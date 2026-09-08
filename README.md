@@ -306,7 +306,7 @@ uv run deerflow-acp
 这个入口定位为本地通用任务 Agent，不提供终端、LSP、代码诊断或 diff 等编码客户端集成：
 
 - Prompt 支持文本和 ACP `ResourceLink`。本地 `file:` 资源必须是真实存在且位于当前 session 的 `cwd` 内，并受 `resource_link_max_size_mb` 限制；`http/https` 链接只作为用户提供的数据引用传给 Agent，不会由适配层自动下载。暂不接受 embedded resource、图片或音频输入。
-- 支持多轮会话、完整历史重放、会话列表、`session/close`、取消、思考、计划、工具进度和本地产物链接。关闭的会话立即从列表和加载接口隐藏，超过 `closed_session_retention_days` 后会在 daemon/stdio 下次启动时连同 checkpoint 一起清理。
+- 支持多轮会话、完整历史重放、会话列表、`session/close`、取消、思考、计划、工具进度和本地产物链接。便携 ACP 默认每小时清理一次过期会话：关闭的会话按 `closed_session_retention_days` 保留；未收到 `session/close` 且没有连接或运行的会话，按 `inactive_session_retention_days` 的最后活动时间保留。可用 `session_cleanup_enabled` 关闭自动清理。
 - 支持线程级 `/goal <完成条件>`：命令会保存目标并立即以规范化后的完成条件开始任务；单独发送 `/goal` 查看当前状态，发送 `/goal clear`、`/goal reset` 或 `/goal off` 清除。目标随 checkpoint 恢复，完成后自动清除。带图片或 ResourceLink 的消息不会被识别为命令。
 - 每个有活动目标的 Agent 回合结束后，运行一个关闭 thinking 的独立模型判断，只依据客户端可见的对话证据。只有判断为 `goal_not_met_yet` 时才允许自动续跑；需要用户输入、运行失败、外部等待、证据不足或评估失败都会停止并保留目标状态。
 - 自动续跑默认关闭。设置 `local_acp.goal_auto_continue: true` 后启用；`goal_max_continuations` 默认 3、硬上限 8，`goal_max_no_progress_continuations` 默认 2。隐藏续跑仍受原 prompt 的超时、权限策略和取消控制，模型用量会累计到该次 ACP 响应。
@@ -324,7 +324,7 @@ uv run deerflow-acp
 - DeerFlow 的 uploads、outputs、ACP 外部 agent workspace 和会话状态仍保存在自己的线程目录中，不会混入客户端项目。
 - ACP 使用独立的 `acp-checkpoints.db` 和 `acp-sessions.db`，可与 HTTP API 同时运行而不共享 SQLite 写热点。
 
-可选配置见 `config.example.yaml` 的 `local_acp:`。也可用 `DEER_FLOW_ACP_CHECKPOINTER_PATH`、`DEER_FLOW_ACP_SESSION_STORE_PATH`、`DEER_FLOW_ACP_MAX_ACTIVE_CONNECTIONS`、`DEER_FLOW_ACP_MAX_ACTIVE_RUNS`、`DEER_FLOW_ACP_RUN_TIMEOUT`、`DEER_FLOW_ACP_GOAL_AUTO_CONTINUE`、`DEER_FLOW_ACP_GOAL_MAX_CONTINUATIONS`、`DEER_FLOW_ACP_GOAL_MAX_NO_PROGRESS_CONTINUATIONS`、`DEER_FLOW_ACP_ENABLE_BASH` 和 `DEER_FLOW_ACP_ACCEPT_CLIENT_MCP_SERVERS` 覆盖运行参数。Bridge 的 stdout 只承载 ACP JSON-RPC；daemon 日志写入独立轮转文件。
+可选配置见 `config.example.yaml` 的 `local_acp:`。也可用 `DEER_FLOW_ACP_CHECKPOINTER_PATH`、`DEER_FLOW_ACP_SESSION_STORE_PATH`、`DEER_FLOW_ACP_MAX_ACTIVE_CONNECTIONS`、`DEER_FLOW_ACP_MAX_ACTIVE_RUNS`、`DEER_FLOW_ACP_RUN_TIMEOUT`、`DEER_FLOW_ACP_SESSION_CLEANUP_ENABLED`、`DEER_FLOW_ACP_SESSION_CLEANUP_INTERVAL`、`DEER_FLOW_ACP_GOAL_AUTO_CONTINUE`、`DEER_FLOW_ACP_GOAL_MAX_CONTINUATIONS`、`DEER_FLOW_ACP_GOAL_MAX_NO_PROGRESS_CONTINUATIONS`、`DEER_FLOW_ACP_ENABLE_BASH` 和 `DEER_FLOW_ACP_ACCEPT_CLIENT_MCP_SERVERS` 覆盖运行参数。Bridge 的 stdout 只承载 ACP JSON-RPC；daemon 日志写入独立轮转文件。
 
 ### Raft 集成
 

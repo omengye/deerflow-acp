@@ -210,23 +210,58 @@ class LocalACPSessionStore:
     async def purge_closed(self, *, retention_days: int) -> builtins.list[str]:
         """Delete closed session metadata older than the configured retention."""
 
-        cutoff = (datetime.now(UTC) - timedelta(days=retention_days)).isoformat().replace(
-            "+00:00", "Z"
+        session_ids = await self.expired_session_ids(
+            closed_retention_days=retention_days,
+            inactive_retention_days=None,
         )
+        await self.delete_sessions(session_ids)
+        return session_ids
+
+    async def expired_session_ids(
+        self,
+        *,
+        closed_retention_days: int,
+        inactive_retention_days: int | None,
+        limit: int = 256,
+    ) -> builtins.list[str]:
+        """Return oldest sessions eligible for checkpoint cleanup."""
+
+        now = datetime.now(UTC)
+        closed_cutoff = (
+            (now - timedelta(days=closed_retention_days))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        conditions = ["(closed = 1 AND updated_at <= ?)"]
+        params: list[Any] = [closed_cutoff]
+        if inactive_retention_days is not None:
+            inactive_cutoff = (
+                now - timedelta(days=inactive_retention_days)
+            ).isoformat().replace("+00:00", "Z")
+            conditions.append("(closed = 0 AND updated_at <= ?)")
+            params.append(inactive_cutoff)
+        params.append(limit)
+        async with self._lock:
+            rows = self._conn().execute(
+                "SELECT session_id FROM acp_sessions WHERE "
+                + " OR ".join(conditions)
+                + " ORDER BY updated_at ASC LIMIT ?",
+                params,
+            ).fetchall()
+        return [str(row["session_id"]) for row in rows]
+
+    async def delete_sessions(self, session_ids: builtins.list[str]) -> None:
+        """Delete session metadata after its checkpoint state was removed."""
+
+        if not session_ids:
+            return
         async with self._lock:
             connection = self._conn()
-            rows = connection.execute(
-                "SELECT session_id FROM acp_sessions WHERE closed = 1 AND updated_at <= ?",
-                (cutoff,),
-            ).fetchall()
-            session_ids = [str(row["session_id"]) for row in rows]
-            if session_ids:
-                connection.executemany(
-                    "DELETE FROM acp_sessions WHERE session_id = ?",
-                    ((session_id,) for session_id in session_ids),
-                )
-                connection.commit()
-        return session_ids
+            connection.executemany(
+                "DELETE FROM acp_sessions WHERE session_id = ?",
+                ((session_id,) for session_id in session_ids),
+            )
+            connection.commit()
 
     @staticmethod
     def encode_cursor(offset: int) -> str:

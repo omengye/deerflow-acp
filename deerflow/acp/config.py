@@ -187,6 +187,9 @@ class LocalACPConfig:
     memory_scope: str = "workspace"
     prompt_overlay: str = ""
     resource_link_max_size_bytes: int = 25 * 1024 * 1024
+    session_cleanup_enabled: bool = True
+    inactive_session_retention_days: int = 30
+    session_cleanup_interval_seconds: float = 3600.0
     closed_session_retention_days: int = 30
     artifacts: LocalACPArtifactConfig | None = None
 
@@ -261,6 +264,20 @@ class LocalACPConfig:
             "off" if permission_raw is False else str(permission_raw).strip().lower()
         )
         memory_scope = str(_value(local, "memory_scope", "workspace")).strip().lower()
+        session_cleanup_enabled = _as_bool(
+            os.getenv(
+                "DEER_FLOW_ACP_SESSION_CLEANUP_ENABLED",
+                _value(local, "session_cleanup_enabled", True),
+            ),
+            name="local_acp.session_cleanup_enabled",
+        )
+        inactive_retention_days = int(
+            _value(local, "inactive_session_retention_days", 30)
+        )
+        cleanup_interval_seconds = _env_float(
+            "DEER_FLOW_ACP_SESSION_CLEANUP_INTERVAL",
+            float(_value(local, "session_cleanup_interval_seconds", 3600.0)),
+        )
         closed_retention_days = int(_value(local, "closed_session_retention_days", 30))
         resource_link_max_size_mb = int(_value(local, "resource_link_max_size_mb", 25))
         tool_allowlist = _string_list(
@@ -324,6 +341,15 @@ class LocalACPConfig:
         if not 0 <= closed_retention_days <= 3650:
             raise ValueError(
                 "local_acp.closed_session_retention_days must be between 0 and 3650"
+            )
+        if not 1 <= inactive_retention_days <= 3650:
+            raise ValueError(
+                "local_acp.inactive_session_retention_days must be between 1 and 3650"
+            )
+        if not 60 <= cleanup_interval_seconds <= 86_400:
+            raise ValueError(
+                "local_acp.session_cleanup_interval_seconds must be between "
+                "60 and 86400"
             )
         if not 1 <= resource_link_max_size_mb <= 2048:
             raise ValueError(
@@ -478,6 +504,9 @@ class LocalACPConfig:
             memory_scope=memory_scope,
             prompt_overlay=prompt_overlay,
             resource_link_max_size_bytes=resource_link_max_size_mb * 1024 * 1024,
+            session_cleanup_enabled=session_cleanup_enabled,
+            inactive_session_retention_days=inactive_retention_days,
+            session_cleanup_interval_seconds=cleanup_interval_seconds,
             closed_session_retention_days=closed_retention_days,
             artifacts=artifact_config,
         )

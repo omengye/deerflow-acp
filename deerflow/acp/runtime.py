@@ -276,10 +276,11 @@ class LocalACPRuntime:
         finally:
             self.permission_broker.clear_session(session_id)
 
-    async def purge_checkpoints(self, session_ids: list[str]) -> None:
+    async def purge_checkpoints(self, session_ids: list[str]) -> list[str]:
         checkpointer = self._checkpointer
         if checkpointer is None:
-            return
+            return []
+        purged: list[str] = []
         for session_id in session_ids:
             try:
                 await checkpointer.adelete_thread(session_id)
@@ -289,6 +290,32 @@ class LocalACPRuntime:
                     session_id,
                     exc_info=True,
                 )
+            else:
+                purged.append(session_id)
+        return purged
+
+    async def compact_checkpoints(self) -> bool:
+        """Compact the ACP SQLite database during an idle startup window."""
+
+        checkpointer = self._checkpointer
+        conn = getattr(checkpointer, "conn", None)
+        lock = getattr(checkpointer, "lock", None)
+        if conn is None or lock is None:
+            return False
+        try:
+            async with lock:
+                checkpoint_cursor = await conn.execute(
+                    "PRAGMA wal_checkpoint(TRUNCATE)"
+                )
+                await checkpoint_cursor.fetchall()
+                await checkpoint_cursor.close()
+                vacuum_cursor = await conn.execute("VACUUM")
+                await vacuum_cursor.close()
+                await conn.commit()
+        except Exception:
+            logger.warning("Failed to compact ACP checkpoint database", exc_info=True)
+            return False
+        return True
 
     def _require_checkpointer(self) -> Any:
         if self._checkpointer is None:

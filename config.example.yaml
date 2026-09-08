@@ -1,7 +1,7 @@
 # DeerFlow config.yaml
 # ⚠️ 配置你的 API Key 后再启动服务
 
-config_version: 14
+config_version: 15
 log_level: info
 
 # API service settings. Prefer putting operational configuration here instead
@@ -140,8 +140,12 @@ local_acp:
   prompt_overlay: ""
   # prompt_overlay_file: ./config/local-acp-overlay.md
   resource_link_max_size_mb: 25
-  # Closed sessions disappear immediately. Their metadata and checkpoints are
-  # deleted at a later daemon/stdio startup after this retention period.
+  # The daemon periodically removes unattached sessions that have had no
+  # activity for this many days, including clients that never sent session/close.
+  session_cleanup_enabled: true
+  inactive_session_retention_days: 30
+  session_cleanup_interval_seconds: 3600
+  # Explicitly closed sessions can use a separate retention window.
   closed_session_retention_days: 30
   recursion_limit: 200
   # `/goal <completion condition>` always stores and evaluates a thread goal.

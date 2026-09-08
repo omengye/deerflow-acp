@@ -170,6 +170,9 @@ local_acp:
   memory_scope: session
   prompt_overlay: Server-owned instruction
   resource_link_max_size_mb: 7
+  session_cleanup_enabled: false
+  inactive_session_retention_days: 14
+  session_cleanup_interval_seconds: 120
   closed_session_retention_days: 0
   enable_bash: true
   accept_client_mcp_servers: true
@@ -198,6 +201,9 @@ local_acp:
     assert config.memory_scope == "session"
     assert config.prompt_overlay == "Server-owned instruction"
     assert config.resource_link_max_size_bytes == 7 * 1024 * 1024
+    assert config.session_cleanup_enabled is False
+    assert config.inactive_session_retention_days == 14
+    assert config.session_cleanup_interval_seconds == 120
     assert config.closed_session_retention_days == 0
     assert config.enable_bash is True
     assert config.accept_client_mcp_servers is True

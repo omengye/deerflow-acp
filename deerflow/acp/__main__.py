@@ -33,6 +33,7 @@ async def _run(config_path: str | None) -> None:
     # isolated environment paths above have been installed.
     from .agent import DeerFlowACPAgent
     from .runtime import LocalACPRuntime
+    from .session_cleanup import cleanup_expired_sessions, run_session_cleanup_loop
     from .session_store import LocalACPSessionStore
 
     runtime = LocalACPRuntime(config)
@@ -40,16 +41,21 @@ async def _run(config_path: str | None) -> None:
     store = LocalACPSessionStore(config.session_store_path)
     store.setup()
     await runtime.open()
-    purged = await store.purge_closed(
-        retention_days=config.closed_session_retention_days
+    await cleanup_expired_sessions(config, store, runtime, compact=True)
+    cleanup_task = asyncio.create_task(
+        run_session_cleanup_loop(config, store, runtime)
     )
-    await runtime.purge_checkpoints(purged)
     agent = DeerFlowACPAgent(config, store, runtime)
     try:
         # Keep the wire surface on stable ACP v1. Experimental workspace,
         # terminal, fork/resume, and provider features remain unavailable.
         await acp.run_agent(agent, use_unstable_protocol=False)
     finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
         await agent.shutdown()
         await runtime.close()
         store.close()

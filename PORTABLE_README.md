@@ -147,4 +147,6 @@ Sandbox 与 Tool JSON 中的字面量密钥会显示为 `__DEERFLOW_REDACTED__`�
 - Daemon 日志与端点：`user-data/runtime/acp`
 - 配置备份：`user-data/backups`
 
+便携 ACP 默认每小时自动清理一次过期会话及其 checkpoint。已关闭会话由 `closed_session_retention_days` 控制；客户端未发送 `session/close` 时，未连接且长期无活动的会话由 `inactive_session_retention_days` 控制。可在 `local_acp` 中调整 `session_cleanup_interval_seconds`，或将 `session_cleanup_enabled` 设为 `false` 关闭自动清理。启动阶段实际删除了过期会话时会自动压缩 checkpoint 数据库；运行期间删除出的空闲页则供后续写入复用，避免在线 `VACUUM` 阻塞活跃任务。
+
 模型的字面量密钥在界面读取时会被脱敏。保存时密钥输入框留空会保留原值；只有勾选“清除已保存的 API Key”才会删除它。

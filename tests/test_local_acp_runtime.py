@@ -46,6 +46,21 @@ def _configure_local_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_compacts_sqlite_checkpoints(tmp_path: Path) -> None:
+    config = LocalACPConfig(
+        config_path=tmp_path / "config.yaml",
+        checkpointer_path=tmp_path / "checkpoints.db",
+        session_store_path=tmp_path / "sessions.db",
+    )
+    runtime = LocalACPRuntime(config)
+    await runtime.open()
+    try:
+        assert await runtime.compact_checkpoints() is True
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_warmup_builds_and_reuses_default_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

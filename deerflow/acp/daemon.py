@@ -35,6 +35,7 @@ from .daemon_endpoint import (
 )
 from .proposal_control import handle_proposal_management_request
 from .runtime import LocalACPRuntime
+from .session_cleanup import cleanup_expired_sessions, run_session_cleanup_loop
 from .session_store import LocalACPSessionStore
 
 logger = logging.getLogger(__name__)
@@ -432,14 +433,13 @@ async def _run_daemon(
     store.setup()
     daemon = ACPDaemon(config, store, runtime, runtime_dir)
     warmup_task: asyncio.Task[None] | None = None
+    cleanup_task: asyncio.Task[None] | None = None
     try:
         await runtime.open()
-        purged = await store.purge_closed(
-            retention_days=config.closed_session_retention_days
+        await cleanup_expired_sessions(config, store, runtime, compact=True)
+        cleanup_task = asyncio.create_task(
+            run_session_cleanup_loop(config, store, runtime)
         )
-        await runtime.purge_checkpoints(purged)
-        if purged:
-            logger.info("Purged %d closed ACP session(s)", len(purged))
         await daemon.start()
         _install_signal_handlers(daemon)
         if warmup:
@@ -456,6 +456,12 @@ async def _run_daemon(
             warmup_task = asyncio.create_task(_do_warmup())
         await daemon.wait()
     finally:
+        if cleanup_task is not None and not cleanup_task.done():
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass
         if warmup_task is not None and not warmup_task.done():
             warmup_task.cancel()
             try:

@@ -1,4 +1,4 @@
-config_version: 14
+config_version: 15
 log_level: info
 
 api:
@@ -28,6 +28,9 @@ local_acp:
   tool_allowlist: null
   tool_denylist: []
   accept_client_mcp_servers: false
+  session_cleanup_enabled: true
+  inactive_session_retention_days: 30
+  session_cleanup_interval_seconds: 3600
   closed_session_retention_days: 30
   recursion_limit: 200
   goal_auto_continue: false

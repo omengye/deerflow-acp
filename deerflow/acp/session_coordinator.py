@@ -50,11 +50,14 @@ class ACPSessionCoordinator:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._bindings: dict[str, SessionBinding] = {}
+        self._cleanup_reservations: set[str] = set()
 
     def attach(self, session_id: str, connection_id: str) -> bool:
         """Attach a session and return whether a new lease was acquired."""
 
         with self._lock:
+            if session_id in self._cleanup_reservations:
+                raise SessionBusyError(f"Session {session_id} is being cleaned up")
             binding = self._bindings.get(session_id)
             if binding is None:
                 self._bindings[session_id] = SessionBinding(connection_id)
@@ -66,6 +69,22 @@ class ACPSessionCoordinator:
             if binding.phase == "disconnecting":
                 raise SessionBusyError(f"Session {session_id} is disconnecting")
             return False
+
+    def reserve_cleanup(self, session_id: str) -> bool:
+        """Reserve an unattached session for destructive cleanup."""
+
+        with self._lock:
+            if (
+                session_id in self._bindings
+                or session_id in self._cleanup_reservations
+            ):
+                return False
+            self._cleanup_reservations.add(session_id)
+            return True
+
+    def release_cleanup(self, session_id: str) -> None:
+        with self._lock:
+            self._cleanup_reservations.discard(session_id)
 
     def owner(self, session_id: str) -> str | None:
         with self._lock:

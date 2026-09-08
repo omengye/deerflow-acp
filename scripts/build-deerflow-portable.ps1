@@ -143,8 +143,24 @@ foreach ($relative in @("config", "data", "skills", "logs", "backups", "runtime\
 }
 
 Write-Host "Validating embedded Python modules..."
-& (Join-Path $runtimeRoot "python.exe") -c "import importlib.util; import sys; import boto3; import botocore.config; import deerflow.config_tool; import deerflow.acp.daemon; from deerflow.community.scrapling.tools import _scrapling_fetch, web_fetch_tool; assert importlib.util.find_spec('agent_sandbox') is None; assert importlib.util.find_spec('playwright') is None; assert importlib.util.find_spec('patchright') is None; sys.modules['scrapling.fetchers'] = None; assert _scrapling_fetch('https://invalid.invalid', 1, None).startswith('Error: Scrapling fetch failed: ModuleNotFoundError'); print('embedded Local-only runtime ok')"
-if ($LASTEXITCODE -ne 0) { throw "Embedded Python validation failed" }
+$validationConfig = Join-Path $resourcesRoot "default-config.yaml"
+$previousConfigPath = $env:DEER_FLOW_CONFIG_PATH
+try {
+    # Import validation runs from the repository root, where a developer's
+    # config.yaml may be older than the freshly packaged default. Point the
+    # child process at the packaged config so validation is deterministic.
+    $env:DEER_FLOW_CONFIG_PATH = $validationConfig
+    & (Join-Path $runtimeRoot "python.exe") -c "import importlib.util; import logging; import sys; import boto3; import botocore.config; import deerflow.config_tool; import deerflow.acp.daemon; from deerflow.community.scrapling.tools import _scrapling_fetch, web_fetch_tool; assert importlib.util.find_spec('agent_sandbox') is None; assert importlib.util.find_spec('playwright') is None; assert importlib.util.find_spec('patchright') is None; logging.disable(logging.CRITICAL); sys.modules['scrapling.fetchers'] = None; assert _scrapling_fetch('https://invalid.invalid', 1, None).startswith('Error: Scrapling fetch failed: ModuleNotFoundError'); print('embedded Local-only runtime ok')"
+    if ($LASTEXITCODE -ne 0) { throw "Embedded Python validation failed" }
+}
+finally {
+    if ($null -eq $previousConfigPath) {
+        Remove-Item Env:DEER_FLOW_CONFIG_PATH -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:DEER_FLOW_CONFIG_PATH = $previousConfigPath
+    }
+}
 
 if (-not $SkipZip) {
     $zipPath = Join-Path (Split-Path $outputRoot -Parent) "DeerFlow-windows-x64.zip"
