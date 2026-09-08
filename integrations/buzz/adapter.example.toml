@@ -1,0 +1,89 @@
+[buzz]
+# Official Buzz CLI. It reads BUZZ_PRIVATE_KEY and optional BUZZ_AUTH_TAG from
+# the process environment; never put the private key in this file.
+command = "buzz"
+args = []
+relay_url = "wss://buzz"
+# Maximum wall-clock time for one Buzz CLI subprocess.
+timeout_seconds = 60
+# Public key belonging to BUZZ_PRIVATE_KEY (64 lowercase hex characters).
+agent_pubkey = "0000000000000000000000000000000000000000000000000000000000000000"
+
+# Only explicitly listed channels are renamed. Keep this empty until you know
+# the UUID and desired name; discovered channels are never renamed implicitly.
+channel_names = {}
+# Example:
+# channel_names = { "11111111-1111-1111-1111-111111111111" = "DeerFlow 工作区" }
+
+# Empty plus auto_discover_channels=true watches every channel in which the
+# agent identity is a member. Otherwise list explicit channel UUIDs here.
+channels = []
+auto_discover_channels = true
+include_dms = true
+
+# Shared channels require a signed Nostr p-tag mentioning the agent. DMs do not.
+require_mention = true
+# Empty allows every relay-authorized member. Set public keys to restrict callers.
+allowed_pubkeys = []
+message_kinds = [9]
+
+[buzz.profile]
+name = "DeerFlow"
+about = "DeerFlow Portable Agent"
+avatar = ""
+nip05 = ""
+
+[buzz.lifecycle]
+presence_enabled = true
+presence_heartbeat_seconds = 60
+status_enabled = true
+status_ready = "DeerFlow 就绪"
+status_working = "DeerFlow 正在处理"
+status_error = "DeerFlow 运行异常"
+status_emoji = ""
+
+[deerflow]
+# The executable from the extracted DeerFlow Portable directory.
+command = "D:\\Apps\\DeerFlow\\deerflow-acp.exe"
+# The sidecar uses ACP v2 by default. This flag selects the v2 facade while the
+# same executable keeps ACP v1 as its default for existing clients.
+protocol = "v2"
+args = ["--protocol", "v2"]
+# Existing local directory used as session/new.cwd for every Buzz conversation.
+workspace = "D:\\BuzzWorkspaces\\DeerFlow"
+timeout_seconds = 600
+
+[observability]
+# Native real-time activity uses Buzz NIP-AO. It requires BUZZ_AUTH_TAG or an
+# explicit owner pubkey whose agent-owner relationship is already known by the relay.
+enabled = true
+owner_pubkey = ""
+queue_size = 256
+publish_timeout_seconds = 10
+# false keeps tool names/status visible but strips raw tool input and result data.
+include_raw_tool_data = false
+# Without owner attestation, maintain one editable tool-status reply in the
+# thread. It contains tool names/status only and is visible to channel members.
+progress_messages = true
+progress_update_interval_seconds = 0.5
+progress_max_tools = 12
+
+[state]
+path = "./data/adapter.sqlite3"
+
+[adapter]
+poll_interval_seconds = 4
+# Each page contains at most 200 events. If the backlog exceeds this bound, the
+# channel cursor stays put and the adapter asks you to raise the limit.
+max_poll_pages = 20
+# false seeds each newly discovered channel at its newest event, so installing
+# the adapter does not answer old mentions. SQLite cursors survive restarts.
+replay_existing = false
+# "thread" gives each shared-channel thread its own ACP session; DMs always
+# remain one session per DM conversation. "channel" shares one session per channel.
+session_scope = "thread"
+transport_retry_attempts = 3
+transport_retry_base_seconds = 1
+transport_retry_max_seconds = 4
+max_message_attempts = 5
+log_level = "INFO"

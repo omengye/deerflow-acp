@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 mod gateway;
 mod remote;
+mod v2;
 
 const HANDSHAKE_VERSION: &str = "DFACP/1";
 const ENDPOINT_FILENAME: &str = "endpoint.json";
@@ -48,9 +49,16 @@ enum Mode {
     Remote,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AcpProtocol {
+    V1,
+    V2,
+}
+
 #[derive(Debug)]
 struct Cli {
     mode: Mode,
+    protocol: AcpProtocol,
     config: Option<PathBuf>,
     python: Option<PathBuf>,
     daemon: Option<PathBuf>,
@@ -89,12 +97,14 @@ fn print_help() {
     println!(
         "deerflow-acp - native stdio bridge for the local DeerFlow ACP daemon\n\n\
 Usage:\n  deerflow-acp [--config PATH] [--python PATH] [--daemon PATH] [--no-auto-start]\n  \
+deerflow-acp --protocol v2 [--config PATH] [--python PATH] [--daemon PATH]\n  \
 deerflow-acp --status [--config PATH]\n  deerflow-acp --start-daemon [--config PATH]\n  \
 deerflow-acp --stop-daemon [--config PATH]\n  \
 deerflow-acp --manage [--config PATH]\n  \
 deerflow-acp --gateway --workspace PATH [--listen ADDR] [--config PATH]\n  \
 deerflow-acp --remote URL [--token-env NAME]\n\n\
 Options:\n  --config PATH       DeerFlow config.yaml used when starting the daemon\n  \
+--protocol VERSION  ACP wire protocol for stdio proxy mode: v1 (default) or v2\n  \
 --python PATH       Python interpreter used to run -m deerflow.acp.daemon\n  \
 --daemon PATH       Explicit deerflow-acpd executable\n  --runtime-dir PATH  Override daemon endpoint directory\n  \
 --no-auto-start      Fail instead of starting a missing daemon\n  --status             Check daemon status\n  \
@@ -112,6 +122,7 @@ Options:\n  --config PATH       DeerFlow config.yaml used when starting the daem
 
 fn parse_cli() -> Result<Cli> {
     let mut mode = Mode::Proxy;
+    let mut protocol = AcpProtocol::V1;
     let mut config = None;
     let mut python = None;
     let mut daemon = None;
@@ -126,6 +137,18 @@ fn parse_cli() -> Result<Cli> {
     while let Some(raw) = args.next() {
         let value = raw.to_string_lossy();
         match value.as_ref() {
+            "--protocol" => {
+                let version = args
+                    .next()
+                    .ok_or("--protocol requires v1 or v2")?
+                    .to_string_lossy()
+                    .into_owned();
+                protocol = match version.to_ascii_lowercase().as_str() {
+                    "1" | "v1" => AcpProtocol::V1,
+                    "2" | "v2" => AcpProtocol::V2,
+                    _ => return Err(format!("unsupported ACP protocol: {version}").into()),
+                };
+            }
             "--config" => {
                 config = Some(PathBuf::from(
                     args.next().ok_or("--config requires a path")?,
@@ -200,6 +223,7 @@ fn parse_cli() -> Result<Cli> {
     }
     Ok(Cli {
         mode,
+        protocol,
         config,
         python,
         daemon,
@@ -888,7 +912,13 @@ async fn run() -> Result<()> {
 
 async fn run_local_mode(cli: &Cli, path: &Path) -> Result<()> {
     match cli.mode {
-        Mode::Proxy => proxy(connect_proxy(cli, path)?),
+        Mode::Proxy => match cli.protocol {
+            AcpProtocol::V1 => proxy(connect_proxy(cli, path)?),
+            AcpProtocol::V2 => {
+                ensure_running(cli, path)?;
+                v2::run(path).await
+            }
+        },
         Mode::Status => {
             let endpoint = load_endpoint(path).map_err(|_| "DeerFlow ACP daemon is not running")?;
             validate_config(&endpoint, cli.config.as_deref())?;

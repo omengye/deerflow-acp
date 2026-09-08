@@ -191,7 +191,7 @@ fn internal_error(error: impl std::fmt::Display) -> agent_client_protocol::Error
     agent_client_protocol::Error::internal_error().data(error.to_string())
 }
 
-async fn connect_daemon(path: &Path) -> Result<TcpStream> {
+pub(crate) async fn connect_daemon(path: &Path) -> Result<TcpStream> {
     let endpoint = load_endpoint(path)?;
     let address = format!("{}:{}", endpoint.host, endpoint.port);
     let mut stream = TcpStream::connect(address).await?;
@@ -280,7 +280,7 @@ fn rewrite_message_workspace(
     };
     if !matches!(
         request.method.as_ref(),
-        "session/new" | "session/load" | "session/list" | "session/fork"
+        "session/new" | "session/load" | "session/resume" | "session/list" | "session/fork"
     ) {
         return Ok(());
     }
@@ -390,6 +390,13 @@ mod tests {
     #[test]
     fn rewrites_remote_session_cwd() {
         let mut frame = session_request("session/new", "/remote/workspace");
+        rewrite_workspace(&mut frame, r"D:\local\workspace").unwrap();
+        assert_eq!(cwd(&frame), Some(r"D:\local\workspace"));
+    }
+
+    #[test]
+    fn rewrites_v2_resume_cwd() {
+        let mut frame = session_request("session/resume", "/remote/workspace");
         rewrite_workspace(&mut frame, r"D:\local\workspace").unwrap();
         assert_eq!(cwd(&frame), Some(r"D:\local\workspace"));
     }

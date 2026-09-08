@@ -1,0 +1,31 @@
+[project]
+name = "buzz-deerflow-adapter"
+version = "0.2.0"
+description = "Connect Buzz channels and DMs to DeerFlow Portable over ACP v2"
+requires-python = ">=3.12"
+dependencies = [
+    "agent-client-protocol>=0.10,<0.11",
+    "certifi>=2025.8",
+    "nostr-sdk>=0.44.8,<0.45",
+    "websockets>=14,<16",
+]
+
+[project.scripts]
+buzz-deerflow-adapter = "buzz_deerflow_adapter.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9,<10",
+    "pytest-asyncio>=1.4,<2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["buzz_deerflow_adapter"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

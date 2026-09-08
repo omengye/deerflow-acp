@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -22,13 +23,21 @@ from deerflow.acp.session_store import LocalACPSessionStore
 
 class FakeRuntime:
     async def astream(self, *args: Any, **kwargs: Any):
-        del args, kwargs
+        del kwargs
+        if len(args) > 1 and args[1] == "wait-for-cancel":
+            await asyncio.Future()
         if False:
             yield None
 
     async def history(self, session_id: str) -> list[dict[str, Any]]:
         del session_id
         return []
+
+    async def bind_client_mcp(self, session_id: str, servers: Any) -> None:
+        del session_id, servers
+
+    async def release_session(self, session_id: str) -> None:
+        del session_id
 
 
 def make_config(tmp_path: Path) -> LocalACPConfig:
@@ -227,6 +236,189 @@ async def test_daemon_accepts_multiple_clients_status_stop_and_reconnect(
     await daemon.close()
     store.close()
     assert not daemon.endpoint_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_v2_facade_prompt_acknowledges_then_runs_to_idle(tmp_path: Path) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    bridge = (
+        project_root
+        / "bridge"
+        / "target"
+        / "release"
+        / ("deerflow-acp.exe" if os.name == "nt" else "deerflow-acp")
+    )
+    if not bridge.is_file():
+        pytest.skip("Native bridge release binary is required")
+
+    config = make_config(tmp_path)
+    config.config_path.write_text("{}\n", encoding="utf-8")
+    store = LocalACPSessionStore(config.session_store_path)
+    store.setup()
+    daemon = ACPDaemon(
+        config, store, FakeRuntime(), tmp_path / "runtime", token="test-token"
+    )  # type: ignore[arg-type]
+    await daemon.start()
+    process = await asyncio.create_subprocess_exec(
+        str(bridge),
+        "--protocol",
+        "v2",
+        "--config",
+        str(config.config_path),
+        "--runtime-dir",
+        str(tmp_path / "runtime"),
+        "--no-auto-start",
+        cwd=tmp_path,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+
+    async def request(
+        request_id: int,
+        method: str,
+        params: dict[str, Any],
+        notifications: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        process.stdin.write(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": method,
+                    "params": params,
+                }
+            ).encode()
+            + b"\n"
+        )
+        await process.stdin.drain()
+        while True:
+            line = await asyncio.wait_for(process.stdout.readline(), timeout=5)
+            assert line, await process.stderr.read() if process.stderr else b""
+            frame = json.loads(line)
+            if frame.get("id") == request_id:
+                return frame
+            if notifications is not None:
+                notifications.append(frame)
+
+    async def notify(method: str, params: dict[str, Any]) -> None:
+        process.stdin.write(
+            json.dumps(
+                {"jsonrpc": "2.0", "method": method, "params": params}
+            ).encode()
+            + b"\n"
+        )
+        await process.stdin.drain()
+
+    try:
+        initialized = await request(
+            1,
+            "initialize",
+            {
+                "protocolVersion": 2,
+                "capabilities": {},
+                "info": {"name": "daemon-v2-test", "version": "1"},
+            },
+        )
+        assert initialized["result"]["protocolVersion"] == 2
+        created = await request(
+            2,
+            "session/new",
+            {
+                "cwd": str(tmp_path),
+                "additionalDirectories": [],
+                "mcpServers": [],
+            },
+        )
+        session_id = created["result"]["sessionId"]
+
+        notifications: list[dict[str, Any]] = []
+        acknowledged = await request(
+            3,
+            "session/prompt",
+            {
+                "sessionId": session_id,
+                "prompt": [{"type": "text", "text": "hello"}],
+            },
+            notifications,
+        )
+        assert acknowledged["result"] == {}
+
+        running = False
+        idle = False
+        while not idle:
+            if notifications:
+                frame = notifications.pop(0)
+            else:
+                line = await asyncio.wait_for(process.stdout.readline(), timeout=5)
+                assert line
+                frame = json.loads(line)
+            if frame.get("method") != "session/update":
+                continue
+            update = frame["params"]["update"]
+            if update.get("sessionUpdate") != "state_update":
+                continue
+            if update.get("state") == "running":
+                running = True
+            elif update.get("state") == "idle" and running:
+                idle = True
+                assert update["stopReason"] == "end_turn"
+        assert running
+
+        cancel_notifications: list[dict[str, Any]] = []
+        cancel_acknowledged = await request(
+            4,
+            "session/prompt",
+            {
+                "sessionId": session_id,
+                "prompt": [{"type": "text", "text": "wait-for-cancel"}],
+            },
+            cancel_notifications,
+        )
+        assert cancel_acknowledged["result"] == {}
+        cancel_running = False
+        while not cancel_running:
+            if cancel_notifications:
+                frame = cancel_notifications.pop(0)
+            else:
+                line = await asyncio.wait_for(process.stdout.readline(), timeout=5)
+                assert line
+                frame = json.loads(line)
+            if frame.get("method") != "session/update":
+                continue
+            update = frame["params"]["update"]
+            cancel_running = (
+                update.get("sessionUpdate") == "state_update"
+                and update.get("state") == "running"
+            )
+
+        await notify("session/cancel", {"sessionId": session_id})
+        while True:
+            line = await asyncio.wait_for(process.stdout.readline(), timeout=5)
+            assert line
+            frame = json.loads(line)
+            if frame.get("method") != "session/update":
+                continue
+            update = frame["params"]["update"]
+            if (
+                update.get("sessionUpdate") == "state_update"
+                and update.get("state") == "idle"
+            ):
+                assert update["stopReason"] == "cancelled"
+                break
+
+        closed = await request(
+            5, "session/close", {"sessionId": session_id}
+        )
+        assert closed["result"] == {}
+    finally:
+        process.stdin.close()
+        await process.stdin.wait_closed()
+        await asyncio.wait_for(process.wait(), timeout=10)
+        await daemon.close()
+        store.close()
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@ name = "deerflow-acp"
 path = "src/main.rs"
 
 [dependencies]
-agent-client-protocol = "2.0.0"
+agent-client-protocol = { version = "=2.0.0", features = ["unstable_protocol_v2"] }
 agent-client-protocol-http = { version = "2.0.0", features = ["client", "server"] }
 axum = "0.8"
 futures = "0.3.32"

@@ -1,0 +1,8 @@
+.venv/
+adapter.toml
+data/
+.env
+.env.*
+!.env.example
+.test-tmp-*
+.pytest-tmp/

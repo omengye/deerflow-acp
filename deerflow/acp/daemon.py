@@ -381,7 +381,11 @@ class ACPDaemon:
                     agent,
                     input_stream=writer,
                     output_stream=reader,
-                    use_unstable_protocol=False,
+                    # The local Rust v2 facade maps v2 session/close onto the
+                    # SDK 0.10 v1 close route, which that SDK still gates as
+                    # unstable. Other unstable methods remain explicit
+                    # method-not-found handlers in DeerFlowACPAgent.
+                    use_unstable_protocol=True,
                 )
             except (ConnectionError, asyncio.IncompleteReadError):
                 logger.debug("ACP bridge %s disconnected", connection.connection_id)

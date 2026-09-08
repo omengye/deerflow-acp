@@ -13,7 +13,7 @@
 
 ## ACP 客户端配置
 
-DeerFlow 使用标准 ACP stdio 协议。将 ACP Client 的启动命令设置为解压目录下 `deerflow-acp.exe` 的**绝对路径**，参数保持为空。Bridge 会自动发现并使用：
+DeerFlow 使用标准 ACP stdio 协议。普通客户端默认使用 ACP v1；将启动命令设置为解压目录下 `deerflow-acp.exe` 的**绝对路径**，参数保持为空。独立 sidecar 可通过 `--protocol v2` 使用 ACP v2 兼容入口。Bridge 会自动发现并使用：
 
 - `user-data/config/config.yaml`
 - `runtime/python.exe`
@@ -56,6 +56,18 @@ DeerFlow 使用标准 ACP stdio 协议。将 ACP Client 的启动命令设置为
 ```
 
 不要通过 `cmd /c` 或 PowerShell 包装该命令，否则包装层可能干扰 ACP stdio、进程退出和取消信号。
+
+### ACP v2 sidecar
+
+独立 sidecar（例如随包提供的 Buzz 适配器）应直接启动同一个可执行文件，并明确传入：
+
+```text
+D:\Apps\DeerFlow\deerflow-acp.exe --protocol v2
+```
+
+该入口在 Bridge 内把 ACP v2 的 `initialize`、session 新建/列出/恢复/关闭、prompt、cancel、状态更新和权限请求映射到常驻 DeerFlow daemon。`session/prompt` 会先确认接收，再以 `running` 到 `idle` 的状态更新报告完成。现有 ACP v1 客户端无需修改。
+
+Buzz sidecar 还可以在自身配置中设置身份显示名、显式频道 UUID 到名称的映射和 presence/status；ACP v2 的工具更新可发布为 owner-only NIP-AO 活动，没有 owner attestation 时可降级为单条可编辑的频道进度消息。具体配置见 `integrations/buzz/README.md`。
 
 ### 图片输入
 

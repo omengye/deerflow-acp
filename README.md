@@ -218,7 +218,7 @@ Signal 持久化后由单个后台 Worker 异步处理，不阻塞当前用户�
 
 ## 本地 ACP Agent（Zed 等客户端）
 
-项目可作为标准 **ACP v1 Agent** 由 Zed 或其他 ACP client 在本机使用。推荐采用多窗口共享 daemon 的 Bridge 模式：
+项目默认作为标准 **ACP v1 Agent** 由 Zed 或其他 ACP client 在本机使用；Bridge 也提供供 sidecar 使用的 ACP v2 兼容入口 `deerflow-acp --protocol v2`。推荐采用多窗口共享 daemon 的 Bridge 模式：
 
 ```text
 Zed stdio <-> Rust Bridge <-> 127.0.0.1 随机端口 <-> 常驻 deerflow-acpd
@@ -241,6 +241,8 @@ Zed stdio <-> Rust Bridge <-> 127.0.0.1 随机端口 <-> 常驻 deerflow-acpd
 ```powershell
 cargo build --release --manifest-path D:\Tools\deerflow-api\bridge\Cargo.toml
 ```
+
+ACP v2 sidecar 使用同一个 Bridge，并在参数中加入 `--protocol v2`。该入口实现 `initialize`、session 新建/列出/恢复/关闭、prompt、cancel、`running`/`idle` 状态更新和权限请求转发；未传该参数时仍保持原有 ACP v1 透明代理行为。
 
 Zed 的 `settings.json` 可添加一个 custom agent server。Windows 示例（路径按实际项目位置修改）：
 
@@ -327,6 +329,10 @@ uv run deerflow-acp
 ### Raft 集成
 
 `integrations/raft/` 提供独立运行的 Raft External Agent sidecar，通过 ACP v1 连接便携版 DeerFlow。它拥有自己的依赖、配置、测试和运行状态，不会被打入主项目 wheel；安装及运行方式见 [`integrations/raft/README.md`](integrations/raft/README.md)。
+
+### Buzz 集成
+
+`integrations/buzz/` 提供独立运行的 Buzz sidecar，通过官方 Buzz CLI 接收频道 mention/DM，并通过 Bridge 的 ACP v2 兼容入口调用便携版 DeerFlow。sidecar 可设置 Agent profile 和显式频道名称映射，发布 online/working/offline 状态，并把 ACP v2 工具调用输出为 NIP-AO 原生活动或单条可编辑的频道进度消息。它使用 SQLite 保存游标、消息和待发送回复，不会把 Nostr 私钥写入配置或状态库；安装及运行方式见 [`integrations/buzz/README.md`](integrations/buzz/README.md)。
 
 ## 外部 ACP Agent 对接（Codex / Claude Code）
 
