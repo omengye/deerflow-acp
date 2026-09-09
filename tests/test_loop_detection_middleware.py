@@ -71,6 +71,73 @@ def test_tool_frequency_limit_still_applies_within_same_run():
     assert "messages" in result
 
 
+def test_soft_warning_in_batch_cannot_mask_later_hard_stop():
+    middleware = LoopDetectionMiddleware(
+        warn_threshold=100,
+        hard_limit=100,
+        tool_freq_warn=2,
+        tool_freq_hard_limit=3,
+    )
+    runtime = _runtime(thread_id="thread-a", loop_detection_scope_id="thread-a:run-1")
+
+    middleware.after_model(_state("hard_tool", 0), runtime)
+    middleware.after_model(
+        {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "warn_tool", "args": {"query": "a"}, "id": "warn-1"},
+                        {"name": "hard_tool", "args": {"query": "b"}, "id": "hard-1"},
+                    ],
+                )
+            ]
+        },
+        runtime,
+    )
+
+    result = middleware.after_model(
+        {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "warn_tool", "args": {"query": "c"}, "id": "warn-2"},
+                        {"name": "hard_tool", "args": {"query": "d"}, "id": "hard-2"},
+                    ],
+                )
+            ]
+        },
+        runtime,
+    )
+
+    assert result is not None
+    assert result["messages"][0].tool_calls == []
+    assert "hard_tool" in result["messages"][0].content
+    assert "warn_tool" not in middleware._tool_freq_warned.get("thread-a:run-1", set())
+
+
+def test_tool_frequency_uses_sliding_window_and_rearms_warning():
+    middleware = LoopDetectionMiddleware(
+        window_size=3,
+        warn_threshold=100,
+        hard_limit=100,
+        tool_freq_warn=2,
+        tool_freq_hard_limit=3,
+    )
+    runtime = _runtime(thread_id="thread-a", loop_detection_scope_id="thread-a:run-1")
+
+    for index, name in enumerate(("lookup", "other", "lookup")):
+        middleware.after_model(_state(name, index), runtime)
+    assert "lookup" in middleware._tool_freq_warned["thread-a:run-1"]
+
+    middleware.after_model(_state("other", 3), runtime)
+    assert "lookup" not in middleware._tool_freq_warned["thread-a:run-1"]
+
+    middleware.after_model(_state("lookup", 4), runtime)
+    assert "lookup" in middleware._tool_freq_warned["thread-a:run-1"]
+
+
 def test_total_call_hard_limit_stops_long_diverse_runs():
     """Every call differs and no single tool repeats enough — only the per-run
     total backstop can stop it before the graph recursion_limit aborts."""

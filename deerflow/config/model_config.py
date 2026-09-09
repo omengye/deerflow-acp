@@ -1,4 +1,6 @@
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ModelConfig(BaseModel):
@@ -20,6 +22,10 @@ class ModelConfig(BaseModel):
     output_version: str | None = Field(
         default=None,
         description="Structured output version for OpenAI responses content, e.g. responses/v1",
+    )
+    runtime_headers: dict[str, Literal["thread_id", "run_id", "user_id"]] = Field(
+        default_factory=dict,
+        description="Per-request HTTP headers populated from LangGraph runtime context.",
     )
     supports_thinking: bool = Field(default_factory=lambda: False, description="Whether the model supports thinking")
     supports_reasoning_effort: bool = Field(default_factory=lambda: False, description="Whether the model supports reasoning effort")
@@ -50,3 +56,14 @@ class ModelConfig(BaseModel):
             "This is a shortcut for `when_thinking_enabled` and will be merged with `when_thinking_enabled` if both are provided."
         ),
     )
+
+    @field_validator("runtime_headers")
+    @classmethod
+    def validate_runtime_header_names(cls, value):
+        import re
+
+        token = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+        for name in value:
+            if not token.fullmatch(name):
+                raise ValueError(f"Invalid runtime header name: {name!r}")
+        return value

@@ -8,9 +8,11 @@ from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
 from langgraph.runtime import Runtime
 
+from deerflow.agents.middlewares.uploads_middleware import (
+    _strip_upload_blocks_from_content,
+)
 from deerflow.config.title_config import get_title_config
 from deerflow.models import aclose_chat_model, create_chat_model
-from deerflow.agents.middlewares.uploads_middleware import _strip_upload_blocks_from_content
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +121,11 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         _, user_msg = self._build_title_prompt(state)
         return {"title": self._fallback_title(user_msg)}
 
-    async def _agenerate_title_result(self, state: TitleMiddlewareState) -> dict | None:
+    async def _agenerate_title_result(
+        self,
+        state: TitleMiddlewareState,
+        runtime: Runtime | None = None,
+    ) -> dict | None:
         """Generate a title asynchronously and fall back locally on failure."""
         if not self._should_generate_title(state):
             return None
@@ -136,10 +142,16 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
                 model = create_chat_model(name=config.model_name, thinking_enabled=False, disable_keepalive=True)
             else:
                 model = create_chat_model(thinking_enabled=False, disable_keepalive=True)
-            from deerflow.agents.middlewares.llm_error_handling_middleware import llm_call_slot_async
+            from deerflow.agents.middlewares.llm_error_handling_middleware import (
+                llm_call_slot_async,
+            )
+            from deerflow.agents.middlewares.runtime_headers_middleware import (
+                bind_runtime_headers,
+            )
 
+            request_model = bind_runtime_headers(model, runtime)
             async with llm_call_slot_async():
-                response = await model.ainvoke(prompt, config={"run_name": "title_agent"})
+                response = await request_model.ainvoke(prompt, config={"run_name": "title_agent"})
             title = self._parse_title(response.content)
             if title:
                 return {"title": title}
@@ -158,4 +170,4 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
 
     @override
     async def aafter_model(self, state: TitleMiddlewareState, runtime: Runtime) -> dict | None:
-        return await self._agenerate_title_result(state)
+        return await self._agenerate_title_result(state, runtime)

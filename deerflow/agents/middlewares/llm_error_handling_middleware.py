@@ -359,8 +359,9 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         self._circuit_open_until = 0.0
         self._circuit_state = "closed"
         self._circuit_probe_in_flight = False
+        self._circuit_probe_token: object | None = None
 
-    def _check_circuit(self) -> bool:
+    def _check_circuit(self, *, probe_token: object | None = None) -> bool:
         """Returns True if circuit is OPEN (fast fail), False otherwise."""
         with self._circuit_lock:
             now = time.time()
@@ -370,34 +371,47 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     return True
                 self._circuit_state = "half_open"
                 self._circuit_probe_in_flight = False
+                self._circuit_probe_token = None
 
             if self._circuit_state == "half_open":
                 if self._circuit_probe_in_flight:
                     return True
                 self._circuit_probe_in_flight = True
+                self._circuit_probe_token = probe_token
                 return False
 
             return False
 
-    def _record_success(self) -> None:
+    def _record_success(self, *, probe_token: object | None = None) -> None:
         with self._circuit_lock:
+            if self._circuit_state == "open":
+                return
+            if self._circuit_state == "half_open" and self._circuit_probe_token is not probe_token:
+                return
             if self._circuit_state != "closed" or self._circuit_failure_count > 0:
                 logger.info("Circuit breaker reset (Closed). LLM service recovered.")
             self._circuit_failure_count = 0
             self._circuit_open_until = 0.0
             self._circuit_state = "closed"
             self._circuit_probe_in_flight = False
+            self._circuit_probe_token = None
 
-    def _record_failure(self) -> None:
+    def _record_failure(self, *, probe_token: object | None = None) -> None:
         with self._circuit_lock:
             if self._circuit_state == "half_open":
+                if self._circuit_probe_token is not probe_token:
+                    return
                 self._circuit_open_until = time.time() + self.circuit_recovery_timeout_sec
                 self._circuit_state = "open"
                 self._circuit_probe_in_flight = False
+                self._circuit_probe_token = None
                 logger.error(
                     "Circuit breaker probe failed (Open). Will probe again after %ds.",
                     self.circuit_recovery_timeout_sec,
                 )
+                return
+
+            if self._circuit_state == "open":
                 return
 
             self._circuit_failure_count += 1
@@ -406,16 +420,18 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 if self._circuit_state != "open":
                     self._circuit_state = "open"
                     self._circuit_probe_in_flight = False
+                    self._circuit_probe_token = None
                     logger.error(
                         "Circuit breaker tripped (Open). Threshold reached (%d). Will probe after %ds.",
                         self.circuit_failure_threshold,
                         self.circuit_recovery_timeout_sec,
                     )
 
-    def _release_half_open_probe(self) -> None:
+    def _release_half_open_probe(self, *, probe_token: object | None = None) -> None:
         with self._circuit_lock:
-            if self._circuit_state == "half_open":
+            if self._circuit_state == "half_open" and self._circuit_probe_token is probe_token:
                 self._circuit_probe_in_flight = False
+                self._circuit_probe_token = None
 
     def _classify_error(self, exc: BaseException) -> tuple[bool, str]:
         detail = _extract_error_detail(exc)
@@ -553,7 +569,8 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelCallResult:
-        if self._check_circuit():
+        probe_token = object()
+        if self._check_circuit(probe_token=probe_token):
             self._emit_failure_event(None, "circuit_open", retriable=True)
             return AIMessage(content=self._build_circuit_breaker_message())
 
@@ -561,13 +578,11 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         while True:
             try:
                 response = self._bounded_model_call_sync(request, handler)
-                self._record_success()
+                self._record_success(probe_token=probe_token)
                 return response
             except GraphBubbleUp:
                 # Preserve LangGraph control-flow signals (interrupt/pause/resume).
-                with self._circuit_lock:
-                    if self._circuit_state == "half_open":
-                        self._circuit_probe_in_flight = False
+                self._release_half_open_probe(probe_token=probe_token)
                 raise
             except Exception as exc:
                 retriable, reason = self._classify_error(exc)
@@ -577,7 +592,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                         attempt,
                         _extract_error_detail(exc),
                     )
-                    self._release_half_open_probe()
+                    self._release_half_open_probe(probe_token=probe_token)
                     self._emit_failure_event(exc, reason, retriable=False)
                     return AIMessage(content=self._build_user_message(exc, reason))
                 max_attempts = self._max_attempts_for(reason)
@@ -601,9 +616,9 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     exc_info=exc,
                 )
                 if retriable and reason != "burst_rate":
-                    self._record_failure()
+                    self._record_failure(probe_token=probe_token)
                 else:
-                    self._release_half_open_probe()
+                    self._release_half_open_probe(probe_token=probe_token)
                 self._emit_failure_event(exc, reason, retriable=retriable)
                 return AIMessage(content=self._build_user_message(exc, reason))
 
@@ -613,62 +628,68 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
-        if self._check_circuit():
+        probe_token = object()
+        if self._check_circuit(probe_token=probe_token):
             self._emit_failure_event(None, "circuit_open", retriable=True)
             return AIMessage(content=self._build_circuit_breaker_message())
 
         attempt = 1
-        while True:
-            try:
-                response = await self._bounded_model_call(request, handler)
-                self._record_success()
-                return response
-            except GraphBubbleUp:
-                # Preserve LangGraph control-flow signals (interrupt/pause/resume).
-                with self._circuit_lock:
-                    if self._circuit_state == "half_open":
-                        self._circuit_probe_in_flight = False
-                raise
-            except Exception as exc:
-                # asyncio shutdown — propagate instead of masking as a user-facing LLM error.
-                if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+        try:
+            while True:
+                try:
+                    response = await self._bounded_model_call(request, handler)
+                    self._record_success(probe_token=probe_token)
+                    return response
+                except GraphBubbleUp:
+                    # Preserve LangGraph control-flow signals (interrupt/pause/resume).
+                    self._release_half_open_probe(probe_token=probe_token)
                     raise
-                retriable, reason = self._classify_error(exc)
-                if reason == "content_policy":
+                except Exception as exc:
+                # asyncio shutdown — propagate instead of masking as a user-facing LLM error.
+                    if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+                        raise
+                    retriable, reason = self._classify_error(exc)
+                    if reason == "content_policy":
+                        logger.warning(
+                            "LLM call rejected by content policy (attempt %d): %s",
+                            attempt,
+                            _extract_error_detail(exc),
+                        )
+                        self._release_half_open_probe(probe_token=probe_token)
+                        self._emit_failure_event(exc, reason, retriable=False)
+                        return AIMessage(content=self._build_user_message(exc, reason))
+                    max_attempts = self._max_attempts_for(reason)
+                    if retriable and attempt < max_attempts:
+                        wait_ms = self._build_retry_delay_ms(attempt, exc, reason)
+                        logger.warning(
+                            "Transient LLM error on attempt %d/%d; retrying in %dms: %s",
+                            attempt,
+                            max_attempts,
+                            wait_ms,
+                            _extract_error_detail(exc),
+                        )
+                        self._emit_retry_event(attempt, wait_ms, reason)
+                        await asyncio.sleep(wait_ms / 1000)
+                        attempt += 1
+                        continue
                     logger.warning(
-                        "LLM call rejected by content policy (attempt %d): %s",
+                        "LLM call failed after %d attempt(s): %s",
                         attempt,
                         _extract_error_detail(exc),
+                        exc_info=exc,
                     )
-                    self._release_half_open_probe()
-                    self._emit_failure_event(exc, reason, retriable=False)
+                    if retriable and reason != "burst_rate":
+                        self._record_failure(probe_token=probe_token)
+                    else:
+                        self._release_half_open_probe(probe_token=probe_token)
+                    self._emit_failure_event(exc, reason, retriable=retriable)
                     return AIMessage(content=self._build_user_message(exc, reason))
-                max_attempts = self._max_attempts_for(reason)
-                if retriable and attempt < max_attempts:
-                    wait_ms = self._build_retry_delay_ms(attempt, exc, reason)
-                    logger.warning(
-                        "Transient LLM error on attempt %d/%d; retrying in %dms: %s",
-                        attempt,
-                        max_attempts,
-                        wait_ms,
-                        _extract_error_detail(exc),
-                    )
-                    self._emit_retry_event(attempt, wait_ms, reason)
-                    await asyncio.sleep(wait_ms / 1000)
-                    attempt += 1
-                    continue
-                logger.warning(
-                    "LLM call failed after %d attempt(s): %s",
-                    attempt,
-                    _extract_error_detail(exc),
-                    exc_info=exc,
-                )
-                if retriable and reason != "burst_rate":
-                    self._record_failure()
-                else:
-                    self._release_half_open_probe()
-                self._emit_failure_event(exc, reason, retriable=retriable)
-                return AIMessage(content=self._build_user_message(exc, reason))
+        except asyncio.CancelledError:
+            # Cancellation can arrive during provider admission/call, retry
+            # event delivery, or backoff.  It is not a provider failure, and
+            # only this request may release the recovery probe it owns.
+            self._release_half_open_probe(probe_token=probe_token)
+            raise
 
 
 def _matches_any(detail: str, patterns: tuple[str, ...]) -> bool:

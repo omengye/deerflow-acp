@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -25,6 +26,7 @@ from deerflow.agents.middlewares.loop_detection_middleware import (
     TOOL_CALL_LIMIT_STOP_REASON,
 )
 from deerflow.agents.thread_state import AgentContext, SandboxState, ThreadDataState, ThreadState
+from deerflow.config import get_app_config
 from deerflow.models import aclose_chat_model, create_chat_model
 from deerflow.subagents.config import SubagentConfig
 
@@ -276,6 +278,7 @@ class SubagentExecutor:
         parent_model: str | None = None,
         sandbox_state: SandboxState | None = None,
         thread_data: ThreadDataState | None = None,
+        uploaded_files: list[dict[str, Any]] | None = None,
         thread_id: str | None = None,
         trace_id: str | None = None,
         thinking_enabled: bool = False,
@@ -291,6 +294,7 @@ class SubagentExecutor:
             parent_model: The parent agent's model name for inheritance.
             sandbox_state: Sandbox state from parent agent.
             thread_data: Thread data from parent agent.
+            uploaded_files: Validated snapshot of current-run parent uploads.
             thread_id: Thread ID for sandbox operations.
             trace_id: Trace ID from parent for distributed tracing.
         """
@@ -298,6 +302,7 @@ class SubagentExecutor:
         self.parent_model = parent_model
         self.sandbox_state = sandbox_state
         self.thread_data = thread_data
+        self.uploaded_files = deepcopy(uploaded_files) if uploaded_files is not None else None
         self.thread_id = thread_id
         self.thinking_enabled = thinking_enabled
         self.deferred_registry = deferred_registry
@@ -365,6 +370,12 @@ class SubagentExecutor:
         # so TokenUsageMiddleware and LoopDetectionMiddleware can push events in the
         # isolated subagent thread (where get_stream_writer() is not available).
         middlewares = build_subagent_runtime_middlewares(lazy_init=True, stream_callback=stream_callback)
+        from deerflow.agents.middlewares.runtime_headers_middleware import RuntimeHeadersMiddleware
+
+        app_config = get_app_config()
+        resolved_model_config = app_config.get_model_config(model_name or app_config.get_default_model_name())
+        if resolved_model_config is not None and resolved_model_config.runtime_headers:
+            middlewares.append(RuntimeHeadersMiddleware(resolved_model_config.runtime_headers))
         from deerflow.agents.middlewares.tool_receipt_middleware import (
             ToolReceiptMiddleware,
         )
@@ -500,6 +511,8 @@ class SubagentExecutor:
             state["sandbox"] = self.sandbox_state
         if self.thread_data is not None:
             state["thread_data"] = self.thread_data
+        if self.uploaded_files is not None:
+            state["uploaded_files"] = deepcopy(self.uploaded_files)
 
         return state
 

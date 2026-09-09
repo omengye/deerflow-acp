@@ -35,9 +35,9 @@ THREAD_ID = "thread-1"
 _HEADING_MD = "# Introduction\n\nSome text.\n\n## Details\n\nMore text.\n"
 
 
-def _runtime(thread_id: str | None = THREAD_ID) -> SimpleNamespace:
+def _runtime(thread_id: str | None = THREAD_ID, *, state: dict | None = None) -> SimpleNamespace:
     context = {"thread_id": thread_id} if thread_id else {}
-    return SimpleNamespace(context=context, config={}, state={})
+    return SimpleNamespace(context=context, config={}, state=state or {})
 
 
 def _middleware(tmp_path: Path) -> UploadsMiddleware:
@@ -124,6 +124,16 @@ def test_before_agent_stores_state_only_never_writes_a_block(tmp_path):
     assert files[0]["path"] == "/mnt/user-data/uploads/report.pdf"
     # The message itself is untouched -- nothing gets persisted into history.
     assert state["messages"][0].content == "please look at this"
+
+
+def test_before_agent_clears_previous_run_upload_snapshot(tmp_path):
+    middleware = _middleware(tmp_path)
+    state = {
+        "messages": [HumanMessage(content="next turn", id="h2")],
+        "uploaded_files": [{"filename": "previous.pdf"}],
+    }
+
+    assert middleware.before_agent(state, _runtime()) == {"uploaded_files": []}
 
 
 def test_before_agent_locates_human_message_when_tail_is_tool_message(tmp_path):
@@ -316,6 +326,19 @@ def test_list_uploaded_files_tool_lists_all_files_without_filename(tmp_path, mon
         assert "outline" not in entry
         assert "begins_with" not in entry
     assert "filename" in payload["hint"]
+
+
+def test_list_uploaded_files_excludes_current_run_snapshot(tmp_path, monkeypatch):
+    _patch_tool_paths(monkeypatch, tmp_path)
+    uploads = _uploads_dir(tmp_path)
+    (uploads / "current.pdf").write_bytes(b"current")
+    (uploads / "historical.pdf").write_bytes(b"historical")
+    runtime = _runtime(state={"uploaded_files": [{"filename": "current.pdf"}]})
+
+    import json
+
+    payload = json.loads(list_uploaded_files_tool.func(runtime, filename=None))
+    assert [entry["filename"] for entry in payload["files"]] == ["historical.pdf"]
 
 
 def test_list_uploaded_files_tool_returns_outline_for_specific_filename(tmp_path, monkeypatch):

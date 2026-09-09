@@ -21,7 +21,7 @@ import hashlib
 import json
 import logging
 import threading
-from collections import OrderedDict, defaultdict
+from collections import Counter, OrderedDict, defaultdict, deque
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from typing import Any, override
@@ -293,8 +293,12 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # Per-thread tracking using OrderedDict for LRU eviction
         self._history: OrderedDict[str, list[str]] = OrderedDict()
         self._warned: dict[str, set[str]] = defaultdict(set)
-        # Per-thread, per-tool-type cumulative call counts
-        self._tool_freq: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        # Per-tool frequency is windowed over individual calls.  Keep the
+        # window large enough for the configured hard threshold to be
+        # reachable even when the generic hash window is smaller.
+        self._tool_frequency_window_size = max(window_size, tool_freq_hard_limit)
+        self._tool_name_history: dict[str, deque[str]] = defaultdict(deque)
+        self._tool_freq: dict[str, Counter[str]] = defaultdict(Counter)
         self._tool_freq_warned: dict[str, set[str]] = defaultdict(set)
         # Per-thread cumulative call count across ALL tool types (backstop)
         self._total_calls: dict[str, int] = defaultdict(int)
@@ -350,6 +354,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             evicted_id, _ = self._history.popitem(last=False)
             self._warned.pop(evicted_id, None)
             self._tool_freq.pop(evicted_id, None)
+            self._tool_name_history.pop(evicted_id, None)
             self._tool_freq_warned.pop(evicted_id, None)
             self._total_calls.pop(evicted_id, None)
             self._total_warned.discard(evicted_id)
@@ -480,28 +485,31 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 )
                 return _HARD_STOP_MSG, True
 
-            if count >= self.warn_threshold:
-                warned = self._warned[thread_id]
-                if call_hash not in warned:
-                    warned.add(call_hash)
-                    logger.warning(
-                        "Repetitive tool calls detected — injecting warning",
-                        extra={
-                            "thread_id": thread_id,
-                            "call_hash": call_hash,
-                            "count": count,
-                            "tools": tool_names,
-                        },
-                    )
-                    return _WARNING_MSG, False
+            # A warning admits the entire batch, so retain it as a candidate
+            # until every tool call has been frequency-accounted.  A later
+            # hard stop must reject the whole batch regardless of call order.
+            warning: str | None = None
+            warning_kind: tuple[str, str] | None = None
+            if count >= self.warn_threshold and call_hash not in self._warned.get(thread_id, set()):
+                warning = _WARNING_MSG
+                warning_kind = ("hash", call_hash)
 
-            # --- Layer 2: per-tool-type frequency ---
+            # --- Layer 2: per-tool-type frequency (sliding window) ---
             freq = self._tool_freq[thread_id]
+            name_history = self._tool_name_history[thread_id]
             for tc in tool_calls:
                 name = tc.get("name", "")
                 if not name:
                     continue
+                name_history.append(name)
                 freq[name] += 1
+                while len(name_history) > self._tool_frequency_window_size:
+                    evicted_name = name_history.popleft()
+                    freq[evicted_name] -= 1
+                    if freq[evicted_name] <= 0:
+                        del freq[evicted_name]
+                    if freq.get(evicted_name, 0) < self.tool_freq_warn:
+                        self._tool_freq_warned[thread_id].discard(evicted_name)
                 tc_count = freq[name]
 
                 if tc_count >= self.tool_freq_hard_limit:
@@ -517,17 +525,29 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
                 if tc_count >= self.tool_freq_warn:
                     warned = self._tool_freq_warned[thread_id]
-                    if name not in warned:
-                        warned.add(name)
-                        logger.warning(
-                            "Tool frequency warning — too many calls to same tool type",
-                            extra={
-                                "thread_id": thread_id,
-                                "tool_name": name,
-                                "count": tc_count,
-                            },
-                        )
-                        return _TOOL_FREQ_WARNING_MSG.format(tool_name=name, count=tc_count), False
+                    if warning is None and name not in warned:
+                        warning = _TOOL_FREQ_WARNING_MSG.format(tool_name=name, count=tc_count)
+                        warning_kind = ("tool", name)
+
+            if warning is not None and warning_kind is not None:
+                kind, key = warning_kind
+                if kind == "hash":
+                    self._warned[thread_id].add(key)
+                    logger.warning(
+                        "Repetitive tool calls detected — injecting warning",
+                        extra={"thread_id": thread_id, "call_hash": call_hash, "count": count, "tools": tool_names},
+                    )
+                else:
+                    # The selected name may have decayed below the threshold
+                    # later in the same oversized batch.  Do not leave a stale
+                    # suppression mark in that case.
+                    if freq.get(key, 0) >= self.tool_freq_warn:
+                        self._tool_freq_warned[thread_id].add(key)
+                    logger.warning(
+                        "Tool frequency warning — too many calls to same tool type",
+                        extra={"thread_id": thread_id, "tool_name": key, "count": freq.get(key, 0)},
+                    )
+                return warning, False
 
             # --- Layer 0: per-run total tool-call backstop (warn) ---
             # Lowest priority: only reached when no hash / per-tool-type signal
@@ -737,6 +757,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._history.pop(thread_id, None)
                 self._warned.pop(thread_id, None)
                 self._tool_freq.pop(thread_id, None)
+                self._tool_name_history.pop(thread_id, None)
                 self._tool_freq_warned.pop(thread_id, None)
                 self._total_calls.pop(thread_id, None)
                 self._total_warned.discard(thread_id)
@@ -747,6 +768,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._history.clear()
                 self._warned.clear()
                 self._tool_freq.clear()
+                self._tool_name_history.clear()
                 self._tool_freq_warned.clear()
                 self._total_calls.clear()
                 self._total_warned.clear()

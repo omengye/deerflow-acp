@@ -81,6 +81,10 @@ def make_sync_tool_wrapper(coro: Callable[..., Any], tool_name: str) -> Callable
             kwargs[config_param] = injected_config
         return asyncio.run(coro(*args, **kwargs))
 
+    # LangGraph inspects ``tool.func`` (before ``tool.coroutine``) for injected
+    # arguments such as ToolRuntime.  Preserve the coroutine's annotations and
+    # ``__wrapped__`` chain when this wrapper is assigned to ``tool.func``.
+    @functools.wraps(coro)
     def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             loop = asyncio.get_running_loop()

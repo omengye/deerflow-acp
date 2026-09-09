@@ -17,10 +17,11 @@ def list_dir(path: str, max_depth: int = 2) -> list[str]:
         excluding items matching IGNORE_PATTERNS.
     """
     result: list[str] = []
-    root_path = Path(path).resolve()
-
+    # ``strict=True`` keeps a missing path distinct from an empty directory.
+    # Callers use these exceptions to surface actionable sandbox failures.
+    root_path = Path(path).resolve(strict=True)
     if not root_path.is_dir():
-        return result
+        raise NotADirectoryError(path)
 
     def _is_within_root(candidate: Path) -> bool:
         try:
@@ -44,6 +45,8 @@ def list_dir(path: str, max_depth: int = 2) -> list[str]:
                         item_resolved = item.resolve()
                         if not _is_within_root(item_resolved):
                             continue
+                    except PermissionError:
+                        raise
                     except OSError:
                         continue
                     post_fix = "/" if item_resolved.is_dir() else ""
@@ -61,7 +64,7 @@ def list_dir(path: str, max_depth: int = 2) -> list[str]:
                 if item.is_dir() and current_depth < max_depth:
                     _traverse(item, current_depth + 1)
         except PermissionError:
-            pass
+            raise
 
     _traverse(root_path, 1)
 

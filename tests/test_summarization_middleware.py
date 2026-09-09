@@ -33,15 +33,18 @@ class _FakeModel:
         self._text = text
         self._error = error
         self.calls = 0
+        self.prompts = []
 
     def invoke(self, _prompt, config=None):  # noqa: ANN001, ARG002
         self.calls += 1
+        self.prompts.append(_prompt)
         if self._error is not None:
             raise self._error
         return SimpleNamespace(text=self._text)
 
     async def ainvoke(self, _prompt, config=None):  # noqa: ANN001, ARG002
         self.calls += 1
+        self.prompts.append(_prompt)
         if self._error is not None:
             raise self._error
         return SimpleNamespace(text=self._text)
@@ -350,6 +353,27 @@ def test_internal_human_message_is_not_mistaken_for_current_user() -> None:
     summarized_contents = [message.content for message in event.messages_to_summarize]
     assert "CURRENT REQUEST" in preserved_contents
     assert "internal reminder" in summarized_contents
+
+
+def test_ai_tool_only_compaction_keeps_latest_tool_result_in_summary() -> None:
+    model = _FakeModel()
+    middleware = DeerFlowSummarizationMiddleware(
+        model=model,
+        trigger=("messages", 6),
+        keep=("messages", 2),
+        token_counter=_token_counter,
+        trim_tokens_to_summarize=200,
+    )
+    messages = [
+        AIMessage(content="", tool_calls=[{"name": "search", "args": {}, "id": "old"}]),
+        ToolMessage(content="OLD RESULT", tool_call_id="old"),
+        AIMessage(content="", tool_calls=[{"name": "search", "args": {}, "id": "new"}]),
+        ToolMessage(content="LATEST RESULT", tool_call_id="new"),
+    ]
+
+    assert middleware._create_summary(messages) == "a summary"
+    assert "LATEST RESULT" in model.prompts[0]
+    assert "Previous conversation was too long to summarize." not in model.prompts[0]
 
 
 async def test_latest_user_request_survives_tool_heavy_summarization_async() -> None:

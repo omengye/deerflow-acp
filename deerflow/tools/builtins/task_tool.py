@@ -5,8 +5,10 @@ import concurrent.futures
 import logging
 import uuid
 from collections.abc import Callable, Coroutine
+from copy import deepcopy
 from dataclasses import replace
 from functools import wraps
+from pathlib import Path
 from typing import Annotated, Any
 
 from langchain.tools import InjectedToolCallId, ToolRuntime
@@ -85,6 +87,24 @@ def _merge_skill_allowlists(parent: list[str] | None, child: list[str] | None) -
     return [skill for skill in child if skill in parent_set]
 
 
+def _snapshot_uploaded_files(state: object) -> list[dict[str, Any]] | None:
+    """Validate and copy the parent upload boundary, failing closed."""
+    if not isinstance(state, dict) or "uploaded_files" not in state:
+        return None
+    uploaded_files = state.get("uploaded_files")
+    if not isinstance(uploaded_files, list):
+        return None
+    if not all(
+        isinstance(entry, dict)
+        and isinstance(entry.get("filename"), str)
+        and bool(entry["filename"])
+        and Path(entry["filename"]).name == entry["filename"]
+        for entry in uploaded_files
+    ):
+        return None
+    return deepcopy(uploaded_files)
+
+
 # Core async implementation of the task tool.
 async def _task_tool_impl(
     runtime: ToolRuntime[AgentContext, ThreadState],
@@ -118,6 +138,7 @@ async def _task_tool_impl(
     # Extract parent context from runtime
     sandbox_state = None
     thread_data = None
+    uploaded_files = None
     thread_id = None
     parent_model = None
     trace_id = None
@@ -126,6 +147,7 @@ async def _task_tool_impl(
     if runtime is not None:
         sandbox_state = runtime.state.get("sandbox")
         thread_data = runtime.state.get("thread_data")
+        uploaded_files = _snapshot_uploaded_files(runtime.state)
         ctx = runtime.context if isinstance(runtime.context, dict) else None
         thread_id = ctx.get("thread_id") if ctx else None
         if thread_id is None:
@@ -161,7 +183,12 @@ async def _task_tool_impl(
     parent_tool_groups = metadata.get("tool_groups")
 
     # Subagents should not have subagent tools enabled (prevent recursive nesting)
-    tools = get_available_tools(model_name=parent_model, groups=parent_tool_groups, subagent_enabled=False)
+    tools = get_available_tools(
+        model_name=parent_model,
+        groups=parent_tool_groups,
+        subagent_enabled=False,
+        include_upload_tool=uploaded_files is not None,
+    )
     excluded_tool_names = set(metadata.get("subagent_excluded_tool_names") or [])
     # Never rely solely on the global registry honoring subagent_enabled=False:
     # recursive delegation is a hard boundary for internal ACP subagents.
@@ -191,6 +218,7 @@ async def _task_tool_impl(
         parent_model=parent_model,
         sandbox_state=sandbox_state,
         thread_data=thread_data,
+        uploaded_files=uploaded_files,
         thread_id=thread_id,
         trace_id=trace_id,
         thinking_enabled=parent_thinking_enabled,

@@ -124,11 +124,23 @@ def list_uploaded_files_tool(
     except ValueError as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
+    current_run_filenames: set[str] = set()
+    state = getattr(runtime, "state", None) if runtime is not None else None
+    uploaded_files = state.get("uploaded_files") if isinstance(state, dict) else None
+    if isinstance(uploaded_files, list):
+        current_run_filenames = {
+            entry["filename"]
+            for entry in uploaded_files
+            if isinstance(entry, dict) and isinstance(entry.get("filename"), str)
+        }
+
     if filename is not None:
         # Reject path components so a crafted name cannot escape the uploads dir.
         safe_name = Path(filename).name
         if not safe_name or safe_name != filename:
             return json.dumps({"error": f"Invalid filename: {filename!r}"}, ensure_ascii=False)
+        if safe_name in current_run_filenames:
+            return json.dumps({"error": f"File belongs to the current upload batch: {safe_name}"}, ensure_ascii=False)
 
         target = uploads_dir / safe_name
         if not target.is_file():
@@ -139,7 +151,10 @@ def list_uploaded_files_tool(
     if not uploads_dir.is_dir():
         return json.dumps({"files": [], "count": 0}, ensure_ascii=False)
 
-    paths = sorted((p for p in uploads_dir.iterdir() if p.is_file()), key=lambda p: p.name)
+    paths = sorted(
+        (p for p in uploads_dir.iterdir() if p.is_file() and p.name not in current_run_filenames),
+        key=lambda p: p.name,
+    )
     # Metadata only here -- outline extraction is opt-in per file (below) so a
     # bare listing call never re-extracts outlines for every historical file.
     files = [_describe_file(p, include_outline=False) for p in paths[:_MAX_LISTED_FILES]]

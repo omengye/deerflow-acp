@@ -461,16 +461,19 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         """
         messages = state.get("messages") or []
         if not messages:
-            return None
+            return {"uploaded_files": []}
 
         last_index = _last_human_message_index(messages)
         if last_index is None:
-            return None
+            return {"uploaded_files": []}
         last_message = messages[last_index]
 
         new_files, _ = self._collect_files(last_message, runtime)
         if not new_files:
-            return None
+            # A file from the previous run is historical now. Clear the
+            # persisted current-run snapshot so list_uploaded_files and child
+            # agents no longer exclude it.
+            return {"uploaded_files": []}
         return {"uploaded_files": new_files}
 
     @override

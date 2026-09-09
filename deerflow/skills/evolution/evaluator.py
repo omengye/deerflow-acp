@@ -107,10 +107,29 @@ class AutoPatchEvaluator:
                 thinking_enabled=False,
                 disable_keepalive=True,
             )
-            from deerflow.agents.middlewares.llm_error_handling_middleware import llm_call_slot_async
+            from deerflow.agents.middlewares.llm_error_handling_middleware import (
+                llm_call_slot_async,
+            )
+            from deerflow.agents.middlewares.runtime_headers_middleware import (
+                bind_runtime_headers,
+            )
 
+            request_model = bind_runtime_headers(
+                model,
+                runtime_values={
+                    "thread_id": (
+                        (signal.thread_id if signal is not None else None)
+                        or proposal.trigger.thread_id
+                        or f"skill-evolution-{proposal.id}"
+                    ),
+                    "run_id": (
+                        (signal.run_id if signal is not None else None)
+                        or proposal.id
+                    ),
+                },
+            )
             async with llm_call_slot_async():
-                response = await model.ainvoke(
+                response = await request_model.ainvoke(
                     [{"role": "system", "content": rubric}, {"role": "user", "content": prompt}],
                     config={"run_name": "skill_evolution_evaluator"},
                 )

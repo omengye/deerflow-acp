@@ -301,6 +301,7 @@ async def evaluate_goal_completion(
     *,
     model: Any | None = None,
     model_name: str | None = None,
+    thread_id: str | None = None,
     usage_callback: Callable[[dict[str, int]], None] | None = None,
 ) -> GoalEvaluation:
     """Judge completion using only visible conversation evidence."""
@@ -337,10 +338,17 @@ async def evaluate_goal_completion(
     from deerflow.agents.middlewares.llm_error_handling_middleware import (
         llm_call_slot_async,
     )
+    from deerflow.agents.middlewares.runtime_headers_middleware import (
+        bind_runtime_headers,
+    )
 
     try:
+        request_model = bind_runtime_headers(
+            evaluator,
+            runtime_values={"thread_id": thread_id} if thread_id is not None else None,
+        )
         async with llm_call_slot_async():
-            response = await evaluator.ainvoke(
+            response = await request_model.ainvoke(
                 [
                     SystemMessage(content=system_instruction),
                     HumanMessage(content=user_content),

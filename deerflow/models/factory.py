@@ -112,6 +112,7 @@ def create_chat_model(
             "thinking",
             "supports_vision",
             "context_window",
+            "runtime_headers",
         },
     )
     # Compute effective when_thinking_enabled by merging in the `thinking` shortcut field.
@@ -203,6 +204,10 @@ def create_chat_model(
     )
 
     model_instance = model_class(**{**model_settings_from_config, **kwargs})
+    # Direct model consumers such as summarization do not pass through the
+    # agent middleware chain.  Keep only the declarative source mapping on the
+    # instance; actual values are resolved per invocation, never shared here.
+    object.__setattr__(model_instance, "_deerflow_runtime_headers", dict(model_config.runtime_headers))
 
     if translate_context_window:
         inferred_profile = getattr(model_instance, "profile", None)

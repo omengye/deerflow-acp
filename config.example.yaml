@@ -229,6 +229,19 @@ models:
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     supports_thinking: true
     context_window: 262144
+  # OpenCode Go uses this conversation-stable header for provider routing and
+  # prompt-cache affinity. It is resolved per request from DeerFlow thread_id;
+  # never put a fixed x-opencode-session value in default_headers.
+  # - name: opencode-go-kimi
+  #   display_name: OpenCode Go Kimi
+  #   use: langchain_openai:ChatOpenAI
+  #   model: kimi-k3
+  #   api_key: $OPENCODE_GO_API_KEY
+  #   base_url: https://opencode.ai/zen/go/v1
+  #   default_headers:
+  #     User-Agent: deerflow-api/1.0
+  #   runtime_headers:
+  #     x-opencode-session: thread_id
 
 default_model: qwen3.6-plus
 

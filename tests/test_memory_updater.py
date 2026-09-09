@@ -1,5 +1,8 @@
 import json
+from types import SimpleNamespace
 from typing import Any
+
+from langchain_core.messages import HumanMessage
 
 from deerflow.agents.memory import updater as memory_updater
 from deerflow.agents.memory.storage import create_empty_memory
@@ -61,3 +64,35 @@ def test_finalize_update_applies_llm_patch_to_latest_memory(monkeypatch) -> None
     saved_contents = {fact["content"] for fact in storage.saved_memory["facts"]}
     assert "Manual fact added while LLM was generating" in saved_contents
     assert "LLM generated fact" in saved_contents
+
+
+async def test_memory_model_uses_queued_thread_as_runtime_header(monkeypatch) -> None:
+    class _Model:
+        def __init__(self) -> None:
+            self._deerflow_runtime_headers = {"x-opencode-session": "thread_id"}
+            self.bound: dict[str, Any] | None = None
+
+        def bind(self, **kwargs):
+            self.bound = kwargs
+            return self
+
+        async def ainvoke(self, *_args, **_kwargs):
+            return SimpleNamespace(content="{}")
+
+    model = _Model()
+    updater = memory_updater.MemoryUpdater()
+    monkeypatch.setattr(
+        updater,
+        "_prepare_update_prompt",
+        lambda **_kwargs: ({}, "memory prompt"),
+    )
+    monkeypatch.setattr(updater, "_get_model", lambda: model)
+    monkeypatch.setattr(updater, "_finalize_update", lambda **_kwargs: True)
+
+    assert await updater.aupdate_memory(
+        [HumanMessage(content="remember this")],
+        thread_id="memory-thread",
+    )
+    assert model.bound == {
+        "extra_headers": {"x-opencode-session": "memory-thread"}
+    }

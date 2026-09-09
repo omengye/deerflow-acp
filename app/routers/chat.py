@@ -1,7 +1,9 @@
 """Chat endpoints — streaming and AG-UI."""
 import asyncio
+import hashlib
 import json
 import mimetypes
+import re
 import uuid
 from pathlib import PurePosixPath
 from typing import Any, cast
@@ -29,6 +31,27 @@ _SSE_RESPONSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
+_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._~:-]{1,128}$")
+
+
+def _idempotency_actor(request: Request) -> str:
+    """Return a non-secret stable API actor identifier."""
+    authorization = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+    if authorization:
+        return "bearer:" + hashlib.sha256(authorization.encode("utf-8")).hexdigest()
+    return "anonymous"
+
+
+def _chat_payload_fingerprint(req: ChatRequest, kwargs: dict[str, Any]) -> str:
+    payload = {
+        "message": req.message,
+        "kwargs": kwargs,
+        "on_disconnect": req.on_disconnect or "cancel",
+        "multitask_strategy": req.multitask_strategy or "reject",
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
 
 @router.post("/chat/stream")
 async def chat_stream(request: Request, req: ChatRequest = Body()):
@@ -37,6 +60,9 @@ async def chat_stream(request: Request, req: ChatRequest = Body()):
 
     thread_id = req.thread_id or str(uuid.uuid4())
     kwargs = _chat_kwargs_from_request(req)
+    idempotency_key = request.headers.get("idempotency-key") or request.headers.get("Idempotency-Key")
+    if idempotency_key is not None and not _IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key):
+        raise HTTPException(status_code=400, detail="Invalid Idempotency-Key; use 1-128 URL-safe ASCII characters")
 
     try:
         record = await manager.start_client_stream_run(
@@ -46,9 +72,23 @@ async def chat_stream(request: Request, req: ChatRequest = Body()):
             request_id=get_request_id(),
             on_disconnect=req.on_disconnect or "cancel",
             multitask_strategy=req.multitask_strategy or "reject",
+            idempotency_actor=_idempotency_actor(request) if idempotency_key is not None else None,
+            idempotency_key=idempotency_key,
+            payload_fingerprint=_chat_payload_fingerprint(req, kwargs) if idempotency_key is not None else None,
         )
     except ConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if record.metadata.get("replay_expired"):
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "code": "REPLAY_EXPIRED",
+                "message": "The idempotent run is retained but its replay data has expired",
+                "run_id": record.run_id,
+                "thread_id": thread_id,
+            },
+        )
 
     last_event_id = request.headers.get("last-event-id")
 

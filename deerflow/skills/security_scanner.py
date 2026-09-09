@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -172,10 +173,20 @@ async def scan_skill_content(content: str, *, executable: bool = False, location
             if model_name
             else create_chat_model(thinking_enabled=False, disable_keepalive=True)
         )
-        from deerflow.agents.middlewares.llm_error_handling_middleware import llm_call_slot_async
+        from deerflow.agents.middlewares.llm_error_handling_middleware import (
+            llm_call_slot_async,
+        )
+        from deerflow.agents.middlewares.runtime_headers_middleware import (
+            bind_runtime_headers,
+        )
 
+        session_id = hashlib.sha256(f"{location}\0{content}".encode()).hexdigest()
+        request_model = bind_runtime_headers(
+            model,
+            runtime_values={"thread_id": f"skill-security-{session_id[:32]}"},
+        )
         async with llm_call_slot_async():
-            response = await model.ainvoke(
+            response = await request_model.ainvoke(
                 [
                     {"role": "system", "content": rubric},
                     {"role": "user", "content": prompt},
@@ -198,7 +209,7 @@ async def scan_skill_content(content: str, *, executable: bool = False, location
 
     try:
         fail_closed = bool(get_app_config().skill_evolution.security_fail_closed)
-    except Exception:
+    except Exception:  # noqa: BLE001 - invalid runtime config must fail closed
         fail_closed = True
 
     if model_responded:

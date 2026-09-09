@@ -14,6 +14,7 @@ from deerflow.agents.middlewares.clarification_middleware import ClarificationMi
 from deerflow.agents.middlewares.configured_extensions import load_configured_middlewares
 from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware, calibrate_loop_detection
 from deerflow.agents.middlewares.memory_middleware import MemoryMiddleware
+from deerflow.agents.middlewares.runtime_headers_middleware import RuntimeHeadersMiddleware
 from deerflow.agents.middlewares.evolution_signal_middleware import EvolutionSignalMiddleware
 from deerflow.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware, clamp_subagent_limit
 from deerflow.agents.middlewares.summarization_middleware import BeforeSummarizationHook, DeerFlowSummarizationMiddleware
@@ -421,6 +422,8 @@ def _build_middlewares(
     # Use the resolved runtime model_name from make_lead_agent to avoid stale config values.
     app_config = get_app_config()
     model_config = app_config.get_model_config(model_name) if model_name else None
+    if model_config is not None and model_config.runtime_headers:
+        middlewares.append(RuntimeHeadersMiddleware(model_config.runtime_headers))
     if model_config is not None and model_config.supports_vision:
         middlewares.append(ViewImageMiddleware())
 

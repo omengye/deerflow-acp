@@ -717,6 +717,9 @@ class ClientManager:
         entrypoint: str = "chat_stream",
         on_disconnect: str = "cancel",
         multitask_strategy: str = "reject",
+        idempotency_actor: str | None = None,
+        idempotency_key: str | None = None,
+        payload_fingerprint: str | None = None,
     ) -> RunRecord:
         """Create a run and stream DeerFlowClient events through the bridge."""
         try:
@@ -728,14 +731,21 @@ class ClientManager:
                 raise ConflictError(str(exc)) from exc
             raise
 
-        record = await self.run_manager.create_or_reject(
+        created_result = await self.run_manager.create_or_reject(
             thread_id,
             run_id=run_id,
             on_disconnect=DisconnectMode.cancel if on_disconnect == "cancel" else DisconnectMode.continue_,
             multitask_strategy=multitask_strategy,
             metadata={"request_id": request_id, "entrypoint": entrypoint},
             kwargs=kwargs,
+            idempotency_actor=idempotency_actor,
+            idempotency_key=idempotency_key,
+            payload_fingerprint=payload_fingerprint,
+            _return_created=True,
         )
+        record, created = created_result
+        if not created:
+            return record
         if not self.mark_thread_running(thread_id):
             await self.run_manager.cleanup(record.run_id, delay=0)
             raise ConflictError(f"Thread {thread_id} is currently being deleted")

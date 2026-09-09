@@ -378,7 +378,7 @@ def _strip_upload_mentions_from_memory(memory_data: dict[str, Any]) -> dict[str,
     # Scrub summaries in user/history sections
     for section in ("user", "history"):
         section_data = memory_data.get(section, {})
-        for _key, val in section_data.items():
+        for val in section_data.values():
             if isinstance(val, dict) and "summary" in val:
                 cleaned = _UPLOAD_SENTENCE_RE.sub("", val["summary"]).strip()
                 cleaned = re.sub(r"  +", " ", cleaned)
@@ -539,12 +539,21 @@ class MemoryUpdater:
             if prepared is None:
                 return False
 
-            current_memory, prompt = prepared
+            _current_memory, prompt = prepared
             model = self._get_model()
-            from deerflow.agents.middlewares.llm_error_handling_middleware import llm_call_slot_async
+            from deerflow.agents.middlewares.llm_error_handling_middleware import (
+                llm_call_slot_async,
+            )
+            from deerflow.agents.middlewares.runtime_headers_middleware import (
+                bind_runtime_headers,
+            )
 
+            request_model = bind_runtime_headers(
+                model,
+                runtime_values={"thread_id": thread_id},
+            )
             async with llm_call_slot_async():
-                response = await model.ainvoke(prompt, config={"run_name": "memory_agent"})
+                response = await request_model.ainvoke(prompt, config={"run_name": "memory_agent"})
             return await asyncio.to_thread(
                 self._finalize_update,
                 response_content=response.content,
@@ -554,8 +563,8 @@ class MemoryUpdater:
         except json.JSONDecodeError as e:
             logger.warning("Failed to parse LLM response for memory update: %s", e)
             return False
-        except Exception as e:
-            logger.exception("Memory update failed: %s", e)
+        except Exception:
+            logger.exception("Memory update failed")
             return False
         finally:
             # _run_async_update_sync wraps this in asyncio.run() on a worker

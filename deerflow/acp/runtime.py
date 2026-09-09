@@ -565,6 +565,7 @@ class LocalACPRuntime:
                 snapshot.messages,
                 model=evaluator_model,
                 model_name=session.model_name,
+                thread_id=session.session_id,
                 usage_callback=evaluator_usage.update,
             )
             evaluator_failed = False

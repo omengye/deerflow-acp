@@ -114,3 +114,34 @@ def test_explicit_model_profile_wins_over_context_window_translation() -> None:
         )
 
     assert model.profile == explicit_profile
+
+
+def test_runtime_headers_stay_out_of_constructor_and_static_headers_remain() -> None:
+    class _CapturingChatModel:
+        def __init__(self, **kwargs) -> None:
+            self.init_kwargs = kwargs
+            self.callbacks = None
+            self.profile = None
+
+    config = AppConfig(
+        sandbox=SandboxConfig(use="test"),
+        models=[
+            ModelConfig(
+                name="opencode-go",
+                use="tests.fake:CapturingChatModel",
+                model="kimi-k3",
+                default_headers={"User-Agent": "deerflow-api/1.0"},
+                runtime_headers={"x-opencode-session": "thread_id"},
+            )
+        ],
+    )
+    with (
+        patch.object(factory_module, "get_app_config", return_value=config),
+        patch.object(factory_module, "resolve_class", return_value=_CapturingChatModel),
+        patch.object(factory_module, "build_tracing_callbacks", return_value=[]),
+    ):
+        model = factory_module.create_chat_model(name="opencode-go")
+
+    assert "runtime_headers" not in model.init_kwargs
+    assert model.init_kwargs["default_headers"] == {"User-Agent": "deerflow-api/1.0"}
+    assert model._deerflow_runtime_headers == {"x-opencode-session": "thread_id"}

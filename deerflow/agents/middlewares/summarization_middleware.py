@@ -13,7 +13,7 @@ from langchain.agents import AgentState
 from langchain.agents.middleware import SummarizationMiddleware
 from langchain.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
-from langchain_core.messages.utils import get_buffer_string
+from langchain_core.messages.utils import get_buffer_string, trim_messages
 from langgraph.config import get_config
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
@@ -403,7 +403,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         if not messages_to_summarize:
             return "No previous conversation history."
 
-        trimmed_messages = self._trim_messages_for_summary(messages_to_summarize)
+        trimmed_messages = self._messages_for_summary(messages_to_summarize)
         if not trimmed_messages:
             return "Previous conversation was too long to summarize."
 
@@ -411,6 +411,9 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         # prompt while excluding raw message metadata from the token budget.
         formatted_messages = get_buffer_string(trimmed_messages, format="xml")
         llm = model if model is not None else self.model
+        from deerflow.agents.middlewares.runtime_headers_middleware import bind_runtime_headers
+
+        llm = bind_runtime_headers(llm)
 
         try:
             from deerflow.agents.middlewares.llm_error_handling_middleware import llm_call_slot_sync
@@ -430,7 +433,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         if not messages_to_summarize:
             return "No previous conversation history."
 
-        trimmed_messages = self._trim_messages_for_summary(messages_to_summarize)
+        trimmed_messages = self._messages_for_summary(messages_to_summarize)
         if not trimmed_messages:
             return "Previous conversation was too long to summarize."
 
@@ -438,6 +441,9 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         # prompt while excluding raw message metadata from the token budget.
         formatted_messages = get_buffer_string(trimmed_messages, format="xml")
         llm = model if model is not None else self.model
+        from deerflow.agents.middlewares.runtime_headers_middleware import bind_runtime_headers
+
+        llm = bind_runtime_headers(llm)
 
         try:
             from deerflow.agents.middlewares.llm_error_handling_middleware import llm_call_slot_async
@@ -451,6 +457,36 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         except Exception as exc:
             logger.warning("Summarization model invocation failed: %s", exc)
             raise _SummarizationFailed(str(exc)) from exc
+
+    def _messages_for_summary(self, messages: list[AnyMessage]) -> list[AnyMessage]:
+        """Keep bounded recent AI/tool history when no human anchor remains.
+
+        Rescuing the active user request can leave the compaction window with
+        only assistant and tool messages.  LangChain's inherited trimmer uses
+        ``start_on='human'`` and returns an empty list for that valid window.
+        Retry without the human anchor while retaining the same token budget
+        and tail-first policy, so the latest tool result reaches the summary.
+        """
+        trimmed = self._trim_messages_for_summary(messages)
+        if trimmed or not messages:
+            return trimmed
+        if any(isinstance(message, HumanMessage) for message in messages):
+            return messages[-1:]
+        if self.trim_tokens_to_summarize is None:
+            return messages
+        try:
+            fallback = trim_messages(
+                messages,
+                max_tokens=self.trim_tokens_to_summarize,
+                token_counter=self.token_counter,
+                strategy="last",
+                allow_partial=True,
+                include_system=True,
+            )
+        except Exception:
+            logger.debug("AI/tool-only summary trimming failed; keeping bounded tail", exc_info=True)
+            return messages[-6:]
+        return list(fallback) or messages[-1:]
 
     @staticmethod
     def _build_placeholder_messages(messages_to_summarize: list[AnyMessage]) -> list[HumanMessage]:

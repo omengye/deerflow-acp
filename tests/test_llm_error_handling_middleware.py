@@ -322,6 +322,41 @@ async def test_nested_model_call_reuses_same_task_slot(monkeypatch, reset_proces
     assert llm_middleware_module._PROCESS_LIMITER.in_flight == 0
 
 
+@pytest.mark.asyncio
+async def test_cancelled_half_open_probe_releases_only_its_lease(reset_process_limiter):
+    middleware = LLMErrorHandlingMiddleware()
+    middleware._circuit_state = "open"
+    middleware._circuit_open_until = 0
+    entered = asyncio.Event()
+
+    async def blocked(_request):
+        entered.set()
+        await asyncio.Event().wait()
+
+    probe = asyncio.create_task(middleware.awrap_model_call(None, blocked))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    owned_token = middleware._circuit_probe_token
+    assert owned_token is not None
+
+    # A stale request cannot free the active recovery probe.
+    middleware._release_half_open_probe(probe_token=object())
+    assert middleware._circuit_probe_in_flight is True
+    assert middleware._circuit_probe_token is owned_token
+
+    probe.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await probe
+    assert middleware._circuit_probe_in_flight is False
+    assert middleware._circuit_probe_token is None
+
+    async def healthy(_request):
+        return AIMessage(content="recovered")
+
+    response = await middleware.awrap_model_call(None, healthy)
+    assert response.content == "recovered"
+    assert middleware._circuit_state == "closed"
+
+
 def test_retry_after_is_bounded_by_configured_cap(monkeypatch, reset_process_limiter):
     monkeypatch.setattr(llm_middleware_module, "get_app_config", lambda: _llm_test_config(limit=0))
     middleware = LLMErrorHandlingMiddleware()

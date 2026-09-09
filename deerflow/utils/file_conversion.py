@@ -260,7 +260,35 @@ def extract_outline(md_path: Path) -> list[dict]:
     outline: list[dict] = []
     try:
         with md_path.open(encoding="utf-8") as f:
+            fence_char: str | None = None
+            fence_length = 0
             for lineno, line in enumerate(f, 1):
+                # CommonMark fenced blocks may be indented by up to three
+                # spaces.  Headings inside them are code, not document
+                # structure.  An unclosed fence intentionally suppresses the
+                # rest of the file.
+                fence_line = line.rstrip("\r\n")
+                candidate = fence_line[3:] if fence_line.startswith("   ") else fence_line.lstrip(" ")
+                indent = len(fence_line) - len(candidate)
+                if indent <= 3 and candidate:
+                    marker_char = candidate[0]
+                    marker_length = len(candidate) - len(candidate.lstrip(marker_char)) if marker_char in {"`", "~"} else 0
+                    if fence_char is None and marker_length >= 3:
+                        fence_char = marker_char
+                        fence_length = marker_length
+                        continue
+                    if (
+                        fence_char is not None
+                        and marker_char == fence_char
+                        and marker_length >= fence_length
+                        and not candidate[marker_length:].strip()
+                    ):
+                        fence_char = None
+                        fence_length = 0
+                        continue
+                if fence_char is not None:
+                    continue
+
                 stripped = line.strip()
                 if not stripped:
                     continue

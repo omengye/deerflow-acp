@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -42,7 +43,20 @@ class RunManager:
 
     def __init__(self) -> None:
         self._runs: dict[str, RunRecord] = {}
+        self._idempotency: OrderedDict[tuple[str, str, str], tuple[str, str]] = OrderedDict()
+        self._idempotency_max_entries = 2048
         self._lock = asyncio.Lock()
+
+    def _prune_idempotency_locked(self) -> None:
+        """Bound terminal idempotency entries without evicting active leases."""
+        if len(self._idempotency) <= self._idempotency_max_entries:
+            return
+        for key, (_fingerprint, run_id) in list(self._idempotency.items()):
+            record = self._runs.get(run_id)
+            if record is None or record.status not in (RunStatus.pending, RunStatus.running):
+                self._idempotency.pop(key, None)
+                if len(self._idempotency) <= self._idempotency_max_entries:
+                    break
 
     async def create(
         self,
@@ -136,7 +150,11 @@ class RunManager:
         metadata: dict | None = None,
         kwargs: dict | None = None,
         multitask_strategy: str = "reject",
-    ) -> RunRecord:
+        idempotency_actor: str | None = None,
+        idempotency_key: str | None = None,
+        payload_fingerprint: str | None = None,
+        _return_created: bool = False,
+    ) -> RunRecord | tuple[RunRecord, bool]:
         """Atomically check for inflight runs and create a new one.
 
         For ``reject`` strategy, raises ``ConflictError`` if thread
@@ -154,6 +172,23 @@ class RunManager:
         async with self._lock:
             if multitask_strategy not in _supported_strategies:
                 raise UnsupportedStrategyError(f"Multitask strategy '{multitask_strategy}' is not yet supported. Supported strategies: {', '.join(_supported_strategies)}")
+            idempotency_scope = None
+            if idempotency_key is not None:
+                if not idempotency_actor or not payload_fingerprint:
+                    raise ValueError("Idempotent run creation requires actor and payload fingerprint")
+                idempotency_scope = (idempotency_actor, thread_id, idempotency_key)
+                existing = self._idempotency.get(idempotency_scope)
+                if existing is not None:
+                    existing_fingerprint, existing_run_id = existing
+                    existing_record = self._runs.get(existing_run_id)
+                    if existing_record is None:
+                        self._idempotency.pop(idempotency_scope, None)
+                    elif existing_fingerprint != payload_fingerprint:
+                        raise ConflictError("Idempotency-Key was already used with a different request payload")
+                    else:
+                        self._idempotency.move_to_end(idempotency_scope)
+                        return (existing_record, False) if _return_created else existing_record
+
             if run_id in self._runs:
                 raise ConflictError(f"Run {run_id} already exists")
 
@@ -190,9 +225,14 @@ class RunManager:
                 updated_at=now,
             )
             self._runs[run_id] = record
+            if idempotency_scope is not None:
+                assert payload_fingerprint is not None
+                self._idempotency[idempotency_scope] = (payload_fingerprint, run_id)
+                self._idempotency.move_to_end(idempotency_scope)
+                self._prune_idempotency_locked()
 
         logger.info("Run created: run_id=%s thread_id=%s", run_id, thread_id)
-        return record
+        return (record, True) if _return_created else record
 
     async def has_inflight(self, thread_id: str) -> bool:
         """Return ``True`` if *thread_id* has a pending or running run."""
@@ -205,6 +245,9 @@ class RunManager:
             await asyncio.sleep(delay)
         async with self._lock:
             self._runs.pop(run_id, None)
+            for key, (_fingerprint, mapped_run_id) in list(self._idempotency.items()):
+                if mapped_run_id == run_id:
+                    self._idempotency.pop(key, None)
         logger.debug("Run record %s cleaned up", run_id)
 
 

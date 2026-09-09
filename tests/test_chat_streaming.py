@@ -27,6 +27,7 @@ class _FakeClient:
     def __init__(self, events: Iterable[StreamEvent] | None = None, error_after_first: bool = False) -> None:
         self.agent_name: str = "lead_agent"
         self.astream_called: bool = False
+        self.astream_calls: int = 0
         self.stream_called: bool = False
         self.last_message: str | None = None
         self.events: list[StreamEvent] = list(
@@ -45,6 +46,7 @@ class _FakeClient:
 
     async def astream(self, *args: object, **_kwargs: object) -> AsyncIterator[StreamEvent]:
         self.astream_called = True
+        self.astream_calls += 1
         self.last_message = str(args[0]) if args else None
         for index, event in enumerate(self.events):
             yield event
@@ -97,15 +99,25 @@ class _FakeManager:
         entrypoint: str = "chat_stream",
         on_disconnect: str = "cancel",
         multitask_strategy: str = "reject",
+        idempotency_actor: str | None = None,
+        idempotency_key: str | None = None,
+        payload_fingerprint: str | None = None,
     ):
-        record = await self.run_manager.create_or_reject(
+        created_result = await self.run_manager.create_or_reject(
             thread_id,
             run_id=run_id,
             on_disconnect=DisconnectMode.cancel if on_disconnect == "cancel" else DisconnectMode.continue_,
             multitask_strategy=multitask_strategy,
             metadata={"request_id": request_id, "entrypoint": entrypoint},
             kwargs=kwargs,
+            idempotency_actor=idempotency_actor,
+            idempotency_key=idempotency_key,
+            payload_fingerprint=payload_fingerprint,
+            _return_created=True,
         )
+        record, created = created_result
+        if not created:
+            return record
         self.mark_thread_running(thread_id)
 
         async def produce() -> None:
@@ -288,6 +300,47 @@ class ChatStreamingTests(unittest.IsolatedAsyncioTestCase):
                 "max_concurrent_subagents": 4,
             },
         )
+
+    async def test_chat_stream_idempotency_key_reuses_run_without_second_producer(self) -> None:
+        fake_client = _FakeClient()
+        fake_manager = _FakeManager(fake_client)
+        original_get_client_manager = chat.get_client_manager
+        chat.get_client_manager = lambda: fake_manager
+        request = _fake_request({"Idempotency-Key": "request-1"})
+        body = ChatRequest(message="hello", thread_id="thread-1")
+        try:
+            first_response = await chat.chat_stream(request, body)
+            first_chunks = [cast(dict[str, str], chunk) async for chunk in first_response.body_iterator]
+            second_response = await chat.chat_stream(request, body)
+            second_chunks = [cast(dict[str, str], chunk) async for chunk in second_response.body_iterator]
+        finally:
+            chat.get_client_manager = original_get_client_manager
+
+        first_run = json.loads(first_chunks[0]["data"])["run_id"]
+        second_run = json.loads(second_chunks[0]["data"])["run_id"]
+        self.assertEqual(first_run, second_run)
+        self.assertEqual(fake_client.astream_calls, 1)
+
+    async def test_chat_stream_idempotency_key_payload_conflict_is_409(self) -> None:
+        fake_manager = _FakeManager(_FakeClient())
+        original_get_client_manager = chat.get_client_manager
+        chat.get_client_manager = lambda: fake_manager
+        request = _fake_request({"idempotency-key": "request-1"})
+        try:
+            first_response = await chat.chat_stream(
+                request,
+                ChatRequest(message="first", thread_id="thread-1"),
+            )
+            _ = [chunk async for chunk in first_response.body_iterator]
+            with self.assertRaises(HTTPException) as raised:
+                await chat.chat_stream(
+                    request,
+                    ChatRequest(message="different", thread_id="thread-1"),
+                )
+        finally:
+            chat.get_client_manager = original_get_client_manager
+
+        self.assertEqual(raised.exception.status_code, 409)
 
     async def test_chat_agui_endpoint_uses_latest_user_message_and_options(self) -> None:
         fake_client = _FakeClient()

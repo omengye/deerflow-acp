@@ -116,8 +116,17 @@ import os, sys, fnmatch
 root = os.path.realpath(sys.argv[1])
 max_depth = int(sys.argv[2])
 ignore = sys.argv[3].split("\x1f") if sys.argv[3] else []
+try:
+    os.stat(root)
+except FileNotFoundError:
+    print("path does not exist", file=sys.stderr)
+    sys.exit(2)
+except PermissionError:
+    print("permission denied", file=sys.stderr)
+    sys.exit(4)
 if not os.path.isdir(root):
-    sys.exit(0)
+    print("path is not a directory", file=sys.stderr)
+    sys.exit(3)
 
 def ignored(name):
     return any(fnmatch.fnmatch(name, pat) for pat in ignore)
@@ -133,10 +142,7 @@ def within(candidate):
 def walk(current, depth):
     if depth > max_depth:
         return
-    try:
-        entries = sorted(os.listdir(current))
-    except OSError:
-        return
+    entries = sorted(os.listdir(current))
     for name in entries:
         if ignored(name):
             continue
@@ -146,21 +152,38 @@ def walk(current, depth):
             if not within(real):
                 continue
             is_dir = os.path.isdir(real)
-        except OSError:
+        except FileNotFoundError:
             continue
         result.append(real + ("/" if is_dir else ""))
         if is_dir and depth < max_depth:
             walk(real, depth + 1)
 
-walk(root, 1)
-print("\n".join(result))
+try:
+    walk(root, 1)
+except PermissionError:
+    print("permission denied", file=sys.stderr)
+    sys.exit(4)
+except OSError as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(5)
+else:
+    print("\n".join(result))
 """
         from deerflow.sandbox.search import IGNORE_PATTERNS
 
         result = self._docker_exec(["python3", "-", path, str(max_depth), "\x1f".join(IGNORE_PATTERNS)], input_data=script)
-        if result.returncode != 0:
+        if result.returncode in (126, 127):
             result = self._docker_exec(["python", "-", path, str(max_depth), "\x1f".join(IGNORE_PATTERNS)], input_data=script)
-        if result.returncode != 0 or not result.stdout:
+        if result.returncode == 2:
+            raise FileNotFoundError(path)
+        if result.returncode == 3:
+            raise NotADirectoryError(path)
+        if result.returncode == 4:
+            raise PermissionError(path)
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            raise RuntimeError(f"Failed to list sandbox directory {path!r}: {stderr or f'exit code {result.returncode}'}")
+        if not result.stdout:
             return []
         return [line for line in result.stdout.splitlines() if line]
 

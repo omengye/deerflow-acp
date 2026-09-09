@@ -137,6 +137,7 @@ async def test_task_tool_propagates_acp_policy_to_internal_subagent(
             "model_name": "parent-model",
             "groups": ["file:read", "file:write"],
             "subagent_enabled": False,
+            "include_upload_tool": False,
         }
     ]
     assert [tool.name for tool in captured["tools"]] == ["read_file", "write_file"]

@@ -11,7 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from deerflow.config import get_app_config
 from deerflow.models import aclose_chat_model, create_chat_model
-from deerflow.skills.manager import get_custom_skill_dir, validate_skill_markdown_content, validate_skill_name
+from deerflow.skills.manager import (
+    get_custom_skill_dir,
+    validate_skill_markdown_content,
+    validate_skill_name,
+)
 
 from .models import EvolutionSignal
 
@@ -178,10 +182,22 @@ class SkillCandidateGenerator:
                 thinking_enabled=False,
                 disable_keepalive=True,
             )
-            from deerflow.agents.middlewares.llm_error_handling_middleware import llm_call_slot_async
+            from deerflow.agents.middlewares.llm_error_handling_middleware import (
+                llm_call_slot_async,
+            )
+            from deerflow.agents.middlewares.runtime_headers_middleware import (
+                bind_runtime_headers,
+            )
 
+            request_model = bind_runtime_headers(
+                model,
+                runtime_values={
+                    "thread_id": signal.thread_id or f"skill-evolution-{signal.id}",
+                    "run_id": signal.run_id or signal.id,
+                },
+            )
             async with llm_call_slot_async():
-                response = await model.ainvoke(
+                response = await request_model.ainvoke(
                     [{"role": "system", "content": rubric}, {"role": "user", "content": prompt}],
                     config={"run_name": "skill_evolution_generator"},
                 )

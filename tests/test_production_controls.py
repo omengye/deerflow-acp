@@ -218,6 +218,55 @@ class ProductionControlsTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ConflictError):
             await manager.run_manager.create_or_reject("thread-1", multitask_strategy="reject")
 
+    async def test_run_manager_idempotency_reuses_same_run_and_rejects_payload_conflict(self) -> None:
+        manager = ClientManager()
+        first = await manager.run_manager.create_or_reject(
+            "thread-1",
+            idempotency_actor="actor-a",
+            idempotency_key="request-1",
+            payload_fingerprint="payload-a",
+        )
+        duplicate = await manager.run_manager.create_or_reject(
+            "thread-1",
+            idempotency_actor="actor-a",
+            idempotency_key="request-1",
+            payload_fingerprint="payload-a",
+        )
+        self.assertIs(first, duplicate)
+
+        with self.assertRaisesRegex(ConflictError, "different request payload"):
+            await manager.run_manager.create_or_reject(
+                "thread-1",
+                idempotency_actor="actor-a",
+                idempotency_key="request-1",
+                payload_fingerprint="payload-b",
+            )
+
+    async def test_run_manager_idempotency_scope_and_cleanup(self) -> None:
+        manager = ClientManager()
+        first = await manager.run_manager.create_or_reject(
+            "thread-1",
+            idempotency_actor="actor-a",
+            idempotency_key="same-key",
+            payload_fingerprint="payload",
+        )
+        other_thread = await manager.run_manager.create_or_reject(
+            "thread-2",
+            idempotency_actor="actor-a",
+            idempotency_key="same-key",
+            payload_fingerprint="payload",
+        )
+        self.assertNotEqual(first.run_id, other_thread.run_id)
+
+        await manager.run_manager.cleanup(first.run_id, delay=0)
+        replacement = await manager.run_manager.create_or_reject(
+            "thread-1",
+            idempotency_actor="actor-a",
+            idempotency_key="same-key",
+            payload_fingerprint="payload",
+        )
+        self.assertNotEqual(first.run_id, replacement.run_id)
+
     async def test_cancel_run_marks_inflight_run_interrupted(self) -> None:
         manager = ClientManager()
         record = await manager.run_manager.create_or_reject("thread-1")

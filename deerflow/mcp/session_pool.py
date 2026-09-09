@@ -434,6 +434,10 @@ def get_session_pool() -> MCPSessionPool:
     return _pool
 
 
-def reset_session_pool() -> None:
+def reset_session_pool() -> MCPSessionPool | None:
+    """Atomically replace the singleton and return the retired pool."""
     global _pool
-    _pool = None
+    with _pool_lock:
+        retired = _pool
+        _pool = None
+    return retired
