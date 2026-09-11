@@ -40,6 +40,9 @@ class _FakeClient:
         )
         self.error_after_first: bool = error_after_first
 
+    def get_model(self, name: str) -> dict[str, str] | None:
+        return {"name": name} if name == "model-a" else None
+
     def stream(self, *_args: object, **_kwargs: object) -> Iterator[StreamEvent]:
         self.stream_called = True
         raise AssertionError("chat_stream must use async DeerFlowClient.astream(), not sync stream()")
@@ -243,7 +246,11 @@ class ChatStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("access-control-allow-origin", response.headers)
 
     async def test_chat_agui_disables_sse_buffering(self) -> None:
-        response = await chat.chat_agui(_fake_request(), self._agui_request())
+        # Header assertions must not start a real agent or touch its checkpoint DB.
+        manager = _FakeManager(_FakeClient())
+        with patch.object(chat, "get_client_manager", return_value=manager):
+            response = await chat.chat_agui(_fake_request(), self._agui_request())
+            _ = [chunk async for chunk in response.body_iterator]
 
         self.assertEqual(response.headers["cache-control"], "no-cache, no-transform")
         self.assertEqual(response.headers["x-accel-buffering"], "no")

@@ -25,7 +25,7 @@ async def list_models():
             for m in result["models"]:
                 models.append(ModelInfo(
                     name=m.get("name", ""),
-                    display_name=m.get("display_name", m.get("name", "")),
+                    display_name=m.get("display_name") or m.get("name", ""),
                     supports_thinking=m.get("supports_thinking", False),
                     supports_vision=m.get("supports_vision", False),
                 ))

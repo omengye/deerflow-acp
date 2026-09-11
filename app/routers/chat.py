@@ -193,6 +193,14 @@ async def chat_agui(request: Request, req: AguiRunAgentInput = Body()):
         user_message = _latest_user_message(req)
         if user_message is None:
             raise HTTPException(status_code=400, detail="No user message found in request")
+        # Validate only new runs; reconnects retain their original kwargs,
+        # even if the model catalog changed after the run started.
+        if req.model_name and manager.get_client().get_model(req.model_name) is None:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "MODEL_NOT_FOUND", "model_name": req.model_name,
+                        "message": "Selected model is no longer configured; refresh the model list"},
+            )
         try:
             record = await manager.start_client_stream_run(
                 thread_id=thread_id,
