@@ -15,6 +15,14 @@ from deerflow.agents.memory.manager import MemoryManager
 from deerflow.config.memory_config import MemoryConfig
 
 
+def memory_bucket(agent_name: str | None, user_id: str | None) -> str | None:
+    """Isolate ACP workspace/session memory without reassigning legacy facts."""
+    if not user_id or not user_id.startswith(("acp-workspace:", "acp-session:")):
+        return agent_name
+    digest = hashlib.sha256(json.dumps([agent_name, user_id]).encode()).hexdigest()[:32]
+    return f"acpmem-{digest}"
+
+
 def _probe_retrieval_support(config: MemoryConfig) -> None:
     if not config.retrieval_enabled:
         return
@@ -79,7 +87,7 @@ class DeerMemManager(MemoryManager):
         return MemoryUpdater().update_memory(
             messages=messages,
             thread_id=thread_id,
-            agent_name=agent_name,
+            agent_name=memory_bucket(agent_name, user_id),
             correction_detected=bool(metadata.get("correction_detected", False)),
             reinforcement_detected=bool(
                 metadata.get("reinforcement_detected", False)
@@ -101,6 +109,7 @@ class DeerMemManager(MemoryManager):
         config = get_memory_config()
         if not config.enabled or not config.injection_enabled:
             return ""
+        agent_name = memory_bucket(agent_name, user_id)
         data = get_memory_data(agent_name)
         if query and config.retrieval_enabled:
             from deerflow.agents.memory.retrieval import search_memory_facts
@@ -165,6 +174,7 @@ class DeerMemManager(MemoryManager):
         from deerflow.agents.memory.retrieval import search_memory_facts
         from deerflow.agents.memory.updater import get_memory_data
 
+        agent_name = memory_bucket(agent_name, user_id)
         facts = search_memory_facts(query, get_memory_data(agent_name), agent_name)
         return facts[:limit] if limit is not None else facts
 

@@ -103,6 +103,8 @@ api:
 # Portable ACP supports LocalSandboxProvider only. Set
 # DEER_FLOW_ACP_DAEMON_WARMUP=0 only for diagnostics.
 local_acp:
+  # Queue and execution have independent deadlines (seconds).
+  queue_timeout_seconds: 600
   checkpointer_path: ./data/acp-checkpoints.db
   session_store_path: ./data/acp-sessions.db
   # Idle local editor windows are cheap and do not consume a run slot.

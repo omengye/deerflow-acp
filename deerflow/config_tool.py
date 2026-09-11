@@ -15,6 +15,7 @@ import re
 import shutil
 import sys
 import tempfile
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +48,11 @@ class RuntimeDocument(BaseModel):
     max_active_connections: int = Field(default=16, ge=1, le=128)
     max_active_runs: int = Field(default=2, ge=1, le=128)
     run_timeout_seconds: float = Field(default=600, gt=0)
+    queue_timeout_seconds: float = Field(default=600, gt=0, le=86400)
+    session_cleanup_enabled: bool = True
+    inactive_session_retention_days: int = Field(default=30, ge=1, le=3650)
+    closed_session_retention_days: int = Field(default=30, ge=0, le=3650)
+    session_cleanup_interval_seconds: float = Field(default=3600, ge=60, le=86400)
     goal_auto_continue: bool = False
     goal_max_continuations: int = Field(default=3, ge=0, le=8)
     goal_max_no_progress_continuations: int = Field(default=2, ge=0, le=8)
@@ -394,6 +400,11 @@ def _runtime_document(data: dict[str, Any]) -> dict[str, Any]:
         max_active_connections=local.get("max_active_connections", 16),
         max_active_runs=local.get("max_active_runs", 2),
         run_timeout_seconds=local.get("run_timeout_seconds", 600),
+        queue_timeout_seconds=local.get("queue_timeout_seconds", 600),
+        session_cleanup_enabled=local.get("session_cleanup_enabled", True),
+        inactive_session_retention_days=local.get("inactive_session_retention_days", 30),
+        closed_session_retention_days=local.get("closed_session_retention_days", 30),
+        session_cleanup_interval_seconds=local.get("session_cleanup_interval_seconds", 3600),
         goal_auto_continue=local.get("goal_auto_continue", False),
         goal_max_continuations=local.get("goal_max_continuations", 3),
         goal_max_no_progress_continuations=local.get(
@@ -716,7 +727,38 @@ def _backup_files(user_data: Path, paths: list[Path], agents_dir: Path) -> Path:
     return backup
 
 
-def save(config_path: Path, user_data: Path, document: SaveDocument) -> dict[str, Any]:
+@contextmanager
+def _save_lock(user_data: Path):
+    """Serialize desktop writers before checking optimistic revisions."""
+    user_data.mkdir(parents=True, exist_ok=True)
+    with (user_data / ".config-tool.lock").open("a+b") as stream:
+        stream.seek(0, 2)
+        if stream.tell() == 0:
+            stream.write(b"0")
+            stream.flush()
+        stream.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def save(config_path: Path, user_data: Path, document: SaveDocument, *, validate_only: bool = False) -> dict[str, Any]:
+    with _save_lock(user_data):
+        return _save_locked(config_path, user_data, document, validate_only=validate_only)
+
+
+def _save_locked(config_path: Path, user_data: Path, document: SaveDocument, *, validate_only: bool = False) -> dict[str, Any]:
     data = _load_yaml(config_path)
     extensions_path = _extensions_path(config_path, data)
     if _sha256(config_path) != document.config_revision or _sha256(extensions_path) != document.extensions_revision:
@@ -753,6 +795,9 @@ def save(config_path: Path, user_data: Path, document: SaveDocument) -> dict[str
     if any(not name for name in group_names) or len(set(group_names)) != len(group_names):
         raise ValueError("Tool group names must be non-empty and unique")
     validated_tools = [ToolConfig.model_validate(item) for item in tools]
+    for tool in validated_tools:
+        if not re.fullmatch(r"[A-Za-z_][\w.]*:[A-Za-z_][\w]*", tool.use.strip()):
+            raise ValueError(f"Tool {tool.name!r}: implementation must be module:function")
     tool_names = [tool.name.strip() for tool in validated_tools]
     if any(not name for name in tool_names) or len(set(tool_names)) != len(tool_names):
         raise ValueError("Tool names must be non-empty and unique")
@@ -875,7 +920,8 @@ def save(config_path: Path, user_data: Path, document: SaveDocument) -> dict[str
     candidate["tools"] = tools
     candidate["memory"] = memory
     local = candidate.setdefault("local_acp", {})
-    for key, value in runtime.model_dump().items():
+    # Older desktop clients must not reset fields they do not understand.
+    for key, value in runtime.model_dump(exclude_unset=True).items():
         local[key] = value
     skills_config = candidate.setdefault("skills", {})
     skills_config["enabled"] = document.skills_enabled
@@ -899,29 +945,50 @@ def save(config_path: Path, user_data: Path, document: SaveDocument) -> dict[str
     # Preserve unknown states as well as all mcpServers/middlewares/extra fields.
     extensions["skills"] = {**{k: v for k, v in skill_states.items() if k not in known_skill_names}, **skill_states}
 
+    if validate_only:
+        return {"valid": True}
     backup = _backup_files(user_data, [config_path, extensions_path], agents_dir)
-    _atomic_write_yaml(config_path, candidate)
-    _atomic_write_json(extensions_path, extensions)
+    originals = {path: path.read_text(encoding="utf-8") if path.is_file() else None for path in (config_path, extensions_path)}
+    try:
+        _atomic_write_yaml(config_path, candidate)
+        _atomic_write_json(extensions_path, extensions)
 
-    existing_dirs = {entry.name: entry for entry in agents_dir.iterdir() if entry.is_dir()}
-    incoming_originals = {original for original, _, _, _ in agents if original}
-    for original, name, agent_data, soul in agents:
-        target = agents_dir / name
-        if original and original != name and original in existing_dirs:
-            os.replace(existing_dirs[original], target)
-        target.mkdir(parents=True, exist_ok=True)
-        _atomic_write_yaml(target / "config.yaml", agent_data)
-        soul_path = target / "SOUL.md"
-        if soul.strip():
-            _atomic_write_text(soul_path, soul.rstrip() + "\n")
-        else:
-            soul_path.unlink(missing_ok=True)
-    for existing_name, existing_path in existing_dirs.items():
-        if existing_name not in incoming_originals:
-            archived = backup / "removed-agents" / existing_name
-            archived.parent.mkdir(parents=True, exist_ok=True)
-            if existing_path.exists():
-                os.replace(existing_path, archived)
+        existing_dirs = {entry.name: entry for entry in agents_dir.iterdir() if entry.is_dir()}
+        incoming_originals = {original for original, _, _, _ in agents if original}
+        for original, name, agent_data, soul in agents:
+            target = agents_dir / name
+            if original and original != name and original in existing_dirs:
+                os.replace(existing_dirs[original], target)
+            target.mkdir(parents=True, exist_ok=True)
+            _atomic_write_yaml(target / "config.yaml", agent_data)
+            soul_path = target / "SOUL.md"
+            if soul.strip():
+                _atomic_write_text(soul_path, soul.rstrip() + "\n")
+            else:
+                soul_path.unlink(missing_ok=True)
+        for existing_name, existing_path in existing_dirs.items():
+            if existing_name not in incoming_originals:
+                archived = backup / "removed-agents" / existing_name
+                archived.parent.mkdir(parents=True, exist_ok=True)
+                if existing_path.exists():
+                    os.replace(existing_path, archived)
+
+    except Exception as error:
+        try:
+            for path, content in originals.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    _atomic_write_text(path, content)
+            if agents_dir.exists():
+                os.replace(agents_dir, backup / "failed-save-agents")
+            if (backup / "agents").exists():
+                shutil.copytree(backup / "agents", agents_dir)
+            else:
+                agents_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as rollback_error:
+            raise RuntimeError(f"保存失败，自动恢复也失败；恢复备份位于 {backup}: {rollback_error}") from error
+        raise RuntimeError(f"保存失败，已恢复保存前配置：{error}") from error
 
     result = snapshot(config_path, user_data)
     result["backup"] = str(backup)
@@ -933,7 +1000,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--user-data", required=True, type=Path)
     parser.add_argument("--resources", required=True, type=Path)
-    parser.add_argument("command", choices=("init", "snapshot", "save"))
+    parser.add_argument("command", choices=("init", "snapshot", "save", "validate", "inspect", "restore", "test-model"))
     return parser
 
 
@@ -948,9 +1015,13 @@ def main() -> None:
             payload: dict[str, Any] = {"initialized": True, "paths": {"config": str(config_path), "user_data": str(user_data)}}
         elif args.command == "snapshot":
             payload = snapshot(config_path, user_data)
-        else:
+        elif args.command in {"save", "validate"}:
             raw = json.load(sys.stdin)
-            payload = save(config_path, user_data, SaveDocument.model_validate(raw))
+            payload = save(config_path, user_data, SaveDocument.model_validate(raw), validate_only=args.command == "validate")
+        else:
+            from deerflow.portable_management import dispatch
+            raw = json.load(sys.stdin)
+            payload = dispatch(args.command, config_path, user_data, raw)
         print(json.dumps({"ok": True, "data": payload}, ensure_ascii=False))
     except (OSError, ValueError, RuntimeError, ValidationError, json.JSONDecodeError) as exc:
         error = (

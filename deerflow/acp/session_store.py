@@ -207,6 +207,13 @@ class LocalACPSessionStore:
             connection.commit()
             return cursor.rowcount > 0
 
+    async def list_for_management(self) -> builtins.list[LocalACPSession]:
+        async with self._lock:
+            rows = self._conn().execute(
+                "SELECT * FROM acp_sessions ORDER BY updated_at DESC LIMIT 1000"
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
     async def purge_closed(self, *, retention_days: int) -> builtins.list[str]:
         """Delete closed session metadata older than the configured retention."""
 

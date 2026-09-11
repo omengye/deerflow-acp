@@ -137,6 +137,8 @@ class FileMemoryStorage(MemoryStorage):
         """Get the path to the memory file."""
         if agent_name is not None:
             self._validate_agent_name(agent_name)
+            if agent_name.startswith("acpmem-"):
+                return get_paths().base_dir / "memory-scopes" / agent_name / "memory.json"
             return get_paths().agent_memory_file(agent_name)
 
         config = get_memory_config()

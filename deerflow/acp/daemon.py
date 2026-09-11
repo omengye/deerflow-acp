@@ -130,8 +130,11 @@ class ACPDaemon:
         token: str | None = None,
     ) -> None:
         self.config = config
+        import hashlib
+        self.config_revision = hashlib.sha256(config.config_path.read_bytes()).hexdigest() if config.config_path.is_file() else ""
         self.store = store
         self.runtime = runtime
+        self.warmup_state = "ready"
         self.runtime_dir = ensure_runtime_dir(runtime_dir)
         self.endpoint_path = self.runtime_dir / ENDPOINT_FILENAME
         self.token = token or secrets.token_urlsafe(32)
@@ -284,7 +287,12 @@ class ACPDaemon:
             if not isinstance(request, dict):
                 raise ValueError("Management request must be a JSON object.")
             async with self._management_lock:
-                response = await self.management_handler(request)
+                operation = str(request.get("operation", ""))
+                if operation.startswith(("daemon.", "session.", "memory.")):
+                    from .management import handle_runtime_management
+                    response = await handle_runtime_management(self, request)
+                else:
+                    response = await self.management_handler(request)
             if not isinstance(response, dict):
                 raise TypeError("Management handler returned an invalid response.")
         except ValueError as exc:
@@ -427,7 +435,13 @@ async def _run_daemon(
 ) -> None:
     config = LocalACPConfig.from_file(config_path)
     config.prepare_environment()
+    # Saving a draft must not auto-reload global model/tool settings mid-turn.
+    from deerflow.config.app_config import get_app_config, set_app_config
+    set_app_config(get_app_config())
+    from deerflow.config.agents_config import freeze_agent_catalog
+    freeze_agent_catalog()
     runtime = LocalACPRuntime(config)
+    runtime._pinned_config = get_app_config()
     runtime.validate_sandbox_provider()
     store = LocalACPSessionStore(config.session_store_path)
     store.setup()
@@ -443,14 +457,17 @@ async def _run_daemon(
         await daemon.start()
         _install_signal_handlers(daemon)
         if warmup:
+            daemon.warmup_state = "warming"
             async def _do_warmup() -> None:
                 try:
                     logger.info("Warming DeerFlow agent graph in background")
                     await runtime.warmup()
+                    daemon.warmup_state = "ready"
                     logger.info("DeerFlow agent graph warmup complete")
                 except asyncio.CancelledError:
                     pass
                 except Exception:
+                    daemon.warmup_state = "failed"
                     logger.exception("Background agent graph warmup failed")
 
             warmup_task = asyncio.create_task(_do_warmup())

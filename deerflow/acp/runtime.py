@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,6 +60,7 @@ class LocalACPRuntime:
 
     def __init__(self, config: LocalACPConfig):
         self.config = config
+        self._pinned_config = None
         self.policy = LocalACPCapabilityPolicy.from_config(config)
         self.session_coordinator = ACPSessionCoordinator()
         self.permission_broker = ACPPermissionBroker(
@@ -72,6 +74,45 @@ class LocalACPRuntime:
         self._client_mcp_bindings: dict[str, ClientMCPBinding] = {}
         self._client_lock = asyncio.Lock()
         self._run_slots = asyncio.Semaphore(config.max_active_runs)
+        self.active_runs = 0
+        self.queued_runs = 0
+
+    @asynccontextmanager
+    async def run_slot(self, callback: LiveEventCallback):
+        async def emit(event: dict[str, Any]) -> None:
+            result = callback(event)
+            if inspect.isawaitable(result):
+                await result
+
+        started = asyncio.get_running_loop().time()
+        if self._run_slots.locked():
+            await emit({"type": "queue_status", "elapsed_seconds": 0})
+        acquire = asyncio.create_task(self._run_slots.acquire())
+        self.queued_runs += 1
+        acquired = False
+        try:
+            while not acquire.done():
+                done, _ = await asyncio.wait({acquire}, timeout=0 if not self._run_slots.locked() else 5)
+                if not done:
+                    await emit({"type": "queue_status", "elapsed_seconds": round(asyncio.get_running_loop().time() - started)})
+                    await asyncio.wait({acquire}, timeout=5)
+            await acquire
+            acquired = True
+            self.queued_runs -= 1
+            self.active_runs += 1
+            await emit({"type": "run_started"})
+            yield
+        finally:
+            if acquired:
+                self.active_runs -= 1
+                self._run_slots.release()
+            else:
+                self.queued_runs -= 1
+                acquire.cancel()
+                results = await asyncio.gather(acquire, return_exceptions=True)
+                if results == [True]:
+                    self._run_slots.release()
+
 
     def validate_sandbox_provider(self) -> None:
         """Require the host-local provider supported by portable ACP."""
@@ -196,7 +237,7 @@ class LocalACPRuntime:
                     session.subagent_enabled and self.policy.subagents_enabled
                 )
                 kwargs: dict[str, Any] = {
-                    "config_path": str(self.config.config_path),
+                    "config_path": None if self._pinned_config is not None else str(self.config.config_path),
                     "checkpointer": self._checkpointer,
                     "model_name": session.model_name,
                     "thinking_enabled": session.thinking_enabled,
@@ -399,7 +440,7 @@ class LocalACPRuntime:
             session.approval_mode,
         )
         client = await self._client_for(session)
-        async with self._run_slots:
+        async with self.run_slot(live_event_callback):
             client_kwargs: dict[str, Any] = {
                 "thread_id": session.session_id,
                 "live_event_callback": live_event_callback,

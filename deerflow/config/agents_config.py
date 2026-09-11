@@ -14,6 +14,18 @@ logger = logging.getLogger(__name__)
 SOUL_FILENAME = "SOUL.md"
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 
+_frozen_catalog: dict[str, "AgentConfig"] | None = None
+_frozen_souls: dict[str | None, str | None] | None = None
+
+
+def freeze_agent_catalog() -> None:
+    """Pin the portable daemon's profiles until its next explicit restart."""
+    global _frozen_catalog, _frozen_souls
+    catalog = {agent.name: agent for agent in list_custom_agents()}
+    souls = {name: load_agent_soul(name) for name in [None, *catalog]}
+    _frozen_catalog = catalog
+    _frozen_souls = souls
+
 
 def validate_agent_name(name: str | None) -> str | None:
     """Validate a custom agent name before using it in filesystem paths."""
@@ -58,6 +70,10 @@ def load_agent_config(name: str | None) -> AgentConfig | None:
         return None
 
     name = validate_agent_name(name)
+    if _frozen_catalog is not None:
+        if name not in _frozen_catalog:
+            raise FileNotFoundError(f"Agent {name!r} is not in the active configuration; apply saved settings first")
+        return _frozen_catalog[name].model_copy(deep=True)
     agent_dir = get_paths().agent_dir(name)
     config_file = agent_dir / "config.yaml"
 
@@ -96,6 +112,8 @@ def load_agent_soul(agent_name: str | None) -> str | None:
     Returns:
         The SOUL.md content as a string, or None if the file does not exist.
     """
+    if _frozen_souls is not None:
+        return _frozen_souls.get(agent_name)
     agent_dir = get_paths().agent_dir(agent_name) if agent_name else get_paths().base_dir
     soul_path = agent_dir / SOUL_FILENAME
     if not soul_path.exists():
@@ -110,6 +128,8 @@ def list_custom_agents() -> list[AgentConfig]:
     Returns:
         List of AgentConfig for each valid agent directory found.
     """
+    if _frozen_catalog is not None:
+        return [agent.model_copy(deep=True) for agent in _frozen_catalog.values()]
     agents_dir = get_paths().agents_dir
 
     if not agents_dir.exists():

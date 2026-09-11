@@ -168,6 +168,7 @@ class LocalACPConfig:
     max_active_connections: int = 16
     max_active_runs: int = 2
     run_timeout_seconds: float = 600.0
+    queue_timeout_seconds: float = 600.0
     session_page_size: int = 50
     model_name: str | None = None
     thinking_enabled: bool = True
@@ -243,6 +244,9 @@ class LocalACPConfig:
                 )
             ),
         )
+        queue_timeout = _env_float("DEER_FLOW_ACP_QUEUE_TIMEOUT", float(_value(local, "queue_timeout_seconds", 600.0)))
+        if not 0 < queue_timeout <= 86400:
+            raise ValueError("local_acp.queue_timeout_seconds must be between 0 and 86400")
         page_size = int(_value(local, "session_page_size", 50))
         recursion_limit = int(
             _value(local, "recursion_limit", _value(api, "recursion_limit", 200))
@@ -454,6 +458,7 @@ class LocalACPConfig:
             max_active_connections=max_active_connections,
             max_active_runs=max_active_runs,
             run_timeout_seconds=run_timeout,
+            queue_timeout_seconds=queue_timeout,
             session_page_size=page_size,
             model_name=_value(local, "model_name", api.get("model_name")),
             thinking_enabled=_as_bool(

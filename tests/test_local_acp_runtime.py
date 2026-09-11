@@ -61,8 +61,9 @@ async def test_runtime_compacts_sqlite_checkpoints(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("pinned", [False, True])
 async def test_runtime_warmup_builds_and_reuses_default_client(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned: bool
 ) -> None:
     instances: list[FakeClient] = []
 
@@ -89,6 +90,8 @@ async def test_runtime_warmup_builds_and_reuses_default_client(
         agent_name="test-agent",
     )
     runtime = LocalACPRuntime(config)
+    if pinned:
+        runtime._pinned_config = object()
     checkpointer = object()
     runtime._checkpointer = checkpointer
 
@@ -98,7 +101,7 @@ async def test_runtime_warmup_builds_and_reuses_default_client(
     assert len(instances) == 1
     assert instances[0].warmup_calls == 2
     kwargs = instances[0].kwargs
-    assert kwargs["config_path"] == str(config.config_path)
+    assert kwargs["config_path"] == (None if pinned else str(config.config_path))
     assert kwargs["checkpointer"] is checkpointer
     assert kwargs["model_name"] == "test-model"
     assert kwargs["thinking_enabled"] is False

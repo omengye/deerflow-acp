@@ -7,7 +7,7 @@
 1. 运行 `deerflow-config.exe`。
 2. 在“模型”页面配置 Provider、模型 ID、Base URL 和 API Key。
 3. 按需配置 Custom Agent、Skills 与 Runtime / ACP 参数。
-4. 点击“保存配置”，再从概览页启动 Daemon。
+4. 点击“保存并应用”，首次启动后复制概览页生成的客户端配置，在自己的 ACP 客户端中验收。
 
 首次启动会自动创建 `user-data` 下的配置、数据、Skill、日志、备份和 ACP runtime 目录。所有用户数据都留在解压目录中；移动整个目录后仍可使用。
 
@@ -117,7 +117,7 @@ local_acp:
 
 “Skills”页面可以启用 Self Improving，并配置 Review / Auto Patch 模式、生成/审核/评估模型、自动发现阈值、候选大小限制和自动回滚阈值。Auto Patch 的创建、支持文件、脚本和删除能力始终由安全锁禁用。
 
-“Skills”页面可以查看待审批 Proposal 的详情、Diff、安全扫描和评估结果，并执行批准发布或拒绝。Signal、Probation、归档和完整历史仍在 DeerFlow Admin 页面中管理。
+“Skills”页面可以查看待审批 Proposal 的详情、Diff、安全扫描和评估结果，并执行批准发布或拒绝。“数据与恢复”页面可查看 Signal、Probation、归档 Proposal 与修订历史，并执行版本回滚。
 
 ## 长期记忆
 
@@ -125,7 +125,7 @@ local_acp:
 
 “ACP 记忆作用域”控制不同客户端会话之间如何共享记忆：`global` 全局共享，`workspace` 按项目目录隔离，`session` 按 ACP 会话隔离。便携版默认使用 `workspace`。
 
-默认记忆数据保存在 `user-data/data/deerflow/memory.json`，可重建的检索索引保存在 `user-data/data/deerflow/memory-fts5.sqlite3`。建议保持相对路径，以便移动整个便携目录时同时迁移记忆。本便携版本的配置工具只支持本地 DeerMem，不提供远程 Mem0 配置。
+global 共享记忆保存在 `user-data/data/deerflow/memory.json`，workspace/session 记忆保存在 `user-data/data/deerflow/memory-scopes`；可重建的检索索引默认位于 `user-data/data/deerflow/memory-fts5.sqlite3`。建议保持相对路径，以便移动整个便携目录时同时迁移记忆。本便携版本的配置工具只支持本地 DeerMem，不提供远程 Mem0 配置。
 
 ## Subagents
 
@@ -150,3 +150,28 @@ Sandbox 与 Tool JSON 中的字面量密钥会显示为 `__DEERFLOW_REDACTED__`�
 便携 ACP 默认每小时自动清理一次过期会话及其 checkpoint。已关闭会话由 `closed_session_retention_days` 控制；客户端未发送 `session/close` 时，未连接且长期无活动的会话由 `inactive_session_retention_days` 控制。可在 `local_acp` 中调整 `session_cleanup_interval_seconds`，或将 `session_cleanup_enabled` 设为 `false` 关闭自动清理。启动阶段实际删除了过期会话时会自动压缩 checkpoint 数据库；运行期间删除出的空闲页则供后续写入复用，避免在线 `VACUUM` 阻塞活跃任务。
 
 模型的字面量密钥在界面读取时会被脱敏。保存时密钥输入框留空会保留原值；只有勾选“清除已保存的 API Key”才会删除它。
+
+
+## 配置工具的新工作流
+
+- 普通“保存配置”不停止 Daemon。运行实例保留启动时配置，保存后提示待应用。
+- “保存并应用”先验证并保存，然后暂停接收新任务，等待已接收的任务结束后重启。可取消等待，也可在确认影响后立即重启。
+- “刷新状态”每五秒自动执行，不丢弃编辑内容；诊断页“重新加载配置”会在存在草稿时要求确认。关闭窗口同样保护草稿。
+- 高级配置位于对应页面的折叠区，包括模型、工具、会话、记忆和自进化。各页独立展开，本次使用期间记住状态；收起不会清空配置或草稿。隐藏字段出错时保持展开，可点击“查看错误配置”定位。
+- 模型页顶部展示全局默认模型、新 ACP 会话预计使用的模型及其来源。选择列表项只切换编辑对象；点击“设为默认”才修改默认值，保存并应用后生效。删除默认模型需明确选择替代项，被其他配置引用的模型须先解除引用。
+- ACP 新会话模型可选择“自动选择（Agent 优先，否则全局默认）”，或指定固定模型。固定选择不跟随全局默认变化；Agent、记忆和自进化的模型选项明确提供“继承全局默认”。已有会话的显式模型选择保持不变。
+- 模型页面提供服务商预设和手动测试。只有点击“测试模型”才发送一次最小文本请求，可能产生少量费用；默认不进行付费探测。
+- 概览中的能力预览基于当前编辑配置，客户端的会话模型/Profile 选择仍可覆盖默认值。
+- 诊断页可查看存储占用、日志尾部并复制脱敏报告。本地路径仍会显示，分享前请自行检查。
+
+## 数据管理与兼容
+
+“数据与恢复”提供配置备份预览与恢复、会话清理预览、记忆事实查看和删除、自进化历史与版本回滚。会话和记忆操作需要 Daemon 运行；正在连接客户端的会话不能删除。清理会话会删除会话元数据及 checkpoint，保留 uploads/outputs 等产物文件。
+
+配置恢复只恢复配置工具管理的配置部分与 Agent 设置，恢复前自动备份当前配置。会话、记忆事实和产物不随配置回滚。恢复后仍需应用配置。默认自动清理保留期限未改变。
+
+ACP 的 workspace/session 记忆现在实际保存到 `user-data/data/deerflow/memory-scopes` 的独立目录。旧版共享记忆不会自动复制到项目作用域，也不会删除；这是为了避免把未标注来源的旧事实分配给错误项目。global 作用域仍使用原存储位置。项目目录更换后产生新的 workspace 记忆作用域。
+
+`queue_timeout_seconds`（默认 600 秒）限制排队等待；`run_timeout_seconds` 在取得运行槽位后计时，仍覆盖该轮自动续跑和权限等待。客户端会收到排队和开始执行的状态提示，取消会及时释放等待槽位。
+
+所有 ACP 客户端中的连接、权限呈现和会话体验，请在交付便携包后由使用者进行验收。

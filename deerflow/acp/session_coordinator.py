@@ -48,9 +48,22 @@ class ACPSessionCoordinator:
     """
 
     def __init__(self) -> None:
+        self._draining = False
         self._lock = threading.Lock()
         self._bindings: dict[str, SessionBinding] = {}
         self._cleanup_reservations: set[str] = set()
+
+    def set_draining(self, draining: bool) -> None:
+        with self._lock:
+            self._draining = draining
+
+    def activity(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "draining": self._draining,
+                "active_operations": sum(b.phase != "idle" for b in self._bindings.values()),
+                "sessions": {key: b.phase for key, b in self._bindings.items()},
+            }
 
     def attach(self, session_id: str, connection_id: str) -> bool:
         """Attach a session and return whether a new lease was acquired."""
@@ -102,6 +115,8 @@ class ACPSessionCoordinator:
         phase: Literal["loading", "mutating"],
     ) -> None:
         with self._lock:
+            if self._draining:
+                raise SessionBusyError("服务正在应用配置，请稍后重试")
             binding = self._require_attached_locked(session_id, connection_id)
             if binding.phase != "idle":
                 raise SessionBusyError(
@@ -131,6 +146,8 @@ class ACPSessionCoordinator:
         task: asyncio.Task[Any],
     ) -> None:
         with self._lock:
+            if self._draining:
+                raise SessionBusyError("服务正在等待任务结束以应用配置，请稍后重试")
             binding = self._require_attached_locked(session_id, connection_id)
             if binding.phase != "idle":
                 raise SessionBusyError(

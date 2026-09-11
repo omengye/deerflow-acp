@@ -1075,6 +1075,30 @@ async def test_goal_survives_prompt_cancellation(
 
 
 @pytest.mark.asyncio
+async def test_queue_wait_does_not_consume_execution_timeout(
+    tmp_path: Path, store: LocalACPSessionStore,
+) -> None:
+    from deerflow.acp.runtime import LocalACPRuntime
+
+    config = make_config(tmp_path, queue_timeout_seconds=5, run_timeout_seconds=0.1)
+
+    class QueuedRuntime(FakeRuntime, LocalACPRuntime):
+        async def astream(self, session, message, *, live_event_callback, input_images=None):
+            await asyncio.sleep(0.2)
+            await live_event_callback({"type": "run_started"})
+            if False:
+                yield None
+
+    runtime = QueuedRuntime()
+    LocalACPRuntime.__init__(runtime, config)
+    agent = DeerFlowACPAgent(config, store, runtime)
+    agent.on_connect(FakeConnection())
+    created = await agent.new_session(cwd=str(tmp_path), mcp_servers=[])
+    response = await agent.prompt([acp.text_block("hello")], created.session_id)
+    assert response.stop_reason == "end_turn"
+
+
+@pytest.mark.asyncio
 async def test_goal_survives_prompt_timeout(
     tmp_path: Path,
     store: LocalACPSessionStore,

@@ -859,10 +859,22 @@ class DeerFlowACPAgent:
                 outputs_path=outputs_path,
             )
             cancelled = False
+            supports_queue = isinstance(self.runtime, LocalACPRuntime)
+            execution_started = not supports_queue
+            initial_timeout = self.config.queue_timeout_seconds if supports_queue else self.config.run_timeout_seconds
+            deadline = asyncio.timeout(initial_timeout)
+
+            async def timed_live(event: dict[str, Any]) -> None:
+                nonlocal execution_started
+                if event.get("type") == "run_started":
+                    execution_started = True
+                    deadline.reschedule(asyncio.get_running_loop().time() + self.config.run_timeout_seconds)
+                await mapper.handle_live(event)
+
             try:
-                async with asyncio.timeout(self.config.run_timeout_seconds):
+                async with deadline:
                     runtime_kwargs: dict[str, Any] = {
-                        "live_event_callback": mapper.handle_live,
+                        "live_event_callback": timed_live,
                     }
                     if input_images:
                         runtime_kwargs["input_images"] = [
@@ -893,7 +905,7 @@ class DeerFlowACPAgent:
                 await mapper.close_open_tools(cancelled=True)
                 raise RequestError.internal_error(
                     {
-                        "details": f"DeerFlow task timed out after {self.config.run_timeout_seconds:g} seconds"
+                        "details": f"DeerFlow {'task' if execution_started else 'queue wait'} timed out after {self.config.run_timeout_seconds if execution_started else initial_timeout:g} seconds"
                     }
                 ) from exc
             except RequestError:

@@ -1,12 +1,12 @@
 use iced::widget::{button, checkbox, column, container, pick_list, row, svg, text, text_input};
 use iced::{Background, Border, Color, Element, Fill, Length, Shadow, Theme, Vector, border};
 
-pub const BG_BASE: Color = rgb(0x0b, 0x11, 0x20);
-pub const BG_SURFACE: Color = rgb(0x11, 0x1a, 0x2e);
-pub const BG_ELEVATED: Color = rgb(0x1a, 0x24, 0x40);
-pub const BG_INPUT: Color = rgb(0x0f, 0x18, 0x2b);
-pub const BORDER: Color = rgb(0x2a, 0x38, 0x59);
-pub const BORDER_STRONG: Color = rgb(0x3a, 0x4b, 0x70);
+pub const BG_BASE: Color = rgb(0x10, 0x14, 0x1b);
+pub const BG_SURFACE: Color = rgb(0x17, 0x1c, 0x25);
+pub const BG_ELEVATED: Color = rgb(0x23, 0x2b, 0x37);
+pub const BG_INPUT: Color = rgb(0x12, 0x17, 0x20);
+pub const BORDER: Color = rgb(0x2a, 0x32, 0x3f);
+pub const BORDER_STRONG: Color = rgb(0x40, 0x4b, 0x5d);
 pub const TEXT_PRIMARY: Color = rgb(0xf1, 0xf5, 0xf9);
 pub const TEXT_SECONDARY: Color = rgb(0xa8, 0xb5, 0xc8);
 pub const TEXT_MUTED: Color = rgb(0x7f, 0x8d, 0xa8);
@@ -48,8 +48,8 @@ pub fn sidebar(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(BG_SURFACE)),
         border: Border {
-            color: BORDER,
-            width: 1.0,
+            color: Color::TRANSPARENT,
+            width: 0.0,
             radius: 0.0.into(),
         },
         ..Default::default()
@@ -77,9 +77,9 @@ pub fn card(_: &Theme) -> container::Style {
             radius: border::radius(12),
         },
         shadow: Shadow {
-            color: Color::BLACK.scale_alpha(0.18),
-            offset: Vector::new(0.0, 3.0),
-            blur_radius: 12.0,
+            color: Color::BLACK.scale_alpha(0.08),
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 6.0,
         },
         ..Default::default()
     }
@@ -174,10 +174,16 @@ pub fn secondary_button(_: &Theme, status: button::Status) -> button::Style {
     button_base(
         status,
         BG_ELEVATED,
-        rgb(0x23, 0x30, 0x50),
+        rgb(0x2d, 0x37, 0x45),
         TEXT_PRIMARY,
         BORDER_STRONG,
     )
+}
+
+pub fn action_button<'a, Message: Clone + 'a>(label: &'a str) -> button::Button<'a, Message> {
+    button(text(label).size(13))
+        .padding([9, 13])
+        .style(secondary_button)
 }
 
 pub fn danger_button(_: &Theme, status: button::Status) -> button::Style {
@@ -216,7 +222,11 @@ fn outline_button(status: button::Status, color: Color) -> button::Style {
 
 pub fn nav_button(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_, status| {
-        let background = if active {
+        let background = if matches!(status, button::Status::Pressed) {
+            with_alpha(ACCENT, 0.20)
+        } else if active && matches!(status, button::Status::Hovered) {
+            with_alpha(ACCENT, 0.17)
+        } else if active {
             with_alpha(ACCENT, 0.12)
         } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
             BG_ELEVATED
@@ -228,7 +238,7 @@ pub fn nav_button(active: bool) -> impl Fn(&Theme, button::Status) -> button::St
             text_color: if active { TEXT_PRIMARY } else { TEXT_SECONDARY },
             border: Border {
                 color: if active {
-                    with_alpha(ACCENT, 0.35)
+                    with_alpha(ACCENT, 0.16)
                 } else {
                     Color::TRANSPARENT
                 },
@@ -447,38 +457,53 @@ pub fn sidebar_item<'a, Message: Clone + 'a>(
     active: bool,
     message: Message,
 ) -> Element<'a, Message> {
-    let marker = container(iced::widget::Space::new().width(3).height(22)).style(move |_| {
-        container::Style {
-            background: Some(Background::Color(if active {
-                ACCENT
-            } else {
-                Color::TRANSPARENT
-            })),
-            border: Border {
-                radius: border::radius(2),
+    sidebar_entry(icon, label, active, None, message)
+}
+
+fn sidebar_entry<'a, Message: Clone + 'a>(
+    icon: Icon,
+    label: &'a str,
+    active: bool,
+    badge: Option<&'a str>,
+    message: Message,
+) -> Element<'a, Message> {
+    let mut content = row![
+        icon_view(icon, 18.0, if active { ACCENT } else { TEXT_SECONDARY }),
+        text(label).size(14).width(Fill),
+    ]
+    .spacing(10)
+    .align_y(iced::Alignment::Center);
+    if let Some(label) = badge {
+        content = content.push(
+            container(
+                text(label)
+                    .size(11)
+                    .color(if active { ACCENT } else { TEXT_SECONDARY }),
+            )
+            .padding([3, 7])
+            .style(move |_| container::Style {
+                background: Some(Background::Color(if active {
+                    with_alpha(ACCENT, 0.10)
+                } else {
+                    BG_ELEVATED
+                })),
+                border: Border {
+                    radius: border::radius(5),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        }
-    });
-    row![
-        marker,
-        button(
-            row![
-                icon_view(icon, 17.0, if active { ACCENT } else { TEXT_MUTED }),
-                text(label).size(14),
-            ]
-            .spacing(11)
-            .align_y(iced::Alignment::Center),
-        )
-        .padding([9, 11])
+            }),
+        );
+    } else if active {
+        content = content.push(icon_view(Icon::ChevronRight, 14.0, ACCENT));
+    }
+    button(content)
+        .padding([10, 12])
+        .height(42)
         .width(Fill)
         .style(nav_button(active))
-        .on_press(message),
-    ]
-    .spacing(7)
-    .align_y(iced::Alignment::Center)
-    .into()
+        .on_press(message)
+        .into()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -500,9 +525,11 @@ pub enum Icon {
     Check,
     Alert,
     Folder,
+    ChevronDown,
+    ChevronRight,
 }
 
-pub fn icon_view(icon: Icon, size: f32, color: Color) -> svg::Svg<'static> {
+pub fn icon_view<'a>(icon: Icon, size: f32, color: Color) -> svg::Svg<'a> {
     svg(svg::Handle::from_memory(icon.svg().as_bytes()))
         .width(Length::Fixed(size))
         .height(Length::Fixed(size))
@@ -512,6 +539,12 @@ pub fn icon_view(icon: Icon, size: f32, color: Color) -> svg::Svg<'static> {
 impl Icon {
     fn svg(self) -> &'static str {
         match self {
+            Self::ChevronDown => {
+                r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>"#
+            }
+            Self::ChevronRight => {
+                r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>"#
+            }
             Self::Dashboard => {
                 r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>"#
             }

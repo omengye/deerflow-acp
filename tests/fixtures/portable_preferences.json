@@ -1,0 +1,230 @@
+{
+  "config_revision": "test-config",
+  "extensions_revision": "test-extensions",
+  "default_model": "openai",
+  "models": [
+    {
+      "original_name": "openai",
+      "name": "openai",
+      "display_name": "OpenAI",
+      "description": "",
+      "use_path": "langchain_openai:ChatOpenAI",
+      "model": "gpt-4.1-mini",
+      "api_key": "",
+      "api_key_configured": false,
+      "api_key_literal": false,
+      "clear_api_key": false,
+      "base_url": "https://api.openai.com/v1",
+      "supports_thinking": false,
+      "supports_reasoning_effort": false,
+      "supports_vision": true,
+      "advanced": {}
+    }
+  ],
+  "runtime": {
+    "model_name": null,
+    "agent_name": null,
+    "thinking_enabled": true,
+    "plan_mode": true,
+    "subagent_enabled": false,
+    "max_concurrent_subagents": 2,
+    "max_active_connections": 16,
+    "max_active_runs": 2,
+    "run_timeout_seconds": 600.0,
+    "queue_timeout_seconds": 600.0,
+    "session_cleanup_enabled": true,
+    "inactive_session_retention_days": 30,
+    "closed_session_retention_days": 30,
+    "session_cleanup_interval_seconds": 3600.0,
+    "goal_auto_continue": false,
+    "goal_max_continuations": 3,
+    "goal_max_no_progress_continuations": 2,
+    "permission_mode": "dangerous",
+    "memory_scope": "workspace",
+    "enable_bash": false,
+    "tool_allowlist": null,
+    "tool_denylist": [],
+    "prompt_overlay": ""
+  },
+  "memory": {
+    "enabled": true,
+    "manager_class": "deermem",
+    "mode": "middleware",
+    "injection_enabled": true,
+    "shutdown_flush_timeout_seconds": 30.0,
+    "storage_path": "memory.json",
+    "storage_class": "deerflow.agents.memory.storage.FileMemoryStorage",
+    "debounce_seconds": 30,
+    "model_name": null,
+    "max_facts": 100,
+    "fact_confidence_threshold": 0.7,
+    "max_injection_tokens": 2000,
+    "retrieval_enabled": true,
+    "retrieval_top_k": 12,
+    "retrieval_index_path": "memory-fts5.sqlite3",
+    "advanced": {},
+    "backend_advanced": {}
+  },
+  "agents": [],
+  "subagents": {
+    "enabled": true,
+    "timeout_seconds": 900,
+    "max_turns": null,
+    "agents": {},
+    "custom_agents": {},
+    "builtin_agents": [
+      {
+        "name": "general-purpose",
+        "description": "A capable agent for complex, multi-step tasks that require both exploration and action.\n\nUse this subagent when:\n- The task requires both exploration and modification\n- Complex reasoning is needed to interpret results\n- Multiple dependent steps must be executed\n- The task would benefit from isolated context management\n\nDo NOT use for simple, single-step operations.",
+        "default_model": "inherit"
+      },
+      {
+        "name": "bash",
+        "description": "Command execution specialist for running bash commands in a separate context.\n\nUse this subagent when:\n- You need to run a series of related bash commands\n- Terminal operations like git, npm, docker, etc.\n- Command output is verbose and would clutter main context\n- Build, test, or deployment operations\n\nDo NOT use for simple single commands - use bash tool directly instead.",
+        "default_model": "inherit"
+      }
+    ],
+    "advanced": {
+      "enabled": true,
+      "timeout_seconds": 900,
+      "max_turns": null,
+      "agents": {},
+      "custom_agents": {}
+    }
+  },
+  "sandbox": {
+    "use": "deerflow.sandbox.local:LocalSandboxProvider",
+    "allow_host_bash": false,
+    "allow_host_tools": false,
+    "advanced": {}
+  },
+  "tool_groups": [
+    {
+      "name": "file:read"
+    },
+    {
+      "name": "file:write"
+    },
+    {
+      "name": "bash"
+    }
+  ],
+  "tools": [
+    {
+      "name": "ls",
+      "group": "file:read",
+      "use": "deerflow.sandbox.tools:ls_tool"
+    },
+    {
+      "name": "read_file",
+      "group": "file:read",
+      "use": "deerflow.sandbox.tools:read_file_tool"
+    },
+    {
+      "name": "glob",
+      "group": "file:read",
+      "use": "deerflow.sandbox.tools:glob_tool",
+      "max_results": 200
+    },
+    {
+      "name": "grep",
+      "group": "file:read",
+      "use": "deerflow.sandbox.tools:grep_tool",
+      "max_results": 100
+    },
+    {
+      "name": "write_file",
+      "group": "file:write",
+      "use": "deerflow.sandbox.tools:write_file_tool"
+    },
+    {
+      "name": "str_replace",
+      "group": "file:write",
+      "use": "deerflow.sandbox.tools:str_replace_tool"
+    },
+    {
+      "name": "bash",
+      "group": "bash",
+      "use": "deerflow.sandbox.tools:bash_tool"
+    }
+  ],
+  "skills_enabled": true,
+  "skills": [],
+  "skill_evolution": {
+    "enabled": false,
+    "mode": "review",
+    "storage_path": "skill-evolution",
+    "generation_model_name": null,
+    "moderation_model_name": null,
+    "evaluation_model_name": null,
+    "security_fail_closed": true,
+    "discovery": {
+      "enabled": false,
+      "min_tool_calls": 5,
+      "repeat_threshold": 2,
+      "repeat_window_days": 30,
+      "cooldown_hours": 24,
+      "max_daily_proposals": 5,
+      "max_pending_proposals": 20
+    },
+    "candidate_limits": {
+      "max_files": 20,
+      "max_total_bytes": 524288,
+      "max_file_bytes": 131072
+    },
+    "auto_patch": {
+      "max_changed_lines": 40,
+      "allow_create": false,
+      "allow_support_files": false,
+      "allow_scripts": false,
+      "allow_delete": false
+    },
+    "monitoring": {
+      "probation_uses": 3,
+      "auto_rollback_consecutive_failures": 2
+    },
+    "advanced": {
+      "enabled": false,
+      "mode": "review",
+      "storage_path": "skill-evolution",
+      "generation_model_name": null,
+      "moderation_model_name": null,
+      "evaluation_model_name": null,
+      "security_fail_closed": true,
+      "discovery": {
+        "enabled": false,
+        "min_tool_calls": 5,
+        "repeat_threshold": 2,
+        "repeat_window_days": 30,
+        "cooldown_hours": 24,
+        "max_daily_proposals": 5,
+        "max_pending_proposals": 20
+      },
+      "candidate_limits": {
+        "max_files": 20,
+        "max_total_bytes": 524288,
+        "max_file_bytes": 131072
+      },
+      "auto_patch": {
+        "max_changed_lines": 40,
+        "allow_create": false,
+        "allow_support_files": false,
+        "allow_scripts": false,
+        "allow_delete": false
+      },
+      "monitoring": {
+        "probation_uses": 3,
+        "auto_rollback_consecutive_failures": 2
+      }
+    }
+  },
+  "paths": {
+    "config": "test-data/config",
+    "extensions": "test-data/extensions",
+    "skills": "test-data/skills",
+    "agents": "test-data/agents",
+    "user_data": "test-data/user_data",
+    "memory": "test-data/memory",
+    "memory_index": "test-data/memory_index"
+  }
+}

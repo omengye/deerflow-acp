@@ -350,6 +350,17 @@ class ACPEventMapper:
                 )
 
     async def _handle_live_unlocked(self, data: dict[str, Any]) -> None:
+        if data.get("type") in {"queue_status", "run_started"}:
+            queued = data["type"] == "queue_status"
+            await self._send(schema.AgentThoughtChunk(
+                session_update="agent_thought_chunk",
+                content=acp.text_block(
+                    f"排队中，已等待 {data.get('elapsed_seconds', 0)} 秒；可随时取消。\n"
+                    if queued else "已开始执行，执行超时从现在计时。\n"
+                ),
+            ))
+            return
+
         event_type = str(data.get("type") or "")
         if event_type == "llm_failure":
             self.failure_message = str(data.get("message") or data.get("reason") or "Model request failed")

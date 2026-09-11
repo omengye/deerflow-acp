@@ -71,6 +71,24 @@ async def _dispatch(request: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("operation must be a string.")
 
     store = get_evolution_store()
+    if operation == "proposal.history":
+        revisions = []
+        for directory in sorted(store.revisions_dir.iterdir()) if store.revisions_dir.exists() else []:
+            if directory.is_dir():
+                revisions.extend({**r.model_dump(mode="json"), "name": r.skill_name} for r in store.list_revisions(directory.name))
+        return {"proposals": [p.model_dump(mode="json") for p in store.list_proposals(include_archived=True)],
+                "revisions": revisions, "signals": [s.model_dump(mode="json") for s in store.list_signals()],
+                "probations": store.get_probations(),
+                "catalog_version": store.get_catalog_version()}
+    if operation == "proposal.rollback":
+        from deerflow.skills.evolution.publisher import SkillPublisher
+        name = request.get("name")
+        version = request.get("version")
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", name):
+            raise ValueError("Invalid Skill name")
+        if type(version) is not int or version < 1:
+            raise ValueError("Invalid Skill revision")
+        return SkillPublisher(store).rollback(name, version, actor="desktop", note=_optional_note(request))
     if operation == "proposal.list":
         status = request.get("status")
         if status is not None and (

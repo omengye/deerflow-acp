@@ -10,6 +10,8 @@ api:
   extensions_config_path: ./extensions_config.json
 
 local_acp:
+  # Queue and execution have independent deadlines (seconds).
+  queue_timeout_seconds: 600
   checkpointer_path: ../data/acp-checkpoints.db
   session_store_path: ../data/acp-sessions.db
   max_active_connections: 16
