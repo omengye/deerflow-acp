@@ -49,7 +49,9 @@ async def _run(config_path: str | None) -> None:
     try:
         # Keep the wire surface on stable ACP v1. Experimental workspace,
         # terminal, fork/resume, and provider features remain unavailable.
-        await acp.run_agent(agent, use_unstable_protocol=False)
+        await acp.run_agent(
+            agent, use_unstable_protocol=False, stdio_buffer_limit_bytes=64 * 1024 * 1024
+        )
     finally:
         cleanup_task.cancel()
         try:

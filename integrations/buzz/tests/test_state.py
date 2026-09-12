@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 from buzz_deerflow_adapter.models import BuzzMessage
@@ -56,3 +58,22 @@ def test_cursor_and_session_are_persistent(tmp_path: Path) -> None:
         assert reopened.get_session("channel:channel-1", tmp_path) == "session-1"
     finally:
         reopened.close()
+
+
+def test_attachment_tags_survive_restart_and_legacy_migration(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    state = AdapterState(path)
+    state.enqueue([_message()], session_scope="thread")
+    state.close()
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE inbox_messages DROP COLUMN tags_json")
+    state = AdapterState(path)
+    assert state.pending()[0].tags == ()
+    tag = ("imeta", "url https://relay.example/media/file", "filename 报告.pdf")
+    state.enqueue([replace(_message("d" * 64), tags=(tag,))], session_scope="thread")
+    state.close()
+    state = AdapterState(path)
+    try:
+        assert state.pending()[1].tags == (tag,)
+    finally:
+        state.close()

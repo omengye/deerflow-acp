@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -48,6 +49,14 @@ class AdapterState:
                 ON inbox_messages(event_id);
             """
         )
+        columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(inbox_messages)")
+        }
+        if "tags_json" not in columns:
+            self._connection.execute(
+                "ALTER TABLE inbox_messages ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'"
+            )
         self._connection.commit()
 
     def close(self) -> None:
@@ -91,8 +100,8 @@ class AdapterState:
                 """
                 INSERT OR IGNORE INTO inbox_messages (
                     message_key, conversation_key, channel_id, event_id,
-                    created_at, author_pubkey, kind, content, is_dm
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, author_pubkey, kind, content, is_dm, tags_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message.key,
@@ -104,6 +113,7 @@ class AdapterState:
                     message.kind,
                     message.content,
                     int(message.is_dm),
+                    json.dumps(message.tags, ensure_ascii=False),
                 ),
             )
             inserted += max(cursor.rowcount, 0)
@@ -117,7 +127,7 @@ class AdapterState:
                 """
             SELECT message_key, conversation_key, channel_id, event_id,
                    created_at, author_pubkey, kind, content, is_dm, attempts,
-                   response_content
+                   response_content, tags_json
             FROM inbox_messages
             WHERE status = 'pending'
             ORDER BY created_at, message_key
@@ -140,6 +150,7 @@ class AdapterState:
                 is_dm=bool(row["is_dm"]),
                 attempts=row["attempts"],
                 response_content=row["response_content"],
+                tags=tuple(tuple(tag) for tag in json.loads(row["tags_json"])),
             )
             for row in rows
         ]

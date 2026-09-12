@@ -139,6 +139,46 @@ If one poll would exceed `max_poll_pages` (200 events per page), that channel's
 cursor is not advanced; raise the limit and restart so older events are not
 silently skipped.
 
+### Images and file attachments (ACP v2)
+
+Messages may contain text, images, files, or only attachments. The normal
+mention/DM and author allowlist rules still apply. Attach files in Buzz's
+composer so the signed message contains NIP-92 `imeta` tags (`url`, `m`, `x`,
+`size`, and optional `filename`). Plain URLs in text are not automatically
+downloaded as attachments.
+
+The sidecar uses the official `buzz media get` command for authenticated
+downloads from the configured relay. Use a Buzz CLI version with that command.
+Downloaded size and SHA-256 must match the message metadata. Images also have
+their format checked. Failed validation produces an explanatory reply without
+running a model turn.
+
+- JPG, PNG, WebP and GIF become native ACP image blocks. The v2 bridge must
+  advertise `capabilities.session.prompt.image`, and the current DeerFlow
+  session model must have `supports_vision: true` and actually support vision.
+- Other files (for example PDF, DOCX, CSV, TXT and ZIP) are saved under
+  `<deerflow.workspace>/.buzz-attachments/<session-hash>/<event-hash>/` and sent
+  as `file://` resource links. DeerFlow tools can access their real bytes in
+  the workspace. This does not automatically convert every file format to text.
+- Each message accepts at most 8 attachments totaling 40 MiB; each image is
+  limited to 20 MiB and each other file to 25 MiB. DeerFlow's configured
+  `local_acp.resource_link_max_size_mb` may impose a smaller file limit.
+- Audio and video input are not supported. The legacy v1 sidecar reports that
+  attachments require v2 instead of silently sending only the caption.
+
+Attachment tags survive sidecar restarts in SQLite. Verified local files are
+reused on retry; modified cache entries are downloaded and checked again.
+Files remain available for follow-up turns. After the relevant conversations
+are no longer needed, their `.buzz-attachments` directories can be removed
+manually. ACP session separation is not a filesystem sandbox: sessions sharing
+the same configured workspace can access that workspace.
+
+Upgrade both the native bridge and the portable Python daemon, then restart
+the daemon and sidecar to pick up capability negotiation and the larger frame
+limit. The sidecar schema migration is automatic. Final replies continue to
+deliver text and ACP ResourceLink output as links; this input feature does not
+upload generated local files back to Buzz.
+
 ## Run
 
 From this directory, reuse the parent project's environment:
@@ -190,7 +230,8 @@ does not answer historical messages.
   resent automatically, avoiding duplicate replies. A send-side CLI timeout is
   treated the same way because relay acceptance can no longer be proven either
   way.
-- Attachments and non-text Buzz event kinds are outside the first release.
+- Attachment input is supported on the configured message kinds via `imeta`;
+  other Buzz event kinds are not implicitly treated as messages.
 
 ## Test
 

@@ -75,6 +75,10 @@ DeerFlow ACP 支持客户端发送标准 `ImageContentBlock`，也支持引用�
 
 图片输入要求当前会话选择的模型配置了 `supports_vision: true`。如果当前模型不支持视觉，ACP 会拒绝该轮输入并提示可选的视觉模型，不会静默切换模型。HTTP/HTTPS 图片 ResourceLink 暂不自动下载；远程图片请由客户端作为 `ImageContentBlock` 发送。
 
+ACP v2 入口会将后端图片能力映射为 `capabilities.session.prompt.image`，客户端可据此启用图片附件。Bridge 与 Python daemon 均需更新，更新后重启 daemon 并重新连接客户端。传输读取上限为 64 MiB，可容纳每轮 40 MiB 图片的 Base64 编码；图片本身仍按上述限制校验。
+
+Buzz v2 sidecar 支持从消息附件下载图片和普通文件。图片发送为 ACP 图片内容块；普通文件保存到配置工作目录的 `.buzz-attachments` 下，并发送本地资源链接供工具读取。每条消息最多 8 个附件、总计 40 MiB，单个普通文件最多 25 MiB，详情见 `integrations/buzz/README.md`。
+
 ### `/goal` 长任务
 
 发送 `/goal <完成条件>` 会把目标保存到当前 ACP 会话并立即开始执行。单独发送 `/goal` 可查看状态；发送 `/goal clear`、`/goal reset` 或 `/goal off` 可清除。目标会随会话 checkpoint 恢复，完成后自动清除；带图片或资源链接的消息按普通 prompt 处理，不会触发命令。

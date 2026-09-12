@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -38,6 +39,13 @@ def _record_operation(args: list[str]) -> None:
 
 def main() -> None:
     args = sys.argv[1:]
+    if args[:2] == ["media", "get"]:
+        _record_operation(args)
+        blobs = _load("FAKE_BUZZ_MEDIA", {})
+        if args[2] not in blobs:
+            _fail("user_error", "missing blob", retryable=False, code=1)
+        sys.stdout.buffer.write(base64.b64decode(blobs[args[2]]))
+        return
     if args[:2] == ["channels", "list"]:
         print(json.dumps(_load("FAKE_BUZZ_CHANNELS", [])))
         return

@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 from collections.abc import Mapping
+from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 from .models import BuzzChannel, BuzzMessage
@@ -81,6 +83,8 @@ class BuzzCLI:
         *args: str,
         stdin: str | None = None,
         delivery_may_be_ambiguous: bool = False,
+        stdout_path: Path | None = None,
+        stdout_limit: int = 0,
     ) -> tuple[str, str]:
         process = await asyncio.create_subprocess_exec(
             *self._base(),
@@ -92,13 +96,33 @@ class BuzzCLI:
         )
         try:
             async with asyncio.timeout(self.timeout_seconds):
-                stdout, stderr = await process.communicate(
-                    stdin.encode("utf-8") if stdin is not None else None
-                )
+                if stdout_path is None:
+                    stdout, stderr = await process.communicate(
+                        stdin.encode("utf-8") if stdin is not None else None
+                    )
+                else:
+                    assert process.stdout is not None and process.stderr is not None
+                    error_output = asyncio.create_task(process.stderr.read())
+                    try:
+                        with stdout_path.open("xb") as output:
+                            size = 0
+                            while chunk := await process.stdout.read(64 * 1024):
+                                size += len(chunk)
+                                if size > stdout_limit:
+                                    raise BuzzCLIError(
+                                        "Buzz attachment exceeds the download size limit"
+                                    )
+                                output.write(chunk)
+                        await process.wait()
+                        stdout, stderr = b"", await error_output
+                    finally:
+                        error_output.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await error_output
         except TimeoutError as exc:
             if process.returncode is None:
                 process.kill()
-                await process.wait()
+                await process.communicate()
             error_type = (
                 BuzzDeliveryUnknownError
                 if delivery_may_be_ambiguous
@@ -110,7 +134,7 @@ class BuzzCLI:
         except BaseException:
             if process.returncode is None:
                 process.kill()
-                await process.wait()
+                await process.communicate()
             raise
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
@@ -129,6 +153,10 @@ class BuzzCLI:
                 raise BuzzTransportError(detail)
             raise BuzzCLIError(detail)
         return out, err
+
+    async def download_media(self, url: str, output: Path, *, max_bytes: int) -> None:
+        """Use the official CLI's relay-only Blossom GET auth, preserving binary bytes."""
+        await self._run("media", "get", url, stdout_path=output, stdout_limit=max_bytes)
 
     async def list_channels(self) -> list[BuzzChannel]:
         stdout, _ = await self._run("channels", "list", "--member", "--limit", "500")

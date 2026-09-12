@@ -163,7 +163,8 @@ class ACPDaemon:
             assert self.endpoint is not None
             return self.endpoint
         self._server = await asyncio.start_server(
-            self._handle_connection, "127.0.0.1", 0
+            # A 40 MiB image turn expands to ~54 MiB in JSON/base64.
+            self._handle_connection, "127.0.0.1", 0, limit=64 * 1024 * 1024
         )
         socket = self._server.sockets[0]
         host, port = socket.getsockname()[:2]

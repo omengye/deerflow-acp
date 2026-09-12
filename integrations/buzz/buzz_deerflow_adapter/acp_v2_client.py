@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -124,6 +124,8 @@ class _JsonRpcProcess:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # v2 echoes the user message, including base64 image blocks.
+            limit=64 * 1024 * 1024,
         )
         self.process = process
         self._reader_task = asyncio.create_task(
@@ -342,6 +344,7 @@ class DeerFlowACPV2Client:
             permission_handler=self._permission_response,
         )
         self._attached_sessions: set[str] = set()
+        self.supports_images = False
 
     async def open(self) -> None:
         if self._transport.process is not None:
@@ -368,6 +371,10 @@ class DeerFlowACPV2Client:
                 capabilities.get("session"), dict
             ):
                 raise ACPV2Error("DeerFlow ACP v2 did not advertise session support")
+            prompt = capabilities["session"].get("prompt")
+            self.supports_images = isinstance(prompt, dict) and isinstance(
+                prompt.get("image"), dict
+            )
             logger.info("DeerFlow ACP connected: protocol=v2")
         except BaseException:
             await self._transport.close()
@@ -375,6 +382,7 @@ class DeerFlowACPV2Client:
 
     async def close(self) -> None:
         self._attached_sessions.clear()
+        self.supports_images = False
         await self._transport.close()
 
     async def attach_or_create(self, existing_session_id: str | None) -> str:
@@ -420,10 +428,28 @@ class DeerFlowACPV2Client:
     async def prompt(
         self,
         session_id: str,
-        prompt: str,
+        prompt: str | Sequence[dict[str, Any]],
         *,
         on_update: Callable[[dict[str, Any]], None] | None = None,
     ) -> str:
+        blocks = (
+            [{"type": "text", "text": prompt}]
+            if isinstance(prompt, str)
+            else list(prompt)
+        )
+        if (
+            any(block.get("type") == "image" for block in blocks)
+            and not self.supports_images
+        ):
+            raise ACPV2Error(
+                "DeerFlow did not advertise image input; configure a vision model "
+                "and use a bridge with ACP v2 image capability support"
+            )
+        if not blocks or any(
+            block.get("type") not in {"text", "image", "resource_link"}
+            for block in blocks
+        ):
+            raise ACPV2Error("Prompt must contain text, image, or resource-link blocks")
         tracker = self._transport.install_turn(session_id, on_update=on_update)
         deadline = time.monotonic() + self.timeout_seconds
         try:
@@ -432,7 +458,7 @@ class DeerFlowACPV2Client:
                     "session/prompt",
                     {
                         "sessionId": session_id,
-                        "prompt": [{"type": "text", "text": prompt}],
+                        "prompt": blocks,
                     },
                 ),
                 timeout=max(0.001, deadline - time.monotonic()),

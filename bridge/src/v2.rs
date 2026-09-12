@@ -258,6 +258,7 @@ async fn run_prompt(
 async fn serve_frontend(
     state: FacadeState,
     backend: ConnectionTo<Agent>,
+    prompt_capabilities: schema_v2::PromptCapabilities,
 ) -> agent_client_protocol::Result<()> {
     Agent
         .v2()
@@ -265,6 +266,7 @@ async fn serve_frontend(
         .on_receive_request(
             {
                 let state = state.clone();
+                let prompt_capabilities = prompt_capabilities.clone();
                 async move |request: schema_v2::InitializeRequest,
                             responder: Responder<schema_v2::InitializeResponse>,
                             connection: ConnectionTo<Client>| {
@@ -279,8 +281,10 @@ async fn serve_frontend(
                             .title("DeerFlow Portable"),
                         )
                         .capabilities(
-                            schema_v2::AgentCapabilities::new()
-                                .session(schema_v2::SessionCapabilities::new()),
+                            schema_v2::AgentCapabilities::new().session(
+                                schema_v2::SessionCapabilities::new()
+                                    .prompt(prompt_capabilities.clone()),
+                            ),
                         ),
                     )
                 }
@@ -497,7 +501,11 @@ pub(crate) async fn run(endpoint_path: &Path) -> Result<()> {
                     initialized.protocol_version
                 )));
             }
-            serve_frontend(state, backend).await
+            let prompt_capabilities = schema_v2::PromptCapabilities::try_from(
+                initialized.agent_capabilities.prompt_capabilities,
+            )
+            .map_err(conversion_error)?;
+            serve_frontend(state, backend, prompt_capabilities).await
         })
         .await?;
     Ok(())

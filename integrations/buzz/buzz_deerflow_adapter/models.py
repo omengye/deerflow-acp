@@ -131,3 +131,4 @@ class PendingMessage:
     is_dm: bool
     attempts: int
     response_content: str | None
+    tags: tuple[tuple[str, ...], ...] = ()

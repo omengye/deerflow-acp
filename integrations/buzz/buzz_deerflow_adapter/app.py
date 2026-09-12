@@ -8,6 +8,7 @@ from contextlib import suppress
 
 from .acp_client import DeerFlowACPClient
 from .acp_v2_client import DeerFlowACPV2Client
+from .attachments import AttachmentError, parse_attachments, prepare_attachments
 from .buzz_cli import (
     BuzzCLI,
     BuzzCLIError,
@@ -380,7 +381,10 @@ class AdapterApp:
     def _eligible(self, message: BuzzMessage) -> bool:
         if message.author_pubkey.casefold() == self.config.agent_pubkey.casefold():
             return False
-        if message.kind not in self.config.message_kinds or not message.content.strip():
+        has_attachments = any(tag and tag[0] == "imeta" for tag in message.tags)
+        if message.kind not in self.config.message_kinds or not (
+            message.content.strip() or has_attachments
+        ):
             return False
         allowed = {value.casefold() for value in self.config.allowed_pubkeys}
         if allowed and message.author_pubkey.casefold() not in allowed:
@@ -462,16 +466,36 @@ class AdapterApp:
                     progress.on_update(update)
 
             try:
+                prompt = self._build_prompt(message)
+                attachments = parse_attachments(message.tags)
+                if attachments:
+                    if self.config.deerflow_protocol != "v2":
+                        raise AttachmentError(
+                            "Buzz attachment input requires deerflow.protocol = 'v2'"
+                        )
+                    if (
+                        any(item.is_image for item in attachments)
+                        and not self.acp.supports_images
+                    ):
+                        raise AttachmentError(
+                            "DeerFlow must advertise ACP v2 image support; configure a vision model and update the bridge"
+                        )
+                    blocks = await prepare_attachments(
+                        attachments,
+                        buzz=self.buzz,
+                        workspace=self.config.workspace,
+                        session_id=session_id,
+                        event_id=message.event_id,
+                    )
+                    prompt = [{"type": "text", "text": prompt}, *blocks]
                 if self.observer is not None or progress is not None:
                     response = await self.acp.prompt(
                         session_id,
-                        self._build_prompt(message),
+                        prompt,
                         on_update=observe_update,
                     )
                 else:
-                    response = await self.acp.prompt(
-                        session_id, self._build_prompt(message)
-                    )
+                    response = await self.acp.prompt(session_id, prompt)
             except Exception as exc:
                 if self.observer is not None:
                     self.observer.session_resolved(
@@ -484,7 +508,12 @@ class AdapterApp:
                 await self._set_activity_status(self.config.status_error)
                 if progress is not None:
                     await progress.finish("error")
-                raise
+                if isinstance(exc, AttachmentError):
+                    # Invalid attachments cannot improve on retry. Persist a useful
+                    # reply through the normal outbox instead of silently dropping them.
+                    response = f"DeerFlow could not process the attachments: {exc}"
+                else:
+                    raise
             else:
                 if self.observer is not None:
                     self.observer.session_resolved(

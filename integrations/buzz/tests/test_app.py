@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from buzz_deerflow_adapter.app import AdapterApp
 from buzz_deerflow_adapter.buzz_cli import BuzzCLIError, BuzzDeliveryUnknownError
 from buzz_deerflow_adapter.config import AdapterConfig
@@ -164,6 +163,35 @@ async def test_delivery_unknown_is_quarantined(tmp_path: Path) -> None:
             .fetchone()
         )
         assert tuple(row) == ("delivery_unknown", 1)
+    finally:
+        app.state.close()
+
+
+async def test_invalid_attachment_sends_persisted_error_without_model(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    acp = _FakeACP()
+    app.acp = acp
+    replies = []
+
+    class ReplyBuzz:
+        async def send_message(self, channel, event_id, content):
+            replies.append(content)
+            return {"accepted": True}
+
+    app.buzz = ReplyBuzz()
+    _enqueue(app)
+    app.state._conn().execute(
+        "UPDATE inbox_messages SET tags_json = ?",
+        ('[["imeta", "url file:///private.txt"]]',),
+    )
+    app.state._conn().commit()
+    try:
+        await app._process_pending()
+        assert acp.prompt_calls == 0
+        assert "could not process the attachments" in replies[0]
+        assert not app.state.pending()
     finally:
         app.state.close()
 

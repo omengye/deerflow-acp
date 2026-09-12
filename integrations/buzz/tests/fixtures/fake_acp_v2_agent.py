@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import uuid
 
@@ -35,7 +36,9 @@ for line in sys.stdin:
             {
                 "protocolVersion": 2,
                 "info": {"name": "fake-deerflow-v2", "version": "1"},
-                "capabilities": {"session": {}},
+                "capabilities": {"session": {"prompt": {"image": {}}}}
+                if not os.getenv("FAKE_ACP_NO_IMAGES")
+                else {"session": {}},
             },
         )
     elif method == "session/new":
@@ -52,6 +55,17 @@ for line in sys.stdin:
         respond(request, {})
     elif method == "session/prompt":
         session_id = params["sessionId"]
+        if path := os.getenv("FAKE_ACP_PROMPTS"):
+            with open(path, "a", encoding="utf-8") as output:
+                output.write(json.dumps(params) + "\n")
+        update(
+            session_id,
+            {
+                "sessionUpdate": "user_message",
+                "messageId": "user-1",
+                "content": params["prompt"],
+            },
+        )
         text = "".join(
             block.get("text", "")
             for block in params.get("prompt", [])

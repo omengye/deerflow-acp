@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import sys
 from pathlib import Path
 
-from nostr_sdk import Keys
-
+import pytest
 from buzz_deerflow_adapter.app import AdapterApp
 from buzz_deerflow_adapter.config import AdapterConfig
+from nostr_sdk import Keys
 
 
+@pytest.mark.parametrize(
+    "with_attachments, attachment_only", [(False, False), (True, False), (True, True)]
+)
 async def test_buzz_event_to_acp_prompt_to_threaded_reply(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, with_attachments: bool, attachment_only: bool
 ) -> None:
     fixtures = Path(__file__).parent / "fixtures"
     channel_id = "11111111-1111-1111-1111-111111111111"
@@ -22,6 +27,31 @@ async def test_buzz_event_to_acp_prompt_to_threaded_reply(
     channels = tmp_path / "channels.json"
     inbox = tmp_path / "inbox.json"
     sent = tmp_path / "sent.jsonl"
+    captured = tmp_path / "prompts.jsonl"
+    tags = [["h", channel_id], ["p", agent_pubkey]]
+    if with_attachments:
+        blobs = {}
+        for data, mime, name in [
+            (b"\x89PNG\r\n\x1a\n" + b"x" * 100000, "image/png", "截图.png"),
+            (b"%PDF-1.7\nreport", "application/pdf", "报告.pdf"),
+        ]:
+            digest = hashlib.sha256(data).hexdigest()
+            url = f"https://buzz.sprwhisp.cc/media/{digest}"
+            tags.append(
+                [
+                    "imeta",
+                    f"url {url}",
+                    f"m {mime}",
+                    f"filename {name}",
+                    f"x {digest}",
+                    f"size {len(data)}",
+                ]
+            )
+            blobs[url] = base64.b64encode(data).decode()
+        media = tmp_path / "media.json"
+        media.write_text(json.dumps(blobs))
+        monkeypatch.setenv("FAKE_BUZZ_MEDIA", str(media))
+    monkeypatch.setenv("FAKE_ACP_PROMPTS", str(captured))
     channels.write_text(
         json.dumps([{"channel_id": channel_id, "name": "General"}]),
         encoding="utf-8",
@@ -35,8 +65,8 @@ async def test_buzz_event_to_acp_prompt_to_threaded_reply(
                     "pubkey": "b" * 64,
                     "created_at": 100,
                     "kind": 9,
-                    "content": "hello from Buzz",
-                    "tags": [["h", channel_id], ["p", agent_pubkey]],
+                    "content": "" if attachment_only else "hello from Buzz",
+                    "tags": tags,
                 }
             ]
         ),
@@ -76,7 +106,8 @@ async def test_buzz_event_to_acp_prompt_to_threaded_reply(
         payload = json.loads(sent.read_text(encoding="utf-8").splitlines()[0])
         assert payload["channel_id"] == channel_id
         assert payload["reply_to"] == event_id
-        assert "hello from Buzz" in payload["content"]
+        if not attachment_only:
+            assert "hello from Buzz" in payload["content"]
         assert "Fake DeerFlow received" in payload["content"]
 
         async with asyncio.timeout(5):
@@ -97,5 +128,16 @@ async def test_buzz_event_to_acp_prompt_to_threaded_reply(
         )
         assert session["conversation_key"] == f"thread:{channel_id}:{event_id}"
         assert session["session_id"].startswith("session-")
+        blocks = json.loads(captured.read_text(encoding="utf-8"))["prompt"]
+        if with_attachments:
+            assert [block["type"] for block in blocks] == [
+                "text",
+                "image",
+                "resource_link",
+            ]
+            assert blocks[2]["name"] == "报告.pdf"
+            assert len(base64.b64decode(blocks[1]["data"])) > 65536
+        else:
+            assert len(blocks) == 1
     finally:
         await app.close()
