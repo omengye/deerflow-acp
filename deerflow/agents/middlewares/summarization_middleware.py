@@ -419,7 +419,10 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
             from deerflow.agents.middlewares.llm_error_handling_middleware import llm_call_slot_sync
 
             with llm_call_slot_sync():
-                response = llm.invoke(
+                from deerflow.models.invocation import invoke_chat_model
+
+                response = invoke_chat_model(
+                    llm,
                     self.summary_prompt.format(messages=formatted_messages).rstrip(),
                     config={"metadata": {"lc_source": "summarization"}},
                 )
@@ -449,7 +452,10 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
             from deerflow.agents.middlewares.llm_error_handling_middleware import llm_call_slot_async
 
             async with llm_call_slot_async():
-                response = await llm.ainvoke(
+                from deerflow.models.invocation import ainvoke_chat_model
+
+                response = await ainvoke_chat_model(
+                    llm,
                     self.summary_prompt.format(messages=formatted_messages).rstrip(),
                     config={"metadata": {"lc_source": "summarization"}},
                 )

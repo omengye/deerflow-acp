@@ -39,6 +39,50 @@ def test_aio_sandbox_execute_uses_docker_exec() -> None:
     assert calls == [["docker", "exec", "-i", "deer-flow-sandbox-aio-test", "/bin/bash", "-lc", "echo ok"]]
 
 
+@pytest.mark.parametrize("operation", ["glob", "grep"])
+@pytest.mark.parametrize(
+    ("returncode", "error_type"),
+    [
+        (2, FileNotFoundError),
+        (3, NotADirectoryError),
+        (4, PermissionError),
+        (5, OSError),
+        (127, OSError),
+    ],
+)
+def test_remote_search_preserves_failure_type(operation, returncode, error_type) -> None:
+    sandbox = AioSandbox("aio-test", "container")
+    result = _completed(stderr="remote failure", returncode=returncode)
+    with patch.object(sandbox, "_docker_exec", return_value=result):
+        with pytest.raises(error_type):
+            if operation == "glob":
+                sandbox.glob("/mnt/user-data/workspace", "*.py")
+            else:
+                sandbox.grep("/mnt/user-data/workspace", "needle")
+
+
+def test_remote_grep_reports_invalid_regex_separately() -> None:
+    sandbox = AioSandbox("aio-test", "container")
+    result = _completed(stderr="unterminated character set", returncode=6)
+    with patch.object(sandbox, "_docker_exec", return_value=result):
+        with pytest.raises(ValueError, match="Invalid grep pattern"):
+            sandbox.grep("/mnt/user-data/workspace", "[")
+
+
+def test_remote_search_keeps_genuine_empty_results() -> None:
+    sandbox = AioSandbox("aio-test", "container")
+    with patch.object(
+        sandbox,
+        "_docker_exec",
+        side_effect=[
+            _completed(stdout="0\n"),
+            _completed(stdout='{"truncated": false, "matches": []}'),
+        ],
+    ):
+        assert sandbox.glob("/mnt/user-data/workspace", "*.missing") == ([], False)
+        assert sandbox.grep("/mnt/user-data/workspace", "missing") == ([], False)
+
+
 def test_aio_provider_mounts_thread_data_and_skills(tmp_path, monkeypatch) -> None:
     base_dir = tmp_path / "state"
     skills_dir = tmp_path / "skills"

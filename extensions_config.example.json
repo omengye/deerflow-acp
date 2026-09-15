@@ -10,5 +10,15 @@
       "description": "Official OpenViking tools for explicit memory and resource operations"
     }
   },
-  "skills": {}
+  "skills": {},
+  "middlewares": [
+    "my_package.middlewares:NoArgsMiddleware",
+    {
+      "class": "my_package.middlewares:ConfiguredMiddleware",
+      "kwargs": {
+        "header": "X-Example",
+        "enabled": true
+      }
+    }
+  ]
 }

@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import replace
 from functools import wraps
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from langchain.tools import InjectedToolCallId, ToolRuntime
 from langchain_core.tools import StructuredTool
@@ -40,6 +40,13 @@ class _TaskToolInput(BaseModel):
             "Optional bounded checklist. Deterministic forms are: "
             "file:<path> exists, file:<path> non-empty, "
             "file_written:<path>, and tests_passed:<exact command>."
+        ),
+    )
+    context_mode: Literal["isolated", "snapshot"] = Field(
+        default="isolated",
+        description=(
+            "Use 'snapshot' to give the subagent an immutable, data-only copy "
+            "of retained parent history; 'isolated' keeps the current behavior."
         ),
     )
 
@@ -114,16 +121,29 @@ async def _task_tool_impl(
     tool_call_id: Annotated[str, InjectedToolCallId],
     max_turns: int | None = None,
     acceptance_criteria: list[str] | None = None,
+    context_mode: Literal["isolated", "snapshot"] = "isolated",
 ) -> str:
-    available_subagent_names = get_available_subagent_names()
+    from deerflow.runtime.assembly import run_in_assembly_executor
+
+    def load_subagent_definition():
+        return get_available_subagent_names(), get_subagent_config(subagent_type)
+
+    available_subagent_names, config = await run_in_assembly_executor(
+        load_subagent_definition
+    )
 
     # Get subagent configuration
-    config = get_subagent_config(subagent_type)
     if config is None:
         available = ", ".join(available_subagent_names)
         return f"Error: Unknown subagent type '{subagent_type}'. Available: {available}"
     if subagent_type == "bash" and not is_host_bash_allowed():
         return f"Error: {LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE}"
+
+    context_snapshot = None
+    if context_mode == "snapshot" and runtime is not None and isinstance(runtime.state, dict):
+        from deerflow.subagents.context_snapshot import ParentContextSnapshot
+
+        context_snapshot = ParentContextSnapshot.from_state(runtime.state)
 
     # Build config overrides
     overrides: dict[str, Any] = {}
@@ -183,7 +203,8 @@ async def _task_tool_impl(
     parent_tool_groups = metadata.get("tool_groups")
 
     # Subagents should not have subagent tools enabled (prevent recursive nesting)
-    tools = get_available_tools(
+    tools = await run_in_assembly_executor(
+        get_available_tools,
         model_name=parent_model,
         groups=parent_tool_groups,
         subagent_enabled=False,
@@ -225,6 +246,7 @@ async def _task_tool_impl(
         deferred_registry=deferred_registry,
         middlewares=list(metadata.get("subagent_middlewares") or []),
         acceptance_criteria=acceptance_criteria,
+        context_snapshot=context_snapshot,
     )
 
     # Resolve the live_event_callback from config metadata.
@@ -490,6 +512,7 @@ def _create_task_tool() -> StructuredTool:
         tool_call_id: str,
         max_turns: int | None = None,
         acceptance_criteria: list[str] | None = None,
+        context_mode: Literal["isolated", "snapshot"] = "isolated",
     ) -> str:
         """Sync wrapper that delegates to the async implementation."""
         coro = _task_tool_impl(
@@ -500,6 +523,7 @@ def _create_task_tool() -> StructuredTool:
             tool_call_id=tool_call_id,
             max_turns=max_turns,
             acceptance_criteria=acceptance_criteria,
+            context_mode=context_mode,
         )
 
         try:

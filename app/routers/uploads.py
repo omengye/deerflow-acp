@@ -20,6 +20,25 @@ router = APIRouter(tags=["uploads"])
 # 64 KiB streaming chunks — bounds peak memory while copying uploads.
 _UPLOAD_COPY_CHUNK = 64 * 1024
 
+# Browsers render these formats as active documents.  Serving an agent-created
+# artifact inline on the API origin would let markup execute with that origin's
+# privileges, so these types are always downloads even without ?download=true.
+_ACTIVE_CONTENT_MIME_TYPES = {
+    "text/html",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "text/xml",
+    "application/xml",
+    "text/xsl",
+}
+
+
+def _is_active_content_mime_type(mime_type: str | None) -> bool:
+    if not isinstance(mime_type, str):
+        return False
+    normalized = mime_type.split(";", 1)[0].strip().lower()
+    return normalized in _ACTIVE_CONTENT_MIME_TYPES or normalized.endswith("+xml")
+
 
 def _content_disposition(filename: str) -> str:
     """Build an RFC 6266-compliant Content-Disposition header for downloads.
@@ -185,7 +204,7 @@ async def get_artifact(thread_id: str, path: str, download: bool = False):
         # The API already has the artifact bytes in memory, so expose a
         # content-addressed revision without another filesystem read.
         headers = {"ETag": f'"{hashlib.sha256(content).hexdigest()}"'}
-        if download:
+        if download or _is_active_content_mime_type(mime_type):
             headers["Content-Disposition"] = _content_disposition(Path(path).name)
         return Response(content=content, media_type=mime_type, headers=headers)
     except FileNotFoundError as e:

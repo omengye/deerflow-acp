@@ -60,6 +60,9 @@ class ViewedImageData(TypedDict):
     # created before image payloads were made model-call-ephemeral.
     base64: NotRequired[str]
     mime_type: str
+    size: NotRequired[int]
+    sha256: NotRequired[str]
+    source_sandbox_id: NotRequired[str]
 
 
 def merge_artifacts(existing: list[str] | None, new: list[str] | None) -> list[str]:

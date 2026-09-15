@@ -41,12 +41,23 @@ def setup_agent(
         if agent_name:
             # If agent_name is provided, we are creating a custom agent in the agents/ directory
             config_data: dict = {"name": agent_name}
+            config_file = agent_dir / "config.yaml"
+            if config_file.is_file():
+                try:
+                    existing = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+                    if isinstance(existing, dict) and existing.get("display_name") is not None:
+                        config_data["display_name"] = existing["display_name"]
+                except (OSError, yaml.YAMLError):
+                    logger.warning(
+                        "Could not preserve display_name while updating agent %r",
+                        agent_name,
+                        exc_info=True,
+                    )
             if description:
                 config_data["description"] = description
             if skills is not None:
                 config_data["skills"] = skills
 
-            config_file = agent_dir / "config.yaml"
             with open(config_file, "w", encoding="utf-8") as f:
                 yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True)
 

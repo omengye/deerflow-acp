@@ -3,7 +3,9 @@ import os
 import re
 import subprocess
 import sys
-from urllib.parse import urljoin
+from html import escape, unescape
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlparse, uses_relative
 
 from markdownify import markdownify as md
 from readabilipy import simple_json_from_html_string
@@ -141,8 +143,140 @@ class Article:
         return content
 
 
+class _BaseHrefParser(HTMLParser):
+    """Find the first real base element without matching comments or scripts."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.href: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.href is not None or tag.lower() != "base":
+            return
+        for name, value in attrs:
+            if name.lower() == "href" and value is not None:
+                self.href = value.strip()
+                return
+
+
+_ATTRIBUTE_RE = re.compile(
+    r'''([^\s/>=]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]*))?'''
+)
+
+
+class _DestinationRewriter(HTMLParser):
+    """Rewrite link/image destinations while preserving the original markup."""
+
+    CDATA_CONTENT_ELEMENTS = (
+        "script",
+        "style",
+        "textarea",
+        "title",
+        "xmp",
+        "iframe",
+        "noembed",
+        "noframes",
+        "plaintext",
+    )
+
+    def __init__(self, html: str, base_url: str) -> None:
+        super().__init__(convert_charrefs=False)
+        self.html = html
+        self.base_url = base_url
+        self.text_element: str | None = None
+        self.line_offsets = [0, *(match.end() for match in re.finditer("\n", html))]
+        self.replacements: list[tuple[int, int, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        tag = tag.lower()
+        if self.text_element is not None:
+            return
+        if tag in self.CDATA_CONTENT_ELEMENTS:
+            self.text_element = tag
+            return
+        attribute = {"a": "href", "img": "src"}.get(tag)
+        if attribute is None:
+            return
+        raw = self.get_starttag_text()
+        tag_match = re.match(r"<[^\s/>]+", raw)
+        if tag_match is None:
+            return
+        for match in _ATTRIBUTE_RE.finditer(raw, tag_match.end()):
+            if match.group(1).lower() != attribute:
+                continue
+            value = match.group(2)
+            line, column = self.getpos()
+            offset = self.line_offsets[line - 1] + column
+            if value is None:
+                self.replacements.append(
+                    (
+                        offset + match.end(1),
+                        offset + match.end(1),
+                        '="' + escape(self.base_url, quote=True) + '"',
+                    )
+                )
+                return
+            original = unescape(
+                value[1:-1] if value.startswith(('"', "'")) else value
+            )
+            try:
+                resolved = urljoin(self.base_url, original.strip())
+            except ValueError:
+                return
+            if resolved != original:
+                self.replacements.append(
+                    (
+                        offset + match.start(2),
+                        offset + match.end(2),
+                        '"' + escape(resolved, quote=True) + '"',
+                    )
+                )
+            # The browser uses the first duplicate attribute.
+            return
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == self.text_element and tag.lower() != "plaintext":
+            self.text_element = None
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+
+    def result(self) -> str:
+        parts: list[str] = []
+        cursor = 0
+        for start, end, replacement in self.replacements:
+            parts.extend((self.html[cursor:start], replacement))
+            cursor = end
+        parts.append(self.html[cursor:])
+        return "".join(parts)
+
+
+def _resolve_html_urls(html: str, url: str) -> str:
+    """Resolve destinations before readability discards the document base."""
+    base_url = url
+    finder = _BaseHrefParser()
+    try:
+        finder.feed(html)
+        finder.close()
+        if finder.href:
+            candidate = urljoin(url, finder.href)
+            if urlparse(candidate).scheme in uses_relative:
+                base_url = candidate
+    except (ValueError, TypeError):
+        # Invalid markup/base URLs must not prevent extraction.
+        base_url = url
+
+    resolver = _DestinationRewriter(html, base_url)
+    resolver.feed(html)
+    resolver.close()
+    return resolver.result()
+
+
 class ReadabilityExtractor:
-    def extract_article(self, html: str) -> Article:
+    def extract_article(self, html: str, *, url: str | None = None) -> Article:
+        if url:
+            html = _resolve_html_urls(html, url)
         try:
             article = simple_json_from_html_string(html, use_readability=True)
         except (subprocess.CalledProcessError, FileNotFoundError) as exc:

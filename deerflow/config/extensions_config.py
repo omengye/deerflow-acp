@@ -1,13 +1,14 @@
 """Unified extensions configuration for MCP servers and skills."""
 
 import json
+import math
 import os
 import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from deerflow.config.project_root import find_project_root
 from deerflow.constants import DEFAULT_MCP_SESSION_INIT_TIMEOUT
@@ -111,6 +112,34 @@ class SkillStateConfig(BaseModel):
     enabled: bool = Field(default=True, description="Whether this skill is enabled")
 
 
+def _validate_json_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("middleware kwargs cannot contain NaN or infinity")
+        return value
+    if isinstance(value, list):
+        return [_validate_json_value(item) for item in value]
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        return {key: _validate_json_value(item) for key, item in value.items()}
+    raise ValueError("middleware kwargs must contain only JSON-compatible values")
+
+
+class MiddlewareConfig(BaseModel):
+    """Declarative middleware constructor and JSON-safe arguments."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    class_path: str = Field(alias="class", min_length=1)
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("kwargs")
+    @classmethod
+    def validate_kwargs(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _validate_json_value(value)
+
+
 class ExtensionsConfig(BaseModel):
     """Unified configuration for MCP servers and skills."""
 
@@ -123,12 +152,12 @@ class ExtensionsConfig(BaseModel):
         default_factory=dict,
         description="Map of skill name to state configuration",
     )
-    middlewares: list[str] = Field(
+    middlewares: list[str | MiddlewareConfig] = Field(
         default_factory=list,
         description=(
-            "Custom AgentMiddleware class paths to load, in 'module.path:ClassName' "
-            "format (e.g. 'my_package.middlewares:MyMiddleware'). Each class is "
-            "instantiated with no arguments and appended to the lead agent's "
+            "Custom AgentMiddleware declarations. Entries may be a "
+            "'module.path:ClassName' string or {'class': path, 'kwargs': {...}}. "
+            "Each class is instantiated with JSON-safe constructor arguments and appended to the lead agent's "
             "middleware chain, after the built-in middlewares and before "
             "ClarificationMiddleware."
         ),

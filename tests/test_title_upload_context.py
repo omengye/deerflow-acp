@@ -32,6 +32,9 @@ def test_title_prompt_ignores_legacy_uploaded_files_context() -> None:
 async def test_attachment_only_title_skips_title_model(monkeypatch) -> None:
     middleware = TitleMiddleware()
     state = _state("<uploaded_files>\n- report.pdf\n</uploaded_files>\n")
+    state["uploaded_files"] = [
+        {"filename": "report.pdf", "path": "/mnt/user-data/uploads/report.pdf"}
+    ]
     monkeypatch.setattr(
         "deerflow.agents.middlewares.title_middleware.create_chat_model",
         lambda **_kwargs: (_ for _ in ()).throw(
@@ -40,7 +43,44 @@ async def test_attachment_only_title_skips_title_model(monkeypatch) -> None:
     )
 
     assert await middleware._agenerate_title_result(state) == {
-        "title": "New Conversation"
+        "title": "report.pdf"
+    }
+
+
+async def test_attachment_only_multiple_files_uses_count_title() -> None:
+    state = _state("")
+    state["uploaded_files"] = [
+        {"filename": "report.pdf", "path": "/mnt/user-data/uploads/report.pdf"},
+        {"filename": "data.csv", "path": "/mnt/user-data/uploads/data.csv"},
+    ]
+
+    assert await TitleMiddleware()._agenerate_title_result(state) == {
+        "title": "2 files uploaded"
+    }
+
+
+def test_attachment_title_rejects_paths_and_cleans_controls() -> None:
+    middleware = TitleMiddleware()
+    state = _state("")
+    state["uploaded_files"] = [
+        {"filename": "../secret.txt"},
+        {
+            "filename": "quarterly\nreport.xlsx",
+            "path": "/mnt/user-data/uploads/quarterly-report.xlsx",
+        },
+    ]
+
+    assert middleware._generate_title_result(state) == {
+        "title": "quarterly report.xlsx"
+    }
+
+
+def test_user_text_takes_precedence_over_attachment_filename() -> None:
+    state = _state("<uploaded_files>\n- report.pdf\n</uploaded_files>\nAnalyze it")
+    state["uploaded_files"] = [{"filename": "report.pdf"}]
+
+    assert TitleMiddleware()._generate_title_result(state) == {
+        "title": "Analyze it"
     }
 
 

@@ -23,6 +23,7 @@ from deerflow.agents.memory.storage import (
 )
 from deerflow.config.memory_config import get_memory_config
 from deerflow.models import aclose_chat_model, create_chat_model
+from deerflow.models.invocation import ainvoke_chat_model
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +402,69 @@ def _fact_content_key(content: Any) -> str | None:
     return " ".join(stripped.casefold().split())
 
 
+_FACT_CJK_RANGE = "\u3400-\u4dbf\u4e00-\u9fff\U00020000-\U0002fa1f"
+_FACT_TOKEN_RE = re.compile(
+    rf"[a-zA-Z0-9_]+|[{_FACT_CJK_RANGE}]+(?:\s+[{_FACT_CJK_RANGE}]+)*"
+)
+_FACT_SIMILARITY_TOKEN_BUDGET = 128
+
+
+def _fact_content_tokens(content: str) -> list[str]:
+    """Tokenize mixed Latin/CJK fact text deterministically and offline."""
+    lowered = content.strip().lower()
+    if not lowered:
+        return []
+    tokens: list[str] = []
+    for match in _FACT_TOKEN_RE.finditer(lowered):
+        run = match.group()
+        if run[0].isascii():
+            tokens.append(run)
+        else:
+            run = "".join(run.split())
+            tokens.extend(
+                [run]
+                if len(run) == 1
+                else (run[index : index + 2] for index in range(len(run) - 1))
+            )
+    return tokens or lowered.split()
+
+
+def _fact_content_similarity(left: str, right: str) -> float:
+    """Calculate bounded token-Jaccard similarity for two fact strings."""
+    left_tokens = set(
+        _fact_content_tokens(left)[:_FACT_SIMILARITY_TOKEN_BUDGET]
+    )
+    right_tokens = set(
+        _fact_content_tokens(right)[:_FACT_SIMILARITY_TOKEN_BUDGET]
+    )
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+
+def _find_dedup_merge_target(
+    content: str,
+    category: str,
+    facts: list[dict[str, Any]],
+    *,
+    threshold: float,
+) -> dict[str, Any] | None:
+    """Return the most similar same-category fact at or above threshold."""
+    best_target: dict[str, Any] | None = None
+    best_similarity = 0.0
+    for fact in facts:
+        if not isinstance(fact, dict) or fact.get("category", "context") != category:
+            continue
+        candidate_content = fact.get("content")
+        if not isinstance(candidate_content, str) or not candidate_content.strip():
+            continue
+        similarity = _fact_content_similarity(content, candidate_content)
+        if similarity >= threshold and similarity > best_similarity:
+            best_target = fact
+            best_similarity = similarity
+    return best_target
+
+
 def _parse_json_with_repair(text: str) -> dict[str, Any]:
     """Parse JSON from LLM response, using json-repair as a fallback for malformed output."""
     try:
@@ -553,7 +617,11 @@ class MemoryUpdater:
                 runtime_values={"thread_id": thread_id},
             )
             async with llm_call_slot_async():
-                response = await request_model.ainvoke(prompt, config={"run_name": "memory_agent"})
+                response = await ainvoke_chat_model(
+                    request_model,
+                    prompt,
+                    config={"run_name": "memory_agent"},
+                )
             return await asyncio.to_thread(
                 self._finalize_update,
                 response_content=response.content,
@@ -719,6 +787,32 @@ class MemoryUpdater:
 
             category = fact.get("category", "context")
             normalized_category = category.strip() if isinstance(category, str) and category.strip() else "context"
+            # Correction facts must retain their exact proposed wording; a
+            # paraphrase merge could preserve the old, incorrect statement.
+            if config.fact_dedup_enabled and normalized_category != "correction":
+                merge_target = _find_dedup_merge_target(
+                    normalized_content,
+                    normalized_category,
+                    current_memory["facts"],
+                    threshold=config.fact_dedup_similarity_threshold,
+                )
+                if merge_target is not None:
+                    try:
+                        existing_confidence = float(merge_target.get("confidence"))
+                        if not math.isfinite(existing_confidence):
+                            raise ValueError
+                    except (TypeError, ValueError):
+                        existing_confidence = 0.0
+                    if confidence > existing_confidence:
+                        merge_target["confidence"] = confidence
+                        merge_target["source"] = thread_id or "unknown"
+                    logger.info(
+                        "Near-duplicate fact merged: target_id=%s confidence_raised=%s",
+                        merge_target.get("id"),
+                        confidence > existing_confidence,
+                    )
+                    continue
+
             fact_entry = {
                 "id": f"fact_{uuid.uuid4().hex[:8]}",
                 "content": normalized_content,

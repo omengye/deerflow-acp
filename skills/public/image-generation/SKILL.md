@@ -16,6 +16,14 @@ This skill generates high-quality images using structured prompts and a Python s
 - Generate images through automated Python script execution
 - Handle various image generation scenarios (character design, scenes, products, etc.)
 
+## Provider configuration
+
+The script selects Gemini when `GEMINI_API_KEY` is present, otherwise an
+OpenAI-compatible Images API when `IMAGE_GENERATION_API_KEY` is present. Set
+`IMAGE_GENERATION_PROVIDER=openai` to force that path. Compatible gateways can
+also set `IMAGE_GENERATION_BASE_URL`, `IMAGE_GENERATION_MODEL`, and optionally
+`IMAGE_GENERATION_SIZE`. Reference images use the `/images/edits` endpoint.
+
 ## Workflow
 
 ### Step 1: Understand Requirements

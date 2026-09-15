@@ -126,7 +126,11 @@ async def _web_fetch_impl(url: str) -> str:
             )
         html_content = fallback_content
 
-    article = await asyncio.to_thread(readability_extractor.extract_article, html_content)
+    article = await asyncio.to_thread(
+        readability_extractor.extract_article,
+        html_content,
+        url=url,
+    )
     markdown = article.to_markdown()
     max_output_chars = _resolve_max_output_chars()
     if len(markdown) > max_output_chars:

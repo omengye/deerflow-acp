@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 MAX_ACCEPTANCE_CRITERIA = 20
 MAX_CRITERION_CHARS = 500
 
@@ -49,7 +51,14 @@ def normalize_acceptance_criteria(
             continue
         # Criteria render as one bullet each; physical newlines must not let
         # untrusted text forge additional checklist or framework lines.
-        cleaned = " ".join(criterion.strip().split())[:MAX_CRITERION_CHARS].strip()
+        # Collapse only the ASCII whitespace that every supported shell treats
+        # predictably. Keep CR and non-ASCII whitespace visible to the
+        # acceptance checker so ambiguous commands fail closed.
+        cleaned = re.sub(
+            r"[ \t\n\f\v]+",
+            " ",
+            criterion.strip(" \t\n\f\v"),
+        )[:MAX_CRITERION_CHARS].strip(" \t\n\f\v")
         if cleaned:
             normalized.append(neutralize_untrusted_tags(cleaned))
         if len(normalized) >= MAX_ACCEPTANCE_CRITERIA:

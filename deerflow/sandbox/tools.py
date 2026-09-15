@@ -1643,6 +1643,21 @@ def read_file_tool(
         return f"Error: Unexpected error reading file: {_sanitize_error(e, runtime)}"
 
 
+def read_current_file_content(
+    runtime: ToolRuntime[AgentContext, ThreadState],
+    path: str,
+) -> str:
+    """Read complete current content for version-gate hashing."""
+    sandbox = ensure_sandbox_initialized(runtime)
+    ensure_thread_directories_exist(runtime)
+    if is_local_sandbox(runtime):
+        thread_data = get_thread_data(runtime)
+        if thread_data is None:
+            raise SandboxRuntimeError("Thread data not available for local sandbox")
+        path = _resolve_local_read_path(path, thread_data)
+    return sandbox.read_file(path)
+
+
 @tool("write_file", parse_docstring=True)
 def write_file_tool(
     runtime: ToolRuntime[AgentContext, ThreadState],

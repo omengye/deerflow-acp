@@ -34,10 +34,12 @@ def load_configured_middlewares(extensions_config: ExtensionsConfig | None = Non
     """
     config = extensions_config if extensions_config is not None else get_extensions_config()
     middlewares: list[AgentMiddleware] = []
-    for middleware_path in config.middlewares:
+    for declaration in config.middlewares:
+        middleware_path = declaration if isinstance(declaration, str) else declaration.class_path
+        kwargs = {} if isinstance(declaration, str) else declaration.kwargs
         try:
             middleware_class = resolve_class(middleware_path, AgentMiddleware)
-            middlewares.append(middleware_class())
+            middlewares.append(middleware_class(**kwargs))
         except Exception as e:
             logger.warning(f"Failed to load configured middleware {middleware_path!r}: {e}", exc_info=True)
     return middlewares

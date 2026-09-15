@@ -171,7 +171,9 @@ async def _test_model(config: Path, request: dict[str, Any]) -> dict[str, Any]:
             model = create_chat_model(
                 validated["name"], thinking_enabled=False, max_tokens=16, max_retries=0
             )
-            await model.ainvoke([HumanMessage(content="Reply OK.")])
+            from deerflow.models.invocation import ainvoke_chat_model
+
+            await ainvoke_chat_model(model, [HumanMessage(content="Reply OK.")])
         return {
             "ok": True,
             "latency_ms": round((time.monotonic() - started) * 1000),

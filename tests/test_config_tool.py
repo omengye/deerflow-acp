@@ -138,6 +138,8 @@ def test_memory_snapshot_save_and_paths_use_portable_deerflow_home(tmp_path: Pat
             "model_name": "openai",
             "debounce_seconds": 12,
             "retrieval_top_k": 20,
+            "fact_dedup_enabled": True,
+            "fact_dedup_similarity_threshold": 0.82,
             "storage_path": "profile/memory.json",
             "retrieval_index_path": "profile/memory.sqlite3",
         }
@@ -155,6 +157,8 @@ def test_memory_snapshot_save_and_paths_use_portable_deerflow_home(tmp_path: Pat
     assert persisted["backend_config"]["model_name"] == "openai"
     assert persisted["backend_config"]["debounce_seconds"] == 12
     assert persisted["backend_config"]["retrieval_top_k"] == 20
+    assert persisted["backend_config"]["fact_dedup_enabled"] is True
+    assert persisted["backend_config"]["fact_dedup_similarity_threshold"] == 0.82
     assert persisted["backend_config"]["future_backend_setting"] == 7
     assert Path(saved["paths"]["memory"]) == (
         user_data / "data" / "deerflow" / "profile" / "memory.json"

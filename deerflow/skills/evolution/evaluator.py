@@ -129,7 +129,10 @@ class AutoPatchEvaluator:
                 },
             )
             async with llm_call_slot_async():
-                response = await request_model.ainvoke(
+                from deerflow.models.invocation import ainvoke_chat_model
+
+                response = await ainvoke_chat_model(
+                    request_model,
                     [{"role": "system", "content": rubric}, {"role": "user", "content": prompt}],
                     config={"run_name": "skill_evolution_evaluator"},
                 )

@@ -244,8 +244,22 @@ models:
   #     User-Agent: deerflow-api/1.0
   #   runtime_headers:
   #     x-opencode-session: thread_id
+  # Tencent Copilot currently rejects non-stream chat requests. Add
+  # `streaming: true` to its ChatOpenAI-compatible model entry; direct
+  # background calls also retry once in stream mode on its explicit 400/11101.
+  # - name: tencent-copilot
+  #   use: langchain_openai:ChatOpenAI
+  #   model: YOUR_MODEL_ID
+  #   api_key: $TENCENT_COPILOT_API_KEY
+  #   base_url: https://copilot.tencent.com/v2
+  #   streaming: true
 
 default_model: qwen3.6-plus
+
+# Require a current read before modifying an existing file. Every successful
+# write invalidates the prior read mark.
+read_before_write:
+  enabled: true
 
 sandbox:
   use: deerflow.sandbox.local:LocalSandboxProvider
@@ -256,6 +270,14 @@ sandbox:
   # credentials outside the sandbox. Keep disabled unless every prompt and
   # fetched document is trusted.
   allow_host_tools: false
+  # Forward these variables when the image-generation skill runs inside the
+  # local sandbox and uses an OpenAI-compatible Images API:
+  # environment:
+  #   IMAGE_GENERATION_PROVIDER: $IMAGE_GENERATION_PROVIDER
+  #   IMAGE_GENERATION_API_KEY: $IMAGE_GENERATION_API_KEY
+  #   IMAGE_GENERATION_BASE_URL: $IMAGE_GENERATION_BASE_URL
+  #   IMAGE_GENERATION_MODEL: $IMAGE_GENERATION_MODEL
+  #   IMAGE_GENERATION_SIZE: $IMAGE_GENERATION_SIZE
 
 # WSL mode (Windows only): bash runs inside a WSL2 distro while file I/O
 # stays on the Windows filesystem. WSL is not an isolation boundary: Windows
@@ -414,6 +436,9 @@ memory:
     model_name: null
     max_facts: 100
     fact_confidence_threshold: 0.7
+    # Optional deterministic same-category near-duplicate merge gate.
+    fact_dedup_enabled: false
+    fact_dedup_similarity_threshold: 0.7
     max_injection_tokens: 2000
     # Query-relevant fact retrieval backed by a rebuildable SQLite FTS5 index.
     retrieval_enabled: true

@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from unittest.mock import patch
 
+import pytest
 from langchain.agents.middleware import AgentMiddleware
 
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
@@ -37,7 +38,11 @@ _MISSING_ATTR_PATH = "test_configured_extensions_middleware:DoesNotExist"
 
 
 class _DummyMiddleware(AgentMiddleware):
-    """No-argument-constructor middleware used to exercise the happy path."""
+    """Middleware used to exercise both declaration forms."""
+
+    def __init__(self, label: str | None = None, enabled: bool = True):
+        self.label = label
+        self.enabled = enabled
 
 
 class _NotAMiddleware:
@@ -52,6 +57,38 @@ def test_extensions_config_middlewares_defaults_to_empty_list():
 def test_extensions_config_middlewares_parses_from_dict():
     config = ExtensionsConfig.model_validate({"middlewares": [_DUMMY_PATH]})
     assert config.middlewares == [_DUMMY_PATH]
+
+
+def test_configured_middleware_accepts_json_safe_constructor_kwargs():
+    config = ExtensionsConfig.model_validate(
+        {
+            "middlewares": [
+                {
+                    "class": _DUMMY_PATH,
+                    "kwargs": {"label": "configured", "enabled": False},
+                }
+            ]
+        }
+    )
+
+    middlewares = load_configured_middlewares(config)
+
+    assert len(middlewares) == 1
+    assert middlewares[0].label == "configured"
+    assert middlewares[0].enabled is False
+
+
+def test_configured_middleware_rejects_non_finite_kwargs():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ExtensionsConfig.model_validate(
+            {
+                "middlewares": [
+                    {"class": _DUMMY_PATH, "kwargs": {"threshold": float("nan")}}
+                ]
+            }
+        )
 
 
 def test_load_configured_middlewares_returns_empty_list_by_default():

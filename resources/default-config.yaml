@@ -52,6 +52,9 @@ models:
 
 default_model: openai
 
+read_before_write:
+  enabled: true
+
 subagents:
   enabled: true
   timeout_seconds: 900
@@ -118,6 +121,8 @@ memory:
     model_name: null
     max_facts: 100
     fact_confidence_threshold: 0.7
+    fact_dedup_enabled: false
+    fact_dedup_similarity_threshold: 0.7
     max_injection_tokens: 2000
     retrieval_enabled: true
     retrieval_top_k: 12

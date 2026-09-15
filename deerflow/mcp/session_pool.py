@@ -293,6 +293,10 @@ class OwnedMCPSession:
     async def aclose(self) -> None:
         await self._owner.await_submit(self._actor.close())
 
+    def start_close(self) -> _OwnerOperation:
+        """Begin close on the owner loop without blocking the caller."""
+        return self._owner.submit(self._actor.close())
+
     def close_sync(self, timeout: float) -> None:
         self._owner.submit(self._actor.close()).result(timeout=timeout)
 
@@ -306,8 +310,29 @@ class MCPSessionPool:
     def __init__(self) -> None:
         self._entries: OrderedDict[tuple[str, str], OwnedMCPSession] = OrderedDict()
         self._creation_guards: dict[tuple[str, str], _CreationGuard] = {}
+        self._detached_closes: set[_OwnerOperation] = set()
         self._lock = threading.Lock()
         self._owner = _SessionOwnerLoop()
+
+    def _start_detached_close(self, session: OwnedMCPSession) -> None:
+        """Close an evicted session without delaying the promoted owner."""
+        try:
+            operation = session.start_close()
+        except Exception:
+            logger.warning("Failed to schedule evicted MCP session close", exc_info=True)
+            return
+        with self._lock:
+            self._detached_closes.add(operation)
+
+        def finished(future: concurrent.futures.Future[Any]) -> None:
+            with self._lock:
+                self._detached_closes.discard(operation)
+            try:
+                future.result()
+            except BaseException:
+                logger.debug("Detached MCP session close failed", exc_info=True)
+
+        operation.completion.add_done_callback(finished)
 
     async def _acquire_creation_guard(self, key: tuple[str, str]) -> _CreationGuard:
         with self._lock:
@@ -365,8 +390,16 @@ class MCPSessionPool:
             actor = _SessionActor(connection)
             await self._owner.await_submit(actor.start())
             proxy = OwnedMCPSession(self._owner, actor)
+            promoted_evicted: list[OwnedMCPSession] = []
             with self._lock:
+                # Different keys initialize concurrently outside the registry
+                # lock. Re-check the hard cap at the atomic promotion point.
+                while len(self._entries) >= self.MAX_SESSIONS:
+                    _oldest_key, oldest = self._entries.popitem(last=False)
+                    promoted_evicted.append(oldest)
                 self._entries[key] = proxy
+            for session in promoted_evicted:
+                self._start_detached_close(session)
             logger.info("Created actor-owned persistent MCP session for %s/%s", server_name, scope_key)
             return proxy
         finally:
@@ -407,6 +440,13 @@ class MCPSessionPool:
         sessions = await self._detach_matching(lambda _key: True)
         for session in sessions:
             await session.aclose()
+        with self._lock:
+            detached = list(self._detached_closes)
+        if detached:
+            await asyncio.gather(
+                *(asyncio.wrap_future(item.completion) for item in detached),
+                return_exceptions=True,
+            )
         await asyncio.to_thread(self._owner.stop)
 
     def close_all_sync(self) -> None:
@@ -418,6 +458,13 @@ class MCPSessionPool:
                 session.close_sync(self.SESSION_CLOSE_TIMEOUT)
             except Exception:
                 logger.debug("Error closing actor-owned MCP session", exc_info=True)
+        with self._lock:
+            detached = list(self._detached_closes)
+        for operation in detached:
+            try:
+                operation.result(timeout=self.SESSION_CLOSE_TIMEOUT)
+            except Exception:
+                logger.debug("Error draining detached MCP session close", exc_info=True)
         self._owner.stop()
 
 

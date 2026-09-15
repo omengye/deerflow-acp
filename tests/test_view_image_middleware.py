@@ -193,7 +193,8 @@ def test_view_image_middleware_does_not_inject_duplicate_legacy_message(tmp_path
 
 
 def test_view_image_tool_persists_metadata_without_base64(tmp_path: Path) -> None:
-    tmp_path.joinpath("test.png").write_bytes(b"\x89PNG\r\n\x1a\nlightweight-state")
+    image_bytes = b"\x89PNG\r\n\x1a\nlightweight-state"
+    tmp_path.joinpath("test.png").write_bytes(image_bytes)
     runtime = SimpleNamespace(state={"thread_data": {"uploads_path": str(tmp_path)}})
 
     command = view_image_tool.func(
@@ -203,7 +204,11 @@ def test_view_image_tool_persists_metadata_without_base64(tmp_path: Path) -> Non
     )
 
     assert command.update["viewed_images"] == {
-        IMAGE_PATH: {"mime_type": "image/png"},
+        IMAGE_PATH: {
+            "mime_type": "image/png",
+            "size": len(image_bytes),
+            "sha256": hashlib.sha256(image_bytes).hexdigest(),
+        },
     }
 
 
@@ -211,7 +216,8 @@ def test_view_image_tool_accepts_gif87a_and_gif89a(tmp_path: Path) -> None:
     for index, header in enumerate((b"GIF87a", b"GIF89a"), start=1):
         filename = f"animation-{index}.gif"
         virtual_path = f"/mnt/user-data/uploads/{filename}"
-        tmp_path.joinpath(filename).write_bytes(header + b"minimal-gif-payload")
+        image_bytes = header + b"minimal-gif-payload"
+        tmp_path.joinpath(filename).write_bytes(image_bytes)
         runtime = SimpleNamespace(state={"thread_data": {"uploads_path": str(tmp_path)}})
 
         command = view_image_tool.func(
@@ -220,7 +226,60 @@ def test_view_image_tool_accepts_gif87a_and_gif89a(tmp_path: Path) -> None:
             tool_call_id=f"call-gif-{index}",
         )
 
-        assert command.update["viewed_images"] == {virtual_path: {"mime_type": "image/gif"}}
+        assert command.update["viewed_images"] == {
+            virtual_path: {
+                "mime_type": "image/gif",
+                "size": len(image_bytes),
+                "sha256": hashlib.sha256(image_bytes).hexdigest(),
+            }
+        }
+
+
+def test_view_image_reads_from_active_remote_sandbox(tmp_path: Path, monkeypatch) -> None:
+    image_bytes = b"\x89PNG\r\n\x1a\nremote-image"
+
+    class RemoteSandbox:
+        id = "remote-1"
+
+        def download_file(self, path: str) -> bytes:
+            assert path == IMAGE_PATH
+            return image_bytes
+
+    remote = RemoteSandbox()
+    provider = SimpleNamespace(get=lambda sandbox_id: remote if sandbox_id == remote.id else None)
+    runtime = SimpleNamespace(
+        state={
+            "sandbox": {"sandbox_id": remote.id},
+            "thread_data": {"uploads_path": str(tmp_path)},
+        },
+        context={},
+        config={},
+    )
+    monkeypatch.setattr("deerflow.sandbox.tools.get_sandbox_provider", lambda: provider)
+
+    command = view_image_tool.func(
+        runtime=runtime,
+        image_path=IMAGE_PATH,
+        tool_call_id="call-remote",
+    )
+    metadata = command.update["viewed_images"][IMAGE_PATH]
+    assert metadata == {
+        "mime_type": "image/png",
+        "size": len(image_bytes),
+        "sha256": hashlib.sha256(image_bytes).hexdigest(),
+        "source_sandbox_id": remote.id,
+    }
+
+    state = _state(tmp_path)
+    state["sandbox"] = {"sandbox_id": remote.id}
+    state["viewed_images"] = {IMAGE_PATH: metadata}
+    monkeypatch.setattr(
+        "deerflow.sandbox.sandbox_provider.get_existing_sandbox_provider",
+        lambda: provider,
+    )
+
+    encoded = ViewImageMiddleware()._image_base64(IMAGE_PATH, metadata, state)
+    assert base64.b64decode(encoded) == image_bytes
 
 
 def test_view_image_error_masks_runtime_scoped_skill_projection(tmp_path: Path) -> None:

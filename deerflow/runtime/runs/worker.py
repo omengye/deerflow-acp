@@ -40,6 +40,7 @@ from deerflow.runtime.checkpoint_state import (
 )
 from deerflow.runtime.serialization import serialize
 from deerflow.runtime.stream_bridge import StreamBridge
+from deerflow.runtime.assembly import run_in_assembly_executor
 from deerflow.tracing.metadata import inject_langfuse_metadata
 from deerflow.tracing.naming import resolve_root_run_name
 
@@ -152,7 +153,10 @@ async def run_agent(
         config.setdefault("run_name", resolve_root_run_name(config, record.assistant_id))
 
         runnable_config = RunnableConfig(**config)
-        agent = agent_factory(config=runnable_config)
+        agent = await run_in_assembly_executor(
+            agent_factory,
+            config=runnable_config,
+        )
 
         # 4. Attach checkpointer and store
         if checkpointer is not None:

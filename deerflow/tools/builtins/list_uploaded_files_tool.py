@@ -90,10 +90,33 @@ def _describe_file(file_path: Path, *, include_outline: bool) -> dict[str, Any]:
     return entry
 
 
+def _normalize_query(query: str | None) -> str | None:
+    if not isinstance(query, str):
+        return None
+    query = query.strip()
+    return query.casefold() if query else None
+
+
+def _normalize_extensions(extensions: list[str] | None) -> frozenset[str] | None:
+    if not isinstance(extensions, list):
+        return None
+    normalized: set[str] = set()
+    for item in extensions:
+        if not isinstance(item, str):
+            continue
+        token = item.strip().lower().lstrip("*")
+        if not token:
+            continue
+        normalized.add(token if token.startswith(".") else f".{token}")
+    return frozenset(normalized) or None
+
+
 @tool("list_uploaded_files", parse_docstring=True)
 def list_uploaded_files_tool(
     runtime: ToolRuntime[AgentContext, ThreadState],
     filename: str | None = None,
+    query: str | None = None,
+    extensions: list[str] | None = None,
 ) -> str:
     """List files the user uploaded in this conversation, with optional document outlines.
 
@@ -114,6 +137,9 @@ def list_uploaded_files_tool(
         filename: Inspect one file and return its full document outline. Omit to
             list every uploaded file's name, size, and path only -- pass a
             filename afterwards to get that file's outline.
+        query: Optional case-insensitive filename substring filter for listings.
+        extensions: Optional extension filters such as ["pdf", ".PNG"].
+            Combined with query using AND and applied before the result cap.
     """
     thread_id = _get_thread_id(runtime)
     if not thread_id:
@@ -155,11 +181,20 @@ def list_uploaded_files_tool(
         (p for p in uploads_dir.iterdir() if p.is_file() and p.name not in current_run_filenames),
         key=lambda p: p.name,
     )
+    query_filter = _normalize_query(query)
+    extension_filter = _normalize_extensions(extensions)
+    if query_filter is not None:
+        paths = [path for path in paths if query_filter in path.name.casefold()]
+    if extension_filter is not None:
+        paths = [path for path in paths if path.suffix.lower() in extension_filter]
     # Metadata only here -- outline extraction is opt-in per file (below) so a
     # bare listing call never re-extracts outlines for every historical file.
     files = [_describe_file(p, include_outline=False) for p in paths[:_MAX_LISTED_FILES]]
 
     result: dict[str, Any] = {"files": files, "count": len(files)}
+    if (query_filter is not None or extension_filter is not None) and not files:
+        result["hint"] = "No uploaded files matched the given filters."
+        return json.dumps(result, ensure_ascii=False, indent=2)
     if len(paths) > _MAX_LISTED_FILES:
         result["truncated"] = True
         result["total"] = len(paths)

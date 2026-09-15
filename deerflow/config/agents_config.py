@@ -2,10 +2,17 @@
 
 import logging
 import re
-from typing import Any
+import unicodedata
+from typing import Annotated, Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+)
 
 from deerflow.config.paths import get_paths
 
@@ -13,6 +20,32 @@ logger = logging.getLogger(__name__)
 
 SOUL_FILENAME = "SOUL.md"
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
+
+
+def _validate_display_name(value: object) -> object:
+    """Reject labels that can alter logs/UI layout or render invisibly."""
+    if isinstance(value, str):
+        if re.search(
+            r"[\x00-\x1f\x7f-\x9f\u00ad\u061c\u200b\u200e-\u200f"
+            r"\u2028-\u202e\u2060-\u2069\ufeff]",
+            value,
+        ):
+            raise ValueError(
+                "Display name must not contain control characters or invisible formatting controls"
+            )
+        if value.strip() and all(
+            unicodedata.category(character)[0] in {"C", "M", "Z"}
+            for character in value
+        ):
+            raise ValueError("Display name must contain visible text")
+    return value
+
+
+AgentDisplayName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, max_length=100),
+    BeforeValidator(_validate_display_name),
+]
 
 _frozen_catalog: dict[str, "AgentConfig"] | None = None
 _frozen_souls: dict[str | None, str | None] | None = None
@@ -42,6 +75,7 @@ class AgentConfig(BaseModel):
     """Configuration for a custom agent."""
 
     name: str
+    display_name: AgentDisplayName | None = None
     description: str = ""
     model: str | None = None
     tool_groups: list[str] | None = None
@@ -50,6 +84,11 @@ class AgentConfig(BaseModel):
     # - [] (explicit empty list): disable all skills
     # - ["skill1", "skill2"]: load only the specified skills
     skills: list[str] | None = None
+
+    @field_validator("display_name")
+    @classmethod
+    def _blank_display_name_to_none(cls, value: str | None) -> str | None:
+        return value or None
 
 
 def load_agent_config(name: str | None) -> AgentConfig | None:
@@ -97,7 +136,20 @@ def load_agent_config(name: str | None) -> AgentConfig | None:
     known_fields = set(AgentConfig.model_fields.keys())
     data = {k: v for k, v in data.items() if k in known_fields}
 
-    return AgentConfig(**data)
+    try:
+        return AgentConfig(**data)
+    except ValidationError as original_error:
+        # A stale/invalid label must not hide an otherwise healthy agent. Drop
+        # only that presentation field; validation of every identity/runtime
+        # field still runs and remains authoritative.
+        if "display_name" not in data:
+            raise
+        without_display_name = dict(data)
+        without_display_name.pop("display_name", None)
+        try:
+            return AgentConfig(**without_display_name)
+        except ValidationError:
+            raise original_error
 
 
 def load_agent_soul(agent_name: str | None) -> str | None:

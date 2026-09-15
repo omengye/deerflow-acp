@@ -129,6 +129,13 @@ def _build_runtime_middlewares(
     from deerflow.agents.middlewares.sandbox_audit_middleware import SandboxAuditMiddleware
 
     middlewares.append(SandboxAuditMiddleware())
+    app_config = get_app_config()
+    if app_config.read_before_write.enabled:
+        from deerflow.agents.middlewares.read_before_write_middleware import (
+            ReadBeforeWriteMiddleware,
+        )
+
+        middlewares.append(ReadBeforeWriteMiddleware())
     middlewares.append(ToolErrorHandlingMiddleware())
     return middlewares
 

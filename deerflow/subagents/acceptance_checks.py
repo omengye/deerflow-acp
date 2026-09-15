@@ -33,6 +33,95 @@ _TEST_FAIL_RE = re.compile(
     r"^ERROR\s+\S|test result: FAILED|^FAIL\s+\S|\bBUILD FAILURE\b",
     re.IGNORECASE | re.MULTILINE,
 )
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_WINDOWS_DRIVE_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[/\\]")
+_POWERSHELL_DRIVE_RE = re.compile(r"^[^/\\:]+:")
+_WINDOWS_SHORT_NAME_RE = re.compile(
+    r"^[A-Za-z0-9$%_'@~`!(){}^#&-]{1,6}~[1-9]"
+    r"(?:\.[A-Za-z0-9$%_'@~`!(){}^#&-]{1,3})?$"
+)
+_CMD_ENV_RE = re.compile(r"%[^%\r\n]+%|![^!\r\n]+!")
+_BRACE_EXPANSION_RE = re.compile(r"\{[^{}\r\n]*(?:,|\.\.)[^{}\r\n]*\}")
+_TYPOGRAPHIC_QUOTES = frozenset("‘’‚‛“”„")
+
+
+def _has_ambiguous_whitespace(value: str) -> bool:
+    return "\r" in value or any(
+        character.isspace() and character not in " \t\n\f\v"
+        for character in value
+    )
+
+
+def _has_unsafe_windows_path_spelling(value: str) -> bool:
+    """Reject Windows aliases that need shell/filesystem provenance."""
+    if _has_ambiguous_whitespace(value) or any(
+        quote in value for quote in _TYPOGRAPHIC_QUOTES
+    ):
+        return True
+    if _CMD_ENV_RE.search(value) or "$" in value or _BRACE_EXPANSION_RE.search(value):
+        return True
+
+    slash_path = value.replace("\\", "/")
+    if slash_path.startswith("//"):
+        # UNC and Win32 device namespaces can alias scoped local paths.
+        return True
+    if value.startswith("\\"):
+        # Root-relative paths depend on the current drive.
+        return True
+    if _WINDOWS_DRIVE_RE.match(value) and not _WINDOWS_DRIVE_ABSOLUTE_RE.match(value):
+        return True
+    if _POWERSHELL_DRIVE_RE.match(value) and not _WINDOWS_DRIVE_RE.match(value):
+        # Includes provider-qualified and named-PSDrive spellings.
+        return True
+
+    path_without_drive = slash_path[2:] if _WINDOWS_DRIVE_RE.match(slash_path) else slash_path
+    # Alternate data streams can hide behind an otherwise scoped file.
+    path_without_nodeid = path_without_drive.split("::", 1)[0]
+    if ":" in path_without_nodeid:
+        return True
+    return any(
+        _WINDOWS_SHORT_NAME_RE.fullmatch(component)
+        for component in path_without_nodeid.split("/")
+        if component
+    )
+
+
+def _command_is_unambiguous(command: str) -> bool:
+    """Accept only command spellings stable across supported Windows shells."""
+    if _has_ambiguous_whitespace(command):
+        return False
+    if any(quote in command for quote in _TYPOGRAPHIC_QUOTES):
+        return False
+    if _CMD_ENV_RE.search(command) or "$" in command or _BRACE_EXPANSION_RE.search(command):
+        return False
+    if re.search(r"(?:^|\s)@\S", command):
+        return False
+
+    # The evidence does not retain shell provenance. Backslash-prefixed tokens
+    # may be root-relative/UNC/device paths or shell escapes, so require the
+    # portable forward-slash spelling for deterministic Windows paths.
+    if re.search(r"(?:^|\s|[\"'])\\", command):
+        return False
+
+    for token in re.split(r"[ \t\n\f\v]+", command):
+        token = token.strip("\"'")
+        if not token:
+            continue
+        if _has_unsafe_windows_path_spelling(token):
+            return False
+    return True
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    if os.name == "nt":
+        candidate = os.path.normcase(str(path))
+        boundary = os.path.normcase(str(root))
+        return candidate == boundary or candidate.startswith(boundary + os.sep)
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 class AcceptanceLeaf(TypedDict):
@@ -84,7 +173,10 @@ def _scoped_file(
     if not roots:
         return None
 
-    value = raw_path.strip().replace("\\", "/")
+    raw_value = raw_path.strip(" \t\n\f\v")
+    if _has_unsafe_windows_path_spelling(raw_value):
+        return None
+    value = raw_value.replace("\\", "/")
     if value.startswith("/mnt/user-data/workspace/") and workspace is not None:
         candidate = workspace / value.removeprefix("/mnt/user-data/workspace/")
     elif value.startswith("/mnt/user-data/outputs/") and outputs is not None:
@@ -102,12 +194,8 @@ def _scoped_file(
     except (OSError, ValueError):
         return None
     for root in roots:
-        try:
-            lexical.relative_to(root)
-            resolved.relative_to(root)
+        if _path_is_within(lexical, root) and _path_is_within(resolved, root):
             return lexical
-        except ValueError:
-            continue
     return None
 
 
@@ -246,7 +334,16 @@ def _check_tests(
     messages: Sequence[Any],
 ) -> AcceptanceLeaf:
     expected = command.strip()
+    if not _command_is_unambiguous(expected):
+        return _leaf(
+            criterion,
+            "tests_passed",
+            checked=False,
+            holds=False,
+            detail="command uses shell- or filesystem-ambiguous syntax",
+        )
     matching = [item for item in _bash_executions(messages) if item[0] == expected]
+    matching = [item for item in matching if _command_is_unambiguous(item[0])]
     if not matching:
         return _leaf(
             criterion,

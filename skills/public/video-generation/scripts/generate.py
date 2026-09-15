@@ -17,6 +17,7 @@ def generate_video(
     i = 0
     json = {
         "instances": [{"prompt": prompt}],
+        "parameters": {"aspectRatio": aspect_ratio},
     }
     for reference_image in reference_images:
         i += 1

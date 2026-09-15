@@ -205,6 +205,13 @@ _SPLIT_BOLD_HEADING_RE = re.compile(r"^\*\*[\dA-Z][\d\.]*\*\*\s+\*\*(?!\d[\d\s.,
 # Maximum number of outline entries injected into the agent context.
 # Keeps prompt size bounded even for very long documents.
 MAX_OUTLINE_ENTRIES = 50
+OUTLINE_TITLE_MAX_CHARS = 200
+OUTLINE_PREVIEW_MAX_CHARS = 2000
+_OUTLINE_TRUNCATION_MARKER = "… (truncated)"
+
+# CommonMark ATX headings allow up to three leading spaces, one to six '#'
+# characters, and require whitespace (or end-of-line) after the opening run.
+_ATX_HEADING_RE = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+(.*))?$")
 
 _ALLOWED_PDF_CONVERTERS = {"auto", "pymupdf4llm", "markitdown"}
 
@@ -228,6 +235,24 @@ def _clean_bold_title(raw: str) -> str:
     if m := re.fullmatch(r"\*\*(.+?)\*\*", merged, re.DOTALL):
         return m.group(1).strip()
     return merged
+
+
+def truncate_outline_text(text: str, max_chars: int) -> str:
+    """Truncate untrusted outline text while keeping the marker in budget."""
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= len(_OUTLINE_TRUNCATION_MARKER):
+        return "…"[:max_chars]
+    return text[: max_chars - len(_OUTLINE_TRUNCATION_MARKER)].rstrip() + _OUTLINE_TRUNCATION_MARKER
+
+
+def _strip_atx_closing_hashes(raw: str) -> str:
+    """Remove a whitespace-separated terminal hash run."""
+    trimmed = raw.rstrip(" \t")
+    prefix = trimmed.rstrip("#")
+    if len(prefix) < len(trimmed) and (not prefix or prefix[-1] in " \t"):
+        return prefix.rstrip(" \t")
+    return trimmed
 
 
 def extract_outline(md_path: Path) -> list[dict]:
@@ -294,23 +319,46 @@ def extract_outline(md_path: Path) -> list[dict]:
                     continue
 
                 # Style 1: standard Markdown heading
-                if stripped.startswith("#"):
-                    title = _clean_bold_title(stripped.lstrip("#").strip())
+                if m := _ATX_HEADING_RE.fullmatch(line.rstrip("\r\n")):
+                    title = _clean_bold_title(
+                        _strip_atx_closing_hashes(m.group(1) or "").strip()
+                    )
                     if title:
-                        outline.append({"title": title, "line": lineno})
+                        outline.append(
+                            {
+                                "title": truncate_outline_text(
+                                    title, OUTLINE_TITLE_MAX_CHARS
+                                ),
+                                "line": lineno,
+                            }
+                        )
 
                 # Style 2: single bold block with SEC structural keyword
                 elif m := _BOLD_HEADING_RE.match(stripped):
                     title = m.group(1).strip()
                     if title:
-                        outline.append({"title": title, "line": lineno})
+                        outline.append(
+                            {
+                                "title": truncate_outline_text(
+                                    title, OUTLINE_TITLE_MAX_CHARS
+                                ),
+                                "line": lineno,
+                            }
+                        )
 
                 # Style 3: split-bold heading — **<num>** **<title>**
                 # Regex already enforces max 4 blocks and non-numeric second block.
                 elif _SPLIT_BOLD_HEADING_RE.match(stripped):
                     title = " ".join(re.findall(r"\*\*([^*]+)\*\*", stripped))
                     if title:
-                        outline.append({"title": title, "line": lineno})
+                        outline.append(
+                            {
+                                "title": truncate_outline_text(
+                                    title, OUTLINE_TITLE_MAX_CHARS
+                                ),
+                                "line": lineno,
+                            }
+                        )
 
                 if len(outline) >= MAX_OUTLINE_ENTRIES:
                     outline.append({"truncated": True})

@@ -120,13 +120,47 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         )
 
         validate_local_tool_path(image_path, thread_data, read_only=True)
-        actual_path = Path(resolve_and_validate_user_data_path(image_path, thread_data))
-        if not actual_path.is_file():
-            raise FileNotFoundError(image_path)
-        size = actual_path.stat().st_size
+
+        source_sandbox_id = image_data.get("source_sandbox_id")
+        sandbox_state = state.get("sandbox")
+        active_sandbox_id = (
+            sandbox_state.get("sandbox_id")
+            if isinstance(sandbox_state, dict)
+            else None
+        )
+        source_is_remote = isinstance(source_sandbox_id, str) and not (
+            source_sandbox_id in {"local", "wsl"}
+            or source_sandbox_id.startswith("local:")
+            or source_sandbox_id.startswith("wsl:")
+        )
+
+        image_bytes: bytes | None = None
+        if source_is_remote and source_sandbox_id == active_sandbox_id:
+            from deerflow.sandbox.sandbox_provider import (
+                get_existing_sandbox_provider,
+            )
+
+            provider = get_existing_sandbox_provider()
+            sandbox = provider.get(source_sandbox_id) if provider is not None else None
+            if sandbox is not None:
+                image_bytes = sandbox.download_file(image_path)
+
+        if image_bytes is None:
+            # A replaced remote sandbox is allowed to fall back to a mounted
+            # host mirror only when the persisted digest can prove identity.
+            if source_is_remote and not isinstance(image_data.get("sha256"), str):
+                raise ValueError("Remote image source is no longer active")
+            actual_path = Path(resolve_and_validate_user_data_path(image_path, thread_data))
+            if not actual_path.is_file():
+                raise FileNotFoundError(image_path)
+            image_bytes = actual_path.read_bytes()
+
+        size = len(image_bytes)
         if size > MAX_INPUT_IMAGE_BYTES:
             raise ValueError(f"Image exceeds {MAX_INPUT_IMAGE_BYTES} bytes")
-        image_bytes = actual_path.read_bytes()
+        expected_size = image_data.get("size")
+        if isinstance(expected_size, int) and expected_size != size:
+            raise ValueError("Image size changed after it was viewed")
         detected_mime = detect_image_mime(image_bytes)
         expected_mime = image_data.get("mime_type")
         if detected_mime is None or (

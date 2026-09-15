@@ -16,6 +16,8 @@ _LEGACY_BACKEND_KEYS = (
     "model_name",
     "max_facts",
     "fact_confidence_threshold",
+    "fact_dedup_enabled",
+    "fact_dedup_similarity_threshold",
     "max_injection_tokens",
     "retrieval_enabled",
     "retrieval_top_k",
@@ -90,6 +92,16 @@ class MemoryConfig(BaseModel):
         ge=0.0,
         le=1.0,
         description="Minimum confidence threshold for storing facts",
+    )
+    fact_dedup_enabled: bool = Field(
+        default=False,
+        description="Merge deterministic near-duplicate facts in the same category",
+    )
+    fact_dedup_similarity_threshold: float = Field(
+        default=0.7,
+        ge=0.5,
+        le=1.0,
+        description="Minimum bounded token-Jaccard similarity for fact deduplication",
     )
     injection_enabled: bool = Field(
         default=True,

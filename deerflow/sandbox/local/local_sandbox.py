@@ -228,14 +228,16 @@ class LocalSandbox(Sandbox):
             Container path if mapping exists, otherwise original path
         """
         normalized_path = path.replace("\\", "/")
-        path_str = str(Path(normalized_path).resolve())
+        path_str = os.path.realpath(normalized_path)
 
         # Try each mapping (longest local path first for more specific matches)
         for mapping in sorted(self.path_mappings, key=lambda m: len(m.local_path), reverse=True):
-            local_path_resolved = str(Path(mapping.local_path).resolve())
-            if path_str == local_path_resolved or path_str.startswith(local_path_resolved + "/"):
+            local_path_resolved = os.path.realpath(mapping.local_path)
+            comparison_path = os.path.normcase(path_str)
+            comparison_root = os.path.normcase(local_path_resolved)
+            if comparison_path == comparison_root or comparison_path.startswith(comparison_root + os.sep):
                 # Replace the local path prefix with container path
-                relative = path_str[len(local_path_resolved) :].lstrip("/")
+                relative = path_str[len(local_path_resolved) :].lstrip(os.sep).replace(os.sep, "/")
                 resolved = f"{mapping.container_path}/{relative}" if relative else mapping.container_path
                 return resolved
 
@@ -265,9 +267,14 @@ class LocalSandbox(Sandbox):
         result = output
         for mapping in sorted_mappings:
             # Escape the local path for use in regex
-            escaped_local = re.escape(str(Path(mapping.local_path).resolve()))
-            # Match the local path followed by optional path components with either separator
-            pattern = re.compile(escaped_local + r"(?:[/\\][^\s\"';&|<>()]*)?")
+            escaped_local = re.escape(os.path.realpath(mapping.local_path)).replace(r"\\", r"[/\\]")
+            # Forward path resolution emits '/' even on Windows. Match either
+            # separator inside the root and at the path boundary, without
+            # treating a similarly prefixed sibling directory as a child.
+            pattern = re.compile(
+                escaped_local + r"(?=$|[/\\])(?:[/\\][^\s\"';&|<>()]*)?",
+                re.IGNORECASE if os.name == "nt" else 0,
+            )
 
             def replace_match(match: re.Match) -> str:
                 matched_path = match.group(0)

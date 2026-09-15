@@ -94,6 +94,8 @@ class MemoryDocument(BaseModel):
     model_name: str | None = None
     max_facts: int = Field(default=100, ge=10, le=500)
     fact_confidence_threshold: float = Field(default=0.7, ge=0, le=1)
+    fact_dedup_enabled: bool = False
+    fact_dedup_similarity_threshold: float = Field(default=0.7, ge=0.5, le=1)
     max_injection_tokens: int = Field(default=2000, ge=100, le=8000)
     retrieval_enabled: bool = True
     retrieval_top_k: int = Field(default=12, ge=1, le=100)
@@ -427,6 +429,8 @@ _MEMORY_BACKEND_FIELDS = {
     "model_name",
     "max_facts",
     "fact_confidence_threshold",
+    "fact_dedup_enabled",
+    "fact_dedup_similarity_threshold",
     "max_injection_tokens",
     "retrieval_enabled",
     "retrieval_top_k",
@@ -466,6 +470,8 @@ def _memory_document(data: dict[str, Any]) -> dict[str, Any]:
         model_name=config.model_name,
         max_facts=config.max_facts,
         fact_confidence_threshold=config.fact_confidence_threshold,
+        fact_dedup_enabled=config.fact_dedup_enabled,
+        fact_dedup_similarity_threshold=config.fact_dedup_similarity_threshold,
         max_injection_tokens=config.max_injection_tokens,
         retrieval_enabled=config.retrieval_enabled,
         retrieval_top_k=config.retrieval_top_k,
@@ -706,6 +712,7 @@ def _validated_agents(incoming: list[dict[str, Any]], model_names: set[str]) -> 
             raise ValueError(f"Agent {name!r} references unknown model {model_name!r}")
         agent = AgentConfig(
             name=name,
+            display_name=str(item.get("display_name") or "").strip() or None,
             description=str(item.get("description") or ""),
             model=model_name,
             tool_groups=[str(value) for value in item.get("tool_groups") or []] or None,
@@ -838,6 +845,8 @@ def _save_locked(config_path: Path, user_data: Path, document: SaveDocument, *, 
             "model_name": memory_document.model_name,
             "max_facts": memory_document.max_facts,
             "fact_confidence_threshold": memory_document.fact_confidence_threshold,
+            "fact_dedup_enabled": memory_document.fact_dedup_enabled,
+            "fact_dedup_similarity_threshold": memory_document.fact_dedup_similarity_threshold,
             "max_injection_tokens": memory_document.max_injection_tokens,
             "retrieval_enabled": memory_document.retrieval_enabled,
             "retrieval_top_k": memory_document.retrieval_top_k,

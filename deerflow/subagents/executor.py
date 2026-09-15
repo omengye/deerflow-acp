@@ -285,6 +285,7 @@ class SubagentExecutor:
         deferred_registry: "DeferredToolRegistry | None" = None,
         middlewares: list[AgentMiddleware] | None = None,
         acceptance_criteria: list[str] | None = None,
+        context_snapshot: "ParentContextSnapshot | None" = None,
     ):
         """Initialize the executor.
 
@@ -308,6 +309,7 @@ class SubagentExecutor:
         self.deferred_registry = deferred_registry
         self.middlewares = list(middlewares or [])
         self.acceptance_criteria = list(acceptance_criteria or [])
+        self.context_snapshot = context_snapshot
         # Generate trace_id if not provided (for top-level calls)
         self.trace_id = trace_id or str(uuid.uuid4())[:8]
 
@@ -399,6 +401,10 @@ class SubagentExecutor:
         )
 
         system_parts = [self.config.system_prompt, build_report_contract_section()]
+        if self.context_snapshot is not None:
+            from deerflow.subagents.context_snapshot import SNAPSHOT_SYSTEM_NOTE
+
+            system_parts.append(SNAPSHOT_SYSTEM_NOTE)
         if self.acceptance_criteria:
             system_parts.append(build_acceptance_criteria_system_note())
 
@@ -431,8 +437,12 @@ class SubagentExecutor:
         try:
             from deerflow.skills.loader import load_skills
 
-            # Use asyncio.to_thread to avoid blocking the event loop (LangGraph ASGI requirement)
-            all_skills = await asyncio.to_thread(load_skills, enabled_only=True)
+            from deerflow.runtime.assembly import run_in_assembly_executor
+
+            all_skills = await run_in_assembly_executor(
+                load_skills,
+                enabled_only=True,
+            )
             logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} loaded {len(all_skills)} enabled skills from disk")
         except Exception:
             logger.warning(f"[trace={self.trace_id}] Failed to load skills for subagent {self.config.name}", exc_info=True)
@@ -469,7 +479,12 @@ class SubagentExecutor:
         if skill_names:
             from deerflow.agents.lead_agent.prompt import get_skills_prompt_section
 
-            skill_section = await asyncio.to_thread(get_skills_prompt_section, skill_names)
+            from deerflow.runtime.assembly import run_in_assembly_executor
+
+            skill_section = await run_in_assembly_executor(
+                get_skills_prompt_section,
+                skill_names,
+            )
         from deerflow.tools.builtins.tool_search import get_deferred_tools_prompt_section
 
         deferred_section = get_deferred_tools_prompt_section(self.deferred_registry)
@@ -479,6 +494,8 @@ class SubagentExecutor:
             messages.append(SystemMessage(content=skill_section))
         if deferred_section:
             messages.append(SystemMessage(content=deferred_section))
+        if self.context_snapshot is not None:
+            messages.append(self.context_snapshot.to_message())
         # Acceptance criteria remain untrusted task data; the system prompt
         # carries only the framework-owned authority note.
         from deerflow.subagents.report_contract import render_acceptance_criteria_block
@@ -563,7 +580,12 @@ class SubagentExecutor:
 
                 set_deferred_registry(self.deferred_registry)
                 deferred_registry_set = True
-            agent, chat_model = self._create_agent(stream_callback=stream_callback)
+            from deerflow.runtime.assembly import run_in_assembly_executor
+
+            agent, chat_model = await run_in_assembly_executor(
+                self._create_agent,
+                stream_callback=stream_callback,
+            )
             state = await self._build_initial_state(task)
 
             # Budget sized to the chain's real per-turn super-step cost in

@@ -2,7 +2,10 @@
 
 import logging
 import re
+from collections.abc import Mapping
+from pathlib import Path
 from typing import NotRequired, override
+from unicodedata import category
 
 from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
@@ -21,6 +24,7 @@ class TitleMiddlewareState(AgentState):
     """Compatible with the `ThreadState` schema."""
 
     title: NotRequired[str | None]
+    uploaded_files: NotRequired[list[dict] | None]
 
 
 class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
@@ -113,10 +117,75 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
             return user_msg[:fallback_chars].rstrip() + "..."
         return user_msg if user_msg else "New Conversation"
 
+    @staticmethod
+    def _clean_attachment_filename(filename: object) -> str | None:
+        """Return a basename-only, layout-safe filename for display as a title."""
+        if (
+            not isinstance(filename, str)
+            or not filename
+            or Path(filename).name != filename
+        ):
+            return None
+        cleaned = "".join(
+            " " if category(character).startswith("C") else character
+            for character in filename
+        )
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned or None
+
+    def _truncate_attachment_filename(self, filename: str) -> str:
+        max_chars = get_title_config().max_chars
+        if len(filename) <= max_chars:
+            return filename
+        ellipsis = "..."
+        extension = Path(filename).suffix.lstrip(".")
+        remaining = max_chars - len(ellipsis) - len(extension)
+        if extension and remaining > 0:
+            return filename[:remaining].rstrip() + ellipsis + extension
+        return filename[: max_chars - len(ellipsis)].rstrip() + ellipsis
+
+    def _attachment_only_title(self, state: TitleMiddlewareState) -> str | None:
+        """Build a local title when the first exchange contains uploads only."""
+        _, user_msg = self._build_title_prompt(state)
+        if user_msg.strip():
+            return None
+        files = state.get("uploaded_files")
+        if not isinstance(files, list):
+            return None
+
+        filenames: list[str] = []
+        seen_ids: set[str] = set()
+        for file in files:
+            if not isinstance(file, Mapping):
+                continue
+            filename = file.get("filename")
+            cleaned = self._clean_attachment_filename(filename)
+            if cleaned is None:
+                continue
+            attachment_id = file.get("path")
+            if not isinstance(attachment_id, str) or not attachment_id:
+                attachment_id = str(filename)
+            if attachment_id in seen_ids:
+                continue
+            seen_ids.add(attachment_id)
+            filenames.append(cleaned)
+
+        if len(filenames) == 1:
+            return self._truncate_attachment_filename(filenames[0])
+        if len(filenames) > 1:
+            for title in (f"{len(filenames)} files uploaded", f"{len(filenames)} files"):
+                if len(title) <= get_title_config().max_chars:
+                    return title
+            return str(len(filenames))
+        return None
+
     def _generate_title_result(self, state: TitleMiddlewareState) -> dict | None:
         """Generate a local fallback title without blocking on an LLM call."""
         if not self._should_generate_title(state):
             return None
+
+        if attachment_title := self._attachment_only_title(state):
+            return {"title": attachment_title}
 
         _, user_msg = self._build_title_prompt(state)
         return {"title": self._fallback_title(user_msg)}
@@ -129,6 +198,9 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         """Generate a title asynchronously and fall back locally on failure."""
         if not self._should_generate_title(state):
             return None
+
+        if attachment_title := self._attachment_only_title(state):
+            return {"title": attachment_title}
 
         prompt, user_msg = self._build_title_prompt(state)
         if not user_msg.strip():
@@ -151,7 +223,13 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
 
             request_model = bind_runtime_headers(model, runtime)
             async with llm_call_slot_async():
-                response = await request_model.ainvoke(prompt, config={"run_name": "title_agent"})
+                from deerflow.models.invocation import ainvoke_chat_model
+
+                response = await ainvoke_chat_model(
+                    request_model,
+                    prompt,
+                    config={"run_name": "title_agent"},
+                )
             title = self._parse_title(response.content)
             if title:
                 return {"title": title}

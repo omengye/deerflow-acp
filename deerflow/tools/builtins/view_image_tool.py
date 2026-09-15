@@ -1,3 +1,4 @@
+import hashlib
 import mimetypes
 from pathlib import Path
 from typing import Annotated
@@ -55,7 +56,9 @@ def view_image_tool(
     from deerflow.sandbox.exceptions import SandboxRuntimeError
     from deerflow.sandbox.tools import (
         get_thread_data,
+        is_host_fs_sandbox,
         resolve_and_validate_user_data_path,
+        sandbox_from_runtime,
         validate_local_tool_path,
     )
 
@@ -81,50 +84,44 @@ def view_image_tool(
             update={"messages": [ToolMessage(f"Error: {str(e)}", tool_call_id=tool_call_id)]},
         )
 
-    path = Path(actual_path)
-
-    # Validate that the file exists
-    if not path.exists():
-        return Command(
-            update={"messages": [ToolMessage(f"Error: Image file not found: {image_path}", tool_call_id=tool_call_id)]},
-        )
-
-    # Validate that it's a file (not a directory)
-    if not path.is_file():
-        return Command(
-            update={"messages": [ToolMessage(f"Error: Path is not a file: {image_path}", tool_call_id=tool_call_id)]},
-        )
-
     # Validate image extension
-    expected_mime_type = IMAGE_EXTENSION_TO_MIME.get(path.suffix.lower())
+    expected_mime_type = IMAGE_EXTENSION_TO_MIME.get(Path(image_path).suffix.lower())
     if expected_mime_type is None:
         return Command(
-            update={"messages": [ToolMessage(f"Error: Unsupported image format: {path.suffix}. Supported formats: {', '.join(IMAGE_EXTENSION_TO_MIME)}", tool_call_id=tool_call_id)]},
+            update={"messages": [ToolMessage(f"Error: Unsupported image format: {Path(image_path).suffix}. Supported formats: {', '.join(IMAGE_EXTENSION_TO_MIME)}", tool_call_id=tool_call_id)]},
         )
 
     # Detect MIME type from file extension
-    mime_type, _ = mimetypes.guess_type(actual_path)
+    mime_type, _ = mimetypes.guess_type(image_path)
     if mime_type is None:
         mime_type = expected_mime_type
 
-    try:
-        image_size = path.stat().st_size
-    except OSError as e:
-        return Command(
-            update={"messages": [ToolMessage(f"Error reading image metadata: {_sanitize_image_error(e, thread_data, runtime)}", tool_call_id=tool_call_id)]},
-        )
-    if image_size > MAX_INPUT_IMAGE_BYTES:
-        return Command(
-            update={"messages": [ToolMessage(f"Error: Image file is too large: {image_size} bytes. Maximum supported size is {MAX_INPUT_IMAGE_BYTES} bytes", tool_call_id=tool_call_id)]},
-        )
+    sandbox_state = runtime.state.get("sandbox") if runtime and runtime.state else None
+    source_sandbox_id = (
+        sandbox_state.get("sandbox_id") if isinstance(sandbox_state, dict) else None
+    )
 
-    # Read image file and convert to base64
+    # Mounted local/WSL sandboxes share the host filesystem. Other providers
+    # are authoritative for their own files and may not have a host mirror.
     try:
-        with open(actual_path, "rb") as f:
-            image_data = f.read()
+        if isinstance(source_sandbox_id, str) and not is_host_fs_sandbox(runtime):
+            image_data = sandbox_from_runtime(runtime).download_file(image_path)
+        else:
+            path = Path(actual_path)
+            if not path.exists():
+                raise FileNotFoundError(image_path)
+            if not path.is_file():
+                raise IsADirectoryError(image_path)
+            image_data = path.read_bytes()
     except Exception as e:
         return Command(
             update={"messages": [ToolMessage(f"Error reading image file: {_sanitize_image_error(e, thread_data, runtime)}", tool_call_id=tool_call_id)]},
+        )
+
+    image_size = len(image_data)
+    if image_size > MAX_INPUT_IMAGE_BYTES:
+        return Command(
+            update={"messages": [ToolMessage(f"Error: Image file is too large: {image_size} bytes. Maximum supported size is {MAX_INPUT_IMAGE_BYTES} bytes", tool_call_id=tool_call_id)]},
         )
 
     detected_mime_type = detect_image_mime(image_data)
@@ -140,7 +137,14 @@ def view_image_tool(
     # Persist only lightweight metadata. ViewImageMiddleware reloads and
     # base64-encodes the image for the immediate model request, so binary image
     # payloads are never copied into every later checkpoint.
-    new_viewed_images = {image_path: {"mime_type": mime_type}}
+    metadata = {
+        "mime_type": mime_type,
+        "size": image_size,
+        "sha256": hashlib.sha256(image_data).hexdigest(),
+    }
+    if isinstance(source_sandbox_id, str):
+        metadata["source_sandbox_id"] = source_sandbox_id
+    new_viewed_images = {image_path: metadata}
 
     return Command(
         update={"viewed_images": new_viewed_images, "messages": [ToolMessage("Successfully read image", tool_call_id=tool_call_id)]},

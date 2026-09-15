@@ -348,7 +348,10 @@ async def evaluate_goal_completion(
             runtime_values={"thread_id": thread_id} if thread_id is not None else None,
         )
         async with llm_call_slot_async():
-            response = await request_model.ainvoke(
+            from deerflow.models.invocation import ainvoke_chat_model
+
+            response = await ainvoke_chat_model(
+                request_model,
                 [
                     SystemMessage(content=system_instruction),
                     HumanMessage(content=user_content),

@@ -276,10 +276,21 @@ pattern = sys.argv[2]
 include_dirs = sys.argv[3] == "1"
 max_results = int(sys.argv[4])
 ignore = sys.argv[5].split("\x1f") if sys.argv[5] else []
-if not os.path.exists(root):
-    raise FileNotFoundError(root)
+try:
+    os.stat(root)
+except FileNotFoundError:
+    print("path does not exist", file=sys.stderr)
+    sys.exit(2)
+except PermissionError:
+    print("permission denied", file=sys.stderr)
+    sys.exit(4)
 if not os.path.isdir(root):
-    raise NotADirectoryError(root)
+    print("path is not a directory", file=sys.stderr)
+    sys.exit(3)
+
+def walk_error(error):
+    print(str(error), file=sys.stderr)
+    sys.exit(4 if isinstance(error, PermissionError) else 5)
 
 def ignored(name):
     return any(fnmatch.fnmatch(name, pat) for pat in ignore)
@@ -290,7 +301,7 @@ def matches(rel):
 
 out = []
 truncated = False
-for current, dirs, files in os.walk(root):
+for current, dirs, files in os.walk(root, onerror=walk_error):
     dirs[:] = [d for d in dirs if not ignored(d)]
     rel_dir = os.path.relpath(current, root)
     if rel_dir == ".":
@@ -325,8 +336,7 @@ print("\n".join(out))
             ["python3", "-", path, pattern, "1" if include_dirs else "0", str(max_results), "\x1f".join(IGNORE_PATTERNS)],
             input_data=script,
         )
-        if result.returncode != 0:
-            raise FileNotFoundError(path)
+        self._raise_remote_search_error(result, path, operation="glob")
         lines = result.stdout.splitlines()
         truncated = bool(lines and lines[0] == "1")
         return lines[1:], truncated
@@ -351,11 +361,22 @@ literal = sys.argv[4] == "1"
 case_sensitive = sys.argv[5] == "1"
 max_results = int(sys.argv[6])
 ignore = sys.argv[7].split("\x1f") if sys.argv[7] else []
-if not os.path.exists(root):
-    raise FileNotFoundError(root)
+try:
+    os.stat(root)
+except FileNotFoundError:
+    print("path does not exist", file=sys.stderr)
+    sys.exit(2)
+except PermissionError:
+    print("permission denied", file=sys.stderr)
+    sys.exit(4)
 root_is_file = os.path.isfile(root)
 if not root_is_file and not os.path.isdir(root):
-    raise NotADirectoryError(root)
+    print("path is not a file or directory", file=sys.stderr)
+    sys.exit(3)
+
+def walk_error(error):
+    print(str(error), file=sys.stderr)
+    sys.exit(4 if isinstance(error, PermissionError) else 5)
 
 def ignored(name):
     return any(fnmatch.fnmatch(name, pat) for pat in ignore)
@@ -365,14 +386,18 @@ def path_matches(pat, rel):
     return p.match(pat) or (pat.startswith("**/") and p.match(pat[3:]))
 
 flags = 0 if case_sensitive else re.IGNORECASE
-regex = re.compile(re.escape(source) if literal else source, flags)
+try:
+    regex = re.compile(re.escape(source) if literal else source, flags)
+except re.error as error:
+    print(str(error), file=sys.stderr)
+    sys.exit(6)
 matches = []
 truncated = False
 def candidate_files():
     if root_is_file:
         yield root, os.path.basename(root)
         return
-    for current, dirs, files in os.walk(root):
+    for current, dirs, files in os.walk(root, onerror=walk_error):
         dirs[:] = [d for d in dirs if not ignored(d)]
         rel_dir = os.path.relpath(current, root)
         if rel_dir == ".":
@@ -404,8 +429,12 @@ for full, rel in candidate_files():
                         raise StopIteration
     except StopIteration:
         break
-    except OSError:
-        continue
+    except PermissionError as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(4)
+    except OSError as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(5)
     if truncated:
         break
 print(json.dumps({"truncated": truncated, "matches": matches}))
@@ -426,13 +455,47 @@ print(json.dumps({"truncated": truncated, "matches": matches}))
             ],
             input_data=script,
         )
-        if result.returncode != 0:
-            raise FileNotFoundError(path)
+        self._raise_remote_search_error(result, path, operation="grep")
 
         import json
 
-        payload = json.loads(result.stdout or '{"truncated": false, "matches": []}')
+        try:
+            payload = json.loads(result.stdout or '{"truncated": false, "matches": []}')
+        except (TypeError, ValueError) as exc:
+            raise OSError(
+                errno.EIO,
+                f"Remote grep returned an invalid response for {path!r}",
+                path,
+            ) from exc
         return [GrepMatch(**item) for item in payload["matches"]], bool(payload["truncated"])
+
+    @staticmethod
+    def _raise_remote_search_error(
+        result: subprocess.CompletedProcess,
+        path: str,
+        *,
+        operation: str,
+    ) -> None:
+        """Map the remote helper protocol without disguising execution errors."""
+        if result.returncode == 0:
+            return
+        stderr = result.stderr or ""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        detail = stderr.strip() or f"exit code {result.returncode}"
+        if result.returncode == 2:
+            raise FileNotFoundError(errno.ENOENT, detail, path)
+        if result.returncode == 3:
+            raise NotADirectoryError(errno.ENOTDIR, detail, path)
+        if result.returncode == 4:
+            raise PermissionError(errno.EACCES, detail, path)
+        if result.returncode == 6 and operation == "grep":
+            raise ValueError(f"Invalid grep pattern: {detail}")
+        raise OSError(
+            errno.EIO,
+            f"Remote {operation} failed for {path!r}: {detail}",
+            path,
+        )
 
     def update_file(self, path: str, content: bytes) -> None:
         quoted_path = self._quote(path)

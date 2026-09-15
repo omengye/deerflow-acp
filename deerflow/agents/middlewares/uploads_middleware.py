@@ -30,7 +30,12 @@ from deerflow.agents.image_inputs import (
     normalize_input_image_metadata,
 )
 from deerflow.config.paths import Paths, get_paths
-from deerflow.utils.file_conversion import CONVERTIBLE_EXTENSIONS, extract_outline
+from deerflow.utils.file_conversion import (
+    CONVERTIBLE_EXTENSIONS,
+    OUTLINE_PREVIEW_MAX_CHARS,
+    extract_outline,
+    truncate_outline_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,13 +78,18 @@ def extract_outline_for_file(file_path: Path) -> tuple[list[dict], list[str]]:
 
     # outline is empty — read the first few non-empty lines as a content preview
     preview: list[str] = []
+    remaining_chars = OUTLINE_PREVIEW_MAX_CHARS
     try:
         with md_path.open(encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
                 if stripped:
-                    preview.append(stripped)
-                if len(preview) >= _OUTLINE_PREVIEW_LINES:
+                    text = truncate_outline_text(stripped, remaining_chars)
+                    preview.append(text)
+                    remaining_chars -= len(text)
+                    if len(stripped) > len(text):
+                        break
+                if len(preview) >= _OUTLINE_PREVIEW_LINES or remaining_chars == 0:
                     break
     except Exception:
         logger.debug("Failed to read preview lines from %s", md_path, exc_info=True)
