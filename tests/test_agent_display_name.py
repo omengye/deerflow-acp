@@ -34,13 +34,23 @@ def test_agent_identifier_remains_ascii_slug() -> None:
         validate_agent_name("代码审查助手")
 
 
+def test_agent_memory_is_enabled_by_default_and_can_be_disabled() -> None:
+    assert AgentConfig(name="default-policy").memory_enabled is True
+    assert AgentConfig(name="stateless", memory_enabled=False).memory_enabled is False
+
+
 def test_setup_agent_preserves_existing_display_name(tmp_path, monkeypatch) -> None:
     agent_dir = tmp_path / "agents" / "reviewer"
     agent_dir.mkdir(parents=True)
     config_path = agent_dir / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
-            {"name": "reviewer", "display_name": "代码审查助手", "description": "old"},
+            {
+                "name": "reviewer",
+                "display_name": "代码审查助手",
+                "description": "old",
+                "memory_enabled": False,
+            },
             allow_unicode=True,
         ),
         encoding="utf-8",
@@ -68,3 +78,4 @@ def test_setup_agent_preserves_existing_display_name(tmp_path, monkeypatch) -> N
     persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert persisted["display_name"] == "代码审查助手"
     assert persisted["description"] == "updated"
+    assert persisted["memory_enabled"] is False

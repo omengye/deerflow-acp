@@ -27,6 +27,10 @@ const PORTABLE_LOCAL_SANDBOX_OPTIONS: &[&str] = &[
     "ls_output_max_chars",
 ];
 
+fn default_true() -> bool {
+    true
+}
+
 fn main() -> iced::Result {
     configure_graphics_backend();
 
@@ -293,6 +297,8 @@ struct AgentDocument {
     model: Option<String>,
     tool_groups: Vec<String>,
     skills: Option<Vec<String>>,
+    #[serde(default = "default_true")]
+    memory_enabled: bool,
     soul: String,
     #[serde(default)]
     invalid: bool,
@@ -311,6 +317,7 @@ impl Default for AgentDocument {
             model: None,
             tool_groups: Vec::new(),
             skills: None,
+            memory_enabled: true,
             soul: String::new(),
             invalid: false,
             tool_groups_input: String::new(),
@@ -1117,6 +1124,7 @@ enum Message {
     AgentModel(String),
     AgentToolGroups(String),
     AgentSkills(String),
+    AgentMemoryEnabled(bool),
     SubagentsEnabled(bool),
     SubagentsTimeout(String),
     SubagentsMaxTurns(String),
@@ -1222,6 +1230,7 @@ impl Message {
                 | Self::AgentModel(_)
                 | Self::AgentToolGroups(_)
                 | Self::AgentSkills(_)
+                | Self::AgentMemoryEnabled(_)
                 | Self::SubagentsEnabled(_)
                 | Self::SubagentsTimeout(_)
                 | Self::SubagentsMaxTurns(_)
@@ -1849,6 +1858,9 @@ impl App {
                 };
                 item.skills_input = value;
             }),
+            Message::AgentMemoryEnabled(value) => {
+                self.agent_mut(|item| item.memory_enabled = value)
+            }
             Message::SubagentsEnabled(value) => self.subagents_mut(|item| item.enabled = value),
             Message::SubagentsTimeout(value) => self.subagents_mut(|item| {
                 if let Ok(parsed) = value.parse() {
@@ -3107,6 +3119,10 @@ impl App {
                         "* 表示全部；空表示禁用全部",
                         Message::AgentSkills
                     ),
+                    checkbox(agent.memory_enabled)
+                        .label("启用长期记忆")
+                        .style(ui::checkbox_style)
+                        .on_toggle(Message::AgentMemoryEnabled),
                     column![
                         text("SOUL.md").size(13),
                         text_editor(&self.portable.soul)

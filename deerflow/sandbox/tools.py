@@ -527,7 +527,7 @@ def mask_local_paths_in_output(
         resolved_base = str(Path(skills_host).resolve())
         for base in _path_variants(raw_base) | _path_variants(resolved_base):
             escaped = re.escape(base).replace(r"\\", r"[/\\]")
-            pattern = re.compile(escaped + r"(?:[/\\][^\s\"';&|<>()]*)?")
+            pattern = re.compile(escaped + r"(?:[/\\][^\s\"';&|<>():]*)?")
 
             def replace_skills(match: re.Match, _base: str = base) -> str:
                 matched_path = match.group(0)
@@ -546,7 +546,7 @@ def mask_local_paths_in_output(
         resolved_base = str(Path(acp_host).resolve())
         for base in _path_variants(raw_base) | _path_variants(resolved_base):
             escaped = re.escape(base).replace(r"\\", r"[/\\]")
-            pattern = re.compile(escaped + r"(?:[/\\][^\s\"';&|<>()]*)?")
+            pattern = re.compile(escaped + r"(?:[/\\][^\s\"';&|<>():]*)?")
 
             def replace_acp(match: re.Match, _base: str = base) -> str:
                 matched_path = match.group(0)
@@ -572,7 +572,7 @@ def mask_local_paths_in_output(
         resolved_base = str(Path(actual_base).resolve())
         for base in _path_variants(raw_base) | _path_variants(resolved_base):
             escaped_actual = re.escape(base).replace(r"\\", r"[/\\]")
-            pattern = re.compile(escaped_actual + r"(?:[/\\][^\s\"';&|<>()]*)?")
+            pattern = re.compile(escaped_actual + r"(?:[/\\][^\s\"';&|<>():]*)?")
 
             def replace_match(match: re.Match, _base: str = base, _virtual: str = virtual_base) -> str:
                 matched_path = match.group(0)
@@ -1328,7 +1328,11 @@ def _truncate_bash_output(output: str, max_chars: int) -> str:
     return f"{output[:head_len]}{marker}{output[-tail_len:] if tail_len > 0 else ''}"
 
 
-def _truncate_read_file_output(output: str, max_chars: int) -> str:
+def _truncate_read_file_output(
+    output: str,
+    max_chars: int,
+    line_offset: int = 0,
+) -> str:
     """Head-truncate read_file output, preserving the beginning of the file.
 
     Source code and documents are read top-to-bottom; the head contains the
@@ -1337,19 +1341,34 @@ def _truncate_read_file_output(output: str, max_chars: int) -> str:
     The returned string (including the truncation marker) is guaranteed to be
     no longer than max_chars characters. Pass max_chars=0 to disable truncation
     and return the full output unchanged.
+
+    ``line_offset`` is the zero-based absolute line number of ``output``'s
+    first line. Ranged reads use it so the continuation hint always speaks in
+    the absolute line numbers accepted by ``read_file``.
     """
     if max_chars == 0:
         return output
     if len(output) <= max_chars:
         return output
     total = len(output)
-    # Compute the exact worst-case marker length: both numeric fields are at
-    # their maximum (total chars), so this is a tight upper bound.
-    marker_max_len = len(f"\n... [truncated: showing first {total} of {total} chars. Use start_line/end_line to read a specific range] ...")
+    total_lines = output.count("\n") + (0 if output.endswith("\n") else 1)
+    bound = total + max(line_offset, 0)
+    marker_max_len = len(
+        f"\n... [truncated: showing first {total} of {total} chars "
+        f"(cut lands in line {bound} of {bound}). Use start_line={bound} — "
+        "optionally with end_line — to continue without a gap] ..."
+    )
     kept = max(0, max_chars - marker_max_len)
     if kept == 0:
         return output[:max_chars]
-    marker = f"\n... [truncated: showing first {kept} of {total} chars. Use start_line/end_line to read a specific range] ..."
+    cut_line = line_offset + output[:kept].count("\n") + 1
+    last_line = line_offset + total_lines
+    marker = (
+        f"\n... [truncated: showing first {kept} of {total} chars "
+        f"(cut lands in line {cut_line} of {last_line}). "
+        f"Use start_line={cut_line} — optionally with end_line — "
+        "to continue without a gap] ..."
+    )
     return f"{output[:kept]}{marker}"
 
 
@@ -1630,7 +1649,11 @@ def read_file_tool(
             max_chars = sandbox_cfg.read_file_output_max_chars if sandbox_cfg else 50000
         except Exception:
             max_chars = 50000
-        return _truncate_read_file_output(content, max_chars)
+        return _truncate_read_file_output(
+            content,
+            max_chars,
+            line_offset=effective_start - 1,
+        )
     except SandboxError as e:
         return f"Error: {e}"
     except FileNotFoundError:

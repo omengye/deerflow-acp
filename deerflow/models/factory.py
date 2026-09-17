@@ -113,6 +113,7 @@ def create_chat_model(
             "supports_vision",
             "context_window",
             "runtime_headers",
+            "request_admission",
         },
     )
     # Compute effective when_thinking_enabled by merging in the `thinking` shortcut field.
@@ -202,6 +203,31 @@ def create_chat_model(
         and "profile" not in kwargs
         and "profile" not in model_settings_from_config
     )
+
+    if model_config.request_admission is not None:
+        from deerflow.models.request_admission import get_request_admission
+
+        if "rate_limiter" in kwargs or "rate_limiter" in model_settings_from_config:
+            raise ValueError(
+                "request_admission cannot be combined with a custom rate_limiter"
+            )
+        model_settings_from_config["rate_limiter"] = get_request_admission(
+            name,
+            model_config.request_admission,
+        )
+
+        # SDK-internal retries bypass BaseChatModel's rate-limiter hook. Keep
+        # retries at the agent middleware layer so every attempt is admitted.
+        model_fields = getattr(model_class, "model_fields", {})
+        if "max_retries" in model_fields:
+            kwargs.pop("max_retries", None)
+            model_settings_from_config["max_retries"] = 0
+        if "retry_max_attempts" in model_fields:
+            # DeerFlow's Claude/Codex providers implement a second retry loop
+            # outside the SDK.  One attempt is the minimum those models accept
+            # and disables that loop so every retry re-enters admission.
+            kwargs.pop("retry_max_attempts", None)
+            model_settings_from_config["retry_max_attempts"] = 1
 
     model_instance = model_class(**{**model_settings_from_config, **kwargs})
     # Direct model consumers such as summarization do not pass through the

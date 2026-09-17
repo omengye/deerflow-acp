@@ -1,12 +1,13 @@
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 from deerflow.sandbox.aio import AioSandbox
 from deerflow.sandbox.local.local_sandbox import LocalSandbox, PathMapping
 from deerflow.sandbox.search import GrepMatch, find_grep_matches
-from deerflow.sandbox.tools import read_file_tool
+from deerflow.sandbox.tools import _truncate_read_file_output, read_file_tool
 
 
 def test_grep_accepts_single_file_path(tmp_path: Path) -> None:
@@ -58,6 +59,85 @@ def test_read_file_tool_validates_and_pushes_range_to_sandbox(monkeypatch) -> No
     assert result == "selected"
     assert calls == [("/mnt/user-data/workspace/large.log", 10, 20)]
     assert "start_line must be >= 1" in invalid
+
+
+def test_read_file_truncation_reports_absolute_resume_line() -> None:
+    content = "".join(f"line-{line:03d} payload\n" for line in range(40, 80))
+
+    result = _truncate_read_file_output(content, 260, line_offset=39)
+
+    assert len(result) <= 260
+    marker = result.split("... [truncated:", 1)[1]
+    resume = int(marker.split("Use start_line=", 1)[1].split(" ", 1)[0])
+    assert resume > 40
+    assert f"of {39 + content.count(chr(10))}" in marker
+
+
+def test_aio_glob_only_marks_truncated_after_an_extra_match(tmp_path: Path, monkeypatch) -> None:
+    sandbox = AioSandbox("probe", "unused")
+
+    def run_embedded(argv, *, input_data=None, text=True):
+        return subprocess.run(
+            [sys.executable, "-", *argv[2:]],
+            input=input_data,
+            text=text,
+            capture_output=True,
+            check=False,
+        )
+
+    monkeypatch.setattr(sandbox, "_docker_exec", run_embedded)
+    (tmp_path / "a.py").write_text("", encoding="utf-8")
+    (tmp_path / "b.py").write_text("", encoding="utf-8")
+    (tmp_path / "ignored.txt").write_text("", encoding="utf-8")
+
+    matches, truncated = sandbox.glob(str(tmp_path), "*.py", max_results=2)
+    assert len(matches) == 2
+    assert truncated is False
+
+    (tmp_path / "c.py").write_text("", encoding="utf-8")
+    matches, truncated = sandbox.glob(str(tmp_path), "*.py", max_results=2)
+    assert len(matches) == 2
+    assert truncated is True
+
+
+def test_aio_glob_directory_limit_uses_extra_matching_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sandbox = AioSandbox("probe", "unused")
+
+    def run_embedded(argv, *, input_data=None, text=True):
+        return subprocess.run(
+            [sys.executable, "-", *argv[2:]],
+            input=input_data,
+            text=text,
+            capture_output=True,
+            check=False,
+        )
+
+    monkeypatch.setattr(sandbox, "_docker_exec", run_embedded)
+    (tmp_path / "one-dir").mkdir()
+    (tmp_path / "two-dir").mkdir()
+    (tmp_path / "not-a-match").mkdir()
+
+    matches, truncated = sandbox.glob(
+        str(tmp_path),
+        "*-dir",
+        include_dirs=True,
+        max_results=2,
+    )
+    assert len(matches) == 2
+    assert truncated is False
+
+    (tmp_path / "three-dir").mkdir()
+    matches, truncated = sandbox.glob(
+        str(tmp_path),
+        "*-dir",
+        include_dirs=True,
+        max_results=2,
+    )
+    assert len(matches) == 2
+    assert truncated is True
 
 
 def test_aio_single_file_grep_uses_process_safe_ignore_separator(monkeypatch) -> None:

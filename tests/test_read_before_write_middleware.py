@@ -4,12 +4,13 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 from deerflow.agents.middlewares.read_before_write_middleware import (
     READ_MARK_KEY,
     WRITE_BLOCK_KEY,
     ReadBeforeWriteMiddleware,
+    elide_blocked_write_payloads,
 )
 from deerflow.agents.middlewares.tool_error_handling_middleware import (
     build_lead_runtime_middlewares,
@@ -135,3 +136,73 @@ def test_runtime_builders_install_read_before_write_gate() -> None:
         isinstance(middleware, ReadBeforeWriteMiddleware)
         for middleware in build_subagent_runtime_middlewares()
     )
+
+
+def test_blocked_write_payload_is_elided_only_in_model_view() -> None:
+    original = "sensitive payload"
+    call = AIMessage(
+        content=[
+            {
+                "type": "tool_use",
+                "id": "write-1",
+                "name": "write_file",
+                "input": {"path": "/tmp/a", "content": original},
+            }
+        ],
+        tool_calls=[
+            {
+                "id": "write-1",
+                "name": "write_file",
+                "args": {"path": "/tmp/a", "content": original},
+            }
+        ],
+    )
+    blocked = ToolMessage(
+        content="blocked",
+        tool_call_id="write-1",
+        name="write_file",
+        status="error",
+        additional_kwargs={WRITE_BLOCK_KEY: {"path": "/tmp/a"}},
+    )
+
+    patched = elide_blocked_write_payloads([call, blocked], min_chars=1)
+
+    assert patched is not None
+    assert call.tool_calls[0]["args"]["content"] == original
+    assert "payload elided" in patched[0].tool_calls[0]["args"]["content"]
+    assert "payload elided" in patched[0].content[0]["input"]["content"]
+
+
+def test_reused_call_id_does_not_elide_a_different_occurrence() -> None:
+    def call(content: str) -> AIMessage:
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "reused",
+                    "name": "write_file",
+                    "args": {"path": "/tmp/a", "content": content},
+                }
+            ],
+        )
+
+    successful = call("keep this")
+    blocked_call = call("drop this")
+    messages = [
+        successful,
+        ToolMessage(content="ok", tool_call_id="reused", name="write_file"),
+        blocked_call,
+        ToolMessage(
+            content="blocked",
+            tool_call_id="reused",
+            name="write_file",
+            status="error",
+            additional_kwargs={WRITE_BLOCK_KEY: {"path": "/tmp/a"}},
+        ),
+    ]
+
+    patched = elide_blocked_write_payloads(messages, min_chars=1)
+
+    assert patched is not None
+    assert patched[0].tool_calls[0]["args"]["content"] == "keep this"
+    assert "payload elided" in patched[2].tool_calls[0]["args"]["content"]

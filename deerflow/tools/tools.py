@@ -64,6 +64,7 @@ def get_available_tools(
     model_name: str | None = None,
     subagent_enabled: bool = False,
     include_upload_tool: bool = True,
+    include_memory_tool: bool = True,
 ) -> list[BaseTool]:
     """Get all available tools from config.
 
@@ -77,6 +78,7 @@ def get_available_tools(
         subagent_enabled: Whether to include subagent tools (task, task_status).
         include_upload_tool: Whether historical upload discovery is safe for
             this runtime state boundary.
+        include_memory_tool: Whether this agent may use tool-driven memory.
 
     Returns:
         List of available tools.
@@ -111,7 +113,7 @@ def get_available_tools(
     builtin_tools = BUILTIN_TOOLS.copy()
     if not include_upload_tool:
         builtin_tools = [tool for tool in builtin_tools if tool.name != "list_uploaded_files"]
-    if config.memory.enabled and config.memory.mode == "tool":
+    if include_memory_tool and config.memory.enabled and config.memory.mode == "tool":
         builtin_tools.append(memory_search_tool)
         logger.info("Including memory_search tool (memory.mode=tool)")
     skill_evolution_config = getattr(config, "skill_evolution", None)

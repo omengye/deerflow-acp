@@ -15,88 +15,14 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
+from deerflow.agents.middlewares.tool_call_metadata import (
+    clone_ai_message_with_tool_calls,
+)
+
 logger = logging.getLogger(__name__)
 
 ASK_CLARIFICATION_TOOL_NAME = "ask_clarification"
 _XML_TAG_RE = re.compile(r"</?[A-Za-z_][\w:.-]*(?:\s[^<>]*?)?\s*/?>")
-
-
-def _filter_provider_tool_blocks(
-    content: Any,
-    kept_ids: set[str],
-    kept_names: set[str],
-) -> Any:
-    """Keep provider-native content blocks aligned with structured tool calls."""
-    if not isinstance(content, list):
-        return content
-
-    filtered: list[Any] = []
-    for block in content:
-        if isinstance(block, dict) and block.get("type") in {"tool_use", "function_call"}:
-            block_id = block.get("id")
-            if isinstance(block_id, str) and block_id:
-                if block_id not in kept_ids:
-                    continue
-            elif block.get("type") == "function_call":
-                name = block.get("name")
-                if not isinstance(name, str) or name not in kept_names:
-                    continue
-        filtered.append(block)
-    return filtered
-
-
-def _clone_with_tool_calls(
-    message: AIMessage,
-    tool_calls: list[dict[str, Any]],
-    *,
-    content: Any,
-) -> AIMessage:
-    """Clone an AI message while synchronizing raw provider tool metadata."""
-    kept_ids = {
-        call["id"]
-        for call in tool_calls
-        if isinstance(call.get("id"), str) and call["id"]
-    }
-    kept_names = {
-        str(call["name"])
-        for call in tool_calls
-        if isinstance(call.get("name"), str) and call["name"]
-    }
-
-    additional_kwargs = dict(message.additional_kwargs or {})
-    raw_tool_calls = additional_kwargs.get("tool_calls")
-    if isinstance(raw_tool_calls, list):
-        retained_raw = [
-            raw
-            for raw in raw_tool_calls
-            if isinstance(raw, dict)
-            and isinstance(raw.get("id"), str)
-            and raw["id"] in kept_ids
-        ]
-        if retained_raw:
-            additional_kwargs["tool_calls"] = retained_raw
-        else:
-            additional_kwargs.pop("tool_calls", None)
-
-    raw_function_call = additional_kwargs.get("function_call")
-    if isinstance(raw_function_call, dict):
-        if raw_function_call.get("name") not in kept_names:
-            additional_kwargs.pop("function_call", None)
-    elif not tool_calls:
-        additional_kwargs.pop("function_call", None)
-
-    response_metadata = dict(message.response_metadata or {})
-    if not tool_calls and response_metadata.get("finish_reason") == "tool_calls":
-        response_metadata["finish_reason"] = "stop"
-
-    return message.model_copy(
-        update={
-            "content": content,
-            "tool_calls": tool_calls,
-            "additional_kwargs": additional_kwargs,
-            "response_metadata": response_metadata,
-        }
-    )
 
 
 class ClarificationMiddlewareState(AgentState):
@@ -167,27 +93,7 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
             "ask_clarification was emitted with sibling tool call(s); dropping %s",
             [str(call.get("name") or "unknown") for call in sibling_calls],
         )
-        kept_for_content = clarification_calls + invalid_clarification_calls
-        kept_ids = {
-            call["id"]
-            for call in kept_for_content
-            if isinstance(call.get("id"), str) and call["id"]
-        }
-        kept_names = {
-            str(call["name"])
-            for call in kept_for_content
-            if isinstance(call.get("name"), str) and call["name"]
-        }
-        filtered_content = _filter_provider_tool_blocks(
-            message.content,
-            kept_ids,
-            kept_names,
-        )
-        patched = _clone_with_tool_calls(
-            message,
-            clarification_calls,
-            content=filtered_content,
-        )
+        patched = clone_ai_message_with_tool_calls(message, clarification_calls)
         return {"messages": [patched]}
 
     def _stable_message_id(self, tool_call_id: str, formatted_message: str) -> str:
@@ -325,6 +231,16 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
             content=formatted_message,
             tool_call_id=tool_call_id,
             name="ask_clarification",
+            artifact={
+                "human_input": {
+                    "version": 1,
+                    "kind": "human_input_request",
+                    "source": ASK_CLARIFICATION_TOOL_NAME,
+                    "request_id": tool_call_id
+                    or self._stable_message_id(tool_call_id, formatted_message),
+                    "question": question,
+                }
+            },
         )
 
         # Return a Command that:

@@ -45,11 +45,18 @@ def setup_agent(
             if config_file.is_file():
                 try:
                     existing = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-                    if isinstance(existing, dict) and existing.get("display_name") is not None:
-                        config_data["display_name"] = existing["display_name"]
+                    if isinstance(existing, dict):
+                        for key in (
+                            "display_name",
+                            "model",
+                            "tool_groups",
+                            "memory_enabled",
+                        ):
+                            if existing.get(key) is not None:
+                                config_data[key] = existing[key]
                 except (OSError, yaml.YAMLError):
                     logger.warning(
-                        "Could not preserve display_name while updating agent %r",
+                        "Could not preserve agent settings while updating agent %r",
                         agent_name,
                         exc_info=True,
                     )

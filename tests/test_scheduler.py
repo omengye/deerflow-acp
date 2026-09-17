@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from deerflow.tools.builtins.scheduled_task_tools import (
     _delivery_metadata_for_thread,
     _require_task_owned_by_current_thread,
     create_scheduled_task_tool,
+    list_scheduled_task_runs_tool,
     list_scheduled_tasks_tool,
 )
 
@@ -89,6 +91,34 @@ async def test_scheduler_store_persists_tasks(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_agent_created_scheduled_task_pins_current_agent(tmp_path):
+    store = SchedulerStore(tmp_path / "scheduled_tasks.db")
+    store.setup()
+    service = SchedulerService(store=store, manager=SimpleNamespace(), poll_interval_seconds=1)
+    runtime = SimpleNamespace(
+        context={"thread_id": "thread-1", "agent_name": "researcher"},
+        config={},
+    )
+    set_scheduler_service(service)
+    try:
+        result = json.loads(
+            await create_scheduled_task_tool.coroutine(
+                runtime,
+                prompt="prepare report",
+                schedule_type="daily",
+                time_of_day="09:00",
+                timezone="UTC",
+            )
+        )
+    finally:
+        set_scheduler_service(None)
+
+    task = await store.get_task(result["created"]["id"])
+    assert task is not None
+    assert task.kwargs == {"agent_name": "researcher"}
+
+
+@pytest.mark.asyncio
 async def test_scheduler_store_delete_removes_task_runs(tmp_path):
     store = SchedulerStore(tmp_path / "scheduled_tasks.db")
     store.setup()
@@ -113,6 +143,99 @@ async def test_scheduler_store_delete_removes_task_runs(tmp_path):
     assert await store.delete_task(task.id) is True
     assert await store.get_task(task.id) is None
     assert await store.list_task_runs(task.id) == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_history_filters_before_pagination(tmp_path):
+    store = SchedulerStore(tmp_path / "scheduled_tasks.db")
+    store.setup()
+    task = await store.create_task(
+        thread_id="thread-1",
+        prompt="history",
+        schedule_type="daily",
+        schedule_expr={"time_of_day": "09:00"},
+        timezone="UTC",
+    )
+    now = datetime.now(UTC).isoformat()
+    with store._connect() as conn:
+        for run_id, status in (
+            ("success-1", "success"),
+            ("error-1", "error"),
+            ("error-2", "error"),
+            ("error-3", "error"),
+        ):
+            conn.execute(
+                """
+                INSERT INTO scheduled_task_runs (
+                    id, task_id, scheduled_at, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (run_id, task.id, now, status, now, now),
+            )
+
+    rows = await store.list_task_runs(task.id, limit=2, offset=1, status="error")
+    assert [row["id"] for row in rows] == ["error-2", "error-1"]
+
+    service = SchedulerService(store=store, manager=SimpleNamespace(), poll_interval_seconds=1)
+    set_scheduler_service(service)
+    try:
+        runtime = SimpleNamespace(context={"thread_id": "thread-1"}, config={})
+        payload = json.loads(
+            await list_scheduled_task_runs_tool.coroutine(
+                runtime,
+                task_id=task.id,
+                limit=2,
+                status="error",
+            )
+        )
+    finally:
+        set_scheduler_service(None)
+
+    assert [row["id"] for row in payload["runs"]] == ["error-3", "error-2"]
+    assert payload["has_more"] is True
+    assert payload["offset"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_history_limit_100_detects_next_page(tmp_path):
+    store = SchedulerStore(tmp_path / "scheduled_tasks.db")
+    store.setup()
+    task = await store.create_task(
+        thread_id="thread-1",
+        prompt="history",
+        schedule_type="daily",
+        schedule_expr={"time_of_day": "09:00"},
+        timezone="UTC",
+    )
+    now = datetime.now(UTC).isoformat()
+    with store._connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO scheduled_task_runs (
+                id, task_id, scheduled_at, status, created_at, updated_at
+            ) VALUES (?, ?, ?, 'success', ?, ?)
+            """,
+            [
+                (f"run-{index:03d}", task.id, now, now, now)
+                for index in range(101)
+            ],
+        )
+
+    service = SchedulerService(store=store, manager=SimpleNamespace(), poll_interval_seconds=1)
+    set_scheduler_service(service)
+    try:
+        payload = json.loads(
+            await list_scheduled_task_runs_tool.coroutine(
+                SimpleNamespace(context={"thread_id": "thread-1"}, config={}),
+                task_id=task.id,
+                limit=100,
+            )
+        )
+    finally:
+        set_scheduler_service(None)
+
+    assert len(payload["runs"]) == 100
+    assert payload["has_more"] is True
 
 
 @pytest.mark.asyncio
@@ -144,6 +267,7 @@ async def test_scheduler_service_dispatches_due_task(tmp_path):
         schedule_type="once",
         schedule_expr={"run_at": (datetime.now(UTC) + timedelta(milliseconds=10)).isoformat()},
         timezone="UTC",
+        kwargs={"agent_name": "agent-a"},
     )
 
     await asyncio.sleep(0.02)
@@ -167,6 +291,7 @@ async def test_scheduler_service_dispatches_due_task(tmp_path):
     assert calls[0]["thread_id"] == "thread-1"
     assert calls[0]["message"] == "run due task"
     assert calls[0]["kwargs"]["recursion_limit"] == 350
+    assert calls[0]["kwargs"]["agent_name"] == "agent-a"
     task_id = (await store.list_tasks(include_disabled=True))[0].id
     runs = []
     for _ in range(20):

@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import inspect
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -53,6 +53,40 @@ logger = logging.getLogger(__name__)
 class _GoalTurnResult:
     continuation: HumanMessage | None
     status_event: StreamEvent | None
+
+
+def _ends_on_human_input_request(messages: list[Any]) -> bool:
+    """Return whether trailing tool results contain an unanswered user prompt."""
+    for message in reversed(messages):
+        message_type = getattr(message, "type", None)
+        if message_type is None and isinstance(message, dict):
+            message_type = message.get("type") or message.get("role")
+        if message_type != "tool":
+            return False
+        artifact = (
+            message.get("artifact")
+            if isinstance(message, dict)
+            else getattr(message, "artifact", None)
+        )
+        message_name = (
+            message.get("name")
+            if isinstance(message, dict)
+            else getattr(message, "name", None)
+        )
+        human_input = (
+            artifact.get("human_input")
+            if isinstance(artifact, Mapping)
+            else None
+        )
+        if (
+            isinstance(human_input, Mapping)
+            and human_input.get("kind") == "human_input_request"
+        ):
+            return True
+        # Older checkpoints predate the durable human-input artifact.
+        if message_name == "ask_clarification":
+            return True
+    return False
 
 
 class LocalACPRuntime:
@@ -510,7 +544,10 @@ class LocalACPRuntime:
                     )
                     if not snapshot.goal or snapshot.goal.get("status") != "active":
                         break
-                    if evaluator_model is None:
+                    if (
+                        evaluator_model is None
+                        and not _ends_on_human_input_request(snapshot.messages)
+                    ):
                         evaluator_model = create_goal_evaluator_model(
                             model_name=session.model_name
                         )
@@ -600,6 +637,66 @@ class LocalACPRuntime:
         conversation_signature = visible_conversation_signature(snapshot.messages)
         evidence_signature = latest_visible_assistant_signature(snapshot.messages)
         evaluator_usage: dict[str, int] = {}
+        if _ends_on_human_input_request(snapshot.messages):
+            evaluation = GoalEvaluation(
+                satisfied=False,
+                blocker="needs_user_input",
+                reason=(
+                    "The turn ended on a question to the user that has not "
+                    "been answered."
+                ),
+                evidence_summary="",
+            )
+            no_progress_count = compute_no_progress_count(
+                goal,
+                evaluation,
+                evidence_signature=evidence_signature,
+            )
+            stand_down_reason = goal_stand_down_reason(
+                goal,
+                evaluation,
+                no_progress_count=no_progress_count,
+            )
+            updated = attach_goal_evaluation(
+                goal,
+                evaluation,
+                no_progress_count=no_progress_count,
+                stand_down_reason=stand_down_reason,
+                evidence_signature=evidence_signature,
+            )
+            checkpointer = self._require_checkpointer()
+            try:
+                async with goal_thread_lock(session.session_id):
+                    latest = await read_goal_snapshot(
+                        checkpointer,
+                        session.session_id,
+                    )
+                    if (
+                        not goal_instance_matches(goal, latest.goal)
+                        or latest.checkpoint_id != snapshot.checkpoint_id
+                        or visible_conversation_signature(latest.messages)
+                        != conversation_signature
+                    ):
+                        return _GoalTurnResult(None, None)
+                    await write_thread_goal(
+                        checkpointer,
+                        session.session_id,
+                        updated,
+                        expected_checkpoint_id=snapshot.checkpoint_id,
+                        as_node="goal_evaluator",
+                    )
+            except GoalWriteConflict:
+                return _GoalTurnResult(None, None)
+            return _GoalTurnResult(
+                None,
+                self._goal_status_event(
+                    updated,
+                    evaluation,
+                    status="paused",
+                    stand_down_reason=stand_down_reason,
+                ),
+            )
+
         try:
             evaluation = await evaluate_goal_completion(
                 goal,

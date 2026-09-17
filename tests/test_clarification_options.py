@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage
 
@@ -141,3 +142,19 @@ def test_non_clarification_tool_batch_is_unchanged() -> None:
         )
         is None
     )
+
+
+def test_clarification_tool_message_marks_pending_human_input() -> None:
+    request = SimpleNamespace(
+        tool_call={
+            "id": "clarify-1",
+            "name": "ask_clarification",
+            "args": {"question": "Proceed?"},
+        }
+    )
+
+    command = ClarificationMiddleware()._handle_clarification(request)
+    message = command.update["messages"][0]
+
+    assert message.artifact["human_input"]["kind"] == "human_input_request"
+    assert message.artifact["human_input"]["request_id"] == "clarify-1"

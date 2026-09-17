@@ -2,7 +2,7 @@ import json
 import os
 from types import SimpleNamespace
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 from deerflow.agents.middlewares.tool_error_handling_middleware import (
     build_subagent_runtime_middlewares,
@@ -10,6 +10,7 @@ from deerflow.agents.middlewares.tool_error_handling_middleware import (
 from deerflow.agents.middlewares.tool_output_budget_middleware import (
     ToolOutputBudgetMiddleware,
     _build_fallback,
+    elide_superseded_write_payloads,
 )
 from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
 from deerflow.config.sandbox_config import SandboxConfig
@@ -88,3 +89,101 @@ def test_tool_output_budget_middleware_is_in_runtime_chain() -> None:
         reset_app_config()
 
     assert any(isinstance(middleware, ToolOutputBudgetMiddleware) for middleware in middlewares)
+
+
+def _file_call(call_id: str, name: str, args: dict) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[{"id": call_id, "name": name, "args": args}],
+    )
+
+
+def test_superseded_write_payload_is_elided_but_recent_write_is_kept() -> None:
+    first_content = "first long payload"
+    second_content = "second long payload"
+    first = _file_call(
+        "write-1",
+        "write_file",
+        {"path": "/tmp/a", "content": first_content},
+    )
+    read = _file_call("read-1", "read_file", {"path": "/tmp/a"})
+    second = _file_call(
+        "write-2",
+        "write_file",
+        {"path": "/tmp/a", "content": second_content},
+    )
+    messages = [
+        first,
+        ToolMessage(content="OK", tool_call_id="write-1", name="write_file"),
+        read,
+        ToolMessage(content="file", tool_call_id="read-1", name="read_file"),
+        second,
+        ToolMessage(content="OK", tool_call_id="write-2", name="write_file"),
+    ]
+
+    patched = elide_superseded_write_payloads(
+        messages,
+        min_chars=1,
+        keep_recent=1,
+    )
+
+    assert patched is not None
+    assert first.tool_calls[0]["args"]["content"] == first_content
+    assert "content elided" in patched[0].tool_calls[0]["args"]["content"]
+    assert patched[4].tool_calls[0]["args"]["content"] == second_content
+
+
+def test_failed_read_does_not_supersede_write_payload() -> None:
+    write = _file_call(
+        "write-1",
+        "write_file",
+        {"path": "/tmp/a", "content": "long payload"},
+    )
+    read = _file_call("read-1", "read_file", {"path": "/tmp/a"})
+    messages = [
+        write,
+        ToolMessage(content="OK", tool_call_id="write-1", name="write_file"),
+        read,
+        ToolMessage(
+            content="Error: unavailable",
+            tool_call_id="read-1",
+            name="read_file",
+        ),
+    ]
+
+    assert (
+        elide_superseded_write_payloads(
+            messages,
+            min_chars=1,
+            keep_recent=0,
+        )
+        is None
+    )
+
+
+def test_invalid_read_range_does_not_supersede_write_payload() -> None:
+    write = _file_call(
+        "write-1",
+        "write_file",
+        {"path": "/tmp/a", "content": "long payload"},
+    )
+    read = _file_call("read-1", "read_file", {"path": "/tmp/a"})
+    messages = [
+        write,
+        ToolMessage(content="OK", tool_call_id="write-1", name="write_file"),
+        read,
+        ToolMessage(
+            content="(start_line must be >= 1)",
+            tool_call_id="read-1",
+            name="read_file",
+        ),
+    ]
+
+    assert (
+        elide_superseded_write_payloads(
+            messages,
+            min_chars=1,
+            keep_recent=0,
+        )
+        is None
+    )

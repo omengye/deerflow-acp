@@ -84,6 +84,8 @@ class AgentConfig(BaseModel):
     # - [] (explicit empty list): disable all skills
     # - ["skill1", "skill2"]: load only the specified skills
     skills: list[str] | None = None
+    # Stateless custom agents can opt out of every memory read/write path.
+    memory_enabled: bool = True
 
     @field_validator("display_name")
     @classmethod

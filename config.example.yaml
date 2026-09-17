@@ -1,7 +1,7 @@
 # DeerFlow config.yaml
 # ⚠️ 配置你的 API Key 后再启动服务
 
-config_version: 15
+config_version: 16
 log_level: info
 
 # API service settings. Prefer putting operational configuration here instead
@@ -220,6 +220,10 @@ models:
   # indicator (ACP usage_update / API end event telemetry) and is distinct
   # from `max_tokens`, the per-call output cap. Leave it unset when the
   # provider limit is unknown; the percentage is then not reported.
+  # `request_admission` provides a process-wide FIFO RPM gate. Models that
+  # share one provider quota can use the same `group` value.
+  # Admission policies live for the lifetime of the process; restart every
+  # worker after enabling, disabling, regrouping, or changing a policy.
   # `deerflow.models.vllm_provider:VllmChatModel` also accepts
   # `cumulative_stream_usage: true` when its vLLM endpoint reports cumulative
   # token snapshots on every streaming chunk.
@@ -231,6 +235,11 @@ models:
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     supports_thinking: true
     context_window: 262144
+    # request_admission:
+    #   requests_per_minute: 60
+    #   group: shared-provider-account
+    #   max_wait_seconds: 300
+    #   max_queue_size: 256
   # OpenCode Go uses this conversation-stable header for provider routing and
   # prompt-cache affinity. It is resolved per request from DeerFlow thread_id;
   # never put a fixed x-opencode-session value in default_headers.
@@ -260,6 +269,8 @@ default_model: qwen3.6-plus
 # write invalidates the prior read mark.
 read_before_write:
   enabled: true
+  elide_blocked_payloads: true
+  elide_min_chars: 2000
 
 sandbox:
   use: deerflow.sandbox.local:LocalSandboxProvider
@@ -526,6 +537,11 @@ tool_output:
   # Keep this empty in production. Exempt tools may persist arbitrarily large
   # results into every later checkpoint in the thread.
   exempt_tools: []
+  # Remove redundant historical write_file payloads only from model requests;
+  # checkpoints and tool receipts retain the original arguments.
+  elide_superseded_writes: true
+  superseded_write_min_chars: 2000
+  keep_recent_writes: 1
   # tool_overrides:
   #   web_search: 8000
   #   bash: 20000

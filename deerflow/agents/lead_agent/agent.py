@@ -131,7 +131,11 @@ def _drop_unusable_fraction_clauses(
     return effective_trigger, effective_keep, True
 
 
-def _create_summarization_middleware(run_model_name: str | None = None) -> DeerFlowSummarizationMiddleware | None:
+def _create_summarization_middleware(
+    run_model_name: str | None = None,
+    *,
+    memory_enabled: bool = True,
+) -> DeerFlowSummarizationMiddleware | None:
     """Create and configure the summarization middleware from config.
 
     Args:
@@ -220,7 +224,7 @@ def _create_summarization_middleware(run_model_name: str | None = None) -> DeerF
         kwargs["summary_prompt"] = config.summary_prompt
 
     hooks: list[BeforeSummarizationHook] = []
-    if get_memory_config().enabled:
+    if memory_enabled and get_memory_config().enabled:
         hooks.append(memory_flush_hook)
 
     # The logic below relies on two assumptions holding true: this factory is
@@ -374,6 +378,7 @@ def _build_middlewares(
     config: RunnableConfig,
     model_name: str | None,
     agent_name: str | None = None,
+    memory_enabled: bool = True,
     custom_middlewares: list[AgentMiddleware] | None = None,
     recursion_limit: int | None = None,
 ) -> list[AgentMiddleware[Any, Any, Any]]:
@@ -392,7 +397,10 @@ def _build_middlewares(
     middlewares: list[AgentMiddleware[Any, Any, Any]] = list(build_lead_runtime_middlewares(lazy_init=True))
 
     # Add summarization middleware if enabled
-    summarization_middleware = _create_summarization_middleware(run_model_name=model_name)
+    summarization_middleware = _create_summarization_middleware(
+        run_model_name=model_name,
+        memory_enabled=memory_enabled,
+    )
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
 
@@ -410,8 +418,10 @@ def _build_middlewares(
     # Add TitleMiddleware
     middlewares.append(TitleMiddleware())
 
-    # Add MemoryMiddleware (after TitleMiddleware)
-    middlewares.append(MemoryMiddleware(agent_name=agent_name))
+    # Add MemoryMiddleware (after TitleMiddleware) unless the custom agent is
+    # explicitly stateless.
+    if memory_enabled:
+        middlewares.append(MemoryMiddleware(agent_name=agent_name))
 
     # Collect lightweight improvement signals and probation outcomes. Candidate
     # generation runs later on the single background worker, never in-response.
@@ -483,6 +493,11 @@ def make_lead_agent(config: RunnableConfig):
     agent_name = validate_agent_name(cfg.get("agent_name"))
 
     agent_config = load_agent_config(agent_name) if not is_bootstrap else None
+    memory_enabled = (
+        getattr(agent_config, "memory_enabled", True)
+        if agent_config is not None
+        else True
+    )
     # Custom agent model from agent config (if any), or None to let _resolve_model_name pick the default
     agent_model_name = agent_config.model if agent_config and agent_config.model else None
 
@@ -535,13 +550,18 @@ def make_lead_agent(config: RunnableConfig):
             "subagent_enabled": subagent_enabled,
             "tool_groups": agent_config.tool_groups if agent_config else None,
             "available_skills": ["bootstrap"] if is_bootstrap else (agent_config.skills if agent_config and agent_config.skills is not None else None),
+            "memory_enabled": memory_enabled,
         }
     )
 
     if is_bootstrap:
         # Special bootstrap agent with minimal prompt for initial custom agent creation flow
         middleware = normalize_middleware_state_schemas(
-            _build_middlewares(config, model_name=model_name),
+            _build_middlewares(
+                config,
+                model_name=model_name,
+                memory_enabled=memory_enabled,
+            ),
             checkpoint_mode,
             checkpoint_frequency,
         )
@@ -549,23 +569,42 @@ def make_lead_agent(config: RunnableConfig):
             model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled),
             tools=get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled) + [setup_agent],
             middleware=middleware,
-            system_prompt=apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, available_skills=set(["bootstrap"])),
+            system_prompt=apply_prompt_template(
+                subagent_enabled=subagent_enabled,
+                max_concurrent_subagents=max_concurrent_subagents,
+                available_skills=set(["bootstrap"]),
+                memory_enabled=memory_enabled,
+            ),
             state_schema=get_thread_state_schema(checkpoint_mode, checkpoint_frequency),
             context_schema=AgentContext,
         )
 
     # Default lead agent (unchanged behavior)
     middleware = normalize_middleware_state_schemas(
-        _build_middlewares(config, model_name=model_name, agent_name=agent_name),
+        _build_middlewares(
+            config,
+            model_name=model_name,
+            agent_name=agent_name,
+            memory_enabled=memory_enabled,
+        ),
         checkpoint_mode,
         checkpoint_frequency,
     )
     return create_agent(
         model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort),
-        tools=get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled),
+        tools=get_available_tools(
+            model_name=model_name,
+            groups=agent_config.tool_groups if agent_config else None,
+            subagent_enabled=subagent_enabled,
+            include_memory_tool=memory_enabled,
+        ),
         middleware=middleware,
         system_prompt=apply_prompt_template(
-            subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, agent_name=agent_name, available_skills=set(agent_config.skills) if agent_config and agent_config.skills is not None else None
+            subagent_enabled=subagent_enabled,
+            max_concurrent_subagents=max_concurrent_subagents,
+            agent_name=agent_name,
+            available_skills=set(agent_config.skills) if agent_config and agent_config.skills is not None else None,
+            memory_enabled=memory_enabled,
         ),
         state_schema=get_thread_state_schema(checkpoint_mode, checkpoint_frequency),
         context_schema=AgentContext,

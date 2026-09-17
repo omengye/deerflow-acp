@@ -135,7 +135,9 @@ def _build_runtime_middlewares(
             ReadBeforeWriteMiddleware,
         )
 
-        middlewares.append(ReadBeforeWriteMiddleware())
+        middlewares.append(
+            ReadBeforeWriteMiddleware(config=app_config.read_before_write)
+        )
     middlewares.append(ToolErrorHandlingMiddleware())
     return middlewares
 

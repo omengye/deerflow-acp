@@ -25,6 +25,7 @@ from langchain_core.messages import AIMessage
 from langgraph.errors import GraphBubbleUp
 
 from deerflow.config import get_app_config
+from deerflow.models.request_admission import AdmissionError
 
 logger = logging.getLogger(__name__)
 
@@ -434,6 +435,9 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 self._circuit_probe_token = None
 
     def _classify_error(self, exc: BaseException) -> tuple[bool, str]:
+        if isinstance(exc, AdmissionError):
+            return False, "admission"
+
         detail = _extract_error_detail(exc)
         lowered = detail.lower()
         error_code = _extract_error_code(exc)

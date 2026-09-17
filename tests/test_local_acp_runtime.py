@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 from acp import schema
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 import deerflow.acp.runtime as runtime_module
@@ -17,6 +17,7 @@ from deerflow.acp.runtime import LocalACPRuntime
 from deerflow.acp.session_store import LocalACPSession
 from deerflow.agents.goal_state import GoalEvaluation
 from deerflow.client import DeerFlowClient, StreamEvent
+from deerflow.runtime.goal import GoalCheckpointSnapshot, build_goal_state
 
 
 def _make_runtime_session(tmp_path: Path, session_id: str) -> LocalACPSession:
@@ -43,6 +44,82 @@ def _configure_local_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
             )
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_goal_runtime_pauses_before_evaluator_for_unanswered_clarification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    goal = build_goal_state("finish the migration", auto_continue=True)
+    messages = [
+        HumanMessage(content="Migrate the database."),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "ask_clarification",
+                    "args": {"question": "Keep the legacy table?"},
+                    "id": "call-ask",
+                }
+            ],
+        ),
+        ToolMessage(
+            content="Keep the legacy table?",
+            tool_call_id="call-ask",
+            name="ask_clarification",
+            artifact={
+                "human_input": {
+                    "kind": "human_input_request",
+                    "question": "Keep the legacy table?",
+                }
+            },
+        ),
+    ]
+    snapshot = GoalCheckpointSnapshot("checkpoint-1", goal, messages)
+    stored: list[dict[str, Any] | None] = []
+
+    async def fake_read(*_args: Any, **_kwargs: Any) -> GoalCheckpointSnapshot:
+        return snapshot
+
+    async def fake_write(
+        _checkpointer: Any,
+        _thread_id: str,
+        updated_goal: dict[str, Any] | None,
+        **_kwargs: Any,
+    ) -> None:
+        stored.append(updated_goal)
+
+    async def fail_evaluator(*_args: Any, **_kwargs: Any) -> GoalEvaluation:
+        raise AssertionError("goal evaluator must not run before the user answers")
+
+    monkeypatch.setattr(runtime_module, "read_goal_snapshot", fake_read)
+    monkeypatch.setattr(runtime_module, "write_thread_goal", fake_write)
+    monkeypatch.setattr(runtime_module, "evaluate_goal_completion", fail_evaluator)
+
+    runtime = LocalACPRuntime(
+        LocalACPConfig(
+            config_path=tmp_path / "config.yaml",
+            checkpointer_path=tmp_path / "checkpoints.db",
+            session_store_path=tmp_path / "sessions.db",
+        )
+    )
+    runtime._checkpointer = object()
+
+    result = await runtime._evaluate_goal_turn(
+        _make_runtime_session(tmp_path, "goal-needs-input"),
+        evaluator_model=object(),
+        snapshot=snapshot,
+    )
+
+    assert result.continuation is None
+    assert result.status_event is not None
+    assert result.status_event.data["status"] == "paused"
+    assert result.status_event.data["blocker"] == "needs_user_input"
+    assert result.status_event.data["stand_down_reason"] == "needs_user_input"
+    assert stored[0] is not None
+    assert stored[0]["continuation_count"] == 0
+    assert stored[0]["last_evaluation"]["blocker"] == "needs_user_input"
 
 
 @pytest.mark.asyncio

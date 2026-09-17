@@ -7,6 +7,10 @@ from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
 from langgraph.runtime import Runtime
 
+from deerflow.agents.middlewares.tool_call_metadata import (
+    clone_ai_message_with_tool_calls,
+)
+
 logger = logging.getLogger(__name__)
 
 # Valid range for max_concurrent_subagents
@@ -82,8 +86,12 @@ class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
         dropped_count = len(indices_to_drop)
         logger.warning(f"Truncated {dropped_count} excess task tool call(s) from model response (limit: {self.max_concurrent})")
 
-        # Replace the AIMessage with truncated tool_calls (same id triggers replacement)
-        updated_msg = last_msg.model_copy(update={"tool_calls": truncated_tool_calls})
+        # Keep provider-native tool blocks and raw metadata aligned with the
+        # structured calls that the tools node will actually execute.
+        updated_msg = clone_ai_message_with_tool_calls(
+            last_msg,
+            truncated_tool_calls,
+        )
         return {"messages": [updated_msg]}
 
     @override

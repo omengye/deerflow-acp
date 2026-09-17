@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage
 
 from langchain.agents.middleware import AgentMiddleware
@@ -59,12 +61,17 @@ def test_tool_frequency_limit_still_applies_within_same_run():
         tool_freq_hard_limit=3,
     )
 
-    assert middleware.after_model(_state("lookup", 1), _runtime(thread_id="thread-a", loop_detection_scope_id="thread-a:run-1")) is None
-    assert middleware.after_model(_state("lookup", 2), _runtime(thread_id="thread-a", loop_detection_scope_id="thread-a:run-1")) is None
+    runtime = _runtime(
+        thread_id="thread-a",
+        loop_detection_scope_id="thread-a:run-1",
+        run_id="run-1",
+    )
+    assert middleware.after_model(_state("lookup", 1), runtime) is None
+    assert middleware.after_model(_state("lookup", 2), runtime) is None
 
     result = middleware.after_model(
         _state("lookup", 3),
-        _runtime(thread_id="thread-a", loop_detection_scope_id="thread-a:run-1"),
+        runtime,
     )
 
     assert result is not None
@@ -126,16 +133,72 @@ def test_tool_frequency_uses_sliding_window_and_rearms_warning():
         tool_freq_hard_limit=3,
     )
     runtime = _runtime(thread_id="thread-a", loop_detection_scope_id="thread-a:run-1")
+    scope_key = middleware._run_scope_key(runtime)
 
     for index, name in enumerate(("lookup", "other", "lookup")):
         middleware.after_model(_state(name, index), runtime)
-    assert "lookup" in middleware._tool_freq_warned["thread-a:run-1"]
+    assert "lookup" in middleware._tool_freq_warned[scope_key]
 
     middleware.after_model(_state("other", 3), runtime)
-    assert "lookup" not in middleware._tool_freq_warned["thread-a:run-1"]
+    assert "lookup" not in middleware._tool_freq_warned[scope_key]
 
     middleware.after_model(_state("lookup", 4), runtime)
-    assert "lookup" in middleware._tool_freq_warned["thread-a:run-1"]
+    assert "lookup" in middleware._tool_freq_warned[scope_key]
+
+
+def test_detection_counters_are_isolated_by_run_in_same_thread():
+    middleware = LoopDetectionMiddleware(
+        warn_threshold=100,
+        hard_limit=100,
+        tool_freq_warn=100,
+        tool_freq_hard_limit=3,
+    )
+
+    for run_id in ("run-1", "run-2", "run-3"):
+        runtime = _runtime(thread_id="thread-a", run_id=run_id)
+        for index in range(2):
+            assert middleware.after_model(_state("lookup", index), runtime) is None
+
+    assert set(middleware._history) == {
+        ("thread-a", "run-1"),
+        ("thread-a", "run-2"),
+        ("thread-a", "run-3"),
+    }
+
+
+def test_hard_stop_removes_provider_native_tool_call_blocks():
+    middleware = LoopDetectionMiddleware(
+        warn_threshold=1,
+        hard_limit=1,
+        tool_freq_warn=100,
+        tool_freq_hard_limit=100,
+    )
+    runtime = _runtime(thread_id="thread-a", run_id="run-1")
+    message = AIMessage(
+        content=[
+            {"type": "text", "text": "working"},
+            {
+                "type": "tool_use",
+                "id": "call-1",
+                "name": "lookup",
+                "input": {"query": "same"},
+            },
+        ],
+        tool_calls=[
+            {
+                "name": "lookup",
+                "args": {"query": "same"},
+                "id": "call-1",
+            }
+        ],
+    )
+
+    result = middleware.after_model({"messages": [message]}, runtime)
+
+    assert result is not None
+    stopped = result["messages"][0]
+    assert stopped.tool_calls == []
+    assert [block["type"] for block in stopped.content] == ["text", "text"]
 
 
 def test_total_call_hard_limit_stops_long_diverse_runs():
@@ -185,6 +248,56 @@ def test_total_call_warn_is_queued_before_hard_limit():
     # 60th call queues a deferred wrap-up warning (returned as None from after_model).
     assert middleware.after_model(_state("lookup", 59), runtime) is None
     assert any(middleware._pending_warnings.values())
+
+
+def test_sync_model_failure_restores_drained_loop_warning():
+    middleware = LoopDetectionMiddleware(
+        warn_threshold=1,
+        hard_limit=100,
+        tool_freq_warn=100,
+        tool_freq_hard_limit=100,
+    )
+    runtime = _runtime(thread_id="thread-a", run_id="run-1")
+    middleware.after_model(_state("lookup", 1), runtime)
+    request = ModelRequest(model=None, messages=[], runtime=runtime)
+
+    with pytest.raises(RuntimeError, match="retry me"):
+        middleware.wrap_model_call(
+            request,
+            lambda _request: (_ for _ in ()).throw(RuntimeError("retry me")),
+        )
+
+    seen = []
+    middleware.wrap_model_call(request, lambda retried: seen.extend(retried.messages) or AIMessage(content="ok"))
+    assert seen[-1].name == "loop_warning"
+
+
+@pytest.mark.asyncio
+async def test_async_model_failure_restores_drained_loop_warning():
+    middleware = LoopDetectionMiddleware(
+        warn_threshold=1,
+        hard_limit=100,
+        tool_freq_warn=100,
+        tool_freq_hard_limit=100,
+    )
+    runtime = _runtime(thread_id="thread-a", run_id="run-1")
+    middleware.after_model(_state("lookup", 1), runtime)
+    request = ModelRequest(model=None, messages=[], runtime=runtime)
+
+    async def fail(_request):
+        raise RuntimeError("retry me")
+
+    with pytest.raises(RuntimeError, match="retry me"):
+        await middleware.awrap_model_call(request, fail)
+
+    seen = []
+
+    async def succeed(retried):
+        seen.extend(retried.messages)
+        return AIMessage(content="ok")
+
+    await middleware.awrap_model_call(request, succeed)
+    assert seen[-1].name == "loop_warning"
 
 
 def test_total_call_limits_track_recursion_budget():

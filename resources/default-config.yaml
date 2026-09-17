@@ -1,4 +1,4 @@
-config_version: 15
+config_version: 16
 log_level: info
 
 api:
@@ -54,6 +54,8 @@ default_model: openai
 
 read_before_write:
   enabled: true
+  elide_blocked_payloads: true
+  elide_min_chars: 2000
 
 subagents:
   enabled: true

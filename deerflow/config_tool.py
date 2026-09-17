@@ -717,6 +717,9 @@ def _validated_agents(incoming: list[dict[str, Any]], model_names: set[str]) -> 
             model=model_name,
             tool_groups=[str(value) for value in item.get("tool_groups") or []] or None,
             skills=(None if item.get("skills") is None else [str(value) for value in item.get("skills") or []]),
+            # Let AgentConfig parse and validate the raw value.  Calling bool()
+            # here would silently turn the string "false" into True.
+            memory_enabled=item.get("memory_enabled", True),
         )
         output.append((original, name, agent.model_dump(exclude_none=True), str(item.get("soul") or "")))
     return output

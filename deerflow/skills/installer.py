@@ -15,13 +15,29 @@ import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from deerflow.skills.loader import get_skills_root_path
+from deerflow.skills.package_files import (
+    is_code_file,
+    is_executable_binary_prefix,
+)
 from deerflow.skills.security_scanner import scan_skill_content
 from deerflow.skills.validation import _validate_skill_frontmatter
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_INPUT_DIRS = {"references", "templates"}
-_PROMPT_INPUT_SUFFIXES = frozenset({".json", ".markdown", ".md", ".rst", ".txt", ".yaml", ".yml"})
+_NESTED_ARCHIVE_SUFFIXES = (
+    ".skill",
+    ".zip",
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz2",
+    ".tar.xz",
+    ".txz",
+    ".7z",
+    ".rar",
+    ".whl",
+)
 
 
 class SkillAlreadyExistsError(ValueError):
@@ -46,6 +62,10 @@ def is_unsafe_zip_member(info: zipfile.ZipInfo) -> bool:
     if PureWindowsPath(name).is_absolute():
         return True
     if ".." in path.parts:
+        return True
+    # On Windows a colon can create an NTFS alternate data stream that normal
+    # directory scans cannot enumerate.
+    if ":" in name:
         return True
     return False
 
@@ -84,6 +104,7 @@ def safe_extract_skill_archive(
     zip_ref: zipfile.ZipFile,
     dest_path: Path,
     max_total_size: int = 512 * 1024 * 1024,
+    max_entries: int = 4096,
 ) -> None:
     """Safely extract a skill archive with security protections.
 
@@ -98,7 +119,14 @@ def safe_extract_skill_archive(
     dest_root = dest_path.resolve()
     total_written = 0
 
-    for info in zip_ref.infolist():
+    infos = zip_ref.infolist()
+    if len(infos) > max_entries:
+        raise ValueError(
+            f"Skill archive contains too many entries ({len(infos)} > {max_entries})."
+        )
+
+    seen_names: set[str] = set()
+    for info in infos:
         if is_unsafe_zip_member(info):
             raise ValueError(f"Archive contains unsafe member path: {info.filename!r}")
 
@@ -107,6 +135,12 @@ def safe_extract_skill_archive(
             continue
 
         normalized_name = posixpath.normpath(info.filename.replace("\\", "/"))
+        normalized_key = normalized_name.casefold()
+        if normalized_key in seen_names:
+            raise ValueError(
+                f"Archive contains a duplicate member path: {info.filename!r}"
+            )
+        seen_names.add(normalized_key)
         member_path = dest_root.joinpath(*PurePosixPath(normalized_name).parts)
         if not member_path.resolve().is_relative_to(dest_root):
             raise ValueError(f"Zip entry escapes destination: {info.filename!r}")
@@ -117,21 +151,22 @@ def safe_extract_skill_archive(
             continue
 
         with zip_ref.open(info) as src, member_path.open("wb") as dst:
+            first_chunk = True
             while chunk := src.read(65536):
+                if first_chunk and is_executable_binary_prefix(chunk):
+                    raise ValueError(
+                        f"Archive contains executable binary member: {info.filename!r}"
+                    )
+                first_chunk = False
                 total_written += len(chunk)
                 if total_written > max_total_size:
                     raise ValueError("Skill archive is too large or appears highly compressed.")
                 dst.write(chunk)
 
 
-def _is_script_support_file(rel_path: Path) -> bool:
-    return bool(rel_path.parts) and rel_path.parts[0] == "scripts"
-
-
-def _should_scan_support_file(rel_path: Path) -> bool:
-    if _is_script_support_file(rel_path):
-        return True
-    return bool(rel_path.parts) and rel_path.parts[0] in _PROMPT_INPUT_DIRS and rel_path.suffix.lower() in _PROMPT_INPUT_SUFFIXES
+def _is_nested_archive(rel_path: Path) -> bool:
+    lowered = rel_path.as_posix().lower()
+    return lowered.endswith(_NESTED_ARCHIVE_SUFFIXES)
 
 
 def _move_staged_skill_into_reserved_target(staging_target: Path, target: Path) -> None:
@@ -176,7 +211,7 @@ async def _scan_skill_file_or_raise(skill_dir: Path, path: Path, skill_name: str
 
 
 async def _scan_skill_archive_contents_or_raise(skill_dir: Path, skill_name: str) -> None:
-    """Run the skill security scanner against all installable text and script files."""
+    """Scan code and readable text across the whole installable package."""
     skill_md = skill_dir / "SKILL.md"
     await _scan_skill_file_or_raise(skill_dir, skill_md, skill_name, executable=False)
 
@@ -189,10 +224,44 @@ async def _scan_skill_archive_contents_or_raise(skill_dir: Path, skill_name: str
             continue
         if path.name == "SKILL.md":
             raise SkillSecurityScanError(f"Security scan failed for skill '{skill_name}': nested SKILL.md is not allowed at {skill_name}/{rel_path.as_posix()}")
-        if not _should_scan_support_file(rel_path):
+        if _is_nested_archive(rel_path):
+            raise SkillSecurityScanError(
+                f"Security scan failed for skill '{skill_name}': nested archive "
+                f"is not allowed at {skill_name}/{rel_path.as_posix()}"
+            )
+
+        try:
+            with path.open("rb") as handle:
+                head = handle.read(16)
+        except OSError as exc:
+            raise SkillSecurityScanError(
+                f"Security scan failed to read {skill_name}/{rel_path.as_posix()}: {exc}"
+            ) from exc
+        if is_executable_binary_prefix(head):
+            raise SkillSecurityScanError(
+                f"Security scan blocked executable binary "
+                f"{skill_name}/{rel_path.as_posix()}"
+            )
+
+        executable = is_code_file(rel_path, head)
+        try:
+            path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            if executable:
+                raise SkillSecurityScanError(
+                    f"Security scan failed for skill '{skill_name}': "
+                    f"{skill_name}/{rel_path.as_posix()} must be valid UTF-8"
+                ) from exc
+            # Non-executable binary assets are permitted after executable
+            # magic and nested-archive checks.
             continue
 
-        await _scan_skill_file_or_raise(skill_dir, path, skill_name, executable=_is_script_support_file(rel_path))
+        await _scan_skill_file_or_raise(
+            skill_dir,
+            path,
+            skill_name,
+            executable=executable,
+        )
 
 
 async def ainstall_skill_from_archive(

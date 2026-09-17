@@ -327,6 +327,37 @@ def test_save_rejects_new_agent_that_would_overwrite_existing_directory(tmp_path
         )
 
 
+def test_agent_memory_opt_out_survives_snapshot_and_save(tmp_path: Path) -> None:
+    config_path, user_data, _ = _layout(tmp_path)
+    agent_dir = user_data / "data" / "deerflow" / "agents" / "stateless"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "config.yaml").write_text(
+        "name: stateless\ndescription: worker\nmemory_enabled: false\n",
+        encoding="utf-8",
+    )
+
+    current = config_tool.snapshot(config_path, user_data)
+    agent = next(item for item in current["agents"] if item["name"] == "stateless")
+    assert agent["memory_enabled"] is False
+
+    config_tool.save(
+        config_path,
+        user_data,
+        config_tool.SaveDocument.model_validate(current),
+    )
+    persisted = yaml.safe_load((agent_dir / "config.yaml").read_text(encoding="utf-8"))
+    assert persisted["memory_enabled"] is False
+
+
+def test_agent_memory_opt_out_parses_string_false() -> None:
+    agents = config_tool._validated_agents(
+        [{"name": "stateless", "memory_enabled": "false"}],
+        set(),
+    )
+
+    assert agents[0][2]["memory_enabled"] is False
+
+
 def test_relative_skill_path_uses_active_config_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path = tmp_path / "config" / "config.yaml"
     config_path.parent.mkdir()

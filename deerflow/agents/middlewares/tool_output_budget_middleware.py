@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import posixpath
 import shlex
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace as dc_replace
 from typing import TYPE_CHECKING, Any, override
 
@@ -18,11 +19,16 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from deerflow.agents.middlewares.tool_output_synopsis import build_synopsis
+from deerflow.agents.middlewares.tool_call_args import (
+    ToolCallOccurrence,
+    pair_tool_call_results,
+    rewrite_messages_tool_call_args,
+)
 from deerflow.config.tool_output_config import ToolOutputConfig
 from deerflow.sandbox.sandbox_provider import get_sandbox_provider
 
@@ -347,6 +353,124 @@ def _patch_model_messages(messages: list[Any], config: ToolOutputConfig) -> list
     return updated if changed else None
 
 
+_WRITE_TOOL = "write_file"
+_FILE_MODIFYING_TOOLS = frozenset({"write_file", "str_replace"})
+_FILE_READING_TOOLS = frozenset({"read_file"})
+_ELIDED_WRITE_CONTENT_TEMPLATE = (
+    "[content elided: {chars} chars; this write_file call succeeded and the "
+    "file was read or modified again afterwards, so the on-disk file is the "
+    "current version; call read_file on its path to see it]"
+)
+
+
+def elide_superseded_write_payloads(
+    messages: list[Any],
+    *,
+    min_chars: int,
+    keep_recent: int,
+) -> list[Any] | None:
+    """Elide old successful writes made redundant by a later file touch."""
+    if not _has_elidable_write(messages, min_chars):
+        return None
+
+    latest_touch: dict[str, int] = {}
+    successful_writes: list[tuple[ToolCallOccurrence, str]] = []
+    for occurrence in pair_tool_call_results(messages):
+        path = _normalized_path_arg(occurrence.args)
+        if path is None:
+            continue
+        if occurrence.name in _FILE_MODIFYING_TOOLS:
+            if not _result_succeeded(occurrence.name, occurrence.result):
+                continue
+            if occurrence.name == _WRITE_TOOL:
+                successful_writes.append((occurrence, path))
+        elif occurrence.name in _FILE_READING_TOOLS:
+            if not _result_succeeded(occurrence.name, occurrence.result):
+                continue
+        else:
+            continue
+        # Calls in one AIMessage may execute concurrently and have no defined
+        # ordering, so only a strictly later message can supersede a write.
+        latest_touch[path] = max(
+            latest_touch.get(path, -1),
+            occurrence.index,
+        )
+
+    replacements: dict[tuple[int, str], dict[str, Any]] = {}
+    cutoff = max(0, len(successful_writes) - keep_recent)
+    for occurrence, path in successful_writes[:cutoff]:
+        content = occurrence.args.get("content")
+        if (
+            not isinstance(content, str)
+            or not content
+            or len(content) < min_chars
+            or latest_touch.get(path, -1) <= occurrence.index
+        ):
+            continue
+        replacements[(id(occurrence.message), occurrence.call_id)] = {
+            **occurrence.args,
+            "content": _ELIDED_WRITE_CONTENT_TEMPLATE.format(
+                chars=len(content)
+            ),
+        }
+    if not replacements:
+        return None
+
+    def replacement_for(
+        message: AIMessage,
+        tool_call: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return replacements.get((id(message), tool_call["id"]))
+
+    return rewrite_messages_tool_call_args(messages, replacement_for)
+
+
+def _has_elidable_write(messages: list[Any], min_chars: int) -> bool:
+    for message in messages:
+        if not isinstance(message, AIMessage):
+            continue
+        for tool_call in message.tool_calls or ():
+            if (
+                not isinstance(tool_call, dict)
+                or tool_call.get("name") != _WRITE_TOOL
+            ):
+                continue
+            args = tool_call.get("args")
+            content = args.get("content") if isinstance(args, dict) else None
+            if (
+                isinstance(content, str)
+                and content
+                and len(content) >= min_chars
+            ):
+                return True
+    return False
+
+
+def _result_succeeded(name: str, result: ToolMessage | None) -> bool:
+    """Use the current runtime's ToolMessage success/error contract."""
+    if result is None or getattr(result, "status", None) != "success":
+        return False
+    text = _message_text(result.content)
+    if not isinstance(text, str):
+        return False
+    stripped = text.strip()
+    if name in _FILE_MODIFYING_TOOLS:
+        return stripped == "OK"
+    return not (
+        stripped.startswith("Error:")
+        or stripped in {
+            "(start_line must be >= 1)",
+            "(end_line must be >= 1)",
+            "(start_line > end_line — no lines in range)",
+        }
+    )
+
+
+def _normalized_path_arg(args: Mapping[str, Any]) -> str | None:
+    path = args.get("path")
+    return posixpath.normpath(path) if isinstance(path, str) and path else None
+
+
 class ToolOutputBudgetMiddleware(AgentMiddleware[AgentState]):
     """Enforce per-result budget on tool outputs via externalization or truncation."""
 
@@ -377,16 +501,32 @@ class ToolOutputBudgetMiddleware(AgentMiddleware[AgentState]):
 
     @override
     def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelCallResult:
-        if self._config.enabled and isinstance(getattr(request, "messages", None), list):
-            patched = _patch_model_messages(request.messages, self._config)
-            if patched is not None:
-                request = request.override(messages=patched)
-        return handler(request)
+        return handler(self._budget_model_request(request))
 
     @override
     async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelCallResult:
-        if self._config.enabled and isinstance(getattr(request, "messages", None), list):
-            patched = _patch_model_messages(request.messages, self._config)
-            if patched is not None:
-                request = request.override(messages=patched)
-        return await handler(request)
+        return await handler(self._budget_model_request(request))
+
+    def _budget_model_request(self, request: ModelRequest) -> ModelRequest:
+        if not self._config.enabled:
+            return request
+        original = getattr(request, "messages", None)
+        if not isinstance(original, list):
+            return request
+        messages = original
+        patched = _patch_model_messages(messages, self._config)
+        if patched is not None:
+            messages = patched
+        if self._config.elide_superseded_writes:
+            elided = elide_superseded_write_payloads(
+                messages,
+                min_chars=self._config.superseded_write_min_chars,
+                keep_recent=self._config.keep_recent_writes,
+            )
+            if elided is not None:
+                messages = elided
+        return (
+            request
+            if messages is original
+            else request.override(messages=messages)
+        )

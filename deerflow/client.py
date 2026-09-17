@@ -225,6 +225,11 @@ class DeerFlowClient:
         self._max_concurrent_subagents = max_concurrent_subagents
         self._agent_name = agent_name
         self._agent_config = load_agent_config(agent_name) if agent_name is not None else None
+        self._memory_enabled = (
+            getattr(self._agent_config, "memory_enabled", True)
+            if self._agent_config is not None
+            else True
+        )
         profile_skills = self._agent_config.skills if self._agent_config is not None else None
         if available_skills is None:
             self._available_skills = set(profile_skills) if profile_skills is not None else None
@@ -409,7 +414,12 @@ class DeerFlowClient:
         model_name = requested_model_name or app_config.get_default_model_name()
         model_config = app_config.get_model_config(model_name) if model_name else None
         current_date = get_current_date()
-        memory_signature = self._get_memory_signature(self._agent_name)
+        memory_enabled = getattr(self, "_memory_enabled", True)
+        memory_signature = (
+            self._get_memory_signature(self._agent_name)
+            if memory_enabled
+            else None
+        )
         skill_catalog_version = self._get_skill_catalog_version()
         skill_evolution_config = getattr(app_config, "skill_evolution", None)
         skill_evolution_enabled = bool(getattr(skill_evolution_config, "enabled", False))
@@ -433,6 +443,7 @@ class DeerFlowClient:
             skill_evolution_enabled,
             skill_evolution_mode,
             self._agent_name,
+            memory_enabled,
             frozenset(self._available_skills) if self._available_skills is not None else None,
             checkpoint_mode,
             checkpoint_frequency,
@@ -467,6 +478,7 @@ class DeerFlowClient:
             agent_name=self._agent_name,
             custom_middlewares=self._middlewares,
             recursion_limit=self._recursion_limit,
+            memory_enabled=memory_enabled,
         )
         middlewares = normalize_middleware_state_schemas(
             middlewares,
@@ -492,6 +504,7 @@ class DeerFlowClient:
                 available_tool_names=effective_tool_names,
                 system_prompt_overlay=getattr(self, "_system_prompt_overlay", ""),
                 current_date=current_date,
+                memory_enabled=memory_enabled,
             ),
             "state_schema": get_thread_state_schema(
                 checkpoint_mode,
@@ -521,6 +534,7 @@ class DeerFlowClient:
                 model_name=model_name,
                 groups=getattr(self, "_tool_groups", None),
                 subagent_enabled=subagent_enabled,
+                include_memory_tool=getattr(self, "_memory_enabled", True),
             )
         )
         existing_names = {tool.name for tool in tools}

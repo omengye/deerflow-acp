@@ -310,8 +310,9 @@ for current, dirs, files in os.walk(root, onerror=walk_error):
         for name in dirs:
             rel = f"{rel_dir}/{name}" if rel_dir else name
             if matches(rel):
-                out.append(os.path.join(current, name))
-                if len(out) >= max_results:
+                if len(out) < max_results:
+                    out.append(os.path.join(current, name))
+                else:
                     truncated = True
                     break
     if truncated:
@@ -321,8 +322,9 @@ for current, dirs, files in os.walk(root, onerror=walk_error):
             continue
         rel = f"{rel_dir}/{name}" if rel_dir else name
         if matches(rel):
-            out.append(os.path.join(current, name))
-            if len(out) >= max_results:
+            if len(out) < max_results:
+                out.append(os.path.join(current, name))
+            else:
                 truncated = True
                 break
     if truncated:

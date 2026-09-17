@@ -759,9 +759,10 @@ def apply_prompt_template(
     available_tool_names: set[str] | None = None,
     system_prompt_overlay: str | None = None,
     current_date: str | None = None,
+    memory_enabled: bool = True,
 ) -> str:
     # Get memory context
-    memory_context = _get_memory_context(agent_name)
+    memory_context = _get_memory_context(agent_name) if memory_enabled else ""
 
     # Include subagent section only if enabled (from runtime parameter)
     n = max_concurrent_subagents

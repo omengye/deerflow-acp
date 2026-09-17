@@ -37,3 +37,20 @@ class ToolOutputConfig(BaseModel):
         default_factory=dict,
         description="Per-tool externalize_min_chars overrides.",
     )
+    elide_superseded_writes: bool = Field(
+        default=True,
+        description=(
+            "Elide large successful write_file content after a later successful "
+            "read or modification of the same path."
+        ),
+    )
+    superseded_write_min_chars: int = Field(
+        default=2000,
+        ge=0,
+        description="Minimum write_file content size eligible for elision.",
+    )
+    keep_recent_writes: int = Field(
+        default=1,
+        ge=0,
+        description="Number of newest successful writes whose content stays visible.",
+    )

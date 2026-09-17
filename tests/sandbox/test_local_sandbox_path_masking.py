@@ -41,3 +41,18 @@ def test_output_does_not_mask_similarly_prefixed_sibling(tmp_path) -> None:
     sibling = f"{workspace}-other"
 
     assert sandbox._reverse_resolve_paths_in_output(sibling) == sibling
+
+
+def test_output_masks_every_entry_in_colon_joined_path_list(tmp_path) -> None:
+    sandbox, workspace = _sandbox(tmp_path)
+    resolved = str(workspace.resolve()).replace("\\", "/")
+
+    output = sandbox._reverse_resolve_paths_in_output(
+        f"PYTHONPATH={resolved}/src:{resolved}/lib:/usr/lib"
+    )
+
+    assert output == (
+        "PYTHONPATH=/mnt/user-data/workspace/src:"
+        "/mnt/user-data/workspace/lib:/usr/lib"
+    )
+    assert resolved not in output

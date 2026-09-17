@@ -12,6 +12,19 @@ from deerflow.agents.thread_state import AgentContext, ThreadState
 from deerflow.runtime.scheduler import get_scheduler_service, task_to_dict
 
 ScheduleType = Literal["once", "interval", "daily"]
+ScheduledTaskRunStatus = Literal[
+    "pending",
+    "claimed",
+    "running",
+    "launched",
+    "retry",
+    "success",
+    "error",
+    "timeout",
+    "interrupted",
+    "cancelled",
+    "dead_letter",
+]
 
 
 def _get_thread_id(runtime: ToolRuntime[AgentContext, ThreadState] | None) -> str | None:
@@ -23,6 +36,21 @@ def _get_thread_id(runtime: ToolRuntime[AgentContext, ThreadState] | None) -> st
             return thread_id
     try:
         return get_config().get("configurable", {}).get("thread_id")
+    except Exception:
+        return None
+
+
+def _get_agent_name(runtime: ToolRuntime[AgentContext, ThreadState] | None) -> str | None:
+    """Resolve the custom agent bound to the current run, if any."""
+    if runtime is not None:
+        if runtime.context and runtime.context.get("agent_name"):
+            return str(runtime.context["agent_name"])
+        agent_name = runtime.config.get("configurable", {}).get("agent_name")
+        if agent_name:
+            return str(agent_name)
+    try:
+        agent_name = get_config().get("configurable", {}).get("agent_name")
+        return str(agent_name) if agent_name else None
     except Exception:
         return None
 
@@ -88,6 +116,7 @@ async def create_scheduled_task_tool(
         raise ValueError(f"Unsupported schedule_type: {schedule_type}")
 
     service = get_scheduler_service()
+    agent_name = _get_agent_name(runtime)
     task = await service.store.create_task(
         thread_id=target_thread_id,
         prompt=prompt,
@@ -96,6 +125,7 @@ async def create_scheduled_task_tool(
         timezone=timezone or service.default_timezone,
         created_by="agent",
         metadata=_delivery_metadata_for_thread(target_thread_id),
+        kwargs={"agent_name": agent_name} if agent_name else None,
         multitask_strategy=multitask_strategy,
     )
     return _json({"created": task_to_dict(task)})
@@ -167,16 +197,37 @@ async def list_scheduled_task_runs_tool(
     runtime: ToolRuntime[AgentContext, ThreadState],
     task_id: str,
     limit: int = 20,
+    offset: int = 0,
+    status: ScheduledTaskRunStatus | None = None,
 ) -> str:
     """List execution history for a scheduled task.
 
     Args:
         task_id: The scheduled task ID.
         limit: Maximum number of execution records to return.
+        offset: Number of matching execution records to skip.
+        status: Optional occurrence status to filter before pagination.
     """
     await _require_task_owned_by_current_thread(runtime, task_id)
-    runs = await get_scheduler_service().store.list_task_runs(task_id, limit=limit)
-    return _json({"task_id": task_id, "runs": runs})
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    rows = await get_scheduler_service().store.list_task_runs(
+        task_id,
+        limit=limit + 1,
+        offset=offset,
+        status=status,
+    )
+    has_more = len(rows) > limit
+    return _json(
+        {
+            "task_id": task_id,
+            "runs": rows[:limit],
+            "offset": offset,
+            "limit": limit,
+            "has_more": has_more,
+            "status": status,
+        }
+    )
 
 
 async def _require_task_owned_by_current_thread(

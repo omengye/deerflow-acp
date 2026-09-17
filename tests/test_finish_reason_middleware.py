@@ -90,7 +90,14 @@ def test_safety_finish_reason_backfills_empty_message(metadata):
 
 def test_safety_finish_reason_suppresses_structured_and_raw_tool_calls():
     message = AIMessage(
-        content="",
+        content=[
+            {
+                "type": "tool_use",
+                "id": "call-1",
+                "name": "write_file",
+                "input": {"path": "x"},
+            }
+        ],
         response_metadata={"finish_reason": "content_filter"},
         tool_calls=[{"id": "call-1", "name": "write_file", "args": {"path": "x"}}],
         additional_kwargs={
@@ -108,7 +115,8 @@ def test_safety_finish_reason_suppresses_structured_and_raw_tool_calls():
     assert patched.tool_calls == []
     assert "tool_calls" not in patched.additional_kwargs
     assert "function_call" not in patched.additional_kwargs
-    assert "suppressed" in patched.content
+    assert [block["type"] for block in patched.content] == ["text"]
+    assert "suppressed" in patched.content[0]["text"]
 
 
 def test_safety_finish_reason_preserves_visible_refusal_without_tools():

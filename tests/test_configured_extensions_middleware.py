@@ -163,3 +163,32 @@ def test_build_middlewares_appends_configured_middlewares_before_clarification()
     dummy_index = middlewares.index(dummy)
     loop_detection_index = next(i for i, m in enumerate(middlewares) if isinstance(m, LoopDetectionMiddleware))
     assert loop_detection_index < dummy_index < len(middlewares) - 1
+
+
+def test_build_middlewares_disables_all_memory_hooks_for_stateless_agent():
+    from deerflow.agents.lead_agent.agent import _build_middlewares
+    from deerflow.agents.middlewares.memory_middleware import MemoryMiddleware
+
+    set_app_config(AppConfig(sandbox=SandboxConfig(use="test")))
+    try:
+        with (
+            patch(
+                "deerflow.agents.lead_agent.agent._create_summarization_middleware",
+                return_value=None,
+            ) as create_summary,
+            patch(
+                "deerflow.agents.lead_agent.agent.load_configured_middlewares",
+                return_value=[],
+            ),
+        ):
+            middlewares = _build_middlewares(
+                {},
+                model_name=None,
+                agent_name="stateless",
+                memory_enabled=False,
+            )
+    finally:
+        reset_app_config()
+
+    assert not any(isinstance(item, MemoryMiddleware) for item in middlewares)
+    assert create_summary.call_args.kwargs["memory_enabled"] is False

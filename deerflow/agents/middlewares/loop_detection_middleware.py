@@ -21,9 +21,9 @@ import hashlib
 import json
 import logging
 import threading
+import uuid
 from collections import Counter, OrderedDict, defaultdict, deque
 from collections.abc import Awaitable, Callable
-from copy import deepcopy
 from typing import Any, override
 
 from langchain.agents import AgentState
@@ -31,6 +31,10 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
+
+from deerflow.agents.middlewares.tool_call_metadata import (
+    clone_ai_message_with_tool_calls,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +71,8 @@ _DEFAULT_STEPS_PER_TURN = 5
 _TOTAL_CALL_HARD_FRACTION = 0.80
 _TOTAL_CALL_WARN_FRACTION = 0.55
 _MAX_PENDING_WARNINGS_PER_RUN = 4
+
+type _RunScopeKey = tuple[str, str]
 
 
 def count_steps_per_turn(middlewares: list) -> int:
@@ -290,25 +296,30 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self.total_call_hard_limit = total_call_hard_limit if total_call_hard_limit is not None else derived_hard
         self.stream_callback = stream_callback
         self._lock = threading.Lock()
-        # Per-thread tracking using OrderedDict for LRU eviction
-        self._history: OrderedDict[str, list[str]] = OrderedDict()
-        self._warned: dict[str, set[str]] = defaultdict(set)
+        # LangGraph replaces Runtime wrappers across graph nodes but keeps the
+        # control object for one invocation. Use it as a fallback run anchor
+        # when embedders do not provide run_id.
+        self._fallback_run_ids: OrderedDict[int, tuple[object, str]] = OrderedDict()
+        self._max_fallback_run_ids = max(1, self.max_tracked_threads * 2)
+        # Detection state is run-scoped so a new user run in the same thread
+        # never inherits warning or hard-stop counters.
+        self._history: OrderedDict[_RunScopeKey, list[str]] = OrderedDict()
+        self._warned: dict[_RunScopeKey, set[str]] = defaultdict(set)
         # Per-tool frequency is windowed over individual calls.  Keep the
         # window large enough for the configured hard threshold to be
         # reachable even when the generic hash window is smaller.
         self._tool_frequency_window_size = max(window_size, tool_freq_hard_limit)
-        self._tool_name_history: dict[str, deque[str]] = defaultdict(deque)
-        self._tool_freq: dict[str, Counter[str]] = defaultdict(Counter)
-        self._tool_freq_warned: dict[str, set[str]] = defaultdict(set)
-        # Per-thread cumulative call count across ALL tool types (backstop)
-        self._total_calls: dict[str, int] = defaultdict(int)
-        self._total_warned: set[str] = set()
+        self._tool_name_history: dict[_RunScopeKey, deque[str]] = defaultdict(deque)
+        self._tool_freq: dict[_RunScopeKey, Counter[str]] = defaultdict(Counter)
+        self._tool_freq_warned: dict[_RunScopeKey, set[str]] = defaultdict(set)
+        self._total_calls: dict[_RunScopeKey, int] = defaultdict(int)
+        self._total_warned: set[_RunScopeKey] = set()
         # Deferred warnings: queued in ``after_model`` and drained in
         # ``wrap_model_call`` so they land at the end of the message list
         # rather than between an AIMessage tool_calls and its ToolMessage
         # responses. Keyed by (thread_id, run_id).
-        self._pending_warnings: dict[tuple[str, str], list[str]] = defaultdict(list)
-        self._pending_warning_touch_order: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._pending_warnings: dict[_RunScopeKey, list[str]] = defaultdict(list)
+        self._pending_warning_touch_order: OrderedDict[_RunScopeKey, None] = OrderedDict()
         self._max_pending_warning_keys = max(1, self.max_tracked_threads * 2)
 
     def set_run_budget(self, recursion_limit: int | None, steps_per_turn: int | None = None) -> None:
@@ -335,35 +346,72 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         return "default"
 
     def _get_run_id(self, runtime: Runtime) -> str:
-        """Extract run_id from runtime context for per-run warning scoping."""
-        context: dict[str, Any] = runtime.context or {}
-        run_id = context.get("run_id")
-        if run_id:
-            return str(run_id)
-        return "default"
+        """Return a stable ID for one invocation, even without context run_id."""
+        context = getattr(runtime, "context", None)
+        if isinstance(context, dict) and context.get("run_id") is not None:
+            return str(context["run_id"])
 
-    def _pending_key(self, runtime: Runtime) -> tuple[str, str]:
+        execution_info = getattr(runtime, "execution_info", None)
+        execution_run_id = getattr(execution_info, "run_id", None)
+        if execution_run_id is not None:
+            return str(execution_run_id)
+
+        control = getattr(runtime, "control", None)
+        anchor = control if control is not None else runtime
+        anchor_id = id(anchor)
+        with self._lock:
+            existing = self._fallback_run_ids.get(anchor_id)
+            if existing is not None and existing[0] is anchor:
+                self._fallback_run_ids.move_to_end(anchor_id)
+                return existing[1]
+            fallback = f"__invocation__:{uuid.uuid4().hex}"
+            self._fallback_run_ids[anchor_id] = (anchor, fallback)
+            self._fallback_run_ids.move_to_end(anchor_id)
+            while len(self._fallback_run_ids) > self._max_fallback_run_ids:
+                self._fallback_run_ids.popitem(last=False)
+            return fallback
+
+    def _release_fallback_run_id(self, runtime: Runtime) -> None:
+        context = getattr(runtime, "context", None)
+        if isinstance(context, dict) and context.get("run_id") is not None:
+            return
+        execution_info = getattr(runtime, "execution_info", None)
+        if getattr(execution_info, "run_id", None) is not None:
+            return
+        control = getattr(runtime, "control", None)
+        anchor = control if control is not None else runtime
+        anchor_id = id(anchor)
+        with self._lock:
+            existing = self._fallback_run_ids.get(anchor_id)
+            if existing is not None and existing[0] is anchor:
+                self._fallback_run_ids.pop(anchor_id, None)
+
+    def _run_scope_key(self, runtime: Runtime) -> _RunScopeKey:
         return self._get_thread_id(runtime), self._get_run_id(runtime)
 
+    def _pending_key(self, runtime: Runtime) -> _RunScopeKey:
+        return self._run_scope_key(runtime)
+
     def _evict_if_needed(self) -> None:
-        """Evict least recently used threads if over the limit.
+        """Evict least recently used thread/run scopes if over the limit.
 
         Must be called while holding self._lock.
         """
         while len(self._history) > self.max_tracked_threads:
-            evicted_id, _ = self._history.popitem(last=False)
-            self._warned.pop(evicted_id, None)
-            self._tool_freq.pop(evicted_id, None)
-            self._tool_name_history.pop(evicted_id, None)
-            self._tool_freq_warned.pop(evicted_id, None)
-            self._total_calls.pop(evicted_id, None)
-            self._total_warned.discard(evicted_id)
-            for key in list(self._pending_warnings):
-                if key[0] == evicted_id:
-                    self._drop_pending_warning_key_locked(key)
-            logger.debug("Evicted loop tracking for thread %s (LRU)", evicted_id)
+            evicted_key, _ = self._history.popitem(last=False)
+            self._warned.pop(evicted_key, None)
+            self._tool_freq.pop(evicted_key, None)
+            self._tool_name_history.pop(evicted_key, None)
+            self._tool_freq_warned.pop(evicted_key, None)
+            self._total_calls.pop(evicted_key, None)
+            self._total_warned.discard(evicted_key)
+            self._drop_pending_warning_key_locked(evicted_key)
+            logger.debug(
+                "Evicted loop tracking for thread/run scope (LRU)",
+                extra={"thread_id": evicted_key[0], "run_id": evicted_key[1]},
+            )
 
-    def _drop_pending_warning_key_locked(self, key: tuple[str, str]) -> None:
+    def _drop_pending_warning_key_locked(self, key: _RunScopeKey) -> None:
         """Drop all pending-warning bookkeeping for one (thread, run) key.
 
         Must be called while holding self._lock.
@@ -371,7 +419,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self._pending_warnings.pop(key, None)
         self._pending_warning_touch_order.pop(key, None)
 
-    def _touch_pending_warning_key_locked(self, key: tuple[str, str]) -> None:
+    def _touch_pending_warning_key_locked(self, key: _RunScopeKey) -> None:
         """Mark a pending-warning key as recently used.
 
         Must be called while holding self._lock.
@@ -379,7 +427,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self._pending_warning_touch_order[key] = None
         self._pending_warning_touch_order.move_to_end(key)
 
-    def _prune_pending_warning_state_locked(self, protected_key: tuple[str, str]) -> None:
+    def _prune_pending_warning_state_locked(self, protected_key: _RunScopeKey) -> None:
         """Cap pending-warning state across abnormal or concurrent runs.
 
         Must be called while holding self._lock.
@@ -428,29 +476,30 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         if not tool_calls:
             return None, False
 
-        thread_id = self._get_thread_id(runtime)
+        scope_key = self._run_scope_key(runtime)
+        thread_id, run_id = scope_key
         call_hash = _hash_tool_calls(tool_calls)
 
         with self._lock:
             # Touch / create entry (move to end for LRU)
-            if thread_id in self._history:
-                self._history.move_to_end(thread_id)
+            if scope_key in self._history:
+                self._history.move_to_end(scope_key)
             else:
-                self._history[thread_id] = []
+                self._history[scope_key] = []
                 self._evict_if_needed()
 
-            history = self._history[thread_id]
+            history = self._history[scope_key]
             history.append(call_hash)
             if len(history) > self.window_size:
                 history[:] = history[-self.window_size :]
 
             # Hashes that fall out of the window should be eligible to warn
             # again if they reappear later. Mirror the upstream behavior.
-            warned_hashes = self._warned.get(thread_id)
+            warned_hashes = self._warned.get(scope_key)
             if warned_hashes is not None:
                 warned_hashes.intersection_update(history)
                 if not warned_hashes:
-                    self._warned.pop(thread_id, None)
+                    self._warned.pop(scope_key, None)
 
             count = history.count(call_hash)
             tool_names = [tc.get("name", "?") for tc in tool_calls]
@@ -459,13 +508,14 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             # Counted unconditionally before the early-returning layers below so
             # diverse runs that never trip the hash / per-tool-type layers still
             # stop before the graph recursion_limit aborts the run.
-            self._total_calls[thread_id] += len(tool_calls)
-            total_count = self._total_calls[thread_id]
+            self._total_calls[scope_key] += len(tool_calls)
+            total_count = self._total_calls[scope_key]
             if total_count >= self.total_call_hard_limit:
                 logger.error(
                     "Total tool-call hard limit reached — forcing stop",
                     extra={
                         "thread_id": thread_id,
+                        "run_id": run_id,
                         "count": total_count,
                         "tools": tool_names,
                     },
@@ -478,6 +528,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     "Loop hard limit reached — forcing stop",
                     extra={
                         "thread_id": thread_id,
+                        "run_id": run_id,
                         "call_hash": call_hash,
                         "count": count,
                         "tools": tool_names,
@@ -490,13 +541,13 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             # hard stop must reject the whole batch regardless of call order.
             warning: str | None = None
             warning_kind: tuple[str, str] | None = None
-            if count >= self.warn_threshold and call_hash not in self._warned.get(thread_id, set()):
+            if count >= self.warn_threshold and call_hash not in self._warned.get(scope_key, set()):
                 warning = _WARNING_MSG
                 warning_kind = ("hash", call_hash)
 
             # --- Layer 2: per-tool-type frequency (sliding window) ---
-            freq = self._tool_freq[thread_id]
-            name_history = self._tool_name_history[thread_id]
+            freq = self._tool_freq[scope_key]
+            name_history = self._tool_name_history[scope_key]
             for tc in tool_calls:
                 name = tc.get("name", "")
                 if not name:
@@ -509,7 +560,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     if freq[evicted_name] <= 0:
                         del freq[evicted_name]
                     if freq.get(evicted_name, 0) < self.tool_freq_warn:
-                        self._tool_freq_warned[thread_id].discard(evicted_name)
+                        self._tool_freq_warned[scope_key].discard(evicted_name)
                 tc_count = freq[name]
 
                 if tc_count >= self.tool_freq_hard_limit:
@@ -517,6 +568,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                         "Tool frequency hard limit reached — forcing stop",
                         extra={
                             "thread_id": thread_id,
+                            "run_id": run_id,
                             "tool_name": name,
                             "count": tc_count,
                         },
@@ -524,7 +576,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     return _TOOL_FREQ_HARD_STOP_MSG.format(tool_name=name, count=tc_count), True
 
                 if tc_count >= self.tool_freq_warn:
-                    warned = self._tool_freq_warned[thread_id]
+                    warned = self._tool_freq_warned[scope_key]
                     if warning is None and name not in warned:
                         warning = _TOOL_FREQ_WARNING_MSG.format(tool_name=name, count=tc_count)
                         warning_kind = ("tool", name)
@@ -532,32 +584,33 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             if warning is not None and warning_kind is not None:
                 kind, key = warning_kind
                 if kind == "hash":
-                    self._warned[thread_id].add(key)
+                    self._warned[scope_key].add(key)
                     logger.warning(
                         "Repetitive tool calls detected — injecting warning",
-                        extra={"thread_id": thread_id, "call_hash": call_hash, "count": count, "tools": tool_names},
+                        extra={"thread_id": thread_id, "run_id": run_id, "call_hash": call_hash, "count": count, "tools": tool_names},
                     )
                 else:
                     # The selected name may have decayed below the threshold
                     # later in the same oversized batch.  Do not leave a stale
                     # suppression mark in that case.
                     if freq.get(key, 0) >= self.tool_freq_warn:
-                        self._tool_freq_warned[thread_id].add(key)
+                        self._tool_freq_warned[scope_key].add(key)
                     logger.warning(
                         "Tool frequency warning — too many calls to same tool type",
-                        extra={"thread_id": thread_id, "tool_name": key, "count": freq.get(key, 0)},
+                        extra={"thread_id": thread_id, "run_id": run_id, "tool_name": key, "count": freq.get(key, 0)},
                     )
                 return warning, False
 
             # --- Layer 0: per-run total tool-call backstop (warn) ---
             # Lowest priority: only reached when no hash / per-tool-type signal
             # fired this turn, so a wrap-up nudge lands before the hard limit.
-            if total_count >= self.total_call_warn and thread_id not in self._total_warned:
-                self._total_warned.add(thread_id)
+            if total_count >= self.total_call_warn and scope_key not in self._total_warned:
+                self._total_warned.add(scope_key)
                 logger.warning(
                     "Total tool-call warning — many calls without a final answer",
                     extra={
                         "thread_id": thread_id,
+                        "run_id": run_id,
                         "count": total_count,
                     },
                 )
@@ -581,31 +634,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             return content + f"\n\n{text}"
         # Fallback: coerce unexpected types to str to avoid TypeError
         return str(content) + f"\n\n{text}"
-
-    @staticmethod
-    def _build_hard_stop_update(last_msg, content: str | list, message: str) -> dict:
-        """Clear tool-call metadata so forced-stop messages serialize as plain assistant text."""
-        update: dict[str, Any] = {
-            "tool_calls": [],
-            "content": content,
-        }
-
-        additional_kwargs = dict(getattr(last_msg, "additional_kwargs", {}) or {})
-        for key in ("tool_calls", "function_call"):
-            additional_kwargs.pop(key, None)
-        additional_kwargs[AGENT_TERMINATION_KEY] = {
-            "reason": TOOL_CALL_LIMIT_STOP_REASON,
-            "incomplete": True,
-            "message": message,
-        }
-        update["additional_kwargs"] = additional_kwargs
-
-        response_metadata = deepcopy(getattr(last_msg, "response_metadata", {}) or {})
-        if response_metadata.get("finish_reason") == "tool_calls":
-            response_metadata["finish_reason"] = "stop"
-        update["response_metadata"] = response_metadata
-
-        return update
 
     def _emit(self, event: dict[str, Any]) -> None:
         """Emit a stream event via stream_callback (preferred) or get_stream_writer() fallback."""
@@ -643,8 +671,19 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             messages = state.get("messages", [])
             last_msg = messages[-1]
             content = self._append_text(last_msg.content, message)
-            stripped_msg = last_msg.model_copy(
-                update=self._build_hard_stop_update(last_msg, content, message)
+            stripped_msg = clone_ai_message_with_tool_calls(
+                last_msg,
+                [],
+                content=content,
+            )
+            additional_kwargs = dict(stripped_msg.additional_kwargs or {})
+            additional_kwargs[AGENT_TERMINATION_KEY] = {
+                "reason": TOOL_CALL_LIMIT_STOP_REASON,
+                "incomplete": True,
+                "message": message,
+            }
+            stripped_msg = stripped_msg.model_copy(
+                update={"additional_kwargs": additional_kwargs}
             )
             return {"messages": [stripped_msg]}
 
@@ -657,14 +696,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             return None
 
         return None
-
-    def _clear_other_run_pending_warnings(self, runtime: Runtime) -> None:
-        """Drop stale pending warnings for previous runs in this thread."""
-        thread_id, current_run_id = self._pending_key(runtime)
-        with self._lock:
-            for key in list(self._pending_warnings):
-                if key[0] == thread_id and key[1] != current_run_id:
-                    self._drop_pending_warning_key_locked(key)
 
     def _clear_current_run_pending_warnings(self, runtime: Runtime) -> None:
         """Drop pending warnings owned by current (thread, run)."""
@@ -685,7 +716,27 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             self._pending_warning_touch_order.pop(pending_key, None)
         return warnings
 
-    def _augment_request(self, request: ModelRequest) -> ModelRequest:
+    def _restore_pending_warnings(
+        self,
+        runtime: Runtime,
+        warnings: list[str],
+    ) -> None:
+        """Restore warnings consumed by a model call that raised."""
+        if not warnings:
+            return
+        pending_key = self._pending_key(runtime)
+        with self._lock:
+            queued = self._pending_warnings[pending_key]
+            queued[:0] = [warning for warning in warnings if warning not in queued]
+            del queued[_MAX_PENDING_WARNINGS_PER_RUN:]
+            self._touch_pending_warning_key_locked(pending_key)
+            self._prune_pending_warning_state_locked(protected_key=pending_key)
+
+    def _inject_warnings(
+        self,
+        request: ModelRequest,
+        warnings: list[str],
+    ) -> ModelRequest:
         """Append queued loop warnings (if any) to the outgoing message list.
 
         The warning lands after every existing message — including the
@@ -695,7 +746,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         restriction (we use HumanMessage), and never mutates an existing
         AIMessage.
         """
-        warnings = self._drain_pending_warnings(request.runtime)
         if not warnings:
             return request
         new_messages = [
@@ -706,13 +756,11 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
     @override
     def before_agent(self, state: AgentState, runtime: Runtime) -> dict | None:
-        """Clear stale pending warnings from previous runs on this thread."""
-        self._clear_other_run_pending_warnings(runtime)
+        """Keep the graph hook without mutating other concurrent run scopes."""
         return None
 
     @override
     async def abefore_agent(self, state: AgentState, runtime: Runtime) -> dict | None:
-        self._clear_other_run_pending_warnings(runtime)
         return None
 
     @override
@@ -727,11 +775,13 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
     def after_agent(self, state: AgentState, runtime: Runtime) -> dict | None:
         """Clear undrained pending warnings at run end."""
         self._clear_current_run_pending_warnings(runtime)
+        self._release_fallback_run_id(runtime)
         return None
 
     @override
     async def aafter_agent(self, state: AgentState, runtime: Runtime) -> dict | None:
         self._clear_current_run_pending_warnings(runtime)
+        self._release_fallback_run_id(runtime)
         return None
 
     @override
@@ -740,7 +790,12 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelCallResult:
-        return handler(self._augment_request(request))
+        warnings = self._drain_pending_warnings(request.runtime)
+        try:
+            return handler(self._inject_warnings(request, warnings))
+        except Exception:
+            self._restore_pending_warnings(request.runtime, warnings)
+            raise
 
     @override
     async def awrap_model_call(
@@ -748,20 +803,35 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
-        return await handler(self._augment_request(request))
+        warnings = self._drain_pending_warnings(request.runtime)
+        try:
+            return await handler(self._inject_warnings(request, warnings))
+        except Exception:
+            self._restore_pending_warnings(request.runtime, warnings)
+            raise
 
     def reset(self, thread_id: str | None = None) -> None:
         """Clear tracking state. If thread_id given, clear only that thread."""
         with self._lock:
             if thread_id:
-                self._history.pop(thread_id, None)
-                self._warned.pop(thread_id, None)
-                self._tool_freq.pop(thread_id, None)
-                self._tool_name_history.pop(thread_id, None)
-                self._tool_freq_warned.pop(thread_id, None)
-                self._total_calls.pop(thread_id, None)
-                self._total_warned.discard(thread_id)
-                for key in list(self._pending_warnings):
+                for mapping in (
+                    self._history,
+                    self._warned,
+                    self._tool_freq,
+                    self._tool_name_history,
+                    self._tool_freq_warned,
+                    self._total_calls,
+                ):
+                    for key in list(mapping):
+                        if key[0] == thread_id:
+                            mapping.pop(key, None)
+                self._total_warned = {
+                    key for key in self._total_warned if key[0] != thread_id
+                }
+                pending_keys = set(self._pending_warnings) | set(
+                    self._pending_warning_touch_order
+                )
+                for key in pending_keys:
                     if key[0] == thread_id:
                         self._drop_pending_warning_key_locked(key)
             else:
@@ -774,3 +844,4 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._total_warned.clear()
                 self._pending_warnings.clear()
                 self._pending_warning_touch_order.clear()
+                self._fallback_run_ids.clear()

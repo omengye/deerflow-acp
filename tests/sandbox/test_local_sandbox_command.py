@@ -71,3 +71,24 @@ def test_timeout_notice_is_user_actionable() -> None:
 
     assert "1.5 seconds" in notice
     assert "background" in notice
+
+
+def test_powershell_command_forces_utf8_console_and_pipe_decoding(monkeypatch) -> None:
+    sandbox = LocalSandbox("test")
+    calls: list[tuple[list[str], str | None]] = []
+
+    def fake_run(args, *, encoding=None):
+        calls.append((args, encoding))
+        return "你好", "", 0, False
+
+    monkeypatch.setattr("deerflow.sandbox.local.local_sandbox.os.name", "nt")
+    monkeypatch.setattr(sandbox, "_get_shell", lambda: "pwsh.exe")
+    monkeypatch.setattr(sandbox, "_run_windows_command", fake_run)
+
+    assert sandbox.execute_command("Write-Output 你好") == "你好"
+    args, encoding = calls[0]
+    assert args[:3] == ["pwsh.exe", "-NoProfile", "-Command"]
+    assert "[Console]::InputEncoding=[System.Text.Encoding]::UTF8" in args[3]
+    assert "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8" in args[3]
+    assert args[3].endswith("Write-Output 你好")
+    assert encoding == "utf-8"

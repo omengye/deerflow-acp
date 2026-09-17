@@ -16,6 +16,9 @@ from deerflow.agents.middlewares.finish_reason_detectors import (
     length_detectors,
     safety_detectors,
 )
+from deerflow.agents.middlewares.tool_call_metadata import (
+    clone_ai_message_with_tool_calls,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,30 +103,35 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
         termination = _detect(message, self._detectors)
         if termination is None:
             return None
-        kwargs = dict(message.additional_kwargs or {})
-        if kwargs.get("model_length_termination"):
+        raw_kwargs = dict(message.additional_kwargs or {})
+        if raw_kwargs.get("model_length_termination"):
             return None
         tool_calls = list(message.tool_calls or [])
         invalid_tool_calls = list(getattr(message, "invalid_tool_calls", None) or [])
-        has_raw_tool_payload = bool(kwargs.get("tool_calls") or kwargs.get("function_call"))
+        has_raw_tool_payload = bool(raw_kwargs.get("tool_calls") or raw_kwargs.get("function_call"))
         suppressed_count = len(tool_calls) + len(invalid_tool_calls)
         if has_raw_tool_payload and suppressed_count == 0:
             suppressed_count = 1
-        kwargs.pop("tool_calls", None)
-        kwargs.pop("function_call", None)
+        base = message.model_copy(update={"invalid_tool_calls": []})
+        patched = clone_ai_message_with_tool_calls(
+            base,
+            [],
+            content=_append_text(message.content, _LENGTH_TOOL_NOTICE if suppressed_count else _LENGTH_NOTICE),
+        )
+        kwargs = dict(patched.additional_kwargs or {})
         kwargs["model_length_termination"] = {
             "detector": termination.detector,
             "reason_field": termination.reason_field,
             "reason_value": termination.reason_value,
             "suppressed_tool_call_count": suppressed_count,
         }
-        notice = _LENGTH_TOOL_NOTICE if suppressed_count else _LENGTH_NOTICE
         patched = message.model_copy(
             update={
-                "content": _append_text(message.content, notice),
-                "tool_calls": [],
-                "invalid_tool_calls": [],
+                "content": patched.content,
+                "tool_calls": patched.tool_calls,
+                "invalid_tool_calls": patched.invalid_tool_calls,
                 "additional_kwargs": kwargs,
+                "response_metadata": patched.response_metadata,
             }
         )
         _stamp_stop_reason(runtime, "model_length_capped")
@@ -166,9 +174,13 @@ class SafetyFinishReasonMiddleware(AgentMiddleware[AgentState]):
         if has_raw_tool_payload and suppressed_count == 0:
             suppressed_count = 1
         notice = _SAFETY_TOOL_NOTICE if has_tool_payload else _SAFETY_EMPTY_NOTICE
-        additional_kwargs = raw_kwargs
-        additional_kwargs.pop("tool_calls", None)
-        additional_kwargs.pop("function_call", None)
+        base = message.model_copy(update={"invalid_tool_calls": []})
+        patched = clone_ai_message_with_tool_calls(
+            base,
+            [],
+            content=_append_text(message.content, notice),
+        )
+        additional_kwargs = dict(patched.additional_kwargs or {})
         additional_kwargs["safety_termination"] = {
             "detector": termination.detector,
             "reason_field": termination.reason_field,
@@ -177,13 +189,8 @@ class SafetyFinishReasonMiddleware(AgentMiddleware[AgentState]):
             "suppressed_tool_call_names": [call.get("name") or "unknown" for call in tool_calls],
             "extras": dict(termination.extras),
         }
-        patched = message.model_copy(
-            update={
-                "content": _append_text(message.content, notice),
-                "tool_calls": [],
-                "invalid_tool_calls": [],
-                "additional_kwargs": additional_kwargs,
-            }
+        patched = patched.model_copy(
+            update={"additional_kwargs": additional_kwargs}
         )
         _stamp_stop_reason(runtime, "safety_capped")
         logger.warning(

@@ -22,6 +22,11 @@ _MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 600
 _COMMAND_CAPTURE_LIMIT_BYTES = 10 * 1024 * 1024
 _PIPE_DRAIN_JOIN_TIMEOUT_SECONDS = 0.2
+_POWERSHELL_UTF8_PREAMBLE = (
+    "try{[Console]::InputEncoding=[System.Text.Encoding]::UTF8}catch{};"
+    "try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{};"
+    "$OutputEncoding=[System.Text.Encoding]::UTF8;"
+)
 
 
 class _BoundedPipeCapture:
@@ -272,7 +277,7 @@ class LocalSandbox(Sandbox):
             # separator inside the root and at the path boundary, without
             # treating a similarly prefixed sibling directory as a child.
             pattern = re.compile(
-                escaped_local + r"(?=$|[/\\])(?:[/\\][^\s\"';&|<>()]*)?",
+                escaped_local + r"(?=$|[/\\])(?:[/\\][^\s\"';&|<>():]*)?",
                 re.IGNORECASE if os.name == "nt" else 0,
             )
 
@@ -422,6 +427,8 @@ class LocalSandbox(Sandbox):
     def _run_windows_command(
         self,
         args: list[str],
+        *,
+        encoding: str | None = None,
     ) -> tuple[str, str, int, bool]:
         """Run a Windows command with bounded capture and tree termination."""
         stdout_read_fd, stdout_write_fd = os.pipe()
@@ -455,16 +462,16 @@ class LocalSandbox(Sandbox):
                 except OSError:
                     pass
 
-        encoding = locale.getpreferredencoding(False)
+        output_encoding = encoding or locale.getpreferredencoding(False)
         stdout_capture, stdout_thread = self._start_pipe_drain(
             stdout_read_fd,
             "deerflow-bash-stdout-drain",
-            encoding=encoding,
+            encoding=output_encoding,
         )
         stderr_capture, stderr_thread = self._start_pipe_drain(
             stderr_read_fd,
             "deerflow-bash-stderr-drain",
-            encoding=encoding,
+            encoding=output_encoding,
         )
 
         timed_out = False
@@ -527,13 +534,22 @@ class LocalSandbox(Sandbox):
 
         if os.name == "nt":
             if self._is_powershell(shell):
-                args = [shell, "-NoProfile", "-Command", resolved_command]
+                args = [
+                    shell,
+                    "-NoProfile",
+                    "-Command",
+                    f"{_POWERSHELL_UTF8_PREAMBLE}{resolved_command}",
+                ]
+                stdout, stderr, returncode, timed_out = self._run_windows_command(
+                    args,
+                    encoding="utf-8",
+                )
             elif self._is_cmd_shell(shell):
                 args = [shell, "/c", resolved_command]
+                stdout, stderr, returncode, timed_out = self._run_windows_command(args)
             else:
                 args = [shell, "-c", resolved_command]
-
-            stdout, stderr, returncode, timed_out = self._run_windows_command(args)
+                stdout, stderr, returncode, timed_out = self._run_windows_command(args)
         else:
             args = [shell, "-c", resolved_command]
             result = subprocess.run(

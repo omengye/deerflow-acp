@@ -892,19 +892,35 @@ class SchedulerStore:
 
         return await asyncio.to_thread(_write)
 
-    async def list_task_runs(self, task_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
-        limit = max(1, min(limit, 100))
+    async def list_task_runs(
+        self,
+        task_id: str,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        # The public history tool allows 100 and requests one sentinel row to
+        # compute has_more, so this internal reader accepts 101.
+        limit = max(1, min(limit, 101))
+        offset = max(0, offset)
 
         def _read() -> list[dict[str, Any]]:
             with self._connect() as conn:
+                where = "WHERE task_id = ?"
+                params: list[Any] = [task_id]
+                if status is not None:
+                    where += " AND status = ?"
+                    params.append(status)
+                params.extend((limit, offset))
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT * FROM scheduled_task_runs
-                    WHERE task_id = ?
-                    ORDER BY created_at DESC
-                    LIMIT ?
+                    {where}
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ? OFFSET ?
                     """,
-                    (task_id, limit),
+                    params,
                 ).fetchall()
                 return [dict(row) for row in rows]
 
