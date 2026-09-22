@@ -1,0 +1,163 @@
+# Desktop histories are retained until explicitly deleted.
+# Existing ACP installations keep their current retention settings.
+config_version: 16
+log_level: info
+
+api:
+  model_name: null
+  thinking_enabled: true
+  plan_mode: true
+  data_dir: ../data
+  deerflow_home: ../data/deerflow
+  extensions_config_path: ./extensions_config.json
+
+local_acp:
+  # Queue and execution have independent deadlines (seconds).
+  queue_timeout_seconds: 600
+  checkpointer_path: ../data/acp-checkpoints.db
+  session_store_path: ../data/acp-sessions.db
+  max_active_connections: 16
+  max_active_runs: 2
+  run_timeout_seconds: 600
+  session_page_size: 50
+  model_name: null
+  thinking_enabled: true
+  plan_mode: true
+  subagent_enabled: false
+  max_concurrent_subagents: 2
+  permission_mode: dangerous
+  memory_scope: workspace
+  agent_name: null
+  enable_bash: false
+  tool_allowlist: null
+  tool_denylist: []
+  accept_client_mcp_servers: false
+  session_cleanup_enabled: false
+  inactive_session_retention_days: 30
+  session_cleanup_interval_seconds: 3600
+  closed_session_retention_days: 30
+  recursion_limit: 200
+  goal_auto_continue: false
+  goal_max_continuations: 3
+  goal_max_no_progress_continuations: 2
+
+models:
+  - name: openai
+    display_name: OpenAI
+    use: langchain_openai:ChatOpenAI
+    model: gpt-4.1-mini
+    api_key: ${OPENAI_API_KEY:-not-configured}
+    base_url: https://api.openai.com/v1
+    supports_thinking: false
+    supports_reasoning_effort: false
+    supports_vision: true
+
+default_model: openai
+
+read_before_write:
+  enabled: true
+  elide_blocked_payloads: true
+  elide_min_chars: 2000
+
+subagents:
+  enabled: true
+  timeout_seconds: 900
+  max_turns: null
+  agents: {}
+  custom_agents: {}
+
+sandbox:
+  use: deerflow.sandbox.local:LocalSandboxProvider
+  allow_host_bash: false
+  allow_host_tools: false
+
+skills:
+  enabled: true
+  path: ../skills
+  extensions_file: ./extensions_config.json
+  container_path: /mnt/skills
+
+skill_evolution:
+  enabled: false
+  mode: review
+  storage_path: skill-evolution
+  generation_model_name: null
+  moderation_model_name: null
+  evaluation_model_name: null
+  security_fail_closed: true
+  discovery:
+    enabled: false
+    min_tool_calls: 5
+    repeat_threshold: 2
+    repeat_window_days: 30
+    cooldown_hours: 24
+    max_daily_proposals: 5
+    max_pending_proposals: 20
+  candidate_limits:
+    max_files: 20
+    max_total_bytes: 524288
+    max_file_bytes: 131072
+  auto_patch:
+    max_changed_lines: 40
+    allow_create: false
+    allow_support_files: false
+    allow_scripts: false
+    allow_delete: false
+  monitoring:
+    probation_uses: 3
+    auto_rollback_consecutive_failures: 2
+
+# Local long-term memory. ACP memory_scope above controls whether these
+# memories are shared globally or isolated by workspace/session.
+memory:
+  enabled: true
+  manager_class: deermem
+  # middleware = automatically recall relevant facts; tool = expose memory_search.
+  # Both modes keep passive post-conversation memory writes enabled.
+  mode: middleware
+  injection_enabled: true
+  shutdown_flush_timeout_seconds: 30
+  backend_config:
+    # Relative paths resolve under user-data/data/deerflow in the portable build.
+    storage_path: memory.json
+    storage_class: deerflow.agents.memory.storage.FileMemoryStorage
+    debounce_seconds: 30
+    model_name: null
+    max_facts: 100
+    fact_confidence_threshold: 0.7
+    fact_dedup_enabled: false
+    fact_dedup_similarity_threshold: 0.7
+    max_injection_tokens: 2000
+    retrieval_enabled: true
+    retrieval_top_k: 12
+    retrieval_index_path: memory-fts5.sqlite3
+
+tool_groups:
+  - name: file:read
+  - name: file:write
+  - name: bash
+
+tools:
+  - name: ls
+    group: file:read
+    use: deerflow.sandbox.tools:ls_tool
+  - name: read_file
+    group: file:read
+    use: deerflow.sandbox.tools:read_file_tool
+  - name: glob
+    group: file:read
+    use: deerflow.sandbox.tools:glob_tool
+    max_results: 200
+  - name: grep
+    group: file:read
+    use: deerflow.sandbox.tools:grep_tool
+    max_results: 100
+  - name: write_file
+    group: file:write
+    use: deerflow.sandbox.tools:write_file_tool
+  - name: str_replace
+    group: file:write
+    use: deerflow.sandbox.tools:str_replace_tool
+  - name: bash
+    group: bash
+    use: deerflow.sandbox.tools:bash_tool

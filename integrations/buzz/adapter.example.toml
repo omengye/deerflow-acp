@@ -51,7 +51,12 @@ protocol = "v2"
 args = ["--protocol", "v2"]
 # Existing local directory used as session/new.cwd for every Buzz conversation.
 workspace = "D:\\BuzzWorkspaces\\DeerFlow"
+# Initialize, session management, and the immediate v2 prompt acknowledgement.
 timeout_seconds = 600
+# 0 lets DeerFlow enforce its own queue/run timeouts (recommended).
+# A positive value caps the entire prompt including queue time. Set it above
+# DeerFlow's queue_timeout_seconds + run_timeout_seconds, with delivery margin.
+prompt_timeout_seconds = 0
 
 [observability]
 # Native real-time activity uses Buzz NIP-AO. It requires BUZZ_AUTH_TAG or an

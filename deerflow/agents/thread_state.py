@@ -45,6 +45,7 @@ class AgentContext(TypedDict, total=False):
     workspace_path: NotRequired[str]
     available_skills: NotRequired[list[str] | None]
     stop_reason: NotRequired[str]
+    knowledge_scope: NotRequired[dict[str, Any] | None]
 
 
 class ThreadDataState(TypedDict):

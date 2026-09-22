@@ -154,13 +154,23 @@ async def test_permission_broker_supports_allow_always_per_session(tmp_path) -> 
     )
     assert calls == ["call-1"]
 
+    # Turn startup syncing the unchanged policy must retain per-tool approvals.
+    broker.set_session_approval_mode("session-1", "ask")
+    assert await broker.request("session-1", {"id": "same-mode", "name": "bash", "args": {}})
+    assert calls == ["call-1"]
+
+    # An explicit user selection of the same Ask value revokes legacy approvals.
+    broker.set_session_approval_mode("session-1", "ask", reset_decisions=True)
+    assert await broker.request("session-1", {"id": "explicit-ask", "name": "bash", "args": {}})
+    assert calls == ["call-1", "explicit-ask"]
+
     # Changing the session-wide policy clears remembered per-tool decisions.
     broker.set_session_approval_mode("session-1", "allow_always")
     broker.set_session_approval_mode("session-1", "ask")
     assert await broker.request(
         "session-1", {"id": "call-4", "name": "bash", "args": {"command": "ls"}}
     )
-    assert calls == ["call-1", "call-4"]
+    assert calls == ["call-1", "explicit-ask", "call-4"]
 
 
 @pytest.mark.asyncio

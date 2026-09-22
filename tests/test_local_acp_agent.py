@@ -16,7 +16,8 @@ from acp import RequestError, schema
 from deerflow.acp.agent import DeerFlowACPAgent
 from deerflow.acp.config import LocalACPConfig
 from deerflow.acp.event_mapper import ACPEventMapper
-from deerflow.acp.session_store import LocalACPSessionStore
+from deerflow.acp.runtime import LocalACPRuntime
+from deerflow.acp.session_store import LocalACPSessionStore, SessionApprovalMode
 
 
 class FakeConnection:
@@ -40,6 +41,16 @@ class FakeRuntime:
         self.goal: dict[str, Any] | None = None
         self.goal_set_calls: list[tuple[str, str]] = []
         self.goal_clear_calls: list[str] = []
+        self.approval_mode_calls: list[tuple[str, SessionApprovalMode, bool]] = []
+
+    def set_session_approval_mode(
+        self,
+        session_id: str,
+        mode: SessionApprovalMode,
+        *,
+        reset_decisions: bool = False,
+    ) -> None:
+        self.approval_mode_calls.append((session_id, mode, reset_decisions))
 
     async def bind_client_mcp(self, session_id: str, binding: Any) -> None:
         if binding is None:
@@ -730,6 +741,7 @@ async def test_session_modes_config_list_and_load_history(
     assert stored is not None
     assert stored.model_name == "model-a"
     assert stored.approval_mode == "allow_always"
+    assert runtime.approval_mode_calls == [(created.session_id, "allow_always", True)]
     with pytest.raises(RequestError) as model_error:
         await agent.set_config_option("model", created.session_id, "missing-model")
     assert model_error.value.code == -32602
@@ -742,6 +754,7 @@ async def test_session_modes_config_list_and_load_history(
             "allow_everything_forever",
         )
     assert approval_error.value.code == -32602
+    assert runtime.approval_mode_calls == [(created.session_id, "allow_always", True)]
 
     listed = await agent.list_sessions(cwd=str(tmp_path))
     assert [item.session_id for item in listed.sessions] == [created.session_id]
@@ -780,10 +793,11 @@ async def test_tool_approval_option_is_hidden_when_permissions_are_off(
     tmp_path: Path,
     store: LocalACPSessionStore,
 ) -> None:
+    runtime = FakeRuntime()
     agent = DeerFlowACPAgent(
         make_config(tmp_path, permission_mode="off"),
         store,
-        FakeRuntime(),
+        runtime,
     )
     created = await agent.new_session(cwd=str(tmp_path), mcp_servers=[])
 
@@ -797,6 +811,125 @@ async def test_tool_approval_option_is_hidden_when_permissions_are_off(
             "allow_always",
         )
     assert error.value.code == -32602
+    assert runtime.approval_mode_calls == []
+    assert (await store.get(created.session_id)).approval_mode == "ask"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intermediate_mode", [None, "allow_always", "reject_always"])
+async def test_tool_approval_ask_revokes_legacy_choices_without_a_prompt(
+    tmp_path: Path,
+    store: LocalACPSessionStore,
+    intermediate_mode: SessionApprovalMode | None,
+) -> None:
+    config = make_config(tmp_path)
+    runtime = LocalACPRuntime(config)
+    agent = DeerFlowACPAgent(config, store, runtime)
+    first = await agent.new_session(cwd=str(tmp_path), mcp_servers=[])
+    second = await agent.new_session(cwd=str(tmp_path), mcp_servers=[])
+    broker = runtime.permission_broker
+    calls: list[tuple[str, str]] = []
+    remember = True
+
+    async def handler(options, session_id, tool_call):
+        calls.append((session_id, tool_call.title))
+        kind = (
+            "allow_always" if tool_call.title == "write_file" else "reject_always"
+        ) if remember else "allow_once"
+        selected = next(option for option in options if option.kind == kind)
+        return schema.RequestPermissionResponse(
+            outcome=schema.AllowedOutcome(outcome="selected", option_id=selected.option_id)
+        )
+
+    runtime.bind_permission_handler(agent.connection_id, handler)
+    write = {"id": "write", "name": "write_file", "args": {}}
+    bash = {"id": "bash", "name": "bash", "args": {}}
+    # Seed old per-tool decisions while the wildcard mode is still implicit Ask.
+    for session_id in (first.session_id, second.session_id):
+        assert await broker.request(session_id, write)
+        assert not await broker.request(session_id, bash)
+    calls.clear()
+    remember = False
+
+    if intermediate_mode is not None:
+        await agent.set_config_option("tool_approval", first.session_id, intermediate_mode)
+        assert (await store.get(first.session_id)).approval_mode == intermediate_mode
+        assert broker.session_approval_mode(first.session_id) == intermediate_mode
+        assert await broker.request(first.session_id, write) is (intermediate_mode == "allow_always")
+        assert calls == []
+
+    # No astream/prompt occurs between config requests: the broker must change now.
+    response = await agent.set_config_option("tool_approval", first.session_id, "ask")
+    assert (await store.get(first.session_id)).approval_mode == "ask"
+    assert next(option for option in response.config_options if option.id == "tool_approval").current_value == "ask"
+    assert broker.session_approval_mode(first.session_id) == "ask"
+    assert await broker.request(first.session_id, write)
+    assert await broker.request(first.session_id, bash)
+    assert calls == [(first.session_id, "write_file"), (first.session_id, "bash")]
+    assert await broker.request(second.session_id, write)
+    assert not await broker.request(second.session_id, bash)
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("previous_mode", "requested_mode"),
+    [("ask", "ask"), ("ask", "allow_always"), ("ask", "reject_always"), ("allow_always", "ask")],
+)
+async def test_failed_tool_approval_save_preserves_session_and_effective_permissions(
+    tmp_path: Path,
+    store: LocalACPSessionStore,
+    monkeypatch: pytest.MonkeyPatch,
+    previous_mode: SessionApprovalMode,
+    requested_mode: SessionApprovalMode,
+) -> None:
+    config = make_config(tmp_path)
+    runtime = LocalACPRuntime(config)
+    agent = DeerFlowACPAgent(config, store, runtime)
+    created = await agent.new_session(cwd=str(tmp_path), mcp_servers=[])
+    await agent.set_config_option("tool_approval", created.session_id, previous_mode)
+    broker = runtime.permission_broker
+    loaded = await store.get(created.session_id)
+    assert loaded is not None
+    original_updated_at = loaded.updated_at
+    calls = []
+
+    async def handler(options, session_id, tool_call):
+        calls.append(tool_call.tool_call_id)
+        selected = next(option for option in options if option.kind == "allow_always")
+        return schema.RequestPermissionResponse(
+            outcome=schema.AllowedOutcome(outcome="selected", option_id=selected.option_id)
+        )
+
+    runtime.bind_permission_handler(agent.connection_id, handler)
+    tool = {"id": "write", "name": "write_file", "args": {}}
+    assert await broker.request(created.session_id, tool)
+    calls.clear()
+    real_get = store.get
+
+    async def shared_get(_session_id, **_kwargs):
+        return loaded
+
+    async def fail_save(candidate):
+        assert candidate.approval_mode == requested_mode
+        assert candidate is not loaded
+        assert loaded.approval_mode == previous_mode
+        assert broker.session_approval_mode(created.session_id) == previous_mode
+        candidate.updated_at = "failed-save-timestamp"
+        raise OSError("session store unavailable")
+
+    monkeypatch.setattr(store, "get", shared_get)
+    monkeypatch.setattr(store, "save", fail_save)
+    with pytest.raises(OSError, match="session store unavailable"):
+        await agent.set_config_option("tool_approval", created.session_id, requested_mode)
+
+    assert loaded.approval_mode == previous_mode
+    assert loaded.updated_at == original_updated_at
+    assert (await real_get(created.session_id)).approval_mode == previous_mode
+    assert broker.session_approval_mode(created.session_id) == previous_mode
+    assert await broker.request(created.session_id, tool)
+    assert calls == []
+    assert runtime.session_coordinator.activity()["sessions"][created.session_id] == "idle"
 
 
 @pytest.mark.asyncio
@@ -887,6 +1020,96 @@ async def test_prompt_maps_events_usage_and_title(
     assert sum(isinstance(update, schema.ToolCallProgress) for update in updates) >= 3
     session = await store.get(created.session_id)
     assert session is not None and session.title == "Task title"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("request_options", "expected_options"),
+    [
+        ({}, {}),
+        ({"_meta": {"another_extension": True}}, {}),
+        ({"_meta": None}, {}),
+        ({"_meta": {"deerflow.knowledge_scope": None}}, {"knowledge_scope": None}),
+        ({"meta": {"deerflow.knowledge_scope": None}}, {"knowledge_scope": None}),
+        (
+            {"_meta": {"deerflow.knowledge_scope": {"dataset_ids": [" ds-a "]}}},
+            {"knowledge_scope": {"dataset_ids": ["ds-a"], "documents": None}},
+        ),
+        (
+            {"meta": {"deerflow.knowledge_scope": {"dataset_ids": [" ds-a "]}}},
+            {"knowledge_scope": {"dataset_ids": ["ds-a"], "documents": None}},
+        ),
+        (
+            {"_meta": {"deerflow.knowledge_scope": {"documents": []}}},
+            {"knowledge_scope": {"dataset_ids": None, "documents": []}},
+        ),
+        (
+            {"meta": {"deerflow.knowledge_scope": {"dataset_ids": []}}},
+            {"knowledge_scope": {"dataset_ids": [], "documents": None}},
+        ),
+    ],
+)
+async def test_prompt_forwards_caller_knowledge_scope(
+    tmp_path: Path,
+    store: LocalACPSessionStore,
+    request_options: dict[str, Any],
+    expected_options: dict[str, Any],
+) -> None:
+    forwarded: list[dict[str, Any]] = []
+
+    class ScopeRuntime(FakeRuntime):
+        async def astream(self, *args: Any, **kwargs: Any):
+            scope_options = {
+                key: value for key, value in kwargs.items() if key == "knowledge_scope"
+            }
+            forwarded.append(scope_options)
+            kwargs.pop("knowledge_scope", None)
+            async for event in super().astream(*args, **kwargs):
+                yield event
+
+    runtime = ScopeRuntime()
+    agent = DeerFlowACPAgent(make_config(tmp_path), store, runtime)
+    agent.on_connect(FakeConnection())
+    created = await agent.new_session(cwd=str(tmp_path), mcp_servers=[])
+
+    response = await agent.prompt(
+        [acp.text_block("Search the knowledge base")], created.session_id, **request_options
+    )
+    assert response.stop_reason == "end_turn"
+    assert forwarded == [expected_options]
+
+    # A later independent user turn must not inherit the previous request metadata.
+    await agent.prompt([acp.text_block("A separate request")], created.session_id)
+    assert forwarded == [expected_options, {}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("metadata_key", ["_meta", "meta"])
+@pytest.mark.parametrize("invalid_scope", [{"dataset_ids": ["../escape"]}, {"unknown": []}])
+async def test_prompt_rejects_invalid_knowledge_scope_before_starting_runtime(
+    tmp_path: Path,
+    store: LocalACPSessionStore,
+    metadata_key: str,
+    invalid_scope: dict[str, Any],
+) -> None:
+    runtime = FakeRuntime()
+    agent = DeerFlowACPAgent(make_config(tmp_path), store, runtime)
+    agent.on_connect(FakeConnection())
+    created = await agent.new_session(cwd=str(tmp_path), mcp_servers=[])
+
+    with pytest.raises(RequestError) as error:
+        await agent.prompt(
+            [acp.text_block("Search")],
+            created.session_id,
+            **{metadata_key: {"deerflow.knowledge_scope": invalid_scope}},
+        )
+    assert error.value.code == -32602
+    assert not runtime.started.is_set()
+    assert runtime.prompt_messages == []
+
+    response = await agent.prompt([acp.text_block("Retry")], created.session_id)
+    assert response.stop_reason == "end_turn"
+    assert runtime.prompt_messages == ["Retry"]
 
 
 @pytest.mark.asyncio
@@ -1176,6 +1399,11 @@ async def test_prompt_rejects_outside_resources_and_one_active_prompt_per_sessio
     with pytest.raises(RequestError) as model_busy_error:
         await agent.set_config_option("model", created.session_id, "model-a")
     assert model_busy_error.value.code == -32001
+    with pytest.raises(RequestError) as approval_busy_error:
+        await agent.set_config_option("tool_approval", created.session_id, "allow_always")
+    assert approval_busy_error.value.code == -32001
+    assert runtime.approval_mode_calls == []
+    assert (await store.get(created.session_id)).approval_mode == "ask"
 
     await agent.cancel(created.session_id)
     response = await first
@@ -1635,6 +1863,27 @@ async def test_close_session_succeeds_after_durable_close_when_cleanup_fails(
     assert await store.get(created.session_id) is None
     assert runtime.session_coordinator.owner(created.session_id) is None
     assert "resource cleanup failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_execution_status_chunks_have_v2_message_ids() -> None:
+    from uuid import UUID
+
+    updates: list[Any] = []
+
+    async def send(update: Any) -> None:
+        updates.append(update)
+
+    mapper = ACPEventMapper("session-1", send)
+    await mapper.handle_live({"type": "queue_status", "elapsed_seconds": 10})
+    await mapper.handle_live({"type": "run_started"})
+    next_turn = ACPEventMapper("session-1", send)
+    await next_turn.handle_live({"type": "run_started"})
+    frames = [update.model_dump(mode="json", by_alias=True) for update in updates]
+    assert all(frame["sessionUpdate"] == "agent_thought_chunk" for frame in frames)
+    assert all(str(UUID(frame["messageId"])) == frame["messageId"] for frame in frames)
+    assert frames[0]["messageId"] == frames[1]["messageId"]
+    assert frames[1]["messageId"] != frames[2]["messageId"]
 
 
 @pytest.mark.asyncio

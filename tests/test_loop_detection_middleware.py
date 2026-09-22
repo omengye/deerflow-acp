@@ -11,6 +11,7 @@ from deerflow.agents.middlewares.loop_detection_middleware import (
     LoopDetectionMiddleware,
     TOOL_CALL_LIMIT_STOP_REASON,
     _derive_total_call_limits,
+    _hash_tool_calls,
     calibrate_loop_detection,
     count_steps_per_turn,
 )
@@ -164,6 +165,51 @@ def test_detection_counters_are_isolated_by_run_in_same_thread():
         ("thread-a", "run-2"),
         ("thread-a", "run-3"),
     }
+
+
+def _read_state(start: int | None, end: int | None, index: int = 0):
+    args = {"path": "/mnt/user-data/workspace/report.txt"}
+    if start is not None:
+        args["start_line"] = start
+    if end is not None:
+        args["end_line"] = end
+    return {"messages": [AIMessage(content="", tool_calls=[{"name": "read_file", "args": args, "id": f"read-{index}"}])]}
+
+
+def test_adjacent_small_read_windows_do_not_trigger_repetition():
+    middleware = LoopDetectionMiddleware()
+    runtime = _runtime(thread_id="reads", run_id="run-1")
+    for index in range(5):
+        assert middleware.after_model(_read_state(index * 40 + 1, (index + 1) * 40, index), runtime) is None
+    assert not any(middleware._pending_warnings.values())
+
+
+def test_repeating_exact_read_window_still_stops():
+    middleware = LoopDetectionMiddleware()
+    runtime = _runtime(thread_id="reads", run_id="run-1")
+    for index in range(4):
+        assert middleware.after_model(_read_state(41, 80, index), runtime) is None
+    result = middleware.after_model(_read_state(41, 80, 4), runtime)
+    assert result is not None
+    assert result["messages"][0].tool_calls == []
+    assert runtime.context["stop_reason"] == TOOL_CALL_LIMIT_STOP_REASON
+
+
+def test_open_ended_read_matches_implicit_start_but_not_single_line():
+    def key(start, end):
+        return _hash_tool_calls(_read_state(start, end)["messages"][0].tool_calls)
+
+    assert key(None, None) == key(1, None)
+    assert key(None, None) != key(1, 1)
+    assert key(1, 40) != key(40, 1)
+
+
+def test_varying_read_windows_still_hit_frequency_backstop():
+    middleware = LoopDetectionMiddleware(tool_freq_warn=2, tool_freq_hard_limit=3)
+    runtime = _runtime(thread_id="reads", run_id="run-1")
+    for index in range(2):
+        assert middleware.after_model(_read_state(index + 1, index + 1, index), runtime) is None
+    assert middleware.after_model(_read_state(3, 3, 2), runtime) is not None
 
 
 def test_hard_stop_removes_provider_native_tool_call_blocks():

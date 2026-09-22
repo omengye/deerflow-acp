@@ -19,6 +19,8 @@ from acp.schema import (
     TextContentBlock,
 )
 
+from .acp_errors import ACPPromptError, ACPPromptTimeoutError
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,11 +65,13 @@ class DeerFlowACPClient:
         workspace: Path,
         *,
         timeout_seconds: float = 600,
+        prompt_timeout_seconds: float = 0,
     ) -> None:
         self.command = command
         self.args = list(args)
         self.workspace = workspace
         self.timeout_seconds = timeout_seconds
+        self.prompt_timeout_seconds = prompt_timeout_seconds
         self._client = _AdapterACPClient()
         self._stack: AsyncExitStack | None = None
         self._connection: Any = None
@@ -143,12 +147,25 @@ class DeerFlowACPClient:
         chunks: list[str] = []
         self._client.captures[session_id] = chunks
         try:
-            async with asyncio.timeout(self.timeout_seconds):
-                await self._connection.prompt(
+            async with asyncio.timeout(self.prompt_timeout_seconds or None):
+                response = await self._connection.prompt(
                     session_id=session_id,
                     prompt=[text_block(prompt)],
                 )
+            if response.stop_reason == "cancelled":
+                raise ACPPromptError("DeerFlow prompt was cancelled")
             await asyncio.sleep(0)
             return "".join(chunks).strip()
+        except TimeoutError:
+            try:
+                async with asyncio.timeout(15):
+                    await self._connection.cancel(session_id=session_id)
+            except Exception:  # noqa: BLE001 - cancellation is best effort
+                logger.warning("Could not cancel timed-out ACP session %s", session_id)
+            raise ACPPromptTimeoutError(
+                f"DeerFlow ACP prompt exceeded {self.prompt_timeout_seconds:g}s"
+            ) from None
+        except acp.RequestError as exc:
+            raise ACPPromptError(f"DeerFlow prompt failed: {exc}") from exc
         finally:
             self._client.captures.pop(session_id, None)

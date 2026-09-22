@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .acp_errors import ACPPromptError, ACPPromptTimeoutError
+
 logger = logging.getLogger(__name__)
 
 
@@ -332,11 +334,13 @@ class DeerFlowACPV2Client:
         workspace: Path,
         *,
         timeout_seconds: float = 600,
+        prompt_timeout_seconds: float = 0,
     ) -> None:
         self.command = command
         self.args = list(args)
         self.workspace = workspace
         self.timeout_seconds = timeout_seconds
+        self.prompt_timeout_seconds = prompt_timeout_seconds
         self._transport = _JsonRpcProcess(
             command,
             args,
@@ -451,39 +455,65 @@ class DeerFlowACPV2Client:
         ):
             raise ACPV2Error("Prompt must contain text, image, or resource-link blocks")
         tracker = self._transport.install_turn(session_id, on_update=on_update)
-        deadline = time.monotonic() + self.timeout_seconds
+        started = time.monotonic()
+        acknowledged = False
+        prompt_deadline = asyncio.timeout(self.prompt_timeout_seconds or None)
+        logger.info(
+            "Starting ACP v2 prompt: session=%s, prompt_timeout=%s",
+            session_id,
+            f"{self.prompt_timeout_seconds:g}s"
+            if self.prompt_timeout_seconds
+            else "server-managed",
+        )
         try:
-            await asyncio.wait_for(
-                self._transport.request(
-                    "session/prompt",
-                    {
-                        "sessionId": session_id,
-                        "prompt": blocks,
-                    },
-                ),
-                timeout=max(0.001, deadline - time.monotonic()),
-            )
-            if tracker.done is None:
-                raise AssertionError("turn tracker has no completion future")
-            idle = await asyncio.wait_for(
-                asyncio.shield(tracker.done),
-                timeout=max(0.001, deadline - time.monotonic()),
-            )
+            async with prompt_deadline:
+                # v2 acknowledges immediately; the daemon owns queue/run limits.
+                async with asyncio.timeout(self.timeout_seconds):
+                    await self._transport.request(
+                        "session/prompt",
+                        {"sessionId": session_id, "prompt": blocks},
+                    )
+                acknowledged = True
+                if tracker.done is None:
+                    raise AssertionError("turn tracker has no completion future")
+                idle = await asyncio.shield(tracker.done)
         except TimeoutError:
             await self._cancel_and_drain(session_id, tracker)
-            raise TimeoutError(
-                f"DeerFlow ACP v2 prompt exceeded {self.timeout_seconds:g}s"
-            ) from None
+            detail = (
+                f"prompt exceeded {self.prompt_timeout_seconds:g}s"
+                if prompt_deadline.expired()
+                else f"prompt acknowledgement exceeded {self.timeout_seconds:g}s"
+            )
+            raise ACPPromptTimeoutError(f"DeerFlow ACP v2 {detail}") from None
+        except asyncio.CancelledError:
+            await self._cancel_and_drain(session_id, tracker)
+            raise
+        except ACPV2Error as exc:
+            if acknowledged:
+                raise ACPPromptError(str(exc)) from exc
+            raise
         finally:
             self._transport.remove_turn(session_id)
+            if (
+                tracker.done is not None
+                and tracker.done.done()
+                and not tracker.done.cancelled()
+            ):
+                tracker.done.exception()
 
         stop_reason = idle.get("stopReason")
+        logger.info(
+            "Finished ACP v2 prompt: session=%s, elapsed=%.1fs, stop_reason=%s",
+            session_id,
+            time.monotonic() - started,
+            stop_reason,
+        )
         if stop_reason == "_deerflow_error":
             meta = idle.get("_meta")
             detail = meta.get("deerflowError") if isinstance(meta, dict) else None
-            raise ACPV2Error(f"DeerFlow prompt failed: {detail or 'unknown error'}")
+            raise ACPPromptError(f"DeerFlow prompt failed: {detail or 'unknown error'}")
         if stop_reason == "cancelled":
-            raise ACPV2Error("DeerFlow prompt was cancelled")
+            raise ACPPromptError("DeerFlow prompt was cancelled")
         return tracker.projection.text()
 
     async def _cancel_and_drain(self, session_id: str, tracker: _TurnTracker) -> None:

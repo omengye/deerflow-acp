@@ -461,11 +461,79 @@ async def test_runtime_passes_session_cwd_as_workspace_path(
 
 
 @pytest.mark.asyncio
+async def test_runtime_keeps_knowledge_scope_per_call_and_preserves_omitted_null_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeClient:
+        async def astream(self, _message: str, **kwargs: Any):
+            calls.append(kwargs)
+            if False:
+                yield None
+
+    client = FakeClient()
+
+    async def client_for(_session: LocalACPSession) -> FakeClient:
+        return client
+
+    _configure_local_sandbox(monkeypatch)
+    runtime = LocalACPRuntime(
+        LocalACPConfig(
+            config_path=tmp_path / "config.yaml",
+            checkpointer_path=tmp_path / "checkpoints.db",
+            session_store_path=tmp_path / "sessions.db",
+        )
+    )
+    monkeypatch.setattr(runtime, "_client_for", client_for)
+    session = _make_runtime_session(tmp_path, "scope-session")
+    other_session = _make_runtime_session(tmp_path, "other-session")
+    explicit_scope = {
+        "dataset_ids": [" ds-a "],
+        "documents": [{"dataset_id": " ds-a ", "document_id": " doc-1 "}],
+    }
+    requests = [
+        (session, {"knowledge_scope": explicit_scope}),
+        (session, {}),
+        (session, {"knowledge_scope": {"dataset_ids": [], "documents": []}}),
+        (session, {"knowledge_scope": None}),
+        (other_session, {}),
+    ]
+    for current_session, options in requests:
+        async for _ in runtime.astream(
+            current_session,
+            "Search",
+            live_event_callback=lambda _event: None,  # type: ignore[arg-type]
+            **options,
+        ):
+            pass
+
+    assert len(calls) == len(requests)
+    assert calls[0]["knowledge_scope"] == {
+        "dataset_ids": ["ds-a"],
+        "documents": [{"dataset_id": "ds-a", "document_id": "doc-1"}],
+    }
+    assert "knowledge_scope" not in calls[1]
+    assert calls[2]["knowledge_scope"] == {"dataset_ids": [], "documents": []}
+    assert "knowledge_scope" in calls[3] and calls[3]["knowledge_scope"] is None
+    assert "knowledge_scope" not in calls[4]
+    assert calls[4]["thread_id"] == "other-session"
+    assert explicit_scope["dataset_ids"] == [" ds-a "]
+    assert explicit_scope["documents"][0]["document_id"] == " doc-1 "
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scope_options",
+    [{}, {"knowledge_scope": None}, {"knowledge_scope": {"dataset_ids": ["ds-a"], "documents": None}}],
+)
 async def test_goal_runtime_continues_then_stops_after_repeated_no_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    scope_options: dict[str, Any],
 ) -> None:
     calls: list[str | HumanMessage] = []
+    forwarded_scopes: list[dict[str, Any]] = []
 
     class FakeClient:
         async def astream(
@@ -473,7 +541,7 @@ async def test_goal_runtime_continues_then_stops_after_repeated_no_progress(
             message: str | HumanMessage,
             **kwargs: Any,
         ):
-            del kwargs
+            forwarded_scopes.append({key: value for key, value in kwargs.items() if key == "knowledge_scope"})
             calls.append(message)
             if False:
                 yield None
@@ -519,11 +587,13 @@ async def test_goal_runtime_continues_then_stops_after_repeated_no_progress(
             session,
             "finish the task",
             live_event_callback=lambda _event: None,  # type: ignore[arg-type]
+            **scope_options,
         )
     ]
 
     assert calls[0] == "finish the task"
     assert len(calls) == 3
+    assert forwarded_scopes == [scope_options, scope_options, scope_options]
     assert all(isinstance(message, HumanMessage) for message in calls[1:])
     assert all(
         message.additional_kwargs.get("hide_from_ui") is True

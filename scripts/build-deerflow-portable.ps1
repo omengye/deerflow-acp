@@ -49,7 +49,10 @@ if ($Configuration -eq "Release") {
 }
 
 Write-Host "Building ACP Bridge ($Configuration)..."
-& cargo @cargoArguments --manifest-path (Join-Path $repoRoot "bridge\Cargo.toml")
+$bridgeCargoArguments = $cargoArguments + @(
+    "--config", 'target.x86_64-pc-windows-msvc.rustflags=["-C","target-feature=+crt-static"]'
+)
+& cargo @bridgeCargoArguments --manifest-path (Join-Path $repoRoot "bridge\Cargo.toml")
 if ($LASTEXITCODE -ne 0) { throw "ACP Bridge build failed" }
 
 Write-Host "Building Iced configuration UI ($Configuration)..."

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +27,22 @@ class SkillsConfig(BaseModel):
         default="/mnt/skills",
         description="Path where skills are mounted in the sandbox container",
     )
+    discovery_mode: Literal["off", "auto", "on"] = Field(
+        default="off",
+        description="Use compact skill names and describe_skill: off keeps full metadata, auto uses the threshold, on always defers.",
+    )
+    discovery_threshold: int = Field(
+        default=20,
+        ge=1,
+        le=10000,
+        description="Minimum number of skills visible to this agent before auto discovery defers metadata.",
+    )
+
+    def use_deferred_discovery(self, visible_count: int) -> bool:
+        return self.enabled and visible_count > 0 and (
+            self.discovery_mode == "on"
+            or (self.discovery_mode == "auto" and visible_count >= self.discovery_threshold)
+        )
 
     def get_skills_path(self) -> Path:
         """

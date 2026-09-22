@@ -396,6 +396,20 @@ skills:
   enabled: true
   path: ./skills
   container_path: /mnt/skills
+  # off keeps the full skill descriptions; auto switches to intent discovery
+  # once this Agent can see at least discovery_threshold enabled skills.
+  discovery_mode: "off"
+  discovery_threshold: 20
+
+# Optional model-input redaction. Original history and user-facing source
+# artifacts remain unchanged. Memory extraction is not covered by this option.
+pii_redaction:
+  enabled: false
+  email: true
+  phone: true
+  bank_card: true
+  chinese_id: true
+  api_key: true
 
 # Agent-managed Skill improvement. Review mode discovers reusable improvements
 # automatically but always requires an admin to publish them. auto_patch mode
@@ -454,6 +468,8 @@ memory:
     # Query-relevant fact retrieval backed by a rebuildable SQLite FTS5 index.
     retrieval_enabled: true
     retrieval_top_k: 12
+    retrieval_mmr_enabled: false
+    retrieval_mmr_lambda: 0.7
     retrieval_index_path: memory-fts5.sqlite3
 
 # mem0 HTTP backend (there is intentionally no automatic DeerMem migration):

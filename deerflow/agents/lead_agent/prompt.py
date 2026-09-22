@@ -7,6 +7,7 @@ from functools import lru_cache
 from deerflow.agents.date_context import append_current_date
 from deerflow.config.agents_config import load_agent_soul
 from deerflow.skills import load_skills
+from deerflow.skills.catalog import SkillCatalog, catalog_from_signature
 from deerflow.skills.types import Skill
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ def _invalidate_enabled_skills_cache() -> threading.Event:
     global _enabled_skills_cache, _enabled_skills_refresh_active, _enabled_skills_refresh_version
 
     _get_cached_skills_prompt_section.cache_clear()
+    catalog_from_signature.cache_clear()
     with _enabled_skills_lock:
         _enabled_skills_cache = None
         _enabled_skills_refresh_version += 1
@@ -127,6 +129,7 @@ def _reset_skills_system_prompt_cache_state() -> None:
     global _enabled_skills_cache, _enabled_skills_refresh_active, _enabled_skills_refresh_version
 
     _get_cached_skills_prompt_section.cache_clear()
+    catalog_from_signature.cache_clear()
     with _enabled_skills_lock:
         _enabled_skills_cache = None
         _enabled_skills_refresh_active = False
@@ -624,8 +627,20 @@ def _get_cached_skills_prompt_section(
     available_skills_key: tuple[str, ...] | None,
     container_base_path: str,
     skill_evolution_section: str,
+    deferred: bool = False,
 ) -> str:
     filtered = [(name, description, category, location) for name, description, category, location in skill_signature if available_skills_key is None or name in available_skills_key]
+    if deferred and filtered:
+        names = "\n".join(html.escape(name) for name, _, _, _ in filtered)
+        return f"""<skill_system>
+Skill descriptions are available through `describe_skill`. Search with task keywords before choosing a workflow.
+For an explicitly requested skill, use `select:skill-name` (multiple names may be comma-separated) so intent ranking cannot discard it.
+Read the returned SKILL.md location before following the workflow; load referenced resources only when needed.
+{skill_evolution_section}
+<skill_index>
+{names}
+</skill_index>
+</skill_system>"""
     skills_list = ""
     if filtered:
         skill_items = "\n".join(
@@ -658,11 +673,16 @@ def get_skills_prompt_section(available_skills: set[str] | None = None) -> str:
         from deerflow.config import get_app_config
 
         config = get_app_config()
+        if not config.skills.enabled:
+            return ""
         container_base_path = config.skills.container_path
         skill_evolution_enabled = config.skill_evolution.enabled
+        visible_count = sum(available_skills is None or skill.name in available_skills for skill in skills)
+        deferred = config.skills.use_deferred_discovery(visible_count)
     except Exception:
         container_base_path = "/mnt/skills"
         skill_evolution_enabled = False
+        deferred = False
 
     if not skills and not skill_evolution_enabled:
         return ""
@@ -675,7 +695,22 @@ def get_skills_prompt_section(available_skills: set[str] | None = None) -> str:
     if not skill_signature and available_key is not None:
         return ""
     skill_evolution_section = _build_skill_evolution_section(skill_evolution_enabled)
-    return _get_cached_skills_prompt_section(skill_signature, available_key, container_base_path, skill_evolution_section)
+    return _get_cached_skills_prompt_section(skill_signature, available_key, container_base_path, skill_evolution_section, deferred)
+
+
+def get_skill_discovery_catalog(available_skills: frozenset[str] | set[str] | None = None) -> SkillCatalog:
+    """Read the shared metadata cache through this run's immutable visibility scope."""
+    from deerflow.config import get_app_config
+
+    config = get_app_config().skills
+    if not config.enabled:
+        return catalog_from_signature(())
+    signature = tuple(
+        (skill.name, skill.description, skill.category, skill.get_container_file_path(config.container_path))
+        for skill in _get_enabled_skills()
+        if available_skills is None or skill.name in available_skills
+    )
+    return catalog_from_signature(signature)
 
 
 def get_agent_soul(agent_name: str | None) -> str:

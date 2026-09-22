@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from buzz_deerflow_adapter.acp_errors import ACPPromptError
 from buzz_deerflow_adapter.acp_v2_client import (
     ACPV2Error,
     DeerFlowACPV2Client,
@@ -78,7 +79,7 @@ async def test_v2_client_surfaces_terminal_error(tmp_path: Path) -> None:
     await client.open()
     try:
         session_id = await client.attach_or_create(None)
-        with pytest.raises(ACPV2Error, match="fake failure"):
+        with pytest.raises(ACPPromptError, match="fake failure"):
             await client.prompt(session_id, "fail")
     finally:
         await client.close()
@@ -112,9 +113,55 @@ async def test_v2_client_cancels_a_timed_out_turn(tmp_path: Path) -> None:
     await client.open()
     try:
         session_id = await client.attach_or_create(None)
-        client.timeout_seconds = 0.05
+        client.prompt_timeout_seconds = 0.05
         with pytest.raises(TimeoutError, match="exceeded"):
             await client.prompt(session_id, "hang")
+        client.prompt_timeout_seconds = 5
+        assert "after cancel" in await client.prompt(session_id, "after cancel")
+    finally:
+        await client.close()
+
+
+async def test_long_prompt_outlives_request_timeout(tmp_path: Path) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "fake_acp_v2_agent.py"
+    client = DeerFlowACPV2Client(
+        sys.executable, [str(fixture)], tmp_path, timeout_seconds=5
+    )
+    await client.open()
+    try:
+        session = await client.attach_or_create(None)
+        client.timeout_seconds = 0.1
+        answer = await asyncio.wait_for(client.prompt(session, "slow"), timeout=5)
+        assert answer == "Fake DeerFlow received: slow"
+    finally:
+        await client.close()
+
+
+async def test_prompt_acknowledgement_still_has_a_deadline(tmp_path: Path) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "fake_acp_v2_agent.py"
+    client = DeerFlowACPV2Client(
+        sys.executable, [str(fixture)], tmp_path, timeout_seconds=5
+    )
+    await client.open()
+    try:
+        session = await client.attach_or_create(None)
+        client.timeout_seconds = 0.1
+        with pytest.raises(TimeoutError, match="acknowledgement exceeded"):
+            await asyncio.wait_for(client.prompt(session, "no-ack"), timeout=5)
+    finally:
+        await client.close()
+
+
+async def test_disconnect_ends_unbounded_prompt(tmp_path: Path) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "fake_acp_v2_agent.py"
+    client = DeerFlowACPV2Client(
+        sys.executable, [str(fixture)], tmp_path, timeout_seconds=5
+    )
+    await client.open()
+    try:
+        session = await client.attach_or_create(None)
+        with pytest.raises(ACPPromptError, match="exited"):
+            await asyncio.wait_for(client.prompt(session, "disconnect"), timeout=5)
     finally:
         await client.close()
 

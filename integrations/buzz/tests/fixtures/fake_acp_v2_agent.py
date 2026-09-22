@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import uuid
 
 running_sessions: set[str] = set()
@@ -71,7 +72,8 @@ for line in sys.stdin:
             for block in params.get("prompt", [])
             if block.get("type") == "text"
         )
-        respond(request, {})
+        if text != "no-ack":
+            respond(request, {})
         update(
             session_id,
             {"sessionUpdate": "state_update", "state": "running"},
@@ -97,8 +99,13 @@ for line in sys.stdin:
             },
         )
         running_sessions.add(session_id)
-        if text == "hang":
+        if text in {"hang", "no-ack"}:
             continue
+        if text == "disconnect":
+            time.sleep(0.1)
+            sys.exit(1)
+        if text == "slow":
+            time.sleep(0.3)
         if text == "fail":
             update(
                 session_id,

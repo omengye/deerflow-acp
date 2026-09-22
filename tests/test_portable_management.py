@@ -217,3 +217,52 @@ async def test_live_management_refuses_attached_session_deletion():
     )
     assert result["ok"] is False
     assert "客户端" in result["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("purge_succeeds", [False, True])
+async def test_session_delete_requires_checkpoint_purge_and_releases_reservation(purge_succeeds):
+    from deerflow.acp.management import handle_runtime_management
+
+    coordinator = ACPSessionCoordinator()
+    removed = []
+
+    class Store:
+        async def get(self, *args, **kwargs):
+            return object()
+
+        async def delete_sessions(self, ids):
+            removed.extend(ids)
+
+    async def release(session_id):
+        # Cleanup must exclude reconnects throughout every awaited operation.
+        with pytest.raises(SessionBusyError):
+            coordinator.attach(session_id, "racing-client")
+
+    async def purge(ids):
+        return ids if purge_succeeds else []
+
+    daemon = SimpleNamespace(store=Store(), runtime=SimpleNamespace(
+        session_coordinator=coordinator, release_session=release, purge_checkpoints=purge,
+    ))
+    result = await handle_runtime_management(daemon, {"operation": "session.delete", "session_id": "s"})
+    assert result["ok"] is purge_succeeds
+    assert removed == (["s"] if purge_succeeds else [])
+    if purge_succeeds:
+        assert result["data"]["deleted"] == ["s"]
+    else:
+        assert "清理失败" in result["error"]
+    assert coordinator.reserve_cleanup("s")
+
+
+@pytest.mark.asyncio
+async def test_session_delete_can_retry_after_history_was_already_removed():
+    from deerflow.acp.management import handle_runtime_management
+
+    class Store:
+        async def get(self, *args, **kwargs):
+            return None
+
+    daemon = SimpleNamespace(store=Store(), runtime=SimpleNamespace(session_coordinator=ACPSessionCoordinator()))
+    result = await handle_runtime_management(daemon, {"operation": "session.delete", "session_id": "s"})
+    assert result == {"ok": True, "data": {"deleted": ["s"], "already_deleted": True}}

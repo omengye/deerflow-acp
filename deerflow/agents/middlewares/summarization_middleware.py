@@ -19,6 +19,8 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares.input_sanitization_middleware import is_genuine_user_message
+from deerflow.agents.middlewares.pii_redaction_middleware import redact_messages, redact_text
+from deerflow.config.pii_redaction_config import PiiRedactionConfig
 
 logger = logging.getLogger(__name__)
 
@@ -129,9 +131,11 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         fallback_model_name: str | None = None,
         max_consecutive_failures: int = 3,
         circuit_recovery_timeout_sec: int = 60,
+        pii_redaction: PiiRedactionConfig | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self.pii_redaction = (pii_redaction or PiiRedactionConfig()).model_copy(deep=True)
         self._skills_container_path = skills_container_path or "/mnt/skills"
         self._skill_file_read_tool_names = frozenset(skill_file_read_tool_names or {"read_file", "read", "view", "cat"})
         self._before_summarization_hooks = before_summarization or []
@@ -403,7 +407,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         if not messages_to_summarize:
             return "No previous conversation history."
 
-        trimmed_messages = self._messages_for_summary(messages_to_summarize)
+        trimmed_messages = self._messages_for_summary(redact_messages(messages_to_summarize, self.pii_redaction))
         if not trimmed_messages:
             return "Previous conversation was too long to summarize."
 
@@ -423,7 +427,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
 
                 response = invoke_chat_model(
                     llm,
-                    self.summary_prompt.format(messages=formatted_messages).rstrip(),
+                    redact_text(self.summary_prompt.format(messages=formatted_messages).rstrip(), self.pii_redaction),
                     config={"metadata": {"lc_source": "summarization"}},
                 )
             return response.text.strip()
@@ -436,7 +440,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         if not messages_to_summarize:
             return "No previous conversation history."
 
-        trimmed_messages = self._messages_for_summary(messages_to_summarize)
+        trimmed_messages = self._messages_for_summary(redact_messages(messages_to_summarize, self.pii_redaction))
         if not trimmed_messages:
             return "Previous conversation was too long to summarize."
 
@@ -456,7 +460,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
 
                 response = await ainvoke_chat_model(
                     llm,
-                    self.summary_prompt.format(messages=formatted_messages).rstrip(),
+                    redact_text(self.summary_prompt.format(messages=formatted_messages).rstrip(), self.pii_redaction),
                     config={"metadata": {"lc_source": "summarization"}},
                 )
             return response.text.strip()

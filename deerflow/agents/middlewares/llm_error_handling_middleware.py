@@ -23,11 +23,104 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage
 from langgraph.errors import GraphBubbleUp
+from langgraph.runtime import Runtime
 
 from deerflow.config import get_app_config
 from deerflow.models.request_admission import AdmissionError
 
 logger = logging.getLogger(__name__)
+
+_EMPTY_RETRY_KEY = "_deerflow_empty_response_retry"
+_EMPTY_RETRY_MARKER = object()
+_EMPTY_RETRY_LOCK = threading.Lock()
+# Context-less SDK graphs still share Runtime.control across their nodes.
+# Hold identities until after_agent; abandoned runs are bounded and the full
+# registry declines new retries rather than forgetting a live run's budget.
+_EMPTY_RETRY_ANCHORS: dict[int, object] = {}
+_MAX_EMPTY_RETRY_ANCHORS = 1024
+
+
+class EmptyModelResponseError(RuntimeError):
+    """A normally completed model call contained neither output nor a tool call."""
+
+    def __init__(self, message: AIMessage | None = None) -> None:
+        super().__init__("Model returned an empty completed response")
+        self.response_message = message
+
+
+def _check_completed_response(response: ModelCallResult) -> None:
+    if isinstance(response, AIMessage):
+        message = response
+    elif isinstance(response, ModelResponse):
+        message = next((item for item in reversed(response.result) if isinstance(item, AIMessage)), None)
+    else:
+        return
+    if message is None:
+        raise EmptyModelResponseError()
+
+    kwargs = message.additional_kwargs or {}
+    if message.tool_calls or message.invalid_tool_calls or kwargs.get("tool_calls") or kwargs.get("function_call"):
+        return
+    content = message.content
+    if isinstance(content, str) and content.strip():
+        return
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, str) and block.strip():
+                return
+            if not isinstance(block, dict):
+                continue
+            kind = block.get("type")
+            if not isinstance(kind, str):
+                continue
+            if kind in {"text", "output_text"} and str(block.get("text") or "").strip():
+                return
+            if kind in {
+                "tool_use", "tool_call", "function_call", "custom_tool_call", "tool_call_chunk",
+                "image", "image_url", "audio", "input_audio", "video", "file", "document",
+            }:
+                return
+    # Length and safety termination have their own recovery middleware. Do
+    # not retry them, including providers that supply both metadata fields.
+    for metadata in (message.response_metadata or {}, kwargs):
+        for field in ("finish_reason", "stop_reason"):
+            reason = metadata.get(field)
+            if isinstance(reason, str) and reason.strip().casefold() not in {"", "stop", "end_turn"}:
+                return
+    raise EmptyModelResponseError(message)
+
+
+def _consume_empty_retry(request: ModelRequest) -> bool:
+    runtime = getattr(request, "runtime", None)
+    context = getattr(runtime, "context", None)
+    if not isinstance(context, dict):
+        if runtime is None:
+            # Direct middleware consumers still have the per-call attempt bound.
+            return True
+        anchor = getattr(runtime, "control", None) or runtime
+        with _EMPTY_RETRY_LOCK:
+            if id(anchor) in _EMPTY_RETRY_ANCHORS or len(_EMPTY_RETRY_ANCHORS) >= _MAX_EMPTY_RETRY_ANCHORS:
+                return False
+            _EMPTY_RETRY_ANCHORS[id(anchor)] = anchor
+            return True
+    scope = (
+        context.get("thread_id"),
+        context.get("run_id") or context.get("loop_detection_scope_id") or getattr(runtime, "control", None),
+    )
+    with _EMPTY_RETRY_LOCK:
+        previous = context.get(_EMPTY_RETRY_KEY)
+        if isinstance(previous, tuple) and len(previous) == 2 and previous[0] is _EMPTY_RETRY_MARKER and previous[1] == scope:
+            return False
+        context[_EMPTY_RETRY_KEY] = (_EMPTY_RETRY_MARKER, scope)
+        return True
+
+
+def _release_empty_retry(runtime: Runtime) -> None:
+    anchor = getattr(runtime, "control", None) or runtime
+    with _EMPTY_RETRY_LOCK:
+        if _EMPTY_RETRY_ANCHORS.get(id(anchor)) is anchor:
+            _EMPTY_RETRY_ANCHORS.pop(id(anchor), None)
+
 
 _RETRIABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 _BUSY_PATTERNS = (
@@ -327,6 +420,14 @@ async def llm_call_slot_async(timeout_seconds: float | None = None):
 class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
     """Retry transient LLM errors and surface graceful assistant messages."""
 
+    @override
+    def after_agent(self, state: AgentState, runtime: Runtime) -> None:
+        _release_empty_retry(runtime)
+
+    @override
+    async def aafter_agent(self, state: AgentState, runtime: Runtime) -> None:
+        _release_empty_retry(runtime)
+
     retry_max_attempts: int = 3
     retry_base_delay_ms: int = 1000
     retry_cap_delay_ms: int = 8000
@@ -437,6 +538,8 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
     def _classify_error(self, exc: BaseException) -> tuple[bool, str]:
         if isinstance(exc, AdmissionError):
             return False, "admission"
+        if isinstance(exc, EmptyModelResponseError):
+            return True, "empty_response"
 
         detail = _extract_error_detail(exc)
         lowered = detail.lower()
@@ -465,6 +568,11 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             "InternalServerError",
             "ReadError",  # httpx.ReadError: connection dropped mid-stream
             "RemoteProtocolError",  # httpx: server closed connection unexpectedly
+            "ReadTimeout",
+            "ConnectTimeout",
+            "WriteTimeout",
+            "PoolTimeout",
+            "TimeoutException",
         }:
             return True, "transient"
         if status_code in _RETRIABLE_STATUS_CODES:
@@ -475,7 +583,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         return False, "generic"
 
     def _max_attempts_for(self, reason: str) -> int:
-        return min(self.retry_max_attempts, 2) if reason == "burst_rate" else self.retry_max_attempts
+        return min(self.retry_max_attempts, 2) if reason in {"burst_rate", "empty_response"} else self.retry_max_attempts
 
     def _bounded_model_call_sync(
         self,
@@ -510,6 +618,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         reason_text = {
             "busy": "provider is busy",
             "burst_rate": "provider is throttling request burst rate",
+            "empty_response": "provider returned no visible response",
         }.get(reason, "provider request failed temporarily")
         return f"LLM request retry {attempt}/{self._max_attempts_for(reason)}: {reason_text}. Retrying in {seconds}s."
 
@@ -528,9 +637,31 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             return "The configured LLM provider is temporarily throttling requests because the request rate increased too quickly. Please wait a moment and try again."
         if reason == "concurrency_limit":
             return "The server is handling the configured maximum number of model calls. The request timed out waiting for capacity; please try again shortly."
+        if reason == "empty_response":
+            return "The configured LLM provider returned an empty response and the automatic retry budget is exhausted. Please continue the conversation or select a different model."
         if reason in {"busy", "transient"}:
             return "The configured LLM provider is temporarily unavailable after multiple retries. Please wait a moment and continue the conversation."
         return f"LLM request failed: {detail}"
+
+    def _failure_message(self, exc: BaseException, reason: str) -> AIMessage:
+        text = self._build_user_message(exc, reason)
+        if not isinstance(exc, EmptyModelResponseError):
+            return AIMessage(content=text)
+        original = exc.response_message or AIMessage(content="")
+        # Keep usage, provider diagnostics and signed reasoning blocks intact.
+        content = original.content
+        if isinstance(content, list):
+            content = [*content, {"type": "text", "text": text}]
+        else:
+            content = f"{content}\n\n{text}" if content else text
+        kwargs = dict(original.additional_kwargs or {})
+        kwargs.update({
+            "deerflow_error_fallback": True,
+            "error_type": type(exc).__name__,
+            "error_reason": reason,
+            "error_detail": str(exc),
+        })
+        return original.model_copy(update={"content": content, "additional_kwargs": kwargs})
 
     def _emit_retry_event(self, attempt: int, wait_ms: int, reason: str) -> None:
         try:
@@ -582,6 +713,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         while True:
             try:
                 response = self._bounded_model_call_sync(request, handler)
+                _check_completed_response(response)
                 self._record_success(probe_token=probe_token)
                 return response
             except GraphBubbleUp:
@@ -600,7 +732,10 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     self._emit_failure_event(exc, reason, retriable=False)
                     return AIMessage(content=self._build_user_message(exc, reason))
                 max_attempts = self._max_attempts_for(reason)
-                if retriable and attempt < max_attempts:
+                should_retry = retriable and attempt < max_attempts
+                if should_retry and reason == "empty_response":
+                    should_retry = _consume_empty_retry(request)
+                if should_retry:
                     wait_ms = self._build_retry_delay_ms(attempt, exc, reason)
                     logger.warning(
                         "Transient LLM error on attempt %d/%d; retrying in %dms: %s",
@@ -619,12 +754,12 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     _extract_error_detail(exc),
                     exc_info=exc,
                 )
-                if retriable and reason != "burst_rate":
+                if retriable and reason not in {"burst_rate", "empty_response"}:
                     self._record_failure(probe_token=probe_token)
                 else:
                     self._release_half_open_probe(probe_token=probe_token)
                 self._emit_failure_event(exc, reason, retriable=retriable)
-                return AIMessage(content=self._build_user_message(exc, reason))
+                return self._failure_message(exc, reason)
 
     @override
     async def awrap_model_call(
@@ -642,6 +777,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             while True:
                 try:
                     response = await self._bounded_model_call(request, handler)
+                    _check_completed_response(response)
                     self._record_success(probe_token=probe_token)
                     return response
                 except GraphBubbleUp:
@@ -663,7 +799,10 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                         self._emit_failure_event(exc, reason, retriable=False)
                         return AIMessage(content=self._build_user_message(exc, reason))
                     max_attempts = self._max_attempts_for(reason)
-                    if retriable and attempt < max_attempts:
+                    should_retry = retriable and attempt < max_attempts
+                    if should_retry and reason == "empty_response":
+                        should_retry = _consume_empty_retry(request)
+                    if should_retry:
                         wait_ms = self._build_retry_delay_ms(attempt, exc, reason)
                         logger.warning(
                             "Transient LLM error on attempt %d/%d; retrying in %dms: %s",
@@ -682,12 +821,12 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                         _extract_error_detail(exc),
                         exc_info=exc,
                     )
-                    if retriable and reason != "burst_rate":
+                    if retriable and reason not in {"burst_rate", "empty_response"}:
                         self._record_failure(probe_token=probe_token)
                     else:
                         self._release_half_open_probe(probe_token=probe_token)
                     self._emit_failure_event(exc, reason, retriable=retriable)
-                    return AIMessage(content=self._build_user_message(exc, reason))
+                    return self._failure_message(exc, reason)
         except asyncio.CancelledError:
             # Cancellation can arrive during provider admission/call, retry
             # event delivery, or backoff.  It is not a provider failure, and

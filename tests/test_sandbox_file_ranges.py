@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -71,6 +72,74 @@ def test_read_file_truncation_reports_absolute_resume_line() -> None:
     resume = int(marker.split("Use start_line=", 1)[1].split(" ", 1)[0])
     assert resume > 40
     assert f"of {39 + content.count(chr(10))}" in marker
+
+
+def test_read_file_truncation_keeps_complete_lines() -> None:
+    content = "".join(f"line {number}: {'x' * 17}\n" for number in range(1, 60))
+    result = _truncate_read_file_output(content, 320)
+    kept, marker = result.split("\n... [truncated:", 1)
+    next_line = int(re.search(r"Use start_line=(\d+)", marker)[1])
+
+    assert len(result) <= 320
+    assert kept.endswith("\n")
+    assert kept == "".join(content.splitlines(keepends=True)[:next_line - 1])
+
+
+def test_long_line_names_single_line_read_that_can_finish() -> None:
+    content = "x" * 600 + "\n" + "tail\n" * 60
+    result = _truncate_read_file_output(content, 640, line_offset=39)
+    assert len(result) <= 640
+    assert "Use start_line=40 end_line=40" in result
+    assert "Then use start_line=41" in result
+    assert _truncate_read_file_output("x" * 600, 640, line_offset=39) == "x" * 600
+
+
+def test_line_larger_than_budget_never_recommends_identical_retry() -> None:
+    result = _truncate_read_file_output("x" * 10000, 500, line_offset=7)
+    assert len(result) <= 500
+    assert "line-range retries cannot advance" in result
+    assert "bounded character slices" in result
+    assert "Use start_line=" not in result
+
+
+def test_tiny_read_budget_returns_diagnostic_instead_of_bare_prefix() -> None:
+    result = _truncate_read_file_output("sensitive payload\n" * 50, 12)
+    assert "truncated" in result
+    assert "increase" in result
+    assert "sensitive" not in result
+
+
+def test_joined_trailing_empty_line_and_bounded_tail_keep_continuation() -> None:
+    result = _truncate_read_file_output("x" * 600 + "\n" + "tail\n" * 30, 640, joined_lines=True)
+    assert "Then use start_line=2" in result
+    bounded = _truncate_read_file_output("x" * 600 + "\n" + "tail\n" * 30, 640, bounded=True)
+    assert "Then use start_line=2" in bounded
+
+
+def test_local_read_tool_continuations_recover_all_lines(monkeypatch, tmp_path: Path) -> None:
+    lines = [f"line {number} {'x' * 40}" for number in range(1, 90)]
+    target = tmp_path / "range.txt"
+    target.write_text("\n".join(lines), encoding="utf-8")
+    sandbox = LocalSandbox("local", [PathMapping(container_path="/mnt/data", local_path=str(tmp_path))])
+    runtime = SimpleNamespace(context={"thread_id": "read-progress"}, config={}, state={})
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_sandbox_initialized", lambda _runtime: sandbox)
+    monkeypatch.setattr("deerflow.sandbox.tools.ensure_thread_directories_exist", lambda _runtime: None)
+    monkeypatch.setattr("deerflow.config.app_config.get_app_config", lambda: SimpleNamespace(sandbox=SimpleNamespace(read_file_output_max_chars=350)))
+    recovered = []
+    start = 11
+    for _ in range(80):
+        result = read_file_tool.func(runtime, description="continue reading", path="/mnt/data/range.txt", start_line=start, end_line=73)
+        if "\n... [truncated:" not in result:
+            recovered.extend(result.splitlines())
+            break
+        kept, marker = result.split("\n... [truncated:", 1)
+        recovered.extend(kept.splitlines())
+        next_line = int(re.search(r"Use start_line=(\d+)", marker)[1])
+        assert next_line > start
+        start = next_line
+    else:
+        raise AssertionError("continuation did not finish")
+    assert recovered == lines[10:73]
 
 
 def test_aio_glob_only_marks_truncated_after_an_extra_match(tmp_path: Path, monkeypatch) -> None:

@@ -144,6 +144,8 @@ OpenViking 原生 `forget` 工具会永久删除 `viking://` 资源，且本项�
 
 ## Checkpoint 与长期记忆
 
+近期独立适配的读取/流式输出/取消清理修复，以及技能意图发现、MCP 实例选择、记忆排序、RAGFlow 来源引用和可选 PII 脱敏，见 [2026-09-20 更新说明](docs/upstream-implementation-20260920.md)。新配置示例位于 `config.example.yaml`；技能延迟发现、MMR 和 PII 默认保持关闭。
+
 本分支已同步字节 DeerFlow 近期的 checkpoint / memory 优化思路：checkpoint 支持 `full`、`delta` 双模式和可配置快照频率；delta 历史可使用进程内 LRU 或 Redis 缓存。模式与快照频率都是进程级冻结配置，修改后必须重启所有共享同一 checkpoint 数据库的进程。`full -> delta` 可直接读取；`delta -> full` 会 fail-closed，避免把 delta sentinel 误当成空状态。
 
 长期记忆通过 `MemoryManager` 接口选择后端。默认 `deermem` 兼容原有 JSON + FTS5 行为；`mem0` 使用 HTTP API，API Key 只从 `backend_config.api_key_env` 指定的环境变量读取。mem0 不会自动迁移 DeerMem 数据。

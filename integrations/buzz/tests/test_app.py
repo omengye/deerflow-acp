@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from buzz_deerflow_adapter.acp_errors import ACPPromptError, ACPPromptTimeoutError
 from buzz_deerflow_adapter.app import AdapterApp
 from buzz_deerflow_adapter.buzz_cli import BuzzCLIError, BuzzDeliveryUnknownError
 from buzz_deerflow_adapter.config import AdapterConfig
@@ -163,6 +164,47 @@ async def test_delivery_unknown_is_quarantined(tmp_path: Path) -> None:
             .fetchone()
         )
         assert tuple(row) == ("delivery_unknown", 1)
+    finally:
+        app.state.close()
+
+
+@pytest.mark.parametrize(
+    "error", [ACPPromptTimeoutError("exceeded 600s"), ACPPromptError("task timed out")]
+)
+async def test_failed_prompt_is_not_rerun_even_if_error_reply_needs_retry(
+    tmp_path: Path, error
+) -> None:
+    app = _app(tmp_path)
+
+    class FailedACP(_FakeACP):
+        async def prompt(self, _session_id, _prompt):
+            self.prompt_calls += 1
+            raise error
+
+    class RetryBuzz:
+        def __init__(self):
+            self.replies = []
+
+        async def send_message(self, channel, reply_to, content):
+            self.replies.append(content)
+            if len(self.replies) == 1:
+                raise RuntimeError("known failed send")
+            return {"accepted": True}
+
+    app.acp = acp = FailedACP()
+    app.buzz = buzz = RetryBuzz()
+    _enqueue(app)
+    try:
+        await app._process_pending()
+        assert app.state.pending()[0].response_content == buzz.replies[0]
+        await app._process_pending()
+        await app._process_pending()
+        assert acp.prompt_calls == 1
+        assert len(buzz.replies) == 2
+        assert buzz.replies[0] == buzz.replies[1]
+        assert "not automatically retried" in buzz.replies[0]
+        assert "session-1" in buzz.replies[0]
+        assert not app.state.pending()
     finally:
         app.state.close()
 

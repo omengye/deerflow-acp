@@ -221,6 +221,18 @@ does not answer historical messages.
 - ACP v2 prompts acknowledge immediately. The sidecar collects updates only
   after `running` and considers the turn complete on the following `idle`, so a
   session's earlier ready/idle notification cannot prematurely finish a reply.
+- `deerflow.timeout_seconds` bounds initialization, session management, and the
+  v2 prompt acknowledgement. `deerflow.prompt_timeout_seconds` independently
+  bounds the whole turn, including queue time. It defaults to `0`, letting the
+  daemon enforce its queue/run limits. Existing configs without the new setting
+  use this default; a long task is no longer cancelled at 600 seconds. If you set
+  a positive limit, allow more than the daemon's queue timeout plus run timeout
+  (for example, 7860 seconds for a 600-second queue and a 7200-second run).
+- A prompt timeout or v2 terminal error produces a persisted failure reply with
+  the ACP session ID. The adapter does not rerun that prompt automatically,
+  because tools may already have executed. Failed delivery retries only the
+  saved failure reply. Transport failure after the v2 acknowledgement is handled
+  the same way.
 - Buzz has no interactive ACP approval surface. When DeerFlow requests tool
   permission, the sidecar selects `allow_once` when offered (then
   `allow_always` as a fallback); configure DeerFlow's tool allow/deny policy for

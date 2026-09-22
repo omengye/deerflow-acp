@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import unquote, urlparse
@@ -605,7 +606,8 @@ class DeerFlowACPAgent:
                             )
                         }
                     )
-                session.approval_mode = cast(SessionApprovalMode, value)
+                # Keep the loaded session unchanged if persistence fails.
+                session = replace(session, approval_mode=cast(SessionApprovalMode, value))
             elif config_id == "subagent_enabled":
                 if not self.policy.subagents_enabled:
                     raise RequestError.invalid_params(
@@ -641,6 +643,14 @@ class DeerFlowACPAgent:
                     {"details": f"Unsupported config option: {config_id}"}
                 )
             await self.store.save(session)
+            if config_id == "tool_approval":
+                # An explicit Ask also revokes legacy per-tool choices. Do this
+                # only after saving, while the session mutation lease is held.
+                self.runtime.set_session_approval_mode(
+                    session_id,
+                    session.approval_mode,
+                    reset_decisions=True,
+                )
             return acp.SetSessionConfigOptionResponse(
                 config_options=self._config_options(session)
             )
@@ -654,8 +664,16 @@ class DeerFlowACPAgent:
         message_id: str | None = None,
         **kwargs: Any,
     ) -> acp.PromptResponse:
-        del kwargs
         session = await self._require_attached_session(session_id)
+        meta = kwargs.get("_meta", kwargs.get("meta"))
+        scope_options: dict[str, Any] = {}
+        if isinstance(meta, dict) and "deerflow.knowledge_scope" in meta:
+            from deerflow.community.ragflow.scope import normalize_scope
+
+            try:
+                scope_options["knowledge_scope"] = normalize_scope(meta["deerflow.knowledge_scope"])
+            except ValueError as exc:
+                raise RequestError.invalid_params({"details": "Invalid knowledge scope"}) from exc
         text_parts: list[str] = []
         pending_images: list[PendingInputImage] = []
         has_non_text_blocks = False
@@ -875,6 +893,7 @@ class DeerFlowACPAgent:
                 async with deadline:
                     runtime_kwargs: dict[str, Any] = {
                         "live_event_callback": timed_live,
+                        **scope_options,
                     }
                     if input_images:
                         runtime_kwargs["input_images"] = [

@@ -132,6 +132,34 @@ def test_deerflow_client_rebuilds_agent_when_calendar_date_changes() -> None:
     ]
 
 
+def test_deerflow_client_rebuilds_agent_when_pii_policy_changes() -> None:
+    from deerflow.config.pii_redaction_config import PiiRedactionConfig
+
+    client = _client()
+    app_config = _app_config(supports_vision=False)
+    app_config.pii_redaction = PiiRedactionConfig()
+    with (
+        patch("deerflow.client.get_app_config", return_value=app_config),
+        patch.object(DeerFlowClient, "_get_memory_signature", return_value=None),
+        patch.object(DeerFlowClient, "_get_skill_catalog_version", return_value=0),
+        patch("deerflow.client.create_chat_model", return_value=object()),
+        patch.object(DeerFlowClient, "_get_tools", return_value=[]),
+        patch("deerflow.client._build_middlewares", return_value=[]),
+        patch("deerflow.client.apply_prompt_template", return_value="system"),
+        patch("deerflow.client.create_agent", return_value=object()) as create_agent,
+    ):
+        client._ensure_agent({})
+        client._ensure_agent({})
+        assert create_agent.call_count == 1
+        app_config.pii_redaction.enabled = True
+        client._ensure_agent({})
+        assert create_agent.call_count == 2
+        app_config.pii_redaction.email = False
+        client._ensure_agent({})
+        client._ensure_agent({})
+        assert create_agent.call_count == 3
+
+
 def test_deerflow_client_explicit_model_overrides_configured_default() -> None:
     client = _client()
     client._model_name = "first-model"

@@ -78,8 +78,10 @@ class ACPPermissionBroker:
         self,
         session_id: str,
         mode: SessionApprovalMode,
+        *,
+        reset_decisions: bool = False,
     ) -> None:
-        """Set one session's wildcard policy and discard stale per-tool choices."""
+        """Sync policy, optionally revoking choices even when the mode is unchanged."""
         if mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"Unsupported session approval mode: {mode}")
         normalized = normalize_session_approval_mode(mode)
@@ -89,7 +91,7 @@ class ACPPermissionBroker:
                 DEFAULT_SESSION_APPROVAL_MODE,
             )
             self._session_approval_modes[session_id] = normalized
-            if previous != normalized:
+            if reset_decisions or previous != normalized:
                 self._always_allowed = {
                     item for item in self._always_allowed if item[0] != session_id
                 }

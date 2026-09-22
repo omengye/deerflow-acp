@@ -79,6 +79,9 @@ class AgentConfig(BaseModel):
     description: str = ""
     model: str | None = None
     tool_groups: list[str] | None = None
+    # MCP instance keys from extensions_config: None inherits enabled servers,
+    # [] loads none. Missing/disabled keys remain configured without widening scope.
+    mcp_servers: list[str] | None = None
     # skills controls which skills are loaded into the agent's prompt:
     # - None (or omitted): load all enabled skills (default fallback behavior)
     # - [] (explicit empty list): disable all skills

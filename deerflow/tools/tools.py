@@ -14,7 +14,7 @@ from deerflow.tools.builtins import (
     task_tool,
     view_image_tool,
 )
-from deerflow.tools.builtins.tool_search import get_deferred_registry
+from deerflow.tools.builtins.tool_search import DeferredToolRegistry, get_deferred_registry
 from deerflow.tools.sync import make_sync_tool_wrapper
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,41 @@ SUBAGENT_TOOLS = [
     task_tool,
     # task_status_tool is no longer exposed to LLM (backend handles polling internally)
 ]
+
+
+def filter_mcp_tools_by_servers(
+    tools: list[BaseTool],
+    selected: list[str] | None,
+    enabled_servers: set[str] | None = None,
+) -> list[BaseTool]:
+    """Project MCP tools by trusted provenance, never name prefixes.
+
+    The cache path supplies its enabled-server set. SDK/ACP additions omit it
+    because their caller owns the enabled bindings; no global configuration is
+    consulted. With no explicit selection, those additions keep legacy behavior.
+    """
+    if enabled_servers is None:
+        if selected is None:
+            return list(tools)
+        wanted = set(selected)
+    else:
+        wanted = enabled_servers if selected is None else enabled_servers.intersection(selected)
+    return [tool for tool in tools if (tool.metadata or {}).get("mcp_server") in wanted]
+
+
+class _ScopedMCPRegistry(DeferredToolRegistry):
+    """Keep discovery state local to one assembled tool list."""
+
+    def __init__(self, tools: list[BaseTool], previous: DeferredToolRegistry | None) -> None:
+        super().__init__()
+        self._catalog = {tool.name: tool for tool in tools}
+        old_catalog = previous._catalog if isinstance(previous, _ScopedMCPRegistry) else {}
+        for tool in tools:
+            # Preserve promotion only for the same trusted tool object. Newly
+            # added or reloaded schemas must be discovered before invocation.
+            promoted = previous is not None and old_catalog.get(tool.name) is tool and not previous.contains(tool.name)
+            if not promoted:
+                self.register(tool)
 
 
 def _is_host_bash_tool(tool: object) -> bool:
@@ -65,6 +100,9 @@ def get_available_tools(
     subagent_enabled: bool = False,
     include_upload_tool: bool = True,
     include_memory_tool: bool = True,
+    available_skills: set[str] | None = None,
+    include_skill_tool: bool = True,
+    mcp_servers: list[str] | None = None,
 ) -> list[BaseTool]:
     """Get all available tools from config.
 
@@ -79,6 +117,9 @@ def get_available_tools(
         include_upload_tool: Whether historical upload discovery is safe for
             this runtime state boundary.
         include_memory_tool: Whether this agent may use tool-driven memory.
+        available_skills: Agent-visible skill names; None inherits all enabled skills.
+        include_skill_tool: Whether the runtime supports skill discovery.
+        mcp_servers: MCP instance keys to select; None inherits enabled servers, [] selects none.
 
     Returns:
         List of available tools.
@@ -116,6 +157,16 @@ def get_available_tools(
     if include_memory_tool and config.memory.enabled and config.memory.mode == "tool":
         builtin_tools.append(memory_search_tool)
         logger.info("Including memory_search tool (memory.mode=tool)")
+    skills_config = getattr(config, "skills", None)
+    if (
+        include_skill_tool
+        and available_skills != set()
+        and getattr(skills_config, "enabled", False)
+        and getattr(skills_config, "discovery_mode", "off") != "off"
+    ):
+        from deerflow.skills.describe import build_describe_skill_tool
+
+        builtin_tools.append(build_describe_skill_tool(available_skills))
     skill_evolution_config = getattr(config, "skill_evolution", None)
     if getattr(skill_evolution_config, "enabled", False):
         from deerflow.tools.skill_manage_tool import skill_manage_tool
@@ -143,40 +194,34 @@ def get_available_tools(
     # made through the Gateway API (which runs in a separate process) are immediately
     # reflected when loading MCP tools.
     mcp_tools = []
-    if include_mcp:
+    if include_mcp and mcp_servers != []:
         try:
             from deerflow.config.extensions_config import ExtensionsConfig
             from deerflow.mcp.cache import get_cached_mcp_tools
 
             extensions_config = ExtensionsConfig.from_file()
-            if extensions_config.get_enabled_mcp_servers():
-                mcp_tools = get_cached_mcp_tools()
+            enabled_servers = set(extensions_config.get_enabled_mcp_servers())
+            if enabled_servers and (mcp_servers is None or enabled_servers.intersection(mcp_servers)):
+                mcp_tools = filter_mcp_tools_by_servers(get_cached_mcp_tools(), mcp_servers, enabled_servers)
                 if mcp_tools:
                     logger.info(f"Using {len(mcp_tools)} cached MCP tool(s)")
-
-                    # When tool_search is enabled, register MCP tools in the
-                    # deferred registry and add tool_search to builtin tools.
-                    if config.tool_search.enabled:
-                        from deerflow.tools.builtins.tool_search import DeferredToolRegistry, set_deferred_registry
-                        from deerflow.tools.builtins.tool_search import tool_search as tool_search_tool
-
-                        existing_registry = get_deferred_registry()
-                        if existing_registry is None:
-                            registry = DeferredToolRegistry()
-                            for t in mcp_tools:
-                                registry.register(t)
-                            set_deferred_registry(registry)
-                            logger.info(f"Tool search active: {len(mcp_tools)} tools deferred")
-                        else:
-                            mcp_tool_names = {t.name for t in mcp_tools}
-                            still_deferred = len(existing_registry)
-                            promoted_count = max(0, len(mcp_tool_names) - still_deferred)
-                            logger.info(f"Tool search active (preserved promotions): {still_deferred} tools deferred, {promoted_count} already promoted")
-                        builtin_tools.append(tool_search_tool)
         except ImportError:
             logger.warning("MCP module not available. Install 'langchain-mcp-adapters' package to enable MCP tools.")
         except Exception as e:
             logger.error(f"Failed to get cached MCP tools: {e}")
+
+    # Rebuild instead of editing an inherited registry: concurrent contexts may
+    # still hold it. Empty scopes must clear discovery too, including on errors.
+    from deerflow.tools.builtins.tool_search import reset_deferred_registry, set_deferred_registry
+
+    if mcp_tools and config.tool_search.enabled:
+        from deerflow.tools.builtins.tool_search import tool_search as tool_search_tool
+
+        registry = _ScopedMCPRegistry(mcp_tools, get_deferred_registry())
+        set_deferred_registry(registry)
+        builtin_tools.append(tool_search_tool)
+    else:
+        reset_deferred_registry()
 
     # Add invoke_acp_agent tool if any ACP agents are configured
     acp_tools: list[BaseTool] = []

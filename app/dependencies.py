@@ -19,6 +19,7 @@ from deerflow.runtime import (
     RunStatus,
     make_stream_bridge,
 )
+from deerflow.utils.async_cleanup import await_drained
 
 logger = logging.getLogger(__name__)
 
@@ -798,10 +799,13 @@ class ClientManager:
                 _record_loop_event(record, str(event.get("type") or "custom"), event)
                 await bridge.publish(run_id, event.get("type", "custom"), event)
 
-            client = await self.get_async_client(**kwargs)
+            # Retrieval scope belongs to this turn, not the cached client/model.
+            client_options = {key: value for key, value in kwargs.items() if key != "knowledge_scope"}
+            turn_options = {key: value for key, value in kwargs.items() if key == "knowledge_scope"}
+            client = await self.get_async_client(**client_options)
             _agent_name = client.agent_name
             async with asyncio.timeout(settings.chat_request_timeout):
-                async for event in client.astream(message, thread_id=thread_id, live_event_callback=_live_event_callback):
+                async for event in client.astream(message, thread_id=thread_id, live_event_callback=_live_event_callback, **turn_options):
                     if record.abort_event.is_set():
                         break
                     data = event.data
@@ -1207,7 +1211,16 @@ class ClientManager:
             conn.close()
 
     async def shutdown(self):
-        """Cleanup on shutdown."""
+        """Finish teardown before propagating even repeated caller cancellation.
+
+        Memory flush retains its configured deadline. An overrun leaves its
+        leased backend open; cancellation must not interrupt backend close or
+        skip the remaining sandbox, checkpoint, and stream cleanup.
+        """
+        await await_drained(self._shutdown())
+
+    async def _shutdown(self):
+        """Run owned cleanup independently of the caller's cancellation."""
         if self.thread_cleanup_service is not None:
             try:
                 await self.thread_cleanup_service.stop()
@@ -1226,7 +1239,10 @@ class ClientManager:
 
         # No new deliveries can start after the scheduler has drained/cancelled
         # all tracked dispatches.
-        await self.stop_feishu_channel()
+        try:
+            await self.stop_feishu_channel()
+        except Exception:
+            logger.warning("Error stopping Feishu channel", exc_info=True)
 
         try:
             from deerflow.mcp.session_pool import get_session_pool, reset_session_pool
@@ -1243,9 +1259,9 @@ class ClientManager:
             )
             from deerflow.config.memory_config import get_memory_config
 
-            memory_config = get_memory_config()
+            memory_config = await asyncio.to_thread(get_memory_config)
             if memory_config.enabled:
-                manager = get_memory_manager()
+                manager = await asyncio.to_thread(get_memory_manager)
                 drained = False
                 try:
                     result = await asyncio.wait_for(

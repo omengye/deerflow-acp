@@ -15,6 +15,8 @@ from deerflow.agents.middlewares.uploads_middleware import (
     _strip_upload_blocks_from_content,
 )
 from deerflow.config.title_config import get_title_config
+from deerflow.config.pii_redaction_config import PiiRedactionConfig
+from deerflow.agents.middlewares.pii_redaction_middleware import redact_text
 from deerflow.models import aclose_chat_model, create_chat_model
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,9 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
     """Automatically generate a title for the thread after the first user message."""
 
     state_schema = TitleMiddlewareState
+
+    def __init__(self, *, pii_redaction: PiiRedactionConfig | None = None):
+        self.pii_redaction = (pii_redaction or PiiRedactionConfig()).model_copy(deep=True)
 
     def _normalize_content(self, content: object) -> str:
         if isinstance(content, str):
@@ -86,15 +91,15 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
 
         if isinstance(user_msg_content, (str, list)):
             user_msg_content, _ = _strip_upload_blocks_from_content(user_msg_content)
-        user_msg = self._normalize_content(user_msg_content)
-        assistant_msg = self._strip_think_tags(self._normalize_content(assistant_msg_content))
+        user_msg = redact_text(self._normalize_content(user_msg_content), self.pii_redaction)
+        assistant_msg = redact_text(self._strip_think_tags(self._normalize_content(assistant_msg_content)), self.pii_redaction)
 
         prompt = config.prompt_template.format(
             max_words=config.max_words,
             user_msg=user_msg[:500],
             assistant_msg=assistant_msg[:500],
         )
-        return prompt, user_msg
+        return redact_text(prompt, self.pii_redaction), user_msg
 
     def _strip_think_tags(self, text: str) -> str:
         """Remove <think>...</think> blocks emitted by reasoning models (e.g. minimax, DeepSeek-R1)."""

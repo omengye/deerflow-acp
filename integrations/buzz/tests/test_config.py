@@ -3,9 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from nostr_sdk import Keys
-
 from buzz_deerflow_adapter.config import AdapterConfig
+from nostr_sdk import Keys
 
 
 def _identity(monkeypatch) -> str:
@@ -40,6 +39,8 @@ command = "deerflow-acp.exe"
 protocol = "v2"
 args = ["--protocol", "v2"]
 workspace = "{workspace.as_posix()}"
+timeout_seconds = 30
+prompt_timeout_seconds = 7860
 
 [observability]
 enabled = true
@@ -56,6 +57,8 @@ path = "./state.sqlite3"
     assert config.relay_url == "wss://buzz.sprwhisp.cc"
     assert config.deerflow_protocol == "v2"
     assert config.deerflow_args == ["--protocol", "v2"]
+    assert config.acp_timeout_seconds == 30
+    assert config.acp_prompt_timeout_seconds == 7860
     assert config.profile_name == "DeerFlow"
     assert config.channel_names == {
         "11111111-1111-1111-1111-111111111111": "DeerFlow 工作区"
@@ -66,6 +69,26 @@ path = "./state.sqlite3"
     assert config.progress_messages_enabled is True
     assert config.workspace == workspace.resolve()
     assert config.state_path == (tmp_path / "state.sqlite3").resolve()
+
+
+def test_prompt_timeout_defaults_to_server_managed() -> None:
+    assert AdapterConfig().acp_prompt_timeout_seconds == 0
+
+
+@pytest.mark.parametrize("value", [-1, float("inf"), float("nan")])
+def test_rejects_invalid_prompt_timeout(
+    tmp_path: Path, monkeypatch, value: float
+) -> None:
+    pubkey = _identity(monkeypatch)
+    with pytest.raises(ValueError, match="prompt_timeout_seconds"):
+        AdapterConfig(
+            relay_url="wss://relay.example",
+            agent_pubkey=pubkey,
+            deerflow_command="deerflow-acp.exe",
+            deerflow_args=["--protocol", "v2"],
+            workspace=tmp_path,
+            acp_prompt_timeout_seconds=value,
+        ).validated()
 
 
 def test_private_key_is_required_from_environment(tmp_path: Path, monkeypatch) -> None:

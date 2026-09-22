@@ -1328,48 +1328,79 @@ def _truncate_bash_output(output: str, max_chars: int) -> str:
     return f"{output[:head_len]}{marker}{output[-tail_len:] if tail_len > 0 else ''}"
 
 
+def _read_file_joins_lines(sandbox: Sandbox, start_line: int | None, end_line: int | None) -> bool:
+    if start_line is None and end_line is None:
+        return False
+    from deerflow.sandbox.local.local_sandbox import LocalSandbox
+
+    return isinstance(sandbox, LocalSandbox)
+
+
 def _truncate_read_file_output(
     output: str,
     max_chars: int,
     line_offset: int = 0,
+    *,
+    joined_lines: bool = False,
+    bounded: bool = False,
 ) -> str:
-    """Head-truncate read_file output, preserving the beginning of the file.
+    """Return complete lines and a continuation that can make progress.
 
-    Source code and documents are read top-to-bottom; the head contains the
-    most context (imports, class definitions, function signatures).
+    ``line_offset`` is the absolute zero-based first line. Local ranged reads
+    join stripped lines, so ``joined_lines`` distinguishes their last empty
+    line from an ordinary terminating newline. ``bounded`` means the caller
+    supplied end_line: the slice may end before the file does.
 
-    The returned string (including the truncation marker) is guaranteed to be
-    no longer than max_chars characters. Pass max_chars=0 to disable truncation
-    and return the full output unchanged.
-
-    ``line_offset`` is the zero-based absolute line number of ``output``'s
-    first line. Ranged reads use it so the continuation hint always speaks in
-    the absolute line numbers accepted by ``read_file``.
+    Content plus marker fits max_chars, except that a diagnostic replaces the
+    content when the configured budget cannot hold even a useful marker.
+    Zero disables truncation.
     """
     if max_chars == 0:
         return output
     if len(output) <= max_chars:
         return output
     total = len(output)
-    total_lines = output.count("\n") + (0 if output.endswith("\n") else 1)
-    bound = total + max(line_offset, 0)
-    marker_max_len = len(
-        f"\n... [truncated: showing first {total} of {total} chars "
-        f"(cut lands in line {bound} of {bound}). Use start_line={bound} — "
-        "optionally with end_line — to continue without a gap] ..."
-    )
-    kept = max(0, max_chars - marker_max_len)
-    if kept == 0:
-        return output[:max_chars]
-    cut_line = line_offset + output[:kept].count("\n") + 1
-    last_line = line_offset + total_lines
-    marker = (
-        f"\n... [truncated: showing first {kept} of {total} chars "
-        f"(cut lands in line {cut_line} of {last_line}). "
-        f"Use start_line={cut_line} — optionally with end_line — "
-        "to continue without a gap] ..."
-    )
-    return f"{output[:kept]}{marker}"
+    first_line = max(line_offset, 0) + 1
+    total_lines = output.count("\n") + (1 if joined_lines or not output.endswith("\n") else 0)
+    last_line = first_line + total_lines - 1
+    slice_note = " Ranged output joins lines." if joined_lines else ""
+
+    def marker(kept: int, next_line: int) -> str:
+        return (
+            f"\n... [truncated: showing {kept} of {total} chars; "
+            f"file lines {first_line}-{next_line - 1} of {last_line}. "
+            f"Use start_line={next_line} to continue.{slice_note}] ..."
+        )
+
+    # Reserve using the largest possible numbers so the real marker fits.
+    budget = max_chars - len(marker(total, last_line + 1))
+    if budget > 0:
+        newline = output.rfind("\n", 0, budget)
+        if newline >= 0:
+            kept = newline + 1
+            shown = output.count("\n", 0, kept)
+            return output[:kept] + marker(kept, first_line + shown)
+
+    # No complete line fits beside the marker. A single-line read returns
+    # without a truncation marker when it fits the full budget, so it can
+    # recover this line even though an unbounded retry would repeat forever.
+    newline = output.find("\n")
+    line_chars = newline if newline >= 0 else total
+    single_line_size = line_chars + (1 if newline >= 0 and not joined_lines else 0)
+    if single_line_size <= max_chars:
+        followup = f"Use start_line={first_line} end_line={first_line} to read this entire line."
+        if total_lines > 1 or bounded:
+            followup += f" Then use start_line={first_line + 1}."
+    else:
+        followup = (
+            f"Line {first_line} exceeds the character budget; line-range retries cannot advance. "
+            "Use a command tool to read bounded character slices, or increase read_file_output_max_chars."
+        )
+    notice = f"\n... [truncated: partial file line {first_line}; {total} chars in this read. {followup}] ..."
+    budget = max_chars - len(notice)
+    if budget <= 0:
+        return "(truncated: read_file_output_max_chars is too small for a continuation; increase it)"
+    return output[:min(budget, line_chars)] + notice
 
 
 def _truncate_ls_output(output: str, max_chars: int) -> str:
@@ -1653,6 +1684,8 @@ def read_file_tool(
             content,
             max_chars,
             line_offset=effective_start - 1,
+            joined_lines=_read_file_joins_lines(sandbox, start_line, end_line),
+            bounded=end_line is not None,
         )
     except SandboxError as e:
         return f"Error: {e}"

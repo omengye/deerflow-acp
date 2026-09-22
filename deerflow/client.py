@@ -21,6 +21,7 @@ import logging
 import mimetypes
 import tempfile
 import uuid
+from copy import deepcopy
 from collections.abc import AsyncGenerator, Generator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -121,6 +122,10 @@ class _StreamProcessingState:
     seen_ids: set[str] = field(default_factory=set)
     streamed_ids: set[str] = field(default_factory=set)
     counted_usage_ids: set[str] = field(default_factory=set)
+    sent_text: dict[str, str] = field(default_factory=dict)
+    sent_reasoning: dict[str, str] = field(default_factory=dict)
+    sent_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
+    sent_tool_calls: dict[str, set[str]] = field(default_factory=dict)
     cumulative_usage: dict[str, int] = field(
         default_factory=lambda: {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     )
@@ -238,6 +243,7 @@ class DeerFlowClient:
         else:
             self._available_skills = set(available_skills).intersection(profile_skills)
         self._tool_groups = self._agent_config.tool_groups if self._agent_config is not None else None
+        self._mcp_servers = getattr(self._agent_config, "mcp_servers", None)
         self._profile_model_name = self._agent_config.model if self._agent_config is not None else None
         self._middlewares = list(middlewares) if middlewares else []
         self._subagent_middlewares = list(subagent_middlewares or [])
@@ -330,6 +336,10 @@ class DeerFlowClient:
             "max_concurrent_subagents": overrides.get("max_concurrent_subagents", self._max_concurrent_subagents),
         }
         metadata: dict[str, Any] = {}
+        if "knowledge_scope" in overrides:
+            from deerflow.community.ragflow.scope import normalize_scope
+
+            metadata["knowledge_scope"] = normalize_scope(overrides["knowledge_scope"])
         if "live_event_callback" in overrides:
             metadata["live_event_callback"] = overrides["live_event_callback"]
         # Mirror key context fields into metadata so tools (e.g. task_tool) can read
@@ -346,6 +356,7 @@ class DeerFlowClient:
         metadata["thinking_enabled"] = bool(overrides.get("thinking_enabled", self._thinking_enabled))
         metadata["agent_name"] = self._agent_name or "agent"
         metadata["tool_groups"] = getattr(self, "_tool_groups", None)
+        metadata["mcp_servers"] = deepcopy(getattr(self, "_mcp_servers", None))
         metadata["available_skills"] = (
             sorted(self._available_skills) if self._available_skills is not None else None
         )
@@ -445,6 +456,13 @@ class DeerFlowClient:
             self._agent_name,
             memory_enabled,
             frozenset(self._available_skills) if self._available_skills is not None else None,
+            tuple(self._mcp_servers) if getattr(self, "_mcp_servers", None) is not None else None,
+            getattr(getattr(app_config, "skills", None), "discovery_mode", "off"),
+            getattr(getattr(app_config, "skills", None), "discovery_threshold", 20),
+            tuple(
+                bool(getattr(getattr(app_config, "pii_redaction", None), field, field != "enabled"))
+                for field in ("enabled", "email", "phone", "bank_card", "chinese_id", "api_key")
+            ),
             checkpoint_mode,
             checkpoint_frequency,
             getattr(self, "_excluded_tool_names", frozenset()),
@@ -535,10 +553,18 @@ class DeerFlowClient:
                 groups=getattr(self, "_tool_groups", None),
                 subagent_enabled=subagent_enabled,
                 include_memory_tool=getattr(self, "_memory_enabled", True),
+                available_skills=getattr(self, "_available_skills", None),
+                mcp_servers=getattr(self, "_mcp_servers", None),
             )
         )
         existing_names = {tool.name for tool in tools}
-        for tool in getattr(self, "_additional_mcp_tools", []):
+        from deerflow.tools.tools import filter_mcp_tools_by_servers
+
+        extra_mcp = filter_mcp_tools_by_servers(
+            list(getattr(self, "_additional_mcp_tools", [])),
+            getattr(self, "_mcp_servers", None),
+        )
+        for tool in extra_mcp:
             if tool.name in existing_names:
                 logger.warning(
                     "Skipping client MCP tool %r because DeerFlow already exposes that name",
@@ -646,6 +672,11 @@ class DeerFlowClient:
             and all(isinstance(path, str) for path in presented)
         ):
             data["presented_artifacts"] = presented
+        from deerflow.community.ragflow.sources import get_sources
+
+        sources = get_sources(getattr(msg, "artifact", None))
+        if sources:
+            data["knowledge_sources"] = sources
         return StreamEvent(
             type="messages-tuple",
             data=data,
@@ -665,14 +696,7 @@ class DeerFlowClient:
                 d["usage_metadata"] = msg.usage_metadata
             return d
         if isinstance(msg, ToolMessage):
-            return {
-                "type": "tool",
-                "content": DeerFlowClient._extract_text(msg.content),
-                "name": getattr(msg, "name", None),
-                "tool_call_id": getattr(msg, "tool_call_id", None),
-                "id": getattr(msg, "id", None),
-                "status": getattr(msg, "status", "success"),
-            }
+            return DeerFlowClient._tool_message_event(msg).data
         if isinstance(msg, HumanMessage):
             serialized = {
                 "type": "human",
@@ -844,6 +868,8 @@ class DeerFlowClient:
         state: dict[str, Any] = {
             "messages": [human_message]
         }
+        if "knowledge_scope" in kwargs:
+            human_message.additional_kwargs["knowledge_scope"] = config["metadata"]["knowledge_scope"]
         context = {
             "thread_id": thread_id,
             "loop_detection_scope_id": f"{thread_id}:{uuid.uuid4().hex}",
@@ -859,6 +885,8 @@ class DeerFlowClient:
             context["user_id"] = str(kwargs["user_id"])
         if kwargs.get("workspace_path") is not None:
             context["workspace_path"] = str(kwargs["workspace_path"])
+        if "knowledge_scope" in kwargs:
+            context["knowledge_scope"] = config["metadata"]["knowledge_scope"]
         return config, state, context
 
     @staticmethod
@@ -996,6 +1024,9 @@ class DeerFlowClient:
                 if text or reasoning:
                     if msg_id:
                         stream_state.streamed_ids.add(msg_id)
+                        stream_state.sent_text[msg_id] = stream_state.sent_text.get(msg_id, "") + text
+                        if isinstance(reasoning, str):
+                            stream_state.sent_reasoning[msg_id] = stream_state.sent_reasoning.get(msg_id, "") + reasoning
                     evt = self._ai_text_event(msg_id, text, counted_usage, reasoning_content=reasoning)
                     evt.data["is_delta"] = True
                     yield evt
@@ -1020,25 +1051,15 @@ class DeerFlowClient:
 
         for msg in messages:
             msg_id = getattr(msg, "id", None)
-            if msg_id and msg_id in stream_state.seen_ids:
+            # Historical IDs are seeded from the checkpoint. Only reconsider
+            # messages observed in THIS run; replaying old answers would duplicate
+            # previous turns. Current-run AI snapshots may be rewritten by guards.
+            was_seen = bool(msg_id and msg_id in stream_state.seen_ids)
+            current_ai = isinstance(msg, AIMessage) and msg_id in stream_state.sent_text
+            if was_seen and not current_ai:
                 continue
             if msg_id:
                 stream_state.seen_ids.add(msg_id)
-
-            # Text was already streamed via ``messages`` mode.  Still emit tool
-            # calls here because streaming chunks carry incomplete name/id data
-            # and are skipped in the messages handler; the values snapshot has
-            # the fully-populated AIMessage with correct name, id, and args.
-            if msg_id and msg_id in stream_state.streamed_ids:
-                if isinstance(msg, AIMessage):
-                    self._account_usage(stream_state, msg_id, getattr(msg, "usage_metadata", None))
-                    if is_top_level and msg.usage_metadata:
-                        stream_state.last_lead_usage = self._lead_usage_from_metadata(
-                            msg.usage_metadata
-                        )
-                    if msg.tool_calls:
-                        yield self._ai_tool_calls_event(msg_id, msg.tool_calls)
-                continue
 
             if isinstance(msg, AIMessage):
                 counted_usage = self._account_usage(stream_state, msg_id, msg.usage_metadata)
@@ -1046,17 +1067,46 @@ class DeerFlowClient:
                     stream_state.last_lead_usage = self._lead_usage_from_metadata(
                         msg.usage_metadata
                     )
-                reasoning = msg.additional_kwargs.get("reasoning_content")
-
-                if msg.tool_calls:
-                    yield self._ai_tool_calls_event(msg_id, msg.tool_calls)
-
                 text = self._extract_text(msg.content)
-                if text or reasoning:
-                    yield self._ai_text_event(msg_id, text, counted_usage, reasoning_content=reasoning)
+                reasoning = msg.additional_kwargs.get("reasoning_content")
+                reasoning = reasoning if isinstance(reasoning, str) else ""
+                previous_text = stream_state.sent_text.get(msg_id, "") if msg_id else ""
+                previous_reasoning = stream_state.sent_reasoning.get(msg_id, "") if msg_id else ""
+                # The public stream is append-only. Never resend a non-extending
+                # replacement: consumers can reconcile that from the values event.
+                text_delta = text[len(previous_text):] if text.startswith(previous_text) else ""
+                reasoning_delta = reasoning[len(previous_reasoning):] if reasoning.startswith(previous_reasoning) else ""
+                metadata = {
+                    key: value for key, value in (msg.additional_kwargs or {}).items()
+                    if key not in {"reasoning_content", "tool_calls", "function_call"}
+                }
+                metadata_changed = bool(metadata) and (
+                    not msg_id or metadata != stream_state.sent_metadata.get(msg_id)
+                )
+                if msg_id:
+                    stream_state.sent_text[msg_id] = text if text.startswith(previous_text) else previous_text
+                    stream_state.sent_reasoning[msg_id] = reasoning if reasoning.startswith(previous_reasoning) else previous_reasoning
+                    stream_state.sent_metadata[msg_id] = deepcopy(metadata)
+                if msg.tool_calls:
+                    emitted = stream_state.sent_tool_calls.setdefault(msg_id, set()) if msg_id else set()
+                    fresh_calls = []
+                    for call in msg.tool_calls:
+                        key = call.get("id") or json.dumps(call, sort_keys=True, default=str)
+                        if key not in emitted:
+                            fresh_calls.append(call)
+                            emitted.add(key)
+                    if fresh_calls:
+                        yield self._ai_tool_calls_event(msg_id, fresh_calls)
+                if text_delta or reasoning_delta or metadata_changed or counted_usage:
+                    event = self._ai_text_event(msg_id, text_delta, counted_usage, reasoning_content=reasoning_delta)
+                    event.data["is_delta"] = True
+                    if metadata_changed:
+                        event.data["additional_kwargs"] = metadata
+                    yield event
 
             elif isinstance(msg, ToolMessage):
-                yield self._tool_message_event(msg)
+                if not msg_id or msg_id not in stream_state.streamed_ids:
+                    yield self._tool_message_event(msg)
 
         # Emit a values event for each state snapshot.
         yield StreamEvent(

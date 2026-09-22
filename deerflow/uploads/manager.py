@@ -256,10 +256,13 @@ def delete_file_safe(base_dir: Path, filename: str, *, convertible_extensions: s
         FileNotFoundError: If the file does not exist.
         PathTraversalError: If path traversal is detected.
     """
-    file_path = (base_dir / filename).resolve()
+    # Validate the resolved target, but unlink the requested entry itself.
+    # Resolving before unlink would turn an in-directory symlink into a delete
+    # of the upload it aliases (including that upload's converted companion).
+    file_path = base_dir / filename
     validate_path_traversal(file_path, base_dir)
 
-    if not file_path.is_file():
+    if file_path.is_symlink() or not file_path.is_file():
         raise FileNotFoundError(f"File not found: {filename}")
 
     file_path.unlink()

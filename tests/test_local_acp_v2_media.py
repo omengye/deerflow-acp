@@ -22,6 +22,8 @@ class MediaRuntime:
     async def astream(self, session, message, *, input_images=None, **kwargs):
         self.images.append(input_images or [])
         self.messages.append(message)
+        await kwargs["live_event_callback"]({"type": "queue_status", "elapsed_seconds": 1})
+        await kwargs["live_event_callback"]({"type": "run_started"})
         if False:
             yield None
 
@@ -122,7 +124,13 @@ async def test_v2_negotiates_capabilities_and_delivers_media(
                     "mimeType": "image/png",
                 }
             )
-        await client.prompt(session, blocks)
+        updates = []
+        await client.prompt(session, blocks, on_update=updates.append)
+        thoughts = [u for u in updates if u.get("sessionUpdate") == "agent_thought_chunk"]
+        assert len(thoughts) == 2
+        assert thoughts[0]["messageId"] == thoughts[1]["messageId"]
+        assert "排队中" in thoughts[0]["content"]["text"]
+        assert "已开始执行" in thoughts[1]["content"]["text"]
         assert "report.pdf" in runtime.messages[0]
         assert "/mnt/user-data/workspace/" in runtime.messages[0]
         if vision:

@@ -3,8 +3,8 @@
 This module provides a patched version of ChatDeepSeek that properly handles
 reasoning_content when sending messages back to the API. The original implementation
 stores reasoning_content in additional_kwargs but doesn't include it when making
-subsequent API calls, which causes errors with APIs that require reasoning_content
-on all assistant messages when thinking mode is enabled.
+subsequent API calls. Thinking-mode tool history also requires string content
+and a reasoning_content field, even when no reasoning was emitted.
 """
 
 from typing import Any
@@ -14,13 +14,25 @@ from langchain_core.messages import AIMessage
 from langchain_deepseek import ChatDeepSeek
 
 
+def _request_thinking_enabled(*sources: Any) -> bool:
+    """Honor the most specific explicit setting, including disabled overrides."""
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for settings in (source, source.get("extra_body")):
+            if not isinstance(settings, dict):
+                continue
+            thinking = settings.get("thinking")
+            if isinstance(thinking, dict) and thinking.get("type") in {"enabled", "disabled"}:
+                return thinking["type"] == "enabled"
+    return False
+
+
 class PatchedChatDeepSeek(ChatDeepSeek):
     """ChatDeepSeek with proper reasoning_content preservation.
 
-    When using thinking/reasoning enabled models, the API expects reasoning_content
-    to be present on ALL assistant messages in multi-turn conversations. This patched
-    version ensures reasoning_content from additional_kwargs is included in the
-    request payload.
+    Restore emitted reasoning and fill protocol-required fields on thinking
+    tool turns. These compatibility rules apply only to this adapter.
     """
 
     @classmethod
@@ -69,5 +81,14 @@ class PatchedChatDeepSeek(ChatDeepSeek):
                 reasoning_content = ai_msg.additional_kwargs.get("reasoning_content")
                 if reasoning_content is not None:
                     payload_messages[idx]["reasoning_content"] = reasoning_content
+
+        thinking_enabled = _request_thinking_enabled(kwargs, payload, {"extra_body": self.extra_body})
+        for payload_msg in payload_messages:
+            if payload_msg.get("role") != "assistant" or not payload_msg.get("tool_calls"):
+                continue
+            if payload_msg.get("content") is None:
+                payload_msg["content"] = ""
+            if thinking_enabled and payload_msg.get("reasoning_content") is None:
+                payload_msg["reasoning_content"] = ""
 
         return payload

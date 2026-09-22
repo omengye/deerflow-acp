@@ -22,6 +22,8 @@ _LEGACY_BACKEND_KEYS = (
     "retrieval_enabled",
     "retrieval_top_k",
     "retrieval_index_path",
+    "retrieval_mmr_enabled",
+    "retrieval_mmr_lambda",
 )
 
 
@@ -129,6 +131,16 @@ class MemoryConfig(BaseModel):
             "Path to the SQLite FTS5 index. Empty uses "
             "`{base_dir}/memory-fts5.sqlite3`; relative paths resolve against base_dir."
         ),
+    )
+    retrieval_mmr_enabled: bool = Field(
+        default=False,
+        description="Diversify BM25 retrieval candidates with bounded lexical MMR ranking.",
+    )
+    retrieval_mmr_lambda: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="MMR relevance weight; lower values prefer less repetitive facts.",
     )
 
     @model_validator(mode="before")

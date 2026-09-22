@@ -94,6 +94,7 @@ class ACPEventMapper:
         self._artifact_resolver = artifact_resolver or self._default_artifact_resolver
         self._lock = asyncio.Lock()
         self._reasoning: dict[str, str] = {}
+        self._execution_status_message_id = str(uuid.uuid4())
         self._started_tools: set[str] = set()
         self._finished_tools: set[str] = set()
         self._seen_artifacts: set[str] = set()
@@ -232,6 +233,11 @@ class ACPEventMapper:
                 status="failed" if data.get("status") in {"error", "failed"} else "completed",
                 output=data.get("content"),
             )
+            from deerflow.community.ragflow.sources import sources_from_message
+
+            checked = sources_from_message(data)
+            if checked:
+                await self._handle_values({"artifacts": [source["path"] for source in checked if source.get("path")]})
 
     async def _start_tool(self, tool_call: dict[str, Any], *, prefix: str = "") -> str:
         raw_id = str(tool_call.get("id") or uuid.uuid4())
@@ -310,7 +316,11 @@ class ACPEventMapper:
                 self._last_plan = signature
                 await self._send(acp.update_plan(normalized))
 
-        artifacts = data.get("artifacts")
+        from deerflow.community.ragflow.sources import sources_from_messages
+
+        sources = sources_from_messages(data.get("messages"))
+        raw_artifacts = data.get("artifacts")
+        artifacts = [*(raw_artifacts if isinstance(raw_artifacts, list) else []), *(source["path"] for source in sources if source.get("path"))]
         if isinstance(artifacts, list):
             for raw in artifacts:
                 if not isinstance(raw, str) or raw in self._seen_artifacts:
@@ -358,6 +368,7 @@ class ACPEventMapper:
                     f"排队中，已等待 {data.get('elapsed_seconds', 0)} 秒；可随时取消。\n"
                     if queued else "已开始执行，执行超时从现在计时。\n"
                 ),
+                message_id=self._execution_status_message_id,
             ))
             return
 

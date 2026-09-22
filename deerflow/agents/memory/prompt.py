@@ -215,12 +215,13 @@ def _coerce_confidence(value: Any, default: float = 0.0) -> float:
     return max(0.0, min(1.0, confidence))
 
 
-def format_memory_for_injection(memory_data: dict[str, Any], max_tokens: int = 2000) -> str:
+def format_memory_for_injection(memory_data: dict[str, Any], max_tokens: int = 2000, *, preserve_fact_order: bool = False) -> str:
     """Format memory data for injection into system prompt.
 
     Args:
         memory_data: The memory data dictionary.
         max_tokens: Maximum tokens to use (counted via tiktoken for accuracy).
+        preserve_fact_order: Keep retrieval order instead of applying legacy confidence ranking.
 
     Returns:
         Formatted memory string for system prompt injection.
@@ -270,14 +271,12 @@ def format_memory_for_injection(memory_data: dict[str, Any], max_tokens: int = 2
         if history_sections:
             sections.append("History:\n" + "\n".join(f"- {s}" for s in history_sections))
 
-    # Format facts (sorted by confidence; include as many as token budget allows)
+    # Queried facts retain retrieval ranking; unqueried memory keeps confidence order.
     facts_data = memory_data.get("facts", [])
     if isinstance(facts_data, list) and facts_data:
-        ranked_facts = sorted(
-            (f for f in facts_data if isinstance(f, dict) and isinstance(f.get("content"), str) and f.get("content").strip()),
-            key=lambda fact: _coerce_confidence(fact.get("confidence"), default=0.0),
-            reverse=True,
-        )
+        ranked_facts = [f for f in facts_data if isinstance(f, dict) and isinstance(f.get("content"), str) and f.get("content").strip()]
+        if not preserve_fact_order:
+            ranked_facts.sort(key=lambda fact: _coerce_confidence(fact.get("confidence"), default=0.0), reverse=True)
 
         # Compute token count for existing sections once, then account
         # incrementally for each fact line to avoid full-string re-tokenization.

@@ -144,6 +144,8 @@ async def chat_stream(request: Request, req: ChatRequest = Body()):
 
 def _chat_kwargs_from_request(req: ChatRequest) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
+    if "knowledge_scope" in req.model_fields_set:
+        kwargs["knowledge_scope"] = req.knowledge_scope.model_dump() if req.knowledge_scope is not None else None
     if req.model_name:
         kwargs["model_name"] = req.model_name
     if req.thinking_enabled is not None:
@@ -215,7 +217,7 @@ async def chat_agui(request: Request, req: AguiRunAgentInput = Body()):
         except ConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    client = await manager.get_async_client(**kwargs)
+    client = await manager.get_async_client(**{key: value for key, value in kwargs.items() if key != "knowledge_scope"})
     agent_name: str = client.agent_name
 
     async def event_generator():
@@ -388,6 +390,8 @@ async def chat_agui(request: Request, req: AguiRunAgentInput = Body()):
 
 def _chat_kwargs_from_agui(req: AguiRunAgentInput) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
+    if "knowledge_scope" in req.model_fields_set:
+        kwargs["knowledge_scope"] = req.knowledge_scope.model_dump() if req.knowledge_scope is not None else None
     if req.model_name:
         kwargs["model_name"] = req.model_name
     if req.agent_name:
@@ -534,7 +538,7 @@ def _stream_event_to_agui(
             data = {**data, "type": "human"}
         elif data.get("type") in ("ToolMessage", "ToolMessageChunk"):
             data = {**data, "type": "tool"}
-        return _message_tuple_to_agui(
+        events = _message_tuple_to_agui(
             data,
             open_text_message_id,
             tool_call_args_state,
@@ -542,11 +546,22 @@ def _stream_event_to_agui(
             open_reasoning_message_ids if open_reasoning_message_ids is not None else set(),
             reasoning_content_state if reasoning_content_state is not None else {},
         )
+        from deerflow.community.ragflow.sources import sources_from_message
+
+        sources = sources_from_message(data)
+        if sources:
+            events.append({"type": "CUSTOM", "name": "deerflow.knowledge_sources", "value": sources})
+        return events
     if event_type == "values":
         events: list[dict[str, Any]] = []
         messages = event.data.get("messages")
         if isinstance(messages, list):
             events.append({"type": "MESSAGES_SNAPSHOT", "messages": [_message_to_agui(m) for m in messages if isinstance(m, dict)]})
+            from deerflow.community.ragflow.sources import sources_from_messages
+
+            sources = sources_from_messages(messages)
+            if sources:
+                events.append({"type": "CUSTOM", "name": "deerflow.knowledge_sources", "value": sources})
         artifact_event = _artifacts_to_agui(thread_id, event.data.get("artifacts"))
         if artifact_event is not None:
             events.append(artifact_event)

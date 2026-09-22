@@ -123,6 +123,7 @@ class DeerMemManager(MemoryManager):
         return format_memory_for_injection(
             escaped,
             max_tokens=config.max_injection_tokens,
+            preserve_fact_order=bool(query and config.retrieval_enabled),
         )
 
     def warm(self) -> None:

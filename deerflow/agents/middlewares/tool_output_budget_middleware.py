@@ -290,6 +290,14 @@ def _patch_tool_message(msg: ToolMessage, config: ToolOutputConfig, outputs_path
     text = _message_text(msg.content)
     if text is None:
         return msg
+    from deerflow.community.ragflow.sources import budget_sources, get_sources
+
+    if get_sources(msg.artifact):
+        limit = _effective_trigger(tool_name, config)
+        if limit > 0 and len(text) > limit:
+            replacement, artifact = budget_sources(text, msg.artifact, limit)
+            return msg.model_copy(update={"content": replacement, "artifact": artifact})
+        return msg
     replacement = _budget_content(text, tool_name=tool_name, tool_call_id=msg.tool_call_id or "", outputs_path=outputs_path, config=config, sandbox=sandbox)
     if replacement is None:
         return msg

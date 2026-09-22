@@ -1,0 +1,515 @@
+//! Host-side adapter for the existing DeerFlow configuration JSON service.
+//! No YAML or credentials are interpreted by the GPUI client.
+
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, anyhow, bail};
+use parking_lot::Mutex;
+use serde_json::{Value, json};
+
+const DEFAULT_CONFIG: &str = include_str!("../../../resources/deerflow/default-config.yaml");
+const MAX_OUTPUT: u64 = 16 * 1024 * 1024;
+static BOOTSTRAP: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[derive(Clone, Debug)]
+struct Paths {
+    root: PathBuf,
+    user_data: PathBuf,
+    config: PathBuf,
+    resources: PathBuf,
+    python: PathBuf,
+    bridge: PathBuf,
+    runtime: PathBuf,
+}
+
+impl Paths {
+    fn discover() -> Result<Self> {
+        let root = waku_protocol::identity::portable_root();
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("workspace layout");
+        let python = root.join("runtime/python.exe");
+        let python = if python.is_file() {
+            python
+        } else {
+            source.join(if cfg!(windows) {
+                ".venv/Scripts/python.exe"
+            } else {
+                ".venv/bin/python"
+            })
+        };
+        let bridge = waku_protocol::identity::bundled_acp_binary().unwrap_or_else(|| {
+            root.join(if cfg!(windows) {
+                "deerflow-acp.exe"
+            } else {
+                "deerflow-acp"
+            })
+        });
+        let user_data = root.join("user-data");
+        Ok(Self {
+            config: user_data.join("config/config.yaml"),
+            resources: root.join("resources"),
+            runtime: user_data.join("runtime/acp"),
+            root,
+            user_data,
+            python,
+            bridge,
+        })
+    }
+
+    fn bootstrap(&self) -> Result<()> {
+        let _guard = BOOTSTRAP.get_or_init(|| Mutex::new(())).lock();
+        if !self.python.is_file() {
+            bail!("找不到 DeerFlow Python 运行时：{}", self.python.display());
+        }
+        let template = self.resources.join("default-config.yaml");
+        if !template.is_file() {
+            std::fs::create_dir_all(&self.resources)?;
+            // Create-new protects a package template provided by another launcher.
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&template)
+            {
+                Ok(mut file) => file.write_all(DEFAULT_CONFIG.as_bytes())?,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if !self.config.is_file() {
+            self.config_command("init", &Value::Null)?;
+        }
+        Ok(())
+    }
+
+    fn environment(&self) -> Vec<(String, String)> {
+        [
+            ("DEER_FLOW_PORTABLE_ROOT", &self.root),
+            ("DEER_FLOW_CONFIG_PATH", &self.config),
+            ("DEER_FLOW_ACP_RUNTIME_DIR", &self.runtime),
+            ("DEER_FLOW_ACP_PYTHON", &self.python),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.to_string_lossy().into_owned()))
+        .collect()
+    }
+
+    fn config_command(&self, operation: &str, input: &Value) -> Result<Value> {
+        let mut command = hidden_command(&self.python);
+        command
+            .args(["-m", "deerflow.config_tool", "--config"])
+            .arg(&self.config)
+            .arg("--user-data")
+            .arg(&self.user_data)
+            .arg("--resources")
+            .arg(&self.resources)
+            .arg(operation)
+            .envs(self.environment())
+            .env("PYTHONUTF8", "1")
+            .env("PYTHONIOENCODING", "utf-8");
+        decode_envelope(&run(command, Some(input), Duration::from_secs(100))?)
+    }
+
+    fn bridge_command(&self, mode: &str, input: Option<&Value>) -> Result<String> {
+        if !self.bridge.is_file() {
+            bail!("找不到 ACP Bridge：{}", self.bridge.display());
+        }
+        let mut command = hidden_command(&self.bridge);
+        command
+            .arg(mode)
+            .arg("--config")
+            .arg(&self.config)
+            .arg("--python")
+            .arg(&self.python)
+            .arg("--runtime-dir")
+            .arg(&self.runtime)
+            .envs(self.environment());
+        run(
+            command,
+            input,
+            Duration::from_secs(if mode == "--start-daemon" { 130 } else { 30 }),
+        )
+    }
+
+    fn manage(&self, input: &Value) -> Result<Value> {
+        decode_envelope(&self.bridge_command("--manage", Some(input))?)
+    }
+
+    fn live_status(&self) -> Value {
+        match self.manage(&json!({"operation":"daemon.status"})) {
+            Ok(mut value) => {
+                value["running"] = json!(true);
+                value
+            }
+            Err(error) => json!({"running":false,"status_error":error.to_string()}),
+        }
+    }
+}
+
+/// Called from provider workers before launching the ACP bridge. Development
+/// must never attach to the unrelated API server's configuration or daemon.
+pub fn launch_environment() -> Result<Vec<(String, String)>> {
+    let paths = Paths::discover()?;
+    paths.bootstrap()?;
+    Ok(paths.environment())
+}
+
+/// The bridge selects its own configuration before spawning Python, so env
+/// overrides alone are insufficient when using a bridge from another bundle.
+pub fn launch_arguments() -> Result<Vec<String>> {
+    let paths = Paths::discover()?;
+    paths.bootstrap()?;
+    Ok(vec![
+        "--config".into(),
+        paths.config.to_string_lossy().into_owned(),
+        "--python".into(),
+        paths.python.to_string_lossy().into_owned(),
+        "--runtime-dir".into(),
+        paths.runtime.to_string_lossy().into_owned(),
+    ])
+}
+
+#[derive(Default)]
+struct ServiceState {
+    applying: AtomicBool,
+    applied_generation: AtomicU64,
+    cancel: AtomicBool,
+    apply_error: Mutex<Option<String>>,
+    // Serializes config writes against the final restart, not against polling.
+    mutation: Mutex<()>,
+}
+
+#[derive(Clone, Default)]
+pub struct DeerFlowService {
+    state: Arc<ServiceState>,
+}
+
+impl DeerFlowService {
+    pub fn shutdown(&self) {
+        self.state.cancel.store(true, Ordering::Release);
+    }
+
+    pub fn request(&self, operation: &str, input: Value) -> Result<Value> {
+        ensure_operation(operation)?;
+        let paths = Paths::discover()?;
+        paths.bootstrap()?;
+        match operation {
+            "snapshot" | "validate" | "test-model" => paths.config_command(operation, &input),
+            "save" | "save-and-apply" => {
+                let _guard = self.state.mutation.lock();
+                if self.state.applying.load(Ordering::Acquire) {
+                    bail!("正在应用配置，请先等待或取消应用");
+                }
+                if operation == "save-and-apply" {
+                    save_and_apply(
+                        || paths.config_command("save", &input),
+                        || self.begin_apply(&paths),
+                    )
+                } else {
+                    paths.config_command("save", &input)
+                }
+            }
+            "manage" => paths.manage(&input),
+            "status" => Ok(self.status(&paths)),
+            "apply" => {
+                let _guard = self.state.mutation.lock();
+                self.begin_apply(&paths)
+            }
+            "cancel-apply" => {
+                self.state.cancel.store(true, Ordering::Release);
+                Ok(self.status(&paths))
+            }
+            "start" => {
+                // Use the same background workflow so cold starts cannot time out the RPC.
+                if paths.live_status()["running"] == true {
+                    return Ok(self.status(&paths));
+                }
+                self.request("apply", Value::Null)
+            }
+            "stop" => {
+                let _guard = self.state.mutation.lock();
+                if self.state.applying.load(Ordering::Acquire) {
+                    bail!("请先取消正在进行的配置应用");
+                }
+                let value = paths.manage(&json!({"operation":"daemon.drain"}))?;
+                if value["active_operations"].as_u64().unwrap_or(1) != 0 {
+                    let _ = paths.manage(&json!({"operation":"daemon.resume"}));
+                    bail!("仍有正在运行或排队的任务，请先停止任务再关闭服务");
+                }
+                if let Err(error) = paths.bridge_command("--stop-daemon", None) {
+                    let _ = paths.manage(&json!({"operation":"daemon.resume"}));
+                    return Err(error);
+                }
+                Ok(self.status(&paths))
+            }
+            _ => unreachable!("operation allowlist"),
+        }
+    }
+
+    fn status(&self, paths: &Paths) -> Value {
+        let mut value = paths.live_status();
+        value["applying"] = json!(self.state.applying.load(Ordering::Acquire));
+        value["applied_generation"] = json!(self.state.applied_generation.load(Ordering::Acquire));
+        value["apply_error"] = json!(*self.state.apply_error.lock());
+        value["config_path"] = json!(paths.config);
+        value["user_data"] = json!(paths.user_data);
+        value
+    }
+
+    /// Caller holds mutation: the saved revision and scheduled restart cannot
+    /// be interleaved with another config write.
+    fn begin_apply(&self, paths: &Paths) -> Result<Value> {
+        if self.state.applying.swap(true, Ordering::AcqRel) {
+            return Ok(self.status(paths));
+        }
+        self.state.cancel.store(false, Ordering::Release);
+        *self.state.apply_error.lock() = None;
+        let service = self.clone();
+        let worker_paths = paths.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("deerflow-apply".into())
+            .spawn(move || {
+                if let Err(error) = service.apply(&worker_paths) {
+                    let _ = worker_paths.manage(&json!({"operation":"daemon.resume"}));
+                    *service.state.apply_error.lock() = Some(error.to_string());
+                }
+                service.state.applying.store(false, Ordering::Release);
+            })
+        {
+            *self.state.apply_error.lock() = Some(error.to_string());
+            self.state.applying.store(false, Ordering::Release);
+            return Err(error.into());
+        }
+        Ok(self.status(paths))
+    }
+
+    fn apply(&self, paths: &Paths) -> Result<()> {
+        if paths.bridge_command("--status", None).is_ok() {
+            paths.manage(&json!({"operation":"daemon.drain"}))?;
+            loop {
+                if self.state.cancel.load(Ordering::Acquire) {
+                    paths.manage(&json!({"operation":"daemon.resume"}))?;
+                    return Ok(());
+                }
+                let live = paths.manage(&json!({"operation":"daemon.status"}))?;
+                if live["active_operations"].as_u64() == Some(0) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            let _guard = self.state.mutation.lock();
+            if self.state.cancel.load(Ordering::Acquire) {
+                paths.manage(&json!({"operation":"daemon.resume"}))?;
+                return Ok(());
+            }
+            paths.bridge_command("--stop-daemon", None)?;
+        }
+        if !self.state.cancel.load(Ordering::Acquire) {
+            paths.bridge_command("--start-daemon", None)?;
+            self.state.applied_generation.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(())
+    }
+}
+
+fn save_and_apply(
+    save: impl FnOnce() -> Result<Value>,
+    apply: impl FnOnce() -> Result<Value>,
+) -> Result<Value> {
+    let document = save()?;
+    // A failed restart must never disguise a successful save. Return the new
+    // revision so the user can retry application without resaving a stale draft.
+    let status =
+        apply().unwrap_or_else(|error| json!({"applying":false,"apply_error":error.to_string()}));
+    Ok(json!({"document":document,"status":status}))
+}
+
+fn ensure_operation(operation: &str) -> Result<()> {
+    if !matches!(
+        operation,
+        "snapshot"
+            | "save"
+            | "save-and-apply"
+            | "validate"
+            | "test-model"
+            | "manage"
+            | "status"
+            | "start"
+            | "stop"
+            | "apply"
+            | "cancel-apply"
+    ) {
+        bail!("不支持的 DeerFlow 操作：{operation}");
+    }
+    Ok(())
+}
+
+fn decode_envelope(output: &str) -> Result<Value> {
+    let envelope: Value =
+        serde_json::from_str(output.trim()).context("DeerFlow 返回了无效 JSON")?;
+    if envelope["ok"] != true {
+        bail!(
+            "{}",
+            envelope["error"].as_str().unwrap_or("DeerFlow 操作失败")
+        );
+    }
+    envelope
+        .get("data")
+        .cloned()
+        .ok_or_else(|| anyhow!("DeerFlow 响应缺少数据"))
+}
+
+fn hidden_command(program: &Path) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+fn run(mut command: Command, input: Option<&Value>, timeout: Duration) -> Result<String> {
+    let mut child = command.spawn().context("无法启动 DeerFlow 服务进程")?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let out = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .take(MAX_OUTPUT + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+    });
+    let err = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr
+            .take(MAX_OUTPUT + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+    });
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Some(input) = input {
+            if let Err(error) = stdin.write_all(&serde_json::to_vec(input)?) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.into());
+            }
+        }
+    }
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("DeerFlow 操作超时，请稍后重试");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let output = out
+        .join()
+        .map_err(|_| anyhow!("读取 DeerFlow 输出失败"))??;
+    let errors = err
+        .join()
+        .map_err(|_| anyhow!("读取 DeerFlow 错误输出失败"))??;
+    if output.len() as u64 > MAX_OUTPUT || errors.len() as u64 > MAX_OUTPUT {
+        bail!("DeerFlow 响应超过大小限制");
+    }
+    let output = String::from_utf8(output).context("DeerFlow 输出不是 UTF-8")?;
+    if !status.success() {
+        if let Ok(envelope) = serde_json::from_str::<Value>(&output) {
+            if let Some(error) = envelope["error"].as_str() {
+                bail!("{error}");
+            }
+        }
+        let error = String::from_utf8_lossy(&errors);
+        bail!(
+            "{}",
+            if error.trim().is_empty() {
+                "DeerFlow 服务操作失败"
+            } else {
+                error.trim()
+            }
+        );
+    }
+    Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn invalid_save_never_applies() {
+        let result = save_and_apply(
+            || bail!("invalid model"),
+            || panic!("must not restart on invalid save"),
+        );
+        assert_eq!(result.unwrap_err().to_string(), "invalid model");
+    }
+
+    #[test]
+    fn saved_revision_is_returned_even_when_application_fails() {
+        let result = save_and_apply(
+            || Ok(json!({"config_revision":"saved","models":[]})),
+            || bail!("restart failed"),
+        )
+        .unwrap();
+        assert_eq!(result["document"]["config_revision"], "saved");
+        assert_eq!(result["status"]["apply_error"], "restart failed");
+        assert_eq!(result["status"]["applying"], false);
+    }
+
+    #[test]
+    fn application_starts_only_after_save_completes() {
+        let saved = std::cell::Cell::new(false);
+        let result = save_and_apply(
+            || {
+                saved.set(true);
+                Ok(json!({"config_revision":"new"}))
+            },
+            || {
+                assert!(saved.get());
+                Ok(json!({"applying":true}))
+            },
+        )
+        .unwrap();
+        assert_eq!(result["document"]["config_revision"], "new");
+        assert_eq!(result["status"]["applying"], true);
+    }
+
+    #[test]
+    fn config_errors_preserve_validation_feedback_without_echoing_input() {
+        let error = decode_envelope(r#"{"ok":false,"error":"configuration changed"}"#).unwrap_err();
+        assert_eq!(error.to_string(), "configuration changed");
+        assert_eq!(
+            decode_envelope(r#"{"ok":true,"data":{"models":[]}}"#).unwrap()["models"],
+            json!([])
+        );
+    }
+    #[test]
+    fn arbitrary_operations_never_reach_a_subprocess() {
+        for operation in [
+            "powershell",
+            "--gateway",
+            "save && echo secret",
+            "",
+            "inspect",
+            "restore",
+        ] {
+            assert!(ensure_operation(operation).is_err());
+        }
+        assert!(ensure_operation("validate").is_ok());
+    }
+}

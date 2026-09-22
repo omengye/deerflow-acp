@@ -170,6 +170,7 @@ class RAGFlowClient:
         similarity_threshold: float,
         vector_similarity_weight: float,
         top_k: int,
+        document_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Retrieve chunks from an explicit operator-resolved dataset scope."""
         if not dataset_ids or not all(
@@ -186,9 +187,31 @@ class RAGFlowClient:
                 "similarity_threshold": similarity_threshold,
                 "vector_similarity_weight": vector_similarity_weight,
                 "top_k": top_k,
+                **({"document_ids": document_ids} if document_ids is not None else {}),
             },
         )
         data = payload.get("data")
         if not isinstance(data, dict):
             raise RAGFlowProtocolError("RAGFlow returned an invalid retrieval result.")
         return data
+
+    async def validate_documents(self, dataset_id: str, document_ids: list[str]) -> None:
+        """Validate large selections using bounded pages, not oversized URLs."""
+        from urllib.parse import quote
+
+        remaining = set(document_ids)
+        if not remaining:
+            return
+        for page in range(1, _MAX_DATASET_PAGES + 1):
+            payload = await self._request("GET", f"/datasets/{quote(dataset_id, safe='')}/documents", params={"page": page, "page_size": _DATASET_PAGE_SIZE})
+            data = payload.get("data")
+            if not isinstance(data, dict) or not isinstance(data.get("docs"), list):
+                raise RAGFlowProtocolError("RAGFlow returned an invalid document list.")
+            docs = data["docs"]
+            remaining.difference_update(item.get("id") for item in docs if isinstance(item, dict))
+            if not remaining:
+                return
+            total = data.get("total")
+            if not docs or (isinstance(total, int) and page * _DATASET_PAGE_SIZE >= total):
+                break
+        raise RAGFlowProtocolError("Selected knowledge documents are unavailable or inaccessible.")

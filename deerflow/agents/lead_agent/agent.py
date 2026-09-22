@@ -472,6 +472,9 @@ def _build_middlewares(
 
     # Calibrate the loop-detection backstop now the full chain (and thus the
     # per-turn graph cost) is known, keeping it below the recursion limit.
+    from deerflow.agents.middlewares.pii_redaction_middleware import configure_pii_redaction
+
+    middlewares = configure_pii_redaction(middlewares, getattr(app_config, "pii_redaction", None))
     calibrate_loop_detection(middlewares, recursion_limit)
     return middlewares
 
@@ -550,6 +553,7 @@ def make_lead_agent(config: RunnableConfig):
             "subagent_enabled": subagent_enabled,
             "tool_groups": agent_config.tool_groups if agent_config else None,
             "available_skills": ["bootstrap"] if is_bootstrap else (agent_config.skills if agent_config and agent_config.skills is not None else None),
+            "mcp_servers": getattr(agent_config, "mcp_servers", None),
             "memory_enabled": memory_enabled,
         }
     )
@@ -567,7 +571,7 @@ def make_lead_agent(config: RunnableConfig):
         )
         return create_agent(
             model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled),
-            tools=get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled) + [setup_agent],
+            tools=get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, available_skills={"bootstrap"}) + [setup_agent],
             middleware=middleware,
             system_prompt=apply_prompt_template(
                 subagent_enabled=subagent_enabled,
@@ -597,6 +601,8 @@ def make_lead_agent(config: RunnableConfig):
             groups=agent_config.tool_groups if agent_config else None,
             subagent_enabled=subagent_enabled,
             include_memory_tool=memory_enabled,
+            available_skills=set(agent_config.skills) if agent_config and agent_config.skills is not None else None,
+            mcp_servers=getattr(agent_config, "mcp_servers", None),
         ),
         middleware=middleware,
         system_prompt=apply_prompt_template(

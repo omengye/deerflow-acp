@@ -203,6 +203,7 @@ def search_memory_facts(
     limit = top_k if top_k is not None else config.retrieval_top_k
     if limit <= 0:
         return []
+    candidate_limit = min(int(limit) * 4, 400) if config.retrieval_mmr_enabled else int(limit)
 
     if not rebuild_memory_index(memory_data, agent_name):
         return []
@@ -217,7 +218,7 @@ def search_memory_facts(
                 ORDER BY rank ASC
                 LIMIT ?
                 """,
-                (expression, _agent_key(agent_name), int(limit)),
+                (expression, _agent_key(agent_name), candidate_limit),
             ).fetchall()
     except (OSError, sqlite3.Error):
         logger.warning("Failed to query memory FTS5 index", exc_info=True)
@@ -239,4 +240,37 @@ def search_memory_facts(
         if source_error:
             result["sourceError"] = source_error
         results.append(result)
+    if config.retrieval_mmr_enabled:
+        return _diversify_facts(results, limit=int(limit), relevance_weight=config.retrieval_mmr_lambda)
     return results
+
+
+def _diversify_facts(facts: list[dict[str, Any]], *, limit: int, relevance_weight: float) -> list[dict[str, Any]]:
+    """Select a deterministic MMR prefix without embeddings or storage changes.
+
+    Candidates already arrive in BM25 order. Token sets are built once, and
+    selection stops at the requested count. Equal scores keep retrieval order.
+    """
+    if len(facts) <= 1 or limit <= 0:
+        return facts[:max(0, limit)]
+    token_sets = [set(_tokens(str(fact.get("content", ""))[:8192])) for fact in facts]
+    scores = [max(0.0, float(fact.get("bm25_score", 0.0))) for fact in facts]
+    maximum = max(scores) or 1.0
+    relevance = [score / maximum for score in scores]
+    remaining = list(range(len(facts)))
+    selected: list[int] = []
+    redundancy = [0.0] * len(facts)
+    while remaining and len(selected) < limit:
+        # Always anchor the result in the best retrieval match, including when
+        # callers intentionally set lambda to zero for maximum diversity.
+        chosen = remaining[0] if not selected else max(
+            remaining,
+            key=lambda index: relevance_weight * relevance[index] - (1.0 - relevance_weight) * redundancy[index],
+        )
+        remaining.remove(chosen)
+        selected.append(chosen)
+        for index in remaining:
+            union = token_sets[index] | token_sets[chosen]
+            overlap = len(token_sets[index] & token_sets[chosen]) / len(union) if union else 0.0
+            redundancy[index] = max(redundancy[index], overlap)
+    return [facts[index] for index in selected]

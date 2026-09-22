@@ -50,13 +50,19 @@ async def _dispatch(daemon: Any, request: dict[str, Any]) -> dict[str, Any]:
         }
     if operation == "session.delete":
         session_id = str(request.get("session_id", ""))
+        if not session_id:
+            raise ValueError("请选择要删除的会话")
         if not await daemon.store.get(session_id, include_closed=True):
-            raise ValueError("会话不存在，请刷新列表")
+            # Deletion is retryable, including after the desktop failed to
+            # remove its own catalog entry following a successful purge.
+            return {"deleted": [session_id], "already_deleted": True}
         if not coordinator.reserve_cleanup(session_id):
             raise ValueError("会话仍连接客户端或正在执行，请先在客户端关闭")
         try:
             await runtime.release_session(session_id)
             purged = await runtime.purge_checkpoints([session_id])
+            if session_id not in purged:
+                raise RuntimeError("会话历史清理失败，会话记录已保留，请重试")
             await daemon.store.delete_sessions(purged)
         finally:
             coordinator.release_cleanup(session_id)

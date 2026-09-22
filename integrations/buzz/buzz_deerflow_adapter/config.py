@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import tomllib
 import uuid
@@ -89,6 +90,7 @@ class AdapterConfig:
     deerflow_protocol: str = "v2"
     workspace: Path = field(default_factory=Path.cwd)
     acp_timeout_seconds: float = 600.0
+    acp_prompt_timeout_seconds: float = 0.0
     observer_enabled: bool = False
     observer_owner_pubkey: str = ""
     observer_queue_size: int = 256
@@ -176,6 +178,7 @@ class AdapterConfig:
             deerflow_protocol=str(deerflow.get("protocol", "v2")).casefold(),
             workspace=workspace.resolve(),
             acp_timeout_seconds=float(deerflow.get("timeout_seconds", 600)),
+            acp_prompt_timeout_seconds=float(deerflow.get("prompt_timeout_seconds", 0)),
             observer_enabled=bool(observability.get("enabled", False)),
             observer_owner_pubkey=str(
                 observability.get("owner_pubkey", os.getenv("BUZZ_ACP_AGENT_OWNER", ""))
@@ -309,6 +312,13 @@ class AdapterConfig:
             raise ValueError("adapter.max_message_attempts must be positive")
         if self.acp_timeout_seconds <= 0:
             raise ValueError("deerflow.timeout_seconds must be positive")
+        if (
+            not math.isfinite(self.acp_prompt_timeout_seconds)
+            or self.acp_prompt_timeout_seconds < 0
+        ):
+            raise ValueError(
+                "deerflow.prompt_timeout_seconds must be finite and nonnegative"
+            )
         if self.presence_heartbeat_seconds <= 0:
             raise ValueError(
                 "buzz.lifecycle.presence_heartbeat_seconds must be positive"

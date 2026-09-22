@@ -7,6 +7,7 @@ import logging
 from contextlib import suppress
 
 from .acp_client import DeerFlowACPClient
+from .acp_errors import ACPPromptError, ACPPromptTimeoutError
 from .acp_v2_client import DeerFlowACPV2Client
 from .attachments import AttachmentError, parse_attachments, prepare_attachments
 from .buzz_cli import (
@@ -44,6 +45,7 @@ class AdapterApp:
             config.deerflow_args,
             config.workspace,
             timeout_seconds=config.acp_timeout_seconds,
+            prompt_timeout_seconds=config.acp_prompt_timeout_seconds,
         )
         self._stop_requested = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -512,6 +514,18 @@ class AdapterApp:
                     # Invalid attachments cannot improve on retry. Persist a useful
                     # reply through the normal outbox instead of silently dropping them.
                     response = f"DeerFlow could not process the attachments: {exc}"
+                elif isinstance(exc, (ACPPromptError, ACPPromptTimeoutError)):
+                    # Retrying a failed turn can repeat tools that already ran.
+                    # Use the durable outbox for the failure reply as well.
+                    logger.warning(
+                        "ACP prompt failed in session %s: %s", session_id, exc
+                    )
+                    response = (
+                        f"DeerFlow could not complete this request: {exc}\n\n"
+                        "The request was not automatically retried because tools "
+                        "may already have run.\n"
+                        f"ACP session: {session_id}"
+                    )
                 else:
                     raise
             else:

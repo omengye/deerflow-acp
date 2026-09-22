@@ -15,6 +15,7 @@ tool_search_module = importlib.import_module("deerflow.tools.builtins.tool_searc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mcp_servers", [None, [], ["docs"]])
 @pytest.mark.parametrize(
     ("task_result", "expected_output", "expected_stop_reason"),
     [
@@ -47,6 +48,7 @@ async def test_task_tool_propagates_acp_policy_to_internal_subagent(
     task_result: SimpleNamespace,
     expected_output: str,
     expected_stop_reason: str | None,
+    mcp_servers: list[str] | None,
 ) -> None:
     permission_middleware = object()
     captured: dict[str, Any] = {}
@@ -121,6 +123,8 @@ async def test_task_tool_propagates_acp_policy_to_internal_subagent(
             },
         },
     )
+    if mcp_servers is not None:
+        runtime.config["metadata"]["mcp_servers"] = list(mcp_servers)
 
     result = await task_tool_module._task_tool_impl(
         runtime=runtime,
@@ -138,10 +142,17 @@ async def test_task_tool_propagates_acp_policy_to_internal_subagent(
             "groups": ["file:read", "file:write"],
             "subagent_enabled": False,
             "include_upload_tool": False,
+            "available_skills": {"research"},
+            "mcp_servers": mcp_servers,
         }
     ]
     assert [tool.name for tool in captured["tools"]] == ["read_file", "write_file"]
     assert captured["config"].skills == ["research"]
+    assert captured["config"] is not child_config
+    assert child_config.skills == ["research", "child-only"]
+    assert child_config.system_prompt == "Child base prompt"
+    assert runtime.config["metadata"]["available_skills"] == ["research", "shared"]
+    assert runtime.config["metadata"].get("mcp_servers") == mcp_servers
     assert captured["config"].system_prompt.endswith("ACP child safety overlay")
     assert captured["middlewares"] == [permission_middleware]
     assert captured["parent_model"] == "parent-model"

@@ -1,6 +1,7 @@
 """Schemas for API requests/responses."""
 from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
+from deerflow.community.ragflow.scope import KnowledgeScope
 
 
 # --- Chat ---
@@ -14,6 +15,7 @@ class ChatRequest(BaseModel):
     max_concurrent_subagents: Optional[int] = Field(default=None, ge=2, le=4)
     multitask_strategy: Optional[Literal["reject", "interrupt", "rollback"]] = None
     on_disconnect: Optional[Literal["cancel", "continue"]] = None
+    knowledge_scope: KnowledgeScope | None = None
 
 
 class AguiMessage(BaseModel):
@@ -41,6 +43,7 @@ class AguiRunAgentInput(BaseModel):
     max_concurrent_subagents: Optional[int] = Field(default=None, ge=2, le=4, alias="maxConcurrentSubagents")
     multitask_strategy: Optional[Literal["reject", "interrupt", "rollback"]] = Field(default=None, alias="multitaskStrategy")
     on_disconnect: Optional[Literal["cancel", "continue"]] = Field(default=None, alias="onDisconnect")
+    knowledge_scope: KnowledgeScope | None = Field(default=None, alias="knowledgeScope")
 
 
 # --- Threads ---

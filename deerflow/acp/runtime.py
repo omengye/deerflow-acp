@@ -42,11 +42,12 @@ from .config import LocalACPConfig
 from .permission import ACPPermissionBroker, ACPPermissionMiddleware, PermissionHandler
 from .policy import LocalACPCapabilityPolicy
 from .session_coordinator import ACPSessionCoordinator
-from .session_store import LocalACPSession
+from .session_store import LocalACPSession, SessionApprovalMode
 
 LiveEventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
+_KNOWLEDGE_SCOPE_UNSET = object()
 
 
 @dataclass(slots=True)
@@ -168,6 +169,20 @@ class LocalACPRuntime:
 
     def unbind_permission_handler(self, connection_id: str) -> None:
         self.permission_broker.unbind(connection_id)
+
+    def set_session_approval_mode(
+        self,
+        session_id: str,
+        mode: SessionApprovalMode,
+        *,
+        reset_decisions: bool = False,
+    ) -> None:
+        """Apply a persisted policy or explicitly revoke session tool decisions."""
+        self.permission_broker.set_session_approval_mode(
+            session_id,
+            mode,
+            reset_decisions=reset_decisions,
+        )
 
     async def open(self) -> None:
         if self._checkpointer is not None:
@@ -456,6 +471,7 @@ class LocalACPRuntime:
         *,
         live_event_callback: LiveEventCallback,
         input_images: list[dict[str, str | int]] | None = None,
+        knowledge_scope: Any = _KNOWLEDGE_SCOPE_UNSET,
     ) -> AsyncGenerator[StreamEvent, None]:
         from .workspace import normalize_workspace_cwd, workspace_paths_equal
 
@@ -469,7 +485,7 @@ class LocalACPRuntime:
                 "ACP session workspace changed after session creation: "
                 f"expected {session.cwd}, resolved to {workspace_path}"
             )
-        self.permission_broker.set_session_approval_mode(
+        self.set_session_approval_mode(
             session.session_id,
             session.approval_mode,
         )
@@ -483,6 +499,10 @@ class LocalACPRuntime:
             }
             if input_images:
                 client_kwargs["input_images"] = input_images
+            if knowledge_scope is not _KNOWLEDGE_SCOPE_UNSET:
+                from deerflow.community.ragflow.scope import normalize_scope
+
+                client_kwargs["knowledge_scope"] = normalize_scope(knowledge_scope)
             evaluator_model: Any | None = None
             current_message: str | HumanMessage = message
             try:

@@ -1,7 +1,9 @@
 """Subagent execution engine."""
 
 import asyncio
+import inspect
 import logging
+import sys
 import threading
 import time
 import uuid
@@ -29,6 +31,8 @@ from deerflow.agents.thread_state import AgentContext, SandboxState, ThreadDataS
 from deerflow.config import get_app_config
 from deerflow.models import aclose_chat_model, create_chat_model
 from deerflow.subagents.config import SubagentConfig
+from deerflow.config.pii_redaction_config import PiiRedactionConfig
+from deerflow.skills.catalog import SkillCatalog
 
 if TYPE_CHECKING:
     from deerflow.tools.builtins.tool_search import DeferredToolRegistry
@@ -39,6 +43,34 @@ logger = logging.getLogger(__name__)
 def _utcnow() -> datetime:
     """Return the timestamp convention used by subagent lifecycle metadata."""
     return datetime.now(UTC)
+
+
+def _extract_knowledge_sources(messages: list[Any]) -> list[dict[str, Any]]:
+    """Snapshot structured sources still present in executed child state.
+
+    These records describe observed tool results, not completion of the child
+    task. Incomplete/cancelled outcomes must keep their existing status.
+    """
+    sources: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for message in messages:
+        if not isinstance(message, ToolMessage) or message.status == "error":
+            continue
+        artifact = message.artifact
+        if not isinstance(artifact, dict) or artifact.get("type") != "deerflow.knowledge_sources":
+            continue
+        records = artifact.get("sources")
+        if not isinstance(records, list):
+            continue
+        for source in records:
+            if not isinstance(source, dict):
+                continue
+            source_id = source.get("id")
+            if not isinstance(source_id, str) or not source_id or source_id in seen:
+                continue
+            seen.add(source_id)
+            sources.append(deepcopy(source))
+    return sources
 
 
 class SubagentStatus(Enum):
@@ -93,6 +125,7 @@ class SubagentResult:
     completed_at: datetime | None = None
     ai_messages: list[dict[str, Any]] = field(default_factory=list)
     tool_receipts: list[dict[str, Any]] = field(default_factory=list)
+    knowledge_sources: list[dict[str, Any]] = field(default_factory=list)
     acceptance_verdict: dict[str, Any] | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _state_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
@@ -115,6 +148,7 @@ class SubagentResult:
         termination_reason: str | None = None,
         ai_messages: list[dict[str, Any]] | None = None,
         tool_receipts: list[dict[str, Any]] | None = None,
+        knowledge_sources: list[dict[str, Any]] | None = None,
         acceptance_verdict: dict[str, Any] | None = None,
     ) -> bool:
         """Publish a terminal outcome once; late workers cannot overwrite it."""
@@ -134,6 +168,9 @@ class SubagentResult:
             self.tool_receipts = list(
                 tool_receipts if tool_receipts is not None else self.tool_receipts
             )
+            self.knowledge_sources = deepcopy(
+                knowledge_sources if knowledge_sources is not None else self.knowledge_sources
+            )
             self.acceptance_verdict = (
                 dict(acceptance_verdict)
                 if acceptance_verdict is not None
@@ -147,6 +184,12 @@ class SubagentResult:
         with self._state_lock:
             if not self.status.is_terminal:
                 self.tool_receipts = [dict(receipt) for receipt in receipts]
+
+    def update_knowledge_sources(self, sources: list[dict[str, Any]]) -> None:
+        """Publish observed sources without allowing late worker mutation."""
+        with self._state_lock:
+            if not self.status.is_terminal:
+                self.knowledge_sources = deepcopy(sources)
 
 
 # Global storage for background task results
@@ -286,6 +329,9 @@ class SubagentExecutor:
         middlewares: list[AgentMiddleware] | None = None,
         acceptance_criteria: list[str] | None = None,
         context_snapshot: "ParentContextSnapshot | None" = None,
+        knowledge_scope: dict[str, Any] | None = None,
+        skill_catalog: SkillCatalog | None = None,
+        pii_redaction: PiiRedactionConfig | None = None,
     ):
         """Initialize the executor.
 
@@ -310,6 +356,9 @@ class SubagentExecutor:
         self.middlewares = list(middlewares or [])
         self.acceptance_criteria = list(acceptance_criteria or [])
         self.context_snapshot = context_snapshot
+        self.knowledge_scope = deepcopy(knowledge_scope)
+        self.skill_catalog = skill_catalog
+        self.pii_redaction = pii_redaction.model_copy(deep=True) if pii_redaction is not None else None
         # Generate trace_id if not provided (for top-level calls)
         self.trace_id = trace_id or str(uuid.uuid4())[:8]
 
@@ -394,6 +443,12 @@ class SubagentExecutor:
         from deerflow.agents.middlewares.finish_reason_middleware import build_finish_reason_middlewares
 
         middlewares.extend(build_finish_reason_middlewares())
+        from deerflow.agents.middlewares.pii_redaction_middleware import configure_pii_redaction
+
+        middlewares = configure_pii_redaction(
+            middlewares,
+            self.pii_redaction if self.pii_redaction is not None else getattr(app_config, "pii_redaction", None),
+        )
 
         from deerflow.subagents.report_contract import (
             build_acceptance_criteria_system_note,
@@ -473,10 +528,24 @@ class SubagentExecutor:
         # Expose only the skill catalog. The subagent reads a matching SKILL.md
         # through read_file when needed, avoiding eager prompt growth and stale
         # authority from unrelated skills.
-        skills = await self._load_skills()
-        skill_names = {skill.name for skill in skills}
         skill_section = ""
-        if skill_names:
+        skill_names: set[str] = set()
+        if self.skill_catalog is not None:
+            import json
+
+            entries = [
+                entry.as_dict() for entry in self.skill_catalog.entries
+                if self.config.skills is None or entry.name in self.config.skills
+            ]
+            if entries:
+                skill_section = (
+                    "Available SDK skills (metadata only). Read the selected SKILL.md location before using it.\n"
+                    + json.dumps(entries, ensure_ascii=False)
+                )
+        else:
+            skills = await self._load_skills()
+            skill_names = {skill.name for skill in skills}
+        if self.skill_catalog is None and skill_names:
             from deerflow.agents.lead_agent.prompt import get_skills_prompt_section
 
             from deerflow.runtime.assembly import run_in_assembly_executor
@@ -524,7 +593,7 @@ class SubagentExecutor:
                 and set(inherited_skills) == set(self.config.skills)
             )
         )
-        if self.sandbox_state is not None and same_skill_policy:
+        if self.sandbox_state is not None and same_skill_policy and self.skill_catalog is None:
             state["sandbox"] = self.sandbox_state
         if self.thread_data is not None:
             state["thread_data"] = self.thread_data
@@ -593,13 +662,18 @@ class SubagentExecutor:
             # actual turns. Fall back defensively if the agent wasn't built here.
             run_config: RunnableConfig = {
                 "recursion_limit": self._run_recursion_limit or self.config.max_turns * 4,
+                "metadata": {"knowledge_scope": deepcopy(self.knowledge_scope)},
             }
             context: AgentContext = {}
+            context["knowledge_scope"] = deepcopy(self.knowledge_scope)
             if self.thread_id:
                 run_config["configurable"] = {"thread_id": self.thread_id}
                 context["thread_id"] = self.thread_id
+            # An SDK catalog does not authorize mounting application-global
+            # skill bodies under matching names. Its caller owns the explicit
+            # location mapping, so the global sandbox projection fails closed.
             context["available_skills"] = (
-                list(self.config.skills)
+                [] if self.skill_catalog is not None else list(self.config.skills)
                 if self.config.skills is not None
                 else None
             )
@@ -632,119 +706,149 @@ class SubagentExecutor:
                 )
                 return result
 
-            async for mode, chunk in agent.astream(  # type: ignore[arg-type]
+            stream = agent.astream(  # type: ignore[arg-type]
                 state,
                 config=run_config,
                 context=context,
                 stream_mode=["values", "messages"],
-            ):
-                # Cooperative cancellation: check if parent requested stop.
-                # Note: cancellation is only detected at astream iteration boundaries,
-                # so long-running tool calls within a single iteration will not be
-                # interrupted until the next chunk is yielded.
-                if result.cancel_event.is_set():
-                    logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} cancelled by parent")
-                    result.try_set_terminal(
-                        SubagentStatus.CANCELLED,
-                        error="Cancelled by user",
-                        ai_messages=captured_ai_messages,
-                    )
-                    return result
+            )
+            try:
+                async for mode, chunk in stream:
+                    if mode == "values" and isinstance(chunk, dict):
+                        # The yielded state already executed, even when cancel
+                        # was requested while its tool was still running.
+                        result.update_knowledge_sources(
+                            _extract_knowledge_sources(list(chunk.get("messages", [])))
+                        )
+                    # Cooperative cancellation: check if parent requested stop.
+                    # Note: cancellation is only detected at astream iteration boundaries,
+                    # so long-running tool calls within a single iteration will not be
+                    # interrupted until the next chunk is yielded.
+                    if result.cancel_event.is_set():
+                        logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} cancelled by parent")
+                        result.try_set_terminal(
+                            SubagentStatus.CANCELLED,
+                            error="Cancelled by user",
+                            ai_messages=captured_ai_messages,
+                        )
+                        return result
 
-                if mode == "messages":
-                    # chunk is a tuple (message_chunk, metadata) from LangGraph messages mode
-                    msg_chunk = chunk[0] if isinstance(chunk, tuple) else chunk
+                    if mode == "messages":
+                        # chunk is a tuple (message_chunk, metadata) from LangGraph messages mode
+                        msg_chunk = chunk[0] if isinstance(chunk, tuple) else chunk
+                        if stream_callback is not None:
+                            try:
+                                # LLM token stream — content may be str or list of blocks
+                                if isinstance(msg_chunk, AIMessage) and msg_chunk.content:
+                                    content = msg_chunk.content
+                                    if isinstance(content, list):
+                                        # Split thinking blocks from text blocks
+                                        for block in content:
+                                            if isinstance(block, dict):
+                                                if block.get("type") == "thinking" and block.get("thinking"):
+                                                    stream_callback({"type": "thinking_chunk", "thinking": block["thinking"]})
+                                                elif block.get("type") == "text" and block.get("text"):
+                                                    stream_callback({"type": "token_chunk", "content": block["text"]})
+                                            elif isinstance(block, str) and block:
+                                                stream_callback({"type": "token_chunk", "content": block})
+                                    else:
+                                        stream_callback({"type": "token_chunk", "content": content})
+                                # Tool call invocation (args may arrive incrementally across chunks)
+                                if isinstance(msg_chunk, AIMessage) and msg_chunk.tool_calls:
+                                    for tc in msg_chunk.tool_calls:
+                                        stream_callback({"type": "tool_call_chunk", "tool_call": tc})
+                                # Tool execution result
+                                if isinstance(msg_chunk, ToolMessage):
+                                    tool_result_event: dict[str, Any] = {
+                                        "type": "tool_result_chunk",
+                                        "tool_call_id": msg_chunk.tool_call_id,
+                                        "name": getattr(msg_chunk, "name", None),
+                                        "content": msg_chunk.content,
+                                        "status": getattr(msg_chunk, "status", None),
+                                    }
+                                    from deerflow.tools.builtins.present_file_tool import (
+                                        PRESENTED_ARTIFACTS_KEY,
+                                    )
+
+                                    presented = (msg_chunk.additional_kwargs or {}).get(
+                                        PRESENTED_ARTIFACTS_KEY
+                                    )
+                                    if (
+                                        msg_chunk.name == "present_files"
+                                        and isinstance(presented, list)
+                                        and all(isinstance(path, str) for path in presented)
+                                    ):
+                                        tool_result_event["presented_artifacts"] = presented
+                                    stream_callback(tool_result_event)
+                            except Exception:
+                                logger.debug(f"[trace={self.trace_id}] stream_callback raised, ignoring", exc_info=True)
+                        # Don't update final_state from messages chunks
+                        continue
+
+                    # mode == "values": full state snapshot — one per completed graph node
+                    final_state = chunk
+
+                    from deerflow.agents.middlewares.tool_receipt import (
+                        extract_tool_receipts,
+                    )
+
+                    result.update_tool_receipts(
+                        extract_tool_receipts(list(chunk.get("messages", [])))
+                    )
+
+                    # Emit turn_complete so callers can track agent progress
                     if stream_callback is not None:
                         try:
-                            # LLM token stream — content may be str or list of blocks
-                            if isinstance(msg_chunk, AIMessage) and msg_chunk.content:
-                                content = msg_chunk.content
-                                if isinstance(content, list):
-                                    # Split thinking blocks from text blocks
-                                    for block in content:
-                                        if isinstance(block, dict):
-                                            if block.get("type") == "thinking" and block.get("thinking"):
-                                                stream_callback({"type": "thinking_chunk", "thinking": block["thinking"]})
-                                            elif block.get("type") == "text" and block.get("text"):
-                                                stream_callback({"type": "token_chunk", "content": block["text"]})
-                                        elif isinstance(block, str) and block:
-                                            stream_callback({"type": "token_chunk", "content": block})
-                                else:
-                                    stream_callback({"type": "token_chunk", "content": content})
-                            # Tool call invocation (args may arrive incrementally across chunks)
-                            if isinstance(msg_chunk, AIMessage) and msg_chunk.tool_calls:
-                                for tc in msg_chunk.tool_calls:
-                                    stream_callback({"type": "tool_call_chunk", "tool_call": tc})
-                            # Tool execution result
-                            if isinstance(msg_chunk, ToolMessage):
-                                tool_result_event: dict[str, Any] = {
-                                    "type": "tool_result_chunk",
-                                    "tool_call_id": msg_chunk.tool_call_id,
-                                    "name": getattr(msg_chunk, "name", None),
-                                    "content": msg_chunk.content,
-                                    "status": getattr(msg_chunk, "status", None),
-                                }
-                                from deerflow.tools.builtins.present_file_tool import (
-                                    PRESENTED_ARTIFACTS_KEY,
-                                )
-
-                                presented = (msg_chunk.additional_kwargs or {}).get(
-                                    PRESENTED_ARTIFACTS_KEY
-                                )
-                                if (
-                                    msg_chunk.name == "present_files"
-                                    and isinstance(presented, list)
-                                    and all(isinstance(path, str) for path in presented)
-                                ):
-                                    tool_result_event["presented_artifacts"] = presented
-                                stream_callback(tool_result_event)
+                            messages_so_far = chunk.get("messages", [])
+                            stream_callback({
+                                "type": "turn_complete",
+                                "message_count": len(messages_so_far),
+                            })
                         except Exception:
-                            logger.debug(f"[trace={self.trace_id}] stream_callback raised, ignoring", exc_info=True)
-                    # Don't update final_state from messages chunks
-                    continue
+                            logger.debug(f"[trace={self.trace_id}] stream_callback raised on turn_complete, ignoring", exc_info=True)
 
-                # mode == "values": full state snapshot — one per completed graph node
-                final_state = chunk
+                    # Extract AI messages from the current state
+                    messages = chunk.get("messages", [])
+                    if messages:
+                        last_message = messages[-1]
+                        # Check if this is a new AI message
+                        if isinstance(last_message, AIMessage):
+                            # Convert message to dict for serialization
+                            message_dict = last_message.model_dump()
+                            # Only add if it's not already in the list (avoid duplicates)
+                            # Check by comparing message IDs if available, otherwise compare full dict
+                            message_id = message_dict.get("id")
+                            is_duplicate = False
+                            if message_id:
+                                is_duplicate = any(msg.get("id") == message_id for msg in captured_ai_messages)
+                            else:
+                                is_duplicate = message_dict in captured_ai_messages
 
-                from deerflow.agents.middlewares.tool_receipt import (
-                    extract_tool_receipts,
-                )
-
-                result.update_tool_receipts(
-                    extract_tool_receipts(list(chunk.get("messages", [])))
-                )
-
-                # Emit turn_complete so callers can track agent progress
-                if stream_callback is not None:
-                    try:
-                        messages_so_far = chunk.get("messages", [])
-                        stream_callback({
-                            "type": "turn_complete",
-                            "message_count": len(messages_so_far),
-                        })
-                    except Exception:
-                        logger.debug(f"[trace={self.trace_id}] stream_callback raised on turn_complete, ignoring", exc_info=True)
-
-                # Extract AI messages from the current state
-                messages = chunk.get("messages", [])
-                if messages:
-                    last_message = messages[-1]
-                    # Check if this is a new AI message
-                    if isinstance(last_message, AIMessage):
-                        # Convert message to dict for serialization
-                        message_dict = last_message.model_dump()
-                        # Only add if it's not already in the list (avoid duplicates)
-                        # Check by comparing message IDs if available, otherwise compare full dict
-                        message_id = message_dict.get("id")
-                        is_duplicate = False
-                        if message_id:
-                            is_duplicate = any(msg.get("id") == message_id for msg in captured_ai_messages)
-                        else:
-                            is_duplicate = message_dict in captured_ai_messages
-
-                        if not is_duplicate:
-                            captured_ai_messages.append(message_dict)
-                            logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} captured AI message #{len(captured_ai_messages)}")
+                            if not is_duplicate:
+                                captured_ai_messages.append(message_dict)
+                                logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} captured AI message #{len(captured_ai_messages)}")
+            finally:
+                # Close on the task that consumed the stream: async generators
+                # may own task-local contexts. Early return from async-for does
+                # not close them, and the model pool must remain open until all
+                # graph cleanup has finished. Parent-side terminal fencing and
+                # quarantine still provide the existing fast cancel response.
+                active_error = sys.exception()
+                try:
+                    close = getattr(stream, "aclose", None)
+                    if close is not None:
+                        closed = close()
+                        if inspect.isawaitable(closed):
+                            await closed
+                except Exception:
+                    if active_error is None and not result.cancel_event.is_set():
+                        raise
+                    logger.warning(
+                        "[trace=%s] Failed to close interrupted subagent stream %s",
+                        self.trace_id,
+                        self.config.name,
+                        exc_info=True,
+                    )
 
             logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} completed async execution")
 
@@ -1063,6 +1167,7 @@ class SubagentExecutor:
                             result=exec_result.result,
                             error=exec_result.error,
                             ai_messages=exec_result.ai_messages,
+                            knowledge_sources=exec_result.knowledge_sources,
                         )
                     return
             except Exception as e:

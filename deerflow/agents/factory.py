@@ -28,6 +28,8 @@ from deerflow.config.checkpointer_config import (
     DEFAULT_CHECKPOINT_SNAPSHOT_FREQUENCY,
     CheckpointChannelMode,
 )
+from deerflow.config.pii_redaction_config import PiiRedactionConfig
+from deerflow.config.skills_config import SkillsConfig
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -81,6 +83,9 @@ def create_deerflow_agent(
     name: str = "default",
     checkpoint_channel_mode: CheckpointChannelMode = "full",
     checkpoint_snapshot_frequency: int | None = None,
+    pii_redaction: PiiRedactionConfig | None = None,
+    skills_config: SkillsConfig | None = None,
+    available_skills: list[str] | None = None,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     """Create a DeerFlow agent from plain Python arguments.
 
@@ -112,6 +117,19 @@ def create_deerflow_agent(
         Optional persistence backend.
     name:
         Agent name (passed to middleware that cares, e.g. ``MemoryMiddleware``).
+    pii_redaction:
+        Explicit sensitive-text filtering config for the assembled model,
+        title and DeerFlow summary middleware. No global config is read.
+        With full middleware takeover, install PiiRedactionMiddleware yourself.
+    skills_config:
+        Explicit skill-discovery config. When enabled with discovery on/auto,
+        add describe_skill unless the caller already supplied that tool.
+        An explicit path or directories is required. Relative SDK paths use
+        the caller's current directory; only an explicit extensions_file is
+        read for enabled/disabled state.
+    available_skills:
+        Skill names describe_skill may expose; None inherits enabled skills,
+        while an empty list exposes none.
 
     Raises
     ------
@@ -124,6 +142,8 @@ def create_deerflow_agent(
         raise ValueError("Cannot specify both 'middleware' and 'features'.  Use one or the other.")
     if middleware is not None and extra_middleware:
         raise ValueError("Cannot use 'extra_middleware' with 'middleware' (full takeover).")
+    if middleware is not None and pii_redaction is not None and pii_redaction.enabled:
+        raise ValueError("With full middleware takeover, include PiiRedactionMiddleware in 'middleware'.")
     if extra_middleware:
         for mw in extra_middleware:
             if not isinstance(mw, AgentMiddleware):
@@ -159,6 +179,45 @@ def create_deerflow_agent(
             if t.name not in existing_names:
                 effective_tools.append(t)
                 existing_names.add(t.name)
+
+    skill_catalog_provider = None
+    if skills_config is not None and skills_config.enabled and (skills_config.path or skills_config.directories):
+        from deerflow.skills.describe import build_explicit_skill_catalog_provider
+
+        skill_catalog_provider = build_explicit_skill_catalog_provider(skills_config)
+    if skills_config is not None and skills_config.enabled and skills_config.discovery_mode != "off":
+        from deerflow.skills.describe import build_describe_skill_tool, build_explicit_skill_catalog_provider
+
+        if not any(tool.name == "describe_skill" for tool in effective_tools):
+            effective_tools.append(build_describe_skill_tool(
+                set(available_skills) if available_skills is not None else None,
+                catalog_provider=skill_catalog_provider or build_explicit_skill_catalog_provider(skills_config),
+            ))
+
+    if pii_redaction is not None or skills_config is not None or available_skills is not None:
+        from deerflow.subagents.sdk_policy import SdkTaskPolicy
+        from deerflow.tools.builtins.task_tool import _create_task_tool, _task_tool_impl
+
+        policy = SdkTaskPolicy(
+            skills_explicit=skills_config is not None or available_skills is not None,
+            skill_catalog_provider=skill_catalog_provider,
+            available_skills=frozenset(available_skills) if available_skills is not None else None,
+            skill_discovery_enabled=bool(skills_config and skills_config.enabled and skills_config.discovery_mode != "off"),
+            pii_redaction=pii_redaction.model_copy(deep=True) if pii_redaction is not None else None,
+        )
+        # Bind only the native tool, preserving arbitrary caller-owned tools.
+        # The policy lives in a closure, never in model arguments or mutable
+        # per-invocation metadata that could widen this factory's restrictions.
+        effective_tools = [
+            _create_task_tool(sdk_policy=policy)
+            if tool.name == "task" and getattr(tool, "coroutine", None) is _task_tool_impl
+            else tool
+            for tool in effective_tools
+        ]
+
+    from deerflow.agents.middlewares.pii_redaction_middleware import configure_pii_redaction
+
+    effective_middleware = configure_pii_redaction(effective_middleware, pii_redaction)
 
     effective_middleware = normalize_middleware_state_schemas(
         effective_middleware,

@@ -13,6 +13,7 @@ from typing import Annotated, Any, Literal
 
 from langchain.tools import InjectedToolCallId, ToolRuntime
 from langchain_core.tools import StructuredTool
+from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, Field
 
 from deerflow.agents.thread_state import AgentContext, ThreadState
@@ -24,6 +25,7 @@ from deerflow.subagents.executor import (
     finalize_cancelled_background_task,
     get_background_task_result,
 )
+from deerflow.subagents.sdk_policy import SdkTaskPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,17 @@ def _snapshot_uploaded_files(state: object) -> list[dict[str, Any]] | None:
     return deepcopy(uploaded_files)
 
 
+def _task_result_with_sources(text: str, result: Any, tool_call_id: str, *, incomplete: bool = False) -> str | ToolMessage:
+    from deerflow.community.ragflow.sources import budget_sources, get_sources, source_artifact
+
+    artifact = source_artifact(list(getattr(result, "knowledge_sources", []) or []))
+    if not get_sources(artifact):
+        return text
+    artifact["summary"] = text
+    text, artifact = budget_sources(text, artifact, 8000)
+    return ToolMessage(content=text, tool_call_id=tool_call_id, name="task", artifact=artifact, status="error" if incomplete else "success", additional_kwargs={"incomplete": incomplete})
+
+
 # Core async implementation of the task tool.
 async def _task_tool_impl(
     runtime: ToolRuntime[AgentContext, ThreadState],
@@ -122,7 +135,9 @@ async def _task_tool_impl(
     max_turns: int | None = None,
     acceptance_criteria: list[str] | None = None,
     context_mode: Literal["isolated", "snapshot"] = "isolated",
-) -> str:
+    *,
+    _sdk_policy: SdkTaskPolicy | None = None,
+) -> str | ToolMessage:
     from deerflow.runtime.assembly import run_in_assembly_executor
 
     def load_subagent_definition():
@@ -185,6 +200,26 @@ async def _task_tool_impl(
     if parent_available_skills is not None:
         overrides["skills"] = _merge_skill_allowlists(list(parent_available_skills), config.skills)
 
+    sdk_skill_catalog = None
+    if _sdk_policy is not None and _sdk_policy.skills_explicit:
+        from deerflow.skills.catalog import SkillCatalog
+
+        supplied = (
+            await run_in_assembly_executor(_sdk_policy.skill_catalog_provider)
+            if _sdk_policy.skill_catalog_provider is not None
+            else SkillCatalog(())
+        )
+        allowed = _merge_skill_allowlists(
+            list(_sdk_policy.available_skills) if _sdk_policy.available_skills is not None else None,
+            overrides.get("skills", config.skills),
+        )
+        sdk_skill_catalog = SkillCatalog(tuple(
+            entry for entry in supplied.entries if allowed is None or entry.name in allowed
+        ))
+        # No explicit catalog means no child skills, not a fallback to global
+        # application directories bearing the same skill names.
+        overrides["skills"] = [entry.name for entry in sdk_skill_catalog.entries]
+
     if overrides:
         config = replace(config, **overrides)
 
@@ -209,7 +244,18 @@ async def _task_tool_impl(
         groups=parent_tool_groups,
         subagent_enabled=False,
         include_upload_tool=uploaded_files is not None,
+        available_skills=set(config.skills) if config.skills is not None else None,
+        mcp_servers=metadata.get("mcp_servers"),
+        **({"include_skill_tool": False} if sdk_skill_catalog is not None else {}),
     )
+    if sdk_skill_catalog is not None:
+        tools = [tool for tool in tools if tool.name != "describe_skill"]
+        if sdk_skill_catalog.entries and _sdk_policy.skill_discovery_enabled:
+            from deerflow.skills.describe import build_describe_skill_tool
+
+            tools.append(build_describe_skill_tool(
+                set(config.skills or []), catalog_provider=lambda: sdk_skill_catalog
+            ))
     excluded_tool_names = set(metadata.get("subagent_excluded_tool_names") or [])
     # Never rely solely on the global registry honoring subagent_enabled=False:
     # recursive delegation is a hard boundary for internal ACP subagents.
@@ -233,6 +279,8 @@ async def _task_tool_impl(
         logger.debug("Failed to clone deferred registry for subagent", exc_info=True)
 
     # Create executor
+    from deerflow.community.ragflow.scope import scope_from_runtime
+
     executor = SubagentExecutor(
         config=config,
         tools=tools,
@@ -247,6 +295,11 @@ async def _task_tool_impl(
         middlewares=list(metadata.get("subagent_middlewares") or []),
         acceptance_criteria=acceptance_criteria,
         context_snapshot=context_snapshot,
+        knowledge_scope=scope_from_runtime(runtime),
+        **({
+            "skill_catalog": sdk_skill_catalog,
+            "pii_redaction": _sdk_policy.pii_redaction,
+        } if _sdk_policy is not None else {}),
     )
 
     # Resolve the live_event_callback from config metadata.
@@ -395,7 +448,8 @@ async def _task_tool_impl(
                     sections.append(citation_summary)
                 if isinstance(acceptance_verdict, dict):
                     sections.append(render_acceptance_section(acceptance_verdict))
-                return "\n\n".join(sections)
+                text = "\n\n".join(sections)
+                return _task_result_with_sources(text, result, tool_call_id)
             elif result.status == SubagentStatus.LIMIT_REACHED:
                 reason = result.termination_reason or "limit_reached"
                 termination_message = (
@@ -423,25 +477,25 @@ async def _task_tool_impl(
                 partial_result = (
                     f" Partial result: {result.result}" if result.result else ""
                 )
-                return (
+                return _task_result_with_sources(
                     f"Task incomplete. Reason: {termination_message}."
-                    f"{partial_result}"
+                    f"{partial_result}", result, tool_call_id, incomplete=True,
                 )
             elif result.status == SubagentStatus.FAILED:
                 _emit({"type": "task_failed", "task_id": tool_call_id, "error": result.error})
                 logger.error(f"[trace={trace_id}] Task {tool_call_id} failed: {result.error}")
                 cleanup_background_task(execution_id)
-                return f"Task failed. Error: {result.error}"
+                return _task_result_with_sources(f"Task failed. Error: {result.error}", result, tool_call_id, incomplete=True)
             elif result.status == SubagentStatus.CANCELLED:
                 _emit({"type": "task_cancelled", "task_id": tool_call_id, "error": result.error})
                 logger.info(f"[trace={trace_id}] Task {tool_call_id} cancelled: {result.error}")
                 cleanup_background_task(execution_id)
-                return "Task cancelled by user."
+                return _task_result_with_sources("Task cancelled by user.", result, tool_call_id, incomplete=True)
             elif result.status == SubagentStatus.TIMED_OUT:
                 _emit({"type": "task_timed_out", "task_id": tool_call_id, "error": result.error})
                 logger.warning(f"[trace={trace_id}] Task {tool_call_id} timed out: {result.error}")
                 cleanup_background_task(execution_id)
-                return f"Task timed out. Error: {result.error}"
+                return _task_result_with_sources(f"Task timed out. Error: {result.error}", result, tool_call_id, incomplete=True)
 
             # Still running, wait before next poll
             await asyncio.sleep(_POLL_INTERVAL)
@@ -460,7 +514,10 @@ async def _task_tool_impl(
                     error="Parent task polling safety timeout",
                 )
                 cleanup_background_task(execution_id)
-                return f"Task polling timed out after {timeout_minutes} minutes. This may indicate the background task is stuck. Status: {result.status.value}"
+                return _task_result_with_sources(
+                    f"Task polling timed out after {timeout_minutes} minutes. This may indicate the background task is stuck. Status: {result.status.value}",
+                    result, tool_call_id, incomplete=True,
+                )
     except asyncio.CancelledError:
         # Signal the background subagent thread to stop cooperatively.
         # Without this, the thread (running in ThreadPoolExecutor with its
@@ -493,7 +550,7 @@ async def _task_tool_impl(
         raise
 
 
-def _create_task_tool() -> StructuredTool:
+def _create_task_tool(*, sdk_policy: SdkTaskPolicy | None = None) -> StructuredTool:
     """Create the task tool with both sync and async invocation support.
 
     The core implementation is async. A sync wrapper bridges via asyncio.run()
@@ -502,6 +559,24 @@ def _create_task_tool() -> StructuredTool:
     `@tool` decorator on an async-only function left `func=None`, causing
     LangGraph's ToolNode to fail when it calls `tool.invoke()`.
     """
+
+    async def _bound_task_tool(
+        runtime: ToolRuntime[AgentContext, ThreadState],
+        description: str,
+        prompt: str,
+        subagent_type: str,
+        tool_call_id: Annotated[str, InjectedToolCallId],
+        max_turns: int | None = None,
+        acceptance_criteria: list[str] | None = None,
+        context_mode: Literal["isolated", "snapshot"] = "isolated",
+    ) -> str | ToolMessage:
+        return await _task_tool_impl(
+            runtime=runtime, description=description, prompt=prompt,
+            subagent_type=subagent_type, tool_call_id=tool_call_id,
+            max_turns=max_turns, acceptance_criteria=acceptance_criteria,
+            context_mode=context_mode,
+            **({"_sdk_policy": sdk_policy} if sdk_policy is not None else {}),
+        )
 
     @wraps(_task_tool_impl)
     def _sync_task_tool(
@@ -515,7 +590,7 @@ def _create_task_tool() -> StructuredTool:
         context_mode: Literal["isolated", "snapshot"] = "isolated",
     ) -> str:
         """Sync wrapper that delegates to the async implementation."""
-        coro = _task_tool_impl(
+        coro = _bound_task_tool(
             runtime=runtime,
             description=description,
             prompt=prompt,
@@ -545,7 +620,7 @@ def _create_task_tool() -> StructuredTool:
         description=_TASK_TOOL_DESCRIPTION,
         args_schema=_TaskToolInput,
         func=_sync_task_tool,
-        coroutine=_task_tool_impl,
+        coroutine=_bound_task_tool if sdk_policy is not None else _task_tool_impl,
     )
 
 
