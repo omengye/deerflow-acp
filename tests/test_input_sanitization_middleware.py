@@ -13,6 +13,8 @@ from deerflow.agents.middlewares.tool_error_handling_middleware import (
     build_lead_runtime_middlewares,
     build_subagent_runtime_middlewares,
 )
+from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
+from deerflow.config.sandbox_config import SandboxConfig
 
 
 def _request(messages):
@@ -144,8 +146,12 @@ def test_sync_and_async_wrappers_pass_processed_request() -> None:
 
 
 def test_shared_lead_and_subagent_chains_include_guard() -> None:
-    lead = build_lead_runtime_middlewares()
-    subagent = build_subagent_runtime_middlewares()
+    set_app_config(AppConfig(sandbox=SandboxConfig(use="test")))
+    try:
+        lead = build_lead_runtime_middlewares()
+        subagent = build_subagent_runtime_middlewares()
+    finally:
+        reset_app_config()
 
     assert isinstance(lead[0], InputSanitizationMiddleware)
     assert isinstance(subagent[0], InputSanitizationMiddleware)

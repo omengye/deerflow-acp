@@ -14,6 +14,8 @@ import deerflow.runtime.goal as goal_module
 from deerflow.acp.config import LocalACPConfig
 from deerflow.agents.goal_state import GoalEvaluation
 from deerflow.agents.thread_state import ThreadState
+from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
+from deerflow.config.sandbox_config import SandboxConfig
 from deerflow.runtime.goal import (
     GoalWriteConflict,
     attach_goal_evaluation,
@@ -125,12 +127,16 @@ async def test_evaluator_uses_visible_evidence_and_ignores_hidden_messages() -> 
         AIMessage(content="One test still fails."),
     ]
     usage: dict[str, int] = {}
-    result = await evaluate_goal_completion(
-        goal,
-        messages,
-        model=FakeModel(),
-        usage_callback=usage.update,
-    )
+    set_app_config(AppConfig(sandbox=SandboxConfig(use="test")))
+    try:
+        result = await evaluate_goal_completion(
+            goal,
+            messages,
+            model=FakeModel(),
+            usage_callback=usage.update,
+        )
+    finally:
+        reset_app_config()
 
     assert result["blocker"] == "goal_not_met_yet"
     evaluator_prompt = captured["messages"][1].content

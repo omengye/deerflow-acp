@@ -53,7 +53,7 @@ async def list_threads(limit: int = Query(default=10, ge=1, le=_MAX_LIST_LIMIT))
                 created_at=t.get("created_at"),
             ))
         return threads
-    except Exception as e:
+    except Exception:
         logger.exception("Unhandled error")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -113,7 +113,7 @@ async def get_thread(thread_id: str):
         )
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unhandled error")
         raise HTTPException(status_code=500, detail="Internal server error")
 

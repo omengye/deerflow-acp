@@ -1228,8 +1228,6 @@ class ChatStreamingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_last_lead_usage_tracks_top_level_only(self) -> None:
         """Context-window telemetry must ignore subagent (namespaced) model calls."""
-        from langchain_core.messages import AIMessage
-
         client_module = _reload_module("deerflow.client")
         DeerFlowClient = client_module.DeerFlowClient
         _StreamProcessingState = client_module._StreamProcessingState

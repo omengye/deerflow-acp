@@ -35,6 +35,7 @@ from deerflow.config.pii_redaction_config import PiiRedactionConfig
 from deerflow.skills.catalog import SkillCatalog
 
 if TYPE_CHECKING:
+    from deerflow.subagents.context_snapshot import ParentContextSnapshot
     from deerflow.tools.builtins.tool_search import DeferredToolRegistry
 
 logger = logging.getLogger(__name__)

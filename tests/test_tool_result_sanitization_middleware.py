@@ -13,6 +13,8 @@ from deerflow.agents.middlewares.tool_error_handling_middleware import (
 from deerflow.agents.middlewares.tool_result_sanitization_middleware import (
     ToolResultSanitizationMiddleware,
 )
+from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
+from deerflow.config.sandbox_config import SandboxConfig
 
 
 MALICIOUS = (
@@ -138,11 +140,17 @@ async def test_async_mcp_result_is_sanitized() -> None:
 
 
 def test_runtime_middleware_builders_include_tool_result_sanitization() -> None:
+    set_app_config(AppConfig(sandbox=SandboxConfig(use="test")))
+    try:
+        lead = build_lead_runtime_middlewares()
+        subagent = build_subagent_runtime_middlewares()
+    finally:
+        reset_app_config()
     assert any(
         isinstance(middleware, ToolResultSanitizationMiddleware)
-        for middleware in build_lead_runtime_middlewares()
+        for middleware in lead
     )
     assert any(
         isinstance(middleware, ToolResultSanitizationMiddleware)
-        for middleware in build_subagent_runtime_middlewares()
+        for middleware in subagent
     )

@@ -16,6 +16,8 @@ from deerflow.acp.policy import (
 from deerflow.acp.session_coordinator import ACPSessionCoordinator
 from deerflow.agents.lead_agent.prompt import apply_prompt_template
 from deerflow.client import DeerFlowClient
+from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
+from deerflow.config.sandbox_config import SandboxConfig
 from deerflow.tools.builtins.tool_search import (
     DeferredToolRegistry,
     get_deferred_registry,
@@ -23,6 +25,15 @@ from deerflow.tools.builtins.tool_search import (
     set_deferred_registry,
     tool_search,
 )
+
+
+@pytest.fixture
+def app_config():
+    set_app_config(AppConfig(sandbox=SandboxConfig(use="deerflow.sandbox.local:LocalSandboxProvider")))
+    try:
+        yield
+    finally:
+        reset_app_config()
 
 
 def _config(tmp_path, **overrides):
@@ -98,6 +109,7 @@ def test_prompt_omits_instructions_for_filtered_tools() -> None:
     assert prompt.endswith("<current_date>2042-03-04, Tuesday</current_date>")
 
 
+@pytest.mark.usefixtures("app_config")
 def test_client_filters_deferred_registry_with_tool_policy(monkeypatch) -> None:
     allowed = SimpleNamespace(name="mcp_allowed", description="Allowed MCP tool")
     denied = SimpleNamespace(name="mcp_denied", description="Denied MCP tool")
@@ -287,6 +299,7 @@ async def test_permission_broker_routes_each_session_to_its_connection(
     ]
 
 
+@pytest.mark.usefixtures("app_config")
 def test_deerflow_client_applies_agent_profile_defaults(monkeypatch) -> None:
     profile = SimpleNamespace(
         model="profile-model",

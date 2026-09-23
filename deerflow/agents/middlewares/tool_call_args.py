@@ -83,13 +83,6 @@ def _ambiguous_idless_names(message: AIMessage) -> set[str]:
     duplicated_names = {name for name, count in name_counts.items() if count > 1}
     if not duplicated_names:
         return set()
-    structured_ids = {
-        call_id
-        for call in message.tool_calls or ()
-        if isinstance(call, dict)
-        and isinstance(call_id := call.get("id"), str)
-        and call_id
-    }
     idless_names: set[str] = set()
 
     def record(entry: Any, *id_keys: str, nested_name: str | None = None) -> None:

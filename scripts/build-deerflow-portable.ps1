@@ -49,8 +49,9 @@ if ($Configuration -eq "Release") {
 }
 
 Write-Host "Building ACP Bridge ($Configuration)..."
+# Keep TOML quoting out of native arguments for Windows PowerShell 5.1.
 $bridgeCargoArguments = $cargoArguments + @(
-    "--config", 'target.x86_64-pc-windows-msvc.rustflags=["-C","target-feature=+crt-static"]'
+    "--config", (Join-Path $PSScriptRoot "cargo-windows-static-crt.toml")
 )
 & cargo @bridgeCargoArguments --manifest-path (Join-Path $repoRoot "bridge\Cargo.toml")
 if ($LASTEXITCODE -ne 0) { throw "ACP Bridge build failed" }

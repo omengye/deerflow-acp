@@ -6,7 +6,7 @@ import threading
 from types import SimpleNamespace
 from typing import Any, override
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from app import dependencies
 from app.channels.feishu import (
@@ -224,10 +224,16 @@ class FeishuChannelTests(unittest.IsolatedAsyncioTestCase):
             file=stream,
             file_name="large.bin",
         )
+        request_type = Mock()
+        builder = request_type.builder.return_value
+        builder.message_id.return_value = builder
+        builder.file_key.return_value = builder
+        builder.type.return_value = builder
+        get_resource = Mock(return_value=response)
         channel._lark_client = SimpleNamespace(
             im=SimpleNamespace(
                 v1=SimpleNamespace(
-                    message_resource=SimpleNamespace(get=lambda _request: response),
+                    message_resource=SimpleNamespace(get=get_resource),
                 )
             )
         )
@@ -238,10 +244,22 @@ class FeishuChannelTests(unittest.IsolatedAsyncioTestCase):
             message_id="message-1",
         )
 
-        with patch("app.channels.feishu._MAX_FEISHU_FILE_BYTES", 4):
+        with (
+            patch("app.channels.feishu._MAX_FEISHU_FILE_BYTES", 4),
+            patch.dict(
+                "sys.modules",
+                {"lark_oapi.api.im.v1": SimpleNamespace(GetMessageResourceRequest=request_type)},
+            ),
+        ):
             with self.assertRaisesRegex(ValueError, "inbound file limit"):
                 await channel._download_message_resource(resource)
 
+        request_type.builder.assert_called_once_with()
+        builder.message_id.assert_called_once_with("message-1")
+        builder.file_key.assert_called_once_with("file-key")
+        builder.type.assert_called_once_with("file")
+        builder.build.assert_called_once_with()
+        get_resource.assert_called_once_with(builder.build.return_value)
         self.assertEqual(read_sizes, [5])
         self.assertTrue(stream.closed)
 

@@ -15,7 +15,7 @@ The decorator path is sugar over the class path.
 from __future__ import annotations
 
 import inspect
-from typing import Any, Awaitable, Callable, Protocol, overload, runtime_checkable
+from typing import Any, Callable, Protocol, overload, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 

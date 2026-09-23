@@ -8,6 +8,9 @@ import deerflow.config.paths as paths_module
 import deerflow.sandbox.sandbox_provider as sandbox_provider_module
 import deerflow.skills.projection as projection_module
 from deerflow.agents.middlewares.thread_data_middleware import ThreadDataMiddleware
+from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
+from deerflow.config.sandbox_config import SandboxConfig
+from deerflow.config.skills_config import SkillsConfig
 from deerflow.sandbox.local.local_sandbox import LocalSandbox
 from deerflow.sandbox.local.local_sandbox_provider import LocalSandboxProvider
 from deerflow.sandbox.tools import (
@@ -20,15 +23,26 @@ from deerflow.tools.builtins.present_file_tool import _normalize_presented_filep
 @pytest.fixture
 def local_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DEER_FLOW_HOME", str(tmp_path / "deerflow-state"))
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    set_app_config(AppConfig(
+        sandbox=SandboxConfig(use="deerflow.sandbox.local:LocalSandboxProvider"),
+        skills=SkillsConfig(path=str(skills_dir)),
+    ))
     paths_module._paths = None
     projection_module._projection_cache.clear()
     projection_module._last_projection_gc = 0.0
-    provider = LocalSandboxProvider()
-    yield provider
-    provider.reset()
-    projection_module._projection_cache.clear()
-    projection_module._last_projection_gc = 0.0
-    paths_module._paths = None
+    provider = None
+    try:
+        provider = LocalSandboxProvider()
+        yield provider
+    finally:
+        if provider is not None:
+            provider.reset()
+        projection_module._projection_cache.clear()
+        projection_module._last_projection_gc = 0.0
+        paths_module._paths = None
+        reset_app_config()
 
 
 def test_thread_data_middleware_binds_acp_workspace_and_maps_outputs_below_it(

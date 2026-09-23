@@ -63,6 +63,11 @@ def _archive_client(
     monkeypatch.setattr(runs, "get_client_manager", lambda: manager)
     monkeypatch.setattr(runs, "get_paths", lambda: _FakePaths(outputs_dir))
     monkeypatch.setattr(
+        runs,
+        "get_app_config",
+        lambda: SimpleNamespace(tool_output=SimpleNamespace(storage_subdir=".tool-results")),
+    )
+    monkeypatch.setattr(
         runs, "_artifact_archive_slots", __import__("asyncio").Semaphore(4)
     )
     app = FastAPI()

@@ -16,6 +16,8 @@ from deerflow.agents.middlewares.tool_error_handling_middleware import (
     build_lead_runtime_middlewares,
     build_subagent_runtime_middlewares,
 )
+from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
+from deerflow.config.sandbox_config import SandboxConfig
 
 
 def _request(name: str, state: dict, *, path: str = "/mnt/user-data/workspace/a.txt"):
@@ -128,13 +130,19 @@ async def test_cancelled_async_write_releases_path_lock() -> None:
 
 
 def test_runtime_builders_install_read_before_write_gate() -> None:
+    set_app_config(AppConfig(sandbox=SandboxConfig(use="test")))
+    try:
+        lead = build_lead_runtime_middlewares()
+        subagent = build_subagent_runtime_middlewares()
+    finally:
+        reset_app_config()
     assert any(
         isinstance(middleware, ReadBeforeWriteMiddleware)
-        for middleware in build_lead_runtime_middlewares()
+        for middleware in lead
     )
     assert any(
         isinstance(middleware, ReadBeforeWriteMiddleware)
-        for middleware in build_subagent_runtime_middlewares()
+        for middleware in subagent
     )
 
 

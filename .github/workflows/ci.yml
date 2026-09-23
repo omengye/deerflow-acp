@@ -40,7 +40,7 @@ jobs:
         run: uv sync --frozen --group dev
 
       - name: Check Python imports and syntax
-        run: uvx ruff==0.16.1 check --select F .
+        run: uvx ruff==0.16.1 check --select F --output-format github .
 
       - name: Run test suite
         run: uv run --no-sync pytest -q

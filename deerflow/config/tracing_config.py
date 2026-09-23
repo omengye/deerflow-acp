@@ -82,6 +82,7 @@ class TracingConfig(BaseModel):
 
 
 _tracing_config: TracingConfig | None = None
+_config_generation = 0
 
 
 _TRUTHY_VALUES = {"1", "true", "yes", "on"}
@@ -148,36 +149,46 @@ def _value_from_config(provider: dict[str, Any], key: str, *env_names: str, defa
 def get_tracing_config() -> TracingConfig:
     """Get the current tracing configuration from config.yaml with env fallback."""
     global _tracing_config
-    if _tracing_config is not None:
-        return _tracing_config
-    with _config_lock:
-        if _tracing_config is not None:
-            return _tracing_config
+    while True:
+        with _config_lock:
+            if _tracing_config is not None:
+                return _tracing_config
+            generation = _config_generation
+
+        # AppConfig loading can invalidate this cache. Never hold the tracing
+        # lock while calling it, including on the first configuration read.
         section = _config_section()
-        langsmith = _config_provider(section, "langsmith")
-        langfuse = _config_provider(section, "langfuse")
-        _tracing_config = TracingConfig(
-            langsmith=LangSmithTracingConfig(
-                enabled=_flag_from_config(langsmith, "enabled", "LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2", "LANGCHAIN_TRACING"),
-                api_key=_value_from_config(langsmith, "api_key", "LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"),
-                project=_value_from_config(langsmith, "project", "LANGSMITH_PROJECT", "LANGCHAIN_PROJECT", default="deer-flow") or "deer-flow",
-                endpoint=_value_from_config(langsmith, "endpoint", "LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT", default="https://api.smith.langchain.com") or "https://api.smith.langchain.com",
-            ),
-            langfuse=LangfuseTracingConfig(
-                enabled=_flag_from_config(langfuse, "enabled", "LANGFUSE_TRACING"),
-                public_key=_value_from_config(langfuse, "public_key", "LANGFUSE_PUBLIC_KEY"),
-                secret_key=_value_from_config(langfuse, "secret_key", "LANGFUSE_SECRET_KEY"),
-                host=_value_from_config(langfuse, "host", "LANGFUSE_BASE_URL", default="https://cloud.langfuse.com") or "https://cloud.langfuse.com",
-            ),
-        )
-        return _tracing_config
+        with _config_lock:
+            # A reload while the lock was released makes this snapshot stale.
+            if generation != _config_generation:
+                continue
+            if _tracing_config is not None:
+                return _tracing_config
+            langsmith = _config_provider(section, "langsmith")
+            langfuse = _config_provider(section, "langfuse")
+            _tracing_config = TracingConfig(
+                langsmith=LangSmithTracingConfig(
+                    enabled=_flag_from_config(langsmith, "enabled", "LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2", "LANGCHAIN_TRACING"),
+                    api_key=_value_from_config(langsmith, "api_key", "LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"),
+                    project=_value_from_config(langsmith, "project", "LANGSMITH_PROJECT", "LANGCHAIN_PROJECT", default="deer-flow") or "deer-flow",
+                    endpoint=_value_from_config(langsmith, "endpoint", "LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT", default="https://api.smith.langchain.com") or "https://api.smith.langchain.com",
+                ),
+                langfuse=LangfuseTracingConfig(
+                    enabled=_flag_from_config(langfuse, "enabled", "LANGFUSE_TRACING"),
+                    public_key=_value_from_config(langfuse, "public_key", "LANGFUSE_PUBLIC_KEY"),
+                    secret_key=_value_from_config(langfuse, "secret_key", "LANGFUSE_SECRET_KEY"),
+                    host=_value_from_config(langfuse, "host", "LANGFUSE_BASE_URL", default="https://cloud.langfuse.com") or "https://cloud.langfuse.com",
+                ),
+            )
+            return _tracing_config
 
 
 def reset_tracing_config() -> None:
     """Reset the cached tracing config instance. Useful for tests/reloads."""
-    global _tracing_config
+    global _tracing_config, _config_generation
     with _config_lock:
         _tracing_config = None
+        _config_generation += 1
 
 
 def get_enabled_tracing_providers() -> list[str]:

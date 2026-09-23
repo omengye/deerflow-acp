@@ -1,6 +1,5 @@
 """Model management endpoints."""
 import logging
-from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
@@ -30,7 +29,7 @@ async def list_models():
                     supports_vision=m.get("supports_vision", False),
                 ))
         return ModelListResponse(models=models)
-    except Exception as e:
+    except Exception:
         logger.exception("Unhandled error")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -48,6 +47,6 @@ async def get_model(model_name: str):
         return model
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unhandled error")
         raise HTTPException(status_code=500, detail="Internal server error")

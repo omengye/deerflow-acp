@@ -25,6 +25,12 @@ uv run uvicorn app:app --host 127.0.0.1 --port 8000 --app-dir app
 `api.auth_enabled: true` 和至少一个 `api.api_keys`；只有已由外层网络严格
 隔离的可信环境才应显式设置 `api.allow_insecure_remote: true`。
 
+## Windows 桌面版构建
+
+GitHub Actions 的 **Build Windows Desktop** 支持手动构建和 Release 发布时自动构建
+Windows x64 桌面便携包，包含 Python runtime、对应源码和 SHA-256 校验文件。
+触发方式、下载位置和验证范围见 [Windows 桌面构建说明](docs/windows-desktop-actions.md)。
+
 ## 飞书与七牛云可选依赖
 
 飞书和七牛云 SDK 是可选依赖，普通的 `uv sync` 不会安装。请在项目根目录按实际需要执行：

@@ -262,7 +262,7 @@ class GitHubAPI:
 
         # Add contributor count
         try:
-            contributors = self.get_contributors(owner, repo, limit=1)
+            self.get_contributors(owner, repo, limit=1)
             # GitHub returns Link header with total, but we approximate
             summary["contributor_count"] = len(
                 self.get_contributors(owner, repo, limit=100)

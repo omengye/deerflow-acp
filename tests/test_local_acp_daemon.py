@@ -19,6 +19,17 @@ from deerflow.acp.daemon_endpoint import (
     get_runtime_dir,
 )
 from deerflow.acp.session_store import LocalACPSessionStore
+from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
+from deerflow.config.sandbox_config import SandboxConfig
+
+
+@pytest.fixture
+def app_config():
+    set_app_config(AppConfig(sandbox=SandboxConfig(use="deerflow.sandbox.local:LocalSandboxProvider")))
+    try:
+        yield
+    finally:
+        reset_app_config()
 
 
 class FakeRuntime:
@@ -109,6 +120,7 @@ def test_runtime_dir_uses_portable_product_root(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("app_config")
 async def test_daemon_rejects_non_local_sandbox_before_opening_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -132,6 +144,7 @@ async def test_daemon_rejects_non_local_sandbox_before_opening_store(
         staticmethod(lambda _path: FakeConfig()),
     )
     monkeypatch.setattr(daemon_module, "LocalACPRuntime", RejectingRuntime)
+    monkeypatch.setattr("deerflow.config.agents_config.freeze_agent_catalog", lambda: None)
 
     with pytest.raises(
         RuntimeError, match="Portable ACP supports only LocalSandboxProvider"
@@ -142,6 +155,7 @@ async def test_daemon_rejects_non_local_sandbox_before_opening_store(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("app_config")
 async def test_daemon_accepts_multiple_clients_status_stop_and_reconnect(
     tmp_path: Path,
 ) -> None:
@@ -239,6 +253,7 @@ async def test_daemon_accepts_multiple_clients_status_stop_and_reconnect(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("app_config")
 async def test_v2_facade_prompt_acknowledges_then_runs_to_idle(tmp_path: Path) -> None:
     project_root = Path(__file__).resolve().parents[1]
     bridge = (

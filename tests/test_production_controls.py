@@ -556,18 +556,23 @@ tracing:
         try:
             reset_app_config()
             reset_tracing_config()
-            config = get_app_config()
-            extra = config.model_extra or {}
-            tracing_section = dict(extra.get("tracing") or {})
-            tracing_section["langfuse"] = {
-                "enabled": True,
-                "public_key": "public-from-config",
-                "secret_key": "secret-from-config",
-                "host": "https://langfuse.test",
-            }
-            extra["tracing"] = tracing_section
-
-            loaded = get_tracing_config()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                config_path = Path(tmpdir) / "tracing-config.yaml"
+                config_path.write_text(
+                    """
+sandbox:
+  use: deerflow.sandbox.local:LocalSandboxProvider
+tracing:
+  langfuse:
+    enabled: true
+    public_key: public-from-config
+    secret_key: secret-from-config
+    host: https://langfuse.test
+""".strip(),
+                    encoding="utf-8",
+                )
+                with patch.dict("os.environ", {"DEER_FLOW_CONFIG_PATH": str(config_path)}):
+                    loaded = get_tracing_config()
 
             self.assertTrue(loaded.langfuse.enabled)
             self.assertEqual(loaded.langfuse.public_key, "public-from-config")

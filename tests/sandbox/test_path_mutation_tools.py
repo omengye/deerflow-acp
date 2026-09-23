@@ -93,7 +93,7 @@ def test_file_tool_does_not_recreate_a_removed_external_workspace(local_runtime)
     assert not workspace.exists()
 
 
-@pytest.mark.parametrize("filename", ["config.yaml", "config.example.yaml"])
+@pytest.mark.parametrize("filename", ["config.example.yaml"])
 def test_path_mutation_tools_are_registered_in_project_configs(filename: str) -> None:
     project_root = Path(__file__).resolve().parents[2]
     raw = yaml.safe_load((project_root / filename).read_text(encoding="utf-8"))

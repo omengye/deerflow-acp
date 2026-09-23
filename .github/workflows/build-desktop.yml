@@ -1,0 +1,145 @@
+name: Build Windows Desktop
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
+
+jobs:
+  build:
+    name: Build and test Windows x64 desktop
+    runs-on: windows-2025
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      # GPUI and the legacy runtime packager compile large Rust dependency trees.
+      CARGO_BUILD_JOBS: "2"
+      UV_HTTP_TIMEOUT: "120"
+
+    steps:
+      - name: Check out repository and version tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Configure MSVC and Windows SDK
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Check native build tools
+        run: |
+          foreach ($tool in @('cl.exe', 'link.exe', 'rc.exe', 'cmake.exe')) {
+            Get-Command $tool -ErrorAction Stop | Select-Object Name, Source
+          }
+          $fxc = Get-Command fxc.exe -ErrorAction SilentlyContinue
+          if ($fxc) {
+            $fxcPath = $fxc.Source
+          } else {
+            $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+            $fxcPath = Get-ChildItem -Path "$sdkBin\*\x64\fxc.exe" |
+              Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $fxcPath) { throw 'Windows SDK shader compiler fxc.exe is required for GPUI release builds' }
+          "GPUI_FXC_PATH=$fxcPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-windows-x64-${{ hashFiles('desktop-app/.cargo/config.toml', 'scripts/cargo-windows-static-crt.toml') }}
+          # Target paths are relative to each Cargo workspace, not the repo root.
+          workspaces: |
+            desktop-app -> ../.build-cache/desktop-build
+            bridge -> target
+            desktop -> target
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.18"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Build desktop and embedded Python runtime
+        timeout-minutes: 120
+        run: |
+          .\scripts\build-deerflow-desktop.ps1 -Configuration Release `
+            -OutputDirectory 'dist\desktop\DeerFlow-Desktop' `
+            -DesktopTargetDirectory '.build-cache\desktop-build' -RebuildRuntime
+
+      - name: Test packaged runtime with local fake model
+        id: smoke
+        timeout-minutes: 30
+        run: |
+          & .\dist\desktop\DeerFlow-Desktop\runtime\python.exe `
+            .\scripts\test-deerflow-desktop-smoke.py --package .\dist\desktop\DeerFlow-Desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop package smoke test failed' }
+
+      - name: Calculate SHA-256 checksums
+        run: |
+          foreach ($name in @('DeerFlow-Desktop-windows-x64.zip', 'DeerFlow-Desktop-source.zip')) {
+            $archive = Join-Path 'dist\desktop' $name
+            $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $name" | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii
+          }
+
+      - name: Upload desktop and corresponding source
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeerFlow-Desktop-windows-x64
+          path: |
+            dist/desktop/DeerFlow-Desktop-*.zip
+            dist/desktop/DeerFlow-Desktop-*.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload smoke test diagnostics
+        if: ${{ always() && steps.smoke.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeerFlow-Desktop-smoke-logs
+          path: .build-cache/desktop-smoke/*/logs/**
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  publish:
+    name: Attach desktop package to release
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested build
+        uses: actions/download-artifact@v4
+        with:
+          name: DeerFlow-Desktop-windows-x64
+          path: dist/desktop
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/desktop/DeerFlow-Desktop-*.zip
+            dist/desktop/DeerFlow-Desktop-*.zip.sha256

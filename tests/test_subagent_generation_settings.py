@@ -17,7 +17,9 @@ from pydantic import ValidationError
 import deerflow.config.subagents_config as subagents_config_module
 import deerflow.models.factory as factory_module
 import deerflow.subagents.executor as executor_module
+from deerflow.config.app_config import AppConfig
 from deerflow.config.model_config import ModelConfig
+from deerflow.config.sandbox_config import SandboxConfig
 from deerflow.config.subagents_config import (
     CustomSubagentConfig,
     ModelSettingsConfig,
@@ -245,6 +247,11 @@ def test_executor_injects_current_date_into_system_prompt(monkeypatch: pytest.Mo
         return object()
 
     monkeypatch.setattr(date_context_module, "datetime", _FrozenDateTime)
+    app_config = AppConfig(
+        sandbox=SandboxConfig(use="test"),
+        models=[ModelConfig(name="test-model", use="test:FakeModel", model="test-model")],
+    )
+    monkeypatch.setattr(executor_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(executor_module, "create_chat_model", lambda **_kwargs: object())
     monkeypatch.setattr(executor_module, "create_agent", _capture_agent)
     monkeypatch.setattr(tool_error_module, "build_subagent_runtime_middlewares", lambda **_kwargs: [])
@@ -313,11 +320,13 @@ def test_factory_degrades_unsupported_thinking_instead_of_raising(
     assert "reasoning_effort" not in captured_kwargs
 
 
-def test_factory_still_raises_for_unrelated_model_lookup_failure() -> None:
+def test_factory_still_raises_for_unrelated_model_lookup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     # Sanity check: create_chat_model still raises for genuinely missing models
     # (unrelated to thinking support) -- only the thinking-support guardrail
     # changed from a hard failure to a warn+degrade.
-    with pytest.raises(ValueError):
+    app_config = AppConfig(sandbox=SandboxConfig(use="test"), models=[])
+    monkeypatch.setattr(factory_module, "get_app_config", lambda: app_config)
+    with pytest.raises(ValueError, match="Model totally-unknown-model-xyz not found in config"):
         factory_module.create_chat_model(name="totally-unknown-model-xyz")
 
 

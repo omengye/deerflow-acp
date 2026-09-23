@@ -44,8 +44,10 @@ $sourceVersion = if (Test-Path -LiteralPath $sourceVersionPath -PathType Leaf) {
 } else { $null }
 $cargoArguments = @("build", "--locked")
 if ($Configuration -eq "Release") { $cargoArguments += "--release" }
+# Windows PowerShell 5.1 strips embedded quotes from native arguments.
+# Pass a TOML file so Cargo receives the static CRT flags intact.
 $bridgeCargoArguments = $cargoArguments + @(
-    "--config", 'target.x86_64-pc-windows-msvc.rustflags=["-C","target-feature=+crt-static"]'
+    "--config", (Join-Path $PSScriptRoot "cargo-windows-static-crt.toml")
 )
 
 if (-not $SkipBuild) {
@@ -214,7 +216,7 @@ if (-not $SkipZip) {
         foreach ($name in $sourceFiles) { Add-SourcePath (Join-Path $repoRoot $name) }
     }
     # These new fork files may be ignored by a developer's global git rules.
-    foreach ($required in @("scripts/build-deerflow-desktop.ps1", "scripts/test-deerflow-desktop-smoke.py", "docs/desktop-implementation-20260917.md", "resources/desktop-default-config.yaml", "desktop-app/FORK.md", "desktop-app/LICENSE", "desktop-app/Cargo.lock", "desktop-app/Cargo.toml")) {
+    foreach ($required in @("scripts/build-deerflow-desktop.ps1", "scripts/cargo-windows-static-crt.toml", "scripts/test-deerflow-desktop-smoke.py", "docs/desktop-implementation-20260917.md", "resources/desktop-default-config.yaml", "desktop-app/FORK.md", "desktop-app/LICENSE", "desktop-app/Cargo.lock", "desktop-app/Cargo.toml")) {
         Add-SourcePath (Join-Path $repoRoot $required)
         if (-not $sourcePaths.Contains($required)) { throw "Required source file is missing: $required" }
     }

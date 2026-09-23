@@ -10,7 +10,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
 from deerflow.config import get_app_config
-from deerflow.config.app_config import set_app_config
+from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
+from deerflow.config.sandbox_config import SandboxConfig
 from deerflow.config.skill_evolution_config import SkillEvolutionConfig
 from deerflow.skills.evolution import EvolutionSignal, FileEvolutionStore, SkillEvolutionService, SkillPublishConflict
 from deerflow.skills.evolution.generator import GeneratedCandidate, SkillCandidateGenerator
@@ -24,8 +25,7 @@ from deerflow.skills.security_scanner import ScanResult, scan_skill_content, sta
 
 @pytest_asyncio.fixture()
 async def evolution_env(tmp_path):
-    original = get_app_config()
-    config = original.model_copy(deep=True)
+    config = AppConfig(sandbox=SandboxConfig(use="test"))
     skills_root = tmp_path / "skills"
     (skills_root / "public").mkdir(parents=True)
     (skills_root / "custom").mkdir(parents=True)
@@ -41,7 +41,7 @@ async def evolution_env(tmp_path):
     try:
         yield skills_root, store, SkillEvolutionService(store)
     finally:
-        set_app_config(original)
+        reset_app_config()
 
 
 def test_static_scanner_blocks_injection_and_dangerous_executable():
@@ -60,7 +60,7 @@ def test_auto_patch_high_risk_capabilities_are_configuration_safety_locks():
 
 
 @pytest.mark.asyncio
-async def test_model_security_scanner_closes_its_worker_loop_client():
+async def test_model_security_scanner_closes_its_worker_loop_client(evolution_env):
     model = AsyncMock()
     model.ainvoke.return_value = AIMessage(content='{"decision":"allow","reason":"Safe."}')
     closer = AsyncMock()
@@ -76,7 +76,7 @@ async def test_model_security_scanner_closes_its_worker_loop_client():
 
 
 @pytest.mark.asyncio
-async def test_model_security_scanner_parses_responses_api_text_blocks():
+async def test_model_security_scanner_parses_responses_api_text_blocks(evolution_env):
     model = AsyncMock()
     model.ainvoke.return_value = SimpleNamespace(
         content=[

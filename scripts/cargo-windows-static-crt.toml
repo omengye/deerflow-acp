@@ -1,0 +1,4 @@
+# The ACP bridge starts before the bundled Python runtime is on PATH.
+# Link its CRT statically so it also starts on a clean Windows machine.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
