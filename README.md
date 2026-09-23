@@ -394,6 +394,7 @@ Windows 上 `LocalSandboxProvider` 会回退到 PowerShell/cmd.exe，与上游 a
 - Windows 10/11 + 已安装 WSL2 与一个 Linux distro（推荐 `Ubuntu-22.04`）
 - WSL 版本 ≥ 0.64.0（启用 `WSL_UTF8` 环境变量支持，避免输出乱码）
 - 用 `wsl -l -v` 确认 distro 存在且为 Version 2
+- distro 内需要 Python 3.9+（`python3` 命令）和 `/proc`，用于逐命令的超时、取消与进程收尾监督。
 
 ### 启用方式
 编辑 `config.yaml` 的 `sandbox:` 段：
@@ -405,9 +406,15 @@ sandbox:
   wsl_user: null                 # 留空则使用 distro 的默认用户
   wsl_shell: bash                # 也可以填 zsh
   wsl_mount_prefix: /mnt         # 与 /etc/wsl.conf 的 automount.root 一致
+  allow_host_bash: true          # 仅在受信任的本地工作流中开启
+  bash_command_timeout: 600      # 命令执行期限，Local/WSL/AIO 均支持
 ```
 
-不需要再开 `allow_host_bash`——非 local provider 默认放行 bash 工具与 bash 子代理。
+WSL 与 Local 都共享宿主文件系统，需要显式开启 `allow_host_bash` 才会提供 bash 工具与 bash 子代理。
+
+命令结果保留退出码、超时、取消及终止确认状态；子任务验收要求明确完成且退出码为零。取消只清理当前命令拥有的进程，不停止整套 WSL 发行版。无法确认远端命令终止时会报告结果未知，不自动重放命令。
+
+文件工具默认在 provider 内限量读取；长文件可使用返回的 `offset` 和 `expected_version` 继续读取。目录列表提供 `cursor` 分页，文件或目录变化后需要重新开始。搜索结果会说明跳过的大文件、二进制文件和超长行。详见 [沙箱适配实现记录](docs/sandbox-implementation-20260922.md)。
 
 ### 路径映射
 agent 看到的虚拟路径 → Windows 主机路径 → WSL 路径自动来回翻译：
@@ -420,15 +427,15 @@ agent 看到的虚拟路径 → Windows 主机路径 → WSL 路径自动来回�
 bash 输出里的 `/mnt/<drive>/...` 会被自动还原成虚拟路径再返回给 agent，主机绝对路径不会泄漏。
 
 ### 安全说明
-- **不是真"安全沙箱"**：WSL2 默认能读写 `/mnt/c/...`、能访问 `%USERPROFILE%`。比直跑 PowerShell 安全一个量级，但弱于 Docker/AioSandbox。
+- WSL2 默认能读写 Windows 挂载盘，并非宿主文件系统的隔离边界。
 - 启动失败有明确报错：未装 WSL、`wsl.exe` 不在 PATH、distro 未注册、非 Windows 主机都会在启动期硬失败。
-- 真要强隔离仍需后续移植 `AioSandboxProvider` + Docker Desktop。
+- 需要容器隔离时可选择已有的 `AioSandboxProvider` 和 Docker Desktop。AIO 容量满时只回收空闲资源，运行中的命令与终止状态未知的资源会保留占用。
 
 ### 故障排查
 - `WslUnavailableError: wsl.exe was not found` → 安装 WSL：`wsl --install`
 - `WslDistroNotFoundError: ...is not registered` → 检查 `wsl -l -q` 输出，确认配置的 `wsl_distro` 拼写
 - bash 输出乱码 → 升级 WSL：`wsl --update`（需 ≥ 0.64.0 以支持 `WSL_UTF8`）
-- `bash` 工具返回 `Host bash execution is disabled` → 确认 `sandbox.use` 真的指向 `wsl` 而不是 local
+- `bash` 工具返回 `Host bash execution is disabled` → 检查是否已为受信任工作流显式设置 `sandbox.allow_host_bash: true`
 
 ## 项目结构
 
