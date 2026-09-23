@@ -75,6 +75,7 @@ from deerflow.uploads.manager import (
     upload_artifact_url,
     upload_virtual_path,
 )
+from deerflow.utils.async_cleanup import owned_async_iterator
 
 logger = logging.getLogger(__name__)
 
@@ -1443,15 +1444,16 @@ class DeerFlowClient:
                     stream_state, actual_thread_id
                 )
             try:
-                async for item in agent.astream(
+                async with owned_async_iterator(agent.astream(
                     state,
                     config=config,
                     context=context,
                     stream_mode=["values", "messages", "custom"],
                     subgraphs=True,
-                ):
-                    for event in self._events_from_stream_item(item, stream_state):
-                        yield event
+                )) as stream:
+                    async for item in stream:
+                        for event in self._events_from_stream_item(item, stream_state):
+                            yield event
             except GraphRecursionError:
                 logger.warning(
                     "Recursion limit reached (thread=%s) — emitting graceful final answer",

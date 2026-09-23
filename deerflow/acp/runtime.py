@@ -36,6 +36,7 @@ from deerflow.runtime.goal import (
     visible_conversation_signature,
     write_thread_goal,
 )
+from deerflow.utils.async_cleanup import owned_async_iterator
 
 from .client_mcp import ClientMCPBinding
 from .config import LocalACPConfig
@@ -509,16 +510,17 @@ class LocalACPRuntime:
                 while True:
                     turn_failed = False
                     try:
-                        async for event in client.astream(
+                        async with owned_async_iterator(client.astream(
                             current_message,
                             **client_kwargs,
-                        ):
-                            if (
-                                event.type == "custom"
-                                and event.data.get("type") == "llm_failure"
-                            ):
-                                turn_failed = True
-                            yield event
+                        )) as stream:
+                            async for event in stream:
+                                if (
+                                    event.type == "custom"
+                                    and event.data.get("type") == "llm_failure"
+                                ):
+                                    turn_failed = True
+                                yield event
                     except asyncio.CancelledError:
                         raise
                     except Exception:

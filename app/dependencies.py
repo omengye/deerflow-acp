@@ -19,7 +19,7 @@ from deerflow.runtime import (
     RunStatus,
     make_stream_bridge,
 )
-from deerflow.utils.async_cleanup import await_drained
+from deerflow.utils.async_cleanup import await_drained, owned_async_iterator
 
 logger = logging.getLogger(__name__)
 
@@ -805,19 +805,22 @@ class ClientManager:
             client = await self.get_async_client(**client_options)
             _agent_name = client.agent_name
             async with asyncio.timeout(settings.chat_request_timeout):
-                async for event in client.astream(message, thread_id=thread_id, live_event_callback=_live_event_callback, **turn_options):
-                    if record.abort_event.is_set():
-                        break
-                    data = event.data
-                    if isinstance(data, dict) and data.get("type") == "llm_failure":
-                        llm_failure = data
-                        record.metadata["llm_failure_reason"] = str(data.get("reason") or "unknown")
-                        record.metadata["llm_failure_retriable"] = bool(data.get("retriable", False))
-                    _record_run_artifacts(record, data)
-                    if isinstance(data, dict):
-                        data = {**data, "_agent_name": _agent_name}
-                    _record_loop_event(record, event.type, data)
-                    await self.stream_bridge.publish(run_id, event.type, data)
+                async with owned_async_iterator(client.astream(
+                    message, thread_id=thread_id, live_event_callback=_live_event_callback, **turn_options,
+                )) as stream:
+                    async for event in stream:
+                        if record.abort_event.is_set():
+                            break
+                        data = event.data
+                        if isinstance(data, dict) and data.get("type") == "llm_failure":
+                            llm_failure = data
+                            record.metadata["llm_failure_reason"] = str(data.get("reason") or "unknown")
+                            record.metadata["llm_failure_retriable"] = bool(data.get("retriable", False))
+                        _record_run_artifacts(record, data)
+                        if isinstance(data, dict):
+                            data = {**data, "_agent_name": _agent_name}
+                        _record_loop_event(record, event.type, data)
+                        await self.stream_bridge.publish(run_id, event.type, data)
 
             if record.abort_event.is_set():
                 await self.run_manager.set_status(run_id, RunStatus.interrupted)

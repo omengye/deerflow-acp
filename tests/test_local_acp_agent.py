@@ -1418,6 +1418,60 @@ async def test_prompt_rejects_outside_resources_and_one_active_prompt_per_sessio
 
 
 @pytest.mark.asyncio
+async def test_prompt_mapper_cancellation_keeps_session_busy_until_stream_closes(
+    tmp_path: Path,
+    store: LocalACPSessionStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mapping, closing, finish, closed = (asyncio.Event() for _ in range(4))
+
+    class ClosingRuntime(FakeRuntime):
+        async def astream(self, *args: Any, **kwargs: Any):
+            try:
+                yield SimpleNamespace(type="custom", data={})
+            finally:
+                closing.set()
+                await finish.wait()
+                closed.set()
+
+    async def blocking_mapper(self: Any, event: Any) -> None:
+        mapping.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(ACPEventMapper, "handle", blocking_mapper)
+    agent = DeerFlowACPAgent(make_config(tmp_path), store, ClosingRuntime())
+    agent.on_connect(FakeConnection())
+    created = await agent.new_session(cwd=str(tmp_path), mcp_servers=[])
+    prompt_task = asyncio.create_task(
+        agent.prompt([acp.text_block("wait")], created.session_id)
+    )
+    try:
+        await asyncio.wait_for(mapping.wait(), 3)
+        await agent.cancel(created.session_id)
+        await asyncio.wait_for(closing.wait(), 3)
+        await agent.cancel(created.session_id)
+        await asyncio.sleep(0)
+        assert not prompt_task.done()
+        assert not closed.is_set()
+        assert agent._sessions.prompt_task(created.session_id, agent.connection_id) is prompt_task
+        with pytest.raises(RequestError) as prompt_busy:
+            await agent.prompt([acp.text_block("second")], created.session_id)
+        assert prompt_busy.value.code == -32001
+        with pytest.raises(RequestError) as config_busy:
+            await agent.set_config_option("model", created.session_id, "model-a")
+        assert config_busy.value.code == -32001
+        with pytest.raises(RequestError) as close_busy:
+            await agent.close_session(created.session_id)
+        assert close_busy.value.code == -32001
+    finally:
+        finish.set()
+    response = await asyncio.wait_for(prompt_task, 3)
+    assert response.stop_reason == "cancelled"
+    assert closed.is_set()
+    assert agent._sessions.prompt_task(created.session_id, agent.connection_id) is None
+
+
+@pytest.mark.asyncio
 async def test_prompt_keeps_session_busy_until_final_save_completes(
     tmp_path: Path,
     store: LocalACPSessionStore,

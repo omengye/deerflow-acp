@@ -31,6 +31,7 @@ from deerflow.config import get_app_config
 from deerflow.config.agents_config import list_custom_agents, load_agent_config
 from deerflow.runtime.goal import parse_goal_command
 from deerflow.sandbox.output_paths import workspace_outputs_path
+from deerflow.utils.async_cleanup import owned_async_iterator
 
 from .artifact_publisher import RustFSArtifactPublisher
 from .client_mcp import ClientMCPBinding, normalize_client_mcp_servers
@@ -899,12 +900,13 @@ class DeerFlowACPAgent:
                         runtime_kwargs["input_images"] = [
                             image.to_metadata() for image in input_images
                         ]
-                    async for event in self.runtime.astream(
+                    async with owned_async_iterator(self.runtime.astream(
                         session,
                         message,
                         **runtime_kwargs,
-                    ):
-                        await mapper.handle(event)
+                    )) as stream:
+                        async for event in stream:
+                            await mapper.handle(event)
                 if mapper.failure_message:
                     raise RequestError.internal_error(
                         {"details": mapper.failure_message}
