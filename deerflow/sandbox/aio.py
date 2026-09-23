@@ -8,8 +8,10 @@ import shlex
 import subprocess
 import threading
 import time
+import uuid
 from collections import OrderedDict
-from collections.abc import Collection
+from collections.abc import Collection, Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from deerflow.config.paths import VIRTUAL_PATH_PREFIX, get_paths
 from deerflow.sandbox.sandbox import Sandbox
 from deerflow.sandbox.sandbox_provider import SandboxProvider
 from deerflow.sandbox.search import GrepMatch
+from deerflow.sandbox.command import COMMAND_CLEANUP_SECONDS, CommandResult, linux_supervisor_args, run_host_command, validate_command_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +40,38 @@ class _SandboxRecord:
     thread_id: str
     last_used: float
     skills_revision: str
+    active_operations: int = 0
+    execution_uncertain: bool = False
+    retiring: bool = False
+    owner_token: str | None = None
+    creation_pending: bool = False
+    creation_may_complete: bool = False
+
+
+class _OperationLease:
+    def __init__(self, provider: AioSandboxProvider, record: _SandboxRecord) -> None:
+        self._provider = provider
+        self._record = record
+
+    def mark_uncertain(self) -> None:
+        """Keep capacity reserved when remote command termination is unknown."""
+        with self._provider._lock:
+            self._record.execution_uncertain = True
 
 
 class AioSandbox(Sandbox):
     """Docker-backed sandbox that exposes mounted paths directly in-container."""
 
-    def __init__(self, id: str, container_name: str, *, timeout: int = DEFAULT_COMMAND_TIMEOUT_SECONDS, container_user: str | None = None) -> None:
+    def __init__(self, id: str, container_name: str, *, timeout: float = DEFAULT_COMMAND_TIMEOUT_SECONDS, container_user: str | None = None) -> None:
         super().__init__(id)
         self.container_name = container_name
-        self.timeout = timeout
+        self.timeout = validate_command_timeout(timeout)
         self._container_user = container_user
+        self._operation_factory = nullcontext
+        self._command_shell: str | None = None
+
+    def _exec_argv(self, args: list[str]) -> list[str]:
+        return ["docker", "exec", "-i", *(["-u", self._container_user] if self._container_user else []), self.container_name, *args]
 
     def _docker_exec(
         self,
@@ -56,16 +81,43 @@ class AioSandbox(Sandbox):
         text: bool = True,
         check: bool = False,
     ) -> subprocess.CompletedProcess:
-        cmd = ["docker", "exec", "-i", *(["-u", self._container_user] if self._container_user else []), self.container_name, *args]
-        return subprocess.run(
-            cmd,
-            input=input_data,
-            shell=False,
-            capture_output=True,
-            text=text,
-            timeout=self.timeout,
-            check=check,
-        )
+        with self._operation_factory() as lease:
+            try:
+                result = subprocess.run(
+                    self._exec_argv(args), input=input_data, shell=False,
+                    capture_output=True, text=text, timeout=self.timeout, check=check,
+                )
+            except FileNotFoundError:
+                # The host could not start the Docker executable: no remote
+                # operation was launched and there is no occupancy to retain.
+                raise
+            except (OSError, subprocess.CalledProcessError) as exc:
+                # An interrupted transport does not establish whether a remote
+                # mutation finished. TimeoutExpired is handled by the provider's
+                # operation context using the same uncertainty flag.
+                known_protocol_failure = isinstance(exc, subprocess.CalledProcessError) and 2 <= exc.returncode <= 9
+                if not known_protocol_failure and hasattr(lease, "mark_uncertain"):
+                    lease.mark_uncertain()
+                raise
+            diagnostic = result.stderr or ""
+            if isinstance(diagnostic, bytes):
+                diagnostic = diagnostic.decode("utf-8", errors="replace")
+            transport_failure = result.returncode < 0 or (
+                result.returncode != 0 and not 2 <= result.returncode <= 9
+                and any(marker in diagnostic.lower() for marker in (
+                    "error during connect", "error response from daemon", "error from daemon",
+                    "connection reset by peer", "broken pipe", "unexpected eof",
+                    "context deadline exceeded", "context canceled", "transport is closing",
+                    "error waiting for container", "unable to upgrade to tcp",
+                ))
+            )
+            if transport_failure:
+                if hasattr(lease, "mark_uncertain"):
+                    lease.mark_uncertain()
+                # A nonzero result would trigger write_file's interpreter
+                # fallback and could repeat an append already started remotely.
+                raise RuntimeError("Docker transport ended without confirming the remote operation; the operation was not retried")
+            return result
 
     @staticmethod
     def _output_from_result(result: subprocess.CompletedProcess) -> str:
@@ -88,10 +140,42 @@ class AioSandbox(Sandbox):
         return shlex.quote(path)
 
     def execute_command(self, command: str) -> str:
-        result = self._docker_exec(["/bin/bash", "-lc", command])
-        if result.returncode == 126 or result.returncode == 127:
-            result = self._docker_exec(["/bin/sh", "-lc", command])
-        return self._output_from_result(result)
+        return self.execute_command_result(command).output
+
+    def execute_command_result(self, command: str, *, cancel_event: threading.Event | None = None) -> CommandResult:
+        with self._operation_factory() as lease:
+            if cancel_event is not None and cancel_event.is_set():
+                return CommandResult("Command cancelled before execution.", None, "cancelled", True)
+            if self._command_shell is None:
+                # Resolve the shell before user code. A user's exit 126/127 is
+                # never a reason to execute that command a second time.
+                probe = run_host_command(
+                    self._exec_argv(["/bin/sh", "-c", "if [ -x /bin/bash ]; then printf /bin/bash; elif [ -x /bin/sh ]; then printf /bin/sh; else exit 127; fi"]),
+                    timeout=min(self.timeout, 10), cancel_event=cancel_event,
+                )
+                if not probe.succeeded:
+                    if not probe.termination_confirmed and hasattr(lease, "mark_uncertain"):
+                        lease.mark_uncertain()
+                    return probe
+                shell = probe.output.strip()
+                if shell not in {"/bin/bash", "/bin/sh"}:
+                    return CommandResult("Error: Could not identify a supported container shell.", 127)
+                self._command_shell = shell
+            supervised, token = linux_supervisor_args(self._command_shell, command, self.timeout)
+            try:
+                result = run_host_command(
+                    self._exec_argv(supervised), timeout=self.timeout + COMMAND_CLEANUP_SECONDS,
+                    cancel_event=cancel_event, remote_token=token, command_timeout=self.timeout,
+                )
+            except BaseException:
+                # A transport/runner exception after launch cannot prove that
+                # remote children stopped. Keep the provider generation pinned.
+                if hasattr(lease, "mark_uncertain"):
+                    lease.mark_uncertain()
+                raise
+            if not result.termination_confirmed and hasattr(lease, "mark_uncertain"):
+                lease.mark_uncertain()
+            return result
 
     def read_file(
         self,
@@ -99,16 +183,18 @@ class AioSandbox(Sandbox):
         start_line: int | None = None,
         end_line: int | None = None,
     ) -> str:
-        if start_line is None and end_line is None:
-            argv = ["cat", path]
-        else:
-            start = max(start_line or 1, 1)
-            end = str(end_line) if end_line is not None else "$"
-            argv = ["sed", "-n", f"{start},{end}p", path]
-        result = self._docker_exec(argv)
-        if result.returncode != 0:
-            raise FileNotFoundError(path)
-        return result.stdout
+        from deerflow.sandbox.file_io import MAX_READ_BYTES
+
+        # Preserve the legacy full-string contract while sharing typed errors,
+        # bounded transport pages and optimistic version checking.
+        chunk = self.read_file_chunk(path, max_bytes=MAX_READ_BYTES,
+                                     start_line=start_line, end_line=end_line)
+        content = [chunk.content]
+        while chunk.next_offset is not None:
+            chunk = self.read_file_chunk(path, offset=chunk.next_offset, max_bytes=MAX_READ_BYTES,
+                                         expected_version=chunk.version, end_line=end_line)
+            content.append(chunk.content)
+        return "".join(content).replace("\r\n", "\n").replace("\r", "\n")
 
     def list_dir(self, path: str, max_depth=2) -> list[str]:
         script = r"""
@@ -267,209 +353,76 @@ shutil.move(source, destination)
                 f"{self._output_from_result(result)}"
             )
 
-    def glob(self, path: str, pattern: str, *, include_dirs: bool = False, max_results: int = 200) -> tuple[list[str], bool]:
-        script = r"""
-import fnmatch, os, sys
-from pathlib import PurePosixPath
-root = os.path.realpath(sys.argv[1])
-pattern = sys.argv[2]
-include_dirs = sys.argv[3] == "1"
-max_results = int(sys.argv[4])
-ignore = sys.argv[5].split("\x1f") if sys.argv[5] else []
-try:
-    os.stat(root)
-except FileNotFoundError:
-    print("path does not exist", file=sys.stderr)
-    sys.exit(2)
-except PermissionError:
-    print("permission denied", file=sys.stderr)
-    sys.exit(4)
-if not os.path.isdir(root):
-    print("path is not a directory", file=sys.stderr)
-    sys.exit(3)
-
-def walk_error(error):
-    print(str(error), file=sys.stderr)
-    sys.exit(4 if isinstance(error, PermissionError) else 5)
-
-def ignored(name):
-    return any(fnmatch.fnmatch(name, pat) for pat in ignore)
-
-def matches(rel):
-    p = PurePosixPath(rel)
-    return p.match(pattern) or (pattern.startswith("**/") and p.match(pattern[3:]))
-
-out = []
-truncated = False
-for current, dirs, files in os.walk(root, onerror=walk_error):
-    dirs[:] = [d for d in dirs if not ignored(d)]
-    rel_dir = os.path.relpath(current, root)
-    if rel_dir == ".":
-        rel_dir = ""
-    if include_dirs:
-        for name in dirs:
-            rel = f"{rel_dir}/{name}" if rel_dir else name
-            if matches(rel):
-                if len(out) < max_results:
-                    out.append(os.path.join(current, name))
-                else:
-                    truncated = True
-                    break
-    if truncated:
-        break
-    for name in files:
-        if ignored(name):
-            continue
-        rel = f"{rel_dir}/{name}" if rel_dir else name
-        if matches(rel):
-            if len(out) < max_results:
-                out.append(os.path.join(current, name))
-            else:
-                truncated = True
-                break
-    if truncated:
-        break
-print("1" if truncated else "0")
-print("\n".join(out))
-"""
-        from deerflow.sandbox.search import IGNORE_PATTERNS
-
-        result = self._docker_exec(
-            ["python3", "-", path, pattern, "1" if include_dirs else "0", str(max_results), "\x1f".join(IGNORE_PATTERNS)],
-            input_data=script,
-        )
-        self._raise_remote_search_error(result, path, operation="glob")
-        lines = result.stdout.splitlines()
-        truncated = bool(lines and lines[0] == "1")
-        return lines[1:], truncated
-
-    def grep(
-        self,
-        path: str,
-        pattern: str,
-        *,
-        glob: str | None = None,
-        literal: bool = False,
-        case_sensitive: bool = False,
-        max_results: int = 100,
-    ) -> tuple[list[GrepMatch], bool]:
-        script = r"""
-import fnmatch, json, os, re, sys
-from pathlib import PurePosixPath
-root = os.path.realpath(sys.argv[1])
-source = sys.argv[2]
-glob_pattern = sys.argv[3] or None
-literal = sys.argv[4] == "1"
-case_sensitive = sys.argv[5] == "1"
-max_results = int(sys.argv[6])
-ignore = sys.argv[7].split("\x1f") if sys.argv[7] else []
-try:
-    os.stat(root)
-except FileNotFoundError:
-    print("path does not exist", file=sys.stderr)
-    sys.exit(2)
-except PermissionError:
-    print("permission denied", file=sys.stderr)
-    sys.exit(4)
-root_is_file = os.path.isfile(root)
-if not root_is_file and not os.path.isdir(root):
-    print("path is not a file or directory", file=sys.stderr)
-    sys.exit(3)
-
-def walk_error(error):
-    print(str(error), file=sys.stderr)
-    sys.exit(4 if isinstance(error, PermissionError) else 5)
-
-def ignored(name):
-    return any(fnmatch.fnmatch(name, pat) for pat in ignore)
-
-def path_matches(pat, rel):
-    p = PurePosixPath(rel)
-    return p.match(pat) or (pat.startswith("**/") and p.match(pat[3:]))
-
-flags = 0 if case_sensitive else re.IGNORECASE
-try:
-    regex = re.compile(re.escape(source) if literal else source, flags)
-except re.error as error:
-    print(str(error), file=sys.stderr)
-    sys.exit(6)
-matches = []
-truncated = False
-def candidate_files():
-    if root_is_file:
-        yield root, os.path.basename(root)
-        return
-    for current, dirs, files in os.walk(root, onerror=walk_error):
-        dirs[:] = [d for d in dirs if not ignored(d)]
-        rel_dir = os.path.relpath(current, root)
-        if rel_dir == ".":
-            rel_dir = ""
-        for name in files:
-            if not ignored(name):
-                yield os.path.join(current, name), f"{rel_dir}/{name}" if rel_dir else name
-
-for full, rel in candidate_files():
-    if glob_pattern and not path_matches(glob_pattern, rel):
-        continue
-    try:
-        if (not root_is_file and os.path.islink(full)) or os.path.getsize(full) > 1000000:
-            continue
-        with open(full, "rb") as sample:
-            if b"\0" in sample.read(8192):
-                continue
-        with open(full, encoding="utf-8", errors="replace") as handle:
-            for line_number, line in enumerate(handle, 1):
-                if len(line) > 2000:
-                    continue
-                if regex.search(line):
-                    line = line.rstrip("\r\n")
-                    if len(line) > 200:
-                        line = line[:197] + "..."
-                    matches.append({"path": os.path.realpath(full), "line_number": line_number, "line": line})
-                    if len(matches) >= max_results:
-                        truncated = True
-                        raise StopIteration
-    except StopIteration:
-        break
-    except PermissionError as error:
-        print(str(error), file=sys.stderr)
-        sys.exit(4)
-    except OSError as error:
-        print(str(error), file=sys.stderr)
-        sys.exit(5)
-    if truncated:
-        break
-print(json.dumps({"truncated": truncated, "matches": matches}))
-"""
-        from deerflow.sandbox.search import IGNORE_PATTERNS
-
-        result = self._docker_exec(
-            [
-                "python3",
-                "-",
-                path,
-                pattern,
-                glob or "",
-                "1" if literal else "0",
-                "1" if case_sensitive else "0",
-                str(max_results),
-                "\x1f".join(IGNORE_PATTERNS),
-            ],
-            input_data=script,
-        )
-        self._raise_remote_search_error(result, path, operation="grep")
-
+    def _remote_file_io(self, operation: str, path: str, **options):
         import json
 
+        from deerflow.sandbox.remote_file_io import remote_file_io_script
+
+        request = json.dumps({"operation": operation, "path": path, "options": options}, ensure_ascii=True)
+        result = self._docker_exec(["python3", "-", request], input_data=remote_file_io_script())
+        if result.returncode in (126, 127):
+            result = self._docker_exec(["python", "-", request], input_data=remote_file_io_script())
+        self._raise_remote_search_error(result, path, operation=operation)
         try:
-            payload = json.loads(result.stdout or '{"truncated": false, "matches": []}')
+            payload = json.loads(result.stdout)
+            if not isinstance(payload, dict):
+                raise ValueError("expected an object")
+            return payload
         except (TypeError, ValueError) as exc:
-            raise OSError(
-                errno.EIO,
-                f"Remote grep returned an invalid response for {path!r}",
-                path,
-            ) from exc
-        return [GrepMatch(**item) for item in payload["matches"]], bool(payload["truncated"])
+            raise OSError(errno.EIO, f"Remote {operation} returned an invalid response", path) from exc
+
+    def read_file_chunk(self, path: str, *, offset: int = 0, max_bytes: int = 65536,
+                        expected_version: str | None = None, start_line: int | None = None,
+                        end_line: int | None = None):
+        from deerflow.sandbox.file_io import FileChunk
+
+        payload = self._remote_file_io("read_file_chunk", path, offset=offset, max_bytes=max_bytes,
+                                       expected_version=expected_version, start_line=start_line, end_line=end_line)
+        try:
+            return FileChunk(**payload)
+        except (TypeError, KeyError, ValueError) as exc:
+            raise OSError(errno.EIO, "Invalid remote file chunk", path) from exc
+
+    def list_dir_page(self, path: str, *, max_depth: int = 2, limit: int = 200,
+                      cursor: str | None = None):
+        from deerflow.sandbox.file_io import DirectoryPage
+
+        payload = self._remote_file_io("list_dir_page", path, max_depth=max_depth, limit=limit, cursor=cursor)
+        try:
+            return DirectoryPage(**payload)
+        except (TypeError, KeyError, ValueError) as exc:
+            raise OSError(errno.EIO, "Invalid remote directory page", path) from exc
+
+    def glob(self, path: str, pattern: str, *, include_dirs: bool = False, max_results: int = 200) -> tuple[list[str], bool]:
+        result = self.glob_result(path, pattern, include_dirs=include_dirs, max_results=max_results)
+        return result.matches, result.truncated
+
+    def glob_result(self, path: str, pattern: str, *, include_dirs: bool = False, max_results: int = 200):
+        from deerflow.sandbox.search import GlobResult, SearchCoverage
+
+        payload = self._remote_file_io("glob_result", path, pattern=pattern, include_dirs=include_dirs, max_results=max_results)
+        try:
+            return GlobResult(payload["matches"], payload["truncated"], SearchCoverage(**payload["coverage"]))
+        except (TypeError, KeyError, ValueError) as exc:
+            raise OSError(errno.EIO, "Invalid remote glob result", path) from exc
+
+    def grep(self, path: str, pattern: str, *, glob: str | None = None, literal: bool = False,
+             case_sensitive: bool = False, max_results: int = 100) -> tuple[list[GrepMatch], bool]:
+        result = self.grep_result(path, pattern, glob=glob, literal=literal,
+                                  case_sensitive=case_sensitive, max_results=max_results)
+        return result.matches, result.truncated
+
+    def grep_result(self, path: str, pattern: str, *, glob: str | None = None, literal: bool = False,
+                    case_sensitive: bool = False, max_results: int = 100):
+        from deerflow.sandbox.search import GrepResult, SearchCoverage
+
+        payload = self._remote_file_io("grep_result", path, pattern=pattern, glob_pattern=glob, literal=literal,
+                                       case_sensitive=case_sensitive, max_results=max_results)
+        try:
+            return GrepResult([GrepMatch(**item) for item in payload["matches"]], payload["truncated"],
+                              SearchCoverage(**payload["coverage"]))
+        except (TypeError, KeyError, ValueError) as exc:
+            raise OSError(errno.EIO, "Invalid remote grep result", path) from exc
 
     @staticmethod
     def _raise_remote_search_error(
@@ -491,8 +444,16 @@ print(json.dumps({"truncated": truncated, "matches": matches}))
             raise NotADirectoryError(errno.ENOTDIR, detail, path)
         if result.returncode == 4:
             raise PermissionError(errno.EACCES, detail, path)
-        if result.returncode == 6 and operation == "grep":
-            raise ValueError(f"Invalid grep pattern: {detail}")
+        if result.returncode == 6:
+            raise re.error(f"Invalid grep pattern: {detail}")
+        if result.returncode == 7:
+            from deerflow.sandbox.file_io import FileVersionMismatchError
+
+            raise FileVersionMismatchError(detail)
+        if result.returncode == 8:
+            raise ValueError(detail)
+        if result.returncode == 9:
+            raise IsADirectoryError(errno.EISDIR, detail, path)
         raise OSError(
             errno.EIO,
             f"Remote {operation} failed for {path!r}: {detail}",
@@ -546,7 +507,9 @@ class AioSandboxProvider(SandboxProvider):
 
     Each thread gets one long-running container. Thread data is bind-mounted at
     /mnt/user-data, skills are mounted read-only, and configured custom mounts
-    are passed through with their declared read-only mode.
+    are passed through with their declared read-only mode. Idle cleanup is
+    opportunistic on acquisition; there is no background timer. Running or
+    unconfirmed operations retain their capacity until they finish.
     """
 
     uses_thread_data_mounts = False
@@ -560,6 +523,7 @@ class AioSandboxProvider(SandboxProvider):
         self.replicas = sandbox_cfg.replicas or DEFAULT_REPLICAS
         self.container_prefix = sandbox_cfg.container_prefix or DEFAULT_CONTAINER_PREFIX
         self.idle_timeout = DEFAULT_IDLE_TIMEOUT_SECONDS if sandbox_cfg.idle_timeout is None else sandbox_cfg.idle_timeout
+        self.command_timeout = getattr(sandbox_cfg, "bash_command_timeout", DEFAULT_COMMAND_TIMEOUT_SECONDS)
         self.environment = sandbox_cfg.environment or {}
         self.mounts = sandbox_cfg.mounts or []
         self.security_opt = getattr(sandbox_cfg, "security_opt", None) or []
@@ -573,6 +537,7 @@ class AioSandboxProvider(SandboxProvider):
         self.skills_container_path = config.skills.container_path
         self._lock = threading.Lock()
         self._records: OrderedDict[str, _SandboxRecord] = OrderedDict()
+        self._closing = False
         self._verify_docker_available()
 
     def _verify_docker_available(self) -> None:
@@ -606,6 +571,8 @@ class AioSandboxProvider(SandboxProvider):
         *,
         skills_path: str,
         skills_revision: str,
+        container_name: str | None = None,
+        owner_token: str | None = None,
     ) -> list[str]:
         paths = get_paths()
         paths.ensure_thread_dirs(thread_id)
@@ -613,7 +580,7 @@ class AioSandboxProvider(SandboxProvider):
             "run",
             "-d",
             "--name",
-            self._container_name(sandbox_id),
+            container_name or self._container_name(sandbox_id),
             "--label",
             "deerflow.sandbox.provider=aio",
             "--label",
@@ -625,6 +592,8 @@ class AioSandboxProvider(SandboxProvider):
             "-v",
             f"{paths.host_acp_workspace_dir(thread_id)}:/mnt/acp-workspace:rw",
         ]
+        if owner_token is not None:
+            args.extend(["--label", f"deerflow.sandbox.owner={owner_token}"])
         if Path(skills_path).exists():
             host_projection = paths.host_skill_projection_dir(skills_revision)
             args.extend(["-v", f"{host_projection}:{self.skills_container_path}:ro"])
@@ -652,44 +621,184 @@ class AioSandboxProvider(SandboxProvider):
         skills_path: str,
         skills_revision: str,
     ) -> AioSandbox:
-        name = self._container_name(sandbox_id)
-        self._run_docker(["rm", "-f", name], check=False)
+        owner_token = uuid.uuid4().hex
+        name = f"{self._container_name(sandbox_id)}-{owner_token}"
+        sandbox = AioSandbox(sandbox_id, name, timeout=self.command_timeout, container_user=self.container_user)
+        record = _SandboxRecord(
+            sandbox=sandbox, thread_id=thread_id, last_used=time.monotonic(),
+            skills_revision=skills_revision, owner_token=owner_token, creation_pending=True,
+        )
+        # Reserve capacity before the request. A timed-out Docker CLI can leave
+        # a creation request still running at the daemon.
+        self._records[sandbox_id] = record
+        sandbox._operation_factory = lambda: self._operation(sandbox_id, record)
         try:
-            self._run_docker(
+            result = self._run_docker(
                 _as_str_list(
                     self._build_run_args(
                         thread_id,
                         sandbox_id,
                         skills_path=skills_path,
                         skills_revision=skills_revision,
+                        container_name=name,
+                        owner_token=owner_token,
                     )
                 )
             )
-        except subprocess.CalledProcessError as exc:
-            diagnostic = (exc.stderr or exc.stdout or "").strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            record.creation_may_complete = isinstance(exc, subprocess.TimeoutExpired)
+            try:
+                self._reconcile_creation_locked(sandbox_id, record)
+            except Exception:
+                logger.warning("Sandbox creation remains unconfirmed for %s", name, exc_info=True)
+            if isinstance(exc, subprocess.TimeoutExpired):
+                diagnostic = "Docker timed out; creation may still be in progress"
+            elif isinstance(exc, subprocess.CalledProcessError):
+                diagnostic = (exc.stderr or exc.stdout or "Docker returned a failure").strip()
+            else:
+                diagnostic = str(exc)
             raise RuntimeError(f"Failed to start sandbox container {name}: {diagnostic}") from exc
-        return AioSandbox(sandbox_id, name, container_user=self.container_user)
+        # Docker IDs are immutable. Never execute or delete a later generation
+        # merely because it has reused the same human-readable container name.
+        container_id = result.stdout.strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", container_id):
+            self._reconcile_creation_locked(sandbox_id, record)
+            if record.creation_pending or self._records.get(sandbox_id) is not record:
+                raise RuntimeError(f"Docker did not return a confirmed container ID for {name}")
+        else:
+            sandbox.container_name = container_id
+            record.creation_pending = False
+        return sandbox
+
+    def _reconcile_creation_locked(self, sandbox_id: str, record: _SandboxRecord) -> None:
+        """Resolve one reserved creation without touching another owner's container."""
+        import json
+
+        result = self._run_docker(["inspect", "--format", "{{json .}}", record.sandbox.container_name], check=False)
+        if result.returncode != 0:
+            diagnostic = (result.stderr or result.stdout or "").strip()
+            if "no such object:" in diagnostic.lower() or "no such container:" in diagnostic.lower():
+                if not record.creation_may_complete:
+                    del self._records[sandbox_id]
+                return
+            raise RuntimeError(f"Could not reconcile sandbox creation: {diagnostic}")
+        try:
+            identity = json.loads(result.stdout)
+            container_id = identity["Id"]
+            owner_token = identity["Config"]["Labels"].get("deerflow.sandbox.owner")
+        except (AttributeError, TypeError, KeyError, ValueError) as exc:
+            raise RuntimeError("Invalid sandbox creation identity") from exc
+        if owner_token != record.owner_token or not isinstance(container_id, str) or not re.fullmatch(r"[0-9a-f]{64}", container_id):
+            raise RuntimeError("Sandbox creation identity does not match its owner; capacity remains reserved")
+        record.sandbox.container_name = container_id
+        record.creation_pending = False
+        record.creation_may_complete = False
+
+    def _reconcile_uncertain_locked(self) -> None:
+        for sandbox_id, record in list(self._records.items()):
+            if record.creation_pending:
+                self._reconcile_creation_locked(sandbox_id, record)
+            elif record.execution_uncertain and not record.active_operations:
+                if self._container_running(record.sandbox.container_name) is not True:
+                    self._remove_record_locked(sandbox_id, record)
+
+    def _container_running(self, container_id: str) -> bool | None:
+        """Observe state without starting, renewing, or executing in a container."""
+        result = self._run_docker(["inspect", "--format", "{{.State.Running}}", container_id], check=False)
+        if result.returncode != 0:
+            diagnostic = (result.stderr or result.stdout or "").strip()
+            if "no such object:" in diagnostic.lower() or "no such container:" in diagnostic.lower():
+                return None
+            raise RuntimeError(f"Could not inspect sandbox {container_id}: {diagnostic}")
+        state = result.stdout.strip().lower()
+        if state not in {"true", "false"}:
+            raise RuntimeError(f"Invalid container state for sandbox {container_id}: {state!r}")
+        return state == "true"
+
+    @contextmanager
+    def _operation(self, sandbox_id: str, record: _SandboxRecord) -> Iterator[_OperationLease]:
+        with self._lock:
+            if self._closing or self._records.get(sandbox_id) is not record or record.retiring or record.creation_pending:
+                raise RuntimeError("Sandbox is no longer available; acquire a new sandbox before executing")
+            if record.execution_uncertain:
+                raise RuntimeError("Sandbox has an operation whose termination is unconfirmed")
+            record.active_operations += 1
+        lease = _OperationLease(self, record)
+        try:
+            yield lease
+        except subprocess.TimeoutExpired:
+            lease.mark_uncertain()
+            raise
+        finally:
+            with self._lock:
+                record.active_operations -= 1
+                record.last_used = time.monotonic()
+                if self._records.get(sandbox_id) is record:
+                    self._records.move_to_end(sandbox_id)
+
+    def _remove_record_locked(self, sandbox_id: str, record: _SandboxRecord) -> None:
+        if self._records.get(sandbox_id) is not record:
+            return
+        if record.creation_pending:
+            self._reconcile_creation_locked(sandbox_id, record)
+            if self._records.get(sandbox_id) is not record:
+                return
+            if record.creation_pending:
+                raise RuntimeError("Sandbox creation is unconfirmed; capacity remains reserved")
+        if record.active_operations:
+            raise RuntimeError("Sandbox is busy; retry cleanup after its operations finish")
+        if record.execution_uncertain and self._container_running(record.sandbox.container_name) is True:
+            raise RuntimeError("Sandbox termination is unconfirmed; capacity remains reserved")
+        record.retiring = True
+        self._remove_container(record.sandbox.container_name)
+        # Keep the record, its Skill projection and its capacity on any failure.
+        del self._records[sandbox_id]
+
+    def _live_record_locked(self, sandbox_id: str) -> _SandboxRecord | None:
+        record = self._records.get(sandbox_id)
+        if record is None:
+            return None
+        if record.creation_pending:
+            self._reconcile_creation_locked(sandbox_id, record)
+            if self._records.get(sandbox_id) is not record:
+                return None
+            if record.creation_pending:
+                raise RuntimeError("Sandbox creation is unconfirmed; retry after Docker resolves the request")
+        if record.retiring or self._container_running(record.sandbox.container_name) is not True:
+            self._remove_record_locked(sandbox_id, record)
+            return None
+        record.last_used = time.monotonic()
+        self._records.move_to_end(sandbox_id)
+        return record
 
     def _evict_if_needed(self) -> None:
         while len(self._records) >= self.replicas and self._records:
-            sandbox_id, record = self._records.popitem(last=False)
-            self._remove_container(record.sandbox.container_name)
+            candidate = next(
+                ((sandbox_id, record) for sandbox_id, record in self._records.items()
+                 if not record.active_operations and not record.execution_uncertain and not record.creation_pending),
+                None,
+            )
+            if candidate is None:
+                raise RuntimeError("Sandbox capacity is full and all sandboxes are busy; retry when an operation finishes")
+            self._remove_record_locked(*candidate)
 
     def _remove_container(self, container_name: str) -> None:
-        self._run_docker(["rm", "-f", container_name], check=False)
+        result = self._run_docker(["rm", "-f", container_name], check=False)
+        if self._container_running(container_name) is not None:
+            diagnostic = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"Sandbox removal was not confirmed for {container_name}: {diagnostic}")
 
     def _cleanup_idle_locked(self) -> None:
         if self.idle_timeout == 0:
             return
-        now = time.time()
+        now = time.monotonic()
         expired = [
             sandbox_id
             for sandbox_id, record in self._records.items()
-            if now - record.last_used > self.idle_timeout
+            if not record.active_operations and not record.execution_uncertain and not record.creation_pending and now - record.last_used > self.idle_timeout
         ]
         for sandbox_id in expired:
-            record = self._records.pop(sandbox_id)
-            self._remove_container(record.sandbox.container_name)
+            self._remove_record_locked(sandbox_id, self._records[sandbox_id])
 
     def acquire(
         self,
@@ -707,54 +816,55 @@ class AioSandboxProvider(SandboxProvider):
         projection = get_skill_projection(available_skills)
         sandbox_id = self._sandbox_id(safe_thread_id, projection.revision)
         with self._lock:
+            if self._closing:
+                raise RuntimeError("Sandbox provider is shutting down")
+            self._reconcile_uncertain_locked()
             self._cleanup_idle_locked()
-            record = self._records.get(sandbox_id)
+            record = self._live_record_locked(sandbox_id)
             if record is not None:
-                record.last_used = time.time()
-                self._records.move_to_end(sandbox_id)
                 return sandbox_id
             self._evict_if_needed()
-            sandbox = self._start_container(
+            self._start_container(
                 safe_thread_id,
                 sandbox_id,
                 skills_path=str(projection.path),
-                skills_revision=projection.revision,
-            )
-            self._records[sandbox_id] = _SandboxRecord(
-                sandbox=sandbox,
-                thread_id=safe_thread_id,
-                last_used=time.time(),
                 skills_revision=projection.revision,
             )
             return sandbox_id
 
     def get(self, sandbox_id: str) -> Sandbox | None:
         with self._lock:
-            record = self._records.get(sandbox_id)
+            if self._closing:
+                return None
+            record = self._live_record_locked(sandbox_id)
             if record is None:
                 return None
-            record.last_used = time.time()
-            self._records.move_to_end(sandbox_id)
             return record.sandbox
 
     def release(self, sandbox_id: str) -> None:
         with self._lock:
             record = self._records.get(sandbox_id)
             if record is not None:
-                record.last_used = time.time()
+                record.last_used = time.monotonic()
                 self._records.move_to_end(sandbox_id)
 
     def release_thread(self, thread_id: str) -> None:
-        """Remove every container revision bound to one thread."""
+        """Remove idle revisions, retaining busy or failed resources for retry."""
         safe_thread_id = self._safe_thread_id(thread_id)
         with self._lock:
             records = [
-                self._records.pop(sandbox_id)
+                (sandbox_id, record)
                 for sandbox_id, record in list(self._records.items())
                 if record.thread_id == safe_thread_id
             ]
-        for record in records:
-            self._remove_container(record.sandbox.container_name)
+            failures = []
+            for sandbox_id, record in records:
+                try:
+                    self._remove_record_locked(sandbox_id, record)
+                except Exception as exc:
+                    failures.append(str(exc))
+            if failures:
+                raise RuntimeError("Failed to release sandbox resources: " + "; ".join(failures))
 
     def active_skill_revisions(self) -> set[str]:
         with self._lock:
@@ -762,10 +872,15 @@ class AioSandboxProvider(SandboxProvider):
 
     def shutdown(self) -> None:
         with self._lock:
-            records = list(self._records.values())
-            self._records.clear()
-        for record in records:
-            self._remove_container(record.sandbox.container_name)
+            self._closing = True
+            failures = []
+            for sandbox_id, record in list(self._records.items()):
+                try:
+                    self._remove_record_locked(sandbox_id, record)
+                except Exception as exc:
+                    failures.append(str(exc))
+            if failures:
+                raise RuntimeError("Failed to shut down sandbox resources: " + "; ".join(failures))
 
 
 def _as_str_list(values: list[object]) -> list[str]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -7,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from deerflow.sandbox.aio import AioSandbox, AioSandboxProvider
+from deerflow.sandbox.command import CommandResult
 from deerflow.sandbox.provider_paths import (
     AIO_SANDBOX_PROVIDER_PATH,
     normalize_sandbox_provider_path,
@@ -26,17 +28,16 @@ def test_provider_path_aliases_normalize_aio() -> None:
 
 
 def test_aio_sandbox_execute_uses_docker_exec() -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        return _completed(stdout="ok\n")
-
     sandbox = AioSandbox("aio-test", "deer-flow-sandbox-aio-test")
-    with patch("subprocess.run", side_effect=fake_run):
+    with (
+        patch("deerflow.sandbox.aio.run_host_command", side_effect=[CommandResult("/bin/bash", 0), CommandResult("ok\n", 0)]) as run,
+        patch("deerflow.sandbox.aio.linux_supervisor_args", return_value=(["supervised"], "token")) as supervisor,
+    ):
         assert sandbox.execute_command("echo ok") == "ok\n"
 
-    assert calls == [["docker", "exec", "-i", "deer-flow-sandbox-aio-test", "/bin/bash", "-lc", "echo ok"]]
+    assert run.call_args_list[-1].args[0] == ["docker", "exec", "-i", "deer-flow-sandbox-aio-test", "supervised"]
+    assert supervisor.call_args.args == ("/bin/bash", "echo ok", sandbox.timeout)
+    assert run.call_args.kwargs["remote_token"] == "token"
 
 
 @pytest.mark.parametrize("operation", ["glob", "grep"])
@@ -65,7 +66,7 @@ def test_remote_grep_reports_invalid_regex_separately() -> None:
     sandbox = AioSandbox("aio-test", "container")
     result = _completed(stderr="unterminated character set", returncode=6)
     with patch.object(sandbox, "_docker_exec", return_value=result):
-        with pytest.raises(ValueError, match="Invalid grep pattern"):
+        with pytest.raises(re.error, match="Invalid grep pattern"):
             sandbox.grep("/mnt/user-data/workspace", "[")
 
 
@@ -75,8 +76,8 @@ def test_remote_search_keeps_genuine_empty_results() -> None:
         sandbox,
         "_docker_exec",
         side_effect=[
-            _completed(stdout="0\n"),
-            _completed(stdout='{"truncated": false, "matches": []}'),
+            _completed(stdout='{"truncated": false, "matches": [], "coverage": {}}'),
+            _completed(stdout='{"truncated": false, "matches": [], "coverage": {}}'),
         ],
     ):
         assert sandbox.glob("/mnt/user-data/workspace", "*.missing") == ([], False)
@@ -115,7 +116,9 @@ def test_aio_provider_mounts_thread_data_and_skills(tmp_path, monkeypatch) -> No
         calls.append(cmd)
         if cmd[:3] == ["docker", "version", "--format"]:
             return _completed(stdout="25.0.0")
-        return _completed(stdout="container-id")
+        if cmd[:2] == ["docker", "inspect"]:
+            return _completed(stdout="true")
+        return _completed(stdout="a" * 64)
 
     with patch("deerflow.config.get_app_config", return_value=config):
         with patch("subprocess.run", side_effect=fake_run):
@@ -125,7 +128,7 @@ def test_aio_provider_mounts_thread_data_and_skills(tmp_path, monkeypatch) -> No
     assert sandbox_id.startswith("aio-thread_1-")
     run_cmd = next(cmd for cmd in calls if cmd[:2] == ["docker", "run"])
     assert "--name" in run_cmd
-    assert f"df-test-{sandbox_id}" in run_cmd
+    assert run_cmd[run_cmd.index("--name") + 1].startswith(f"df-test-{sandbox_id}-")
     assert f"{base_dir / 'threads' / 'thread_1' / 'user-data'}:/mnt/user-data:rw" in run_cmd
     assert f"{base_dir / 'threads' / 'thread_1' / 'acp-workspace'}:/mnt/acp-workspace:rw" in run_cmd
     assert any(mount.endswith(":/mnt/skills:ro") for mount in run_cmd)
@@ -166,12 +169,17 @@ def test_aio_provider_auto_user_applies_only_to_exec(tmp_path, monkeypatch) -> N
         calls.append(cmd)
         if cmd[:3] == ["docker", "version", "--format"]:
             return _completed(stdout="25.0.0")
+        if cmd[:2] == ["docker", "inspect"]:
+            return _completed(stdout="true")
         if cmd[:3] == ["docker", "exec", "-i"]:
             return _completed(stdout="ok\n")
-        return _completed(stdout="container-id")
+        return _completed(stdout="a" * 64)
 
     with patch("deerflow.config.get_app_config", return_value=config):
-        with patch("subprocess.run", side_effect=fake_run):
+        with (
+            patch("subprocess.run", side_effect=fake_run),
+            patch("deerflow.sandbox.aio.run_host_command", side_effect=[CommandResult("/bin/bash", 0), CommandResult("ok\n", 0)]) as run,
+        ):
             provider = AioSandboxProvider()
             sandbox_id = provider.acquire("thread_1")
             sandbox = provider.get(sandbox_id)
@@ -179,9 +187,9 @@ def test_aio_provider_auto_user_applies_only_to_exec(tmp_path, monkeypatch) -> N
             assert sandbox.execute_command("echo ok") == "ok\n"
 
     run_cmd = next(cmd for cmd in calls if cmd[:2] == ["docker", "run"])
-    exec_cmd = next(cmd for cmd in calls if cmd[:3] == ["docker", "exec", "-i"])
+    exec_cmd = run.call_args.args[0]
     assert "--user" not in run_cmd
-    assert exec_cmd[:6] == ["docker", "exec", "-i", "-u", "1234:5678", f"df-test-{sandbox_id}"]
+    assert exec_cmd[:6] == ["docker", "exec", "-i", "-u", "1234:5678", "a" * 64]
 
 
 def test_aio_provider_rejects_unsafe_thread_id(tmp_path, monkeypatch) -> None:

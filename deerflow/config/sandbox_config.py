@@ -23,9 +23,11 @@ class SandboxConfig(BaseModel):
     AioSandboxProvider specific options:
         image: Docker image to use (default: enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest)
         port: Base port for sandbox containers (default: 8080)
-        replicas: Maximum number of concurrent sandbox containers (default: 3). When the limit is reached the least-recently-used sandbox is evicted to make room.
+        replicas: Maximum tracked sandbox containers (default: 3). Only idle,
+            confirmed resources may be evicted; all-busy capacity is rejected.
         container_prefix: Prefix for container names (default: deer-flow-sandbox)
-        idle_timeout: Idle timeout in seconds before sandbox is released (default: 600 = 10 minutes). Set to 0 to disable.
+        idle_timeout: Idle age checked on the next acquire (default: 600 seconds).
+            Active or termination-unknown operations remain protected. Zero disables it.
         mounts: List of volume mounts to share directories with the container
         environment: Environment variables to inject into the container (values starting with $ are resolved from host env)
         security_opt: List of Docker --security-opt values to apply to the sandbox container
@@ -76,7 +78,8 @@ class SandboxConfig(BaseModel):
     )
     replicas: int | None = Field(
         default=None,
-        description="Maximum number of concurrent sandbox containers (default: 3). When the limit is reached the least-recently-used sandbox is evicted to make room.",
+        ge=1,
+        description="Maximum tracked containers (default: 3). Evict only idle resources; reject when all are busy or termination is unknown.",
     )
     container_prefix: str | None = Field(
         default=None,
@@ -84,7 +87,8 @@ class SandboxConfig(BaseModel):
     )
     idle_timeout: int | None = Field(
         default=None,
-        description="Idle timeout in seconds before sandbox is released (default: 600 = 10 minutes). Set to 0 to disable.",
+        ge=0,
+        description="Idle age checked on the next acquire (default: 600 seconds). Active/uncertain operations are protected; 0 disables idle cleanup.",
     )
     mounts: list[VolumeMountConfig] = Field(
         default_factory=list,
@@ -114,20 +118,21 @@ class SandboxConfig(BaseModel):
         ge=0,
         description="Maximum characters to keep from bash tool output. Output exceeding this limit is middle-truncated (head + tail), preserving the first and last half. Set to 0 to disable truncation.",
     )
-    bash_command_timeout: int = Field(
+    bash_command_timeout: float = Field(
         default=600,
-        ge=1,
-        description="Wall-clock timeout in seconds for a LocalSandbox host command.",
+        gt=0,
+        allow_inf_nan=False,
+        description="Command execution timeout in seconds for LocalSandbox, WSL and Docker AIO. Transport cleanup has a separate bounded grace period.",
     )
     read_file_output_max_chars: int = Field(
         default=50000,
         ge=0,
-        description="Maximum characters to keep from read_file tool output. Output exceeding this limit is head-truncated. Set to 0 to disable truncation.",
+        description="Maximum characters in read_file tool output. Built-in providers reduce the byte window and return a continuation; legacy providers use head truncation. Set to 0 to disable the display limit (byte windows remain bounded).",
     )
     ls_output_max_chars: int = Field(
         default=20000,
         ge=0,
-        description="Maximum characters to keep from ls tool output. Output exceeding this limit is head-truncated. Set to 0 to disable truncation.",
+        description="Maximum characters in ls tool output. Built-in providers reduce the page size and return a continuation; legacy providers use head truncation. Set to 0 to disable the display limit.",
     )
 
     wsl_distro: str | None = Field(

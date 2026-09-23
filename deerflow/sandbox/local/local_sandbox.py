@@ -6,15 +6,17 @@ import os
 import shutil
 import subprocess
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX
 from deerflow.sandbox.env_policy import build_sandbox_subprocess_env
+from deerflow.sandbox.file_io import DirectoryPage, FileChunk, list_dir_page, read_file_chunk
+from deerflow.sandbox.command import CommandResult, run_host_command, validate_command_timeout
 from deerflow.sandbox.local.list_dir import list_dir
 from deerflow.sandbox.sandbox import Sandbox
-from deerflow.sandbox.search import GrepMatch, find_glob_matches, find_grep_matches
+from deerflow.sandbox.search import IGNORE_PATTERNS, GlobResult, GrepMatch, GrepResult, find_glob_result, find_grep_result
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +140,7 @@ class LocalSandbox(Sandbox):
         """
         super().__init__(id)
         self.path_mappings = path_mappings or []
-        if command_timeout_seconds <= 0:
-            raise ValueError("command_timeout_seconds must be positive")
+        command_timeout_seconds = validate_command_timeout(command_timeout_seconds)
         if command_capture_limit_bytes < 0:
             raise ValueError("command_capture_limit_bytes cannot be negative")
         self.command_timeout_seconds = command_timeout_seconds
@@ -528,10 +529,13 @@ class LocalSandbox(Sandbox):
             logger.warning("Process tree for pid %s did not exit after taskkill", process.pid)
 
     def execute_command(self, command: str) -> str:
+        return self.execute_command_result(command).output
+
+    def execute_command_result(self, command: str, *, cancel_event: threading.Event | None = None) -> CommandResult:
         # Resolve container paths in command before execution
         resolved_command = self._resolve_paths_in_command(command)
         shell = self._get_shell()
-
+        encoding = "utf-8"
         if os.name == "nt":
             if self._is_powershell(shell):
                 args = [
@@ -540,44 +544,20 @@ class LocalSandbox(Sandbox):
                     "-Command",
                     f"{_POWERSHELL_UTF8_PREAMBLE}{resolved_command}",
                 ]
-                stdout, stderr, returncode, timed_out = self._run_windows_command(
-                    args,
-                    encoding="utf-8",
-                )
             elif self._is_cmd_shell(shell):
                 args = [shell, "/c", resolved_command]
-                stdout, stderr, returncode, timed_out = self._run_windows_command(args)
+                encoding = locale.getencoding()
             else:
                 args = [shell, "-c", resolved_command]
-                stdout, stderr, returncode, timed_out = self._run_windows_command(args)
+                encoding = locale.getencoding()
         else:
             args = [shell, "-c", resolved_command]
-            result = subprocess.run(
-                args,
-                shell=False,
-                capture_output=True,
-                text=True,
-                timeout=self.command_timeout_seconds,
-                env=build_sandbox_subprocess_env(),
-            )
-            stdout, stderr, returncode, timed_out = (
-                result.stdout,
-                result.stderr,
-                result.returncode,
-                False,
-            )
-        output = stdout
-        if stderr:
-            output += f"\nStd Error:\n{stderr}" if output else stderr
-        if timed_out:
-            notice = self._format_timeout_notice(self.command_timeout_seconds)
-            output += f"\n{notice}" if output else notice
-        elif returncode != 0:
-            output += f"\nExit Code: {returncode}"
-
-        final_output = output if output else "(no output)"
-        # Reverse resolve local paths back to container paths in output
-        return self._reverse_resolve_paths_in_output(final_output)
+        result = run_host_command(
+            args, timeout=self.command_timeout_seconds, cancel_event=cancel_event,
+            env=build_sandbox_subprocess_env(), encoding=encoding,
+            capture_limit=self.command_capture_limit_bytes,
+        )
+        return CommandResult(self._reverse_resolve_paths_in_output(result.output), result.exit_code, result.status, result.termination_confirmed)
 
     def list_dir(self, path: str, max_depth=2) -> list[str]:
         resolved_path = self._resolve_path(path)
@@ -623,6 +603,69 @@ class LocalSandbox(Sandbox):
         except OSError as e:
             # Re-raise with the original path for clearer error messages, hiding internal resolved paths
             raise type(e)(e.errno, e.strerror, path) from None
+
+    def read_file_chunk(self, path: str, *, offset: int = 0, max_bytes: int = 65536,
+                        expected_version: str | None = None, start_line: int | None = None,
+                        end_line: int | None = None) -> FileChunk:
+        resolved_path = self._resolve_path(path)
+        result = read_file_chunk(resolved_path, offset=offset, max_bytes=max_bytes,
+                                 expected_version=expected_version, start_line=start_line, end_line=end_line)
+        display = None
+        if resolved_path in self._agent_written_paths:
+            display = self._project_file_chunk(resolved_path, result)
+        return replace(result, path=path, display_content=display)
+
+    def _project_file_chunk(self, path: str, chunk: FileChunk) -> str:
+        """Project written host prefixes without changing source byte cursors.
+
+        A small context window recognizes a prefix split across two pages. Its
+        virtual replacement is emitted only in the page containing its first
+        byte, so later pages never leak/repeat the remaining host prefix.
+        User uploads and other external files never take this display path.
+        """
+        import re
+
+        from deerflow.sandbox.file_io import FileVersionMismatchError, _version
+
+        mappings = sorted(self.path_mappings, key=lambda mapping: len(mapping.local_path), reverse=True)
+        if not mappings or not chunk.bytes_read:
+            return chunk.content
+        prefixes = [os.path.realpath(mapping.local_path).encode("utf-8") for mapping in mappings]
+        margin = max(map(len, prefixes)) + 2
+        context_start = max(0, chunk.offset - margin)
+        with open(path, "rb") as handle:
+            if _version(os.fstat(handle.fileno())) != chunk.version:
+                raise FileVersionMismatchError("File changed; restart reading from offset=0")
+            handle.seek(context_start)
+            context = handle.read(chunk.bytes_read + 2 * margin)
+            if _version(os.fstat(handle.fileno())) != chunk.version or _version(os.stat(path)) != chunk.version:
+                raise FileVersionMismatchError("File changed; restart reading from offset=0")
+        alternatives = []
+        for index, prefix in enumerate(prefixes):
+            escaped = re.escape(prefix).replace(rb"\\", rb"[/\\]")
+            alternatives.append(b"(?P<m" + str(index).encode() + b">" + escaped + rb")(?=$|[/\\])")
+        pattern = re.compile(b"|".join(alternatives), re.IGNORECASE if os.name == "nt" else 0)
+        start = chunk.offset - context_start
+        end = start + chunk.bytes_read
+        position = start
+        output: list[bytes] = []
+        for match in pattern.finditer(context):
+            if match.end() <= start or match.start() >= end:
+                continue
+            if match.start() >= start:
+                output.append(context[position:match.start()])
+                output.append(mappings[int(match.lastgroup[1:])].container_path.encode("utf-8"))
+            position = min(end, match.end())
+        output.append(context[position:end])
+        return b"".join(output).decode("utf-8", errors="replace")
+
+    def list_dir_page(self, path: str, *, max_depth: int = 2, limit: int = 200,
+                      cursor: str | None = None) -> DirectoryPage:
+        result = list_dir_page(self._resolve_path(path), max_depth=max_depth, limit=limit,
+                               cursor=cursor, ignore_patterns=IGNORE_PATTERNS)
+        entries = [self._reverse_resolve_path(entry.rstrip("/")) + ("/" if entry.endswith("/") else "")
+                   for entry in result.entries]
+        return replace(result, entries=entries)
 
     def write_file(self, path: str, content: str, append: bool = False) -> None:
         resolved = self._resolve_path_with_mapping(path)
@@ -729,9 +772,13 @@ class LocalSandbox(Sandbox):
             raise type(e)(e.errno, e.strerror, filename) from None
 
     def glob(self, path: str, pattern: str, *, include_dirs: bool = False, max_results: int = 200) -> tuple[list[str], bool]:
+        result = self.glob_result(path, pattern, include_dirs=include_dirs, max_results=max_results)
+        return result.matches, result.truncated
+
+    def glob_result(self, path: str, pattern: str, *, include_dirs: bool = False, max_results: int = 200) -> GlobResult:
         resolved_path = Path(self._resolve_path(path))
-        matches, truncated = find_glob_matches(resolved_path, pattern, include_dirs=include_dirs, max_results=max_results)
-        return [self._reverse_resolve_path(match) for match in matches], truncated
+        result = find_glob_result(resolved_path, pattern, include_dirs=include_dirs, max_results=max_results)
+        return replace(result, matches=[self._reverse_resolve_path(match) for match in result.matches])
 
     def grep(
         self,
@@ -743,8 +790,14 @@ class LocalSandbox(Sandbox):
         case_sensitive: bool = False,
         max_results: int = 100,
     ) -> tuple[list[GrepMatch], bool]:
+        result = self.grep_result(path, pattern, glob=glob, literal=literal,
+                                  case_sensitive=case_sensitive, max_results=max_results)
+        return result.matches, result.truncated
+
+    def grep_result(self, path: str, pattern: str, *, glob: str | None = None,
+                    literal: bool = False, case_sensitive: bool = False, max_results: int = 100) -> GrepResult:
         resolved_path = Path(self._resolve_path(path))
-        matches, truncated = find_grep_matches(
+        result = find_grep_result(
             resolved_path,
             pattern,
             glob_pattern=glob,
@@ -752,14 +805,14 @@ class LocalSandbox(Sandbox):
             case_sensitive=case_sensitive,
             max_results=max_results,
         )
-        return [
+        return replace(result, matches=[
             GrepMatch(
                 path=self._reverse_resolve_path(match.path),
                 line_number=match.line_number,
                 line=match.line,
             )
-            for match in matches
-        ], truncated
+            for match in result.matches
+        ])
 
     def update_file(self, path: str, content: bytes) -> None:
         resolved = self._resolve_path_with_mapping(path)

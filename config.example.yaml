@@ -275,7 +275,9 @@ read_before_write:
 sandbox:
   use: deerflow.sandbox.local:LocalSandboxProvider
   allow_host_bash: false
-  # Host commands are terminated with their process tree after this timeout.
+  # Positive finite command deadline, shared by Local, WSL and Docker AIO.
+  # WSL/AIO supervise each command using Python 3.9+ (python3) and /proc inside the execution environment.
+  # An unconfirmed transport failure is reported as unknown, never retried.
   bash_command_timeout: 600
   # Host-process tools such as host_opencli can reuse browser login state and
   # credentials outside the sandbox. Keep disabled unless every prompt and
@@ -301,6 +303,7 @@ sandbox:
 #   wsl_user: null                    # omit to use the distro's default user
 #   wsl_shell: bash
 #   wsl_mount_prefix: /mnt
+#   bash_command_timeout: 600
 
 # Docker sandbox mode (Linux/macOS hosts with Docker available):
 # sandbox:
@@ -308,7 +311,10 @@ sandbox:
 #   image: enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest
 #   replicas: 3
 #   container_prefix: deer-flow-sandbox
+#   # Opportunistic cleanup at the next acquire; running/uncertain commands are protected.
 #   idle_timeout: 600
+#   bash_command_timeout: 600
+#   # If all replicas are busy, acquisition reports capacity full instead of killing one.
 #   # User for sandbox commands. 'auto' (default, recommended) boots the
 #   # container as the image's root user so its init works, then runs tool
 #   # commands as the host UID:GID. The image's root init still leaves some

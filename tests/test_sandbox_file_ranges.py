@@ -216,7 +216,7 @@ def test_aio_single_file_grep_uses_process_safe_ignore_separator(monkeypatch) ->
     def fake_exec(argv, *, input_data=None, text=True):
         captured["argv"] = argv
         captured["script"] = input_data
-        payload = {"truncated": False, "matches": [{"path": "/tmp/report.md", "line_number": 1, "line": "needle"}]}
+        payload = {"truncated": False, "matches": [{"path": "/tmp/report.md", "line_number": 1, "line": "needle"}], "coverage": {}}
         return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(payload), stderr="")
 
     monkeypatch.setattr(sandbox, "_docker_exec", fake_exec)
@@ -225,7 +225,9 @@ def test_aio_single_file_grep_uses_process_safe_ignore_separator(monkeypatch) ->
     assert matches == [GrepMatch(path="/tmp/report.md", line_number=1, line="needle")]
     assert truncated is False
     assert all("\0" not in argument for argument in captured["argv"])
-    assert "root_is_file = os.path.isfile(root)" in captured["script"]
+    request = json.loads(captured["argv"][2])
+    assert request["path"] == "/tmp/report.md"
+    assert request["operation"] == "grep_result"
 
 
 def test_aio_directory_helpers_never_pass_nul_in_process_arguments(monkeypatch) -> None:
@@ -234,7 +236,7 @@ def test_aio_directory_helpers_never_pass_nul_in_process_arguments(monkeypatch) 
 
     def fake_exec(argv, *, input_data=None, text=True):
         calls.append(argv)
-        stdout = "0\n" if argv[2:3] == ["-"] and len(argv) >= 8 else ""
+        stdout = json.dumps({"matches": [], "truncated": False, "coverage": {}}) if len(argv) == 3 and argv[2].startswith("{") else ""
         return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(sandbox, "_docker_exec", fake_exec)

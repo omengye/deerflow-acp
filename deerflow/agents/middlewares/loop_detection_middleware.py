@@ -166,6 +166,13 @@ def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
         # Adjacent reads are progress, even when their ranges are shorter than
         # the old 200-line bucket. Omitted end_line means through EOF, not a
         # one-line read; keep invalid/reversed ranges distinct as well.
+        if args.get("offset") or args.get("max_bytes") is not None or args.get("expected_version"):
+            try:
+                offset = int(args.get("offset") or 0)
+                max_bytes = int(args["max_bytes"]) if args.get("max_bytes") is not None else None
+            except (TypeError, ValueError, OverflowError):
+                return json.dumps(args, sort_keys=True, default=str)
+            return json.dumps([path, start_line, end_line, offset, max_bytes, args.get("expected_version")], default=str)
         return json.dumps([path, start_line, end_line], default=str)
 
     # write_file / str_replace are content-sensitive: same path may be updated

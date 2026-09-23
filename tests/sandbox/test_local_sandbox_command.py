@@ -74,16 +74,18 @@ def test_timeout_notice_is_user_actionable() -> None:
 
 
 def test_powershell_command_forces_utf8_console_and_pipe_decoding(monkeypatch) -> None:
+    from deerflow.sandbox.command import CommandResult
+
     sandbox = LocalSandbox("test")
     calls: list[tuple[list[str], str | None]] = []
 
-    def fake_run(args, *, encoding=None):
+    def fake_run(args, *, encoding=None, **kwargs):
         calls.append((args, encoding))
-        return "你好", "", 0, False
+        return CommandResult("你好", 0)
 
     monkeypatch.setattr("deerflow.sandbox.local.local_sandbox.os.name", "nt")
     monkeypatch.setattr(sandbox, "_get_shell", lambda: "pwsh.exe")
-    monkeypatch.setattr(sandbox, "_run_windows_command", fake_run)
+    monkeypatch.setattr("deerflow.sandbox.local.local_sandbox.run_host_command", fake_run)
 
     assert sandbox.execute_command("Write-Output 你好") == "你好"
     args, encoding = calls[0]

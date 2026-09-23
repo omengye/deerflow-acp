@@ -123,6 +123,10 @@ def test_acceptance_checks_are_scoped_and_fail_closed(tmp_path) -> None:
             content="12 passed in 1.2s",
             tool_call_id="bash-1",
             name="bash",
+            artifact={"sandbox_command": {
+                "version": 1, "command": "pytest -q", "status": "completed",
+                "exit_code": 0, "termination_confirmed": True,
+            }},
         ),
     ]
 

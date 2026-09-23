@@ -1,13 +1,12 @@
 """Unit tests for WslSandbox / LocalWslProvider.
 
-All tests mock ``subprocess.run`` so they run on Linux CI as well as on Windows.
+All tests mock command execution so they run on Linux CI as well as on Windows.
 The provider tests also mock ``platform.system`` since the provider rejects
 non-Windows hosts at construction time.
 """
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -21,6 +20,7 @@ from deerflow.sandbox.local import (
     WslUnavailableError,
 )
 from deerflow.sandbox.local.local_sandbox import PathMapping
+from deerflow.sandbox.command import COMMAND_CLEANUP_SECONDS, CommandResult
 from deerflow.sandbox.provider_paths import (
     WSL_SANDBOX_PROVIDER_PATH,
     is_host_fs_sandbox_provider_path,
@@ -244,50 +244,48 @@ def test_build_wsl_argv_custom_shell() -> None:
     assert argv[-2] == "-lc"
 
 
-# ── execute_command (mocked subprocess) ──────────────────────────────────
-
-
-def _run_result(stdout: str = "", stderr: str = "", returncode: int = 0) -> SimpleNamespace:
-    return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode)
+# ── execute_command (mocked command runner) ──────────────────────────────
 
 
 def test_execute_command_sets_wsl_utf8_env_and_utf8_encoding() -> None:
     sandbox = WslSandbox("wsl", distro="Ubuntu-22.04")
-    with patch("subprocess.run", return_value=_run_result(stdout="ok\n")) as mock_run:
+    with patch("deerflow.sandbox.local.wsl_sandbox.run_host_command", return_value=CommandResult("ok\n", 0)) as mock_run:
         sandbox.execute_command("echo ok")
 
     args, kwargs = mock_run.call_args
     assert kwargs["env"]["WSL_UTF8"] == "1"
     assert kwargs["encoding"] == "utf-8"
-    assert kwargs["errors"] == "replace"
-    assert kwargs["text"] is True
-    assert kwargs["shell"] is False
-    assert kwargs["capture_output"] is True
-    assert kwargs["timeout"] == WslSandbox.EXECUTE_TIMEOUT_SECONDS
+    assert kwargs["timeout"] == sandbox.command_timeout_seconds + COMMAND_CLEANUP_SECONDS
+    assert kwargs["command_timeout"] == sandbox.command_timeout_seconds
+    assert kwargs["remote_token"]
 
 
 def test_execute_command_passes_translated_command_to_wsl() -> None:
     sandbox = WslSandbox("wsl", distro="Ubuntu-22.04")
-    with patch("subprocess.run", return_value=_run_result(stdout="")) as mock_run:
+    with (
+        patch("deerflow.sandbox.local.wsl_sandbox.run_host_command", return_value=CommandResult("", 0)) as mock_run,
+        patch("deerflow.sandbox.local.wsl_sandbox.linux_supervisor_args", return_value=(["supervised"], "token")) as supervisor,
+    ):
         sandbox.execute_command("cat D:\\foo\\x.py")
 
-    argv = mock_run.call_args.args[0]
-    # Tail of argv is [shell, -lc, command]
-    assert argv[-1] == "cat /mnt/d/foo/x.py"
+    assert supervisor.call_args.args[1] == "cat /mnt/d/foo/x.py"
+    assert mock_run.call_args.args[0] == ["wsl.exe", "-d", "Ubuntu-22.04", "--", "supervised"]
 
 
 def test_execute_command_passes_translated_verbatim_path_to_wsl() -> None:
     sandbox = WslSandbox("wsl", distro="Ubuntu-22.04")
-    with patch("subprocess.run", return_value=_run_result(stdout="")) as mock_run:
+    with (
+        patch("deerflow.sandbox.local.wsl_sandbox.run_host_command", return_value=CommandResult("", 0)),
+        patch("deerflow.sandbox.local.wsl_sandbox.linux_supervisor_args", return_value=(["supervised"], "token")) as supervisor,
+    ):
         sandbox.execute_command(r"cd '\\?\D:\foo' && pwd")
 
-    argv = mock_run.call_args.args[0]
-    assert argv[-1] == "cd '/mnt/d/foo' && pwd"
+    assert supervisor.call_args.args[1] == "cd '/mnt/d/foo' && pwd"
 
 
 def test_execute_command_translates_output_back() -> None:
     sandbox = WslSandbox("wsl", distro="Ubuntu-22.04")
-    with patch("subprocess.run", return_value=_run_result(stdout="found at /mnt/d/foo/x.py\n")):
+    with patch("deerflow.sandbox.local.wsl_sandbox.run_host_command", return_value=CommandResult("found at /mnt/d/foo/x.py\n", 0)):
         out = sandbox.execute_command("echo ignored")
     assert "D:\\foo\\x.py" in out
     assert "/mnt/d/foo" not in out
@@ -295,35 +293,37 @@ def test_execute_command_translates_output_back() -> None:
 
 def test_execute_command_appends_exit_code_on_failure() -> None:
     sandbox = WslSandbox("wsl", distro="Ubuntu-22.04")
-    with patch("subprocess.run", return_value=_run_result(stderr="boom\n", returncode=2)):
-        out = sandbox.execute_command("false")
-    assert "boom" in out
-    assert "Exit Code: 2" in out
+    with patch("deerflow.sandbox.local.wsl_sandbox.run_host_command", return_value=CommandResult("boom\nExit Code: 2", 2)):
+        result = sandbox.execute_command_result("false")
+    assert "boom" in result.output
+    assert "Exit Code: 2" in result.output
+    assert result.exit_code == 2
+    assert not result.succeeded
 
 
 def test_execute_command_no_output_returns_marker() -> None:
     sandbox = WslSandbox("wsl", distro="Ubuntu-22.04")
-    with patch("subprocess.run", return_value=_run_result()):
+    with patch("deerflow.sandbox.local.wsl_sandbox.run_host_command", return_value=CommandResult("(no output)", 0)):
         out = sandbox.execute_command("true")
     assert out == "(no output)"
 
 
 def test_execute_command_wsl_missing_raises_clear_error() -> None:
     sandbox = WslSandbox("wsl", distro="Ubuntu-22.04")
-    with patch("subprocess.run", side_effect=FileNotFoundError("wsl.exe")):
+    with patch("deerflow.sandbox.local.wsl_sandbox.run_host_command", side_effect=FileNotFoundError("wsl.exe")):
         with pytest.raises(WslUnavailableError, match="not installed"):
             sandbox.execute_command("echo hi")
 
 
 def test_execute_command_timeout_returns_formatted_message() -> None:
     sandbox = WslSandbox("wsl", distro="Ubuntu-22.04")
-    timeout_exc = subprocess.TimeoutExpired(
-        cmd=["wsl.exe"], timeout=600, output="partial\n", stderr=""
-    )
-    with patch("subprocess.run", side_effect=timeout_exc):
-        out = sandbox.execute_command("sleep 10000")
-    assert "partial" in out
-    assert "timeout after 600s" in out
+    timed_out = CommandResult("partial\nCommand timed out after 600 seconds and was terminated.\nExit Code: 124", 124, "timed_out")
+    with patch("deerflow.sandbox.local.wsl_sandbox.run_host_command", return_value=timed_out):
+        result = sandbox.execute_command_result("sleep 10000")
+    assert "partial" in result.output
+    assert result.status == "timed_out"
+    assert result.termination_confirmed
+    assert not result.succeeded
 
 
 # ── Provider (Windows-only path) ─────────────────────────────────────────

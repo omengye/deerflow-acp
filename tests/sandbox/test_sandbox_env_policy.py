@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import os
 import sys
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from deerflow.sandbox.env_policy import build_sandbox_subprocess_env
+from deerflow.sandbox.command import CommandResult
 from deerflow.sandbox.local.local_sandbox import LocalSandbox
 from deerflow.sandbox.local.wsl_sandbox import WslSandbox
 
@@ -48,8 +48,8 @@ def test_wsl_command_uses_scrubbed_environment(monkeypatch: pytest.MonkeyPatch) 
     sandbox = WslSandbox("wsl", distro="Ubuntu")
 
     with patch(
-        "deerflow.sandbox.local.wsl_sandbox.subprocess.run",
-        return_value=SimpleNamespace(stdout="", stderr="", returncode=0),
+        "deerflow.sandbox.local.wsl_sandbox.run_host_command",
+        return_value=CommandResult("", 0),
     ) as run:
         sandbox.execute_command("true")
 

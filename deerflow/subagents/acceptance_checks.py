@@ -321,9 +321,20 @@ def _bash_executions(messages: Sequence[Any]) -> list[tuple[str, str, bool]]:
                 if isinstance(message.content, str)
                 else str(message.content)
             )
-            succeeded = getattr(
-                message, "status", None
-            ) != "error" and not content.startswith("Error:")
+            artifact = message.artifact
+            receipt = artifact.get("sandbox_command") if isinstance(artifact, dict) else None
+            # Stdout is arbitrary program text. Only the executor's structured
+            # receipt can attest that this exact command finished successfully.
+            succeeded = (
+                getattr(message, "status", None) == "success"
+                and isinstance(receipt, dict)
+                and receipt.get("version") == 1
+                and receipt.get("command") == command
+                and receipt.get("status") == "completed"
+                and type(receipt.get("exit_code")) is int
+                and receipt["exit_code"] == 0
+                and receipt.get("termination_confirmed") is True
+            )
             executions.append((command, content, succeeded))
     return executions
 

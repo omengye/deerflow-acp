@@ -204,6 +204,22 @@ def test_open_ended_read_matches_implicit_start_but_not_single_line():
     assert key(1, 40) != key(40, 1)
 
 
+def test_byte_continuations_count_as_progress_but_repeats_still_stop():
+    middleware = LoopDetectionMiddleware(tool_freq_hard_limit=100)
+    runtime = _runtime(thread_id="byte-reads", run_id="run-1")
+    for index in range(6):
+        state = _read_state(None, None, index)
+        state["messages"][0].tool_calls[0]["args"].update(
+            offset=index * 100, max_bytes=100, expected_version="version-a",
+        )
+        assert middleware.after_model(state, runtime) is None
+    assert not any(middleware._pending_warnings.values())
+    for index in range(4):
+        result = middleware.after_model(state, runtime)
+    assert result is not None
+    assert result["messages"][0].tool_calls == []
+
+
 def test_varying_read_windows_still_hit_frequency_backstop():
     middleware = LoopDetectionMiddleware(tool_freq_warn=2, tool_freq_hard_limit=3)
     runtime = _runtime(thread_id="reads", run_id="run-1")

@@ -27,6 +27,18 @@ class Sandbox(ABC):
         """
         pass
 
+    def execute_command_result(self, command: str, *, cancel_event=None):
+        """Return a trustworthy execution outcome when the provider supports it.
+
+        Legacy providers still expose their output, but a text-only response
+        cannot prove successful completion and must not pass command acceptance.
+        """
+        from deerflow.sandbox.command import CommandResult
+
+        if cancel_event is not None and cancel_event.is_set():
+            return CommandResult("Command cancelled before execution.", None, "cancelled", True)
+        return CommandResult(self.execute_command(command), None, "unknown", False)
+
     @abstractmethod
     def read_file(
         self,
@@ -58,6 +70,26 @@ class Sandbox(ABC):
             The contents of the directory.
         """
         pass
+
+    def read_file_chunk(self, path: str, *, offset: int = 0, max_bytes: int = 65536,
+                        expected_version: str | None = None, start_line: int | None = None,
+                        end_line: int | None = None):
+        """Optional bounded UTF-8 read; offsets and continuations refer to bytes."""
+        raise NotImplementedError("This sandbox does not support bounded file reads")
+
+    def list_dir_page(self, path: str, *, max_depth: int = 2, limit: int = 200,
+                      cursor: str | None = None):
+        """Optional bounded directory page with a change-detecting cursor."""
+        raise NotImplementedError("This sandbox does not support directory pages")
+
+    def glob_result(self, path: str, pattern: str, *, include_dirs: bool = False, max_results: int = 200):
+        """Optional search with explicit coverage; legacy providers may opt out."""
+        raise NotImplementedError("This sandbox does not report search coverage")
+
+    def grep_result(self, path: str, pattern: str, *, glob: str | None = None,
+                    literal: bool = False, case_sensitive: bool = False, max_results: int = 100):
+        """Optional text search with explicit coverage."""
+        raise NotImplementedError("This sandbox does not report search coverage")
 
     @abstractmethod
     def write_file(self, path: str, content: str, append: bool = False) -> None:

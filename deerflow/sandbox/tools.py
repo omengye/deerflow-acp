@@ -1,10 +1,15 @@
+import asyncio
 import posixpath
 import re
 import shlex
+import threading
 from contextlib import ExitStack
+from dataclasses import asdict
 from pathlib import Path
 
 from langchain.tools import ToolRuntime, tool
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import StructuredTool
 
 from deerflow.agents.thread_state import AgentContext, ThreadDataState, ThreadState
 from deerflow.config import get_app_config
@@ -15,6 +20,7 @@ from deerflow.sandbox.exceptions import (
     SandboxRuntimeError,
 )
 from deerflow.sandbox.file_operation_lock import get_file_operation_lock
+from deerflow.sandbox.file_io import FileVersionMismatchError
 from deerflow.sandbox.sandbox import Sandbox
 from deerflow.sandbox.sandbox_provider import (
     get_sandbox_provider,
@@ -409,6 +415,42 @@ def _format_grep_results(root_path: str, matches: list[GrepMatch], truncated: bo
     if truncated:
         lines.append("Results truncated. Narrow the path or add a glob filter.")
     return "\n".join(lines)
+
+
+def _search_coverage_note(result) -> str:
+    coverage = getattr(result, "coverage", None)
+    if coverage is None:
+        return ""
+    values = asdict(coverage) if not isinstance(coverage, dict) else coverage
+    counts = []
+    for key, label in (
+        ("skipped_large_files", "large files"), ("skipped_binary_files", "binary files"),
+        ("skipped_long_lines", "long lines"), ("skipped_symlinks", "symlinks"),
+        ("read_errors", "read errors"),
+    ):
+        value = values.get(key, 0)
+        count = len(value) if isinstance(value, (list, dict)) else value
+        if count:
+            counts.append(f"{count} {label}")
+    if not counts and values.get("complete", True):
+        return ""
+    suffix = f" Skipped: {', '.join(counts)}." if counts else ""
+    return f"\nSearch coverage: {values.get('searched_files', 0)} files searched; coverage is partial.{suffix}"
+
+
+def _file_response(runtime, name: str, text: str, metadata: dict):
+    call_id = getattr(runtime, "tool_call_id", None)
+    if call_id is None:
+        return text
+    return ToolMessage(content=text, tool_call_id=call_id, name=name, artifact=metadata)
+
+
+def _optional_sandbox_method(sandbox, name: str):
+    """Older providers may inherit unsupported bounded-operation defaults."""
+    implementation = getattr(type(sandbox), name, None)
+    if implementation is not None and implementation is getattr(Sandbox, name, None):
+        return None
+    return getattr(sandbox, name, None)
 
 
 def _path_variants(path: str) -> set[str]:
@@ -1426,8 +1468,68 @@ def _truncate_ls_output(output: str, max_chars: int) -> str:
     return f"{output[:kept]}{marker}"
 
 
-@tool("bash", parse_docstring=True)
-def bash_tool(runtime: ToolRuntime[AgentContext, ThreadState], description: str, command: str) -> str:
+def _bash_response(runtime, result, command: str, text: str):
+    """Keep execution evidence outside display/output truncation."""
+    call_id = getattr(runtime, "tool_call_id", None)
+    if call_id is None:
+        return text
+    return ToolMessage(
+        content=text,
+        name="bash",
+        tool_call_id=call_id,
+        status="success" if result.succeeded else "error",
+        artifact={"sandbox_command": {
+            "version": 1,
+            "command": command.strip(),
+            "exit_code": result.exit_code,
+            "status": result.status,
+            "termination_confirmed": result.termination_confirmed,
+        }},
+    )
+
+
+def _execute_bash(runtime, command: str, cancel_event: threading.Event | None = None):
+    from deerflow.sandbox.command import CommandResult
+
+    original_command = command
+    try:
+        if cancel_event is not None and cancel_event.is_set():
+            result = CommandResult("Command cancelled before execution.", None, "cancelled", True)
+            return _bash_response(runtime, result, original_command, result.output)
+        sandbox = ensure_sandbox_initialized(runtime)
+        thread_data = None
+        if is_local_sandbox(runtime):
+            if not is_host_bash_allowed():
+                raise PermissionError(LOCAL_HOST_BASH_DISABLED_MESSAGE)
+            ensure_thread_directories_exist(runtime)
+            thread_data = get_thread_data(runtime)
+            validate_local_bash_command_paths(command, thread_data)
+            command = replace_virtual_paths_in_command(command, thread_data, runtime)
+            command = _apply_cwd_prefix(command, thread_data)
+        else:
+            ensure_thread_directories_exist(runtime)
+        execute = getattr(sandbox, "execute_command_result", None)
+        if execute is not None:
+            result = execute(command, cancel_event=cancel_event)
+        else:
+            result = CommandResult(sandbox.execute_command(command), None, "unknown", False)
+        text = result.output
+        if thread_data is not None:
+            text = mask_local_paths_in_output(text, thread_data, runtime)
+        try:
+            sandbox_cfg = get_app_config().sandbox
+            max_chars = sandbox_cfg.bash_output_max_chars if sandbox_cfg else 20000
+        except Exception:
+            max_chars = 20000
+        text = _truncate_bash_output(text, max_chars)
+        return _bash_response(runtime, result, original_command, text)
+    except Exception as exc:
+        text = f"Error: {_sanitize_error(exc, runtime)}"
+        result = CommandResult(text, None, "unknown", False)
+        return _bash_response(runtime, result, original_command, text)
+
+
+def _bash_sync(runtime: ToolRuntime[AgentContext, ThreadState], description: str, command: str):
     """Execute a bash command in a Linux environment.
 
 
@@ -1439,49 +1541,49 @@ def bash_tool(runtime: ToolRuntime[AgentContext, ThreadState], description: str,
         description: Explain why you are running this command in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         command: The bash command to execute. Always use absolute paths for files and directories.
     """
+    return _execute_bash(runtime, command)
+
+
+async def _bash_async(runtime: ToolRuntime[AgentContext, ThreadState], description: str, command: str):
+    cancel_event = threading.Event()
+    worker = asyncio.create_task(asyncio.to_thread(_execute_bash, runtime, command, cancel_event))
     try:
-        sandbox = ensure_sandbox_initialized(runtime)
-        if is_local_sandbox(runtime):
-            if not is_host_bash_allowed():
-                return f"Error: {LOCAL_HOST_BASH_DISABLED_MESSAGE}"
-            ensure_thread_directories_exist(runtime)
-            thread_data = get_thread_data(runtime)
-            validate_local_bash_command_paths(command, thread_data)
-            command = replace_virtual_paths_in_command(command, thread_data, runtime)
-            command = _apply_cwd_prefix(command, thread_data)
-            output = sandbox.execute_command(command)
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        cancel_event.set()
+        # The provider bounds process termination. Keep the operation (and its
+        # resource lease) owned until that cleanup returns, even on repeat cancel.
+        while not worker.done():
             try:
-                from deerflow.config.app_config import get_app_config
+                await asyncio.wait({worker})
+            except asyncio.CancelledError:
+                cancel_event.set()
+        # Consume a possible worker failure without replacing caller cancellation.
+        if not worker.cancelled():
+            worker.exception()
+        raise
 
-                sandbox_cfg = get_app_config().sandbox
-                max_chars = sandbox_cfg.bash_output_max_chars if sandbox_cfg else 20000
-            except Exception:
-                max_chars = 20000
-            return _truncate_bash_output(mask_local_paths_in_output(output, thread_data, runtime), max_chars)
-        ensure_thread_directories_exist(runtime)
-        try:
-            from deerflow.config.app_config import get_app_config
 
-            sandbox_cfg = get_app_config().sandbox
-            max_chars = sandbox_cfg.bash_output_max_chars if sandbox_cfg else 20000
-        except Exception:
-            max_chars = 20000
-        return _truncate_bash_output(sandbox.execute_command(command), max_chars)
-    except SandboxError as e:
-        return f"Error: {e}"
-    except PermissionError as e:
-        return f"Error: {e}"
-    except Exception as e:
-        return f"Error: Unexpected error executing command: {_sanitize_error(e, runtime)}"
+bash_tool = StructuredTool.from_function(
+    func=_bash_sync,
+    coroutine=_bash_async,
+    name="bash",
+    parse_docstring=True,
+)
 
 
 @tool("ls", parse_docstring=True)
-def ls_tool(runtime: ToolRuntime[AgentContext, ThreadState], description: str, path: str) -> str:
+def ls_tool(
+    runtime: ToolRuntime[AgentContext, ThreadState], description: str, path: str,
+    max_entries: int = 200, cursor: str | None = None,
+) -> str:
     """List the contents of a directory up to 2 levels deep in tree format.
 
     Args:
         description: Explain why you are listing this directory in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         path: The **absolute** path to the directory to list.
+        max_entries: Maximum entries in one page, from 1 to 1000. Default 200.
+        cursor: Opaque continuation from the previous page. A changed tree requires restarting.
     """
     requested_path = path
     try:
@@ -1492,12 +1594,6 @@ def ls_tool(runtime: ToolRuntime[AgentContext, ThreadState], description: str, p
             thread_data = get_thread_data(runtime)
             assert thread_data is not None
             path = _resolve_local_read_path(path, thread_data)
-        children = sandbox.list_dir(path)
-        if not children:
-            return "(empty)"
-        output = "\n".join(children)
-        if thread_data is not None:
-            output = mask_local_paths_in_output(output, thread_data, runtime)
         try:
             from deerflow.config.app_config import get_app_config
 
@@ -1505,7 +1601,37 @@ def ls_tool(runtime: ToolRuntime[AgentContext, ThreadState], description: str, p
             max_chars = sandbox_cfg.ls_output_max_chars if sandbox_cfg else 20000
         except Exception:
             max_chars = 20000
+        if not 1 <= max_entries <= 1000:
+            return "Error: max_entries must be between 1 and 1000"
+        page_method = _optional_sandbox_method(sandbox, "list_dir_page")
+        if page_method is not None:
+            limit = max_entries
+            while True:
+                page = page_method(path, limit=limit, cursor=cursor)
+                output = "\n".join(page.entries) or "(empty)"
+                if thread_data is not None:
+                    output = mask_local_paths_in_output(output, thread_data, runtime)
+                if page.next_cursor:
+                    output += f'\n... [more entries: continue ls with cursor="{page.next_cursor}"]'
+                if not max_chars or len(output) <= max_chars:
+                    return _file_response(runtime, "ls", output, {"directory_page": {
+                        "next_cursor": page.next_cursor, "truncated": page.truncated,
+                        "version": page.version,
+                    }})
+                if limit == 1:
+                    return "Error: ls_output_max_chars is too small for one entry and its continuation; increase it."
+                limit = max(1, limit // 2)
+        if cursor is not None:
+            return "Error: This sandbox does not support directory continuation."
+        children = sandbox.list_dir(path)
+        if not children:
+            return "(empty)"
+        output = "\n".join(children)
+        if thread_data is not None:
+            output = mask_local_paths_in_output(output, thread_data, runtime)
         return _truncate_ls_output(output, max_chars)
+    except FileVersionMismatchError:
+        return "Error: Directory changed during listing; restart without cursor."
     except SandboxError as e:
         return f"Error: {e}"
     except FileNotFoundError:
@@ -1550,10 +1676,14 @@ def glob_tool(
             if thread_data is None:
                 raise SandboxRuntimeError("Thread data not available for local sandbox")
             path = _resolve_local_read_path(path, thread_data)
-        matches, truncated = sandbox.glob(path, pattern, include_dirs=include_dirs, max_results=effective_max_results)
+        detailed = _optional_sandbox_method(sandbox, "glob_result")
+        result = detailed(path, pattern, include_dirs=include_dirs, max_results=effective_max_results) if detailed else None
+        matches, truncated = (result.matches, result.truncated) if result is not None else sandbox.glob(
+            path, pattern, include_dirs=include_dirs, max_results=effective_max_results,
+        )
         if thread_data is not None:
             matches = [mask_local_paths_in_output(match, thread_data, runtime) for match in matches]
-        return _format_glob_results(requested_path, matches, truncated)
+        return _format_glob_results(requested_path, matches, truncated) + _search_coverage_note(result)
     except SandboxError as e:
         return f"Error: {e}"
     except FileNotFoundError:
@@ -1604,7 +1734,9 @@ def grep_tool(
             if thread_data is None:
                 raise SandboxRuntimeError("Thread data not available for local sandbox")
             path = _resolve_local_read_path(path, thread_data)
-        matches, truncated = sandbox.grep(
+        detailed = _optional_sandbox_method(sandbox, "grep_result")
+        search = detailed or sandbox.grep
+        result = search(
             path,
             pattern,
             glob=glob,
@@ -1612,6 +1744,7 @@ def grep_tool(
             case_sensitive=case_sensitive,
             max_results=effective_max_results,
         )
+        matches, truncated = (result.matches, result.truncated) if detailed else result
         if thread_data is not None:
             matches = [
                 GrepMatch(
@@ -1621,7 +1754,7 @@ def grep_tool(
                 )
                 for match in matches
             ]
-        return _format_grep_results(requested_path, matches, truncated)
+        return _format_grep_results(requested_path, matches, truncated) + _search_coverage_note(result if detailed else None)
     except SandboxError as e:
         return f"Error: {e}"
     except FileNotFoundError:
@@ -1643,6 +1776,9 @@ def read_file_tool(
     path: str,
     start_line: int | None = None,
     end_line: int | None = None,
+    offset: int = 0,
+    max_bytes: int | None = None,
+    expected_version: str | None = None,
 ) -> str:
     """Read the contents of a text file. Use this to examine source code, configuration files, logs, or any text-based file.
 
@@ -1651,6 +1787,9 @@ def read_file_tool(
         path: The **absolute** path to the file to read.
         start_line: Optional starting line number (1-indexed, inclusive). Omit to start at the first line.
         end_line: Optional ending line number (1-indexed, inclusive). Omit to read through the last line.
+        offset: UTF-8 byte offset from a previous chunk. Default 0; do not combine continuation with start_line.
+        max_bytes: Maximum source bytes to read, from 4 to 1048576. Output budget may reduce it.
+        expected_version: Version returned by the previous chunk; required when offset is nonzero.
     """
     requested_path = path
     try:
@@ -1661,18 +1800,18 @@ def read_file_tool(
             return "(end_line must be >= 1)"
         if end_line is not None and effective_start > end_line:
             return "(start_line > end_line — no lines in range)"
+        if offset < 0:
+            return "Error: offset must be non-negative"
+        if offset and (not expected_version or start_line is not None):
+            return "Error: Continuation requires expected_version and must omit start_line."
+        if max_bytes is not None and not 4 <= max_bytes <= 1048576:
+            return "Error: max_bytes must be between 4 and 1048576"
         sandbox = ensure_sandbox_initialized(runtime)
         ensure_thread_directories_exist(runtime)
         if is_local_sandbox(runtime):
             thread_data = get_thread_data(runtime)
             assert thread_data is not None
             path = _resolve_local_read_path(path, thread_data)
-        if start_line is not None or end_line is not None:
-            content = sandbox.read_file(path, start_line=start_line, end_line=end_line)
-        else:
-            content = sandbox.read_file(path)
-        if not content:
-            return "(empty)"
         try:
             from deerflow.config.app_config import get_app_config
 
@@ -1680,6 +1819,48 @@ def read_file_tool(
             max_chars = sandbox_cfg.read_file_output_max_chars if sandbox_cfg else 50000
         except Exception:
             max_chars = 50000
+        chunk_method = _optional_sandbox_method(sandbox, "read_file_chunk")
+        if chunk_method is not None:
+            if max_chars and max_chars < 256:
+                return "Error: read_file_output_max_chars must be at least 256 for safe chunk continuation."
+            byte_limit = min(max_bytes or 65536, max_chars - 192) if max_chars else (max_bytes or 65536)
+            while True:
+                chunk = chunk_method(
+                    path, offset=offset, max_bytes=byte_limit, expected_version=expected_version,
+                    start_line=start_line, end_line=end_line,
+                )
+                # Display matches the existing universal-newline reader; the
+                # cursor still counts the original source bytes, including CRLF.
+                display_content = getattr(chunk, "display_content", None)
+                if display_content is None:
+                    display_content = chunk.content
+                output = display_content.replace("\r\n", "\n")
+                if not chunk.content:
+                    output = "(empty)"
+                if chunk.truncated:
+                    range_hint = f", end_line={end_line}" if end_line is not None else ""
+                    line_hint = ""
+                    if not offset and max_bytes is None and chunk.content.endswith("\n"):
+                        line_hint = f" Use start_line={effective_start + chunk.content.count(chr(10))} for a new line-window read."
+                    output += (
+                        f'\n... [truncated: continue read_file with offset={chunk.next_offset}, '
+                        f'expected_version="{chunk.version}"{range_hint}.{line_hint}]'
+                    )
+                if not max_chars or len(output) <= max_chars:
+                    metadata = {key: value for key, value in asdict(chunk).items() if key not in ("content", "display_content", "path")}
+                    return _file_response(runtime, "read_file", output, {"file_read": metadata})
+                if byte_limit <= 4:
+                    return "Error: Output budget is too small for a file chunk and its continuation."
+                expected_version = chunk.version
+                byte_limit = max(4, byte_limit - (len(output) - max_chars))
+        if offset or expected_version is not None or max_bytes is not None:
+            return "Error: This sandbox does not support bounded byte-range reading."
+        if start_line is not None or end_line is not None:
+            content = sandbox.read_file(path, start_line=start_line, end_line=end_line)
+        else:
+            content = sandbox.read_file(path)
+        if not content:
+            return "(empty)"
         return _truncate_read_file_output(
             content,
             max_chars,
@@ -1687,6 +1868,8 @@ def read_file_tool(
             joined_lines=_read_file_joins_lines(sandbox, start_line, end_line),
             bounded=end_line is not None,
         )
+    except FileVersionMismatchError:
+        return "Error: File changed during reading; restart from offset=0 without expected_version."
     except SandboxError as e:
         return f"Error: {e}"
     except FileNotFoundError:

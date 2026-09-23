@@ -63,6 +63,7 @@ class LocalWslProvider(SandboxProvider):
         self._wsl_user = sandbox_cfg.wsl_user if sandbox_cfg else None
         self._wsl_shell = (sandbox_cfg.wsl_shell if sandbox_cfg else "bash") or "bash"
         self._mount_prefix = (sandbox_cfg.wsl_mount_prefix if sandbox_cfg else "/mnt") or "/mnt"
+        self._command_timeout_seconds = getattr(sandbox_cfg, "bash_command_timeout", WslSandbox.EXECUTE_TIMEOUT_SECONDS)
 
         self._verify_wsl_available()
         if self._distro:
@@ -156,6 +157,7 @@ class LocalWslProvider(SandboxProvider):
                     wsl_user=self._wsl_user,
                     wsl_shell=self._wsl_shell,
                     mount_prefix=self._mount_prefix,
+                    command_timeout_seconds=self._command_timeout_seconds,
                     path_mappings=[
                         *self._base_path_mappings,
                         PathMapping(

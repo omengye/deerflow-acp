@@ -18,10 +18,11 @@ class adds Windows -> WSL on the way in and the inverse pair on the way out.
 from __future__ import annotations
 
 import re
-import subprocess
+import threading
 from typing import ClassVar
 
 from deerflow.sandbox.env_policy import build_sandbox_subprocess_env
+from deerflow.sandbox.command import COMMAND_CLEANUP_SECONDS, CommandResult, linux_supervisor_args, run_host_command
 from deerflow.sandbox.local.local_sandbox import LocalSandbox, PathMapping
 from deerflow.sandbox.local.wsl_exceptions import WslUnavailableError
 
@@ -58,8 +59,9 @@ class WslSandbox(LocalSandbox):
         wsl_shell: str = "bash",
         mount_prefix: str = "/mnt",
         path_mappings: list[PathMapping] | None = None,
+        command_timeout_seconds: float = EXECUTE_TIMEOUT_SECONDS,
     ) -> None:
-        super().__init__(id, path_mappings=path_mappings)
+        super().__init__(id, path_mappings=path_mappings, command_timeout_seconds=command_timeout_seconds)
         self.distro = distro
         self.wsl_user = wsl_user
         self.wsl_shell = wsl_shell
@@ -158,52 +160,35 @@ class WslSandbox(LocalSandbox):
         return argv
 
     def execute_command(self, command: str) -> str:
+        return self.execute_command_result(command).output
+
+    def execute_command_result(self, command: str, *, cancel_event: threading.Event | None = None) -> CommandResult:
         # virtual -> Windows  (inherited)
         resolved = self._resolve_paths_in_command(command)
         # Windows -> WSL  (new)
         wsl_command = self._translate_windows_paths_in_command(resolved)
 
-        argv = self._build_wsl_argv(wsl_command)
+        supervised, token = linux_supervisor_args(self.wsl_shell, wsl_command, self.command_timeout_seconds)
+        argv = ["wsl.exe"]
+        if self.distro:
+            argv += ["-d", self.distro]
+        if self.wsl_user:
+            argv += ["-u", self.wsl_user]
+        argv += ["--", *supervised]
         env = build_sandbox_subprocess_env(overrides={"WSL_UTF8": "1"})
 
         try:
-            result = subprocess.run(
-                argv,
-                shell=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self.EXECUTE_TIMEOUT_SECONDS,
-                env=env,
+            result = run_host_command(
+                argv, timeout=self.command_timeout_seconds + COMMAND_CLEANUP_SECONDS,
+                cancel_event=cancel_event, env=env, encoding="utf-8",
+                capture_limit=self.command_capture_limit_bytes, remote_token=token,
+                command_timeout=self.command_timeout_seconds,
             )
         except FileNotFoundError as exc:
             raise WslUnavailableError(
                 "WSL is not installed or wsl.exe is not on PATH. Install Windows "
                 "Subsystem for Linux and a distro before using LocalWslProvider."
             ) from exc
-        except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout or ""
-            stderr = exc.stderr or ""
-            if isinstance(stdout, bytes):
-                stdout = stdout.decode("utf-8", errors="replace")
-            if isinstance(stderr, bytes):
-                stderr = stderr.decode("utf-8", errors="replace")
-            output = stdout
-            if stderr:
-                output += f"\nStd Error:\n{stderr}" if output else stderr
-            output += f"\nExit Code: -1 (timeout after {self.EXECUTE_TIMEOUT_SECONDS}s)"
-            return self._reverse_resolve_paths_in_output(
-                self._translate_wsl_paths_in_output(output)
-            )
-
-        output = result.stdout
-        if result.stderr:
-            output += f"\nStd Error:\n{result.stderr}" if output else result.stderr
-        if result.returncode != 0:
-            output += f"\nExit Code: {result.returncode}"
-
-        final_output = output if output else "(no output)"
         # WSL -> Windows -> virtual
-        windows_output = self._translate_wsl_paths_in_output(final_output)
-        return self._reverse_resolve_paths_in_output(windows_output)
+        windows_output = self._translate_wsl_paths_in_output(result.output)
+        return CommandResult(self._reverse_resolve_paths_in_output(windows_output), result.exit_code, result.status, result.termination_confirmed)
