@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from copy import deepcopy
 
 import pytest
@@ -39,13 +40,22 @@ def test_injection_budget_preserves_first_retrieved_chinese_fact():
     assert _count_tokens(result) <= budget
 
 
+@pytest.mark.parametrize("missing_fts5", [False, True])
 @pytest.mark.parametrize("query,duplicate,distinct", [
     ("Python", "Python automation scripts", "Python deployments Kubernetes monitoring"),
     ("中文", "中文技术交流说明", "中文文档排版和插图"),
 ])
-def test_mmr_retrieves_extra_candidates_and_diversifies_without_storage_changes(tmp_path, monkeypatch, query, duplicate, distinct):
+def test_mmr_retrieves_extra_candidates_and_diversifies_without_storage_changes(
+    tmp_path, monkeypatch, query, duplicate, distinct, missing_fts5
+):
     config = MemoryConfig(retrieval_index_path=str(tmp_path / "ranking.sqlite3"), retrieval_top_k=2)
     monkeypatch.setattr(retrieval, "get_memory_config", lambda: config)
+    if missing_fts5:
+
+        def no_fts5():
+            raise sqlite3.OperationalError("no such module: fts5")
+
+        monkeypatch.setattr(retrieval, "_connect", no_fts5)
     memory = {"facts": [_fact("a", duplicate), _fact("b", duplicate), _fact("c", distinct)]}
     original = deepcopy(memory)
     plain = retrieval.search_memory_facts(query, memory)
