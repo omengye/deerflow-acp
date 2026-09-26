@@ -223,7 +223,7 @@ class LocalSandbox(Sandbox):
     def _is_resolved_path_read_only(self, resolved: ResolvedPath) -> bool:
         return bool(resolved.mapping and resolved.mapping.read_only) or self._is_read_only_path(resolved.path)
 
-    def _reverse_resolve_path(self, path: str) -> str:
+    def _reverse_resolve_path(self, path: str, *, preserve_lexical: bool = False) -> str:
         """
         Reverse resolve local path back to container path using mappings.
 
@@ -234,7 +234,10 @@ class LocalSandbox(Sandbox):
             Container path if mapping exists, otherwise original path
         """
         normalized_path = path.replace("\\", "/")
-        path_str = os.path.realpath(normalized_path)
+        # Directory entries name the link itself, even when its target is
+        # missing. The listing helper already rejects targets outside its
+        # requested root, so only its display path needs lexical projection.
+        path_str = os.path.abspath(normalized_path) if preserve_lexical else os.path.realpath(normalized_path)
 
         # Try each mapping (longest local path first for more specific matches)
         for mapping in sorted(self.path_mappings, key=lambda m: len(m.local_path), reverse=True):
@@ -663,7 +666,7 @@ class LocalSandbox(Sandbox):
                       cursor: str | None = None) -> DirectoryPage:
         result = list_dir_page(self._resolve_path(path), max_depth=max_depth, limit=limit,
                                cursor=cursor, ignore_patterns=IGNORE_PATTERNS)
-        entries = [self._reverse_resolve_path(entry.rstrip("/")) + ("/" if entry.endswith("/") else "")
+        entries = [self._reverse_resolve_path(entry.rstrip("/"), preserve_lexical=True) + ("/" if entry.endswith("/") else "")
                    for entry in result.entries]
         return replace(result, entries=entries)
 

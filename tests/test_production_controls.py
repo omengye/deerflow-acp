@@ -324,20 +324,25 @@ class ProductionControlsTests(unittest.IsolatedAsyncioTestCase):
         original_type = settings.checkpointer_type
         original_path = settings.checkpointer_path
         original_fallback = settings.allow_memory_fallback
-        settings.checkpointer_type = "sqlite"
-        settings.checkpointer_path = "/tmp/deerflow-api-test/checkpoints.db"
-        settings.allow_memory_fallback = False
-
         class _Conn:
             def close(self) -> None:
                 pass
 
         try:
-            manager = ClientManager()
-            with patch("app.dependencies.sqlite3.connect", return_value=_Conn()):
-                with patch("langgraph.checkpoint.sqlite.SqliteSaver", side_effect=RuntimeError("sqlite unavailable")):
-                    with self.assertRaises(RuntimeError):
-                        manager._get_checkpointer()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                settings.checkpointer_type = "sqlite"
+                settings.checkpointer_path = str(Path(tmpdir) / "checkpoints.db")
+                settings.allow_memory_fallback = False
+                manager = ClientManager()
+                with (
+                    patch("app.dependencies.sqlite3.connect", return_value=_Conn()),
+                    patch(
+                        "langgraph.checkpoint.sqlite.SqliteSaver",
+                        side_effect=RuntimeError("sqlite unavailable"),
+                    ),
+                    self.assertRaises(RuntimeError),
+                ):
+                    manager._get_checkpointer()
         finally:
             settings.checkpointer_type = original_type
             settings.checkpointer_path = original_path

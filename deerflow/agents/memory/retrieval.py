@@ -10,9 +10,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 import sqlite3
 import threading
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -205,44 +207,99 @@ def search_memory_facts(
         return []
     candidate_limit = min(int(limit) * 4, 400) if config.retrieval_mmr_enabled else int(limit)
 
-    if not rebuild_memory_index(memory_data, agent_name):
-        return []
-    try:
-        with _INDEX_LOCK, _connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT fact_id, display_content, category, confidence, source_error,
-                       bm25(memory_facts_fts) AS rank
-                FROM memory_facts_fts
-                WHERE memory_facts_fts MATCH ? AND agent_key = ?
-                ORDER BY rank ASC
-                LIMIT ?
-                """,
-                (expression, _agent_key(agent_name), candidate_limit),
-            ).fetchall()
-    except (OSError, sqlite3.Error):
-        logger.warning("Failed to query memory FTS5 index", exc_info=True)
-        return []
-
-    results: list[dict[str, Any]] = []
-    for fact_id, content, category, confidence, source_error, rank in rows:
+    rows = None
+    if rebuild_memory_index(memory_data, agent_name):
         try:
-            parsed_confidence = float(confidence)
-        except (TypeError, ValueError):
-            parsed_confidence = 0.5
-        result = {
-            "id": fact_id,
-            "content": content,
-            "category": category,
-            "confidence": parsed_confidence,
-            "bm25_score": -float(rank),
-        }
-        if source_error:
-            result["sourceError"] = source_error
-        results.append(result)
+            with _INDEX_LOCK, _connect() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT fact_id, display_content, category, confidence, source_error,
+                           bm25(memory_facts_fts) AS rank
+                    FROM memory_facts_fts
+                    WHERE memory_facts_fts MATCH ? AND agent_key = ?
+                    ORDER BY rank ASC
+                    LIMIT ?
+                    """,
+                    (expression, _agent_key(agent_name), candidate_limit),
+                ).fetchall()
+        except (OSError, sqlite3.Error):
+            logger.warning("Failed to query memory FTS5 index", exc_info=True)
+
+    if rows is None:
+        # The JSON facts are authoritative. Keep retrieval available on Python
+        # builds without FTS5 and when the disposable side index cannot be used.
+        results = _search_without_index(query, memory_data, candidate_limit)
+    else:
+        results = []
+        for fact_id, content, category, confidence, source_error, rank in rows:
+            try:
+                parsed_confidence = float(confidence)
+            except (TypeError, ValueError):
+                parsed_confidence = 0.5
+            result = {
+                "id": fact_id,
+                "content": content,
+                "category": category,
+                "confidence": parsed_confidence,
+                "bm25_score": -float(rank),
+            }
+            if source_error:
+                result["sourceError"] = source_error
+            results.append(result)
     if config.retrieval_mmr_enabled:
         return _diversify_facts(results, limit=int(limit), relevance_weight=config.retrieval_mmr_lambda)
     return results
+
+
+def _search_without_index(query: str, memory_data: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    """Rank the current JSON facts with BM25 when the SQLite index is unusable."""
+    query_tokens = set(_tokens(query)[:64])
+    documents: list[tuple[dict[str, Any], set[str]]] = []
+    frequencies: Counter[str] = Counter()
+    for fact in memory_data.get("facts", []):
+        if not isinstance(fact, dict):
+            continue
+        content = fact.get("content")
+        if not isinstance(content, str) or not content.strip() or not isinstance(fact.get("id"), str):
+            continue
+        tokens = set(_tokens(content))
+        if not tokens:
+            continue
+        documents.append((fact, tokens))
+        frequencies.update(tokens & query_tokens)
+
+    if not documents:
+        return []
+    average_length = sum(len(tokens) for _, tokens in documents) / len(documents)
+    results: list[dict[str, Any]] = []
+    for fact, tokens in documents:
+        matches = query_tokens & tokens
+        if not matches:
+            continue
+        length_factor = 1.2 * (0.25 + 0.75 * len(tokens) / average_length)
+        score = sum(
+            math.log1p((len(documents) - frequencies[token] + 0.5) / (frequencies[token] + 0.5))
+            * 2.2
+            / (1.0 + length_factor)
+            for token in matches
+        )
+        try:
+            confidence = float(fact.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            confidence = 0.5
+        result = {
+            "id": fact["id"],
+            "content": fact["content"].strip(),
+            "category": str(fact.get("category", "context")),
+            "confidence": confidence,
+            "bm25_score": score,
+        }
+        source_error = str(fact.get("sourceError", ""))
+        if source_error:
+            result["sourceError"] = source_error
+        results.append(result)
+    results.sort(key=lambda fact: fact["bm25_score"], reverse=True)
+    return results[:limit]
 
 
 def _diversify_facts(facts: list[dict[str, Any]], *, limit: int, relevance_weight: float) -> list[dict[str, Any]]:

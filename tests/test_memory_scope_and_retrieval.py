@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from deerflow.agents.memory import retrieval
 from deerflow.agents.memory.retrieval import search_memory_facts
 from deerflow.agents.memory.storage import create_empty_memory, reset_memory_storage
 from deerflow.agents.memory.updater import MemoryUpdater, create_memory_fact, get_memory_data
@@ -171,6 +173,43 @@ def test_fts5_preserves_correction_source_error(tmp_path, restore_memory_config)
     result = search_memory_facts("production API", memory)[0]
 
     assert result["sourceError"] == "using the staging API endpoint"
+
+
+@pytest.mark.parametrize("failure_stage", ["rebuild", "query"])
+def test_missing_fts5_searches_current_json_facts(
+    tmp_path, restore_memory_config, monkeypatch, failure_stage
+):
+    set_memory_config(
+        MemoryConfig(
+            retrieval_index_path=str(tmp_path / "memory-fts5.sqlite3"),
+            retrieval_enabled=True,
+            retrieval_top_k=2,
+        )
+    )
+
+    def missing_fts5():
+        raise sqlite3.OperationalError("no such module: fts5")
+
+    if failure_stage == "query":
+        monkeypatch.setattr(retrieval, "rebuild_memory_index", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(retrieval, "_connect", missing_fts5)
+    memory = {
+        "facts": [
+            {"id": "python", "content": "The user prefers Python automation.", "confidence": 0.9},
+            {"id": "chinese", "content": "用户偏好使用中文交流技术问题。", "category": "preference"},
+            {"id": "correction", "content": "Use the production API endpoint.", "sourceError": "staging API"},
+        ]
+    }
+
+    assert search_memory_facts("Python automation", memory)[0]["id"] == "python"
+    assert search_memory_facts("中文技术交流", memory)[0]["id"] == "chinese"
+    correction = search_memory_facts("production API", memory)[0]
+    assert correction["sourceError"] == "staging API"
+    assert correction["bm25_score"] > 0
+
+    memory["facts"][0]["content"] = "The user prefers Rust for systems programming."
+    assert search_memory_facts("Python automation", memory) == []
+    assert search_memory_facts("Rust systems", memory)[0]["id"] == "python"
 
 
 def test_memory_middleware_injects_retrieval_transiently(tmp_path, restore_memory_config):

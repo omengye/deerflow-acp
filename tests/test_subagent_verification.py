@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -228,6 +229,7 @@ def test_acceptance_test_commands_reject_shell_ambiguous_syntax(command) -> None
     assert verdict["leaves"][0]["checked"] is False
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows path comparison requires Windows")
 def test_acceptance_windows_absolute_path_comparison_is_case_insensitive(tmp_path) -> None:
     workspace = tmp_path / "Workspace"
     workspace.mkdir()

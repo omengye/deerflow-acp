@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from deerflow.sandbox.aio import AioSandbox
-from deerflow.sandbox.file_io import FileVersionMismatchError
+from deerflow.sandbox.file_io import DirectoryPage, FileVersionMismatchError
 from deerflow.sandbox.local.local_sandbox import LocalSandbox, PathMapping
 from deerflow.sandbox.local.wsl_sandbox import WslSandbox
 
@@ -230,6 +230,45 @@ def test_directory_page_accepts_dangling_internal_symlink(sandbox, tmp_path):
     page = sandbox.list_dir_page(str(tmp_path))
     assert page.entries == [str(link)]
     assert not page.truncated
+
+
+def test_local_directory_page_keeps_mapped_link_name_and_excludes_escape(tmp_path):
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private", encoding="utf-8")
+    dangling = mount / "dangling"
+    escaped = mount / "outside-link"
+    try:
+        dangling.symlink_to(mount / "missing-target")
+        escaped.symlink_to(outside)
+    except OSError:
+        pytest.skip("This host does not permit symlink creation")
+
+    sandbox = LocalSandbox("mapped-links", [PathMapping("/mnt/skills", str(mount))])
+    page = sandbox.list_dir_page("/mnt/skills")
+    assert page.entries == ["/mnt/skills/dangling"]
+    with pytest.raises(PermissionError):
+        sandbox.read_file("/mnt/skills/outside-link")
+
+
+def test_local_directory_page_projects_link_name_without_following_target(tmp_path, monkeypatch):
+    from deerflow.sandbox.local import local_sandbox as local_module
+
+    link = tmp_path / "dangling"
+    target = tmp_path / "missing-target"
+    original_realpath = local_module.os.path.realpath
+
+    def resolve_link(candidate, *args, **kwargs):
+        if Path(candidate) == link:
+            return str(target)
+        return original_realpath(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(local_module.os.path, "realpath", resolve_link)
+    monkeypatch.setattr(local_module, "list_dir_page", lambda *_args, **_kwargs:
+                        DirectoryPage([str(link)], None, False, "version"))
+    sandbox = LocalSandbox("mapped-links", [PathMapping("/mnt/skills", str(tmp_path))])
+    assert sandbox.list_dir_page("/mnt/skills").entries == ["/mnt/skills/dangling"]
 
 
 def test_legacy_remote_read_keeps_content_and_classifies_errors(tmp_path, monkeypatch):
