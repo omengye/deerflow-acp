@@ -12,6 +12,7 @@ import os
 import secrets
 import signal
 import sys
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
@@ -434,6 +435,7 @@ async def _run_daemon(
     *,
     warmup: bool,
 ) -> None:
+    startup_started = time.perf_counter()
     config = LocalACPConfig.from_file(config_path)
     config.prepare_environment()
     # Saving a draft must not auto-reload global model/tool settings mid-turn.
@@ -441,24 +443,52 @@ async def _run_daemon(
     set_app_config(get_app_config())
     from deerflow.config.agents_config import freeze_agent_catalog
     freeze_agent_catalog()
+    logger.info(
+        "ACP startup configuration ready in %.2fs",
+        time.perf_counter() - startup_started,
+    )
+    stage_started = time.perf_counter()
     runtime = LocalACPRuntime(config)
     runtime._pinned_config = get_app_config()
     runtime.validate_sandbox_provider()
     store = LocalACPSessionStore(config.session_store_path)
     store.setup()
+    logger.info(
+        "ACP startup session store ready in %.2fs",
+        time.perf_counter() - stage_started,
+    )
     daemon = ACPDaemon(config, store, runtime, runtime_dir)
     warmup_task: asyncio.Task[None] | None = None
     cleanup_task: asyncio.Task[None] | None = None
     try:
+        stage_started = time.perf_counter()
         await runtime.open()
+        logger.info(
+            "ACP startup checkpointer ready in %.2fs",
+            time.perf_counter() - stage_started,
+        )
+        stage_started = time.perf_counter()
         await cleanup_expired_sessions(config, store, runtime, compact=True)
+        logger.info(
+            "ACP startup session cleanup finished in %.2fs",
+            time.perf_counter() - stage_started,
+        )
         cleanup_task = asyncio.create_task(
             run_session_cleanup_loop(config, store, runtime)
         )
-        await daemon.start()
-        _install_signal_handlers(daemon)
+        # Publish the actual startup phase with the endpoint. A status request
+        # can arrive immediately after daemon.start() makes it discoverable.
         if warmup:
             daemon.warmup_state = "warming"
+        stage_started = time.perf_counter()
+        await daemon.start()
+        logger.info(
+            "ACP startup endpoint published in %.2fs (total %.2fs after module load)",
+            time.perf_counter() - stage_started,
+            time.perf_counter() - startup_started,
+        )
+        _install_signal_handlers(daemon)
+        if warmup:
             async def _do_warmup() -> None:
                 try:
                     logger.info("Warming DeerFlow agent graph in background")

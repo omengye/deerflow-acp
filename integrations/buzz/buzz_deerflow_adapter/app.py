@@ -401,6 +401,10 @@ class AdapterApp:
                 await self._process_message(message)
             except asyncio.CancelledError:
                 raise
+            except BuzzTransportError:
+                # Keep the inbox and cached reply intact during an outage. The
+                # poll loop retries later without exhausting message attempts.
+                raise
             except BuzzDeliveryUnknownError as exc:
                 self.state.mark_delivery_unknown(message.key, str(exc))
                 logger.error(

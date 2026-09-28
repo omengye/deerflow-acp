@@ -2046,6 +2046,100 @@ impl Waku {
 
     // ── Header ─────────────────────────────────────────────────────────────
 
+    fn render_deerflow_status_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.daemon.is_remote() {
+            return None;
+        }
+        let theme = Theme::current(cx);
+        let phase = self.deerflow_settings.service_phase();
+        let (label, icon_path, icon_color) = match phase {
+            deerflow_settings::DeerFlowServicePhase::Unknown => {
+                ("ACP 检测中", "icons/loader-circle.svg", theme.text_tertiary)
+            }
+            deerflow_settings::DeerFlowServicePhase::Starting => (
+                "ACP 启动中",
+                "icons/loader-circle.svg",
+                theme.text_secondary,
+            ),
+            deerflow_settings::DeerFlowServicePhase::Warming => {
+                ("ACP 预热中", "icons/loader-circle.svg", theme.warning)
+            }
+            deerflow_settings::DeerFlowServicePhase::Ready => {
+                ("ACP 已就绪", "icons/check.svg", theme.success)
+            }
+            deerflow_settings::DeerFlowServicePhase::Applying => (
+                "ACP 应用中",
+                "icons/loader-circle.svg",
+                theme.text_secondary,
+            ),
+            deerflow_settings::DeerFlowServicePhase::Stopping => (
+                "ACP 停止中",
+                "icons/loader-circle.svg",
+                theme.text_secondary,
+            ),
+            deerflow_settings::DeerFlowServicePhase::Failed => {
+                let label = if self.deerflow_settings.startup_failed() {
+                    "ACP 启动失败"
+                } else {
+                    "ACP 操作失败"
+                };
+                (label, "icons/alert.svg", theme.danger)
+            }
+            deerflow_settings::DeerFlowServicePhase::Stopped => {
+                ("ACP 未启动", "icons/alert.svg", theme.text_tertiary)
+            }
+        };
+        let indicator = if matches!(
+            phase,
+            deerflow_settings::DeerFlowServicePhase::Unknown
+                | deerflow_settings::DeerFlowServicePhase::Starting
+                | deerflow_settings::DeerFlowServicePhase::Warming
+                | deerflow_settings::DeerFlowServicePhase::Applying
+                | deerflow_settings::DeerFlowServicePhase::Stopping
+        ) {
+            motion::spin_slow(icon(icon_path, 12.0, icon_color))
+        } else {
+            icon(icon_path, 12.0, icon_color).into_any_element()
+        };
+        let focus = self.transcript_control_focus("header-deerflow-status", cx);
+        Some(
+            div()
+                .id("header-deerflow-status")
+                .track_focus(&focus)
+                .tab_index(0)
+                .tab_group()
+                .tab_stop(true)
+                .h(px(26.0))
+                .px(px(8.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .rounded(px(6.0))
+                .bg(theme.overlay)
+                .text_size(sp(11.5))
+                .text_color(theme.text_secondary)
+                .cursor_default()
+                .focus_visible(|style| style.border_1().border_color(theme.accent))
+                .hover(|style| style.bg(theme.overlay_strong))
+                .active(|style| style.bg(theme.overlay_strong))
+                .tooltip(Tooltip::text("点击打开 DeerFlow 设置"))
+                .child(indicator)
+                .child(label)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_settings_action(&OpenSettings, window, cx);
+                }))
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        this.open_settings_action(&OpenSettings, window, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn render_header(
         &self,
         window: &Window,
@@ -2181,6 +2275,9 @@ impl Waku {
                     cx,
                 ),
             )
+            .when_some(self.render_deerflow_status_chip(cx), |element, chip| {
+                element.child(chip)
+            })
             .child(self.render_background_work_summary(cx))
             .when(!self.right_panel_visible, |element| {
                 element

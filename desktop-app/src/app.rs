@@ -3043,6 +3043,7 @@ impl Waku {
         // first frame.
         entity.update(cx, |this, cx| {
             this.restart_task_state_sync();
+            this.auto_start_deerflow(cx);
             for session_id in startup_live_session_ids {
                 this.start_runtime_attachment(session_id, cx);
             }

@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 from buzz_deerflow_adapter.acp_errors import ACPPromptError, ACPPromptTimeoutError
 from buzz_deerflow_adapter.app import AdapterApp
-from buzz_deerflow_adapter.buzz_cli import BuzzCLIError, BuzzDeliveryUnknownError
+from buzz_deerflow_adapter.buzz_cli import (
+    BuzzCLIError,
+    BuzzDeliveryUnknownError,
+    BuzzTransportError,
+)
 from buzz_deerflow_adapter.config import AdapterConfig
 from buzz_deerflow_adapter.models import BuzzChannel, BuzzMessage
 
@@ -147,6 +151,72 @@ async def test_delivery_retry_reuses_persisted_response(tmp_path: Path) -> None:
             .fetchone()
         )
         assert tuple(row) == ("done", 1, None)
+    finally:
+        app.state.close()
+
+
+async def test_transport_outage_preserves_reply_until_delivery_recovers(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path, max_attempts=2)
+    object.__setattr__(app.config, "status_enabled", False)
+
+    class TrackingACP(_FakeACP):
+        def __init__(self) -> None:
+            super().__init__()
+            self.open_calls = 0
+            self.close_calls = 0
+
+        async def open(self) -> None:
+            self.open_calls += 1
+
+        async def close(self) -> None:
+            self.close_calls += 1
+
+    class UnavailableBuzz:
+        def __init__(self) -> None:
+            self.unavailable = True
+            self.replies: list[str] = []
+
+        async def send_message(self, channel, reply_to, content):
+            assert channel == "11111111-1111-1111-1111-111111111111"
+            assert reply_to == "c" * 64
+            self.replies.append(content)
+            if self.unavailable:
+                raise BuzzTransportError("Buzz CLI temporarily unavailable")
+            return {"accepted": True}
+
+    app.acp = acp = TrackingACP()  # type: ignore[assignment]
+    app.buzz = buzz = UnavailableBuzz()  # type: ignore[assignment]
+    _enqueue(app)
+    failed_cycles = app.config.max_message_attempts + 1
+    try:
+        for cycle in range(1, failed_cycles + 1):
+            with pytest.raises(BuzzTransportError, match="temporarily unavailable"):
+                await app._process_pending()
+            assert len(buzz.replies) == cycle * app.config.transport_retry_attempts
+            row = (
+                app.state._conn()
+                .execute("SELECT status, attempts, response_content FROM inbox_messages")
+                .fetchone()
+            )
+            assert tuple(row) == ("pending", 0, "saved reply")
+            assert acp.prompt_calls == 1
+            assert (acp.open_calls, acp.close_calls) == (0, 0)
+
+        buzz.unavailable = False
+        await app._process_pending()
+        assert len(buzz.replies) == failed_cycles * app.config.transport_retry_attempts + 1
+        assert set(buzz.replies) == {"saved reply"}
+        assert acp.prompt_calls == 1
+        assert (acp.open_calls, acp.close_calls) == (0, 0)
+        row = (
+            app.state._conn()
+            .execute("SELECT status, attempts, response_content FROM inbox_messages")
+            .fetchone()
+        )
+        assert tuple(row) == ("done", 0, None)
+        assert not app.state.pending()
     finally:
         app.state.close()
 

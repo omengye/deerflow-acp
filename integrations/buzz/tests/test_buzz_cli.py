@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import sys
 from pathlib import Path
@@ -124,6 +125,37 @@ async def test_cli_classifies_retryable_and_unknown_delivery(monkeypatch) -> Non
     monkeypatch.setenv("FAKE_BUZZ_SEND_MODE", "delivery_unknown")
     with pytest.raises(BuzzDeliveryUnknownError):
         await _cli(monkeypatch).send_message("channel-1", EVENT, "reply")
+
+
+@pytest.mark.parametrize("send", [False, True])
+async def test_missing_executable_is_safe_to_retry(tmp_path: Path, send: bool) -> None:
+    command = str(tmp_path / "missing-buzz.exe")
+    cli = BuzzCLI(command, [], "wss://relay.example")
+
+    with pytest.raises(BuzzTransportError, match="Could not start Buzz CLI") as caught:
+        if send:
+            await cli.send_message("channel-1", EVENT, "reply")
+        else:
+            await cli.list_channels()
+
+    assert isinstance(caught.value.__cause__, FileNotFoundError)
+    assert repr(command) in str(caught.value)
+    assert "buzz.command" in str(caught.value)
+
+
+async def test_locked_executable_is_safe_to_retry(monkeypatch) -> None:
+    error = PermissionError(errno.EACCES, "Permission denied")
+
+    async def fail_to_start(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(
+        "buzz_deerflow_adapter.buzz_cli.asyncio.create_subprocess_exec", fail_to_start
+    )
+    with pytest.raises(BuzzTransportError, match="Could not start Buzz CLI") as caught:
+        await _cli(monkeypatch).send_message("channel-1", EVENT, "reply")
+
+    assert caught.value.__cause__ is error
 
 
 async def test_timeout_is_ambiguous_only_for_send(monkeypatch) -> None:
