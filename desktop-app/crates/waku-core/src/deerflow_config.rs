@@ -178,6 +178,8 @@ pub fn launch_arguments() -> Result<Vec<String>> {
 #[derive(Default)]
 struct ServiceState {
     applying: AtomicBool,
+    starting: AtomicBool,
+    pending_restart: AtomicBool,
     applied_generation: AtomicU64,
     cancel: AtomicBool,
     apply_error: Mutex<Option<String>>,
@@ -188,6 +190,12 @@ struct ServiceState {
 #[derive(Clone, Default)]
 pub struct DeerFlowService {
     state: Arc<ServiceState>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ApplyIntent {
+    EnsureRunning,
+    Restart,
 }
 
 impl DeerFlowService {
@@ -209,7 +217,7 @@ impl DeerFlowService {
                 if operation == "save-and-apply" {
                     save_and_apply(
                         || paths.config_command("save", &input),
-                        || self.begin_apply(&paths),
+                        || self.begin_apply(&paths, ApplyIntent::Restart),
                     )
                 } else {
                     paths.config_command("save", &input)
@@ -219,18 +227,20 @@ impl DeerFlowService {
             "status" => Ok(self.status(&paths)),
             "apply" => {
                 let _guard = self.state.mutation.lock();
-                self.begin_apply(&paths)
+                self.begin_apply(&paths, ApplyIntent::Restart)
             }
             "cancel-apply" => {
                 self.state.cancel.store(true, Ordering::Release);
+                self.state.pending_restart.store(false, Ordering::Release);
                 Ok(self.status(&paths))
             }
             "start" => {
                 // Use the same background workflow so cold starts cannot time out the RPC.
+                let _guard = self.state.mutation.lock();
                 if paths.live_status()["running"] == true {
                     return Ok(self.status(&paths));
                 }
-                self.request("apply", Value::Null)
+                self.begin_apply(&paths, ApplyIntent::EnsureRunning)
             }
             "stop" => {
                 let _guard = self.state.mutation.lock();
@@ -246,6 +256,7 @@ impl DeerFlowService {
                     let _ = paths.manage(&json!({"operation":"daemon.resume"}));
                     return Err(error);
                 }
+                *self.state.apply_error.lock() = None;
                 Ok(self.status(&paths))
             }
             _ => unreachable!("operation allowlist"),
@@ -264,10 +275,19 @@ impl DeerFlowService {
 
     /// Caller holds mutation: the saved revision and scheduled restart cannot
     /// be interleaved with another config write.
-    fn begin_apply(&self, paths: &Paths) -> Result<Value> {
+    fn begin_apply(&self, paths: &Paths, intent: ApplyIntent) -> Result<Value> {
         if self.state.applying.swap(true, Ordering::AcqRel) {
+            // An explicit apply must still run if it arrives during automatic startup.
+            // Repeated apply requests during an ordinary restart are redundant.
+            if intent == ApplyIntent::Restart && self.state.starting.load(Ordering::Acquire) {
+                self.state.cancel.store(false, Ordering::Release);
+                self.state.pending_restart.store(true, Ordering::Release);
+            }
             return Ok(self.status(paths));
         }
+        self.state
+            .starting
+            .store(intent == ApplyIntent::EnsureRunning, Ordering::Release);
         self.state.cancel.store(false, Ordering::Release);
         *self.state.apply_error.lock() = None;
         let service = self.clone();
@@ -275,21 +295,50 @@ impl DeerFlowService {
         if let Err(error) = std::thread::Builder::new()
             .name("deerflow-apply".into())
             .spawn(move || {
-                if let Err(error) = service.apply(&worker_paths) {
-                    let _ = worker_paths.manage(&json!({"operation":"daemon.resume"}));
-                    *service.state.apply_error.lock() = Some(error.to_string());
+                let mut intent = intent;
+                loop {
+                    if let Err(error) = service.apply(&worker_paths, intent) {
+                        let _ = worker_paths.manage(&json!({"operation":"daemon.resume"}));
+                        *service.state.apply_error.lock() = Some(error.to_string());
+                    }
+                    // begin_apply is called under mutation. Holding it here makes
+                    // checking the queued restart and clearing applying atomic
+                    // with respect to the next explicit apply request.
+                    let _guard = service.state.mutation.lock();
+                    if intent == ApplyIntent::EnsureRunning
+                        && service.state.pending_restart.swap(false, Ordering::AcqRel)
+                    {
+                        *service.state.apply_error.lock() = None;
+                        service.state.starting.store(false, Ordering::Release);
+                        intent = ApplyIntent::Restart;
+                        continue;
+                    }
+                    service.state.starting.store(false, Ordering::Release);
+                    service.state.applying.store(false, Ordering::Release);
+                    break;
                 }
-                service.state.applying.store(false, Ordering::Release);
             })
         {
             *self.state.apply_error.lock() = Some(error.to_string());
+            self.state.starting.store(false, Ordering::Release);
             self.state.applying.store(false, Ordering::Release);
             return Err(error.into());
         }
         Ok(self.status(paths))
     }
 
-    fn apply(&self, paths: &Paths) -> Result<()> {
+    fn apply(&self, paths: &Paths, intent: ApplyIntent) -> Result<()> {
+        if intent == ApplyIntent::EnsureRunning {
+            if self.state.cancel.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            // The bridge's --start-daemon is idempotent. Another ACP client may
+            // have started the service since request("start") checked status;
+            // never drain or stop that process for a startup request.
+            paths.bridge_command("--start-daemon", None)?;
+            self.state.applied_generation.fetch_add(1, Ordering::AcqRel);
+            return Ok(());
+        }
         if paths.bridge_command("--status", None).is_ok() {
             paths.manage(&json!({"operation":"daemon.drain"}))?;
             loop {

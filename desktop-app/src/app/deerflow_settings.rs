@@ -18,6 +18,74 @@ enum Section {
     Tools,
     Runtime,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DeerFlowServicePhase {
+    Unknown,
+    Starting,
+    Warming,
+    Ready,
+    Applying,
+    Stopping,
+    Failed,
+    Stopped,
+}
+
+fn deerflow_service_phase(
+    status: &Value,
+    request_pending: bool,
+    startup_pending: bool,
+    startup_error: bool,
+    pending_operation: Option<&str>,
+) -> DeerFlowServicePhase {
+    if request_pending || pending_operation == Some("start") {
+        return DeerFlowServicePhase::Starting;
+    }
+    if matches!(
+        pending_operation,
+        Some("apply" | "save-and-apply" | "cancel-apply")
+    ) {
+        return DeerFlowServicePhase::Applying;
+    }
+    if pending_operation == Some("stop") {
+        return DeerFlowServicePhase::Stopping;
+    }
+    if startup_error {
+        return DeerFlowServicePhase::Failed;
+    }
+    let applying = status["applying"].as_bool() == Some(true);
+    if !startup_pending && !applying && status["running"].as_bool() == Some(false) {
+        return DeerFlowServicePhase::Stopped;
+    }
+    if status["apply_error"].as_str().is_some() || status["warmup"] == "failed" {
+        return DeerFlowServicePhase::Failed;
+    }
+    if applying {
+        return if startup_pending {
+            DeerFlowServicePhase::Starting
+        } else {
+            DeerFlowServicePhase::Applying
+        };
+    }
+    if status["running"].as_bool() == Some(true) {
+        return if status["warmup"] == "warming" {
+            DeerFlowServicePhase::Warming
+        } else {
+            DeerFlowServicePhase::Ready
+        };
+    }
+    if startup_pending && status["status_error"].as_str().is_some() {
+        return DeerFlowServicePhase::Failed;
+    }
+    if startup_pending {
+        return DeerFlowServicePhase::Starting;
+    }
+    if status.is_null() {
+        DeerFlowServicePhase::Unknown
+    } else {
+        DeerFlowServicePhase::Stopped
+    }
+}
 impl Section {
     const ALL: [(Self, &'static str); 7] = [
         (Self::Overview, "概览"),
@@ -94,6 +162,9 @@ pub(super) struct DeerFlowSettings {
     status_generation: u64,
     observed_applied_generation: Option<u64>,
     refresh_after_start: bool,
+    startup_request_pending: bool,
+    startup_completion_pending: bool,
+    startup_error: Option<String>,
     model_refresh_queued: bool,
     model_refresh_retry_pending: bool,
     status: Value,
@@ -152,6 +223,9 @@ impl DeerFlowSettings {
             status_generation: 0,
             observed_applied_generation: None,
             refresh_after_start: false,
+            startup_request_pending: false,
+            startup_completion_pending: false,
+            startup_error: None,
             model_refresh_queued: false,
             model_refresh_retry_pending: false,
             status: Value::Null,
@@ -184,6 +258,20 @@ impl DeerFlowSettings {
     }
     fn can_edit(&self) -> bool {
         self.draft.is_some() && !self.busy() && !self.applying()
+    }
+
+    pub(super) fn service_phase(&self) -> DeerFlowServicePhase {
+        deerflow_service_phase(
+            &self.status,
+            self.startup_request_pending,
+            self.startup_completion_pending,
+            self.startup_error.is_some(),
+            self.pending.as_deref(),
+        )
+    }
+
+    pub(super) fn startup_failed(&self) -> bool {
+        self.startup_error.is_some() || self.status["warmup"] == "failed"
     }
 
     fn observe_saved_revision(&mut self) {
@@ -338,6 +426,64 @@ fn document_with_model_names(
 }
 
 impl Waku {
+    pub(super) fn auto_start_deerflow(&mut self, cx: &mut Context<Self>) {
+        // A remote Waku daemon is managed outside this desktop process.
+        if self.daemon.is_remote() {
+            return;
+        }
+        self.deerflow_settings.startup_request_pending = true;
+        self.deerflow_settings.startup_completion_pending = true;
+        self.deerflow_settings.startup_error = None;
+        cx.notify();
+        let daemon = self.daemon.client();
+        cx.spawn(async move |this, cx| {
+            let result: anyhow::Result<Value> = cx
+                .background_executor()
+                .spawn(async move {
+                    match daemon.request(
+                        Uuid::nil(),
+                        Uuid::nil(),
+                        waku_client::Command::DeerFlow {
+                            operation: "start".into(),
+                            input: json!({}),
+                        },
+                    )? {
+                        waku_client::ResponsePayload::DeerFlow { data } => Ok(data),
+                        _ => anyhow::bail!("DeerFlow 返回了无法识别的响应"),
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.deerflow_settings.startup_request_pending = false;
+                match result {
+                    Ok(status) => {
+                        // A status read started before the start response must not
+                        // overwrite the newer startup state when it returns.
+                        this.deerflow_settings.status_generation += 1;
+                        this.deerflow_settings.status_pending = false;
+                        this.deerflow_settings.status = status;
+                        this.deerflow_settings.error = None;
+                        this.deerflow_settings.refresh_after_start = true;
+                        this.deerflow_status(cx);
+                        this.deerflow_poll_status(cx);
+                    }
+                    Err(error) => {
+                        let message = redact_deerflow_message(
+                            &format!("自动启动 DeerFlow 服务失败：{error}"),
+                            this.deerflow_settings.draft.as_ref(),
+                        );
+                        this.deerflow_settings.startup_completion_pending = false;
+                        this.deerflow_settings.startup_error = Some(message.clone());
+                        this.deerflow_settings.error = Some(message);
+                        this.show_toast("DeerFlow ACP 启动失败，请在设置中查看详情");
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub(crate) fn has_unsaved_deerflow_settings(&self) -> bool {
         self.deerflow_settings.dirty || self.deerflow_settings.busy()
     }
@@ -389,6 +535,17 @@ impl Waku {
     fn deerflow_request(&mut self, operation: &str, input: Value, cx: &mut Context<Self>) {
         if self.deerflow_settings.busy() {
             return;
+        }
+        match operation {
+            "start" => {
+                self.deerflow_settings.startup_completion_pending = true;
+                self.deerflow_settings.startup_error = None;
+            }
+            "stop" | "cancel-apply" | "apply" | "save-and-apply" => {
+                self.deerflow_settings.startup_completion_pending = false;
+                self.deerflow_settings.startup_error = None;
+            }
+            _ => {}
         }
         self.deerflow_settings.request_generation += 1;
         let generation = self.deerflow_settings.request_generation;
@@ -448,6 +605,15 @@ impl Waku {
                     return;
                 }
                 this.deerflow_settings.pending = None;
+                if matches!(
+                    operation.as_str(),
+                    "apply" | "save-and-apply" | "start" | "stop" | "cancel-apply"
+                ) {
+                    // A poll launched while this command was in flight may
+                    // return afterward with an older service state.
+                    this.deerflow_settings.status_generation += 1;
+                    this.deerflow_settings.status_pending = false;
+                }
                 if result.is_err() {
                     this.deerflow_settings.exit_after_save = false;
                 }
@@ -463,6 +629,13 @@ impl Waku {
                         } else {
                             error.to_string()
                         };
+                        if operation == "start" {
+                            this.deerflow_settings.startup_completion_pending = false;
+                            this.deerflow_settings.startup_error = Some(redact_deerflow_message(
+                                &message,
+                                this.deerflow_settings.draft.as_ref(),
+                            ));
+                        }
                         this.deerflow_service_error(&message, cx);
                     }
                     Ok(data) => match operation.as_str() {
@@ -588,6 +761,12 @@ impl Waku {
                         let ready = model_refresh_ready(&status);
                         this.deerflow_settings.status = status;
                         this.deerflow_settings.observe_saved_revision();
+                        if ready
+                            && this.deerflow_settings.status["warmup"] != "warming"
+                            && this.deerflow_settings.startup_error.take().is_some()
+                        {
+                            this.deerflow_settings.error = None;
+                        }
                         if let Some(error) = this.deerflow_settings.status["apply_error"].as_str() {
                             let message = if this.deerflow_settings.needs_apply {
                                 format!("配置已保存，但应用失败：{error}。可点击“重试应用”。")
@@ -607,6 +786,8 @@ impl Waku {
                             this.deerflow_settings.notice = Some(
                                 if applied {
                                     "配置已保存并应用。模型列表已请求刷新。"
+                                } else if this.deerflow_settings.status["warmup"] == "warming" {
+                                    "ACP 已连接，正在预热 Agent。"
                                 } else {
                                     "服务已启动。"
                                 }
@@ -626,16 +807,48 @@ impl Waku {
                             this.deerflow_settings.observed_applied_generation =
                                 Some(applied_generation);
                         }
-                        if this.deerflow_settings.applying() {
+                        let phase = this.deerflow_settings.service_phase();
+                        if this.deerflow_settings.startup_completion_pending {
+                            match phase {
+                                DeerFlowServicePhase::Ready => {
+                                    this.deerflow_settings.startup_completion_pending = false;
+                                    this.deerflow_settings.notice =
+                                        Some("DeerFlow ACP 已就绪。".into());
+                                    this.show_success_toast("DeerFlow ACP 已就绪");
+                                }
+                                DeerFlowServicePhase::Failed => {
+                                    this.deerflow_settings.startup_completion_pending = false;
+                                    if this.deerflow_settings.error.is_none() {
+                                        this.deerflow_settings.error =
+                                            Some("DeerFlow ACP 启动失败，请检查服务日志。".into());
+                                    }
+                                    this.deerflow_settings.startup_error =
+                                        this.deerflow_settings.error.clone();
+                                    this.show_toast("DeerFlow ACP 启动失败，请在设置中查看详情");
+                                }
+                                _ => {}
+                            }
+                        }
+                        if this.deerflow_settings.applying()
+                            || phase == DeerFlowServicePhase::Warming
+                            || this.deerflow_settings.startup_completion_pending
+                        {
                             this.deerflow_poll_status(cx);
                         }
                     }
                     Err(error) => {
-                        this.deerflow_settings.error = Some(redact_deerflow_message(
+                        let message = redact_deerflow_message(
                             &error.to_string(),
                             this.deerflow_settings.draft.as_ref(),
-                        ));
-                        if this.deerflow_settings.applying() {
+                        );
+                        this.deerflow_settings.error = Some(message.clone());
+                        if this.deerflow_settings.startup_completion_pending
+                            && !this.deerflow_settings.startup_request_pending
+                        {
+                            this.deerflow_settings.startup_completion_pending = false;
+                            this.deerflow_settings.startup_error = Some(message);
+                            this.show_toast("DeerFlow ACP 状态查询失败，请在设置中查看详情");
+                        } else if this.deerflow_settings.applying() {
                             this.deerflow_poll_status(cx);
                         }
                     }
@@ -1532,14 +1745,21 @@ impl Waku {
                 |this, _, cx| this.deerflow_request("cancel-apply", json!({}), cx),
             ));
         }
-        let running_text = if state.status.is_null() {
-            "正在读取服务状态"
-        } else if state.applying() {
-            "等待任务完成后应用配置"
-        } else if state.status["running"].as_bool() == Some(true) {
-            "服务运行中"
-        } else {
-            "服务未启动"
+        let running_text = match state.service_phase() {
+            DeerFlowServicePhase::Unknown => "正在读取服务状态",
+            DeerFlowServicePhase::Starting => "正在启动 ACP 服务",
+            DeerFlowServicePhase::Warming => "ACP 已连接，正在预热 Agent",
+            DeerFlowServicePhase::Ready => "ACP 服务已就绪",
+            DeerFlowServicePhase::Applying => "等待任务完成后应用配置",
+            DeerFlowServicePhase::Stopping => "正在停止 ACP 服务",
+            DeerFlowServicePhase::Failed => {
+                if state.startup_failed() {
+                    "ACP 服务启动失败"
+                } else {
+                    "ACP 配置应用失败"
+                }
+            }
+            DeerFlowServicePhase::Stopped => "服务未启动",
         };
         let edit_text = if let Some(operation) = state.pending.as_deref() {
             match operation {
@@ -1738,7 +1958,7 @@ impl Waku {
                 let mut group = df_group(theme)
                     .child(df_label(
                         "运行服务",
-                        "DeerFlow 执行任务的服务与桌面工作台分别管理。",
+                        "打开桌面程序时会自动启动；也可在这里手动停止或重试。",
                         theme,
                     ))
                     .child(
@@ -3027,6 +3247,7 @@ fn model_refresh_ready(status: &Value) -> bool {
     status["running"].as_bool() == Some(true)
         && status["applying"].as_bool() != Some(true)
         && status["apply_error"].as_str().is_none()
+        && status["warmup"] != "failed"
 }
 
 #[cfg(test)]
@@ -3065,9 +3286,93 @@ mod integrity_tests {
         assert!(!model_refresh_ready(
             &json!({"running":true,"applying":false,"apply_error":"failure"})
         ));
+        assert!(!model_refresh_ready(
+            &json!({"running":true,"applying":false,"warmup":"failed"})
+        ));
         assert!(model_refresh_ready(
             &json!({"running":true,"applying":false,"apply_error":null})
         ));
+    }
+    #[test]
+    fn service_phase_waits_for_agent_warmup() {
+        let phase = |status: Value, request_pending, startup_pending| {
+            deerflow_service_phase(&status, request_pending, startup_pending, false, None)
+        };
+        assert_eq!(
+            phase(Value::Null, true, true),
+            DeerFlowServicePhase::Starting
+        );
+        assert_eq!(
+            phase(Value::Null, false, true),
+            DeerFlowServicePhase::Starting
+        );
+        assert_eq!(
+            phase(json!({"running":false,"applying":true}), false, true),
+            DeerFlowServicePhase::Starting
+        );
+        assert_eq!(
+            phase(json!({"running":true,"warmup":"warming"}), false, true),
+            DeerFlowServicePhase::Warming
+        );
+        assert_eq!(
+            phase(json!({"running":true,"warmup":"ready"}), false, true),
+            DeerFlowServicePhase::Ready
+        );
+    }
+    #[test]
+    fn service_phase_reports_startup_failures() {
+        assert_eq!(
+            deerflow_service_phase(
+                &json!({"running":true,"warmup":"failed"}),
+                false,
+                true,
+                false,
+                None
+            ),
+            DeerFlowServicePhase::Failed
+        );
+        assert_eq!(
+            deerflow_service_phase(
+                &json!({"running":false,"apply_error":"failed"}),
+                false,
+                true,
+                false,
+                None
+            ),
+            DeerFlowServicePhase::Failed
+        );
+        assert_eq!(
+            deerflow_service_phase(
+                &json!({"running":false,"status_error":"disconnected"}),
+                false,
+                true,
+                false,
+                None
+            ),
+            DeerFlowServicePhase::Failed
+        );
+        assert_eq!(
+            deerflow_service_phase(
+                &json!({"running":false,"status_error":"not running"}),
+                false,
+                false,
+                false,
+                None
+            ),
+            DeerFlowServicePhase::Stopped
+        );
+        assert_eq!(
+            deerflow_service_phase(&Value::Null, false, false, true, None),
+            DeerFlowServicePhase::Failed
+        );
+        assert_eq!(
+            deerflow_service_phase(&json!({"running":true}), false, false, false, Some("apply")),
+            DeerFlowServicePhase::Applying
+        );
+        assert_eq!(
+            deerflow_service_phase(&json!({"running":true}), false, false, false, Some("stop")),
+            DeerFlowServicePhase::Stopping
+        );
     }
 }
 

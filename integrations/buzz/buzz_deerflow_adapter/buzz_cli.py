@@ -86,14 +86,22 @@ class BuzzCLI:
         stdout_path: Path | None = None,
         stdout_limit: int = 0,
     ) -> tuple[str, str]:
-        process = await asyncio.create_subprocess_exec(
-            *self._base(),
-            *args,
-            stdin=asyncio.subprocess.PIPE if stdin is not None else None,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=self.env,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *self._base(),
+                *args,
+                stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self.env,
+            )
+        except OSError as exc:
+            # An installer may temporarily remove or lock the executable. No
+            # command ran, so even a message send is safe to retry here.
+            raise BuzzTransportError(
+                f"Could not start Buzz CLI {self.command!r}: {exc}. "
+                "Check buzz.command and the Buzz installation if this persists."
+            ) from exc
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 if stdout_path is None:

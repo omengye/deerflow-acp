@@ -88,6 +88,28 @@ conversations. Shared-channel events must contain the agent's signed Nostr
 `p`-tag by default; DMs do not need a mention. `allowed_pubkeys` can further
 restrict who may invoke DeerFlow.
 
+### Appearing in Buzz Desktop's @ picker
+
+Buzz Desktop 0.5.25 also checks agent discovery and response policy. Channel
+membership and a display name alone do not make an owner-attested agent
+mentionable. For an owned sidecar, publish an owner-signed kind `30177` event
+with a `d` tag containing the sidecar public key and public content such as
+`{"name":"DeerFlow","parallelism":1,"respond_to":"owner-only"}`. The author
+must match the owner in the sidecar's current kind `0` NIP-OA profile. The
+signed policy permits the owner to select the sidecar even when its channel
+role is `member` and it has no local Desktop-managed runtime record.
+
+Check the current Desktop account, not an old account's configured public key.
+Keep the local `BUZZ_AUTH_TAG` consistent with the published profile so a
+sidecar restart does not restore stale ownership. Desktop caches the agent
+directory for up to five minutes while in the foreground; reopening Desktop
+also refreshes it. This registration controls Desktop's mention picker;
+`allowed_pubkeys` remains the sidecar's own inbound author filter.
+
+Changing profile provenance does not transfer the relay's separately stored
+agent-owner binding. Native observer authorization requires that binding to
+match as well; keep native observation disabled until it has been verified.
+
 ### Display names and lifecycle
 
 `[buzz.profile]` sets the dedicated identity's display name, avatar, bio, and
@@ -238,6 +260,11 @@ does not answer historical messages.
   `allow_always` as a fallback); configure DeerFlow's tool allow/deny policy for
   the trust level of the Buzz users allowed to invoke this identity.
 - A failed send retries the already-saved body instead of rerunning DeerFlow.
+- CLI launch failures (for example, Windows `WinError 2` while Buzz is being
+  updated) use the transport retry/backoff path. Retryable transport outages
+  keep messages pending and preserve saved replies without consuming message
+  attempts. Polling resumes after recovery; persistent launch errors include
+  the executable path so `buzz.command` and the installation can be checked.
 - If the Buzz CLI reports `delivery_unknown`, the row is quarantined and never
   resent automatically, avoiding duplicate replies. A send-side CLI timeout is
   treated the same way because relay acceptance can no longer be proven either

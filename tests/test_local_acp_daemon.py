@@ -156,6 +156,81 @@ async def test_daemon_rejects_non_local_sandbox_before_opening_store(
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("app_config")
+async def test_warmup_is_visible_when_endpoint_is_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    published_states: list[str] = []
+    daemon_instances: list[Any] = []
+
+    class FakeConfig:
+        session_store_path = tmp_path / "sessions.db"
+
+        def prepare_environment(self) -> None:
+            pass
+
+    class FakeRuntime:
+        def __init__(self, _config: FakeConfig) -> None:
+            pass
+
+        def validate_sandbox_provider(self) -> None:
+            pass
+
+        async def open(self) -> None:
+            pass
+
+        async def warmup(self) -> None:
+            await asyncio.sleep(0)
+
+        async def close(self) -> None:
+            pass
+
+    class FakeStore:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def setup(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class FakeDaemon:
+        def __init__(self, *_args: Any) -> None:
+            self.warmup_state = "ready"
+            daemon_instances.append(self)
+
+        async def start(self) -> None:
+            published_states.append(self.warmup_state)
+
+        async def wait(self) -> None:
+            await asyncio.sleep(0.01)
+
+        async def close(self) -> None:
+            pass
+
+    async def no_cleanup(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    async def cleanup_loop(*_args: Any) -> None:
+        await asyncio.Future()
+
+    monkeypatch.setattr(daemon_module.LocalACPConfig, "from_file", staticmethod(lambda _path: FakeConfig()))
+    monkeypatch.setattr(daemon_module, "LocalACPRuntime", FakeRuntime)
+    monkeypatch.setattr(daemon_module, "LocalACPSessionStore", FakeStore)
+    monkeypatch.setattr(daemon_module, "ACPDaemon", FakeDaemon)
+    monkeypatch.setattr(daemon_module, "cleanup_expired_sessions", no_cleanup)
+    monkeypatch.setattr(daemon_module, "run_session_cleanup_loop", cleanup_loop)
+    monkeypatch.setattr(daemon_module, "_install_signal_handlers", lambda _daemon: None)
+    monkeypatch.setattr("deerflow.config.agents_config.freeze_agent_catalog", lambda: None)
+
+    await daemon_module._run_daemon(None, tmp_path / "runtime", warmup=True)
+
+    assert published_states == ["warming"]
+    assert daemon_instances[0].warmup_state == "ready"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("app_config")
 async def test_daemon_accepts_multiple_clients_status_stop_and_reconnect(
     tmp_path: Path,
 ) -> None:
