@@ -74,7 +74,7 @@ func run(args []string) (err error) {
 	}
 	// Also covers host construction/start failure. Client.Close is idempotent.
 	defer func() { err = errors.Join(err, client.Close()) }()
-	hostCfg.BuildID, hostCfg.ServeACP, hostCfg.Cleanup = buildID, client.ServeACP, client.Close
+	hostCfg.BuildID, hostCfg.ServeACP, hostCfg.Manage, hostCfg.Cleanup = buildID, client.ServeACP, client.ManageLocal, client.Close
 	host, err := localhost.New(hostCfg)
 	if err != nil {
 		return err

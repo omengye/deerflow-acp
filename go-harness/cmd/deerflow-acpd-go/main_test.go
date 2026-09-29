@@ -172,6 +172,31 @@ func acpClient(t *testing.T, ep localhost.Endpoint) *rpcClient {
 	return c
 }
 
+func manageDaemon(t *testing.T, ep localhost.Endpoint, operation string) map[string]json.RawMessage {
+	t.Helper()
+	conn, reader, line := connectCommand(t, ep, "MANAGE")
+	if line != "OK" {
+		t.Fatalf("MANAGE handshake: %s", line)
+	}
+	if err := json.NewEncoder(conn).Encode(map[string]string{"operation": operation}); err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		OK    bool                       `json:"ok"`
+		Data  map[string]json.RawMessage `json:"data"`
+		Code  string                     `json:"code"`
+		Error string                     `json:"error"`
+	}
+	if err := json.NewDecoder(reader).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	if !envelope.OK {
+		t.Fatalf("MANAGE %s: %s %s", operation, envelope.Code, envelope.Error)
+	}
+	return envelope.Data
+}
+
 func TestDaemonProcessCancellationRestartAndOwnership(t *testing.T) {
 	if testing.Short() {
 		t.Skip("process integration")
@@ -198,6 +223,21 @@ func TestDaemonProcessCancellationRestartAndOwnership(t *testing.T) {
 	}
 	if err := json.Unmarshal(created, &session); err != nil || session.ID == "" {
 		t.Fatalf("session: %s %v", created, err)
+	}
+	if status := manageDaemon(t, ep, "daemon.status"); string(status["active_operations"]) != "0" || string(status["connections"]) != "2" {
+		t.Fatalf("management status: %+v", status)
+	}
+	if inventory := manageDaemon(t, ep, "session.list"); !bytes.Contains(inventory["sessions"], []byte(session.ID)) {
+		t.Fatalf("management inventory: %+v", inventory)
+	}
+	if drain := manageDaemon(t, ep, "daemon.drain"); string(drain["draining"]) != "true" {
+		t.Fatalf("drain: %+v", drain)
+	}
+	if f := b.request(t, "session/new", map[string]any{"cwd": workspace, "mcpServers": []any{}}); len(f.Error) == 0 {
+		t.Fatal("new session admitted while daemon drained")
+	}
+	if resume := manageDaemon(t, ep, "daemon.resume"); string(resume["draining"]) != "false" {
+		t.Fatalf("resume: %+v", resume)
 	}
 	if f := b.request(t, "session/load", map[string]any{"cwd": workspace, "sessionId": session.ID, "mcpServers": []any{}}); len(f.Error) == 0 {
 		t.Fatal("second ACP client stole session ownership")
@@ -295,6 +335,9 @@ func TestExistingRustBridge(t *testing.T) {
 	}
 	if out := invoke("--manage", `{"operation":"proposal.list"}`); !bytes.Contains(out, []byte("unsupported_operation")) {
 		t.Fatalf("Bridge management: %s", out)
+	}
+	if out := invoke("--manage", `{"operation":"daemon.status"}`); !bytes.Contains(out, []byte(`"active_operations":0`)) || !bytes.Contains(out, []byte(`"draining":false`)) {
+		t.Fatalf("Bridge daemon status: %s", out)
 	}
 	proxy := exec.CommandContext(ctx, bridge, "--no-auto-start", "--runtime-dir", runtimeDir)
 	in, err := proxy.StdinPipe()

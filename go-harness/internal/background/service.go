@@ -28,6 +28,9 @@ type Service struct {
 	inflight              map[string]bool
 	backoff               map[string]time.Time
 	closed, started       bool
+	draining              bool
+	submissions           int
+	running               int
 	dispatchCancel        context.CancelFunc
 	scanDone, workersDone chan struct{}
 	jobs                  chan string
@@ -110,20 +113,62 @@ func (s *Service) sendCreated(ctx context.Context, task *bt.Task) error {
 
 type createContextKey struct{}
 
+// Activity includes submissions that have passed admission and jobs reserved
+// by the dispatcher. During drain, zero means no local background operation
+// can still start or be running; persisted pending tasks remain durable.
+type Activity struct {
+	Draining         bool
+	ActiveOperations int
+	ActiveRuns       int
+	QueuedRuns       int
+}
+
+func (s *Service) SetDraining(value bool) Activity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.draining = value
+	if !value {
+		s.wake()
+	}
+	return s.activityLocked()
+}
+
+func (s *Service) Activity() Activity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activityLocked()
+}
+
+func (s *Service) activityLocked() Activity {
+	return Activity{Draining: s.draining, ActiveOperations: s.submissions + len(s.inflight), ActiveRuns: s.running, QueuedRuns: len(s.inflight) - s.running}
+}
+
+func (s *Service) beginSubmission() (func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, harness.ErrBackgroundClosed
+	}
+	if s.draining {
+		return nil, harness.ErrBusy
+	}
+	s.submissions++
+	return func() { s.mu.Lock(); s.submissions--; s.mu.Unlock() }, nil
+}
+
 func (s *Service) Submit(ctx context.Context, actor harness.TaskActor, in Submission) (harness.BackgroundTask, error) {
 	if err := s.authorize(ctx, actor); err != nil {
 		return harness.BackgroundTask{}, err
 	}
-	s.mu.Lock()
-	closed := s.closed
-	s.mu.Unlock()
-	if closed {
-		return harness.BackgroundTask{}, harness.ErrBackgroundClosed
+	finish, err := s.beginSubmission()
+	if err != nil {
+		return harness.BackgroundTask{}, err
 	}
+	defer finish()
 	if s.config.Budgets == nil {
 		return harness.BackgroundTask{}, harness.ErrBackgroundUnavailable
 	}
-	in, err := prepareSubmission(actor, in)
+	in, err = prepareSubmission(actor, in)
 	if err != nil {
 		return harness.BackgroundTask{}, err
 	}
@@ -165,14 +210,13 @@ func (s *Service) SubmitNativeSubagent(ctx context.Context, actor harness.TaskAc
 	if err := s.authorize(ctx, actor); err != nil {
 		return harness.BackgroundTask{}, err
 	}
+	finish, err := s.beginSubmission()
+	if err != nil {
+		return harness.BackgroundTask{}, err
+	}
+	defer finish()
 	if s.config.Budgets == nil || b.AgentVersion == "" {
 		return harness.BackgroundTask{}, harness.ErrBackgroundUnavailable
-	}
-	s.mu.Lock()
-	closed := s.closed
-	s.mu.Unlock()
-	if closed {
-		return harness.BackgroundTask{}, harness.ErrBackgroundClosed
 	}
 	// Native Submit serializes its public request. A short-lived request scope
 	// lets the transaction hook derive the final native Spec hash before create.

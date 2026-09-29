@@ -74,7 +74,7 @@ func (s *Service) dispatch(ctx context.Context) error {
 				continue
 			}
 			s.mu.Lock()
-			if s.closed {
+			if s.closed || s.draining {
 				s.mu.Unlock()
 				return nil
 			}
@@ -111,13 +111,19 @@ func (s *Service) worker(ctx context.Context) {
 	defer s.workers.Done()
 	for id := range s.jobs {
 		s.mu.Lock()
-		closed := s.closed
+		closed := s.closed || s.draining
+		if !closed {
+			s.running++
+		}
 		s.mu.Unlock()
 		var err error
 		if !closed {
 			err = s.manager.Execute(ctx, id)
 		}
 		s.mu.Lock()
+		if !closed {
+			s.running--
+		}
 		delete(s.inflight, id)
 		if err != nil {
 			s.backoff[id] = time.Now().Add(max(s.config.PollInterval, 250*time.Millisecond))

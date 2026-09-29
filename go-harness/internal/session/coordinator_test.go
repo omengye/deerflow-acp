@@ -42,6 +42,41 @@ func TestCancelKeepsBusyUntilCleanup(t *testing.T) {
 	release()
 }
 
+func TestDrainStopsNewAdmissionsWithoutCancellingActiveRun(t *testing.T) {
+	c := NewCoordinator()
+	if _, err := c.Attach("active", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, release, err := c.Begin(context.Background(), "active", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	activity := c.SetDraining(true)
+	if !activity.Draining || activity.ActiveOperations != 1 || activity.Phases["active"] != "running" || ctx.Err() != nil {
+		t.Fatalf("drain changed active run: %+v %v", activity, ctx.Err())
+	}
+	if _, err := c.Attach("new", "other"); !errors.Is(err, harness.ErrBusy) {
+		t.Fatalf("new attach during drain: %v", err)
+	}
+	release()
+	if _, _, err := c.Begin(context.Background(), "active", "owner"); !errors.Is(err, harness.ErrBusy) {
+		t.Fatalf("new run during drain: %v", err)
+	}
+	activity = c.Activity()
+	if activity.ActiveOperations != 0 || activity.Phases["active"] != "attached" {
+		t.Fatalf("drained activity: %+v", activity)
+	}
+	c.SetDraining(false)
+	if _, err := c.Attach("new", "other"); err != nil {
+		t.Fatal(err)
+	}
+	_, release, err = c.Begin(context.Background(), "active", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+}
+
 func TestDisconnectWaitsForOwnedCleanup(t *testing.T) {
 	c := NewCoordinator()
 	_, _ = c.Attach("a", "one")

@@ -35,6 +35,46 @@ type Coordinator struct {
 	mu       sync.Mutex
 	bindings map[string]*binding
 	retired  map[string]bool
+	draining bool
+}
+
+// Activity is a point-in-time view for the authenticated local management
+// channel. It intentionally excludes connection owner identities.
+type Activity struct {
+	Draining         bool
+	ActiveOperations int
+	Phases           map[string]string
+}
+
+func (c *Coordinator) SetDraining(value bool) Activity {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.draining = value
+	return c.activityLocked()
+}
+
+func (c *Coordinator) Activity() Activity {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.activityLocked()
+}
+
+func (c *Coordinator) activityLocked() Activity {
+	out := Activity{Draining: c.draining, Phases: make(map[string]string, len(c.bindings))}
+	for id, b := range c.bindings {
+		switch {
+		case b.closing:
+			out.Phases[id] = "closing"
+		case b.busy:
+			out.Phases[id] = "running"
+		default:
+			out.Phases[id] = "attached"
+		}
+		if b.busy {
+			out.ActiveOperations++
+		}
+	}
+	return out
 }
 
 func NewCoordinator() *Coordinator {
@@ -61,6 +101,9 @@ func (c *Coordinator) Attach(id, owner string) (bool, error) {
 }
 
 func (c *Coordinator) attachLocked(id, owner string) (bool, error) {
+	if c.draining {
+		return false, harness.ErrBusy
+	}
 	if c.retired[owner] {
 		return false, harness.ErrNotAttached
 	}
@@ -99,6 +142,9 @@ func (c *Coordinator) Begin(parent context.Context, id, owner string) (context.C
 }
 
 func (c *Coordinator) beginLocked(parent context.Context, id, owner string) (context.Context, func(), error) {
+	if c.draining {
+		return nil, nil, harness.ErrBusy
+	}
 	if c.retired[owner] {
 		return nil, nil, harness.ErrNotAttached
 	}

@@ -104,6 +104,37 @@ func (s *Store) List(ctx context.Context, cwd, cursor string, limit int) ([]harn
 	}
 	return result, rows.Err()
 }
+
+// ListForManagement is a bounded host-only inventory. Background child
+// sessions remain internal even on the authenticated local control channel.
+func (s *Store) ListForManagement(ctx context.Context, limit int) ([]harness.Session, error) {
+	if limit < 1 || limit > 1001 {
+		return nil, harness.ErrInvalidInput
+	}
+	children, err := s.hasBackgroundSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id`
+	if children {
+		query += ` WHERE NOT EXISTS(SELECT 1 FROM harness_background_specs b WHERE b.child_session_id=s.id)`
+	}
+	query += ` ORDER BY s.updated_at DESC,s.id DESC LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]harness.Session, 0, min(limit, 1000))
+	for rows.Next() {
+		x, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, x)
+	}
+	return result, rows.Err()
+}
 func (s *Store) SetMode(ctx context.Context, id, mode string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE harness_sessions SET mode=?,updated_at=? WHERE id=?`, mode, timestamp(), id)
 	return err

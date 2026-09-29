@@ -30,10 +30,21 @@ type Config struct {
 	HandshakeTimeout  time.Duration
 	ManagementTimeout time.Duration
 	ServeACP          func(context.Context, io.ReadCloser, io.WriteCloser) error
+	Manage            func(context.Context, ManagementRequest) (any, error)
 	// Cleanup runs after every connection callback has returned, while this
 	// process still owns endpoint.json and daemon.lock. Typically Client.Close.
 	Cleanup func() error
 }
+
+type ManagementRequest struct {
+	Operation         string
+	Fields            map[string]json.RawMessage
+	ActiveConnections int
+}
+
+type ManagementError struct{ Code, Message string }
+
+func (e *ManagementError) Error() string { return e.Message }
 
 type Host struct {
 	cfg         Config
@@ -295,9 +306,35 @@ func (h *Host) manage(reader *bufio.Reader, out io.Writer) {
 	if err == nil {
 		err = json.Unmarshal([]byte(line), &request)
 	}
-	code, message := "unsupported_operation", "Go daemon management operations are not implemented; use ACP for sessions"
 	if err != nil || request == nil {
-		code, message = "invalid_request", "expected one JSON object line of at most 64 KiB"
+		_ = json.NewEncoder(out).Encode(map[string]any{"ok": false, "error": "expected one JSON object line of at most 64 KiB", "code": "invalid_request"})
+		return
 	}
-	_ = json.NewEncoder(out).Encode(map[string]any{"ok": false, "error": message, "code": code})
+	var operation string
+	if raw, ok := request["operation"]; ok {
+		if json.Unmarshal(raw, &operation) != nil || len(operation) > 128 {
+			_ = json.NewEncoder(out).Encode(map[string]any{"ok": false, "error": "invalid management operation", "code": "invalid_request"})
+			return
+		}
+	}
+	if operation == "" || h.cfg.Manage == nil {
+		_ = json.NewEncoder(out).Encode(map[string]any{"ok": false, "error": "unsupported management operation", "code": "unsupported_operation"})
+		return
+	}
+	h.mu.Lock()
+	active := h.active
+	h.mu.Unlock()
+	ctx, cancel := context.WithTimeout(h.ctx, h.cfg.ManagementTimeout)
+	defer cancel()
+	data, err := h.cfg.Manage(ctx, ManagementRequest{Operation: operation, Fields: request, ActiveConnections: active})
+	if err != nil {
+		var known *ManagementError
+		code, message := "operation_failed", "management operation failed"
+		if errors.As(err, &known) {
+			code, message = known.Code, known.Message
+		}
+		_ = json.NewEncoder(out).Encode(map[string]any{"ok": false, "error": message, "code": code})
+		return
+	}
+	_ = json.NewEncoder(out).Encode(map[string]any{"ok": true, "data": data})
 }

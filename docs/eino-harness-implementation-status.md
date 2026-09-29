@@ -26,7 +26,7 @@
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
-| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、多窗口、现有 Rust Bridge 实际二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 诊断子集 |
+| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单、多窗口及 Rust Bridge 二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 记忆及清理操作 |
 | 可选外部 ACP Agent | 待实现 | 白名单、反向权限、预算和取消链 |
 | 打包 / 默认切换 | 未开始 | Windows/Linux 实机、回退、切换演练 |
 
@@ -237,3 +237,11 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - `plan` 与 `read_only` 允许此内建工具，命名空间内的 MCP 工具不能借名称获得相同授权。失败回执归为无外部副作用。前台 Eino 本地模型测试确认只读模式可实际调用、同工作区的另一会话看不到 session 事实。
 
 检索结果按当前事实 head 读取；恢复后再次调用可看到新的事实版本。已写入原生工具历史的旧结果不会改写。
+
+## 第十六阶段本机 MANAGE 运行诊断
+
+- 复用 DFACP/1 受保护的本机端点，接入 `daemon.status`、`daemon.drain`、`daemon.resume` 和 `session.list`。排空先在会话协调器锁内阻止新建、附着和新 prompt，再暂停后台新提交与派发；既有后台 worker 继续完成，尚未派发的持久任务留待恢复。`active_operations` 合计前台运行、后台提交中操作和已派发任务，桌面等待其归零才重启；`active_runs` 只计实际运行，`queued_runs` 计已派发但尚未运行的后台任务。状态还提供 ACP 连接数和排空状态。
+- 会话清单最多 1,000 条、3 MiB，按更新时间排序并排除后台 child；显示进程内 attached/running/closing 状态。当前 Go 存储尚无持久 close/retention 状态，所以不推断清理资格，`cleanup_eligible` 固定为 false。未迁移的删除和记忆管理仍明确返回 unsupported。
+- SDK、真实 daemon 进程与 ACP 管道测试验证状态、清单、排空阻止新会话及新执行、恢复和独占资源；可选 Rust Bridge 二进制测试增加 `--manage daemon.status` 验证。Go daemon 仍未接受 Python `--config`，Bridge 自动启动迁移尚未完成。
+
+本批整模块普通测试、管理与后台排空聚焦 race 测试，以及 Linux amd64 无 CGO 全模块构建通过。后台执行的 drain 回归测试确认活动 worker 完成前活动数不归零，新提交在排空期间被拒绝，恢复后可以继续提交。
