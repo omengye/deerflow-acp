@@ -4,10 +4,12 @@ on:
   pull_request:
     paths:
       - "go-harness/**"
+      - "bridge/**"
       - ".github/workflows/go-harness.yml"
   push:
     paths:
       - "go-harness/**"
+      - "bridge/**"
       - ".github/workflows/go-harness.yml"
   workflow_dispatch:
 
@@ -36,3 +38,13 @@ jobs:
       - run: go mod verify
       - run: go test -count=1 -p=2 -timeout=5m ./...
       - run: go test -race -p=2 -timeout=5m ./internal/... ./
+      - name: Build Rust Bridge
+        working-directory: bridge
+        run: cargo build --locked
+      - name: Test Rust Bridge
+        working-directory: bridge
+        run: cargo test --locked
+      - name: Verify Go daemon through Rust Bridge
+        env:
+          DEERFLOW_TEST_BRIDGE: ${{ github.workspace }}/bridge/target/debug/deerflow-acp${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: go test -count=1 -run TestExistingRustBridge -timeout=5m ./cmd/deerflow-acpd-go

@@ -334,3 +334,9 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 互操作测试暴露 Go daemon 的 v1 文本分片缺少可选 `messageId`，Rust 的 v1→v2 转换会跳过该分片。Go 的 user/assistant/thought 内容更新现使用稳定消息 ID；同一流的分片共享 ID，工具调用前后以持久事件序号划分 assistant 消息，重新连接后的完整历史回放保留原 ID。流式和回放的 ACP 单元测试及真实工具调用进程测试已加入断言。
 - v2 门面宣告 vision 模型的图片能力；真实进程测试将一个 PNG 经 v2 prompt、Go 媒体资产及 Eino OpenAI 适配器送达本地模型 fixture，并检查正常终态。尚未覆盖 draft v2 的全部扩展、真实编辑器和模型生成媒体。外部 ACP 委派的断线权限恢复和完整远端预算仍是独立缺口。
 - Windows 验证通过：`cargo build --locked` 与 `cargo test --locked`；配置 `DEERFLOW_TEST_BRIDGE` 后的真实 Go daemon/Bridge v2 进程测试；Go 整模块 `go test -count=1 -p=2 -timeout=5m ./...`，ACP agent 与 daemon 的 `-race` 回归；Linux amd64、CGO 关闭的全模块交叉构建。官方 stable v1 TCK 未在本批重跑；此前的合规判定不等同于 draft v2 完整验收。
+
+## 第三十阶段跨平台运行与 CI 验证入口
+
+- GitHub Actions 的 `go-harness.yml` 现在对 `bridge/**` 变更触发 Windows/Linux 双平台任务；Go 全模块和 race 回归后构建并测试 Rust Bridge，随后以 `DEERFLOW_TEST_BRIDGE` 运行真实 Go daemon 与 Bridge 的 v1/v2 互操作测试。该工作流尚未推送，远端执行结果待验收。
+- 在本机 WSL `Ubuntu-22.04` 中运行 Linux amd64、无 CGO 的 Go stdio 可执行文件，真实完成 ACP v1 `initialize`、`session/new`、`session/list` 并正常退出。该检查验证 Linux 进程启动、SQLite 初始化及基础 stdio 管道；没有覆盖 Linux 下的真实模型执行或 daemon/Bridge 生命周期。Windows 上按工作流命令组合运行 v1/v2 Bridge 测试通过。
+- 当前 Docker Desktop daemon 未运行，容器 backend 的真实执行与取消验收仍待可用 Docker 环境。打包、默认入口切换和真实编辑器联调仍未完成。
