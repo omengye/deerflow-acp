@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | Go SDK / 版本组合 | 模块、公共类型、嵌入式 Client 和模型适配器已写入 | 全量组合、跨平台构建、配置清单 |
 | SQLite 基础和 Eino providers | checkpoint、session events、background task stores；上游 conformance、崩溃恢复、SQL 故障注入测试已通过 | 后续 Manager/工具恢复装配 |
-| 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close/delete 及自动 retention 已写入；官方 ACP stable v1 TCK 判定 `CONFORMANT` | 真实编辑器互操作、后台任务图安全清理 |
+| 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close/delete、自动 retention 及终态后台任务图清理已写入；官方 ACP stable v1 TCK 判定 `CONFORMANT` | 真实编辑器互操作、清理策略实机验收 |
 | 执行与工作区工具 | Eino TurnLoop/DeepAgent、前台委派、文件工具、plan/read_only、主/子共享预算；执行回执与命令工具已接线 | 长期会话循环、后台委派和更完整的工具集 |
 | 权限 / 恢复 | 前台与后台原生 durable HITL、审批/检查点/回执/预算联合恢复；SDK/ACP 查询、批准与取消已接入 | 真实编辑器与 MCP 重新绑定恢复 |
 | 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、原生子 Agent 生命周期、主 Agent 计划与真实上下文用量投影、分页历史与 load 重放、有界异步 ACP 更新队列 | 真实编辑器流压验证 |
@@ -306,3 +306,9 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 旧 Go 数据库迁移增加 `closed_at`。显式 `session/close` 在资源释放成功后记录关闭时间；成功 `session/load` 清除关闭状态并刷新活动时间；普通与 durable run 的结束事务也刷新活动时间，避免长执行后立即到期。扫描按 ID 有界分页，删除预留阻止重连，并在事务清理前复核到期时间。
 - 已附着/运行/正在关闭的会话、后台任务图及未对账工具回执不会自动清理。`MANAGE session.list` 的 `cleanup_eligible` 结合时间、进程状态与持久阻塞条件计算；它只是即时提示，实际删除再次复核。后台任务图的安全删除留待独立策略。
 - SDK、迁移、分页、配置优先级、启动扫描及真实 daemon 重启测试覆盖上述路径。Windows 整模块普通测试、SDK/runtime/launch/daemon 聚焦 race 和 Linux amd64 无 CGO 全模块构建通过。官方 `acp-tck v0.2.0` 使用真实 Go stdio 可执行文件和本地模型夹具再次判定 `CONFORMANT`：21 项 mandatory、12 项已启用 capability 全通过；唯一失败仍是工作区外不存在文件的 `ACP-PROMPT-003` advisory。
+
+## 第二十六阶段终态后台任务图清理
+
+- 会话删除和自动 retention 可以在一个 SQLite 事务中清除已完成、失败或取消的后台任务及其私有 child 会话。一个 child 被多个顺序任务复用时只清理一次；任务快照、宿主绑定、预算归属和 child run 的终态必须一致。清理覆盖 Eino 任务/事件/通知、后台审批与诊断、child 历史、回执、预算和资产引用。内部资产在提交后回收，工作区文件保留。
+- 运行中、等待输入、暂停、有执行租约、未送达原生通知、未对账回执、关联 task 的未知预算消耗或持久化故障证据的图继续阻止删除。自动 retention 还等待 inbox 通知被 UI 确认；显式 `session/delete` 可以删除终态图中的未确认 UI 通知。`MANAGE session.list.cleanup_eligible` 按相同的终态与通知条件给出即时提示，删除事务重新检查。
+- 数据库故障回滚、历史审批外键顺序、自动通知阻塞和真实 SDK 后台子 Agent 终态删除已加入回归。Windows 整模块普通测试、SDK/runtime 聚焦 race 和 Linux amd64 无 CGO 全模块构建通过。官方 TCK 不覆盖后台任务图；本批未重新运行 TCK，ACP 协议层的后台扩展仍需真实编辑器互操作验收。

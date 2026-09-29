@@ -51,8 +51,9 @@ for 30 days; other detached sessions expire 30 days after their last activity.
 `--closed-session-retention-days`, `--inactive-session-retention-days`, and
 `--session-cleanup-interval` set those limits; `--session-cleanup-enabled=false`
 disables automatic deletion. Zero closed days permits cleanup at the next sweep.
-Attached or running sessions, background task graphs, and sessions with
-unreconciled tool receipts are preserved. A successful `session/load` reopens a
+Attached or running sessions, nonterminal or uncertain background task graphs,
+unhandled background notifications, and sessions with unreconciled tool receipts
+are preserved. A successful `session/load` reopens a
 closed session and restarts its inactivity clock. Embedded SDK clients leave
 retention disabled unless `Config.Retention` is explicitly configured; hosts
 can call `Client.CleanupExpiredSessions` for a single sweep.

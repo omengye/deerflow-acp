@@ -172,23 +172,21 @@ func (s *Store) IsCleanupEligible(ctx context.Context, id string, now time.Time,
 	if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state IN ('pending','started','uncertain'))`, id).Scan(&unresolved); err != nil || unresolved {
 		return false, err
 	}
-	for _, table := range []string{"harness_background_specs", "harness_background_bindings"} {
-		var exists bool
-		if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)`, table).Scan(&exists); err != nil {
-			return false, err
-		}
-		if !exists {
-			continue
-		}
-		var related bool
-		if table == "harness_background_specs" {
-			err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_background_specs WHERE child_session_id=?)`, id).Scan(&related)
-		} else {
-			err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_background_bindings WHERE parent_session_id=? OR child_session_id=?)`, id, id).Scan(&related)
-		}
-		if err != nil || related {
-			return false, err
-		}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	tables, err := sessionTables(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	_, _, err = prepareBackgroundGraphTx(ctx, tx, id, tables, true)
+	if errors.Is(err, harness.ErrBusy) || errors.Is(err, harness.ErrInvalidInput) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
 	}
 	return true, nil
 }

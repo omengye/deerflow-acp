@@ -11,9 +11,8 @@ import (
 
 // purgeSession removes a detached foreground session and its private durable
 // state in one transaction. The caller must hold a coordinator deletion fence.
-// Background parents remain protected until their task graph has a separate
-// retention policy; an accidental partial graph purge would strand children.
-func (s *Store) purgeSession(ctx context.Context, id string) (bool, []string, error) {
+// Terminal background task graphs are removed with their parent and children.
+func (s *Store) purgeSession(ctx context.Context, id string, automatic bool) (bool, []string, error) {
 	if id == "" {
 		return false, nil, harness.ErrInvalidInput
 	}
@@ -29,27 +28,18 @@ func (s *Store) purgeSession(ctx context.Context, id string) (bool, []string, er
 	if !exists {
 		return true, nil, nil
 	}
+	// Acquire SQLite's writer slot before checking task state. A concurrent
+	// native transition must finish first or make this transaction fail.
+	if _, err = tx.ExecContext(ctx, `UPDATE harness_sessions SET updated_at=updated_at WHERE id=?`, id); err != nil {
+		return false, nil, err
+	}
 	tables, err := sessionTables(ctx, tx)
 	if err != nil {
 		return false, nil, err
 	}
-	if tables["harness_background_specs"] {
-		var child bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_background_specs WHERE child_session_id=?)`, id).Scan(&child); err != nil {
-			return false, nil, err
-		}
-		if child {
-			return false, nil, harness.ErrInvalidInput
-		}
-	}
-	if tables["harness_background_bindings"] {
-		var related bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_background_bindings WHERE parent_session_id=? OR child_session_id=?)`, id, id).Scan(&related); err != nil {
-			return false, nil, err
-		}
-		if related {
-			return false, nil, harness.ErrBusy
-		}
+	children, tasks, err := prepareBackgroundGraphTx(ctx, tx, id, tables, automatic)
+	if err != nil {
+		return false, nil, err
 	}
 	var unresolved bool
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state IN ('pending','started','uncertain'))`, id).Scan(&unresolved); err != nil {
@@ -59,8 +49,12 @@ func (s *Store) purgeSession(ctx context.Context, id string) (bool, []string, er
 		return false, nil, harness.ErrReceiptConflict
 	}
 	var paths []string
-	if tables["harness_assets"] {
-		rows, e := tx.QueryContext(ctx, `SELECT path FROM harness_assets WHERE session_id=?`, id)
+	targets := append(children, id)
+	for _, target := range targets {
+		if !tables["harness_assets"] {
+			continue
+		}
+		rows, e := tx.QueryContext(ctx, `SELECT path FROM harness_assets WHERE session_id=?`, target)
 		if e != nil {
 			return false, nil, e
 		}
@@ -78,6 +72,9 @@ func (s *Store) purgeSession(ctx context.Context, id string) (bool, []string, er
 		if e != nil {
 			return false, nil, e
 		}
+	}
+	if err = purgeBackgroundGraphTx(ctx, tx, tasks, tables); err != nil {
+		return false, nil, err
 	}
 	// Delete leaf rows before their parents. Optional subsystems create tables
 	// only when configured; every query here has a fixed, audited table name.
@@ -114,18 +111,20 @@ func (s *Store) purgeSession(ctx context.Context, id string) (bool, []string, er
 		{"harness_session_configs", `DELETE FROM harness_session_configs WHERE session_id=?`},
 		{"harness_sessions", `DELETE FROM harness_sessions WHERE id=?`},
 	}
-	for _, step := range steps {
-		if !tables[step.table] {
-			continue
-		}
-		// Only the budget continuation statement has two placeholders.
-		if step.table == "budget_tool_continuations" {
-			_, err = tx.ExecContext(ctx, step.query, id, id)
-		} else {
-			_, err = tx.ExecContext(ctx, step.query, id)
-		}
-		if err != nil {
-			return false, nil, err
+	for _, target := range targets {
+		for _, step := range steps {
+			if !tables[step.table] {
+				continue
+			}
+			// Only the budget continuation statement has two placeholders.
+			if step.table == "budget_tool_continuations" {
+				_, err = tx.ExecContext(ctx, step.query, target, target)
+			} else {
+				_, err = tx.ExecContext(ctx, step.query, target)
+			}
+			if err != nil {
+				return false, nil, err
+			}
 		}
 	}
 	if err = tx.Commit(); err != nil {
@@ -157,7 +156,7 @@ func (s *Service) DeleteSession(ctx context.Context, id string) (bool, error) {
 		return false, err
 	}
 	defer release()
-	alreadyDeleted, paths, err := s.Store.purgeSession(ctx, id)
+	alreadyDeleted, paths, err := s.Store.purgeSession(ctx, id, false)
 	if err != nil {
 		return false, err
 	}
@@ -186,7 +185,7 @@ func (s *Service) DeleteExpiredSession(ctx context.Context, id string, now time.
 	if err != nil || !expired {
 		return false, err
 	}
-	_, paths, err := s.Store.purgeSession(ctx, id)
+	_, paths, err := s.Store.purgeSession(ctx, id, true)
 	if err != nil {
 		return false, err
 	}
@@ -226,7 +225,7 @@ func (s *Service) DeleteAttachedSession(ctx context.Context, owner, id string) (
 	// leave the durable session detached so a fresh load must rebind resources.
 	restore = false
 	s.clearDecisions(owner, id)
-	alreadyDeleted, paths, err := s.Store.purgeSession(cleanup, id)
+	alreadyDeleted, paths, err := s.Store.purgeSession(cleanup, id, false)
 	if err != nil {
 		return false, err
 	}

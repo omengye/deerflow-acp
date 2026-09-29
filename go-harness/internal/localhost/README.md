@@ -36,13 +36,15 @@ mapping; see [configuration compatibility](../../../docs/eino-go-config-bridge.m
 get/delete. Unsupported operations return
 `{"ok":false,"code":"unsupported_operation",...}`.
 
-`session.delete` requires a detached foreground session. It refuses sessions
-with a background task graph or unresolved tool receipts, then removes the
-session's private database records and internal asset snapshots. Workspace
+`session.delete` requires a detached foreground session. It refuses active or
+uncertain background task graphs and unresolved tool receipts. Terminal task
+graphs, their child sessions and private records are removed in one database
+transaction, then internal asset snapshots are reclaimed. Workspace
 files and workspace/user memory remain. The operation is idempotent so a client
 can retry after a lost response. `cleanup_eligible` becomes true when the
-configured retention age is reached, the session is detached, and no background
-task or unresolved tool receipt blocks deletion. This inventory field is a
+configured retention age is reached, the session is detached, and no active
+task, unhandled background notification or unresolved tool receipt blocks
+deletion. This inventory field is a
 point-in-time hint; the sweep repeats checks before deleting.
 
 Automatic cleanup is enabled by default in both Go executables. It runs once

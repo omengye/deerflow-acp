@@ -138,6 +138,43 @@ func TestSDKNativeBackgroundChildApprovalAcrossRestart(t *testing.T) {
 				if snapshotErr != nil || budget.ToolCalls != 2 || budget.ModelCalls != 4 || budget.HeldTokens != 0 || budget.BlockedReason != "" {
 					t.Fatalf("inherited policy shared budget=%+v err=%v", budget, snapshotErr)
 				}
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					var pending int
+					if err := c.store.DB().QueryRowContext(ctx, `SELECT count(*) FROM eino_task_notifications WHERE task_id=?`, task.ID).Scan(&pending); err != nil {
+						t.Fatal(err)
+					}
+					if pending == 0 {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("background notification delivery did not settle")
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+				notifications, err := c.BackgroundNotifications(ctx, sess.ID, 0, 100)
+				if err != nil || len(notifications) == 0 {
+					t.Fatalf("background notifications=%+v err=%v", notifications, err)
+				}
+				for _, notification := range notifications {
+					if err := c.AcknowledgeBackgroundNotification(ctx, sess.ID, notification.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := c.CloseSession(ctx, sess.ID); err != nil {
+					t.Fatal(err)
+				}
+				if already, err := c.service.DeleteSession(ctx, sess.ID); err != nil || already {
+					t.Fatalf("completed task graph delete: already=%v err=%v", already, err)
+				}
+				for _, id := range []string{sess.ID, task.ChildSessionID} {
+					if _, err := c.service.Store.Session(ctx, id); !errors.Is(err, harness.ErrNotFound) {
+						t.Fatalf("deleted graph session %s remains: %v", id, err)
+					}
+				}
+				if _, err := os.Stat(filepath.Join(workspace, "child.txt")); err != nil {
+					t.Fatalf("workspace file removed with graph: %v", err)
+				}
 				return
 			}
 			if task.Status != "waiting_input" || task.Interaction == nil || !task.Interaction.Resumable || len(task.Interaction.WaitingInputs) != 1 {
