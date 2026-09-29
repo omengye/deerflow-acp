@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/adk"
+	einosession "github.com/cloudwego/eino/adk/session"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
@@ -41,6 +42,99 @@ type testToolImageImporter struct {
 	ref   harness.AssetRef
 	data  string
 	calls atomic.Int32
+}
+
+type testModelImageImporter struct {
+	ref   harness.AssetRef
+	calls atomic.Int32
+}
+
+type imageCommitOrderStore struct {
+	adk.SessionEventStore[*schema.Message]
+	published *atomic.Bool
+	checked   atomic.Int32
+}
+
+func (s *imageCommitOrderStore) AppendEvents(ctx context.Context, sessionID string, events []*adk.SessionEvent[*schema.Message]) error {
+	for _, event := range events {
+		if event == nil || event.Message == nil {
+			continue
+		}
+		for _, part := range event.Message.AssistantGenMultiContent {
+			if part.Type == schema.ChatMessagePartTypeImageURL {
+				s.checked.Add(1)
+				if !s.published.Load() {
+					return errors.New("native image history preceded durable image event")
+				}
+			}
+		}
+	}
+	return s.SessionEventStore.AppendEvents(ctx, sessionID, events)
+}
+
+func (i *testModelImageImporter) StageModelImage(_ context.Context, session harness.Session, runID string, image harness.Content) (harness.Content, error) {
+	i.calls.Add(1)
+	if session.ID != i.ref.SessionID || runID == "" || image.Type != "image" || image.Data != testImageBase64 || image.MimeType != i.ref.MimeType {
+		return harness.Content{}, harness.ErrInvalidInput
+	}
+	return imageContent(i.ref), nil
+}
+
+func TestGeneratedModelImageIsReferencedEmittedAndRehydrated(t *testing.T) {
+	ref, data := testImageAsset(t)
+	importer := &testModelImageImporter{ref: ref}
+	resolver := &testAssetResolver{ref: ref, data: data}
+	var published atomic.Bool
+	store := &imageCommitOrderStore{SessionEventStore: einosession.NewInMemoryStore[*schema.Message](nil), published: &published}
+	var rehydrated atomic.Bool
+	fake := &scriptedModel{stream: func(_ context.Context, call int, input []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		if call == 0 {
+			inline := testImageBase64
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, AssistantGenMultiContent: []schema.MessageOutputPart{{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageOutputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &inline, MIMEType: "image/png"}}}}}}), nil
+		}
+		for _, message := range input {
+			for _, part := range message.AssistantGenMultiContent {
+				if part.Image != nil && part.Image.Base64Data != nil && *part.Image.Base64Data == testImageBase64 {
+					rehydrated.Store(true)
+				}
+			}
+		}
+		return textStream("done"), nil
+	}}
+	e := newTestEngine(t, Config{ChatModel: fake, Model: "vision", Media: harness.MediaConfig{VisionModels: []string{"vision"}}, AssetResolver: resolver, ModelImageImporter: importer, SessionStore: store})
+	var events []harness.RunEvent
+	for _, id := range []string{"generated-first", "generated-second"} {
+		if _, err := e.Run(context.Background(), request(id), func(_ context.Context, event harness.RunEvent) error {
+			if event.Kind == "image_delta" {
+				published.Store(true)
+			}
+			events = append(events, event)
+			return nil
+		}, allowTool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if importer.calls.Load() != 1 || !rehydrated.Load() || store.checked.Load() == 0 {
+		t.Fatalf("generated image was not staged, committed and replayed: importer=%d replay=%v nativeChecks=%d", importer.calls.Load(), rehydrated.Load(), store.checked.Load())
+	}
+	var images int
+	for _, event := range events {
+		if event.Kind == "image_delta" {
+			images++
+			if len(event.Content) != 1 || event.Content[0].Asset == nil || *event.Content[0].Asset != ref {
+				t.Fatalf("invalid generated image event: %+v", event)
+			}
+		}
+	}
+	if images != 1 {
+		t.Fatalf("image events=%d", images)
+	}
+	assertNoImageBytes(t, events)
+	stored, err := e.config.SessionStore.LoadEvents(context.Background(), ref.SessionID, &adk.LoadSessionEventsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoImageBytes(t, stored)
 }
 
 func (i *testToolImageImporter) StageToolImages(_ context.Context, session harness.Session, runID, callID string, images []harness.Content) ([]harness.Content, error) {
@@ -265,6 +359,23 @@ func TestImageBudgetIgnoresBase64LengthAndSettlesUsage(t *testing.T) {
 	}
 	if estimates[0] != estimates[1] {
 		t.Fatalf("base64 counted as text tokens: %v", estimates)
+	}
+}
+
+func TestGeneratedImageHasBoundedOutputTokenEstimate(t *testing.T) {
+	for _, data := range []string{"tiny", strings.Repeat("x", 1024*1024)} {
+		b := &runBudget{limits: harness.BudgetLimits{MaxTokens: 10000, MaxOutputTokens: 10000}}
+		r, _, err := b.reserve([]*schema.Message{{Role: schema.User, Content: "draw"}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg := &schema.Message{Role: schema.Assistant, AssistantGenMultiContent: []schema.MessageOutputPart{{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageOutputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &data, MIMEType: "image/png"}}}}}
+		if err = r.observe(msg); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.currentUsage().OutputTokens; got != estimatedImageTokens {
+			t.Fatalf("estimated output tokens=%d", got)
+		}
 	}
 }
 

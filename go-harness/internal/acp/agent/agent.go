@@ -410,6 +410,15 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 			role = "thought"
 		}
 		update = map[string]any{"sessionUpdate": kind, "messageId": a.streamMessageID(e, role), "content": harness.Content{Type: "text", Text: e.Text}}
+	case "image_delta":
+		if len(e.Content) != 1 {
+			return harness.ErrInvalidInput
+		}
+		wire, err := a.wireContent(ctx, e.SessionID, e.Content[0])
+		if err != nil {
+			return err
+		}
+		update = map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": a.streamMessageID(e, "assistant"), "content": wire}
 	case "context_usage":
 		if e.ContextUsage == nil || e.ContextUsage.Size <= 0 || e.ContextUsage.Used < 0 {
 			return nil

@@ -22,7 +22,7 @@
 | 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、原生子 Agent 生命周期、主 Agent 计划与真实上下文用量投影、分页历史与 load 重放、有界异步 ACP 更新队列 | 真实编辑器流压验证 |
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
-| 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image、产物登记及 MCP 增强工具的普通/流式图片导入已验证 | 模型生成媒体导入、可选对象存储发布 |
+| 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image、产物登记、MCP 增强工具图片导入及模型生成图片的导入/ACP 回放已验证 | 模型生成音视频、远程图片 URL、可选对象存储发布及真实图片模型验收 |
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
@@ -359,3 +359,11 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 
 - `--config` 与显式 Go `--provider`/`--base-url` 组合时，仅在最终后端与 Python 所选模型的提供商、端点相同的情况下带入其 API key。调用方已有的 Go API key 保持优先；候选模型、视觉声明及上下文窗口还要求凭据与最终 Go key 一致，避免把 Python 凭据或能力映射送往另一后端。显式模型 ID 改变但提供商、端点和凭据相同，仍可使用兼容候选模型。
 - 单元测试覆盖跨提供商、跨端点、已有 Go 凭据及同后端模型覆盖；Windows 与 WSL Linux 的 `go test -count=1 -timeout=5m ./internal/launch`、`gofmt` 检查通过。完整配置清单及真实编辑器启动演练仍待完成。
+
+## 第三十四阶段模型生成图片
+
+- Eino 模型 `AssistantGenMultiContent` 中的内联 PNG、JPEG、GIF、WebP 图片在流式或非流式模型返回时先校验并暂存为会话资产，再把图片字节换成引用交给 Eino。每次模型调用限制 8 张、单张 20 MiB、合计 40 MiB；音视频和远程图片 URL 继续拒绝。
+- `image_delta` 在图片引用交给 Eino Runner 前，将资产记录和事件在同一事务中提交，防止 Runner 先写原生会话而留下不可读取的引用。未发出事件的暂存快照由运行结束清理；事件提交失败时资产不可读取。ACP 实时更新与 `session/load` 回放按会话授权临时加载图片，持久事件与 Eino 原生历史没有内联 Base64。后续模型调用仅在当前模型配置了视觉能力时加载先前生成的图片。
+- 本地 Eino 模型 fixture 验证生成、事件先于原生会话写入、下一轮历史加载及字节隔离；ACP 管道测试验证实时图片块与历史回放；SQLite 故障注入验证事件/资产一起回滚。缺少真实图片生成模型和编辑器联调，不能据此宣称完整多媒体或完整 V1 验收。
+- 图片事件为保证资产引用先于原生会话持久化而提前提交，可能先于同一模型回复的较早文本分片到达 ACP；混合文本/图片的显示顺序尚待真实编辑器验收及调整。
+- Windows 全 Go 模块 `go test -mod=readonly -p=2 -count=1 -timeout=5m ./...`、三个新增用例的 `-race` 聚焦检查和 `git diff --check` 通过。本批未重新打包、运行远端 CI、Docker 或真实编辑器。

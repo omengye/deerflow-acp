@@ -59,7 +59,7 @@ func (r *runIO) failure() error { r.mu.Lock(); defer r.mu.Unlock(); return r.err
 // relayStream owns upstream reads through terminal EOF. A provider may send its
 // error before deferred HTTP/process cleanup runs, so merely reading one error
 // does not establish teardown. Providers must honor their cancelled context.
-func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk func(T) error, onError func(error), observers ...func(T) error) *schema.StreamReader[T] {
+func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk func(T) (T, error), onError func(error), observers ...func(T) error) *schema.StreamReader[T] {
 	reader, writer := schema.Pipe[T](1)
 	go func() {
 		defer finish()
@@ -98,7 +98,8 @@ func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk f
 				continue
 			}
 			if onChunk != nil {
-				if callbackErr := onChunk(chunk); callbackErr != nil {
+				mapped, callbackErr := onChunk(chunk)
+				if callbackErr != nil {
 					if onError != nil {
 						onError(callbackErr)
 					}
@@ -107,6 +108,7 @@ func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk f
 					draining = true
 					continue
 				}
+				chunk = mapped
 			}
 			if closed := writer.Send(chunk, nil); closed {
 				draining = true
@@ -155,15 +157,21 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 	complete := false
 	defer func() { m.settle(ctx, reservation, complete && ctx.Err() == nil) }()
 	msg, err := m.inner.Generate(ctx, input, opts...)
-	complete = err == nil
 	observeErr := reservation.observe(msg)
-	if mediaErr := validateProviderOutput(msg); mediaErr != nil {
-		return nil, errors.Join(err, observeErr, mediaErr)
+	providerErr := err
+	if m.media != nil {
+		msg, err = m.media.normalizeProviderOutput(ctx, msg, &modelImageLimit{})
+	} else if msg != nil {
+		err = validateProviderOutput(msg, "")
+	}
+	complete = err == nil && providerErr == nil
+	if err != nil || providerErr != nil {
+		return nil, errors.Join(providerErr, err, observeErr)
 	}
 	if observeErr != nil {
-		return msg, errors.Join(err, observeErr)
+		return msg, observeErr
 	}
-	return msg, err
+	return msg, nil
 }
 func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	ctx, finish, err := m.io.begin(ctx)
@@ -194,7 +202,14 @@ func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts
 		return nil, errors.New("model returned nil stream")
 	}
 	complete := true
-	return relayStream(source, func() { m.settle(ctx, reservation, complete && ctx.Err() == nil); finish() }, validateProviderOutput, func(err error) { complete = false; m.io.recordError(err) }, reservation.observe), nil
+	limit := &modelImageLimit{}
+	project := func(msg *schema.Message) (*schema.Message, error) {
+		if m.media != nil {
+			return m.media.normalizeProviderOutput(ctx, msg, limit)
+		}
+		return msg, validateProviderOutput(msg, "")
+	}
+	return relayStream(source, func() { m.settle(ctx, reservation, complete && ctx.Err() == nil); finish() }, project, func(err error) { complete = false; m.io.recordError(err) }, reservation.observe), nil
 }
 
 func (m *trackedModel) settle(ctx context.Context, r *modelReservation, complete bool) {

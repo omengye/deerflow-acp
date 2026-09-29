@@ -206,6 +206,9 @@ func ProjectToolContent(content []harness.Content) (*schema.ToolResult, error) {
 
 type mediaProjection struct {
 	resolver         harness.AssetResolver
+	importer         harness.ModelImageImporter
+	publish          func(context.Context, harness.Content) error
+	request          harness.RunRequest
 	policy           harness.MediaConfig
 	sessionID, model string
 }
@@ -240,7 +243,7 @@ func (p *mediaProjection) hydrate(ctx context.Context, input []*schema.Message, 
 				return nil, invalidMedia("legacy multimedia history must be reimported as asset references")
 			}
 		}
-		if err := validateModelOutput(message); err != nil {
+		if err := validateModelOutput(message, p.sessionID); err != nil {
 			return nil, err
 		}
 		for i, part := range message.UserInputMultiContent {
@@ -297,6 +300,42 @@ func (p *mediaProjection) hydrate(ctx context.Context, input []*schema.Message, 
 				return nil, invalidMedia("unsupported model input media")
 			}
 		}
+		for i, part := range message.AssistantGenMultiContent {
+			if part.Type != schema.ChatMessagePartTypeImageURL {
+				continue
+			}
+			ref, err := validateOutputImagePart(part, p.sessionID)
+			if err != nil {
+				return nil, err
+			}
+			if !p.policy.SupportsVision(selectedModel) || p.resolver == nil {
+				return nil, invalidMedia("generated image history requires a configured vision model and asset resolver")
+			}
+			key := *part.Image.URL
+			cached, exists := cache[key]
+			if exists && cached.ref != ref {
+				return nil, invalidMedia("conflicting metadata for repeated image asset")
+			}
+			data := cached.data
+			if !exists {
+				if len(cache) >= 32 || resolvedBytes+ref.Size > harness.MaxInputImageTotalBytes {
+					return nil, invalidMedia("model request exceeds image hydration limits")
+				}
+				bytes, err := p.resolver.Resolve(ctx, p.sessionID, ref)
+				if err != nil {
+					return nil, fmt.Errorf("resolve generated image asset: %w", err)
+				}
+				if int64(len(bytes)) != ref.Size || fmt.Sprintf("%x", sha256.Sum256(bytes)) != strings.ToLower(ref.SHA256) || http.DetectContentType(bytes) != ref.MimeType {
+					return nil, invalidMedia("resolved generated image does not match asset metadata")
+				}
+				data = base64.StdEncoding.EncodeToString(bytes)
+				cache[key] = cachedImage{ref: ref, data: data}
+				resolvedBytes += ref.Size
+			}
+			part.Image.URL, part.Image.Base64Data = nil, &data
+			delete(part.Extra, assetRefExtraKey)
+			message.AssistantGenMultiContent[i] = part
+		}
 	}
 	return output, nil
 }
@@ -319,20 +358,46 @@ func fileInputContent(part schema.MessageInputPart, sessionID string) (harness.C
 	return content, nil
 }
 
-func validateModelOutput(message *schema.Message) error {
+func validateOutputImagePart(part schema.MessageOutputPart, sessionID string) (harness.AssetRef, error) {
+	if part.Image == nil || part.Image.URL == nil || part.Image.Base64Data != nil || len(part.Image.Extra) != 0 || len(part.Extra) != 1 || part.Text != "" || part.Audio != nil || part.Video != nil || part.Reasoning != nil {
+		return harness.AssetRef{}, invalidMedia("generated image requires a normalized asset reference")
+	}
+	ref, err := assetFromPart(part.Extra)
+	if err != nil {
+		return ref, err
+	}
+	if err = validateAsset(ref, sessionID, true); err != nil {
+		return ref, err
+	}
+	if *part.Image.URL != harness.AssetURI(ref) || part.Image.MIMEType != ref.MimeType {
+		return ref, invalidMedia("generated image metadata does not match its asset")
+	}
+	return ref, nil
+}
+
+func validateModelOutput(message *schema.Message, sessionID string) error {
 	if message == nil {
 		return nil
 	}
 	for _, part := range message.AssistantGenMultiContent {
-		if part.Image != nil || part.Audio != nil || part.Video != nil || (part.Type != schema.ChatMessagePartTypeText && part.Type != schema.ChatMessagePartTypeReasoning) {
-			return invalidMedia("generated multimedia must be imported before entering durable history")
+		switch part.Type {
+		case schema.ChatMessagePartTypeText, schema.ChatMessagePartTypeReasoning:
+			if part.Image != nil || part.Audio != nil || part.Video != nil {
+				return invalidMedia("unexpected generated media fields")
+			}
+		case schema.ChatMessagePartTypeImageURL:
+			if _, err := validateOutputImagePart(part, sessionID); err != nil {
+				return err
+			}
+		default:
+			return invalidMedia("unsupported generated multimedia")
 		}
 	}
 	return nil
 }
 
-func validateProviderOutput(message *schema.Message) error {
-	if err := validateModelOutput(message); err != nil {
+func validateProviderOutput(message *schema.Message, sessionID string) error {
+	if err := validateModelOutput(message, sessionID); err != nil {
 		return err
 	}
 	if message == nil {
@@ -349,6 +414,66 @@ func validateProviderOutput(message *schema.Message) error {
 		}
 	}
 	return nil
+}
+
+type modelImageLimit struct {
+	count int
+	bytes int64
+}
+
+// normalizeProviderOutput keeps provider bytes out of native Eino messages.
+// Each returned reference remains staged until its image_delta event commits.
+func (p *mediaProjection) normalizeProviderOutput(ctx context.Context, message *schema.Message, limit *modelImageLimit) (*schema.Message, error) {
+	if message == nil {
+		return nil, nil
+	}
+	copyMessage := *message
+	copyMessage.AssistantGenMultiContent = append([]schema.MessageOutputPart(nil), message.AssistantGenMultiContent...)
+	for i, part := range copyMessage.AssistantGenMultiContent {
+		if part.Type != schema.ChatMessagePartTypeImageURL {
+			continue
+		}
+		if part.Image == nil || part.Image.Base64Data == nil || part.Image.URL != nil || len(part.Image.Extra) != 0 || !imageMIME(part.Image.MIMEType) || part.Text != "" || part.Audio != nil || part.Video != nil || part.Reasoning != nil || len(part.Extra) != 0 {
+			return nil, invalidMedia("unsupported generated image representation")
+		}
+		if p.importer == nil {
+			return nil, invalidMedia("model image importer is unavailable")
+		}
+		// Bound decoded bytes before asking the asset service to verify the image.
+		if len(*part.Image.Base64Data) > int((harness.MaxInputImageBytes+2)/3*4+4) || limit.count >= harness.MaxInputImagesPerTurn {
+			return nil, invalidMedia("generated image exceeds model output limits")
+		}
+		content, err := p.importer.StageModelImage(ctx, p.request.Session, p.request.RunID, harness.Content{Type: "image", Data: *part.Image.Base64Data, MimeType: part.Image.MIMEType})
+		if err != nil {
+			return nil, err
+		}
+		if content.Asset == nil || content.Type != "image" || content.Data != "" || content.URI != harness.AssetURI(*content.Asset) || content.MimeType != content.Asset.MimeType {
+			return nil, invalidMedia("model image importer returned an invalid reference")
+		}
+		if err := validateAsset(*content.Asset, p.sessionID, true); err != nil {
+			return nil, err
+		}
+		if content.Asset.Size+limit.bytes > harness.MaxInputImageTotalBytes {
+			return nil, invalidMedia("generated images exceed 40 MiB")
+		}
+		encoded, _ := json.Marshal(content.Asset)
+		uri := content.URI
+		part.Image = &schema.MessageOutputImage{MessagePartCommon: schema.MessagePartCommon{URL: &uri, MIMEType: content.MimeType}}
+		part.Extra = map[string]any{assetRefExtraKey: string(encoded)}
+		if p.publish == nil {
+			return nil, invalidMedia("model image event publisher is unavailable")
+		}
+		if err := p.publish(ctx, content); err != nil {
+			return nil, err
+		}
+		copyMessage.AssistantGenMultiContent[i] = part
+		limit.count++
+		limit.bytes += content.Asset.Size
+	}
+	if err := validateProviderOutput(&copyMessage, p.sessionID); err != nil {
+		return nil, err
+	}
+	return &copyMessage, nil
 }
 
 func validateToolMedia(result *schema.ToolResult, sessionID string) (*schema.ToolResult, error) {

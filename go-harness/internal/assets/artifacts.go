@@ -125,6 +125,64 @@ func (s *Store) TakeArtifacts(sessionID, runID, callID string) *Prepared {
 	return p
 }
 
+// StageModelImage pins one provider image until its image_delta event commits.
+// A failed run removes any snapshot whose event was never published.
+func (s *Store) StageModelImage(ctx context.Context, x harness.Session, runID string, image harness.Content) (content harness.Content, returnErr error) {
+	if runID == "" || image.Type != "image" || image.Data == "" || image.URI != "" || image.Asset != nil || image.Text != "" {
+		return content, invalid("model image must contain only inline data")
+	}
+	data, mediaType, err := decodeImage(image.Data, image.MimeType)
+	if err != nil {
+		return content, err
+	}
+	p, err := s.begin(x)
+	if err != nil {
+		return content, err
+	}
+	defer func() {
+		if returnErr != nil {
+			returnErr = errors.Join(returnErr, p.Finish(false))
+		}
+	}()
+	ref, err := p.snapshot(ctx, bytes.NewReader(data), "model-image"+imageExtension(mediaType), mediaType, harness.AssetImage, harness.MaxInputImageBytes)
+	if err != nil {
+		return content, err
+	}
+	content = assetContent(ref, "Generated image")
+	p.Input = []harness.Content{content}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing.Load() {
+		return harness.Content{}, errors.New("asset store is closing")
+	}
+	s.staged[artifactKey(runID, "model:"+ref.ID)] = p
+	return content, nil
+}
+
+// TakeModelImage transfers a staged image to the event transaction. Matching
+// the complete reference prevents an event from publishing a different asset.
+func (s *Store) TakeModelImage(sessionID, runID string, content harness.Content) *Prepared {
+	if content.Type != "image" || content.Asset == nil || content.Data != "" || content.Text != "" || content.URI != harness.AssetURI(*content.Asset) || content.MimeType != content.Asset.MimeType {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := artifactKey(runID, "model:"+content.Asset.ID)
+	p := s.staged[key]
+	if p == nil || p.session.ID != sessionID || len(p.Input) != 1 || p.Input[0].Asset == nil || *p.Input[0].Asset != *content.Asset || p.Input[0].Name != content.Name || p.Input[0].Size == nil || content.Size == nil || *p.Input[0].Size != *content.Size || p.Input[0].Description != content.Description {
+		return nil
+	}
+	delete(s.staged, key)
+	return p
+}
+
+func (p *Prepared) AttachModelImage(ctx context.Context, tx *sql.Tx) error {
+	if len(p.refs) != 1 || p.refs[0].Kind != harness.AssetImage {
+		return invalid("model image snapshot is invalid")
+	}
+	return p.attachRecords(ctx, tx)
+}
+
 func (p *Prepared) AttachArtifacts(ctx context.Context, tx *sql.Tx, runID, callID string) error {
 	if err := p.attachRecords(ctx, tx); err != nil {
 		return err

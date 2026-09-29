@@ -62,6 +62,67 @@ func mediaInitialize(t *testing.T, c *client) bool {
 	}
 	return response.Caps.Prompt.Image
 }
+
+func TestGeneratedImageEventCommitsAndReplaysAsACPImage(t *testing.T) {
+	var f *fixture
+	raw := mediaImage(64)
+	f = newFixture(t, engineFunc(func(ctx context.Context, req harness.RunRequest, emit harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
+		image, err := f.service.Assets.StageModelImage(ctx, req.Session, req.RunID, raw)
+		if err != nil {
+			return harness.RunResult{}, err
+		}
+		if err := emit(ctx, harness.RunEvent{Kind: "image_delta", Content: []harness.Content{image}}); err != nil {
+			return harness.RunResult{}, err
+		}
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	}))
+	enableMedia(t, f, "fake-model")
+	c := connect(t, f.service)
+	mediaInitialize(t, c)
+	sid := c.newSession(t, f.cwd)
+	id := c.request(t, "session/prompt", map[string]any{"sessionId": sid, "prompt": []harness.Content{{Type: "text", Text: "draw"}}})
+	updates, result := collectMediaResponse(t, c, id)
+	if result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	check := func(updates []sessionUpdate) {
+		t.Helper()
+		var images int
+		for _, update := range updates {
+			if update.Update.Kind != "agent_message_chunk" {
+				continue
+			}
+			var content harness.Content
+			if err := json.Unmarshal(update.Update.Content, &content); err != nil {
+				t.Fatal(err)
+			}
+			if content.Type == "image" {
+				images++
+				if content.Data != raw.Data || content.MimeType != raw.MimeType || content.Asset != nil || content.URI != "" {
+					t.Fatalf("invalid ACP image: %+v", content)
+				}
+			}
+		}
+		if images != 1 {
+			t.Fatalf("ACP image chunks=%d", images)
+		}
+	}
+	check(updates)
+	var assetsCount int
+	if err := f.db.DB().QueryRow(`SELECT count(*) FROM harness_assets WHERE session_id=?`, sid).Scan(&assetsCount); err != nil || assetsCount != 1 {
+		t.Fatalf("asset commit count=%d err=%v", assetsCount, err)
+	}
+	var stored string
+	if err := f.db.DB().QueryRow(`SELECT CAST(event AS TEXT) FROM harness_events WHERE session_id=? AND CAST(event AS TEXT) LIKE '%image_delta%'`, sid).Scan(&stored); err != nil || strings.Contains(stored, raw.Data) || !strings.Contains(stored, "deerflow-asset://") {
+		t.Fatalf("event stored image bytes or lost reference: %v %q", err, stored)
+	}
+	id = c.request(t, "session/load", map[string]any{"sessionId": sid, "cwd": f.cwd, "mcpServers": []any{}})
+	updates, result = collectMediaResponse(t, c, id)
+	if result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	check(updates)
+}
 func collectMediaResponse(t *testing.T, c *client, id int) ([]sessionUpdate, wireMessage) {
 	t.Helper()
 	var updates []sessionUpdate

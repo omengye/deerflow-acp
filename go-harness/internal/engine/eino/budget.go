@@ -145,14 +145,14 @@ func (b *runBudget) tool() error {
 }
 
 type modelReservation struct {
-	budget                       *runBudget
-	input, outputBytes, reserved int64
-	usage                        harness.Usage
-	known                        bool
-	once                         sync.Once
-	grant                        *durablebudget.Reservation
-	settledUsage                 harness.Usage
-	settlementErr                error
+	budget                                     *runBudget
+	input, outputBytes, outputImages, reserved int64
+	usage                                      harness.Usage
+	known                                      bool
+	once                                       sync.Once
+	grant                                      *durablebudget.Reservation
+	settledUsage                               harness.Usage
+	settlementErr                              error
 }
 
 func (b *runBudget) reserve(input []*schema.Message, opts []model.Option) (*modelReservation, []model.Option, error) {
@@ -305,6 +305,14 @@ func (r *modelReservation) observe(msg *schema.Message) error {
 		return nil
 	}
 	r.outputBytes += int64(len(msg.Content) + len(msg.ReasoningContent))
+	for _, part := range msg.AssistantGenMultiContent {
+		if msg.Content == "" {
+			r.outputBytes += int64(len(part.Text))
+		}
+		if part.Type == schema.ChatMessagePartTypeImageURL {
+			r.outputImages++
+		}
+	}
 	for _, c := range msg.ToolCalls {
 		r.outputBytes += int64(len(c.Function.Arguments) + len(c.Function.Name))
 	}
@@ -339,7 +347,7 @@ func (r *modelReservation) observe(msg *schema.Message) error {
 func (r *modelReservation) currentUsage() harness.Usage {
 	u := r.usage
 	if !r.known {
-		u = harness.Usage{InputTokens: r.input, OutputTokens: (r.outputBytes + 3) / 4, Estimated: true}
+		u = harness.Usage{InputTokens: r.input, OutputTokens: (r.outputBytes+3)/4 + r.outputImages*estimatedImageTokens, Estimated: true}
 	}
 	u.TotalTokens = max(u.TotalTokens, u.InputTokens+u.OutputTokens)
 	return u

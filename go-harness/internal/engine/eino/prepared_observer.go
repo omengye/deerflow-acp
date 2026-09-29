@@ -137,7 +137,7 @@ func (a *preparedObserver) observe(parent context.Context, begin func(context.Co
 						}
 						closeMu.Unlock()
 						streams.Done()
-					}, observe, fail)
+					}, func(message *schema.Message) (*schema.Message, error) { return message, observe(message) }, fail)
 					closeMu.Lock()
 					if !finished {
 						stopClose = context.AfterFunc(p.io.ctx, stream.Close)

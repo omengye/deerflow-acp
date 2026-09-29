@@ -210,6 +210,12 @@ func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest, prepared .
 	return tx.Commit()
 }
 func (s *Store) Append(ctx context.Context, e harness.RunEvent, stores ...*assets.Store) (harness.RunEvent, error) {
+	if e.Kind == "image_delta" {
+		if len(stores) == 0 || stores[0] == nil {
+			return e, harness.ErrInvalidInput
+		}
+		return s.appendModelImageEvent(ctx, e, stores[0])
+	}
 	if isToolEvent(e.Kind) {
 		return s.appendToolEvent(ctx, e, stores...)
 	}

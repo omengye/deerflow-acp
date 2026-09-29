@@ -169,11 +169,16 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	if selectedModel == "" {
 		selectedModel = e.config.Model
 	}
-	media := &mediaProjection{resolver: e.config.AssetResolver, policy: e.config.Media, sessionID: req.Session.ID, model: selectedModel}
+	media := &mediaProjection{resolver: e.config.AssetResolver, importer: e.config.ModelImageImporter, request: req, policy: e.config.Media, sessionID: req.Session.ID, model: selectedModel,
+		publish: func(ctx context.Context, content harness.Content) error {
+			return sink.emit(ctx, harness.RunEvent{Kind: "image_delta", Content: []harness.Content{content}})
+		}}
 	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle, budget: b, images: e.config.ToolImageImporter}
 	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), extensions.Handlers...)
 	if extensions.ModelHandlerFactory != nil || extensions.PostRunFactory != nil {
-		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: media}
+		privateMedia := *media
+		privateMedia.importer, privateMedia.publish = nil, nil
+		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia}
 		if extensions.ModelHandlerFactory != nil {
 			modelHandlers, err := extensions.ModelHandlerFactory(ctx, metered)
 			if err != nil {
@@ -190,7 +195,9 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		}
 	}
 	if e.config.Compaction.Enabled {
-		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: media}
+		privateMedia := *media
+		privateMedia.importer, privateMedia.publish = nil, nil
+		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia}
 		compaction, err := newCompactionMiddleware(ctx, e.config.Compaction, metered)
 		if err != nil {
 			return p, fmt.Errorf("build context compaction: %w", err)

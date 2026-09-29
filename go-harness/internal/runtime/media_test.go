@@ -2,12 +2,45 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
 )
+
+func TestGeneratedImageEventFailureRollsBackAsset(t *testing.T) {
+	ctx := context.Background()
+	s, req := receiptFixture(t)
+	assetStore, err := assets.NewStore(ctx, filepath.Join(t.TempDir(), "assets"), s.Store.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = assetStore.Close() })
+	data := make([]byte, 64)
+	copy(data, []byte("\x89PNG\r\n\x1a\n"))
+	content, err := assetStore.StageModelImage(ctx, req.Session, req.RunID, harness.Content{Type: "image", Data: base64.StdEncoding.EncodeToString(data), MimeType: "image/png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Store.db.Exec(`CREATE TRIGGER fail_image_event BEFORE INSERT ON harness_events BEGIN SELECT RAISE(ABORT,'fixture event failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Store.Append(ctx, harness.RunEvent{SessionID: req.Session.ID, RunID: req.RunID, Kind: "image_delta", Content: []harness.Content{content}}, assetStore)
+	if err == nil {
+		t.Fatal("image event insert unexpectedly succeeded")
+	}
+	var count int
+	if err = s.Store.db.QueryRow(`SELECT count(*) FROM harness_assets`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("asset record survived failed event: %d %v", count, err)
+	}
+	if _, err = assetStore.Resolve(ctx, req.Session.ID, *content.Asset); !errors.Is(err, harness.ErrNotFound) {
+		t.Fatalf("uncommitted image became resolvable: %v", err)
+	}
+}
 
 func TestViewImageTrustedReadOnlyPermissionAndFailureReceipt(t *testing.T) {
 	for _, x := range []harness.Session{{Mode: "plan"}, {ApprovalMode: harness.ApprovalReadOnly}} {

@@ -34,6 +34,12 @@ type ToolImageImporter interface {
 	StageToolImages(context.Context, Session, string, string, []Content) ([]Content, error)
 }
 
+// ModelImageImporter stages one generated image. Its asset is published with
+// the corresponding image_delta event, before it can be used in model history.
+type ModelImageImporter interface {
+	StageModelImage(context.Context, Session, string, Content) (Content, error)
+}
+
 // MediaConfig is host policy. Vision support is an explicit per-model allowlist
 // and remains disabled when empty; provider names do not imply capabilities.
 type MediaConfig struct {

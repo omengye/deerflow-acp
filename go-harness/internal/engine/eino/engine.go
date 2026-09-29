@@ -32,16 +32,17 @@ type Config struct {
 	ToolFactory func(context.Context, harness.RunRequest) ([]tool.BaseTool, func() error, error)
 	// ExtensionFactory pins one snapshot for both tools and middleware. On
 	// explicit resume, pinned is the state saved in the checkpoint envelope.
-	ExtensionFactory  func(context.Context, harness.RunRequest, json.RawMessage) (RunExtensions, error)
-	CheckpointStore   adk.CheckPointStore
-	SessionStore      adk.SessionEventStore[*schema.Message]
-	MaxIterations     int
-	Budget            harness.BudgetLimits
-	BudgetLedger      *durablebudget.Ledger
-	Media             harness.MediaConfig
-	AssetResolver     harness.AssetResolver
-	ToolImageImporter harness.ToolImageImporter
-	Compaction        harness.CompactionConfig
+	ExtensionFactory   func(context.Context, harness.RunRequest, json.RawMessage) (RunExtensions, error)
+	CheckpointStore    adk.CheckPointStore
+	SessionStore       adk.SessionEventStore[*schema.Message]
+	MaxIterations      int
+	Budget             harness.BudgetLimits
+	BudgetLedger       *durablebudget.Ledger
+	Media              harness.MediaConfig
+	AssetResolver      harness.AssetResolver
+	ToolImageImporter  harness.ToolImageImporter
+	ModelImageImporter harness.ModelImageImporter
+	Compaction         harness.CompactionConfig
 	// ContextWindows contains configured model context sizes. A missing size
 	// suppresses ACP context occupancy rather than guessing from run budgets.
 	ContextWindows map[string]int
@@ -497,6 +498,17 @@ func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *even
 			if msg.ReasoningContent != "" {
 				if err := sink.emit(ctx, harness.RunEvent{Kind: "reasoning_delta", Text: msg.ReasoningContent}); err != nil {
 					return err
+				}
+			}
+			for _, part := range msg.AssistantGenMultiContent {
+				switch part.Type {
+				case schema.ChatMessagePartTypeText:
+					if msg.Content == "" && part.Text != "" {
+						observed.text += part.Text
+						if err := sink.emit(ctx, harness.RunEvent{Kind: "text_delta", Text: part.Text}); err != nil {
+							return err
+						}
+					}
 				}
 			}
 			if meta := msg.ResponseMeta; meta != nil {

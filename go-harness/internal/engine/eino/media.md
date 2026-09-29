@@ -37,10 +37,19 @@ staged snapshots. Streaming tool chunks still require normalized references.
 
 The official MCP adapter formats call results as JSON text. Its result handler
 removes image data from that text, and the enhanced wrapper passes actual MCP
-image blocks to the same import path. Other MCP binary content and generated
-model multimedia remain unsupported. An image is hydrated only for an allowed
-vision model immediately before the next model invocation.
+image blocks to the same import path. Other MCP binary content remains
+unsupported.
 
-Each image reserves an explicit 4,096-token estimate; Base64 length is excluded
-from text token estimation. This is a model-independent estimate, not an exact
-token or cost bound. Provider-reported usage replaces it during settlement.
+Assistant-generated inline PNG, JPEG, GIF and WebP images use a separate model
+importer. The model lifecycle replaces Base64 with a session asset reference
+before Eino receives the message. Each `image_delta` event commits the asset
+record and event together. ACP hydrates that event only for an authorized live
+update or history replay. One model call is limited to eight images, 20 MiB
+each and 40 MiB total. Generated audio, video and remote image URLs remain
+unsupported. Generated images in prior assistant turns are hydrated only for a
+configured vision model immediately before the next model invocation.
+
+Each input or generated image receives an explicit 4,096-token estimate when
+the provider omits usage; Base64 length is excluded from text token estimation.
+This is a model-independent estimate, not an exact token or cost bound.
+Provider-reported usage replaces it during settlement.
