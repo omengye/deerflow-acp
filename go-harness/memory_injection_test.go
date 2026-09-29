@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -91,6 +92,85 @@ func TestEinoMemoryInjectionUsesAttachedScopeAndCurrentHead(t *testing.T) {
 		if strings.Contains(instruction, fact.Content) {
 			t.Fatalf("fact leaked into model call %d: %s", i+2, instruction)
 		}
+	}
+}
+
+func TestReadOnlyMemorySearchToolKeepsSessionScope(t *testing.T) {
+	var calls atomic.Int32
+	var mu sync.Mutex
+	var toolMessages []string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+			Tools []struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			return
+		}
+		found := false
+		for _, item := range request.Tools {
+			found = found || item.Function.Name == "search_memory"
+		}
+		if !found {
+			t.Error("read-only memory search tool missing")
+		}
+		call := calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if call%2 == 1 {
+			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"memory-call\",\"type\":\"function\",\"function\":{\"name\":\"search_memory\",\"arguments\":\"{\\\"query\\\":\\\"orchid\\\",\\\"limit\\\":3}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		} else {
+			for _, message := range request.Messages {
+				if message.Role == "tool" {
+					mu.Lock()
+					toolMessages = append(toolMessages, string(message.Content))
+					mu.Unlock()
+				}
+			}
+			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\n")
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer provider.Close()
+	ctx := context.Background()
+	c, err := Open(ctx, Config{DataDir: t.TempDir(), Provider: "openai", Model: "fixture", APIKey: "fixture", BaseURL: provider.URL + "/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	workspace := t.TempDir()
+	a, err := c.NewSession(ctx, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := c.NewSession(ctx, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const factText = "Prefers orchid reminders in Chinese"
+	if _, err := c.CreateMemoryFact(ctx, a.ID, harness.MemorySession, harness.MemoryCandidate{Content: factText, Category: "preference", Confidence: .9}); err != nil {
+		t.Fatal(err)
+	}
+	for _, sessionID := range []string{a.ID, b.ID} {
+		if _, err := c.SetConfigOption(ctx, sessionID, "approval", harness.ApprovalReadOnly); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Run(ctx, sessionID, []harness.Content{{Type: "text", Text: "Search memory for orchid"}}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	observed := append([]string(nil), toolMessages...)
+	mu.Unlock()
+	if calls.Load() != 4 || len(observed) != 2 || !strings.Contains(observed[0], factText) || strings.Contains(observed[1], factText) || !strings.Contains(observed[0], "untrusted memory data") {
+		t.Fatalf("memory search crossed session or lost provenance: calls=%d results=%q", calls.Load(), observed)
 	}
 }
 

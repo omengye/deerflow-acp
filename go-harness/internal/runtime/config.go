@@ -48,7 +48,7 @@ func (s *Service) ConfigOptions(x harness.Session) []harness.ConfigOption {
 		{Value: harness.ApprovalAsk, Name: "Ask before restricted tools"},
 		{Value: harness.ApprovalAllowAlways, Name: "Allow tools in this session", Description: "Explicitly authorize tool requests; server startup policy and plan mode still apply."},
 		{Value: harness.ApprovalRejectAlways, Name: "Reject restricted tools"},
-		{Value: harness.ApprovalReadOnly, Name: "Local read-only tools", Description: "Only trusted built-in file reading, listing and searching are permitted."},
+		{Value: harness.ApprovalReadOnly, Name: "Local read-only tools", Description: "Trusted built-in workspace and memory inspection tools are permitted."},
 	}})
 	if s.Settings.EnableSubagents {
 		value := "off"
@@ -123,7 +123,7 @@ func (s *Service) clearDecisions(owner, id string) {
 func configuredPermission(x harness.Session, p harness.PermissionRequest) (harness.PermissionDecision, bool) {
 	if x.Mode == "plan" || x.ApprovalMode == harness.ApprovalReadOnly {
 		switch p.ToolName {
-		case "read_file", "list_directory", "search_files", "read_skill_file", "view_image", "task_status", "task_wait":
+		case "read_file", "list_directory", "search_files", "read_skill_file", "view_image", "search_memory", "task_status", "task_wait":
 			return harness.AllowOnce, true
 		default:
 			return harness.RejectOnce, true

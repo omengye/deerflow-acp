@@ -109,6 +109,43 @@ func selectMemory(ctx context.Context, store *memory.Store, req harness.RunReque
 	return snapshots, nil
 }
 
+func searchMemory(ctx context.Context, store *memory.Store, req harness.RunRequest, userID, query string, limit int) ([]tools.MemorySearchHit, error) {
+	hits := make([]tools.MemorySearchHit, 0, limit)
+	bytesLeft := 8192
+	for _, kind := range []harness.MemoryScope{harness.MemorySession, harness.MemoryWorkspace, harness.MemoryUser} {
+		if kind == harness.MemoryUser && userID == "" {
+			continue
+		}
+		var sessionID, subjectUser string
+		if kind == harness.MemorySession {
+			sessionID = req.Session.ID
+		}
+		if kind == harness.MemoryUser {
+			subjectUser = userID
+		}
+		scope, err := memory.NewScope(memory.ScopeKind(kind), req.Session.CWD, sessionID, subjectUser, "")
+		if err != nil {
+			return nil, err
+		}
+		facts, err := store.Search(ctx, scope, query, limit-len(hits))
+		if err != nil {
+			return nil, err
+		}
+		for _, fact := range facts {
+			cost := len(fact.Content) + len(fact.Category) + len(fact.ID) + 64
+			if cost > bytesLeft {
+				continue
+			}
+			bytesLeft -= cost
+			hits = append(hits, tools.MemorySearchHit{Scope: kind, ID: fact.ID, Revision: fact.Revision, Category: fact.Category, Content: fact.Content})
+		}
+		if len(hits) == limit || bytesLeft == 0 {
+			break
+		}
+	}
+	return hits, nil
+}
+
 func memoryInstruction(snapshots []memorySnapshot) string {
 	var selected []memorySnapshot
 	for _, snapshot := range snapshots {
@@ -196,6 +233,15 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		out.Tools, out.Cleanup, err = tools.WorkspaceFactory(ctx, req)
 		if err != nil {
 			return out, err
+		}
+		if memoryStore != nil {
+			search, toolErr := tools.MemorySearchTool(func(ctx context.Context, query string, limit int) ([]tools.MemorySearchHit, error) {
+				return searchMemory(ctx, memoryStore, req, cfg.MemoryUserID, query, limit)
+			})
+			if toolErr != nil {
+				return out, toolErr
+			}
+			out.Tools = append(out.Tools, search)
 		}
 		if len(state.Skills) > 0 {
 			handler, err := einoskill.NewMiddleware(ctx, &einoskill.Config{Backend: snapshot, BuildContent: snapshot.BuildContent})

@@ -24,7 +24,7 @@
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image、产物登记及 MCP 工具图片导入已验证 | 流式工具与模型生成媒体导入、可选对象存储发布 |
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
-| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准及只读检索工具 |
+| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、多窗口、现有 Rust Bridge 实际二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 诊断子集 |
 | 可选外部 ACP Agent | 待实现 | 白名单、反向权限、预算和取消链 |
@@ -230,3 +230,10 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 实际 MCP stdio 进程、Eino、ACP 双向管道和本地模型 fixture 验证图片到达下一次模型请求；存储测试验证发布前不可读取、SQL 事件故障回滚、文本与图片顺序及无内联字节落库。
 
 流式增强工具图片、模型生成媒体和可选对象存储发布仍待实现。MCP 的音频与嵌入式二进制资源现在明确拒绝，避免经官方文本格式化路径将 Base64 带入模型上下文。
+
+## 第十五阶段记忆只读检索工具
+
+- 增加内建 `search_memory`。查询与返回量有界，作用域仅由当前会话工作区、会话 ID 和显式配置的 user 身份构造；模型不能在参数中选择其他作用域。结果仅含描述性事实、分类、revision 和范围，并明确标记为不可信数据。
+- `plan` 与 `read_only` 允许此内建工具，命名空间内的 MCP 工具不能借名称获得相同授权。失败回执归为无外部副作用。前台 Eino 本地模型测试确认只读模式可实际调用、同工作区的另一会话看不到 session 事实。
+
+检索结果按当前事实 head 读取；恢复后再次调用可看到新的事实版本。已写入原生工具历史的旧结果不会改写。
