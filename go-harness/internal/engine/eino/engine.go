@@ -38,6 +38,7 @@ type Config struct {
 	BudgetLedger     *durablebudget.Ledger
 	Media            harness.MediaConfig
 	AssetResolver    harness.AssetResolver
+	Compaction       harness.CompactionConfig
 	// Handlers extends native Eino middleware without introducing another loop.
 	Handlers        []adk.ChatModelAgentMiddleware
 	DisableSubAgent bool
@@ -78,6 +79,11 @@ func (e *Engine) DurableExecutions() bool { return e.config.BudgetLedger != nil 
 
 func New(ctx context.Context, config Config) (*Engine, error) {
 	if err := validateBudget(config.Budget); err != nil {
+		return nil, err
+	}
+	var err error
+	config.Compaction, err = normalizeCompaction(config.Compaction)
+	if err != nil {
 		return nil, err
 	}
 	if config.MaxIterations == 0 {

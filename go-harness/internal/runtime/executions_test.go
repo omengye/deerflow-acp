@@ -505,6 +505,42 @@ func TestExecutionManifestCapturesNativeHeadAndRequiresAllPendingCalls(t *testin
 	})
 }
 
+func TestExecutionManifestBindsEarlierSummaryReplacement(t *testing.T) {
+	f := newExecutionFixture(t)
+	ctx := context.Background()
+	f.pending(t)
+	if _, err := f.s.db.Exec(`INSERT INTO eino_session_events(session_id,event_id,kind,payload) VALUES(?,'summary','messages_replaced',?)`, f.req.Session.ID, []byte(`{"summary":"original"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.db.Exec(`INSERT INTO eino_session_events(session_id,event_id,kind,payload) VALUES(?,'later','message',?)`, f.req.Session.ID, []byte(`{"later":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	f.suspend(t)
+	mustExecutionTx(t, f, func(tx *sql.Tx) error {
+		row, err := readExecution(ctx, tx, f.req.Session.ID, f.req.RunID)
+		if err != nil {
+			return err
+		}
+		if row.Manifest.SummaryHead.EventID != "summary" || row.Manifest.SummaryHead.Digest != executionDigest([]byte(`{"summary":"original"}`)) {
+			t.Fatalf("missing summary binding: %+v", row.Manifest.SummaryHead)
+		}
+		return validateExecutionManifest(ctx, tx, row)
+	})
+	if _, err := f.s.db.Exec(`UPDATE eino_session_events SET payload=? WHERE session_id=? AND event_id='summary'`, []byte(`{"summary":"changed"}`), f.req.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+	err := executionTx(ctx, f.s, func(tx *sql.Tx) error {
+		row, err := readExecution(ctx, tx, f.req.Session.ID, f.req.RunID)
+		if err != nil {
+			return err
+		}
+		return validateExecutionManifest(ctx, tx, row)
+	})
+	if !errors.Is(err, harness.ErrExecutionUnresumable) {
+		t.Fatalf("changed summary accepted: %v", err)
+	}
+}
+
 func TestExecutionBrokerRejectsForgedIdentityAndConfigDrift(t *testing.T) {
 	f := newExecutionFixture(t)
 	ctx := context.Background()

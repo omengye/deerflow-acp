@@ -58,6 +58,7 @@ type backgroundPermissionManifest struct {
 	Attempt, TaskVersion                                               int64
 	CheckpointSHA, NativeTaskSHA, ConfigSHA, InputSHA, ReceiptFrontier string
 	NativeHead                                                         ExecutionNativeHead
+	SummaryHead                                                        ExecutionNativeHead
 	EventCursor                                                        int64
 	Interrupts                                                         []interaction.ExecutionInterruptBinding
 }
@@ -242,6 +243,15 @@ func (s *BackgroundInteractionStore) validateFrontier(ctx context.Context, tx *s
 	}
 	if head != m.NativeHead {
 		return harness.ErrExecutionUnresumable
+	}
+	if m.SummaryHead != (ExecutionNativeHead{}) {
+		summary, err := executionSummaryHead(ctx, tx, m.Binding.ChildSessionID)
+		if err != nil {
+			return err
+		}
+		if summary != m.SummaryHead {
+			return harness.ErrExecutionUnresumable
+		}
 	}
 	cursor, err := executionEventCursor(ctx, tx, m.Binding.ChildSessionID)
 	if err != nil {

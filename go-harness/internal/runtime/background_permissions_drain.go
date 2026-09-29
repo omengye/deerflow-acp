@@ -36,6 +36,9 @@ func (s *BackgroundInteractionStore) captureFrontier(ctx context.Context, tx *sq
 	if m.NativeHead, err = executionNativeHead(ctx, tx, scope.Binding.ChildSessionID); err != nil {
 		return m, err
 	}
+	if m.SummaryHead, err = executionSummaryHead(ctx, tx, scope.Binding.ChildSessionID); err != nil {
+		return m, err
+	}
 	if m.EventCursor, err = executionEventCursor(ctx, tx, scope.Binding.ChildSessionID); err != nil {
 		return m, err
 	}

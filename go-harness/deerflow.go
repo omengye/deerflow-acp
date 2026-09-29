@@ -60,6 +60,8 @@ type Config struct {
 	// MemoryExtraction enables a bounded post-turn model call that proposes
 	// descriptive facts for terminal promotion. Disabled by default.
 	MemoryExtraction bool
+	// Compaction enables budgeted native Eino session summarization.
+	Compaction harness.CompactionConfig
 	// Engine allows embedding a custom execution backend without importing Eino.
 	// When nil, the real Eino DeepAgent and durable SQLite stores are used.
 	Engine harness.Engine
@@ -220,7 +222,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			out.Tools = append(out.Tools, tools...)
 			return out, err
 		}
-		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore})
+		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, Compaction: cfg.Compaction})
 		if err != nil {
 			return nil, err
 		}

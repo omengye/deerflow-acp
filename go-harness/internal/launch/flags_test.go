@@ -86,3 +86,14 @@ func TestMemoryFlagsAreExplicit(t *testing.T) {
 		t.Fatalf("configured=%+v err=%v", cfg, err)
 	}
 }
+
+func TestCompactionFlagsAreExplicit(t *testing.T) {
+	cfg, err := parseRuntimeFlags(t)
+	if err != nil || cfg.Compaction.Enabled {
+		t.Fatalf("default compaction=%+v err=%v", cfg.Compaction, err)
+	}
+	cfg, err = parseRuntimeFlags(t, "--context-compaction", "--compact-after-messages=40", "--compact-after-tokens=30000", "--compact-keep-messages=6")
+	if err != nil || !cfg.Compaction.Enabled || cfg.Compaction.ContextMessages != 40 || cfg.Compaction.ContextTokens != 30000 || cfg.Compaction.KeepRecentMessages != 6 {
+		t.Fatalf("configured compaction=%+v err=%v", cfg.Compaction, err)
+	}
+}

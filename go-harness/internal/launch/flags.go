@@ -32,6 +32,10 @@ func RuntimeFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
 	flags.IntVar(&cfg.BackgroundWorkers, "background-workers", 4, "maximum concurrent background attempts (1..64)")
 	flags.BoolVar(&cfg.MemoryExtraction, "memory-extraction", false, "extract durable descriptive facts after successful foreground turns")
 	flags.StringVar(&cfg.MemoryUserID, "memory-user-id", "", "explicit host user identity for workspace-bound user memory")
+	flags.BoolVar(&cfg.Compaction.Enabled, "context-compaction", false, "summarize long Eino conversations using the shared run budget")
+	flags.IntVar(&cfg.Compaction.ContextMessages, "compact-after-messages", 0, "summarize above this native message count; 0 uses the default")
+	flags.IntVar(&cfg.Compaction.ContextTokens, "compact-after-tokens", 0, "summarize above this estimated token count; 0 uses the default")
+	flags.IntVar(&cfg.Compaction.KeepRecentMessages, "compact-keep-messages", 0, "minimum recent messages to retain with the active user turn; 0 uses the default")
 	flags.Func("allow-model", "additional model ID allowed in session config (repeatable, same provider)", func(value string) error {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("model ID is empty")

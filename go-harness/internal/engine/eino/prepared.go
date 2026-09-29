@@ -186,6 +186,14 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 			}
 		}
 	}
+	if e.config.Compaction.Enabled {
+		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: media}
+		compaction, err := newCompactionMiddleware(ctx, e.config.Compaction, metered)
+		if err != nil {
+			return p, fmt.Errorf("build context compaction: %w", err)
+		}
+		handlers = append(handlers, compaction)
+	}
 	handlers = append(handlers, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media}, mw)
 	p.Agent, err = deep.New(ctx, &deep.Config{
 		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend,

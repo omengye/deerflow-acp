@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/cloudwego/eino/adk"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
 )
@@ -30,6 +31,7 @@ type ExecutionManifest struct {
 	CheckpointID, CheckpointSHA, ConfigSHA, InputSHA, ReceiptFrontier string
 	EventCursor                                                       int64
 	NativeHead                                                        ExecutionNativeHead
+	SummaryHead                                                       ExecutionNativeHead
 	Interrupts                                                        []ExecutionInterruptBinding
 }
 type ExecutionCheckpoint struct {
@@ -42,6 +44,19 @@ func executionNativeHead(ctx context.Context, tx *sql.Tx, sessionID string) (Exe
 	var h ExecutionNativeHead
 	var data []byte
 	err := tx.QueryRowContext(ctx, `SELECT seq,event_id,payload FROM eino_session_events WHERE session_id=? ORDER BY seq DESC LIMIT 1`, sessionID).Scan(&h.Sequence, &h.EventID, &data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return h, nil
+	}
+	if err != nil {
+		return h, err
+	}
+	h.Digest = executionDigest(data)
+	return h, nil
+}
+func executionSummaryHead(ctx context.Context, tx *sql.Tx, sessionID string) (ExecutionNativeHead, error) {
+	var h ExecutionNativeHead
+	var data []byte
+	err := tx.QueryRowContext(ctx, `SELECT seq,event_id,payload FROM eino_session_events WHERE session_id=? AND kind=? ORDER BY seq DESC LIMIT 1`, sessionID, string(adk.SessionEventMessagesReplaced)).Scan(&h.Sequence, &h.EventID, &data)
 	if errors.Is(err, sql.ErrNoRows) {
 		return h, nil
 	}
@@ -157,6 +172,10 @@ func (s *Store) SuspendExecutionTx(ctx context.Context, tx *sql.Tx, lease Execut
 	if err != nil {
 		return row.State, err
 	}
+	m.SummaryHead, err = executionSummaryHead(ctx, tx, row.State.SessionID)
+	if err != nil {
+		return row.State, err
+	}
 	m.EventCursor, err = executionEventCursor(ctx, tx, row.State.SessionID)
 	if err != nil {
 		return row.State, err
@@ -218,6 +237,15 @@ func validateExecutionManifest(ctx context.Context, tx *sql.Tx, row executionRow
 	}
 	if head != m.NativeHead {
 		return fmt.Errorf("%w: native session advanced", harness.ErrExecutionUnresumable)
+	}
+	if m.SummaryHead != (ExecutionNativeHead{}) {
+		summary, err := executionSummaryHead(ctx, tx, row.State.SessionID)
+		if err != nil {
+			return err
+		}
+		if summary != m.SummaryHead {
+			return fmt.Errorf("%w: native summary changed", harness.ErrExecutionUnresumable)
+		}
 	}
 	cursor, err := executionEventCursor(ctx, tx, row.State.SessionID)
 	if err != nil {

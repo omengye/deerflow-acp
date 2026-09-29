@@ -24,7 +24,7 @@
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image 与产物登记已验证 | MCP/模型生成媒体导入、可选对象存储发布 |
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
-| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入和显式启用的受控提取/终态提升已接入 | 摘要压缩、旧 DeerMem 迁移和真实模型策略校准 |
+| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、显式启用的受控提取/终态提升与摘要压缩已接入 | 旧 DeerMem 迁移和真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、多窗口、现有 Rust Bridge 实际二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 诊断子集 |
 | 可选外部 ACP Agent | 待实现 | 白名单、反向权限、预算和取消链 |
@@ -196,4 +196,15 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 候选写入按 attempt 隔离的 staging；终态 SQL 事务将事实提升与执行、预算结算一起提交。失败、取消、等待和终态事务错误不发布。范围 revision 漂移时舍弃候选，同文重复事实不累积；额度不足记录 `quota_skip`，不损害已完成的主回答。
 - 本地模型 fixture 验证真实 Eino 提取、重启保留、来源 event sequence、非法候选拒绝、重复去重、配额跳过、终态 SQL 故障不发布和跨会话范围冲突。
 
-下一项按 [记忆与上下文压缩设计](eino-memory-context-design.md) 实现摘要压缩、`FlushMemory` 和旧 DeerMem 迁移。完整 V1 的媒体输出、异步事件、外部 ACP agent、管理接口及真实编辑器/TCK 验收仍待完成。
+下一项按 [记忆与上下文压缩设计](eino-memory-context-design.md) 实现 `FlushMemory` 和旧 DeerMem 迁移。完整 V1 的媒体输出、异步事件、外部 ACP agent、管理接口及真实编辑器/TCK 验收仍待完成。
+
+## 第十一阶段 Eino 摘要压缩
+
+- SDK `Compaction` 和两个 CLI 的 `--context-compaction` 等参数显式开启，默认关闭。配置检查要求触发阈值为最近窗口留出空间，并纳入 Eino 执行合约。
+- 摘要模型经当前 attempt 的 `trackedModel` 计入主/子共享预算、usage 与 I/O join。Eino 原生 `summarization` 负责触发和 `messages_replaced` 事件；自定义 finalizer 保留活动用户回合、工具调用及结果配对、最多 64 KiB 最近消息与有界已加载 Skill 片段。无效、过长摘要或过大的活动回合明确失败，不以错误文本替换上下文。
+- 前台执行与后台任务恢复 manifest 额外绑定最近原生替换事件的序号、ID 和载荷 SHA。已有 manifest 无摘要字段时仍可按原有边界恢复。
+- 原始业务事件、审批与工具回执继续完整保存。测试覆盖真实 Eino 会话替换、重启恢复、摘要失败不替换、共享模型次数、工具配对和早于 native head 的摘要篡改。
+
+本批 `GOMAXPROCS=2 go test -mod=readonly -p=2 -count=1 -timeout=5m ./...` 通过；摘要、恢复 manifest 与启动参数的聚焦 race 测试通过；`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -mod=readonly -p=2 ./...` 通过。未使用真实付费模型或编辑器。
+
+本阶段不等于完整 V1：`FlushMemory`、旧 DeerMem 迁移、媒体输出导入、计划/usage 投影、有界异步事件发送、外部 ACP agent、管理接口和真实编辑器/TCK 验收仍待完成。

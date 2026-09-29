@@ -88,6 +88,9 @@ func (s *BackgroundInteractionStore) TransitionTx(ctx context.Context, tx *sql.T
 		if m.NativeHead, err = executionNativeHead(ctx, tx, scope.Binding.ChildSessionID); err != nil {
 			return err
 		}
+		if m.SummaryHead, err = executionSummaryHead(ctx, tx, scope.Binding.ChildSessionID); err != nil {
+			return err
+		}
 		if m.EventCursor, err = executionEventCursor(ctx, tx, scope.Binding.ChildSessionID); err != nil {
 			return err
 		}
