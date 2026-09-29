@@ -335,7 +335,10 @@ func TestReversePermissionDuringActivePrompt(t *testing.T) {
 		if approved != harness.AllowOnce {
 			return harness.RunResult{}, harness.ErrPermissionDenied
 		}
-		if err := emit(ctx, harness.RunEvent{Kind: "tool_end", ToolCallID: "write-1", Status: "completed", Text: "wrote result"}); err != nil {
+		if err := emit(ctx, harness.RunEvent{Kind: "tool_execute", ToolCallID: "write-1", ToolName: "write_file", Status: "in_progress"}); err != nil {
+			return harness.RunResult{}, err
+		}
+		if err := emit(ctx, harness.RunEvent{Kind: "tool_end", ToolCallID: "write-1", ToolName: "write_file", Status: "completed", Text: "wrote result"}); err != nil {
 			return harness.RunResult{}, err
 		}
 		return harness.RunResult{StopReason: "end_turn"}, nil
@@ -365,6 +368,7 @@ func TestReversePermissionDuringActivePrompt(t *testing.T) {
 		t.Fatalf("permission=%+v", params)
 	}
 	c.send(t, map[string]any{"jsonrpc": "2.0", "id": permission.ID, "result": map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": "allow_once"}}})
+	update(t, c.read(t), sessionID, "tool_call_update")
 	completed := update(t, c.read(t), sessionID, "tool_call_update")
 	if completed.Update.Status != "completed" {
 		t.Fatalf("tool result=%+v", completed)
@@ -543,7 +547,10 @@ func TestTwoConnectionsAndEOFKeepOtherSessionRunning(t *testing.T) {
 
 func TestEOFWhileAwaitingPermissionRecordsCancellation(t *testing.T) {
 	observed := make(chan harness.PermissionDecision, 1)
-	f := newFixture(t, engineFunc(func(ctx context.Context, _ harness.RunRequest, _ harness.EventHandler, permission harness.PermissionHandler) (harness.RunResult, error) {
+	f := newFixture(t, engineFunc(func(ctx context.Context, _ harness.RunRequest, emit harness.EventHandler, permission harness.PermissionHandler) (harness.RunResult, error) {
+		if err := emit(ctx, harness.RunEvent{Kind: "tool_start", ToolCallID: "call", ToolName: "write_file", Status: "pending", Arguments: json.RawMessage(`{"path":"x"}`)}); err != nil {
+			return harness.RunResult{}, err
+		}
 		decision, err := permission(ctx, harness.PermissionRequest{ToolCallID: "call", ToolName: "write_file", Arguments: json.RawMessage(`{"path":"x"}`)})
 		observed <- decision
 		return harness.RunResult{}, err
@@ -552,6 +559,7 @@ func TestEOFWhileAwaitingPermissionRecordsCancellation(t *testing.T) {
 	c.initialize(t)
 	sid := c.newSession(t, f.cwd)
 	c.request(t, "session/prompt", promptParams(sid, "needs permission"))
+	update(t, c.read(t), sid, "tool_call")
 	request := c.read(t)
 	if request.Method != "session/request_permission" {
 		t.Fatalf("request=%+v", request)

@@ -24,7 +24,7 @@ $env:DEERFLOW_MODEL_BASE_URL = "https://your-provider.example/v1"
 On Linux, build the same command without `.exe`. Supported provider adapters are
 `openai`, `claude`, and `ark` (`--provider`, or `DEERFLOW_MODEL_PROVIDER`). Provider
 keys may also come from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `ARK_API_KEY`.
-Secrets are accepted through the process environment, never command-line flags.
+Model credentials are accepted through the process environment, never command-line flags.
 
 Configure your editor's ACP command to launch this executable with `--data-dir`
 and `--model`. The transport is newline-delimited JSON-RPC over stdio. stdout is
@@ -36,7 +36,7 @@ Bridge. See [daemon setup and compatibility](internal/localhost/README.md).
 
 ## Current execution path
 
-`ACP → session coordinator → durable accepted input → Eino DeepAgent/Runner →
+`ACP → session coordinator → durable accepted input → Eino TurnLoop/DeepAgent →
 permission-protected tools → session/checkpoint stores → ACP updates`.
 
 The executable supports initialize, new, list, load, resume, close, prompt,
@@ -50,7 +50,18 @@ read_only modes expose trusted local read tools without prompts. Other modes
 follow the configured ask/allow_always/reject_always approval policy. An
 `allow_always` decision applies only to identical tool arguments in that session
 and connection. `os.Root` constrains file operations including symlink traversal.
-Host shell is not enabled. Workspaces are local directories, not OS sandboxes.
+Command execution is disabled by default. Explicit command providers include
+local argv, PowerShell, WSL2 and Docker; both executables share
+`--sandbox-provider`, allowlists and resource limits. Local shells and WSL2 have
+host capabilities; they are not security isolation. See
+[command lifecycle and providers](internal/sandbox/README.md) and
+[shared CLI flags](internal/launch/sandbox.md).
+
+Every tool has a durable receipt. Its `started` transition commits before the
+tool runs. Unknown outcomes block another run until the owner explicitly reviews
+the receipt. Review never executes a tool. The SDK exposes `ListToolReceipts` and
+`ReconcileToolReceipt`; ACP advertises the corresponding namespaced extensions.
+See [receipt queries and reconciliation](internal/acp/receipts.md).
 
 ACP client MCP servers are scoped to the attached session. Use repeatable
 `--mcp-allow-command` with an absolute executable to allow client stdio servers.
@@ -70,8 +81,23 @@ they use the same configured provider and credentials. Model, subagent and
 approval settings persist across restarts. `--disable-subagents` disables the
 delegation capability globally.
 
+The SDK supports explicitly installed, scoped Skills through Eino's native skill
+middleware. Configure `Config.Skills.Sources`, call `InstallSkill`, inspect its
+findings, then call `SetSkillEnabled`. New installations are disabled. Workspace
+selection follows the session, global sources require
+`Config.SkillSelection.IncludeGlobal`, and no HOME paths are scanned.
+`ListSkills` and `DeleteSkill` provide management. Bodies and reference files load
+on demand from immutable database versions. See [Skills](internal/skills/README.md).
+CLI Skills configuration and management are still pending.
+
+Internal execution checkpoints pin the active budget, Skills versions and resource
+policy. They use a versioned harness envelope containing native Eino state;
+older development checkpoints are rejected. ACP `session/resume` reattaches a
+conversation; it does not resume suspended tool execution. Public durable
+execution resume and background notification scheduling are still pending.
+
 The current ACP build accepts text prompts. Media persistence, durable
-background task scheduling, Skills, memory, compression, Docker, and full
+background task scheduling, memory, compression, and full
 Bridge compatibility are being integrated. Their incomplete
 status is not represented as a capability promise. This build is not the V1
 completion or default-launcher switch.
@@ -80,7 +106,8 @@ completion or default-launcher switch.
 
 The root package exposes `Open`, `Client.NewSession`, `Run`, `Cancel`,
 `LoadSession`, `CloseSession`, `SetMode`, `ConfigOptions`, `SetConfigOption`,
-`ServeACP` and `Close`. New/LoadSession accept optional `harness.MCPServer`
+`ServeACP`, receipt and Skills management methods, and `Close`.
+New/LoadSession accept optional `harness.MCPServer`
 arguments. Public event and permission
 types live in `harness/` and do not expose Eino or ACP SDK types. An embedder can
 provide `Config.Engine` to supply its own execution backend. Call `Close` after

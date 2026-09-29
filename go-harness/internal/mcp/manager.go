@@ -3,6 +3,7 @@ package mcp
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,7 @@ type Manager struct {
 
 type binding struct {
 	owner, id     string
+	generation    string
 	fingerprint   [32]byte
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -136,7 +138,7 @@ func (m *Manager) Bind(ctx context.Context, owner, id, cwd string, servers []har
 		}
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
-	b := &binding{owner: owner, id: id, fingerprint: fingerprint, ctx: lifetime, cancel: cancel, ready: make(chan struct{}), closed: make(chan struct{})}
+	b := &binding{owner: owner, id: id, generation: rand.Text(), fingerprint: fingerprint, ctx: lifetime, cancel: cancel, ready: make(chan struct{}), closed: make(chan struct{})}
 	m.pending[id] = b
 	m.all[b] = struct{}{}
 	m.mu.Unlock()
@@ -239,6 +241,38 @@ func (m *Manager) Tools(ctx context.Context, id string) ([]tool.BaseTool, error)
 	}
 	sort.Slice(result, func(i, j int) bool { a, _ := result[i].Info(ctx); b, _ := result[j].Info(ctx); return a.Name < b.Name })
 	return result, nil
+}
+
+// Generation is an opaque connection identity without credentials. Callers
+// hold the session lifecycle lease across Tools and Generation. Reconnecting
+// an endpoint invalidates suspended execution even when its schema is equal.
+// An empty binding has no remote resources and needs no process-local identity.
+func (m *Manager) Generation(ctx context.Context, id string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return "", ErrClosed
+	}
+	b := m.bindings[id]
+	if b == nil {
+		if m.pending[id] != nil {
+			return "", harness.ErrBusy
+		}
+		return "", nil
+	}
+	if b.closing || b.ctx.Err() != nil {
+		return "", ErrClosed
+	}
+	if b.err != nil {
+		return "", b.err
+	}
+	if len(b.endpoints) == 0 {
+		return "", nil
+	}
+	return b.generation, nil
 }
 
 func (m *Manager) startClose(b *binding) {

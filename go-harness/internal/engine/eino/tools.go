@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -53,18 +54,20 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return m.sink.emit(ctx, harness.RunEvent{Kind: "tool_update", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress"})
+	return m.sink.emit(ctx, harness.RunEvent{Kind: "tool_execute", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress"})
 }
 
 func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, content []harness.Content, err error) error {
 	status := "completed"
+	var receipt *harness.ToolReceipt
 	if err != nil {
 		status = "failed"
-		content = []harness.Content{{Type: "text", Text: err.Error()}}
+		content = append(content, harness.Content{Type: "text", Text: err.Error()})
+		receipt = &harness.ToolReceipt{Error: err.Error()}
 	}
 	// Terminal cards and their durable events must survive cancellation of the
 	// actual tool operation. The run still joins this callback before returning.
-	return m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "tool_end", ToolCallID: tc.CallID, ToolName: tc.Name, Status: status, Content: content})
+	return m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "tool_end", ToolCallID: tc.CallID, ToolName: tc.Name, Status: status, Content: content, Receipt: receipt})
 }
 
 func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.InvokableToolCallEndpoint, tc *adk.ToolContext) (adk.InvokableToolCallEndpoint, error) {
@@ -76,7 +79,7 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 		defer finish()
 		if err := m.start(ctx, tc, args); err != nil {
 			if emitErr := m.finish(ctx, tc, nil, err); emitErr != nil {
-				return "", emitErr
+				return "", errors.Join(err, emitErr)
 			}
 			if errors.Is(err, harness.ErrPermissionDenied) {
 				return "Tool permission denied; no operation was performed.", nil
@@ -84,8 +87,15 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 			return "", err
 		}
 		output, err := next(ctx, args, opts...)
+		// Eino alpha discards a tool's returned value when it also returns an
+		// error. Command failures carry their bounded execution evidence on the
+		// error so durable receipts retain stdout, exit code and termination state.
+		var evidence interface{ ToolResult() string }
+		if output == "" && errors.As(err, &evidence) {
+			output = evidence.ToolResult()
+		}
 		if emitErr := m.finish(ctx, tc, []harness.Content{{Type: "text", Text: output}}, err); emitErr != nil {
-			return "", emitErr
+			return "", errors.Join(err, emitErr)
 		}
 		return output, err
 	}, nil
@@ -105,7 +115,7 @@ func (m *toolMiddleware) WrapStreamableToolCall(_ context.Context, next adk.Stre
 		}()
 		if err := m.start(ctx, tc, args); err != nil {
 			if emitErr := m.finish(ctx, tc, nil, err); emitErr != nil {
-				return nil, emitErr
+				return nil, errors.Join(err, emitErr)
 			}
 			if errors.Is(err, harness.ErrPermissionDenied) {
 				return schema.StreamReaderFromArray([]string{"Tool permission denied; no operation was performed."}), nil
@@ -114,16 +124,10 @@ func (m *toolMiddleware) WrapStreamableToolCall(_ context.Context, next adk.Stre
 		}
 		stream, err := next(ctx, args, opts...)
 		if err != nil {
-			_ = m.finish(ctx, tc, nil, err)
-			return nil, err
+			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
 		}
 		handedOff = true
-		return relayStream(stream, finish, func(chunk string) error {
-			if err := m.sink.emit(ctx, harness.RunEvent{Kind: "tool_update", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress", Content: []harness.Content{{Type: "text", Text: chunk}}}); err != nil {
-				return err
-			}
-			return nil
-		}, m.io.recordError), nil
+		return relayToolStream(ctx, m, tc, stream, finish, func(chunk string) []harness.Content { return []harness.Content{{Type: "text", Text: chunk}} }), nil
 	}, nil
 }
 
@@ -164,12 +168,11 @@ func (m *toolMiddleware) WrapEnhancedInvokableToolCall(_ context.Context, next a
 			return nil, errors.New("nil tool arguments")
 		}
 		if err := m.start(ctx, tc, args.Text); err != nil {
-			_ = m.finish(ctx, tc, nil, err)
-			return nil, err
+			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
 		}
 		output, err := next(ctx, args, opts...)
 		if emitErr := m.finish(ctx, tc, enhancedContent(output), err); emitErr != nil {
-			return nil, emitErr
+			return nil, errors.Join(err, emitErr)
 		}
 		return output, err
 	}, nil
@@ -191,20 +194,70 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 			return nil, errors.New("nil tool arguments")
 		}
 		if err := m.start(ctx, tc, args.Text); err != nil {
-			_ = m.finish(ctx, tc, nil, err)
-			return nil, err
+			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
 		}
 		stream, err := next(ctx, args, opts...)
 		if err != nil {
-			_ = m.finish(ctx, tc, nil, err)
-			return nil, err
+			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
 		}
 		handedOff = true
-		return relayStream(stream, finish, func(chunk *schema.ToolResult) error {
-			if err := m.sink.emit(ctx, harness.RunEvent{Kind: "tool_update", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress", Content: enhancedContent(chunk)}); err != nil {
-				return err
-			}
-			return nil
-		}, m.io.recordError), nil
+		return relayToolStream(ctx, m, tc, stream, finish, enhancedContent), nil
 	}, nil
+}
+
+// Complete the durable tool receipt before exposing terminal EOF to Eino.
+// Errors after effects began, including errors while draining cleanup, remain
+// failures even if earlier chunks looked successful.
+func relayToolStream[T any](ctx context.Context, m *toolMiddleware, tc *adk.ToolContext, source *schema.StreamReader[T], release func(), content func(T) []harness.Content) *schema.StreamReader[T] {
+	reader, writer := schema.Pipe[T](1)
+	go func() {
+		var terminal error
+		defer func() {
+			if source != nil {
+				source.Close()
+			}
+			terminal = errors.Join(terminal, ctx.Err())
+			if finishErr := m.finish(ctx, tc, nil, terminal); finishErr != nil {
+				terminal = errors.Join(terminal, finishErr)
+			}
+			m.io.recordError(terminal)
+			release()
+			writer.Close()
+		}()
+		if source == nil {
+			terminal = errors.New("tool returned a nil stream")
+			var zero T
+			writer.Send(zero, terminal)
+			return
+		}
+		draining := false
+		for {
+			chunk, err := source.Recv()
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			if err != nil {
+				terminal = errors.Join(terminal, err)
+				if !draining {
+					writer.Send(chunk, err)
+					draining = true
+				}
+				continue
+			}
+			if draining {
+				continue
+			}
+			if err = m.sink.emit(ctx, harness.RunEvent{Kind: "tool_update", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress", Content: content(chunk)}); err != nil {
+				terminal = errors.Join(terminal, err)
+				writer.Send(chunk, err)
+				draining = true
+				continue
+			}
+			if writer.Send(chunk, nil) {
+				terminal = errors.Join(terminal, context.Canceled)
+				draining = true
+			}
+		}
+	}()
+	return reader
 }

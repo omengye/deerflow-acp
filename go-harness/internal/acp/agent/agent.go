@@ -77,10 +77,20 @@ func mapError(err error) error {
 		return err
 	}
 	switch {
-	case errors.Is(err, harness.ErrBusy), errors.Is(err, harness.ErrAttachedElsewhere):
-		return rpcError(protocol.ServerBusy, err.Error())
-	case errors.Is(err, harness.ErrNotAttached), errors.Is(err, harness.ErrNotFound), errors.Is(err, harness.ErrInvalidInput):
-		return rpcError(protocol.InvalidParams, err.Error())
+	case errors.Is(err, harness.ErrReconciliationRequired):
+		return receiptRecoveryError(false)
+	case errors.Is(err, harness.ErrReceiptConflict):
+		return receiptRecoveryError(true)
+	case errors.Is(err, harness.ErrBusy):
+		return rpcError(protocol.ServerBusy, "Session is busy")
+	case errors.Is(err, harness.ErrAttachedElsewhere):
+		return rpcError(protocol.ServerBusy, "Session is attached to another connection")
+	case errors.Is(err, harness.ErrNotAttached):
+		return rpcError(protocol.InvalidParams, "Session is not attached to this connection")
+	case errors.Is(err, harness.ErrNotFound):
+		return rpcError(protocol.InvalidParams, "Requested session or tool receipt was not found")
+	case errors.Is(err, harness.ErrInvalidInput):
+		return rpcError(protocol.InvalidParams, "Invalid request parameters")
 	}
 	return err
 }
@@ -109,12 +119,14 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		a.initialized = true
 		a.capabilities = req.ClientCapabilities
 		httpMCP, sseMCP := a.service.MCPCapabilities()
-		return map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": false, "audio": false, "embeddedContext": false}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}}}}, nil
+		return map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": false, "audio": false, "embeddedContext": false}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}}}, "_meta": map[string]any{"deerflow": map[string]any{"toolReceipts": receiptCapabilities()}}}, nil
 	}
 	if !a.ready() {
 		return nil, rpcError(protocol.InvalidRequest, "initialize must complete first")
 	}
 	switch method {
+	case listReceiptsMethod, reconcileReceiptMethod:
+		return a.receiptRequest(ctx, method, raw)
 	case "session/new":
 		var req acp.NewSessionRequest
 		if err := decode(raw, &req); err != nil {
@@ -336,8 +348,11 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 		update = map[string]any{"sessionUpdate": "agent_message_chunk", "content": harness.Content{Type: "text", Text: e.Text}, "_meta": map[string]any{"deerflow": map[string]any{"event": "budget_exhausted"}}}
 	case "tool_start":
 		update = map[string]any{"sessionUpdate": "tool_call", "toolCallId": e.ToolCallID, "title": e.ToolName, "kind": "other", "status": e.Status, "rawInput": e.Arguments}
-	case "tool_update", "tool_end":
+	case "tool_execute", "tool_update", "tool_end", "tool_reconciled":
 		update = map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": e.ToolCallID, "status": e.Status}
+		if e.Kind == "tool_reconciled" && e.Status != "completed" {
+			update["status"] = "failed"
+		}
 		var content []any
 		for _, c := range e.Content {
 			content = append(content, map[string]any{"type": "content", "content": c})
@@ -350,6 +365,9 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 		}
 	default:
 		return nil
+	}
+	if e.Receipt != nil {
+		update["_meta"] = map[string]any{"deerflow": map[string]any{"receipt": map[string]any{"runId": e.Receipt.RunID, "toolCallId": e.Receipt.ToolCallID, "state": e.Receipt.State, "version": e.Receipt.Version, "review": e.Receipt.Review}}}
 	}
 	return a.update(ctx, e.SessionID, update)
 }

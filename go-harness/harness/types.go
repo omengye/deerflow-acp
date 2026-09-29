@@ -72,6 +72,7 @@ type RunEvent struct {
 	Arguments  json.RawMessage `json:"arguments,omitempty"`
 	Content    []Content       `json:"content,omitempty"`
 	Usage      *Usage          `json:"usage,omitempty"`
+	Receipt    *ToolReceipt    `json:"receipt,omitempty"`
 }
 
 type PermissionRequest struct {

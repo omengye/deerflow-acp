@@ -12,6 +12,7 @@ import (
 )
 
 func RuntimeFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
+	sandboxFlags(flags, &cfg.Sandbox)
 	budget := harness.DefaultBudgetLimits()
 	cfg.Budget = &budget
 	flags.IntVar(&budget.MaxModelCalls, "max-model-calls", budget.MaxModelCalls, "model calls across main and child agents; 0 disables")

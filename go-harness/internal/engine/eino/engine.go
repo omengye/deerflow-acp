@@ -4,12 +4,14 @@ package eino
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/prebuilt/deep"
@@ -30,11 +32,14 @@ type Config struct {
 	// ToolFactory opens resources owned by this run, such as a pinned os.Root.
 	// Cleanup runs after native execution and all tracked I/O have drained, even
 	// when construction or execution fails. Static Tools remain caller-owned.
-	ToolFactory     func(context.Context, harness.RunRequest) ([]tool.BaseTool, func() error, error)
-	CheckpointStore adk.CheckPointStore
-	SessionStore    adk.SessionEventStore[*schema.Message]
-	MaxIterations   int
-	Budget          harness.BudgetLimits
+	ToolFactory func(context.Context, harness.RunRequest) ([]tool.BaseTool, func() error, error)
+	// ExtensionFactory pins one snapshot for both tools and middleware. On
+	// explicit resume, pinned is the state saved in the checkpoint envelope.
+	ExtensionFactory func(context.Context, harness.RunRequest, json.RawMessage) (RunExtensions, error)
+	CheckpointStore  adk.CheckPointStore
+	SessionStore     adk.SessionEventStore[*schema.Message]
+	MaxIterations    int
+	Budget           harness.BudgetLimits
 	// Handlers extends native Eino middleware without introducing another loop.
 	Handlers        []adk.ChatModelAgentMiddleware
 	DisableSubAgent bool
@@ -43,6 +48,16 @@ type Config struct {
 type Engine struct {
 	config Config
 	model  model.ToolCallingChatModel
+}
+
+// RunExtensions is constructed exactly once for a run. State must describe the
+// immutable resources used by both Tools and Handlers; it enters the execution
+// contract and checkpoint. Cleanup runs after all tracked execution has joined.
+type RunExtensions struct {
+	Tools    []tool.BaseTool
+	Handlers []adk.ChatModelAgentMiddleware
+	Cleanup  func() error
+	State    json.RawMessage
 }
 
 var _ harness.Engine = (*Engine)(nil)
@@ -78,7 +93,7 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 
 // CheckpointID identifies a run's native execution checkpoint. Ordinary next
 // prompts start a new turn; resuming an interrupted execution is explicit.
-func CheckpointID(runID string) string { return "harness/run/" + runID }
+func CheckpointID(runID string) string { return "harness/turn/v1/" + runID }
 
 func (e *Engine) Run(ctx context.Context, req harness.RunRequest, events harness.EventHandler, permissions harness.PermissionHandler) (harness.RunResult, error) {
 	return e.execute(ctx, req, "", events, permissions)
@@ -97,10 +112,20 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	if req.Session.ID == "" || req.RunID == "" {
 		return harness.RunResult{}, errors.New("session ID and run ID are required")
 	}
-	budget := &runBudget{limits: e.config.Budget}
+	budget := &runBudget{limits: e.config.Budget, startedAt: time.Now()}
+	var pendingCheckpoints *checkedCheckpoints
+	// Registered first, so checkpoint mutations commit after every execution,
+	// I/O, resource-cleanup and terminal budget-event defer has succeeded.
+	defer func() {
+		if pendingCheckpoints != nil && returnErr == nil {
+			if err := pendingCheckpoints.commit(context.WithoutCancel(ctx), result.StopReason != "cancelled"); err != nil {
+				returnErr = fmt.Errorf("commit execution checkpoint: %w", err)
+			}
+		}
+	}()
 	if e.config.Budget.Timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeoutCause(ctx, e.config.Budget.Timeout, &budgetError{resource: "time"})
+		ctx, cancel = context.WithTimeoutCause(ctx, budget.remainingTime(), &budgetError{resource: "time"})
 		defer cancel()
 	}
 	sink := &eventSink{request: req, callback: events, active: make(map[string]string), finished: make(map[string]bool)}
@@ -112,12 +137,33 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		if limit == nil {
 			return
 		}
+		budget.mu.Lock()
+		budget.fail(limit.resource)
+		budget.mu.Unlock()
 		result.StopReason, result.Limit = limit.stopReason(), limit.resource
 		returnErr = withoutBudgetTermination(returnErr)
 		if err := sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "budget_exhausted", Text: limit.Error()}); err != nil {
 			returnErr = errors.Join(returnErr, err)
 		}
 	}()
+	var savedCheckpoint *checkpointEnvelope
+	if resumeID != "" {
+		var err error
+		savedCheckpoint, err = loadCheckpointEnvelope(ctx, e.config.CheckpointStore, resumeID)
+		if err != nil {
+			return harness.RunResult{}, err
+		}
+		if err := budget.restore(*savedCheckpoint.Budget); err != nil {
+			return harness.RunResult{}, err
+		}
+		if e.config.Budget.Timeout > 0 {
+			// Loading is bounded by this invocation's deadline; after restoration
+			// tighten it to the unspent time of the complete logical execution.
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeoutCause(ctx, budget.remainingTime(), &budgetError{resource: "time"})
+			defer cancel()
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return harness.RunResult{StopReason: "cancelled"}, nil
 	}
@@ -130,6 +176,25 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		}
 	}
 	tools := append([]tool.BaseTool(nil), e.config.Tools...)
+	extensions := RunExtensions{}
+	if e.config.ExtensionFactory != nil {
+		var pinned json.RawMessage
+		if savedCheckpoint != nil {
+			pinned = append(json.RawMessage(nil), savedCheckpoint.Extension...)
+		}
+		var err error
+		extensions, err = e.config.ExtensionFactory(ctx, req, pinned)
+		if extensions.Cleanup != nil {
+			defer func() { returnErr = errors.Join(returnErr, extensions.Cleanup()) }()
+		}
+		if err != nil {
+			return harness.RunResult{}, fmt.Errorf("run extensions: %w", err)
+		}
+		if len(extensions.State) > 0 && !json.Valid(extensions.State) {
+			return harness.RunResult{}, errors.New("extension state is not valid JSON")
+		}
+		tools = append(tools, extensions.Tools...)
+	}
 	if e.config.ToolFactory != nil {
 		more, cleanup, err := e.config.ToolFactory(ctx, req)
 		if cleanup != nil {
@@ -147,6 +212,7 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		tools = append(tools, more...)
 	}
 	protected := make(map[string]bool, len(tools))
+	toolContracts := make([]*schema.ToolInfo, 0, len(tools))
 	for _, t := range tools {
 		if t == nil {
 			return harness.RunResult{}, errors.New("nil tool")
@@ -162,21 +228,31 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 			return harness.RunResult{}, fmt.Errorf("duplicate tool %q", info.Name)
 		}
 		protected[info.Name] = true
+		toolContracts = append(toolContracts, info)
+	}
+	contract, err := e.executionContract(toolContracts, extensions.State)
+	if err != nil {
+		return harness.RunResult{}, err
 	}
 	// The native cancel controller cancels models/tools while the Runner's outer
 	// context remains live long enough to commit cancellation and its checkpoint.
 	execCtx, closeExecution := context.WithCancel(context.WithoutCancel(ctx))
 	defer closeExecution()
-	cancelOption, cancelAgent := adk.WithCancel()
 	ioLifecycle := newRunIO(ctx)
 	defer ioLifecycle.closeAndWait()
+	// Assigned before starting the loop or any model/tool work.
+	stopLoop := func() {}
 	requestCancel := func() {
-		cancelAgent(adk.WithAgentCancelMode(adk.CancelImmediate), adk.WithRecursive())
-		ioLifecycle.stop()
+		stopLoop()
+		// TurnLoop dispatches native cancellation asynchronously. Cancelling the
+		// provider first can turn this into an ordinary model error before Eino
+		// captures its checkpoint. The native loop stops first; closeAndWait
+		// below then cancels and joins any remaining provider/tool cleanup.
 	}
 	sink.cancel = requestCancel
 	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle, budget: budget}
-	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), &modelLifecycle{io: ioLifecycle, budget: budget, sink: sink}, mw)
+	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), extensions.Handlers...)
+	handlers = append(handlers, &modelLifecycle{io: ioLifecycle, budget: budget, sink: sink}, mw)
 	agent, err := deep.New(execCtx, &deep.Config{
 		Name: "deerflow", Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction,
 		ChatModel: chatModel, MaxIteration: e.config.MaxIterations,
@@ -186,21 +262,43 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	if err != nil {
 		return harness.RunResult{}, fmt.Errorf("create deep agent: %w", err)
 	}
-	runner := adk.NewRunner(execCtx, adk.RunnerConfig{Agent: agent, EnableStreaming: true,
-		CheckPointStore: e.config.CheckpointStore, SessionID: req.Session.ID, SessionStore: e.config.SessionStore})
-	var iter *adk.AsyncIterator[*adk.AgentEvent]
-	if resumeID != "" {
-		iter, err = runner.Resume(execCtx, resumeID, cancelOption)
-	} else {
-		var input []*schema.Message
-		input, err = e.input(ctx, req)
-		if err == nil {
-			iter = runner.Run(execCtx, input, cancelOption, adk.WithCheckPointID(CheckpointID(req.RunID)))
+	result = harness.RunResult{StopReason: "end_turn"}
+	var runErr error
+	loop, checkpoints, err := e.turnLoop(ctx, req, resumeID, contract, extensions.State, budget, savedCheckpoint, agent, func(iter *adk.AsyncIterator[*adk.AgentEvent]) error {
+		for {
+			event, ok := iter.Next()
+			if !ok {
+				break
+			}
+			if event == nil {
+				continue
+			}
+			if event.Err != nil {
+				var cancelled *adk.CancelError
+				switch {
+				case errors.As(event.Err, &cancelled), errors.Is(event.Err, context.Canceled), errors.Is(event.Err, adk.ErrStreamCanceled):
+					result.StopReason = "cancelled"
+				case errors.Is(event.Err, adk.ErrExceedMaxIterations):
+					result.StopReason = "max_turn_requests"
+				case errors.Is(event.Err, adk.ErrSessionBusy):
+					runErr = errors.Join(runErr, harness.ErrBusy)
+				}
+				runErr = errors.Join(runErr, withoutNativeTermination(event.Err))
+			}
+			if event.Output != nil && event.Output.MessageOutput != nil {
+				if err := consumeMessage(execCtx, event.Output.MessageOutput, sink, &result); err != nil {
+					runErr = errors.Join(runErr, withoutNativeTermination(err))
+					requestCancel()
+				}
+			}
 		}
-	}
+		return runErr
+	})
 	if err != nil {
 		return harness.RunResult{}, err
 	}
+	pendingCheckpoints = checkpoints
+	stopLoop = func() { loop.Stop(adk.WithImmediate()) }
 	done := make(chan struct{})
 	monitorDone := make(chan struct{})
 	go func() {
@@ -212,42 +310,13 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		}
 	}()
 	defer func() { close(done); <-monitorDone }()
-	result = harness.RunResult{StopReason: "end_turn"}
-	var runErr error
-	for {
-		event, ok := iter.Next()
-		if !ok {
-			break
-		}
-		if event == nil {
-			continue
-		}
-		if event.Err != nil {
-			var cancelled *adk.CancelError
-			switch {
-			case errors.As(event.Err, &cancelled), errors.Is(event.Err, context.Canceled), errors.Is(event.Err, adk.ErrStreamCanceled):
-				result.StopReason = "cancelled"
-			case errors.Is(event.Err, adk.ErrExceedMaxIterations):
-				result.StopReason = "max_turn_requests"
-			case errors.Is(event.Err, adk.ErrSessionBusy):
-				runErr = errors.Join(runErr, harness.ErrBusy)
-			}
-			runErr = errors.Join(runErr, withoutNativeTermination(event.Err))
-		}
-		if event.Action != nil && event.Action.Interrupted != nil {
-			runErr = errors.Join(runErr, errors.New("agent interrupted; explicit resume is required"))
-		}
-		if event.Output != nil && event.Output.MessageOutput != nil {
-			if err := consumeMessage(execCtx, event.Output.MessageOutput, sink, &result); err != nil {
-				runErr = errors.Join(runErr, withoutNativeTermination(err))
-				requestCancel()
-			}
-		}
-	}
+	loop.Run(execCtx)
+	exit := loop.Wait()
+	runErr = errors.Join(runErr, withoutNativeTermination(exit.ExitReason), exit.CheckpointErr, checkpoints.failure())
 	ioLifecycle.closeAndWait()
 	runErr = errors.Join(runErr, ioLifecycle.failure())
-	if err := sink.closeOpen(execCtx); err != nil && runErr == nil {
-		runErr = err
+	if err := sink.closeOpen(execCtx); err != nil {
+		runErr = errors.Join(runErr, err)
 	}
 	if err := sink.failure(); err != nil {
 		return result, errors.Join(runErr, err)

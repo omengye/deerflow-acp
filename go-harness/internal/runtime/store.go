@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS harness_inputs (id TEXT PRIMARY KEY, run_id TEXT UNIQ
 CREATE TABLE IF NOT EXISTS harness_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES harness_sessions(id), run_id TEXT NOT NULL, event BLOB NOT NULL);
 CREATE INDEX IF NOT EXISTS harness_events_session ON harness_events(session_id,sequence);
 CREATE TABLE IF NOT EXISTS harness_approvals (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT NOT NULL, intent BLOB NOT NULL, decision TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS harness_tool_receipts (run_id TEXT NOT NULL REFERENCES harness_runs(id), tool_call_id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES harness_sessions(id), state TEXT NOT NULL, version INTEGER NOT NULL, receipt BLOB NOT NULL, PRIMARY KEY(run_id,tool_call_id));
+CREATE INDEX IF NOT EXISTS harness_tool_receipts_session ON harness_tool_receipts(session_id,state);
+CREATE TABLE IF NOT EXISTS harness_tool_reconciliations (run_id TEXT NOT NULL, tool_call_id TEXT NOT NULL, version INTEGER NOT NULL, review BLOB NOT NULL, PRIMARY KEY(run_id,tool_call_id,version), FOREIGN KEY(run_id,tool_call_id) REFERENCES harness_tool_receipts(run_id,tool_call_id));
 `)
 	if err != nil {
 		return nil, err
@@ -115,6 +118,9 @@ func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest) error {
 	return tx.Commit()
 }
 func (s *Store) Append(ctx context.Context, e harness.RunEvent) (harness.RunEvent, error) {
+	if isToolEvent(e.Kind) {
+		return s.appendToolEvent(ctx, e)
+	}
 	data, err := json.Marshal(e)
 	if err != nil {
 		return e, err
@@ -158,10 +164,23 @@ func (s *Store) Finish(ctx context.Context, id, reason string, runErr error) err
 		status = "failed"
 		detail = runErr.Error()
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE harness_runs SET status=?,stop_reason=?,error=?,updated_at=? WHERE id=?`, status, reason, detail, timestamp(), id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = settleOpenReceipts(ctx, tx, id, "run ended without a final tool receipt"); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE harness_runs SET status=?,stop_reason=?,error=?,updated_at=? WHERE id=?`, status, reason, detail, timestamp(), id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Store) Approval(ctx context.Context, p harness.PermissionRequest) error {
+	if err := s.validateReceiptPermission(ctx, p); err != nil {
+		return err
+	}
 	data, err := json.Marshal(p)
 	if err != nil {
 		return err
@@ -177,10 +196,21 @@ func (s *Store) Decide(ctx context.Context, id string, d harness.PermissionDecis
 // ReconcileInterrupted never blindly replays model turns or external effects.
 // It preserves the accepted input for later explicit reconciliation.
 func (s *Store) ReconcileInterrupted(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE harness_runs SET status='needs_reconciliation',error='process stopped before final run receipt',updated_at=? WHERE status='running'`, timestamp())
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = settleOpenReceipts(ctx, tx, "", "process stopped before a final tool receipt"); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE harness_runs SET status='needs_reconciliation',error='process stopped before final run receipt',updated_at=? WHERE status='running'`, timestamp())
 	if err != nil {
 		return fmt.Errorf("reconcile runs: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE harness_approvals SET decision='cancelled',updated_at=? WHERE decision='pending'`, timestamp())
-	return err
+	_, err = tx.ExecContext(ctx, `UPDATE harness_approvals SET decision='cancelled',updated_at=? WHERE decision='pending'`, timestamp())
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }

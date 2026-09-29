@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -98,7 +99,7 @@ func TestConfigurationMetadataPersistsAcrossRuntimeRestart(t *testing.T) {
 
 func TestConfigurationConflictsCancelAndCachedPermissionReset(t *testing.T) {
 	f := newFixture(t, engineFunc(func(ctx context.Context, _ harness.RunRequest, emit harness.EventHandler, permission harness.PermissionHandler) (harness.RunResult, error) {
-		decision, err := permission(ctx, harness.PermissionRequest{ToolCallID: "call", ToolName: "write_file", Arguments: json.RawMessage(`{"path":"x"}`)})
+		decision, err := callTestPermission(ctx, emit, permission, harness.PermissionRequest{ToolCallID: "call", ToolName: "write_file", Arguments: json.RawMessage(`{"path":"x"}`)})
 		if err != nil {
 			return harness.RunResult{}, err
 		}
@@ -112,6 +113,7 @@ func TestConfigurationConflictsCancelAndCachedPermissionReset(t *testing.T) {
 	c.initialize(t)
 	sid := c.newSession(t, f.cwd)
 	first := c.request(t, "session/prompt", promptParams(sid, "write"))
+	update(t, c.read(t), sid, "tool_call")
 	permission := c.read(t)
 	if permission.Method != "session/request_permission" {
 		t.Fatalf("permission=%+v", permission)
@@ -121,14 +123,20 @@ func TestConfigurationConflictsCancelAndCachedPermissionReset(t *testing.T) {
 		t.Fatalf("active reconfiguration=%+v", msg)
 	}
 	c.send(t, map[string]any{"jsonrpc": "2.0", "id": permission.ID, "result": map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": "allow_always"}}})
+	update(t, c.read(t), sid, "tool_call_update")
+	update(t, c.read(t), sid, "tool_call_update")
 	update(t, c.read(t), sid, "agent_message_chunk")
 	stopReason(t, c.success(t, first), "end_turn")
 	second := c.request(t, "session/prompt", promptParams(sid, "repeat"))
+	update(t, c.read(t), sid, "tool_call")
+	update(t, c.read(t), sid, "tool_call_update")
+	update(t, c.read(t), sid, "tool_call_update")
 	// The cached approval emits text without a second reverse request.
 	update(t, c.read(t), sid, "agent_message_chunk")
 	stopReason(t, c.success(t, second), "end_turn")
 	c.configure(t, sid, "model", "other")
 	third := c.request(t, "session/prompt", promptParams(sid, "repeat after configuration"))
+	update(t, c.read(t), sid, "tool_call")
 	permission2 := c.read(t)
 	if permission2.Method != "session/request_permission" {
 		t.Fatalf("old approval survived config change: %+v", permission2)
@@ -147,9 +155,12 @@ func TestConfigurationConflictsCancelAndCachedPermissionReset(t *testing.T) {
 		t.Fatalf("approval config version=%d", requestMeta.Meta.Deerflow.ConfigVersion)
 	}
 	c.notify(t, "session/cancel", map[string]any{"sessionId": sid})
+	update(t, c.read(t), sid, "tool_call_update")
 	stopReason(t, c.success(t, third), "cancelled")
 	c.configure(t, sid, "approval", "reject_always")
 	fourth := c.request(t, "session/prompt", promptParams(sid, "reject without asking"))
+	update(t, c.read(t), sid, "tool_call")
+	update(t, c.read(t), sid, "tool_call_update")
 	event := update(t, c.read(t), sid, "agent_message_chunk")
 	if chunkText(t, event) != "reject_once" {
 		t.Fatalf("decision=%q", chunkText(t, event))
@@ -195,7 +206,7 @@ func TestBudgetLimitAndEstimatedUsageUseStableProtocolMetadata(t *testing.T) {
 
 func TestExplicitApprovalModesAndPlanGuard(t *testing.T) {
 	f := newFixture(t, engineFunc(func(ctx context.Context, req harness.RunRequest, emit harness.EventHandler, permission harness.PermissionHandler) (harness.RunResult, error) {
-		decision, err := permission(ctx, harness.PermissionRequest{ToolCallID: "call", ToolName: req.Input[0].Text, Arguments: json.RawMessage(`{}`)})
+		decision, err := callTestPermission(ctx, emit, permission, harness.PermissionRequest{ToolCallID: "call", ToolName: req.Input[0].Text, Arguments: json.RawMessage(`{}`)})
 		if err != nil {
 			return harness.RunResult{}, err
 		}
@@ -210,6 +221,11 @@ func TestExplicitApprovalModesAndPlanGuard(t *testing.T) {
 	run := func(tool, want string) {
 		t.Helper()
 		id := c.request(t, "session/prompt", promptParams(sid, tool))
+		update(t, c.read(t), sid, "tool_call")
+		if want == "allow_once" {
+			update(t, c.read(t), sid, "tool_call_update")
+		}
+		update(t, c.read(t), sid, "tool_call_update")
 		event := update(t, c.read(t), sid, "agent_message_chunk")
 		if chunkText(t, event) != want {
 			t.Fatalf("tool %s decision=%s want=%s", tool, chunkText(t, event), want)
@@ -230,4 +246,24 @@ func TestExplicitApprovalModesAndPlanGuard(t *testing.T) {
 	c.configure(t, sid, "approval", "read_only")
 	run("search_files", "allow_once")
 	run("mcp_server_read_file", "reject_once")
+}
+
+// Configuration fixtures still honor the engine's durable lifecycle contract.
+func callTestPermission(ctx context.Context, emit harness.EventHandler, permission harness.PermissionHandler, p harness.PermissionRequest) (harness.PermissionDecision, error) {
+	if err := emit(ctx, harness.RunEvent{Kind: "tool_start", ToolCallID: p.ToolCallID, ToolName: p.ToolName, Status: "pending", Arguments: p.Arguments}); err != nil {
+		return "", err
+	}
+	decision, err := permission(ctx, p)
+	if err == nil && decision == harness.PermissionCancelled {
+		err = context.Canceled
+	}
+	status := "failed"
+	if err == nil && (decision == harness.AllowOnce || decision == harness.AllowAlways) {
+		err = emit(ctx, harness.RunEvent{Kind: "tool_execute", ToolCallID: p.ToolCallID, ToolName: p.ToolName, Status: "in_progress"})
+		if err == nil {
+			status = "completed"
+		}
+	}
+	err = errors.Join(err, emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "tool_end", ToolCallID: p.ToolCallID, ToolName: p.ToolName, Status: status}))
+	return decision, err
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -31,6 +32,62 @@ type runBudget struct {
 	modelCalls, toolCalls int
 	spent, held           int64
 	exhausted             *budgetError
+	startedAt             time.Time
+	elapsed               time.Duration
+}
+
+// budgetSnapshot is taken only after all model/tool I/O has joined, so token
+// reservations have settled. Paused time is excluded from the execution limit.
+type budgetSnapshot struct {
+	ModelCalls int           `json:"modelCalls"`
+	ToolCalls  int           `json:"toolCalls"`
+	Tokens     int64         `json:"tokens"`
+	Elapsed    time.Duration `json:"elapsed"`
+	Exhausted  string        `json:"exhausted,omitempty"`
+}
+
+func (b *runBudget) snapshot() (budgetSnapshot, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.held != 0 {
+		return budgetSnapshot{}, errors.New("checkpoint budget has unsettled model reservations")
+	}
+	s := budgetSnapshot{ModelCalls: b.modelCalls, ToolCalls: b.toolCalls, Tokens: b.spent, Elapsed: b.elapsed}
+	if !b.startedAt.IsZero() {
+		s.Elapsed += time.Since(b.startedAt)
+	}
+	if b.exhausted != nil {
+		s.Exhausted = b.exhausted.resource
+	}
+	return s, nil
+}
+
+func (b *runBudget) restore(s budgetSnapshot) error {
+	if s.ModelCalls < 0 || s.ToolCalls < 0 || s.Tokens < 0 || s.Elapsed < 0 {
+		return fmt.Errorf("%w: invalid checkpoint budget", harness.ErrInvalidInput)
+	}
+	switch s.Exhausted {
+	case "", "model_calls", "tool_calls", "tokens", "time":
+	default:
+		return fmt.Errorf("%w: unknown checkpoint budget resource", harness.ErrInvalidInput)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.modelCalls, b.toolCalls, b.spent, b.elapsed = s.ModelCalls, s.ToolCalls, s.Tokens, s.Elapsed
+	if s.Exhausted != "" {
+		b.exhausted = &budgetError{resource: s.Exhausted}
+	}
+	return nil
+}
+
+func (b *runBudget) remainingTime() time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	remaining := b.limits.Timeout - b.elapsed
+	if !b.startedAt.IsZero() {
+		remaining -= time.Since(b.startedAt)
+	}
+	return remaining
 }
 
 func validateBudget(l harness.BudgetLimits) error {

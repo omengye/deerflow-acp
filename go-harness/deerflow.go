@@ -10,15 +10,14 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/cloudwego/eino/components/tool"
 	"github.com/gofrs/flock"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/acp/agent"
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
+	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
-	"github.com/omengye/deerflow-acp/go-harness/internal/tools"
 )
 
 type Config struct {
@@ -35,8 +34,13 @@ type Config struct {
 	DisableSubagents bool
 	// Nil uses DefaultBudgetLimits. A non-nil zero value disables all quotas.
 	// Token accounting is estimated until the provider reports actual usage.
-	Budget *harness.BudgetLimits
-	MCP    harness.MCPPolicy
+	Budget  *harness.BudgetLimits
+	MCP     harness.MCPPolicy
+	Sandbox harness.SandboxConfig
+	Skills  harness.SkillsConfig
+	// SkillSelection is host policy. Workspace is derived from each session;
+	// global skills require IncludeGlobal. Sources are never installed implicitly.
+	SkillSelection harness.SkillSelection
 	// Engine allows embedding a custom execution backend without importing Eino.
 	// When nil, the real Eino DeepAgent and durable SQLite stores are used.
 	Engine harness.Engine
@@ -46,6 +50,7 @@ type Client struct {
 	service    *hr.Service
 	store      *sqlite.Store
 	mcp        *mcp.Manager
+	skills     *skills.Registry
 	lock       *flock.Flock
 	owner      string
 	mu         sync.Mutex
@@ -115,25 +120,22 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			_ = manager.Close()
 		}
 	}()
+	registry, err := skills.NewRegistry(ctx, cfg.Skills, store.DB())
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = registry.Close()
+		}
+	}()
 	engine := cfg.Engine
 	if engine == nil {
 		budget := harness.DefaultBudgetLimits()
 		if cfg.Budget != nil {
 			budget = *cfg.Budget
 		}
-		factory := func(ctx context.Context, req harness.RunRequest) ([]tool.BaseTool, func() error, error) {
-			readOnly := req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
-			if readOnly {
-				req.Session.Mode = "plan"
-			}
-			local, cleanup, err := tools.WorkspaceFactory(ctx, req)
-			if err != nil || readOnly {
-				return local, cleanup, err
-			}
-			remote, err := manager.Tools(ctx, req.Session.ID)
-			return append(local, remote...), cleanup, err
-		}
-		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: budget, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ToolFactory: factory})
+		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: budget, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensionFactory(cfg, manager, registry)})
 		if err != nil {
 			return nil, err
 		}
@@ -141,7 +143,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	service := hr.NewService(business, engine, cfg.Model)
 	service.Resources = manager
 	service.Settings = hr.ConfigSettings{Models: append([]harness.ConfigValue(nil), cfg.Models...), EnableSubagents: !cfg.DisableSubagents, DefaultSubagents: !cfg.DisableSubagents}
-	return &Client{service: service, store: store, mcp: manager, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
+	return &Client{service: service, store: store, mcp: manager, skills: registry, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
 }
 
 func (c *Client) operation() (func(), error) {
@@ -195,6 +197,26 @@ func (c *Client) ConfigOptions(ctx context.Context, id string) ([]harness.Config
 		return nil, err
 	}
 	return c.service.ConfigOptions(x), nil
+}
+
+func (c *Client) ListToolReceipts(ctx context.Context, id string) ([]harness.ToolReceipt, error) {
+	done, err := c.operation()
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	return c.service.ListToolReceipts(ctx, c.owner, id)
+}
+
+// ReconcileToolReceipt records the operator's observed outcome. It never
+// invokes the tool. An uncertain effect must be reviewed before another run.
+func (c *Client) ReconcileToolReceipt(ctx context.Context, id string, review harness.ToolReconciliation) (harness.ToolReceipt, error) {
+	done, err := c.operation()
+	if err != nil {
+		return harness.ToolReceipt{}, err
+	}
+	defer done()
+	return c.service.ReconcileToolReceipt(ctx, c.owner, id, review)
 }
 
 func (c *Client) SetMode(ctx context.Context, id, mode string) error {
@@ -257,7 +279,7 @@ func (c *Client) Close() error {
 	}
 	disconnectErr := c.service.Disconnect(context.Background(), c.owner)
 	c.operations.Wait()
-	c.closeErr = errors.Join(disconnectErr, c.mcp.Close(), c.store.Close(), c.lock.Close())
+	c.closeErr = errors.Join(disconnectErr, c.mcp.Close(), c.skills.Close(), c.store.Close(), c.lock.Close())
 	close(c.closeDone)
 	return c.closeErr
 }

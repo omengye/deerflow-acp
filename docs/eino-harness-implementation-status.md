@@ -17,15 +17,15 @@
 | Go SDK / 版本组合 | 模块、公共类型、嵌入式 Client 和模型适配器已写入 | 全量组合、跨平台构建、配置清单 |
 | SQLite 基础和 Eino providers | checkpoint、session events、background task stores；上游 conformance、崩溃恢复、SQL 故障注入测试已通过 | 后续 Manager/工具恢复装配 |
 | 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close 已写入 | 黑盒互操作、官方 TCK、真实编辑器 |
-| 执行与工作区工具 | Eino DeepAgent/Runner、前台委派、原生文件工具、plan/read_only 模式、主/子共享预算；取消与清理测试通过 | 工具回执、后台委派和更完整的工具集 |
-| 权限 / 恢复 | 审批意图先落库、精确参数授权、断连拒绝；未完成运行标记待对账 | durable HITL 恢复和显式对账控制 |
+| 执行与工作区工具 | Eino TurnLoop/DeepAgent、前台委派、文件工具、plan/read_only、主/子共享预算；执行回执与命令工具已接线 | 长期会话循环、后台委派和更完整的工具集 |
+| 权限 / 恢复 | 审批意图先落库、精确参数授权、版本绑定、断连拒绝；不确定工具结果阻止新运行；SDK/ACP 显式对账 | durable HITL 和公开执行检查点恢复 |
 | 领域事件 / 历史 | 持久事件、文本/工具 updates、load 重放 | 有界异步发送、计划/usage/产物投影、分页历史 |
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 引擎图片转换准备中；ACP 暂不声明支持 | 校验、文件持久化、引用和重放 |
 | 后台子任务 / 长命令 | SQL provider 已写入，未完成调度接线 | Manager/TurnLoop、取消、租约、通知、重启恢复 |
-| Skills / memory / 压缩 | 待接入 | Eino middleware + 项目范围/生命周期/预算 |
-| Docker / Windows shell | 文件工具已跨平台，默认无 shell | Docker provider、PowerShell/WSL2、进程树清理 |
+| Skills / memory / 压缩 | Skills 不可变注册表、原生 middleware、SDK 管理与逐步加载已接入 | Skills CLI 管理、memory、压缩及其共享预算 |
+| Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、多窗口、现有 Rust Bridge 实际二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 诊断子集 |
 | 可选外部 ACP Agent | 待实现 | 白名单、反向权限、预算和取消链 |
 | 打包 / 默认切换 | 未开始 | Windows/Linux 实机、回退、切换演练 |
@@ -62,7 +62,33 @@ go test -race -p=2 -timeout=5m ./internal/... ./
 
 ## 下一阶段
 
-继续装配 TurnLoop/backgroundtask Manager、工具回执与显式对账、可选 PowerShell/WSL2/Docker 命令后端，随后补齐 Skills、Memory、压缩、媒体/产物。后台任务 SQL provider 已通过测试，但不能据此宣称后台任务已能通过当前可执行文件使用。
+继续装配长期 TurnLoop/backgroundtask Manager、公开 durable HITL 恢复、Memory、压缩、媒体/产物。后台任务 SQL provider 已通过测试，但不能据此宣称后台任务已能通过当前可执行文件使用。
+
+## 第三阶段装配
+
+- 工具回执与领域事件同事务。`tool_execute` 是唯一执行边界，提交失败不能触发工具；重复 call ID 不重复执行。流式工具的晚到错误及部分输出保留。
+- `pending/started/completed/not_executed/uncertain/no_effect` 分别保存。崩溃后不盲目重放；不确定结果需要 owner 在会话空闲时显式对账。审阅带版本检查与独立审计，不覆盖原始证据。
+- ACP 声明 `_deerflow/tool_receipts/list` 和 `_deerflow/tool_receipts/reconcile`。业务错误提供稳定提示与恢复方法，内部 joined error 不直接透传。
+- Eino 原生 TurnLoop 已替代直接 Runner 入口。目前每次调用处理一个已持久化的前台输入，尚不是长期会话或后台通知调度器。
+- 检查点写入/删除延迟到完整执行、事件落库、I/O 和资源清理之后；拒绝恢复、内层编码损坏或模型/清理失败保留旧检查点。保存预算计数、活动执行时长及 extension state。暂停期间不计执行超时。
+- 检查点格式为 `harness/turn/v1/<runID>` 对应的版本化 JSON envelope，内部保存 Eino 原生字节。早期 `harness/run/...` raw Runner 及未包装 TurnLoop 开发格式不迁移、不自动重放。
+- Skills 固定不可变版本，由一个 per-run factory 同时装配工具和原生 middleware。只暴露 metadata，正文和引用文件按需加载。SDK 安装/启停/删除/查询已接线；global 必须显式开启。fork/model override 暂不支持。
+- MCP 检查点绑定不含凭据的连接代际，重连后旧执行拒绝恢复；这不保证同一远端连接的实现永不变化。命令配置以摘要绑定。当前公开 ACP resume 只做会话重新附着，尚不开放执行检查点 Resume。
+- 命令工具前台执行并持久化有界结果。明确结束后释放进程资源；失败、取消或未确认终止保留执行证据。Eino alpha 丢弃 result+error 中的 result，适配器通过错误上的结构化结果接口保留命令证据。
+- Windows Job、PowerShell 与本机 WSL2 `Ubuntu-22.04` 的执行/取消已实际验证；Linux 进程组测试在该 WSL 中实际运行。Docker daemon 未运行，目前只有策略与参数测试，不宣称容器实测通过。
+
+公开 durable resume 前还需完成业务 run/event cursor 绑定、失败恢复尝试的独立预算账本、工具回执与原生检查点的联合准入，以及断连后的审批重新附着。保留旧检查点字节并不意味着可以无条件重放副作用。完整 V1 仍未达到发布条件。
+
+本批装配后的验证通过：
+
+```text
+GOMAXPROCS=2 go test -mod=readonly -p=2 -count=1 -timeout=5m ./...
+GOMAXPROCS=2 go test -mod=readonly -race -p=2 -count=1 -timeout=3m ./ ./internal/runtime ./internal/tools ./internal/launch
+```
+
+Engine 的最终 checkpoint 回归、ACP agent/protocol、Skills 和 Sandbox 已分别通过限定包 race；MCP 新增连接代际恢复回归通过 race。整模块测试包含真实可执行文件、MCP、命令进程和本地模型 fixture，未调用付费模型。测试发现过的命令错误丢失结构化输出问题已修复，最终 SDK race 验证通过。
+
+本批 `go mod verify` 通过；`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -mod=readonly -p=2 ./...` 全模块交叉编译通过。
 
 ## 第二阶段已落地
 

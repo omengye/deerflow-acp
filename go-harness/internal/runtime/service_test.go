@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -93,9 +94,19 @@ func TestPermissionScopeAndCancellationPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := testEngine(func(ctx context.Context, r harness.RunRequest, _ harness.EventHandler, p harness.PermissionHandler) (harness.RunResult, error) {
-		for _, arg := range []string{`{"path":"one"}`, `{"path":"one"}`, `{"path":"two"}`} {
-			if _, err := p(ctx, harness.PermissionRequest{ToolName: "write_file", ToolCallID: "call", Arguments: []byte(arg)}); err != nil {
+	engine := testEngine(func(ctx context.Context, r harness.RunRequest, emit harness.EventHandler, p harness.PermissionHandler) (harness.RunResult, error) {
+		for i, arg := range []string{`{"path":"one"}`, `{"path":"one"}`, `{"path":"two"}`} {
+			callID := fmt.Sprintf("call-%d", i)
+			if err := emit(ctx, harness.RunEvent{Kind: "tool_start", ToolName: "write_file", ToolCallID: callID, Status: "pending", Arguments: []byte(arg)}); err != nil {
+				return harness.RunResult{}, err
+			}
+			if _, err := p(ctx, harness.PermissionRequest{ToolName: "write_file", ToolCallID: callID, Arguments: []byte(arg)}); err != nil {
+				return harness.RunResult{}, err
+			}
+			if err := emit(ctx, harness.RunEvent{Kind: "tool_execute", ToolName: "write_file", ToolCallID: callID, Status: "in_progress"}); err != nil {
+				return harness.RunResult{}, err
+			}
+			if err := emit(ctx, harness.RunEvent{Kind: "tool_end", ToolName: "write_file", ToolCallID: callID, Status: "completed"}); err != nil {
 				return harness.RunResult{}, err
 			}
 		}

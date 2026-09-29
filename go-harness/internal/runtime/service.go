@@ -166,6 +166,9 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 	if s.Engine == nil {
 		return harness.RunResult{}, fmt.Errorf("model engine is not configured")
 	}
+	if err = s.Store.requireReconciled(ctx, id); err != nil {
+		return harness.RunResult{}, err
+	}
 	req := harness.RunRequest{Session: x, RunID: NewID(), InputID: NewID(), Input: input}
 	if err = s.Store.BeginRun(ctx, req); err != nil {
 		return harness.RunResult{}, err
