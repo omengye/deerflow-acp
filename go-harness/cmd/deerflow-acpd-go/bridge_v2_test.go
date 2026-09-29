@@ -3,8 +3,11 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -208,10 +212,19 @@ func TestExistingRustBridgeV2Lifecycle(t *testing.T) {
 	if bridge == "" || testing.Short() {
 		t.Skip("set DEERFLOW_TEST_BRIDGE to a native Bridge executable")
 	}
+	var pngData bytes.Buffer
+	if err := png.Encode(&pngData, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	encodedImage := base64.StdEncoding.EncodeToString(pngData.Bytes())
+	var imageReachedModel atomic.Bool
 	modelStarted := make(chan struct{}, 1)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_ = r.Body.Close()
+		if bytes.Contains(body, []byte("data:image/png;base64,"+encodedImage)) {
+			imageReachedModel.Store(true)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		if bytes.Contains(body, []byte("wait-for-cancel")) {
 			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Working.\"},\"finish_reason\":null}]}\n\n")
@@ -233,12 +246,25 @@ func TestExistingRustBridgeV2Lifecycle(t *testing.T) {
 	}))
 	defer provider.Close()
 	dataDir, runtimeDir, workspace := t.TempDir(), t.TempDir(), t.TempDir()
-	daemon := launchDaemon(t, dataDir, runtimeDir, provider.URL+"/v1")
+	daemon := launchDaemon(t, dataDir, runtimeDir, provider.URL+"/v1", "--vision-model", "fixture-model")
 	ep := daemon.endpoint(t, runtimeDir)
 	client := launchBridgeV2(t, bridge, runtimeDir)
 	initialized := client.request(t, "initialize", map[string]any{"protocolVersion": 2, "capabilities": map[string]any{}, "info": map[string]string{"name": "go-v2-test", "version": "1"}})
 	if !bytes.Contains(initialized, []byte(`"protocolVersion":2`)) {
 		t.Fatalf("initialize: %s", initialized)
+	}
+	var capabilities struct {
+		Capabilities struct {
+			Session struct {
+				Prompt map[string]json.RawMessage `json:"prompt"`
+			} `json:"session"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(initialized, &capabilities); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := capabilities.Capabilities.Session.Prompt["image"]; !ok {
+		t.Fatalf("v2 image capability missing: %s", initialized)
 	}
 	create := func() string {
 		t.Helper()
@@ -278,6 +304,14 @@ func TestExistingRustBridgeV2Lifecycle(t *testing.T) {
 	}
 	if !liveText {
 		t.Fatal("v2 facade lost live assistant text")
+	}
+	client.request(t, "session/prompt", map[string]any{"sessionId": first, "prompt": []any{map[string]string{"type": "text", "text": "inspect image"}, map[string]string{"type": "image", "data": encodedImage, "mimeType": "image/png"}}})
+	client.waitState(t, first, "running")
+	if idle := client.waitState(t, first, "idle"); idle["stopReason"] != "end_turn" {
+		t.Fatalf("image prompt idle: %+v", idle)
+	}
+	if !imageReachedModel.Load() {
+		t.Fatal("v2 image was not delivered to the Eino model adapter")
 	}
 	client.approve = true
 	permissionStart := len(client.seen)

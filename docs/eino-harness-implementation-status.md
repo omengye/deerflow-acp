@@ -332,5 +332,5 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 
 - 保留 Go daemon 的稳定 ACP v1 连接，通过现有 Rust Bridge `--protocol v2` 提供 draft v2 stdio 门面。真实 Go daemon、Rust 二进制和本地 OpenAI SSE fixture 的进程测试验证 initialize、新建与列出两个会话、prompt 的 ACK→running→idle、跨会话更新归属、cancel、重新连接后 `session/resume`、`replayFrom: start` 历史重放、默认不重放、close，以及 v2 反向权限批准后执行文件工具。
 - 互操作测试暴露 Go daemon 的 v1 文本分片缺少可选 `messageId`，Rust 的 v1→v2 转换会跳过该分片。Go 的 user/assistant/thought 内容更新现使用稳定消息 ID；同一流的分片共享 ID，工具调用前后以持久事件序号划分 assistant 消息，重新连接后的完整历史回放保留原 ID。流式和回放的 ACP 单元测试及真实工具调用进程测试已加入断言。
-- 这验证了当前门面的主要生命周期和现有能力映射，尚未覆盖 draft v2 的全部扩展、真实编辑器及端到端图片客户端。外部 ACP 委派的断线权限恢复和完整远端预算仍是独立缺口。
+- v2 门面宣告 vision 模型的图片能力；真实进程测试将一个 PNG 经 v2 prompt、Go 媒体资产及 Eino OpenAI 适配器送达本地模型 fixture，并检查正常终态。尚未覆盖 draft v2 的全部扩展、真实编辑器和模型生成媒体。外部 ACP 委派的断线权限恢复和完整远端预算仍是独立缺口。
 - Windows 验证通过：`cargo build --locked` 与 `cargo test --locked`；配置 `DEERFLOW_TEST_BRIDGE` 后的真实 Go daemon/Bridge v2 进程测试；Go 整模块 `go test -count=1 -p=2 -timeout=5m ./...`，ACP agent 与 daemon 的 `-race` 回归；Linux amd64、CGO 关闭的全模块交叉构建。官方 stable v1 TCK 未在本批重跑；此前的合规判定不等同于 draft v2 完整验收。
