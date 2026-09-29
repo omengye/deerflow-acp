@@ -12,6 +12,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
+	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
@@ -173,6 +174,9 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 		return harness.RunResult{}, err
 	}
 	req := harness.RunRequest{Session: x, RunID: NewID(), InputID: NewID(), Input: input}
+	if s.Store.BudgetLedger != nil {
+		req.RootBudgetID = req.RunID
+	}
 	var prepared *assets.Prepared
 	if s.Assets != nil {
 		prepared, err = s.Assets.Prepare(ctx, x, input)
@@ -185,7 +189,6 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 				return harness.RunResult{}, errors.Join(fmt.Errorf("%w: the selected model does not support image input", harness.ErrInvalidInput), prepared.Finish(false))
 			}
 		}
-		defer func() { runErr = errors.Join(runErr, s.Assets.AbortRun(req.RunID)) }()
 	} else {
 		for _, c := range input {
 			if c.Type != "text" || c.Data != "" || c.Asset != nil || c.URI != "" {
@@ -199,6 +202,38 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 		}
 		return harness.RunResult{}, err
 	}
+	var budgetScopes []budget.Scope
+	runCtx := context.WithValue(ctx, taskActorKey{}, harness.TaskActor{OwnerID: owner, SessionID: id})
+	stopBudgetHeartbeat := func() error { return nil }
+	if s.Store.BudgetLedger != nil {
+		scope := foregroundBudgetScope(req)
+		runCtx, stopBudgetHeartbeat = keepBudgetAlive(budget.WithScope(runCtx, scope), s.Store.BudgetLedger, scope)
+		budgetScopes = []budget.Scope{scope}
+	}
+	// Once input is accepted, every exit must close its attempt. Engine.Run
+	// returns only after I/O and resources join; asset staging is cleaned before
+	// the terminal run and budget transaction commits.
+	defer func() {
+		if s.Assets != nil {
+			runErr = errors.Join(runErr, s.Assets.AbortRun(req.RunID))
+		}
+		heartbeatErr := stopBudgetHeartbeat()
+		if cancellationOnly(runErr) || errors.Is(ctx.Err(), context.Canceled) {
+			result.StopReason = "cancelled"
+			if cancellationOnly(runErr) {
+				runErr = nil
+			}
+		}
+		if result.StopReason == "" {
+			result.StopReason = "end_turn"
+		}
+		runErr = errors.Join(runErr, applyBudgetHeartbeat(&result, heartbeatErr))
+		finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if finishErr := s.Store.Finish(finishCtx, req.RunID, result.StopReason, runErr, budgetScopes...); finishErr != nil {
+			runErr = errors.Join(runErr, &runPersistenceError{err: finishErr})
+		}
+	}()
 	if prepared != nil {
 		if err = prepared.Finish(true); err != nil {
 			return harness.RunResult{}, err
@@ -274,21 +309,7 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 		}
 		return decision, err
 	}
-	result, runErr = s.Engine.Run(ctx, req, publish, permissions)
-	if cancellationOnly(runErr) || errors.Is(ctx.Err(), context.Canceled) {
-		result.StopReason = "cancelled"
-		if cancellationOnly(runErr) {
-			runErr = nil
-		}
-	}
-	if result.StopReason == "" {
-		result.StopReason = "end_turn"
-	}
-	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancel()
-	if finishErr := s.Store.Finish(finishCtx, req.RunID, result.StopReason, runErr); finishErr != nil {
-		return result, errors.Join(runErr, finishErr)
-	}
+	result, runErr = s.Engine.Run(runCtx, req, publish, permissions)
 	return result, runErr
 }
 
@@ -296,6 +317,9 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 // cancellation occurred at the same time.
 func cancellationOnly(err error) bool {
 	if err == nil {
+		return false
+	}
+	if persistence, ok := err.(interface{ PersistenceFailure() bool }); ok && persistence.PersistenceFailure() {
 		return false
 	}
 	if err == context.Canceled {

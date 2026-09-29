@@ -11,6 +11,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 )
 
 type budgetError struct{ resource string }
@@ -34,6 +35,8 @@ type runBudget struct {
 	exhausted             *budgetError
 	startedAt             time.Time
 	elapsed               time.Duration
+	ledger                *durablebudget.Ledger
+	scope                 durablebudget.Scope
 }
 
 // budgetSnapshot is taken only after all model/tool I/O has joined, so token
@@ -122,9 +125,16 @@ type modelReservation struct {
 	usage                        harness.Usage
 	known                        bool
 	once                         sync.Once
+	grant                        *durablebudget.Reservation
+	settledUsage                 harness.Usage
+	settlementErr                error
 }
 
 func (b *runBudget) reserve(input []*schema.Message, opts []model.Option) (*modelReservation, []model.Option, error) {
+	return b.reserveContext(context.Background(), input, opts)
+}
+
+func (b *runBudget) reserveContext(ctx context.Context, input []*schema.Message, opts []model.Option) (*modelReservation, []model.Option, error) {
 	encoded, imageTokens, err := budgetMessageEncoding(input)
 	if err != nil {
 		return nil, nil, err
@@ -137,6 +147,9 @@ func (b *runBudget) reserve(input []*schema.Message, opts []model.Option) (*mode
 	// A byte estimate, not model-specific tokenization. Provider usage replaces
 	// it at settlement; providers can exceed this estimate on the in-flight call.
 	estimate := int64((len(encoded)+len(toolBytes)+3)/4+len(input)*8) + imageTokens
+	if b.ledger != nil {
+		return b.reserveDurable(ctx, estimate, encoded, toolBytes, common, opts)
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.exhausted != nil {
@@ -228,6 +241,9 @@ func removeErrorLeaves(err error, remove func(error) bool) (error, bool) {
 	if err == nil {
 		return nil, false
 	}
+	if atomic, ok := err.(interface{ PersistenceFailure() bool }); ok && atomic.PersistenceFailure() {
+		return err, false
+	}
 	if remove(err) {
 		return nil, true
 	}
@@ -278,6 +294,16 @@ func (r *modelReservation) observe(msg *schema.Message) error {
 	}
 	actual := r.currentUsage().TotalTokens
 	b := r.budget
+	if b.ledger != nil {
+		// Final settlement is authoritative across concurrent attempts. Stop a
+		// single response that already exceeds the complete root token policy.
+		if b.limits.MaxTokens > 0 && actual > b.limits.MaxTokens {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			return b.fail("tokens")
+		}
+		return nil
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.limits.MaxTokens > 0 && b.spent+b.held-r.reserved+actual > b.limits.MaxTokens {
@@ -294,9 +320,27 @@ func (r *modelReservation) currentUsage() harness.Usage {
 	return u
 }
 func (r *modelReservation) settle() harness.Usage {
+	u, _ := r.settleContext(context.Background(), true)
+	return u
+}
+
+func (r *modelReservation) settleContext(ctx context.Context, complete bool) (harness.Usage, error) {
 	u := r.currentUsage()
 	r.once.Do(func() {
 		b := r.budget
+		if b.ledger != nil {
+			r.settledUsage, r.settlementErr = b.ledger.Settle(ctx, *r.grant, durablebudget.Settlement{Usage: u, Complete: complete})
+			if r.settlementErr == nil {
+				var state durablebudget.Snapshot
+				state, r.settlementErr = b.ledger.Snapshot(ctx, b.scope.RootBudgetID)
+				if r.settlementErr == nil && (state.BlockedReason == "tokens" || state.BlockedReason == "time") {
+					b.mu.Lock()
+					b.fail(state.BlockedReason)
+					b.mu.Unlock()
+				}
+			}
+			return
+		}
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		b.held -= r.reserved
@@ -304,6 +348,7 @@ func (r *modelReservation) settle() harness.Usage {
 		if b.limits.MaxTokens > 0 && b.spent > b.limits.MaxTokens {
 			b.fail("tokens")
 		}
+		r.settledUsage = u
 	})
-	return u
+	return r.settledUsage, r.settlementErr
 }

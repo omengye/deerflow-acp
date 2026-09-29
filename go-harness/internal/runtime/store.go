@@ -11,9 +11,16 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
+	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
 )
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db *sql.DB
+	// Set during host construction before accepting work. Lifecycle writes use
+	// the same transaction as accepted input and terminal run state.
+	BudgetLedger *budget.Ledger
+	BudgetLimits harness.BudgetLimits
+}
 
 func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 	_, err := db.ExecContext(ctx, `
@@ -103,6 +110,17 @@ func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest, prepared .
 		return err
 	}
 	defer tx.Rollback()
+	if s.BudgetLedger != nil {
+		if req.RootBudgetID == "" || req.RootBudgetID != req.RunID {
+			return fmt.Errorf("%w: new run requires its own root budget", harness.ErrInvalidInput)
+		}
+		if err = s.BudgetLedger.CreateRootTx(ctx, tx, budget.RootSpec{RootBudgetID: req.RootBudgetID, SessionID: req.Session.ID, RootRunID: req.RunID, Limits: s.BudgetLimits}); err != nil {
+			return err
+		}
+		if err = s.BudgetLedger.BeginAttemptTx(ctx, tx, foregroundBudgetScope(req)); err != nil {
+			return err
+		}
+	}
 	now := timestamp()
 	if _, err = tx.ExecContext(ctx, `INSERT INTO harness_runs(id,session_id,input_id,status,created_at,updated_at) VALUES(?,?,?,'running',?,?)`, req.RunID, req.Session.ID, req.InputID, now, now); err != nil {
 		return err
@@ -162,7 +180,7 @@ func (s *Store) History(ctx context.Context, id string) ([]harness.RunEvent, err
 	}
 	return events, rows.Err()
 }
-func (s *Store) Finish(ctx context.Context, id, reason string, runErr error) error {
+func (s *Store) Finish(ctx context.Context, id, reason string, runErr error, scopes ...budget.Scope) error {
 	status := "completed"
 	detail := ""
 	if reason == "cancelled" {
@@ -177,6 +195,15 @@ func (s *Store) Finish(ctx context.Context, id, reason string, runErr error) err
 		return err
 	}
 	defer tx.Rollback()
+	if s.BudgetLedger != nil {
+		if len(scopes) != 1 || scopes[0].MemberID != id {
+			return fmt.Errorf("%w: run budget scope is required", harness.ErrInvalidInput)
+		}
+		outcome := budget.Outcome(status)
+		if err = s.BudgetLedger.EndAttemptTx(ctx, tx, scopes[0], outcome); err != nil {
+			return err
+		}
+	}
 	if err = settleOpenReceipts(ctx, tx, id, "run ended without a final tool receipt"); err != nil {
 		return err
 	}
@@ -209,6 +236,11 @@ func (s *Store) ReconcileInterrupted(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
+	if s.BudgetLedger != nil {
+		if err = s.BudgetLedger.ReconcileInterruptedTx(ctx, tx); err != nil {
+			return err
+		}
+	}
 	if err = settleOpenReceipts(ctx, tx, "", "process stopped before a final tool receipt"); err != nil {
 		return err
 	}

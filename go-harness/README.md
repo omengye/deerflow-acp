@@ -97,9 +97,12 @@ and selection configuration; see [the startup profile](internal/launch/skills.md
 Each listed installation commits independently. New SDK installations remain
 disabled until enabled; a startup profile can explicitly enable a reviewed package.
 
-Internal execution checkpoints pin the active budget, Skills versions and resource
-policy. They use a versioned harness envelope containing native Eino state;
-older development checkpoints are rejected. ACP `session/resume` reattaches a
+Internal execution checkpoints pin Skills versions, resource policy and durable
+budget identity. The SQL ledger records reservations and actual/estimated usage
+independently of checkpoint success. Failed retries cannot reset spent quota;
+unknown interrupted work retains its holds. Production checkpoint envelopes use
+version 2, containing native Eino state and the ledger identity; older local
+counter checkpoints cannot authorize production resume. ACP `session/resume` reattaches a
 conversation; it does not resume suspended tool execution. Public durable
 execution resume and background notification scheduling are still pending.
 

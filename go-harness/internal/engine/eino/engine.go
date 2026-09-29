@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/prebuilt/deep"
@@ -18,6 +17,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 )
 
 // Config is internal to the Eino adapter. Business and transport packages use
@@ -37,6 +37,7 @@ type Config struct {
 	SessionStore     adk.SessionEventStore[*schema.Message]
 	MaxIterations    int
 	Budget           harness.BudgetLimits
+	BudgetLedger     *durablebudget.Ledger
 	Media            harness.MediaConfig
 	AssetResolver    harness.AssetResolver
 	// Handlers extends native Eino middleware without introducing another loop.
@@ -112,7 +113,10 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	if req.Session.ID == "" || req.RunID == "" {
 		return harness.RunResult{}, errors.New("session ID and run ID are required")
 	}
-	budget := &runBudget{limits: e.config.Budget, startedAt: time.Now()}
+	budget, err := e.newBudget(ctx, req)
+	if err != nil {
+		return harness.RunResult{}, err
+	}
 	var pendingCheckpoints *checkedCheckpoints
 	// Registered first, so checkpoint mutations commit after every execution,
 	// I/O, resource-cleanup and terminal budget-event defer has succeeded.
@@ -135,6 +139,12 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 			_ = errors.As(context.Cause(ctx), &limit)
 		}
 		if limit == nil {
+			var shared *durablebudget.LimitError
+			if errors.As(context.Cause(ctx), &shared) && !shared.Temporary {
+				limit = &budgetError{resource: shared.Resource}
+			}
+		}
+		if limit == nil {
 			return
 		}
 		budget.mu.Lock()
@@ -153,8 +163,24 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		if err != nil {
 			return harness.RunResult{}, err
 		}
-		if err := budget.restore(*savedCheckpoint.Budget); err != nil {
-			return harness.RunResult{}, err
+		if budget.ledger != nil {
+			if savedCheckpoint.Ledger == nil {
+				return harness.RunResult{}, fmt.Errorf("%w: a local checkpoint cannot authorize durable quota", harness.ErrInvalidInput)
+			}
+			identity, identityErr := budget.durableIdentity(ctx)
+			if identityErr != nil {
+				return harness.RunResult{}, identityErr
+			}
+			if identity.RootBudgetID != savedCheckpoint.Ledger.RootBudgetID || identity.PolicyHash != savedCheckpoint.Ledger.PolicyHash || identity.Revision < savedCheckpoint.Ledger.Revision {
+				return harness.RunResult{}, durablebudget.ErrConflict
+			}
+		} else {
+			if savedCheckpoint.Budget == nil {
+				return harness.RunResult{}, fmt.Errorf("%w: durable checkpoint requires its ledger", harness.ErrInvalidInput)
+			}
+			if err := budget.restore(*savedCheckpoint.Budget); err != nil {
+				return harness.RunResult{}, err
+			}
 		}
 		if e.config.Budget.Timeout > 0 {
 			// Loading is bounded by this invocation's deadline; after restoration

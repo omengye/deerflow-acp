@@ -15,6 +15,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/acp/agent"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
+	budgetledger "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
@@ -55,6 +56,7 @@ type Client struct {
 	mcp        *mcp.Manager
 	skills     *skills.Registry
 	assets     *assets.Store
+	budgets    *budgetledger.Ledger
 	lock       *flock.Flock
 	owner      string
 	mu         sync.Mutex
@@ -113,6 +115,15 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if err != nil {
 		return nil, err
 	}
+	limits := harness.DefaultBudgetLimits()
+	if cfg.Budget != nil {
+		limits = *cfg.Budget
+	}
+	ledger, err := budgetledger.New(store.DB(), budgetledger.Config{})
+	if err != nil {
+		return nil, err
+	}
+	business.BudgetLedger, business.BudgetLimits = ledger, limits
 	if err = business.ReconcileInterrupted(ctx); err != nil {
 		return nil, err
 	}
@@ -157,11 +168,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	}()
 	engine := cfg.Engine
 	if engine == nil {
-		budget := harness.DefaultBudgetLimits()
-		if cfg.Budget != nil {
-			budget = *cfg.Budget
-		}
-		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: budget, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensionFactory(cfg, manager, registry, assetStore), Media: cfg.Media, AssetResolver: assetStore})
+		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensionFactory(cfg, manager, registry, assetStore), Media: cfg.Media, AssetResolver: assetStore})
 		if err != nil {
 			return nil, err
 		}
@@ -170,7 +177,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	service.Resources = manager
 	service.Media, service.Assets = cfg.Media, assetStore
 	service.Settings = hr.ConfigSettings{Models: append([]harness.ConfigValue(nil), cfg.Models...), EnableSubagents: !cfg.DisableSubagents, DefaultSubagents: !cfg.DisableSubagents}
-	return &Client{service: service, store: store, mcp: manager, skills: registry, assets: assetStore, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
+	return &Client{service: service, store: store, mcp: manager, skills: registry, assets: assetStore, budgets: ledger, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
 }
 
 func (c *Client) operation() (func(), error) {

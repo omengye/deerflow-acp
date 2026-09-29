@@ -2,14 +2,20 @@ package eino
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 )
 
 type toolMiddleware struct {
@@ -19,6 +25,7 @@ type toolMiddleware struct {
 	protected   map[string]bool
 	io          *runIO
 	budget      *runBudget
+	grants      sync.Map // *adk.ToolContext -> durablebudget.Reservation
 }
 
 func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args string) error {
@@ -29,7 +36,14 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 	if err := m.sink.emit(ctx, harness.RunEvent{Kind: "tool_start", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "pending", Arguments: append(json.RawMessage(nil), arguments...)}); err != nil {
 		return err
 	}
-	if err := m.budget.tool(); err != nil {
+	if m.budget.ledger != nil {
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(tc.Name+"\x00"+args)))
+		grant, err := m.budget.ledger.ReserveTool(ctx, m.budget.scope, durablebudget.ToolRequest{OperationID: rand.Text(), Digest: digest})
+		if err != nil {
+			return m.budget.classify(err)
+		}
+		m.grants.Store(tc, grant)
+	} else if err := m.budget.tool(); err != nil {
 		return err
 	}
 	if m.protected[tc.Name] {
@@ -54,10 +68,28 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if value, ok := m.grants.Load(tc); ok {
+		first, err := m.budget.ledger.MarkDispatched(ctx, value.(durablebudget.Reservation))
+		if err != nil {
+			return m.budget.classify(err)
+		}
+		if !first {
+			return durablebudget.ErrConflict
+		}
+	}
 	return m.sink.emit(ctx, harness.RunEvent{Kind: "tool_execute", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress"})
 }
 
 func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, content []harness.Content, err error) error {
+	var settleErr error
+	if value, ok := m.grants.LoadAndDelete(tc); ok {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		_, settleErr = m.budget.ledger.Settle(cleanup, value.(durablebudget.Reservation), durablebudget.Settlement{Complete: true})
+		cancel()
+		if settleErr != nil {
+			m.io.recordError(settleErr)
+		}
+	}
 	status := "completed"
 	var receipt *harness.ToolReceipt
 	if err != nil {
@@ -67,7 +99,7 @@ func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, conten
 	}
 	// Terminal cards and their durable events must survive cancellation of the
 	// actual tool operation. The run still joins this callback before returning.
-	return m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "tool_end", ToolCallID: tc.CallID, ToolName: tc.Name, Status: status, Content: content, Receipt: receipt})
+	return errors.Join(settleErr, m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "tool_end", ToolCallID: tc.CallID, ToolName: tc.Name, Status: status, Content: content, Receipt: receipt}))
 }
 
 func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.InvokableToolCallEndpoint, tc *adk.ToolContext) (adk.InvokableToolCallEndpoint, error) {

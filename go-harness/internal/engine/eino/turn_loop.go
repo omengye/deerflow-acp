@@ -12,6 +12,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 )
 
 // turnItem records durable input identity and the immutable execution policy.
@@ -23,6 +24,7 @@ type turnItem struct {
 	Model, Mode, ApprovalMode string
 	Subagents                 bool
 	Workspace, Contract       string
+	RootBudgetID              string
 }
 
 func itemFor(req harness.RunRequest) turnItem {
@@ -30,7 +32,7 @@ func itemFor(req harness.RunRequest) turnItem {
 	if inputID == "" {
 		inputID = req.RunID
 	}
-	return turnItem{InputID: inputID, SessionID: req.Session.ID, ConfigVersion: req.Session.ConfigVersion, Model: req.Session.Model, Mode: req.Session.Mode, ApprovalMode: req.Session.ApprovalMode, Subagents: req.Session.Subagents, Workspace: req.Session.CWD}
+	return turnItem{InputID: inputID, SessionID: req.Session.ID, ConfigVersion: req.Session.ConfigVersion, Model: req.Session.Model, Mode: req.Session.Mode, ApprovalMode: req.Session.ApprovalMode, Subagents: req.Session.Subagents, Workspace: req.Session.CWD, RootBudgetID: req.RootBudgetID}
 }
 
 func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawMessage) (string, error) {
@@ -116,10 +118,11 @@ func (e *Engine) turnLoop(ctx context.Context, req harness.RunRequest, resumeID,
 // execution budget and extension state alongside it. Older development formats
 // are rejected rather than restoring execution with reset counters or policies.
 type checkpointEnvelope struct {
-	Version   int             `json:"version"`
-	Native    []byte          `json:"native"`
-	Budget    *budgetSnapshot `json:"budget"`
-	Extension json.RawMessage `json:"extension,omitempty"`
+	Version   int                     `json:"version"`
+	Native    []byte                  `json:"native"`
+	Budget    *budgetSnapshot         `json:"budget"`
+	Ledger    *durablebudget.Identity `json:"ledger,omitempty"`
+	Extension json.RawMessage         `json:"extension,omitempty"`
 }
 
 func decodeCheckpointEnvelope(data []byte) (*checkpointEnvelope, error) {
@@ -127,7 +130,7 @@ func decodeCheckpointEnvelope(data []byte) (*checkpointEnvelope, error) {
 	if err := json.Unmarshal(data, &saved); err != nil {
 		return nil, fmt.Errorf("%w: decode harness checkpoint: %v", harness.ErrInvalidInput, err)
 	}
-	if saved.Version != 1 || len(saved.Native) == 0 || saved.Budget == nil {
+	if len(saved.Native) == 0 || (saved.Version != 1 && saved.Version != 2) || (saved.Version == 1 && (saved.Budget == nil || saved.Ledger != nil)) || (saved.Version == 2 && (saved.Ledger == nil || saved.Budget != nil)) {
 		return nil, fmt.Errorf("%w: unsupported or empty harness checkpoint", harness.ErrInvalidInput)
 	}
 	return &saved, nil
@@ -242,11 +245,19 @@ func (s *checkedCheckpoints) commit(ctx context.Context, deleteAllowed bool) err
 			err = s.inner.Set(ctx, s.key, nil)
 		}
 	} else {
-		var snapshot budgetSnapshot
-		snapshot, err = s.budget.snapshot()
+		envelope := checkpointEnvelope{Native: s.data, Extension: s.extension}
+		if s.budget.ledger != nil {
+			envelope.Version = 2
+			envelope.Ledger, err = s.budget.durableIdentity(ctx)
+		} else {
+			envelope.Version = 1
+			var snapshot budgetSnapshot
+			snapshot, err = s.budget.snapshot()
+			envelope.Budget = &snapshot
+		}
 		if err == nil {
 			var data []byte
-			data, err = json.Marshal(checkpointEnvelope{Version: 1, Native: s.data, Budget: &snapshot, Extension: s.extension})
+			data, err = json.Marshal(envelope)
 			if err == nil {
 				err = s.inner.Set(ctx, s.key, data)
 			}

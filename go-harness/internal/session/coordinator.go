@@ -36,6 +36,19 @@ func NewCoordinator() *Coordinator {
 	return &Coordinator{bindings: make(map[string]*binding), retired: make(map[string]bool)}
 }
 
+// Authorize checks the current connection generation without reserving a new
+// foreground turn. Background tools call this while their parent owns the
+// existing turn lease. Closing or retired owners cannot start task operations.
+func (c *Coordinator) Authorize(id, owner string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := c.bindings[id]
+	if owner == "" || c.retired[owner] || b == nil || b.owner != owner || b.closing {
+		return harness.ErrNotAttached
+	}
+	return nil
+}
+
 func (c *Coordinator) Attach(id, owner string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

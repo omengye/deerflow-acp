@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
@@ -147,12 +148,14 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 			return nil, err
 		}
 	}
-	reservation, opts, err := m.budget.reserve(input, opts)
+	reservation, opts, err := m.budget.reserveContext(ctx, input, opts)
 	if err != nil {
 		return nil, err
 	}
-	defer m.settle(ctx, reservation)
+	complete := false
+	defer func() { m.settle(ctx, reservation, complete && ctx.Err() == nil) }()
 	msg, err := m.inner.Generate(ctx, input, opts...)
+	complete = err == nil
 	observeErr := reservation.observe(msg)
 	if mediaErr := validateProviderOutput(msg); mediaErr != nil {
 		return nil, errors.Join(err, observeErr, mediaErr)
@@ -174,21 +177,35 @@ func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts
 			return nil, err
 		}
 	}
-	reservation, opts, err := m.budget.reserve(input, opts)
+	reservation, opts, err := m.budget.reserveContext(ctx, input, opts)
 	if err != nil {
 		finish()
 		return nil, err
 	}
 	source, err := m.inner.Stream(ctx, input, opts...)
 	if err != nil {
-		m.settle(ctx, reservation)
+		m.settle(ctx, reservation, false)
 		finish()
 		return nil, err
 	}
-	return relayStream(source, func() { m.settle(ctx, reservation); finish() }, validateProviderOutput, m.io.recordError, reservation.observe), nil
+	if source == nil {
+		m.settle(ctx, reservation, false)
+		finish()
+		return nil, errors.New("model returned nil stream")
+	}
+	complete := true
+	return relayStream(source, func() { m.settle(ctx, reservation, complete && ctx.Err() == nil); finish() }, validateProviderOutput, func(err error) { complete = false; m.io.recordError(err) }, reservation.observe), nil
 }
 
-func (m *trackedModel) settle(ctx context.Context, r *modelReservation) {
-	u := r.settle()
-	_ = m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "usage", Usage: &u})
+func (m *trackedModel) settle(ctx context.Context, r *modelReservation, complete bool) {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	u, err := r.settleContext(cleanup, complete)
+	if err != nil {
+		m.io.recordError(err)
+		return
+	}
+	if err = m.sink.emit(cleanup, harness.RunEvent{Kind: "usage", Usage: &u}); err != nil {
+		m.io.recordError(err)
+	}
 }

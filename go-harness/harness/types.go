@@ -51,9 +51,12 @@ type Session struct {
 type RunRequest struct {
 	Session Session
 	RunID   string
-	InputID string
-	Input   []Content
-	History []Message
+	// RootBudgetID binds this logical execution and its delegated work to the
+	// host-owned durable budget. Callers cannot supply a new policy on resume.
+	RootBudgetID string
+	InputID      string
+	Input        []Content
+	History      []Message
 }
 
 type Usage struct {

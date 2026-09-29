@@ -23,7 +23,7 @@
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image 与产物登记已验证 | MCP/模型生成媒体导入、可选对象存储发布 |
-| 后台子任务 / 长命令 | SQL provider 已写入，未完成调度接线 | Manager/TurnLoop、取消、租约、通知、重启恢复 |
+| 后台子任务 / 长命令 | 原生 Manager、有界 worker、child 租约、fenced stores、事务化 checkpoint 与通知 inbox 已通过 fixture 验证 | 真实模型/工具 factory、审批、SDK/ACP 与父会话输入接线 |
 | Skills / memory / 压缩 | Skills 不可变注册表、原生 middleware、SDK 管理、显式 CLI 启动配置与逐步加载已接入 | memory、压缩及其共享预算 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、多窗口、现有 Rust Bridge 实际二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 诊断子集 |
@@ -64,7 +64,7 @@ go test -race -p=2 -timeout=5m ./internal/... ./
 
 历史查询现提供 SDK `HistoryPage` 与 ACP `_deerflow/history/list`，游标绑定会话并固定首次查询的事件上限。`session/load` 持有会话租约分页读取并完整重放，`session/resume` 仍不重放。验证覆盖分页间新增事件、全量重放、跨会话游标、其他连接访问、繁忙会话与大事件边界，runtime 与真实 ACP 管道限定测试通过 race。
 
-继续装配长期 TurnLoop/backgroundtask Manager、公开 durable HITL 恢复、Memory、压缩、媒体/产物。后台任务 SQL provider 已通过测试，但不能据此宣称后台任务已能通过当前可执行文件使用。
+继续装配长期 TurnLoop、公开 durable HITL 恢复、Memory、压缩及后台任务 host。后台 Manager 与原生 fixture 已通过测试，实际模型/工具 factory、审批、SDK/ACP 与父会话通知输入尚需接线。
 
 ## 第三阶段装配
 
@@ -79,7 +79,7 @@ go test -race -p=2 -timeout=5m ./internal/... ./
 - 命令工具前台执行并持久化有界结果。明确结束后释放进程资源；失败、取消或未确认终止保留执行证据。Eino alpha 丢弃 result+error 中的 result，适配器通过错误上的结构化结果接口保留命令证据。
 - Windows Job、PowerShell 与本机 WSL2 `Ubuntu-22.04` 的执行/取消已实际验证；Linux 进程组测试在该 WSL 中实际运行。Docker daemon 未运行，目前只有策略与参数测试，不宣称容器实测通过。
 
-公开 durable resume 前还需完成业务 run/event cursor 绑定、失败恢复尝试的独立预算账本、工具回执与原生检查点的联合准入，以及断连后的审批重新附着。保留旧检查点字节并不意味着可以无条件重放副作用。完整 V1 仍未达到发布条件。
+公开 durable resume 前还需完成业务 run/event cursor 绑定、工具回执与原生检查点的联合准入，以及断连后的审批重新附着。独立预算账本已在第五阶段落地。保留旧检查点字节并不意味着可以无条件重放副作用。完整 V1 仍未达到发布条件。
 
 本批装配后的验证通过：
 
@@ -118,5 +118,16 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - daemon 使用独立目录及认证 loopback IPC，无 HTTP 服务。已实测现有 Rust Bridge 的 status/manage/ACP proxy/stop；MANAGE 业务操作当前仍明确返回 unsupported，Python `--config` 尚未迁移。Windows endpoint 与锁文件使用受保护 DACL。
 
 以上新增模块分别通过常规测试与 race 检查；最终集成验证以实际执行记录为准。Linux 交叉编译不等于 Linux 运行验收，真实编辑器、真实付费模型和 ACP TCK 仍待进行。
+
+## 第五阶段持久预算
+
+- SDK 默认 Eino 路径启用独立 SQL 预算账本；接受输入、建立根预算和首次 attempt 同事务，运行终态与 attempt 结束同事务。同步子 Agent 共用同一个作用域，后续后台任务通过原始 run 绑定既有预算。
+- 模型与工具调用先预留、持久标记 dispatch 后才执行。真实 usage 结算，失败且没有最终 usage 时保守收取预留。失败重试保留旧检查点也不会退回已记账消耗；重启留下的未知执行保留额度并阻止自动续跑。
+- Heartbeat 覆盖构建、执行和清理；额度耗尽后仍为清理续租。并行执行按活动时间区间并集计时。SQL 结算/收尾错误具有不可拆的 persistence 标记，不会被取消和预算终止过滤吞掉。
+- 生产检查点 envelope 升为 v2，保存 root/policy/revision 身份，以账本为额度权威。无账本的内部测试兼容 v1；旧本地计数检查点不能用于初始化生产预算。checkpoint key 前缀仍为 `harness/turn/v1/`，它不表示 envelope 版本。
+- runtime 测试覆盖输入/终态事务失败、heartbeat SQL 故障、额度耗尽后清理超过原租期、重启 unknown；engine 测试覆盖失败恢复继续扣费及结算错误不被额度终止吞掉。
+- 真实 SDK + 本地 provider fixture 已验证实际 write_file、下一次模型调用被预算挡住、80 tokens 实际 usage 结算、重启保留账本以及新 prompt 建立新组。SDK/runtime/ACP 组合 race 和 engine 全包 race 通过。
+
+后台基础层另已验证 native subagent interrupt → 重建服务 → broker resume、checkpoint/task/outbox 事务故障回滚、取消与清理 join、跨重启 child 隔离及通知去重。此时尚未向模型开放后台委派，也未开放公共执行恢复；不能据这些基础测试宣称完整 V1 已完成。
 
 第二阶段集成检查中发现并修正：取消与独立故障组成 joined error 时不能整条丢弃；provider 在取消之后排空流时上报的故障仍须返回；MCP Close 必须等本地连接和直接子进程真正清理完成后才允许 SDK 释放数据库锁。对应回归已增加。一次全量测试因 HTTP 测试服务在 middleware 内等待不可取消 context 而超时；该代际替换取消用例已改为可回收的真实 stdio 进程，限定包 race 复测通过。出站 HTTP 取消仍不代表远端副作用已经停止。
