@@ -178,3 +178,5 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 真实 Eino + 本地模型服务 + SQLite close/reopen 的 SDK 测试验证父 prompt 已完成、原预算计费、较晚的新 prompt 预算独立、UI 已读后处理、重复处理、无审批等待与恢复、配置漂移、原预算耗尽及来源篡改。真实双向 ACP 管道验证断连后重新附着、待批恢复、旧版本冲突和重复处理。整模块普通测试通过；SDK/真实 ACP continuation 聚焦 race、runtime/budget/ACP/engine 全包 race、Linux amd64 无 CGO 全模块交叉编译均通过。ACP 将原预算准入失败映射为 `-32015`，携带资源名并保留通知。
 
 尚待完整 V1 的工作包括记忆与上下文压缩、MCP/模型媒体输出导入、计划与 usage 投影、有界异步事件发送、可选外部 ACP agent、MANAGE/Python 配置迁移、默认入口切换和真实编辑器/TCK/Docker 验证。自动通知调度可在显式处理接口之上继续实施。
+
+下一项记忆与压缩的存储、预算和恢复边界已核对并写入 [设计](eino-memory-context-design.md)。Eino `RunExtensions.ModelHandlerFactory` 已为摘要和记忆中间件提供与主模型共用的受控模型；1/2 次模型额度的真实 TurnLoop 测试验证内部调用实际扣减原预算并受限额阻断。事实存储、提取、注入和压缩仍待实施。

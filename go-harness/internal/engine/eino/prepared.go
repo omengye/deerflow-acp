@@ -168,6 +168,14 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	media := &mediaProjection{resolver: e.config.AssetResolver, policy: e.config.Media, sessionID: req.Session.ID, model: selectedModel}
 	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle, budget: b}
 	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), extensions.Handlers...)
+	if extensions.ModelHandlerFactory != nil {
+		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: media}
+		modelHandlers, err := extensions.ModelHandlerFactory(ctx, metered)
+		if err != nil {
+			return p, fmt.Errorf("build tracked model middleware: %w", err)
+		}
+		handlers = append(handlers, modelHandlers...)
+	}
 	handlers = append(handlers, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media}, mw)
 	p.Agent, err = deep.New(ctx, &deep.Config{
 		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction,

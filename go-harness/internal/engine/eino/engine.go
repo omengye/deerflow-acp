@@ -54,8 +54,13 @@ type Engine struct {
 type RunExtensions struct {
 	Tools    []tool.BaseTool
 	Handlers []adk.ChatModelAgentMiddleware
-	Cleanup  func() error
-	State    json.RawMessage
+	// ModelHandlerFactory builds middleware that makes its own model calls,
+	// such as summarization or memory extraction. The supplied model is tracked
+	// by the same I/O lifecycle and durable budget as the main agent. It must
+	// be used instead of an unwrapped provider model for those calls.
+	ModelHandlerFactory func(context.Context, model.BaseModel[*schema.Message]) ([]adk.ChatModelAgentMiddleware, error)
+	Cleanup             func() error
+	State               json.RawMessage
 }
 
 var _ harness.Engine = (*Engine)(nil)
