@@ -38,7 +38,7 @@ Python `deerflow/acp/`、现有测试和 `bridge/` 是当前产品协议基线�
 | 默认持久化 | SQLite，WAL + 单 daemon 所有权 | 本地启动无需 PostgreSQL；预留 store 接口 |
 | 沙箱/工作区 | 受控本地文件 backend + 可选 Docker/WSL2 backend | 兼顾当前 ACP cwd 行为和真正隔离的执行能力 |
 
-Eino、三个模型扩展、SQLite 和 ACP SDK 类型已完成第一轮组合编译，版本固定在 `go-harness/go.mod/go.sum`。MCP 扩展待管理器接入时完成组合验证。阶段 0 的流式、checkpoint、ACP 双向调用与后续互操作记录见实施状态。禁止所有模块统一浮动 `@latest`。
+Eino、三个模型扩展、SQLite、ACP SDK 类型及 MCP 扩展已完成组合编译，版本固定在 `go-harness/go.mod/go.sum`。MCP 官方 SDK 固定为 `v1.6.1`。阶段 0 的流式、checkpoint、ACP 双向调用与后续互操作记录见实施状态。禁止所有模块统一浮动 `@latest`。
 
 已确认最新部分模型扩展使用 `CacheWriteTokens`，Eino alpha.35 暂无该字段。V1 先采用 `*schema.Message`，新的原生 AgenticMessage 接口经 engine adapter 后续加入。
 

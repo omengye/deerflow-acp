@@ -17,6 +17,7 @@ type toolMiddleware struct {
 	permissions harness.PermissionHandler
 	protected   map[string]bool
 	io          *runIO
+	budget      *runBudget
 }
 
 func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args string) error {
@@ -25,6 +26,9 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 		return errors.New("tool arguments are not valid JSON")
 	}
 	if err := m.sink.emit(ctx, harness.RunEvent{Kind: "tool_start", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "pending", Arguments: append(json.RawMessage(nil), arguments...)}); err != nil {
+		return err
+	}
+	if err := m.budget.tool(); err != nil {
 		return err
 	}
 	if m.protected[tc.Name] {
@@ -119,7 +123,7 @@ func (m *toolMiddleware) WrapStreamableToolCall(_ context.Context, next adk.Stre
 				return err
 			}
 			return nil
-		}), nil
+		}, m.io.recordError), nil
 	}, nil
 }
 
@@ -201,6 +205,6 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 				return err
 			}
 			return nil
-		}), nil
+		}, m.io.recordError), nil
 	}, nil
 }

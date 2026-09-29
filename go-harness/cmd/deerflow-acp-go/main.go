@@ -11,6 +11,7 @@ import (
 
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/acp/protocol"
+	"github.com/omengye/deerflow-acp/go-harness/internal/launch"
 )
 
 func main() {
@@ -26,6 +27,7 @@ func run() error {
 	flag.StringVar(&cfg.Model, "model", os.Getenv("DEERFLOW_MODEL"), "model identifier")
 	flag.StringVar(&cfg.BaseURL, "base-url", os.Getenv("DEERFLOW_MODEL_BASE_URL"), "model endpoint override")
 	flag.IntVar(&cfg.MaxIterations, "max-iterations", 50, "maximum model/tool iterations per run")
+	launch.RuntimeFlags(flag.CommandLine, &cfg)
 	flag.Parse()
 	cfg.APIKey = os.Getenv("DEERFLOW_MODEL_API_KEY")
 	if cfg.APIKey == "" {

@@ -34,6 +34,7 @@ type Config struct {
 	CheckpointStore adk.CheckPointStore
 	SessionStore    adk.SessionEventStore[*schema.Message]
 	MaxIterations   int
+	Budget          harness.BudgetLimits
 	// Handlers extends native Eino middleware without introducing another loop.
 	Handlers        []adk.ChatModelAgentMiddleware
 	DisableSubAgent bool
@@ -47,6 +48,9 @@ type Engine struct {
 var _ harness.Engine = (*Engine)(nil)
 
 func New(ctx context.Context, config Config) (*Engine, error) {
+	if err := validateBudget(config.Budget); err != nil {
+		return nil, err
+	}
 	if config.MaxIterations == 0 {
 		config.MaxIterations = 50
 	}
@@ -93,6 +97,27 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	if req.Session.ID == "" || req.RunID == "" {
 		return harness.RunResult{}, errors.New("session ID and run ID are required")
 	}
+	budget := &runBudget{limits: e.config.Budget}
+	if e.config.Budget.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, e.config.Budget.Timeout, &budgetError{resource: "time"})
+		defer cancel()
+	}
+	sink := &eventSink{request: req, callback: events, active: make(map[string]string), finished: make(map[string]bool)}
+	defer func() {
+		limit := budget.failure()
+		if limit == nil {
+			_ = errors.As(context.Cause(ctx), &limit)
+		}
+		if limit == nil {
+			return
+		}
+		result.StopReason, result.Limit = limit.stopReason(), limit.resource
+		returnErr = withoutBudgetTermination(returnErr)
+		if err := sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "budget_exhausted", Text: limit.Error()}); err != nil {
+			returnErr = errors.Join(returnErr, err)
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return harness.RunResult{StopReason: "cancelled"}, nil
 	}
@@ -149,14 +174,14 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		cancelAgent(adk.WithAgentCancelMode(adk.CancelImmediate), adk.WithRecursive())
 		ioLifecycle.stop()
 	}
-	sink := &eventSink{request: req, callback: events, cancel: requestCancel, active: make(map[string]string), finished: make(map[string]bool)}
-	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle}
-	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), &modelLifecycle{io: ioLifecycle}, mw)
+	sink.cancel = requestCancel
+	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle, budget: budget}
+	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), &modelLifecycle{io: ioLifecycle, budget: budget, sink: sink}, mw)
 	agent, err := deep.New(execCtx, &deep.Config{
 		Name: "deerflow", Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction,
 		ChatModel: chatModel, MaxIteration: e.config.MaxIterations,
 		ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}},
-		Handlers:    handlers, WithoutGeneralSubAgent: e.config.DisableSubAgent,
+		Handlers:    handlers, WithoutGeneralSubAgent: e.config.DisableSubAgent || (req.Session.ConfigVersion > 0 && !req.Session.Subagents),
 	})
 	if err != nil {
 		return harness.RunResult{}, fmt.Errorf("create deep agent: %w", err)
@@ -205,34 +230,40 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 			case errors.Is(event.Err, adk.ErrExceedMaxIterations):
 				result.StopReason = "max_turn_requests"
 			case errors.Is(event.Err, adk.ErrSessionBusy):
-				runErr = harness.ErrBusy
-			default:
-				runErr = event.Err
+				runErr = errors.Join(runErr, harness.ErrBusy)
 			}
+			runErr = errors.Join(runErr, withoutNativeTermination(event.Err))
 		}
 		if event.Action != nil && event.Action.Interrupted != nil {
-			runErr = errors.New("agent interrupted; explicit resume is required")
+			runErr = errors.Join(runErr, errors.New("agent interrupted; explicit resume is required"))
 		}
 		if event.Output != nil && event.Output.MessageOutput != nil {
-			if err := consumeMessage(execCtx, event.Output.MessageOutput, sink, &result); err != nil && runErr == nil {
-				if !errors.Is(err, context.Canceled) && !errors.Is(err, adk.ErrStreamCanceled) {
-					runErr = err
-				}
+			if err := consumeMessage(execCtx, event.Output.MessageOutput, sink, &result); err != nil {
+				runErr = errors.Join(runErr, withoutNativeTermination(err))
 				requestCancel()
 			}
 		}
 	}
 	ioLifecycle.closeAndWait()
+	runErr = errors.Join(runErr, ioLifecycle.failure())
 	if err := sink.closeOpen(execCtx); err != nil && runErr == nil {
 		runErr = err
 	}
 	if err := sink.failure(); err != nil {
-		return result, err
+		return result, errors.Join(runErr, err)
 	}
 	if ctx.Err() != nil {
 		result.StopReason = "cancelled"
 	}
 	return result, runErr
+}
+
+func withoutNativeTermination(err error) error {
+	remaining, _ := removeErrorLeaves(err, func(leaf error) bool {
+		_, cancelled := leaf.(*adk.CancelError)
+		return cancelled || leaf == context.Canceled || leaf == adk.ErrStreamCanceled || leaf == adk.ErrExceedMaxIterations
+	})
+	return remaining
 }
 
 func (e *Engine) input(ctx context.Context, req harness.RunRequest) ([]*schema.Message, error) {
@@ -307,7 +338,6 @@ func convertContent(role schema.RoleType, content []harness.Content) (*schema.Me
 }
 
 func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *eventSink, result *harness.RunResult) error {
-	var usage harness.Usage
 	var toolCallID string
 	consume := func(msg *schema.Message) error {
 		if msg == nil {
@@ -334,11 +364,6 @@ func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *even
 				if meta.FinishReason == "content_filter" {
 					result.StopReason = "refusal"
 				}
-				if u := meta.Usage; u != nil {
-					usage.InputTokens = max(usage.InputTokens, int64(u.PromptTokens))
-					usage.OutputTokens = max(usage.OutputTokens, int64(u.CompletionTokens))
-					usage.TotalTokens = max(usage.TotalTokens, int64(u.TotalTokens))
-				}
 			}
 		}
 		return nil
@@ -364,9 +389,6 @@ func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *even
 		if err := sink.emit(ctx, harness.RunEvent{Kind: "tool_end", ToolCallID: toolCallID, ToolName: variant.ToolName, Status: "completed"}); err != nil {
 			return err
 		}
-	}
-	if usage.TotalTokens > 0 || usage.InputTokens > 0 || usage.OutputTokens > 0 {
-		return sink.emit(ctx, harness.RunEvent{Kind: "usage", Usage: &usage})
 	}
 	return nil
 }
@@ -403,7 +425,9 @@ func (s *eventSink) emit(ctx context.Context, event harness.RunEvent) error {
 	if s.callback != nil {
 		if err := s.callback(ctx, event); err != nil {
 			s.err = err
-			s.cancel()
+			if s.cancel != nil {
+				s.cancel()
+			}
 			return err
 		}
 	}

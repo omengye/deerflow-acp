@@ -33,13 +33,16 @@ type Message struct {
 }
 
 type Session struct {
-	ID        string    `json:"id"`
-	CWD       string    `json:"cwd"`
-	Title     string    `json:"title,omitempty"`
-	Mode      string    `json:"mode"`
-	Model     string    `json:"model"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID            string    `json:"id"`
+	CWD           string    `json:"cwd"`
+	Title         string    `json:"title,omitempty"`
+	Mode          string    `json:"mode"`
+	Model         string    `json:"model"`
+	ApprovalMode  string    `json:"approvalMode"`
+	Subagents     bool      `json:"subagents"`
+	ConfigVersion int64     `json:"configVersion"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 type RunRequest struct {
@@ -54,6 +57,7 @@ type Usage struct {
 	InputTokens  int64 `json:"inputTokens"`
 	OutputTokens int64 `json:"outputTokens"`
 	TotalTokens  int64 `json:"totalTokens"`
+	Estimated    bool  `json:"estimated,omitempty"`
 }
 
 type RunEvent struct {
@@ -71,12 +75,13 @@ type RunEvent struct {
 }
 
 type PermissionRequest struct {
-	ID         string          `json:"id"`
-	SessionID  string          `json:"sessionId"`
-	RunID      string          `json:"runId"`
-	ToolCallID string          `json:"toolCallId"`
-	ToolName   string          `json:"toolName"`
-	Arguments  json.RawMessage `json:"arguments"`
+	ID            string          `json:"id"`
+	SessionID     string          `json:"sessionId"`
+	RunID         string          `json:"runId"`
+	ConfigVersion int64           `json:"configVersion"`
+	ToolCallID    string          `json:"toolCallId"`
+	ToolName      string          `json:"toolName"`
+	Arguments     json.RawMessage `json:"arguments"`
 }
 
 type PermissionDecision string
@@ -94,6 +99,7 @@ type EventHandler func(context.Context, RunEvent) error
 
 type RunResult struct {
 	StopReason string
+	Limit      string
 }
 
 // Engine must stop model/tool execution when ctx is cancelled and finish cleanup

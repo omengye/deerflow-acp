@@ -19,6 +19,8 @@ type Service struct {
 	Coordinator *session.Coordinator
 	Engine      harness.Engine
 	Model       string
+	Settings    ConfigSettings
+	Resources   SessionResources
 	mu          sync.Mutex
 	decisions   map[string]harness.PermissionDecision
 }
@@ -27,7 +29,7 @@ func NewService(store *Store, engine harness.Engine, model string) *Service {
 	return &Service{Store: store, Engine: engine, Model: model, Coordinator: session.NewCoordinator(), decisions: make(map[string]harness.PermissionDecision)}
 }
 
-func (s *Service) NewSession(ctx context.Context, owner, cwd string) (harness.Session, error) {
+func (s *Service) NewSession(ctx context.Context, owner, cwd string, servers ...harness.MCPServer) (harness.Session, error) {
 	cwd, err := session.NormalizeWorkspace(cwd)
 	if err != nil {
 		return harness.Session{}, err
@@ -36,11 +38,26 @@ func (s *Service) NewSession(ctx context.Context, owner, cwd string) (harness.Se
 	if err != nil {
 		return x, err
 	}
-	_, err = s.Coordinator.Attach(x.ID, owner)
+	x.ApprovalMode = harness.ApprovalAsk
+	x.Subagents = s.Settings.EnableSubagents && s.Settings.DefaultSubagents
+	x.ConfigVersion = 1
+	if err = s.Store.SaveConfig(ctx, x); err != nil {
+		return x, errors.Join(err, s.discardNewSession(x.ID))
+	}
+	ctx, release, _, err := s.Coordinator.AttachAndBegin(ctx, x.ID, owner)
+	if err != nil {
+		return x, errors.Join(err, s.discardNewSession(x.ID))
+	}
+	err = s.bindResources(ctx, owner, x, servers)
+	if err != nil {
+		err = errors.Join(err, s.abandonBinding(owner, x.ID, release, true))
+	} else {
+		release()
+	}
 	return x, err
 }
 
-func (s *Service) Load(ctx context.Context, owner, id, cwd string, replay bool, emit harness.EventHandler) (harness.Session, error) {
+func (s *Service) Load(ctx context.Context, owner, id, cwd string, replay bool, emit harness.EventHandler, servers ...harness.MCPServer) (harness.Session, error) {
 	x, err := s.Store.Session(ctx, id)
 	if err != nil {
 		return x, err
@@ -52,20 +69,21 @@ func (s *Service) Load(ctx context.Context, owner, id, cwd string, replay bool, 
 	if !session.SameWorkspace(x.CWD, cwd) {
 		return x, fmt.Errorf("%w: session workspace cannot be changed", harness.ErrInvalidInput)
 	}
-	fresh, err := s.Coordinator.Attach(id, owner)
-	if err != nil {
-		return x, err
-	}
-	ctx, release, err := s.Coordinator.Begin(ctx, id, owner)
+	ctx, release, fresh, err := s.Coordinator.AttachAndBegin(ctx, id, owner)
 	if err != nil {
 		return x, err
 	}
 	defer func() {
-		release()
 		if err != nil && fresh {
-			_ = s.Coordinator.Detach(context.Background(), id, owner)
+			_ = s.abandonBinding(owner, id, release)
+		} else {
+			release()
 		}
 	}()
+	if err = s.bindResources(ctx, owner, x, servers); err != nil {
+		return x, err
+	}
+	s.clearDecisions(owner, id)
 	if replay {
 		var events []harness.RunEvent
 		events, err = s.Store.History(ctx, id)
@@ -172,13 +190,15 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 	}
 	permissions := func(pctx context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
 		p.ID, p.SessionID, p.RunID = NewID(), id, req.RunID
+		p.ConfigVersion = x.ConfigVersion
 		if !json.Valid(p.Arguments) {
 			return harness.RejectOnce, fmt.Errorf("invalid tool arguments")
 		}
 		intent, err := json.Marshal(struct {
-			Tool string
-			Args json.RawMessage
-		}{p.ToolName, p.Arguments})
+			Tool          string
+			Args          json.RawMessage
+			ConfigVersion int64
+		}{p.ToolName, p.Arguments, p.ConfigVersion})
 		if err != nil {
 			return harness.RejectOnce, err
 		}
@@ -187,9 +207,12 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 		if err = s.Store.Approval(pctx, p); err != nil {
 			return harness.RejectOnce, err
 		}
-		s.mu.Lock()
-		decision, cached := s.decisions[key]
-		s.mu.Unlock()
+		decision, cached := configuredPermission(x, p)
+		if !cached {
+			s.mu.Lock()
+			decision, cached = s.decisions[key]
+			s.mu.Unlock()
+		}
 		if !cached {
 			decision = harness.RejectOnce
 			if approve != nil {
@@ -268,15 +291,35 @@ func (s *Service) SetMode(ctx context.Context, owner, id, mode string) error {
 		return err
 	}
 	defer release()
-	return s.Store.SetMode(ctx, id, mode)
+	x, err := s.Store.Session(ctx, id)
+	if err != nil {
+		return err
+	}
+	x.Mode = mode
+	x.ConfigVersion++
+	if err = s.Store.SaveConfig(ctx, x); err != nil {
+		return err
+	}
+	s.clearDecisions(owner, id)
+	return nil
 }
 func (s *Service) Disconnect(ctx context.Context, owner string) error {
-	err := s.Coordinator.Disconnect(ctx, owner)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for key := range s.decisions {
-		if len(key) > len(owner) && key[:len(owner)+1] == owner+"/" {
-			delete(s.decisions, key)
+	s.clearDecisions(owner, "")
+	var cleanup func(context.Context, string) error
+	if s.Resources != nil {
+		cleanup = func(ctx context.Context, id string) error { return s.Resources.Release(ctx, owner, id) }
+	}
+	err := s.Coordinator.DisconnectWithCleanup(ctx, owner, cleanup)
+	if s.Resources != nil {
+		if ctx.Err() != nil && err != nil {
+			// Stop waiting for the caller, but preserve run cleanup before owner
+			// retirement closes active/pending/retired MCP generations.
+			go func() {
+				_ = s.Coordinator.DisconnectWithCleanup(context.Background(), owner, cleanup)
+				_ = s.releaseResourceOwner(owner)
+			}()
+		} else {
+			err = errors.Join(err, s.releaseResourceOwner(owner))
 		}
 	}
 	return err

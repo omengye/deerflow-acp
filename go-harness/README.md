@@ -30,8 +30,9 @@ Configure your editor's ACP command to launch this executable with `--data-dir`
 and `--model`. The transport is newline-delimited JSON-RPC over stdio. stdout is
 reserved for protocol messages; logs and startup errors go to stderr.
 
-Use a separate data directory from Python. Only one process may own it. The local
-daemon will provide shared multi-window access in a later implementation step.
+Use a separate data directory from Python. Only one process may own it. Build
+`./cmd/deerflow-acpd-go` for shared multi-window access through the existing Rust
+Bridge. See [daemon setup and compatibility](internal/localhost/README.md).
 
 ## Current execution path
 
@@ -39,27 +40,48 @@ daemon will provide shared multi-window access in a later implementation step.
 permission-protected tools → session/checkpoint stores → ACP updates`.
 
 The executable supports initialize, new, list, load, resume, close, prompt,
-cancel, and default/plan modes. Load replays history before its response; resume
+cancel, session config options, and default/plan modes. Load replays history before its response; resume
 restores without replay. A second active prompt is rejected before the first
 can be canceled. Cancellation retains session ownership until cleanup and final
 persistence finish.
 
-Native workspace tools provide read, list, search, write, and edit. Plan mode
-exposes the read-only subset. All these tools require client permission; an
+Native workspace tools provide read, list, search, write, and edit. Plan and
+read_only modes expose trusted local read tools without prompts. Other modes
+follow the configured ask/allow_always/reject_always approval policy. An
 `allow_always` decision applies only to identical tool arguments in that session
 and connection. `os.Root` constrains file operations including symlink traversal.
 Host shell is not enabled. Workspaces are local directories, not OS sandboxes.
 
-The current ACP build accepts text prompts. MCP, media persistence, durable
-background task scheduling, Skills, memory, compression, Docker, the shared
-daemon and full Bridge compatibility are being integrated. Their incomplete
+ACP client MCP servers are scoped to the attached session. Use repeatable
+`--mcp-allow-command` with an absolute executable to allow client stdio servers.
+Outbound MCP HTTP/SSE need `--mcp-allow-http` / `--mcp-allow-sse`. These flags do
+not create an HTTP server. See [MCP lifecycle and policy](internal/mcp/README.md).
+
+The SDK and both executables default to 100 model calls, 200 tool calls,
+200,000 aggregate tokens, 4,096 output tokens per request, and 30 minutes per run
+shared with child agents. The corresponding flags are `--max-model-calls`,
+`--max-tool-calls`, `--max-tokens`, `--max-output-tokens`, and `--run-timeout`;
+zero disables an individual limit. Token usage is estimated until reported by
+the provider, so these limits cannot guarantee exact billing. Provider-internal
+transport retries are not counted as separate logical calls.
+
+Use repeatable `--allow-model` to expose additional model IDs in session config;
+they use the same configured provider and credentials. Model, subagent and
+approval settings persist across restarts. `--disable-subagents` disables the
+delegation capability globally.
+
+The current ACP build accepts text prompts. Media persistence, durable
+background task scheduling, Skills, memory, compression, Docker, and full
+Bridge compatibility are being integrated. Their incomplete
 status is not represented as a capability promise. This build is not the V1
 completion or default-launcher switch.
 
 ## Embed
 
 The root package exposes `Open`, `Client.NewSession`, `Run`, `Cancel`,
-`LoadSession`, `CloseSession`, `ServeACP` and `Close`. Public event and permission
+`LoadSession`, `CloseSession`, `SetMode`, `ConfigOptions`, `SetConfigOption`,
+`ServeACP` and `Close`. New/LoadSession accept optional `harness.MCPServer`
+arguments. Public event and permission
 types live in `harness/` and do not expose Eino or ACP SDK types. An embedder can
 provide `Config.Engine` to supply its own execution backend. Call `Close` after
 all work; it cancels attached runs, waits for cleanup and releases the database

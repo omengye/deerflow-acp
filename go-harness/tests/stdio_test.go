@@ -34,11 +34,12 @@ type wireProcess struct {
 	done        chan error
 	next        int
 	updates     []json.RawMessage
+	permission  func(json.RawMessage) string
 }
 
-func launch(t *testing.T, binary, dataDir, endpoint string) *wireProcess {
+func launch(t *testing.T, binary, dataDir, endpoint string, extra ...string) *wireProcess {
 	t.Helper()
-	cmd := exec.Command(binary, "--data-dir", dataDir, "--model", "fixture-model", "--base-url", endpoint)
+	cmd := exec.Command(binary, append([]string{"--data-dir", dataDir, "--model", "fixture-model", "--base-url", endpoint}, extra...)...)
 	cmd.Env = append(os.Environ(), "DEERFLOW_MODEL_API_KEY=fixture-only-key", "DEERFLOW_MODEL_PROVIDER=openai")
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -108,7 +109,11 @@ func (p *wireProcess) request(t *testing.T, method string, params any) json.RawM
 				continue
 			}
 			if f.Method == "session/request_permission" {
-				p.send(t, map[string]any{"jsonrpc": "2.0", "id": f.ID, "result": map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": "allow_once"}}})
+				choice := "allow_once"
+				if p.permission != nil {
+					choice = p.permission(f.Params)
+				}
+				p.send(t, map[string]any{"jsonrpc": "2.0", "id": f.ID, "result": map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": choice}}})
 				continue
 			}
 			if string(f.ID) == fmt.Sprint(id) {

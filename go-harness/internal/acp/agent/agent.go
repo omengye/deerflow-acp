@@ -108,7 +108,8 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		}
 		a.initialized = true
 		a.capabilities = req.ClientCapabilities
-		return map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": false, "audio": false, "embeddedContext": false}, "mcpCapabilities": map[string]bool{"http": false, "sse": false}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}}}}, nil
+		httpMCP, sseMCP := a.service.MCPCapabilities()
+		return map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": false, "audio": false, "embeddedContext": false}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}}}}, nil
 	}
 	if !a.ready() {
 		return nil, rpcError(protocol.InvalidRequest, "initialize must complete first")
@@ -122,14 +123,18 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err := req.Validate(); err != nil {
 			return nil, rpcError(protocol.InvalidParams, err.Error())
 		}
-		if err := validateResources(req.AdditionalDirectories, len(req.McpServers)); err != nil {
+		if err := validateResources(req.AdditionalDirectories); err != nil {
 			return nil, err
 		}
-		x, err := a.service.NewSession(ctx, a.owner, req.Cwd)
+		servers, err := a.mcpServers(raw)
 		if err != nil {
 			return nil, err
 		}
-		return sessionResponse(x, true), nil
+		x, err := a.service.NewSession(ctx, a.owner, req.Cwd, servers...)
+		if err != nil {
+			return nil, err
+		}
+		return a.sessionResponse(x, true), nil
 	case "session/load", "session/resume":
 		var req acp.LoadSessionRequest
 		if err := decode(raw, &req); err != nil {
@@ -138,14 +143,18 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err := req.Validate(); err != nil {
 			return nil, rpcError(protocol.InvalidParams, err.Error())
 		}
-		if err := validateResources(req.AdditionalDirectories, len(req.McpServers)); err != nil {
+		if err := validateResources(req.AdditionalDirectories); err != nil {
 			return nil, err
 		}
-		x, err := a.service.Load(ctx, a.owner, string(req.SessionId), req.Cwd, method == "session/load", a.emit)
+		servers, err := a.mcpServers(raw)
 		if err != nil {
 			return nil, err
 		}
-		return sessionResponse(x, false), nil
+		x, err := a.service.Load(ctx, a.owner, string(req.SessionId), req.Cwd, method == "session/load", a.emit, servers...)
+		if err != nil {
+			return nil, err
+		}
+		return a.sessionResponse(x, false), nil
 	case "session/list":
 		var req acp.ListSessionsRequest
 		if err := decode(raw, &req); err != nil {
@@ -185,7 +194,28 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err := decode(raw, &req); err != nil {
 			return nil, err
 		}
-		return map[string]any{}, a.service.Coordinator.Detach(ctx, string(req.SessionId), a.owner)
+		return map[string]any{}, a.service.CloseSession(ctx, a.owner, string(req.SessionId))
+	case "session/set_config_option":
+		var req struct {
+			SessionID string `json:"sessionId"`
+			ConfigID  string `json:"configId"`
+			Value     string `json:"value"`
+			Type      string `json:"type"`
+		}
+		if err := decode(raw, &req); err != nil {
+			return nil, err
+		}
+		if req.SessionID == "" || req.ConfigID == "" || req.Value == "" || (req.Type != "" && req.Type != "select") {
+			return nil, rpcError(protocol.InvalidParams, "invalid select configuration request")
+		}
+		options, err := a.service.SetConfigOption(ctx, a.owner, req.SessionID, req.ConfigID, req.Value)
+		if err != nil {
+			return nil, err
+		}
+		if err = a.update(ctx, req.SessionID, map[string]any{"sessionUpdate": "config_option_update", "configOptions": options}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"configOptions": options}, nil
 	case "session/set_mode":
 		var req acp.SetSessionModeRequest
 		if err := decode(raw, &req); err != nil {
@@ -206,11 +236,39 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err := decode(raw, &req); err != nil {
 			return nil, err
 		}
-		result, err := a.service.Run(ctx, a.owner, req.SessionID, req.Prompt, a.emit, a.permission)
+		var usageMu sync.Mutex
+		var usage harness.Usage
+		hasUsage := false
+		emit := func(ctx context.Context, e harness.RunEvent) error {
+			if e.Kind == "usage" && e.Usage != nil {
+				usageMu.Lock()
+				hasUsage = true
+				usage.InputTokens += e.Usage.InputTokens
+				usage.OutputTokens += e.Usage.OutputTokens
+				usage.TotalTokens += e.Usage.TotalTokens
+				usage.Estimated = usage.Estimated || e.Usage.Estimated
+				usageMu.Unlock()
+			}
+			return a.emit(ctx, e)
+		}
+		result, err := a.service.Run(ctx, a.owner, req.SessionID, req.Prompt, emit, a.permission)
 		if err != nil {
 			return nil, err
 		}
-		return acp.PromptResponse{StopReason: acp.StopReason(result.StopReason)}, nil
+		response := acp.PromptResponse{StopReason: acp.StopReason(result.StopReason)}
+		metadata := make(map[string]any)
+		if result.Limit != "" {
+			metadata["limit"] = result.Limit
+		}
+		usageMu.Lock()
+		if hasUsage {
+			metadata["usage"] = usage
+		}
+		usageMu.Unlock()
+		if len(metadata) > 0 {
+			response.Meta = map[string]any{"deerflow": metadata}
+		}
+		return response, nil
 	case "session/cancel":
 		if !protocol.IsNotification(ctx) {
 			return nil, rpcError(protocol.InvalidRequest, "session/cancel is a notification")
@@ -225,19 +283,15 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 	}
 }
 
-func validateResources(additional []string, mcpCount int) error {
+func validateResources(additional []string) error {
 	if len(additional) > 0 {
 		return rpcError(protocol.InvalidParams, "additionalDirectories is not supported")
 	}
-	// Explicitly incomplete until the scoped MCP manager is installed. Capability
-	// completeness is not claimed by this development build.
-	if mcpCount > 0 {
-		return rpcError(protocol.InvalidParams, "client MCP is not yet configured in this development build")
-	}
 	return nil
 }
-func sessionResponse(x harness.Session, includeID bool) map[string]any {
+func (a *Agent) sessionResponse(x harness.Session, includeID bool) map[string]any {
 	r := map[string]any{"modes": map[string]any{"currentModeId": x.Mode, "availableModes": []any{map[string]any{"id": "default", "name": "Default", "description": "Execute tasks with approved tools."}, map[string]any{"id": "plan", "name": "Plan", "description": "Inspect and plan using read-only workspace tools."}}}}
+	r["configOptions"] = a.service.ConfigOptions(x)
 	if includeID {
 		r["sessionId"] = x.ID
 	}
@@ -278,6 +332,8 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 			kind = "agent_thought_chunk"
 		}
 		update = map[string]any{"sessionUpdate": kind, "content": harness.Content{Type: "text", Text: e.Text}}
+	case "budget_exhausted":
+		update = map[string]any{"sessionUpdate": "agent_message_chunk", "content": harness.Content{Type: "text", Text: e.Text}, "_meta": map[string]any{"deerflow": map[string]any{"event": "budget_exhausted"}}}
 	case "tool_start":
 		update = map[string]any{"sessionUpdate": "tool_call", "toolCallId": e.ToolCallID, "title": e.ToolName, "kind": "other", "status": e.Status, "rawInput": e.Arguments}
 	case "tool_update", "tool_end":
@@ -300,7 +356,7 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 
 func (a *Agent) permission(ctx context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
 	options := []map[string]string{{"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"}, {"optionId": "allow_always", "name": "Allow identical calls in this session", "kind": "allow_always"}, {"optionId": "reject_once", "name": "Reject once", "kind": "reject_once"}, {"optionId": "reject_always", "name": "Reject identical calls in this session", "kind": "reject_always"}}
-	request := map[string]any{"sessionId": p.SessionID, "toolCall": map[string]any{"toolCallId": p.ToolCallID, "title": p.ToolName, "status": "pending", "rawInput": p.Arguments}, "options": options}
+	request := map[string]any{"sessionId": p.SessionID, "toolCall": map[string]any{"toolCallId": p.ToolCallID, "title": p.ToolName, "status": "pending", "rawInput": p.Arguments}, "options": options, "_meta": map[string]any{"deerflow": map[string]any{"approvalId": p.ID, "configVersion": p.ConfigVersion}}}
 	var response struct {
 		Outcome struct {
 			Outcome  string `json:"outcome"`

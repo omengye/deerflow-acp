@@ -8,7 +8,7 @@
 - 代码位于独立 `go-harness/` 模块，未切换现有 Python 或桌面默认入口。
 - 工具链 `go1.26.8`；因 SQLite `modernc.org/sqlite v1.60.0` 要求 Go 1.26，模块最低版本相应提高。
 - Eino `v0.10.0-alpha.35`；openai `v0.1.13`、claude `v0.1.25`、ark `v0.1.71`；ACP 类型 `coder/acp-go-sdk v0.13.5`。
-- MCP 适配器将在管理器接入时固定 `officialmcp v0.1.1`，尚未混入当前已编译功能范围。
+- MCP 使用 `officialmcp v0.1.1` + 官方 MCP Go SDK `v1.6.1`，已接入执行入口并通过真实 stdio/HTTP/SSE fixture。
 
 ## 工作项
 
@@ -17,15 +17,16 @@
 | Go SDK / 版本组合 | 模块、公共类型、嵌入式 Client 和模型适配器已写入 | 全量组合、跨平台构建、配置清单 |
 | SQLite 基础和 Eino providers | checkpoint、session events、background task stores；上游 conformance、崩溃恢复、SQL 故障注入测试已通过 | 后续 Manager/工具恢复装配 |
 | 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close 已写入 | 黑盒互操作、官方 TCK、真实编辑器 |
-| 执行与工作区工具 | Eino DeepAgent/Runner、前台委派、原生文件工具、plan 只读模式；流清理和主/子工具权限测试通过 | token/时间预算、工具回执和更完整的工具集 |
+| 执行与工作区工具 | Eino DeepAgent/Runner、前台委派、原生文件工具、plan/read_only 模式、主/子共享预算；取消与清理测试通过 | 工具回执、后台委派和更完整的工具集 |
 | 权限 / 恢复 | 审批意图先落库、精确参数授权、断连拒绝；未完成运行标记待对账 | durable HITL 恢复和显式对账控制 |
 | 领域事件 / 历史 | 持久事件、文本/工具 updates、load 重放 | 有界异步发送、计划/usage/产物投影、分页历史 |
-| MCP | 待接入 | stdio 必需配置、HTTP/SSE 出站、scope 和凭据隔离 |
+| MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
+| 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 引擎图片转换准备中；ACP 暂不声明支持 | 校验、文件持久化、引用和重放 |
 | 后台子任务 / 长命令 | SQL provider 已写入，未完成调度接线 | Manager/TurnLoop、取消、租约、通知、重启恢复 |
 | Skills / memory / 压缩 | 待接入 | Eino middleware + 项目范围/生命周期/预算 |
 | Docker / Windows shell | 文件工具已跨平台，默认无 shell | Docker provider、PowerShell/WSL2、进程树清理 |
-| daemon / Bridge / draft v2 | 待实现 | DFACP/1、endpoint、STATUS/STOP、多窗口和 v2 fixture |
+| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、多窗口、现有 Rust Bridge 实际二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 诊断子集 |
 | 可选外部 ACP Agent | 待实现 | 白名单、反向权限、预算和取消链 |
 | 打包 / 默认切换 | 未开始 | Windows/Linux 实机、回退、切换演练 |
 
@@ -61,4 +62,18 @@ go test -race -p=2 -timeout=5m ./internal/... ./
 
 ## 下一阶段
 
-先接入 scoped MCP 管理器与 ACP 客户端 stdio MCP 配置、会话模型/审批配置，随后装配 TurnLoop/backgroundtask Manager。保留工具注册的权限、资源清理和总预算约束，继续补齐 Skills、Memory、压缩、媒体/产物以及本地 daemon/Bridge。后台任务 SQL provider 已通过测试，但不能据此宣称后台任务已能通过当前可执行文件使用。
+继续装配 TurnLoop/backgroundtask Manager、工具回执与显式对账、可选 PowerShell/WSL2/Docker 命令后端，随后补齐 Skills、Memory、压缩、媒体/产物。后台任务 SQL provider 已通过测试，但不能据此宣称后台任务已能通过当前可执行文件使用。
+
+## 第二阶段已落地
+
+- SDK 与两个 CLI 共用预算配置。默认一轮及其子 Agent 共 100 次逻辑模型调用、200 次工具调用、200,000 tokens、单次输出最多 4,096 tokens、30 分钟。显式零值可关闭对应预算。
+- Token 限额使用调用前预估与并发预留，收到 provider usage 后结算；这是估计约束，不能保证在进行中的模型调用绝不超过实际计费额度。隐藏在 provider SDK 内的重试不计为新的逻辑调用。无 provider usage 时明确标记 `Estimated`。
+- ACP 预算耗尽使用标准 stop reason 和文本 update，额外 `limit` 与汇总 usage 放在 `_meta.deerflow` 中。超时仍等待已启动的 provider/tool 清理，独立清理错误保留。
+- `session/set_config_option` 的设置确实进入下一轮引擎。配置/模式切换递增版本并撤销缓存授权；运行期间拒绝冲突变更。权限意图记录配置版本。
+- MCP 启动命令需显式允许列表；会话配置不持久化凭据。替换先连接和发现新工具，成功后原子发布，失败保持旧连接。read_only/plan 不暴露 MCP 工具。
+- 真实可执行文件测试覆盖 ACP 下发 stdio MCP 配置、Eino 模型发现工具、先审批后副作用、切换模型、read_only、关闭与重新加载，以及凭据没有进入 ACP、模型请求或数据库。
+- daemon 使用独立目录及认证 loopback IPC，无 HTTP 服务。已实测现有 Rust Bridge 的 status/manage/ACP proxy/stop；MANAGE 业务操作当前仍明确返回 unsupported，Python `--config` 尚未迁移。Windows endpoint 与锁文件使用受保护 DACL。
+
+以上新增模块分别通过常规测试与 race 检查；最终集成验证以实际执行记录为准。Linux 交叉编译不等于 Linux 运行验收，真实编辑器、真实付费模型和 ACP TCK 仍待进行。
+
+第二阶段集成检查中发现并修正：取消与独立故障组成 joined error 时不能整条丢弃；provider 在取消之后排空流时上报的故障仍须返回；MCP Close 必须等本地连接和直接子进程真正清理完成后才允许 SDK 释放数据库锁。对应回归已增加。一次全量测试因 HTTP 测试服务在 middleware 内等待不可取消 context 而超时；该代际替换取消用例已改为可回收的真实 stdio 进程，限定包 race 复测通过。出站 HTTP 取消仍不代表远端副作用已经停止。

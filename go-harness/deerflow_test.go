@@ -93,3 +93,51 @@ func TestCloseWaitsForRunCleanupAndRejectsNewWork(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSDKSessionConfigurationIsAppliedAndRecovered(t *testing.T) {
+	var seen harness.Session
+	engine := engineFunc(func(_ context.Context, req harness.RunRequest, _ harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
+		seen = req.Session
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	})
+	cfg := Config{DataDir: t.TempDir(), Model: "primary", Models: []harness.ConfigValue{{Value: "secondary"}}, Engine: engine}
+	c, err := Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	cwd := t.TempDir()
+	s, err := c.NewSession(context.Background(), cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]string{"model": "secondary", "approval": "read_only", "subagent": "off"} {
+		if _, err := c.SetConfigOption(context.Background(), s.ID, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := c.Run(context.Background(), s.ID, []harness.Content{{Type: "text", Text: "test"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if seen.Model != "secondary" || seen.ApprovalMode != harness.ApprovalReadOnly || seen.Subagents || seen.ConfigVersion != 4 {
+		t.Fatalf("engine session=%+v", seen)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	c, err = Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := c.LoadSession(context.Background(), s.ID, cwd, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ConfigVersion != seen.ConfigVersion || loaded.Model != seen.Model || loaded.ApprovalMode != seen.ApprovalMode || loaded.Subagents != seen.Subagents {
+		t.Fatalf("reopened=%+v", loaded)
+	}
+	options, err := c.ConfigOptions(context.Background(), s.ID)
+	if err != nil || len(options) != 3 {
+		t.Fatalf("options=%+v err=%v", options, err)
+	}
+}

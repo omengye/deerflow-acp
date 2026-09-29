@@ -9,6 +9,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
 // runIO separates checkpoint persistence from cancellable external work. Native
@@ -20,6 +21,7 @@ type runIO struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	err    error
 }
 
 func newRunIO(ctx context.Context) *runIO {
@@ -42,11 +44,21 @@ func (r *runIO) begin(ctx context.Context) (context.Context, func(), error) {
 
 func (r *runIO) stop()         { r.mu.Lock(); r.closed = true; r.cancel(); r.mu.Unlock() }
 func (r *runIO) closeAndWait() { r.stop(); r.wg.Wait() }
+func (r *runIO) recordError(err error) {
+	err = withoutNativeTermination(err)
+	if err == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.err = errors.Join(r.err, err)
+}
+func (r *runIO) failure() error { r.mu.Lock(); defer r.mu.Unlock(); return r.err }
 
 // relayStream owns upstream reads through terminal EOF. A provider may send its
 // error before deferred HTTP/process cleanup runs, so merely reading one error
 // does not establish teardown. Providers must honor their cancelled context.
-func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk func(T) error) *schema.StreamReader[T] {
+func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk func(T) error, onError func(error), observers ...func(T) error) *schema.StreamReader[T] {
 	reader, writer := schema.Pipe[T](1)
 	go func() {
 		defer finish()
@@ -57,6 +69,22 @@ func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk f
 			chunk, err := source.Recv()
 			if errors.Is(err, io.EOF) {
 				return
+			}
+			if err != nil && onError != nil {
+				onError(err)
+			}
+			if err == nil {
+				for _, observe := range observers {
+					if observeErr := observe(chunk); observeErr != nil {
+						if onError != nil {
+							onError(observeErr)
+						}
+						if !draining {
+							writer.Send(chunk, observeErr)
+							draining = true
+						}
+					}
+				}
 			}
 			if draining {
 				continue
@@ -83,16 +111,20 @@ func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk f
 
 type modelLifecycle struct {
 	adk.BaseChatModelAgentMiddleware
-	io *runIO
+	io     *runIO
+	budget *runBudget
+	sink   *eventSink
 }
 
 func (m *modelLifecycle) WrapModel(_ context.Context, inner model.BaseModel[*schema.Message], _ *adk.ModelContext) (model.BaseModel[*schema.Message], error) {
-	return &trackedModel{inner: inner, io: m.io}, nil
+	return &trackedModel{inner: inner, io: m.io, budget: m.budget, sink: m.sink}, nil
 }
 
 type trackedModel struct {
-	inner model.BaseModel[*schema.Message]
-	io    *runIO
+	inner  model.BaseModel[*schema.Message]
+	io     *runIO
+	budget *runBudget
+	sink   *eventSink
 }
 
 func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
@@ -101,17 +133,37 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 		return nil, err
 	}
 	defer finish()
-	return m.inner.Generate(ctx, input, opts...)
+	reservation, opts, err := m.budget.reserve(input, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer m.settle(ctx, reservation)
+	msg, err := m.inner.Generate(ctx, input, opts...)
+	if observeErr := reservation.observe(msg); observeErr != nil {
+		return msg, errors.Join(err, observeErr)
+	}
+	return msg, err
 }
 func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	ctx, finish, err := m.io.begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	source, err := m.inner.Stream(ctx, input, opts...)
+	reservation, opts, err := m.budget.reserve(input, opts)
 	if err != nil {
 		finish()
 		return nil, err
 	}
-	return relayStream(source, finish, nil), nil
+	source, err := m.inner.Stream(ctx, input, opts...)
+	if err != nil {
+		m.settle(ctx, reservation)
+		finish()
+		return nil, err
+	}
+	return relayStream(source, func() { m.settle(ctx, reservation); finish() }, nil, m.io.recordError, reservation.observe), nil
+}
+
+func (m *trackedModel) settle(ctx context.Context, r *modelReservation) {
+	u := r.settle()
+	_ = m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "usage", Usage: &u})
 }

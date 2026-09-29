@@ -128,3 +128,73 @@ func TestDisconnectTimeoutStillReleasesIdleSessions(t *testing.T) {
 		t.Fatalf("busy session leaked: %v", err)
 	}
 }
+
+func TestLifecycleLeasePreventsPromptUntilBindingCompletes(t *testing.T) {
+	c := NewCoordinator()
+	_, release, fresh, err := c.AttachAndBegin(context.Background(), "s", "owner")
+	if err != nil || !fresh {
+		t.Fatalf("fresh=%t err=%v", fresh, err)
+	}
+	if _, _, err = c.Begin(context.Background(), "s", "owner"); !errors.Is(err, harness.ErrBusy) {
+		t.Fatalf("prompt entered binding: %v", err)
+	}
+	release()
+	_, release, fresh, err = c.AttachAndBegin(context.Background(), "s", "owner")
+	if err != nil || fresh {
+		t.Fatalf("reattach fresh=%t err=%v", fresh, err)
+	}
+	release()
+}
+
+func TestResourceCleanupRetainsOwnershipAfterCloseTimeout(t *testing.T) {
+	c := NewCoordinator()
+	_, _ = c.Attach("s", "old")
+	_, finishRun, err := c.Begin(context.Background(), "s", "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan context.Context, 1)
+	cleanupGate := make(chan struct{})
+	defer close(cleanupGate)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = c.DetachWithCleanup(ctx, "s", "old", func(cleanup context.Context) error { started <- cleanup; <-cleanupGate; return nil })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("close=%v", err)
+	}
+	select {
+	case <-started:
+		t.Fatal("resource cleanup preceded run cleanup")
+	default:
+	}
+	finishRun()
+	select {
+	case cleanup := <-started:
+		if cleanup.Err() != nil {
+			t.Fatal("resource cleanup inherited expired caller")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resource cleanup never started")
+	}
+	if _, err = c.Attach("s", "new"); !errors.Is(err, harness.ErrAttachedElsewhere) {
+		t.Fatalf("ownership released before resources: %v", err)
+	}
+}
+
+func TestResourceCloseFailureCanBeRetriedWithoutLosingBinding(t *testing.T) {
+	c := NewCoordinator()
+	_, _ = c.Attach("s", "old")
+	want := errors.New("resource still running")
+	if err := c.DetachWithCleanup(context.Background(), "s", "old", func(context.Context) error { return want }); !errors.Is(err, want) {
+		t.Fatalf("close=%v", err)
+	}
+	if _, err := c.Attach("s", "new"); !errors.Is(err, harness.ErrAttachedElsewhere) {
+		t.Fatalf("failed cleanup lost ownership: %v", err)
+	}
+	if err := c.DetachWithCleanup(context.Background(), "s", "old", func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Attach("s", "new"); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -17,6 +17,7 @@ type Store struct{ db *sql.DB }
 func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 	_, err := db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS harness_sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, title TEXT NOT NULL, mode TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS harness_session_configs (session_id TEXT PRIMARY KEY REFERENCES harness_sessions(id),approval_mode TEXT NOT NULL DEFAULT 'ask',subagents INTEGER NOT NULL DEFAULT 1,version INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS harness_runs (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES harness_sessions(id), input_id TEXT UNIQUE NOT NULL, status TEXT NOT NULL, stop_reason TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS harness_inputs (id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL REFERENCES harness_runs(id), content BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS harness_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES harness_sessions(id), run_id TEXT NOT NULL, event BLOB NOT NULL);
@@ -44,7 +45,7 @@ type scanner interface{ Scan(...any) error }
 func scanSession(row scanner) (harness.Session, error) {
 	var x harness.Session
 	var created, updated string
-	err := row.Scan(&x.ID, &x.CWD, &x.Title, &x.Mode, &x.Model, &created, &updated)
+	err := row.Scan(&x.ID, &x.CWD, &x.Title, &x.Mode, &x.Model, &created, &updated, &x.ApprovalMode, &x.Subagents, &x.ConfigVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return x, harness.ErrNotFound
 	}
@@ -59,10 +60,10 @@ func scanSession(row scanner) (harness.Session, error) {
 	return x, err
 }
 func (s *Store) Session(ctx context.Context, id string) (harness.Session, error) {
-	return scanSession(s.db.QueryRowContext(ctx, `SELECT id,cwd,title,mode,model,created_at,updated_at FROM harness_sessions WHERE id=?`, id))
+	return scanSession(s.db.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, id))
 }
 func (s *Store) List(ctx context.Context, cwd, cursor string, limit int) ([]harness.Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,cwd,title,mode,model,created_at,updated_at FROM harness_sessions WHERE (?='' OR cwd=?) AND id>? ORDER BY id LIMIT ?`, cwd, cwd, cursor, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE (?='' OR s.cwd=?) AND s.id>? ORDER BY s.id LIMIT ?`, cwd, cwd, cursor, limit)
 	if err != nil {
 		return nil, err
 	}
