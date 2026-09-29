@@ -90,6 +90,55 @@ func TestApplyPythonConfigRejectsUnsupportedAuthority(t *testing.T) {
 	}
 }
 
+func TestApplyPythonConfigDoesNotCarryCredentialsAcrossBackendOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := `local_acp:
+  model_name: selected
+models:
+  - name: selected
+    use: langchain_openai:ChatOpenAI
+    model: python-model
+    api_key: python-secret
+    base_url: https://python.example/v1
+    supports_vision: true
+    context_window: 100000
+`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		provider string
+		baseURL  string
+	}{
+		{"provider", "claude", "https://python.example/v1"},
+		{"endpoint", "openai", "https://other.example/v1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := deerflow.Config{Provider: tc.provider, Model: "host-model", BaseURL: tc.baseURL, APIKey: "host-secret"}
+			connections := 2
+			_, err := ApplyPythonConfig(path, &cfg, &connections, map[string]bool{"provider": true, "model": true, "base-url": true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.APIKey != "host-secret" || len(cfg.Models) != 0 || len(cfg.Media.VisionModels) != 0 || len(cfg.ContextWindows) != 0 {
+				t.Fatalf("Python backend metadata crossed %s override: %+v", tc.name, cfg)
+			}
+		})
+	}
+	cfg := deerflow.Config{Provider: "openai", Model: "host-model", BaseURL: "https://python.example/v1"}
+	connections := 2
+	_, err := ApplyPythonConfig(path, &cfg, &connections, map[string]bool{"provider": true, "model": true, "base-url": true})
+	if err != nil || cfg.APIKey != "python-secret" || len(cfg.Models) != 1 {
+		t.Fatalf("same backend lost compatible Python options: %+v %v", cfg, err)
+	}
+	cfg = deerflow.Config{Provider: "openai", Model: "host-model", BaseURL: "https://python.example/v1", APIKey: "host-secret"}
+	_, err = ApplyPythonConfig(path, &cfg, &connections, map[string]bool{"provider": true, "model": true, "base-url": true})
+	if err != nil || cfg.APIKey != "host-secret" || len(cfg.Models) != 0 || len(cfg.Media.VisionModels) != 0 || len(cfg.ContextWindows) != 0 {
+		t.Fatalf("existing Go credential was replaced: %+v %v", cfg, err)
+	}
+}
+
 func TestApplyPythonConfigRejectsInvalidRetention(t *testing.T) {
 	for _, field := range []string{
 		"inactive_session_retention_days: 0",

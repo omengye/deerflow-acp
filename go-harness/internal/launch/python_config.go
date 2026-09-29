@@ -200,7 +200,11 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	if !explicit["base-url"] && baseURL != "" {
 		cfg.BaseURL = baseURL
 	}
-	if apiKey != "" {
+	// A CLI provider or endpoint override may route requests to a different
+	// service. Never carry the selected Python model's credential or advertised
+	// model capabilities across that boundary.
+	sameBackend := cfg.Provider == provider && cfg.BaseURL == baseURL
+	if sameBackend && apiKey != "" && cfg.APIKey == "" {
 		cfg.APIKey = apiKey
 	}
 	if !explicit["data-dir"] && cfg.DataDir == "" {
@@ -228,12 +232,12 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 		cfg.Retention.CheckInterval = time.Duration(*p * float64(time.Second))
 	}
 	for _, option := range source.Models {
-		if option.Model == "" || option.Use != model.Use {
+		if !sameBackend || option.Model == "" || option.Use != model.Use {
 			continue
 		}
 		key, keyErr := pythonScalar(option.APIKey)
 		url, urlErr := pythonScalar(option.BaseURL)
-		if keyErr != nil || urlErr != nil || key != apiKey || url != baseURL {
+		if keyErr != nil || urlErr != nil || key != cfg.APIKey || url != baseURL {
 			continue
 		}
 		if option.ContextWindow < 0 || option.ContextWindow > 1<<30 {

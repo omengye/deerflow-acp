@@ -15,6 +15,8 @@ Rust Bridge 和桌面端可以继续传入现有 `config.yaml`。Go daemon 读�
 
 显式 Go 命令行标志优先于对应 YAML 字段，包括 `--session-cleanup-enabled`、`--inactive-session-retention-days`、`--closed-session-retention-days` 和 `--session-cleanup-interval`。已附着或运行的会话、关联后台任务及未对账工具回执不会自动删除；`session/load` 成功后重置关闭状态和活动时间。
 
+若显式 `--provider` 或 `--base-url` 指向不同于 Python 所选模型的后端，Go 不会带入该模型的 `api_key`、候选模型、视觉声明和上下文窗口。调用方已经提供的 Go 凭据也不会被 YAML 覆盖；只有候选模型的凭据与最终 Go 凭据一致时才公开该模型的能力。相同提供商、端点和凭据的模型 ID 覆盖仍可复用兼容候选模型。
+
 选中模型未配置凭据时，仍回退到现有 `DEERFLOW_MODEL_API_KEY` 或提供商环境变量。未指定 `--data-dir` 或 `DEERFLOW_GO_DATA_DIR` 时，Go 状态写在配置文件所在目录的 `go-harness-state`，不会复用 Python SQLite 数据库。
 
 启动时明确拒绝尚无对应策略的 `local_acp.permission_mode`（除 `dangerous`）、工具 allow/deny 列表和自动 goal continuation。`enable_bash` 要求显式 Go sandbox 标志；允许客户端 MCP 要求显式 Go MCP allow 标志。其他 Python API、调度器和管理界面配置目前不进入 Go harness。跨提供商或不同凭据的模型不出现在 Go ACP 模型切换列表中。

@@ -354,3 +354,8 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - Linux 真实 v1 Bridge 进程测试发现 `initialize` 响应积在 Rust stdout，直到代理退出才被客户端读到。Bridge 现在逐块转发 daemon 输出并立即 flush。修复后 Windows/Linux 的 `TestExistingRustBridge` 均通过三轮，避免客户端在等待首个响应时卡住。
 - Linux v2 进程测试发现 Eino 可先发出 `tool_start` 再发出工具前的模型文本，按 `tool_start` 重置消息 ID 会把工具前后文本合并。现改在 `tool_end`/`tool_reconciled` 终态重置；ACP 单测模拟该顺序，历史回放与实时 ID 由现有 v2 进程测试覆盖。Linux v2 单独十轮和 v1/v2 组合三轮通过；Windows v1/v2 组合三轮、ACP agent 全包测试及 Rust 11 项单测通过。
 - 五轮 Linux v1/v2 组合测试曾有一轮 v2 权限 prompt 返回内部错误，后续十轮 v2 与三轮组合未复现。失败时的测试输出现包含协议更新，便于后续定位；这项偶发性仍需在远端 CI 和真实编辑器中观察。`cargo fmt --check`、`git diff --check` 通过。默认入口、Docker、外部 ACP 断线审批与远端预算等完整 V1 缺口仍未关闭。
+
+## 第三十三阶段 Python 配置的凭据边界
+
+- `--config` 与显式 Go `--provider`/`--base-url` 组合时，仅在最终后端与 Python 所选模型的提供商、端点相同的情况下带入其 API key。调用方已有的 Go API key 保持优先；候选模型、视觉声明及上下文窗口还要求凭据与最终 Go key 一致，避免把 Python 凭据或能力映射送往另一后端。显式模型 ID 改变但提供商、端点和凭据相同，仍可使用兼容候选模型。
+- 单元测试覆盖跨提供商、跨端点、已有 Go 凭据及同后端模型覆盖；Windows 与 WSL Linux 的 `go test -count=1 -timeout=5m ./internal/launch`、`gofmt` 检查通过。完整配置清单及真实编辑器启动演练仍待完成。
