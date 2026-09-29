@@ -25,12 +25,15 @@ type Agent struct {
 	initialized  bool
 	capabilities acp.ClientCapabilities
 	subagents    map[subagentKey]bool
+	contentIDs   map[contentKey]contentState
 }
 
 type subagentKey struct{ sessionID, runID, callID string }
+type contentKey struct{ sessionID, role string }
+type contentState struct{ runID, messageID string }
 
 func New(service *hr.Service, in io.ReadCloser, out io.WriteCloser) *Agent {
-	a := &Agent{service: service, owner: hr.NewID(), subagents: make(map[subagentKey]bool)}
+	a := &Agent{service: service, owner: hr.NewID(), subagents: make(map[subagentKey]bool), contentIDs: make(map[contentKey]contentState)}
 	a.peer = protocol.NewPeer(in, out, a.Handle, protocol.Options{Admit: a.admit})
 	return a
 }
@@ -406,7 +409,7 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 		if e.Kind == "reasoning_delta" {
 			role = "thought"
 		}
-		update = map[string]any{"sessionUpdate": kind, "messageId": contentMessageID(e, role), "content": harness.Content{Type: "text", Text: e.Text}}
+		update = map[string]any{"sessionUpdate": kind, "messageId": a.streamMessageID(e, role), "content": harness.Content{Type: "text", Text: e.Text}}
 	case "context_usage":
 		if e.ContextUsage == nil || e.ContextUsage.Size <= 0 || e.ContextUsage.Used < 0 {
 			return nil
@@ -430,8 +433,9 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 		}
 		update = map[string]any{"sessionUpdate": "plan", "entries": entries}
 	case "budget_exhausted":
-		update = map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": contentMessageID(e, "assistant"), "content": harness.Content{Type: "text", Text: e.Text}, "_meta": map[string]any{"deerflow": map[string]any{"event": "budget_exhausted"}}}
+		update = map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": a.streamMessageID(e, "assistant"), "content": harness.Content{Type: "text", Text: e.Text}, "_meta": map[string]any{"deerflow": map[string]any{"event": "budget_exhausted"}}}
 	case "tool_start":
+		a.resetContentStream(e)
 		update = map[string]any{"sessionUpdate": "tool_call", "toolCallId": e.ToolCallID, "title": e.ToolName, "kind": "other", "status": e.Status, "rawInput": e.Arguments}
 	case "tool_execute", "tool_update", "tool_end", "tool_reconciled":
 		update = map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": e.ToolCallID, "status": e.Status}
@@ -473,7 +477,7 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 			if err != nil {
 				return err
 			}
-			if err := a.updateAsync(ctx, e.SessionID, map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": contentMessageID(e, "assistant"), "content": wire}); err != nil {
+			if err := a.updateAsync(ctx, e.SessionID, map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": a.streamMessageID(e, "assistant"), "content": wire}); err != nil {
 				return err
 			}
 		}
@@ -482,13 +486,35 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 }
 
 // ACP v1 permits an omitted messageId, but the v2 Bridge requires one to
-// preserve streamed and replayed content. A run ID remains stable across both
-// paths; the sequence is a fallback for synthetic events without a run ID.
+// preserve streamed and replayed content.
 func contentMessageID(e harness.RunEvent, role string) string {
 	if e.RunID != "" {
 		return e.RunID + "/" + role
 	}
 	return fmt.Sprintf("%s/%d/%s", e.SessionID, e.Sequence, role)
+}
+
+// A tool call separates assistant messages within a run. The first persisted
+// event sequence after that boundary identifies the new message, so live
+// streaming and a full session/load replay derive the same IDs.
+func (a *Agent) streamMessageID(e harness.RunEvent, role string) string {
+	key := contentKey{e.SessionID, role}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	current := a.contentIDs[key]
+	if current.runID != e.RunID || current.messageID == "" {
+		current = contentState{runID: e.RunID, messageID: fmt.Sprintf("%s/%d", contentMessageID(e, role), e.Sequence)}
+		a.contentIDs[key] = current
+	}
+	return current.messageID
+}
+
+func (a *Agent) resetContentStream(e harness.RunEvent) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, role := range []string{"assistant", "thought"} {
+		delete(a.contentIDs, contentKey{e.SessionID, role})
+	}
 }
 
 func (a *Agent) emitSubagent(ctx context.Context, e harness.RunEvent) error {
@@ -550,6 +576,11 @@ func (a *Agent) clearSubagents(sessionID string) {
 	for key := range a.subagents {
 		if key.sessionID == sessionID {
 			delete(a.subagents, key)
+		}
+	}
+	for key := range a.contentIDs {
+		if key.sessionID == sessionID {
+			delete(a.contentIDs, key)
 		}
 	}
 }

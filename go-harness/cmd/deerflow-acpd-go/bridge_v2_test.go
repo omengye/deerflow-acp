@@ -221,6 +221,7 @@ func TestExistingRustBridgeV2Lifecycle(t *testing.T) {
 			return
 		}
 		if bytes.Contains(body, []byte("write-permission")) && !bytes.Contains(body, []byte(`"role":"tool"`)) {
+			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Preparing.\"},\"finish_reason\":null}]}\n\n")
 			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"write-v2\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"v2-result.txt\\\",\\\"content\\\":\\\"approved\\\"}\"}}]},\"finish_reason\":null}]}\n\n")
 			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n")
 			fmt.Fprint(w, "data: [DONE]\n\n")
@@ -286,6 +287,33 @@ func TestExistingRustBridgeV2Lifecycle(t *testing.T) {
 		t.Fatalf("permission prompt idle: %+v", idle)
 	}
 	client.assertUpdateSession(t, permissionStart, first)
+	var beforeToolID, afterToolID string
+	for _, raw := range client.seen[permissionStart:] {
+		var event struct {
+			Update struct {
+				MessageID string          `json:"messageId"`
+				Content   json.RawMessage `json:"content"`
+			} `json:"update"`
+		}
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		var content struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(event.Update.Content, &content) != nil {
+			continue
+		}
+		switch content.Text {
+		case "Preparing.":
+			beforeToolID = event.Update.MessageID
+		case "Done.":
+			afterToolID = event.Update.MessageID
+		}
+	}
+	if beforeToolID == "" || afterToolID == "" || beforeToolID == afterToolID {
+		t.Fatalf("tool-separated assistant messages lack distinct IDs: before=%q after=%q", beforeToolID, afterToolID)
+	}
 	if client.permissions != 1 {
 		t.Fatalf("v2 permission requests: %d", client.permissions)
 	}
@@ -326,6 +354,29 @@ func TestExistingRustBridgeV2Lifecycle(t *testing.T) {
 			rendered = append(rendered, string(raw))
 		}
 		t.Fatalf("resume from start did not replay completed prompt: %s; Bridge stderr: %s", strings.Join(rendered, "\n"), resumed.stderr.String())
+	}
+	var replayedBefore, replayedAfter bool
+	for _, raw := range resumed.seen {
+		var event struct {
+			Update struct {
+				MessageID string          `json:"messageId"`
+				Content   json.RawMessage `json:"content"`
+			} `json:"update"`
+		}
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		var content struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(event.Update.Content, &content) != nil {
+			continue
+		}
+		replayedBefore = replayedBefore || (content.Text == "Preparing." && event.Update.MessageID == beforeToolID)
+		replayedAfter = replayedAfter || (content.Text == "Done." && event.Update.MessageID == afterToolID)
+	}
+	if !replayedBefore || !replayedAfter {
+		t.Fatalf("tool-separated message IDs changed on replay: before=%v after=%v", replayedBefore, replayedAfter)
 	}
 	resumed.request(t, "session/close", map[string]any{"sessionId": first})
 	beforeResume := len(resumed.seen)

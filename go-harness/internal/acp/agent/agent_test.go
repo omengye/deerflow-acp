@@ -331,6 +331,9 @@ func TestReversePermissionDuringActivePrompt(t *testing.T) {
 	decision := make(chan harness.PermissionDecision, 1)
 	f := newFixture(t, engineFunc(func(ctx context.Context, req harness.RunRequest, emit harness.EventHandler, permission harness.PermissionHandler) (harness.RunResult, error) {
 		args := json.RawMessage(`{"path":"result.txt","text":"ok"}`)
+		if err := emit(ctx, harness.RunEvent{Kind: "text_delta", Text: "Preparing."}); err != nil {
+			return harness.RunResult{}, err
+		}
 		if err := emit(ctx, harness.RunEvent{Kind: "tool_start", ToolCallID: "write-1", ToolName: "write_file", Status: "pending", Arguments: args}); err != nil {
 			return harness.RunResult{}, err
 		}
@@ -348,12 +351,16 @@ func TestReversePermissionDuringActivePrompt(t *testing.T) {
 		if err := emit(ctx, harness.RunEvent{Kind: "tool_end", ToolCallID: "write-1", ToolName: "write_file", Status: "completed", Text: "wrote result"}); err != nil {
 			return harness.RunResult{}, err
 		}
+		if err := emit(ctx, harness.RunEvent{Kind: "text_delta", Text: "Done."}); err != nil {
+			return harness.RunResult{}, err
+		}
 		return harness.RunResult{StopReason: "end_turn"}, nil
 	}))
 	c := connect(t, f.service)
 	c.initialize(t)
 	sessionID := c.newSession(t, f.cwd)
 	id := c.request(t, "session/prompt", promptParams(sessionID, "write result"))
+	beforeTool := update(t, c.read(t), sessionID, "agent_message_chunk")
 	started := update(t, c.read(t), sessionID, "tool_call")
 	if started.Update.ToolCallID != "write-1" || started.Update.Status != "pending" {
 		t.Fatalf("tool start=%+v", started)
@@ -379,6 +386,10 @@ func TestReversePermissionDuringActivePrompt(t *testing.T) {
 	completed := update(t, c.read(t), sessionID, "tool_call_update")
 	if completed.Update.Status != "completed" {
 		t.Fatalf("tool result=%+v", completed)
+	}
+	afterTool := update(t, c.read(t), sessionID, "agent_message_chunk")
+	if chunkText(t, beforeTool) != "Preparing." || chunkText(t, afterTool) != "Done." || beforeTool.Update.MessageID == "" || afterTool.Update.MessageID == "" || beforeTool.Update.MessageID == afterTool.Update.MessageID {
+		t.Fatalf("tool boundary did not separate assistant messages: before=%+v after=%+v", beforeTool, afterTool)
 	}
 	stopReason(t, c.success(t, id), "end_turn")
 	if got := <-decision; got != harness.AllowOnce {
