@@ -533,3 +533,40 @@ func TestInlineToolImagesCommitWithReceiptAndRollBackOnEventFailure(t *testing.T
 		t.Fatal("inline bytes persisted in tool event")
 	}
 }
+
+func TestStreamedToolImagesAccumulateAcrossChunks(t *testing.T) {
+	f := newAssetFixture(t)
+	ctx := context.Background()
+	run, call := f.startTool(t, "mcp_image")
+	first, err := f.assets.StageToolImages(ctx, f.session, run, call, []harness.Content{imageInput(64)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.assets.StageToolImages(ctx, f.session, run, call, []harness.Content{imageInput(32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first[0].Asset.ID == second[0].Asset.ID {
+		t.Fatal("streamed images reused one asset")
+	}
+	for _, chunk := range [][]harness.Content{{{Type: "text", Text: "caption"}, {Type: "text", Text: "Image staged"}}, {{Type: "text", Text: "Image staged"}}} {
+		if _, err := f.runtime.Append(ctx, harness.RunEvent{SessionID: f.session.ID, RunID: run, ToolCallID: call, ToolName: "mcp_image", Kind: "tool_update", Status: "in_progress", Content: chunk}, f.assets); err != nil {
+			t.Fatal(err)
+		}
+	}
+	end, err := f.runtime.Append(ctx, harness.RunEvent{SessionID: f.session.ID, RunID: run, ToolCallID: call, ToolName: "mcp_image", Kind: "tool_end", Status: "completed", Content: []harness.Content{first[0], second[0]}}, f.assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if end.Receipt == nil || end.Receipt.State != harness.ReceiptCompleted || len(end.Receipt.Result) != 5 || end.Receipt.Result[0].Text != "caption" || end.Receipt.Result[3].Asset == nil || end.Receipt.Result[4].Asset == nil {
+		t.Fatalf("stream receipt lost text or assets: %+v", end.Receipt)
+	}
+	if f.scalar(t, `SELECT count(*) FROM harness_assets`) != 2 {
+		t.Fatal("streamed images not committed")
+	}
+	for _, item := range []harness.Content{first[0], second[0]} {
+		if _, err := f.assets.Resolve(ctx, f.session.ID, *item.Asset); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

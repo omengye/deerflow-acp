@@ -382,7 +382,7 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 		}
 		handedOff = true
 		return relayToolStream(ctx, m, tc, stream, finish, enhancedContent, func(result *schema.ToolResult) (*schema.ToolResult, error) {
-			return validateToolMedia(result, m.sink.request.Session.ID)
+			return normalizeToolImages(ctx, result, m.sink.request, tc.CallID, m.images)
 		}), nil
 	}, nil
 }
@@ -394,12 +394,13 @@ func relayToolStream[T any](ctx context.Context, m *toolMiddleware, tc *adk.Tool
 	reader, writer := schema.Pipe[T](1)
 	go func() {
 		var terminal error
+		var terminalImages []harness.Content
 		defer func() {
 			if source != nil {
 				source.Close()
 			}
 			terminal = errors.Join(terminal, ctx.Err())
-			if finishErr := m.finish(ctx, tc, nil, terminal); finishErr != nil {
+			if finishErr := m.finish(ctx, tc, terminalImages, terminal); finishErr != nil {
 				terminal = errors.Join(terminal, finishErr)
 			}
 			m.io.recordError(terminal)
@@ -443,11 +444,27 @@ func relayToolStream[T any](ctx context.Context, m *toolMiddleware, tc *adk.Tool
 				draining = true
 				continue
 			}
-			if err = m.sink.emit(ctx, harness.RunEvent{Kind: "tool_update", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress", Content: content(chunk)}); err != nil {
+			projected := content(chunk)
+			liveContent := make([]harness.Content, 0, len(projected))
+			for _, item := range projected {
+				if item.Type == "image" && item.Asset != nil {
+					// The snapshot is not published until tool_end. Persisting its
+					// reference in an update would break history after a crash.
+					liveContent = append(liveContent, harness.Content{Type: "text", Text: "Image staged; available when this tool completes."})
+				} else {
+					liveContent = append(liveContent, item)
+				}
+			}
+			if err = m.sink.emit(ctx, harness.RunEvent{Kind: "tool_update", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress", Content: liveContent}); err != nil {
 				terminal = errors.Join(terminal, err)
 				writer.Send(chunk, err)
 				draining = true
 				continue
+			}
+			for _, item := range projected {
+				if item.Type == "image" && item.Asset != nil {
+					terminalImages = append(terminalImages, item)
+				}
 			}
 			if writer.Send(chunk, nil) {
 				terminal = errors.Join(terminal, context.Canceled)

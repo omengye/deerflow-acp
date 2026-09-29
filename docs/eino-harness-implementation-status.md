@@ -22,7 +22,7 @@
 | 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、原生子 Agent 生命周期、主 Agent 计划与真实上下文用量投影、分页历史与 load 重放、有界异步 ACP 更新队列 | 真实编辑器流压验证 |
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
-| 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image、产物登记及 MCP 工具图片导入已验证 | 流式工具与模型生成媒体导入、可选对象存储发布 |
+| 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image、产物登记及 MCP 增强工具的普通/流式图片导入已验证 | 模型生成媒体导入、可选对象存储发布 |
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
@@ -320,3 +320,10 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 外层工具调用和一次估算模型调用计入父预算；流式文本增加估算 token，用完即中止。标准 ACP 没有可靠的外部 Agent 内部模型调用/计费总量，因此这还不是完整的远端预算约束。外部可执行文件仍须由宿主信任，独立 cwd 和精简环境不是 OS 沙箱。父会话删除后回收私有 session 映射与 workspace。
 - 真实子进程协议测试覆盖 new/load、流式文字和工具更新、默认拒绝反向请求、显式选择、超时及回收；Eino 测试覆盖父模型调用额度和进度，durable runtime 测试覆盖连接内实时反向审批路由。配置说明见 [外部 ACP 委派](eino-external-acp.md)。完整 V1 仍需断线后的反向权限恢复、远端预算/副作用对账、媒体和真实编辑器验收。
 - 本批 Windows 整模块普通测试、ACP client/protocol/Eino/runtime/SDK 聚焦 race，以及 Linux amd64 无 CGO 全模块构建通过。资源链接校验限制本地文件须位于外部独立 workspace；HTTP(S) 链接只作为引用。启动时依据持久会话清单回收删除事务提交后残留的私有外部目录，保留仍有效会话的目录。
+
+## 第二十八阶段流式增强工具图片
+
+- 每个增强工具流分片在交给 Eino 前，复用现有图片导入器把内联 Base64 转为会话资产引用。未提交的图片不进入持久 `tool_update`，进度只给出暂存提示；一个工具调用的多批图片累计限制为 8 张、40 MiB，全部图片在同一终态 `tool_end` 事务中发布，失败时回收暂存快照。
+- 流式工具的终态事件带完整图片引用供存储校验；回执保留此前 `tool_update` 的文字与图片证据，不被终态图片列表覆盖。资产存储测试验证两批图片的提交和文字保留，Eino 测试验证模型可继续使用引用且事件与历史没有内联图片字节。
+- 模型自身生成的图片/其他媒体仍拒绝进入持久历史；这批不覆盖该缺口。
+- Windows 整模块普通测试、资产/Eino/runtime 聚焦 race 和 Linux amd64 无 CGO 全模块构建通过；尚未用真实图片输出 MCP server 或付费模型做端到端验收。

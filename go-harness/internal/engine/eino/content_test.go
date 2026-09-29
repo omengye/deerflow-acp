@@ -317,6 +317,50 @@ func TestRawToolMediaNeverEntersNativeHistoryOrReceipts(t *testing.T) {
 	}
 }
 
+func TestStreamedEnhancedToolImageUsesStagedReference(t *testing.T) {
+	ref, bytes := testImageAsset(t)
+	importer := &testToolImageImporter{ref: ref, data: testImageBase64}
+	resolver := &testAssetResolver{ref: ref, data: bytes}
+	data := testImageBase64
+	result := &schema.ToolResult{Parts: []schema.ToolOutputPart{{Type: schema.ToolPartTypeText, Text: "caption"}, {Type: schema.ToolPartTypeImage, Image: &schema.ToolOutputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &data, MIMEType: "image/png"}}}}}
+	engine := newTestEngine(t, Config{ChatModel: toolScript(), Model: "vision", Media: harness.MediaConfig{VisionModels: []string{"vision"}}, Tools: []tool.BaseTool{&mediaStreamTool{mediaResultTool{result: result}}}, ToolImageImporter: importer, AssetResolver: resolver})
+	var events []harness.RunEvent
+	req := request("stream-image")
+	req.Session.Model = "vision"
+	if _, err := engine.Run(context.Background(), req, func(_ context.Context, event harness.RunEvent) error { events = append(events, event); return nil }, allowTool); err != nil {
+		t.Fatal(err)
+	}
+	if importer.calls.Load() != 1 {
+		t.Fatal("stream image was not staged")
+	}
+	seenPending, seenEnd := false, false
+	for _, event := range events {
+		if event.Kind != "tool_update" && event.Kind != "tool_end" {
+			continue
+		}
+		for _, c := range event.Content {
+			if c.Type == "image" && c.Asset != nil && *c.Asset == ref {
+				if event.Kind == "tool_update" {
+					t.Fatal("uncommitted image reference entered update")
+				}
+				seenEnd = true
+			}
+			if event.Kind == "tool_update" && c.Type == "text" && strings.Contains(c.Text, "Image staged") {
+				seenPending = true
+			}
+		}
+	}
+	if !seenPending || !seenEnd {
+		t.Fatalf("stream image missing in update or terminal event: %+v", events)
+	}
+	assertNoImageBytes(t, events)
+	stored, err := engine.config.SessionStore.LoadEvents(context.Background(), "test-session", &adk.LoadSessionEventsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoImageBytes(t, stored)
+}
+
 func TestToolMediaProjectionRejectsConflictingPartsAndRemovesOpaquePayload(t *testing.T) {
 	data := testImageBase64
 	if _, err := validateToolMedia(&schema.ToolResult{Parts: []schema.ToolOutputPart{{Type: schema.ToolPartTypeText, Text: "caption", Image: &schema.ToolOutputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &data}}}}}, "test-session"); !errors.Is(err, harness.ErrInvalidInput) {

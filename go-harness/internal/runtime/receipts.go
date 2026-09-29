@@ -141,7 +141,14 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores 
 			case e.Status == "completed" && receipt.State == harness.ReceiptStarted:
 				receipt.State = harness.ReceiptCompleted
 				if len(e.Content) > 0 {
-					receipt.Result, receipt.ResultTruncated = boundedReceiptResult(e.Content, false)
+					// Enhanced streams already recorded text and image references in
+					// tool_update. Their terminal image list validates the staged
+					// assets; it must not erase earlier text evidence.
+					if onlyStagedImages(e.Content) && len(receipt.Result) > 0 {
+						receipt.Result, receipt.ResultTruncated = boundedReceiptResult(append(receipt.Result, e.Content...), receipt.ResultTruncated)
+					} else {
+						receipt.Result, receipt.ResultTruncated = boundedReceiptResult(e.Content, false)
+					}
 				}
 			case e.Status == "failed" && receipt.State == harness.ReceiptPending:
 				receipt.State = harness.ReceiptNotExecuted
@@ -183,6 +190,18 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores 
 	err = tx.Commit()
 	committed = err == nil && e.Status == "completed"
 	return e, err
+}
+
+func onlyStagedImages(contents []harness.Content) bool {
+	if len(contents) == 0 {
+		return false
+	}
+	for _, c := range contents {
+		if c.Type != "image" || c.Asset == nil || c.Asset.Kind != harness.AssetImage {
+			return false
+		}
+	}
+	return true
 }
 
 type receiptQuery interface {

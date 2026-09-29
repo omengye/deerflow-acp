@@ -184,18 +184,40 @@ func (s *Store) StageToolImages(ctx context.Context, x harness.Session, runID, c
 	if json.Unmarshal(receiptData, &receipt) != nil {
 		return nil, harness.ErrReceiptConflict
 	}
-	p, err := s.begin(x)
-	if err != nil {
-		return nil, err
+	// A stream may deliver images in several chunks. Serialize staging with
+	// terminal TakeArtifacts and Close so no snapshot is published half-built.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing.Load() {
+		return nil, errors.New("asset store is closing")
 	}
-	p.toolImages = true
-	defer func() {
-		if returnErr != nil {
-			returnErr = errors.Join(returnErr, p.Finish(false))
+	key := artifactKey(runID, callID)
+	p := s.staged[key]
+	created := p == nil
+	if created {
+		var err error
+		p, err = s.begin(x)
+		if err != nil {
+			return nil, err
 		}
-	}()
+		p.toolImages = true
+		defer func() {
+			if returnErr != nil {
+				returnErr = errors.Join(returnErr, p.Finish(false))
+			}
+		}()
+	} else if !p.toolImages || p.session.ID != x.ID {
+		return nil, harness.ErrReceiptConflict
+	}
+	if len(p.refs)+len(images) > harness.MaxInputImagesPerTurn {
+		return nil, invalid("tool image stream exceeds 8 images")
+	}
 	var total int64
-	for i, c := range images {
+	for _, ref := range p.refs {
+		total += ref.Size
+	}
+	contents = make([]harness.Content, 0, len(images))
+	for _, c := range images {
 		if c.Type != "image" || c.Asset != nil || c.URI != "" || c.Text != "" {
 			return nil, invalid("tool image must contain only inline data")
 		}
@@ -207,21 +229,19 @@ func (s *Store) StageToolImages(ctx context.Context, x harness.Session, runID, c
 		if total > harness.MaxInputImageTotalBytes {
 			return nil, invalid("tool image batch exceeds 40 MiB")
 		}
-		name := safeName(c.Name, "tool-image-"+strconv.Itoa(i+1)+imageExtension(mediaType))
+		name := safeName(c.Name, "tool-image-"+strconv.Itoa(len(p.refs)+1)+imageExtension(mediaType))
 		ref, err := p.snapshot(ctx, bytes.NewReader(data), name, mediaType, harness.AssetImage, harness.MaxInputImageBytes)
 		if err != nil {
 			return nil, err
 		}
-		p.Input = append(p.Input, assetContent(ref, "Tool image"))
+		item := assetContent(ref, "Tool image")
+		p.Input = append(p.Input, item)
+		contents = append(contents, item)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := artifactKey(runID, callID)
-	if s.closing.Load() || s.staged[key] != nil {
-		return nil, harness.ErrReceiptConflict
+	if created {
+		s.staged[key] = p
 	}
-	s.staged[key] = p
-	return append([]harness.Content(nil), p.Input...), nil
+	return contents, nil
 }
 
 // StageImage snapshots a workspace image for a view_image tool call. Its bytes
