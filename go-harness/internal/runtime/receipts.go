@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
 )
 
 func isToolEvent(kind string) bool {
@@ -24,7 +26,15 @@ func isToolEvent(kind string) bool {
 	return false
 }
 
-func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent) (harness.RunEvent, error) {
+func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores ...*assets.Store) (out harness.RunEvent, returnErr error) {
+	var artifacts *assets.Prepared
+	if e.Kind == "tool_end" && len(stores) > 0 && stores[0] != nil {
+		artifacts = stores[0].TakeArtifacts(e.SessionID, e.RunID, e.ToolCallID)
+	}
+	committed := false
+	if artifacts != nil {
+		defer func() { returnErr = errors.Join(returnErr, artifacts.Finish(committed)) }()
+	}
 	if e.ToolCallID == "" || e.ToolName == "" {
 		return e, fmt.Errorf("%w: tool event requires call ID and name", harness.ErrInvalidInput)
 	}
@@ -86,6 +96,12 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent) (harnes
 			}
 			receipt.Result, receipt.ResultTruncated = boundedReceiptResult(append(receipt.Result, e.Content...), receipt.ResultTruncated)
 		case "tool_end":
+			if artifacts != nil && e.Status == "completed" {
+				if err = artifacts.AttachArtifacts(ctx, tx, e.RunID, e.ToolCallID); err != nil {
+					return e, err
+				}
+				e.Content = append([]harness.Content(nil), artifacts.Input...)
+			}
 			switch {
 			case e.Status == "completed" && receipt.State == harness.ReceiptStarted:
 				receipt.State = harness.ReceiptCompleted
@@ -116,7 +132,22 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent) (harnes
 	if err != nil {
 		return e, err
 	}
-	return e, tx.Commit()
+	if artifacts != nil && e.Status == "completed" {
+		var presented []harness.Content
+		for _, c := range e.Content {
+			if c.Asset != nil && c.Asset.Kind == harness.AssetArtifact {
+				presented = append(presented, c)
+			}
+		}
+		if len(presented) > 0 {
+			if _, err = appendEventTx(ctx, tx, harness.RunEvent{SessionID: e.SessionID, RunID: e.RunID, Kind: "artifact_presented", ToolCallID: e.ToolCallID, ToolName: e.ToolName, Content: presented}); err != nil {
+				return e, err
+			}
+		}
+	}
+	err = tx.Commit()
+	committed = err == nil && e.Status == "completed"
+	return e, err
 }
 
 type receiptQuery interface {
@@ -271,6 +302,9 @@ func (s *Service) ReconcileToolReceipt(ctx context.Context, owner, sessionID str
 	if review.RunID == "" || review.ToolCallID == "" || review.ExpectedVersion < 1 || strings.TrimSpace(review.Reviewer) == "" || strings.TrimSpace(review.Note) == "" || len(review.Reviewer) > 256 || len(review.Note) > 16384 || (review.Outcome != harness.ReceiptCompleted && review.Outcome != harness.ReceiptNoEffect) {
 		return harness.ToolReceipt{}, fmt.Errorf("%w: review requires identity, version, reviewer, evidence and completed/no_effect outcome", harness.ErrInvalidInput)
 	}
+	if err := validateReviewResult(review.Result); err != nil {
+		return harness.ToolReceipt{}, err
+	}
 	tx, err := s.Store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return harness.ToolReceipt{}, err
@@ -306,6 +340,41 @@ func (s *Service) ReconcileToolReceipt(ctx context.Context, owner, sessionID str
 	return receipt, tx.Commit()
 }
 
+// Human evidence is descriptive, never a way to introduce trusted media into
+// the durable transcript. Keep SDK validation aligned with the ACP extension.
+func validateReviewResult(input []harness.Content) error {
+	invalid := func() error {
+		return fmt.Errorf("%w: review evidence requires bounded text or ordinary resource links", harness.ErrInvalidInput)
+	}
+	if len(input) > 128 {
+		return invalid()
+	}
+	remaining := 64 * 1024
+	for _, c := range input {
+		if c.Asset != nil || c.Data != "" || c.Size != nil || c.Description != "" {
+			return invalid()
+		}
+		remaining -= len(c.Text) + len(c.URI) + len(c.MimeType) + len(c.Name)
+		if remaining < 0 {
+			return invalid()
+		}
+		switch c.Type {
+		case "text":
+			if c.Text == "" || c.URI != "" || c.MimeType != "" || c.Name != "" {
+				return invalid()
+			}
+		case "resource_link":
+			u, err := url.Parse(c.URI)
+			if err != nil || !u.IsAbs() || u.Scheme == "deerflow-asset" || c.Text != "" || len(c.URI) > 4096 || len(c.MimeType) > 256 || len(c.Name) > 1024 {
+				return invalid()
+			}
+		default:
+			return invalid()
+		}
+	}
+	return nil
+}
+
 func eventError(e harness.RunEvent) string {
 	if e.Receipt != nil && e.Receipt.Error != "" {
 		return truncateUTF8(e.Receipt.Error, 4096)
@@ -326,7 +395,7 @@ func eventError(e harness.RunEvent) string {
 // MCP tools always have a namespace; their readOnlyHint is not evidence.
 func failedStartedState(toolName string) harness.ReceiptState {
 	switch toolName {
-	case "read_file", "list_directory", "search_files", "read_skill_file", "skill":
+	case "read_file", "list_directory", "search_files", "read_skill_file", "skill", "view_image":
 		return harness.ReceiptNoEffect
 	default:
 		return harness.ReceiptUncertain
@@ -390,7 +459,17 @@ func boundedReceiptResult(input []harness.Content, truncated bool) ([]harness.Co
 			content.Data = ""
 			truncated = true
 		}
-		for _, field := range []*string{&content.Type, &content.MimeType, &content.Name, &content.URI, &content.Text} {
+		if content.Asset != nil {
+			encoded, err := json.Marshal(content)
+			if err != nil || len(encoded) > remaining {
+				truncated = true
+				break
+			}
+			remaining -= len(encoded)
+			result = append(result, content)
+			continue
+		}
+		for _, field := range []*string{&content.Type, &content.MimeType, &content.Name, &content.URI, &content.Text, &content.Description} {
 			if len(*field) > remaining {
 				*field = truncateUTF8(*field, remaining)
 				truncated = true

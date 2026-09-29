@@ -41,7 +41,8 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 		DisableSubagent                       bool
 		Tools                                 []*schema.ToolInfo
 		Extension                             json.RawMessage
-	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension})
+		Media                                 harness.MediaConfig
+	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media})
 	if err != nil {
 		return "", fmt.Errorf("encode execution contract: %w", err)
 	}

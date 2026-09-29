@@ -13,6 +13,14 @@ import (
 
 func RuntimeFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
 	sandboxFlags(flags, &cfg.Sandbox)
+	skillsFlags(flags, cfg)
+	flags.Func("vision-model", "explicit model ID supporting image input (repeatable; must also be the default or an allow-model)", func(value string) error {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("vision model ID is empty")
+		}
+		cfg.Media.VisionModels = append(cfg.Media.VisionModels, value)
+		return nil
+	})
 	budget := harness.DefaultBudgetLimits()
 	cfg.Budget = &budget
 	flags.IntVar(&budget.MaxModelCalls, "max-model-calls", budget.MaxModelCalls, "model calls across main and child agents; 0 disables")

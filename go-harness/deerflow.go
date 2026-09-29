@@ -8,11 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/gofrs/flock"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/acp/agent"
+	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
@@ -38,6 +40,7 @@ type Config struct {
 	MCP     harness.MCPPolicy
 	Sandbox harness.SandboxConfig
 	Skills  harness.SkillsConfig
+	Media   harness.MediaConfig
 	// SkillSelection is host policy. Workspace is derived from each session;
 	// global skills require IncludeGlobal. Sources are never installed implicitly.
 	SkillSelection harness.SkillSelection
@@ -51,6 +54,7 @@ type Client struct {
 	store      *sqlite.Store
 	mcp        *mcp.Manager
 	skills     *skills.Registry
+	assets     *assets.Store
 	lock       *flock.Flock
 	owner      string
 	mu         sync.Mutex
@@ -62,6 +66,7 @@ type Client struct {
 }
 
 func Open(ctx context.Context, cfg Config) (client *Client, err error) {
+	cfg.Media.VisionModels = slices.Clone(cfg.Media.VisionModels)
 	if cfg.DataDir == "" {
 		base, e := os.UserConfigDir()
 		if e != nil {
@@ -129,21 +134,43 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			_ = registry.Close()
 		}
 	}()
+	if len(cfg.Skills.Install) > 128 {
+		return nil, fmt.Errorf("too many configured skill installations")
+	}
+	for _, install := range cfg.Skills.Install {
+		record, installErr := registry.Install(ctx, install.SourceID, install.Directory)
+		if installErr != nil {
+			return nil, fmt.Errorf("install configured skill: %w", installErr)
+		}
+		if err = registry.SetEnabled(ctx, install.SourceID, record.Ref.Name, install.Enabled); err != nil {
+			return nil, fmt.Errorf("configure installed skill: %w", err)
+		}
+	}
+	assetStore, err := assets.NewStore(ctx, filepath.Join(cfg.DataDir, "assets"), store.DB())
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = assetStore.Close()
+		}
+	}()
 	engine := cfg.Engine
 	if engine == nil {
 		budget := harness.DefaultBudgetLimits()
 		if cfg.Budget != nil {
 			budget = *cfg.Budget
 		}
-		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: budget, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensionFactory(cfg, manager, registry)})
+		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: budget, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensionFactory(cfg, manager, registry, assetStore), Media: cfg.Media, AssetResolver: assetStore})
 		if err != nil {
 			return nil, err
 		}
 	}
 	service := hr.NewService(business, engine, cfg.Model)
 	service.Resources = manager
+	service.Media, service.Assets = cfg.Media, assetStore
 	service.Settings = hr.ConfigSettings{Models: append([]harness.ConfigValue(nil), cfg.Models...), EnableSubagents: !cfg.DisableSubagents, DefaultSubagents: !cfg.DisableSubagents}
-	return &Client{service: service, store: store, mcp: manager, skills: registry, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
+	return &Client{service: service, store: store, mcp: manager, skills: registry, assets: assetStore, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
 }
 
 func (c *Client) operation() (func(), error) {
@@ -279,7 +306,7 @@ func (c *Client) Close() error {
 	}
 	disconnectErr := c.service.Disconnect(context.Background(), c.owner)
 	c.operations.Wait()
-	c.closeErr = errors.Join(disconnectErr, c.mcp.Close(), c.skills.Close(), c.store.Close(), c.lock.Close())
+	c.closeErr = errors.Join(disconnectErr, c.mcp.Close(), c.skills.Close(), c.assets.Close(), c.store.Close(), c.lock.Close())
 	close(c.closeDone)
 	return c.closeErr
 }

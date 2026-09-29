@@ -16,6 +16,14 @@ of parameter names/types, bounded result evidence, and any prior human review.
 Tool session updates carry the corresponding identity, state and version in
 `update._meta.deerflow.receipt`.
 
+This private query returns harness receipt records, not standard ACP content
+blocks. Results from `view_image` or `present_files` may contain a stable
+`deerflow-asset:` URI and internal `asset` metadata (session, digest and size)
+for audit. They contain no inline image bytes. Those fields cannot be submitted
+as ACP prompt or reconciliation capabilities. Standard session content updates
+and the artifact listing use the normal media projection described in
+[media.md](media.md).
+
 The connection must own the session, and the session must be idle. After a
 reconnect, first use `session/resume` or `session/load` with its original
 workspace. Neither re-executes an interrupted tool.
@@ -56,6 +64,8 @@ Parameters reject unknown/case-aliased fields, duplicate keys, nulls and wrong
 types. Requests are limited to 128 KiB. Optional result evidence is limited to
 128 text/resource-link parts and 64 KiB of field values; inline binary data is
 not accepted. Evidence references are recorded without fetching them.
+SDK reconciliation applies the same evidence limits and rejects internal asset
+references, image data, size/description fields and unsupported content kinds.
 
 ## Errors
 

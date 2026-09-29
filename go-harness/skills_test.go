@@ -39,6 +39,44 @@ func skillFixture(t *testing.T) (string, Config) {
 	return workspace, Config{DataDir: t.TempDir(), Skills: harness.SkillsConfig{Sources: []harness.SkillSource{{ID: "project", Root: root, Scope: harness.SkillScopeWorkspace, Workspace: workspace}}}, DisableSubagents: true}
 }
 
+func TestSkillsExplicitStartupProfileIsAppliedAndIdempotent(t *testing.T) {
+	workspace, cfg := skillFixture(t)
+	cfg.Engine = engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
+		return harness.RunResult{}, nil
+	})
+	cfg.Skills.Install = []harness.SkillInstall{{SourceID: "project", Directory: "research", Enabled: true}}
+	var ref harness.SkillRef
+	for i := 0; i < 2; i++ {
+		c, err := Open(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		records, err := c.ListSkills(context.Background(), harness.SkillSelection{Workspace: workspace})
+		if err != nil || len(records) != 1 || !records[0].Enabled {
+			_ = c.Close()
+			t.Fatalf("profile=%+v %v", records, err)
+		}
+		if i == 0 {
+			ref = records[0].Ref
+		} else if records[0].Ref != ref {
+			t.Fatal("unchanged profile created different version")
+		}
+		if err = c.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg.Skills.Install[0].Enabled = false
+	c, err := Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	records, err := c.ListSkills(context.Background(), harness.SkillSelection{Workspace: workspace})
+	if err != nil || len(records) != 1 || records[0].Enabled {
+		t.Fatalf("explicit disabled profile=%+v %v", records, err)
+	}
+}
+
 func TestSDKSkillsUseNativeProgressiveLoadingAndPersistentInstall(t *testing.T) {
 	workspace, cfg := skillFixture(t)
 	var calls atomic.Int32
@@ -158,7 +196,7 @@ func TestExtensionFactoryRestoresPinnedSkillAndRejectsChangedResources(t *testin
 	}
 	defer manager.Close()
 	req := harness.RunRequest{Session: harness.Session{ID: "s", CWD: workspace, Mode: "plan"}}
-	factory := extensionFactory(cfg, manager, registry)
+	factory := extensionFactory(cfg, manager, registry, nil)
 	first, err := factory(context.Background(), req, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +250,7 @@ func TestExtensionFactoryRestoresPinnedSkillAndRejectsChangedResources(t *testin
 	}
 	req.Session.CWD = workspace
 	cfg.Sandbox.AllowShell = true
-	if _, err = extensionFactory(cfg, manager, registry)(context.Background(), req, first.State); !errors.Is(err, harness.ErrInvalidInput) {
+	if _, err = extensionFactory(cfg, manager, registry, nil)(context.Background(), req, first.State); !errors.Is(err, harness.ErrInvalidInput) {
 		t.Fatalf("changed policy resume=%v", err)
 	}
 }

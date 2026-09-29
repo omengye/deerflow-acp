@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
 )
 
 type Store struct{ db *sql.DB }
@@ -88,7 +89,7 @@ func (s *Store) SetMode(ctx context.Context, id, mode string) error {
 
 // BeginRun atomically records accepted input and its replay event before the
 // model sees it. Recovery can distinguish accepted input from a finished turn.
-func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest) error {
+func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest, prepared ...*assets.Prepared) error {
 	input, err := json.Marshal(req.Input)
 	if err != nil {
 		return err
@@ -109,6 +110,13 @@ func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest) error {
 	if _, err = tx.ExecContext(ctx, `INSERT INTO harness_inputs VALUES(?,?,?)`, req.InputID, req.RunID, input); err != nil {
 		return err
 	}
+	for _, p := range prepared {
+		if p != nil {
+			if err = p.Attach(ctx, tx, req.InputID); err != nil {
+				return err
+			}
+		}
+	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO harness_events(session_id,run_id,event) VALUES(?,?,?)`, req.Session.ID, req.RunID, user); err != nil {
 		return err
 	}
@@ -117,9 +125,9 @@ func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest) error {
 	}
 	return tx.Commit()
 }
-func (s *Store) Append(ctx context.Context, e harness.RunEvent) (harness.RunEvent, error) {
+func (s *Store) Append(ctx context.Context, e harness.RunEvent, stores ...*assets.Store) (harness.RunEvent, error) {
 	if isToolEvent(e.Kind) {
-		return s.appendToolEvent(ctx, e)
+		return s.appendToolEvent(ctx, e, stores...)
 	}
 	data, err := json.Marshal(e)
 	if err != nil {

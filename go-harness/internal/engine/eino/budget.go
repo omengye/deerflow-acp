@@ -125,7 +125,7 @@ type modelReservation struct {
 }
 
 func (b *runBudget) reserve(input []*schema.Message, opts []model.Option) (*modelReservation, []model.Option, error) {
-	encoded, err := json.Marshal(input)
+	encoded, imageTokens, err := budgetMessageEncoding(input)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -136,7 +136,7 @@ func (b *runBudget) reserve(input []*schema.Message, opts []model.Option) (*mode
 	}
 	// A byte estimate, not model-specific tokenization. Provider usage replaces
 	// it at settlement; providers can exceed this estimate on the in-flight call.
-	estimate := int64((len(encoded)+len(toolBytes)+3)/4 + len(input)*8)
+	estimate := int64((len(encoded)+len(toolBytes)+3)/4+len(input)*8) + imageTokens
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.exhausted != nil {
@@ -168,6 +168,49 @@ func (b *runBudget) reserve(input []*schema.Message, opts []model.Option) (*mode
 		opts = append(append([]model.Option(nil), opts...), model.WithMaxTokens(output))
 	}
 	return reservation, opts, nil
+}
+
+// Each image reserves a documented 4,096-token estimate, independent of its
+// transport's Base64 byte count. This is a model-agnostic estimate, not a price
+// or hard token bound; actual provider usage replaces it during settlement.
+const estimatedImageTokens int64 = 4096
+
+func budgetMessageEncoding(input []*schema.Message) ([]byte, int64, error) {
+	messages := make([]*schema.Message, len(input))
+	var imageTokens int64
+	for i, original := range input {
+		if original == nil {
+			continue
+		}
+		message := *original
+		message.UserInputMultiContent = append([]schema.MessageInputPart(nil), original.UserInputMultiContent...)
+		for j, part := range message.UserInputMultiContent {
+			if part.Type == schema.ChatMessagePartTypeImageURL {
+				imageTokens += estimatedImageTokens
+				part.Image, part.Extra = nil, nil
+				message.UserInputMultiContent[j] = part
+			}
+		}
+		message.MultiContent = append([]schema.ChatMessagePart(nil), original.MultiContent...)
+		for j, part := range message.MultiContent {
+			if part.Type == schema.ChatMessagePartTypeImageURL {
+				imageTokens += estimatedImageTokens
+				part.ImageURL = nil
+				message.MultiContent[j] = part
+			}
+		}
+		message.AssistantGenMultiContent = append([]schema.MessageOutputPart(nil), original.AssistantGenMultiContent...)
+		for j, part := range message.AssistantGenMultiContent {
+			if part.Type == schema.ChatMessagePartTypeImageURL {
+				imageTokens += estimatedImageTokens
+				part.Image, part.Extra = nil, nil
+				message.AssistantGenMultiContent[j] = part
+			}
+		}
+		messages[i] = &message
+	}
+	data, err := json.Marshal(messages)
+	return data, imageTokens, err
 }
 
 // withoutBudgetTermination removes only expected budget/cancellation leaves.

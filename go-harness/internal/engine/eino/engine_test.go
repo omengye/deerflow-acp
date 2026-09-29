@@ -526,12 +526,13 @@ func TestProviderConstructorsCompileAgainstPinnedEino(t *testing.T) {
 
 func TestImageInputPreservesPartsAndRejectsMismatchedData(t *testing.T) {
 	png := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII="
-	input := []harness.Content{{Type: "text", Text: "inspect "}, {Type: "image", Data: png, MimeType: "image/png"}, {Type: "text", Text: " this"}}
+	ref, _ := testImageAsset(t)
+	input := []harness.Content{{Type: "text", Text: "inspect "}, {Type: "image", Asset: &ref, URI: harness.AssetURI(ref), MimeType: "image/png"}, {Type: "text", Text: " this"}}
 	msg, err := convertContent(schema.User, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(msg.UserInputMultiContent) != 3 || msg.Content != "" || *msg.UserInputMultiContent[1].Image.Base64Data != png {
+	if len(msg.UserInputMultiContent) != 3 || msg.Content != "" || msg.UserInputMultiContent[1].Image.Base64Data != nil || *msg.UserInputMultiContent[1].Image.URL != harness.AssetURI(ref) {
 		t.Fatalf("bad image mapping: %+v", msg)
 	}
 	for _, bad := range []harness.Content{

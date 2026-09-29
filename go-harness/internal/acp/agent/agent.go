@@ -119,12 +119,14 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		a.initialized = true
 		a.capabilities = req.ClientCapabilities
 		httpMCP, sseMCP := a.service.MCPCapabilities()
-		return map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": false, "audio": false, "embeddedContext": false}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}}}, "_meta": map[string]any{"deerflow": map[string]any{"toolReceipts": receiptCapabilities()}}}, nil
+		return map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": a.service.ImageInputEnabled(), "audio": false, "embeddedContext": false}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}}}, "_meta": map[string]any{"deerflow": map[string]any{"toolReceipts": receiptCapabilities(), "artifacts": map[string]any{"version": 1, "listMethod": listArtifactsMethod}}}}, nil
 	}
 	if !a.ready() {
 		return nil, rpcError(protocol.InvalidRequest, "initialize must complete first")
 	}
 	switch method {
+	case listArtifactsMethod:
+		return a.artifactRequest(ctx, raw)
 	case listReceiptsMethod, reconcileReceiptMethod:
 		return a.receiptRequest(ctx, method, raw)
 	case "session/new":
@@ -241,11 +243,8 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		}
 		return map[string]any{}, nil
 	case "session/prompt":
-		var req struct {
-			SessionID string            `json:"sessionId"`
-			Prompt    []harness.Content `json:"prompt"`
-		}
-		if err := decode(raw, &req); err != nil {
+		req, err := decodePrompt(raw)
+		if err != nil {
 			return nil, err
 		}
 		var usageMu sync.Mutex
@@ -333,7 +332,11 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 	switch e.Kind {
 	case "user_message":
 		for _, c := range e.Content {
-			if err := a.update(ctx, e.SessionID, map[string]any{"sessionUpdate": "user_message_chunk", "content": c}); err != nil {
+			wire, err := a.wireContent(ctx, e.SessionID, c)
+			if err != nil {
+				return err
+			}
+			if err := a.update(ctx, e.SessionID, map[string]any{"sessionUpdate": "user_message_chunk", "content": wire}); err != nil {
 				return err
 			}
 		}
@@ -355,7 +358,14 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 		}
 		var content []any
 		for _, c := range e.Content {
-			content = append(content, map[string]any{"type": "content", "content": c})
+			if e.Kind == "tool_end" && c.Asset != nil && c.Asset.Kind == harness.AssetArtifact {
+				continue
+			}
+			wire, err := a.wireContent(ctx, e.SessionID, c)
+			if err != nil {
+				return err
+			}
+			content = append(content, map[string]any{"type": "content", "content": wire})
 		}
 		if e.Text != "" {
 			content = append(content, map[string]any{"type": "content", "content": harness.Content{Type: "text", Text: e.Text}})
@@ -369,7 +379,24 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 	if e.Receipt != nil {
 		update["_meta"] = map[string]any{"deerflow": map[string]any{"receipt": map[string]any{"runId": e.Receipt.RunID, "toolCallId": e.Receipt.ToolCallID, "state": e.Receipt.State, "version": e.Receipt.Version, "review": e.Receipt.Review}}}
 	}
-	return a.update(ctx, e.SessionID, update)
+	if err := a.update(ctx, e.SessionID, update); err != nil {
+		return err
+	}
+	if e.Kind == "tool_end" {
+		for _, c := range e.Content {
+			if c.Asset == nil || c.Asset.Kind != harness.AssetArtifact {
+				continue
+			}
+			wire, err := a.wireContent(ctx, e.SessionID, c)
+			if err != nil {
+				return err
+			}
+			if err := a.update(ctx, e.SessionID, map[string]any{"sessionUpdate": "agent_message_chunk", "content": wire}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (a *Agent) permission(ctx context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {

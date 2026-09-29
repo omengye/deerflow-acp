@@ -19,12 +19,15 @@ var (
 )
 
 type Content struct {
-	Type     string `json:"type"`
-	Text     string `json:"text,omitempty"`
-	Data     string `json:"data,omitempty"`
-	MimeType string `json:"mimeType,omitempty"`
-	URI      string `json:"uri,omitempty"`
-	Name     string `json:"name,omitempty"`
+	Type        string    `json:"type"`
+	Text        string    `json:"text,omitempty"`
+	Data        string    `json:"data,omitempty"`
+	MimeType    string    `json:"mimeType,omitempty"`
+	URI         string    `json:"uri,omitempty"`
+	Name        string    `json:"name,omitempty"`
+	Size        *int64    `json:"size,omitempty"`
+	Description string    `json:"description,omitempty"`
+	Asset       *AssetRef `json:"asset,omitempty"`
 }
 
 type Message struct {

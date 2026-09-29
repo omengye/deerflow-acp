@@ -88,7 +88,10 @@ selection follows the session, global sources require
 `Config.SkillSelection.IncludeGlobal`, and no HOME paths are scanned.
 `ListSkills` and `DeleteSkill` provide management. Bodies and reference files load
 on demand from immutable database versions. See [Skills](internal/skills/README.md).
-CLI Skills configuration and management are still pending.
+Both executables accept `--skills-config <file>` for explicit source, installation
+and selection configuration; see [the startup profile](internal/launch/skills.md).
+Each listed installation commits independently. New SDK installations remain
+disabled until enabled; a startup profile can explicitly enable a reviewed package.
 
 Internal execution checkpoints pin the active budget, Skills versions and resource
 policy. They use a versioned harness envelope containing native Eino state;
@@ -96,8 +99,25 @@ older development checkpoints are rejected. ACP `session/resume` reattaches a
 conversation; it does not resume suspended tool execution. Public durable
 execution resume and background notification scheduling are still pending.
 
-The current ACP build accepts text prompts. Media persistence, durable
-background task scheduling, memory, compression, and full
+ACP accepts text and file references. Images require an explicit
+`--vision-model <model-id>` (repeatable), and that model must also be selectable.
+The corresponding SDK policy is `Config.Media.VisionModels`. Up to eight images
+may be supplied per prompt, at most 20 MiB each and 40 MiB in total. Local file
+references must stay within the session workspace; ordinary files are capped at
+25 MiB. HTTP(S) links are metadata references and are not downloaded.
+
+Images and attachments are stored as immutable, session-scoped snapshots. Model
+calls hydrate image bytes privately; SQLite history/checkpoints contain stable
+references. `view_image` lets vision models inspect workspace images, including
+in read_only mode. `present_files` snapshots completed files from
+`.deerflow/outputs` and commits their references with the tool receipt before
+presenting them to ACP. `Client.ListArtifacts` and `ResolveAsset` provide SDK
+access; ACP exposes `_deerflow/artifacts/list`. See
+[media projection and limits](internal/engine/eino/media.md) and
+[ACP media behavior](internal/acp/media.md).
+
+Raw image outputs from MCP and model-generated media still need importer wiring.
+Durable background task scheduling, memory, compression, and full
 Bridge compatibility are being integrated. Their incomplete
 status is not represented as a capability promise. This build is not the V1
 completion or default-launcher switch.
@@ -106,7 +126,7 @@ completion or default-launcher switch.
 
 The root package exposes `Open`, `Client.NewSession`, `Run`, `Cancel`,
 `LoadSession`, `CloseSession`, `SetMode`, `ConfigOptions`, `SetConfigOption`,
-`ServeACP`, receipt and Skills management methods, and `Close`.
+`ServeACP`, receipt/Skills/asset management methods, and `Close`.
 New/LoadSession accept optional `harness.MCPServer`
 arguments. Public event and permission
 types live in `harness/` and do not expose Eino or ACP SDK types. An embedder can

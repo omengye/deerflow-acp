@@ -31,6 +31,17 @@ type SkillLimits struct {
 type SkillsConfig struct {
 	Sources []SkillSource
 	Limits  SkillLimits
+	// Install is an explicit operator startup action. No packages are scanned
+	// or installed unless listed here or installed through the SDK.
+	Install []SkillInstall `json:"install,omitempty"`
+}
+
+// SkillInstall installs one named relative package and applies its enabled
+// state at startup. Repeated startup with identical content is idempotent.
+type SkillInstall struct {
+	SourceID  string `json:"sourceId"`
+	Directory string `json:"directory"`
+	Enabled   bool   `json:"enabled"`
 }
 
 // SkillSelection is host policy, never an argument supplied by the model.

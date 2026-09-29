@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
@@ -21,6 +22,8 @@ type Service struct {
 	Model       string
 	Settings    ConfigSettings
 	Resources   SessionResources
+	Assets      *assets.Store
+	Media       harness.MediaConfig
 	mu          sync.Mutex
 	decisions   map[string]harness.PermissionDecision
 }
@@ -142,13 +145,6 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 	if len(input) == 0 {
 		return harness.RunResult{}, fmt.Errorf("%w: prompt must contain content", harness.ErrInvalidInput)
 	}
-	// Additional input types are enabled only after their persistence and model
-	// adapters are wired. Never claim image support before that capability works.
-	for _, c := range input {
-		if c.Type != "text" {
-			return harness.RunResult{}, fmt.Errorf("%w: unsupported prompt content %q", harness.ErrInvalidInput, c.Type)
-		}
-	}
 	x, err := s.Store.Session(ctx, id)
 	if err != nil {
 		return harness.RunResult{}, err
@@ -170,8 +166,36 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 		return harness.RunResult{}, err
 	}
 	req := harness.RunRequest{Session: x, RunID: NewID(), InputID: NewID(), Input: input}
-	if err = s.Store.BeginRun(ctx, req); err != nil {
+	var prepared *assets.Prepared
+	if s.Assets != nil {
+		prepared, err = s.Assets.Prepare(ctx, x, input)
+		if err != nil {
+			return harness.RunResult{}, err
+		}
+		req.Input = prepared.Input
+		for _, c := range req.Input {
+			if c.Type == "image" && !s.Media.SupportsVision(x.Model) {
+				return harness.RunResult{}, errors.Join(fmt.Errorf("%w: the selected model does not support image input", harness.ErrInvalidInput), prepared.Finish(false))
+			}
+		}
+		defer func() { runErr = errors.Join(runErr, s.Assets.AbortRun(req.RunID)) }()
+	} else {
+		for _, c := range input {
+			if c.Type != "text" || c.Data != "" || c.Asset != nil || c.URI != "" {
+				return harness.RunResult{}, fmt.Errorf("%w: media storage is not configured", harness.ErrInvalidInput)
+			}
+		}
+	}
+	if err = s.Store.BeginRun(ctx, req, prepared); err != nil {
+		if prepared != nil {
+			err = errors.Join(err, prepared.Finish(false))
+		}
 		return harness.RunResult{}, err
+	}
+	if prepared != nil {
+		if err = prepared.Finish(true); err != nil {
+			return harness.RunResult{}, err
+		}
 	}
 	// Serializes concurrent tool callbacks and their event order; the transport
 	// has a separate reader so pending permissions never block cancellation.
@@ -182,7 +206,7 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 		e.SessionID, e.RunID = id, req.RunID
 		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(eventCtx), 10*time.Second)
 		defer cancel()
-		e, err := s.Store.Append(persistCtx, e)
+		e, err := s.Store.Append(persistCtx, e, s.Assets)
 		if err != nil {
 			return err
 		}

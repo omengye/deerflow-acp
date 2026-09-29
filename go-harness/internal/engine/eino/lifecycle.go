@@ -80,7 +80,8 @@ func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk f
 							onError(observeErr)
 						}
 						if !draining {
-							writer.Send(chunk, observeErr)
+							var zero T
+							writer.Send(zero, observeErr)
 							draining = true
 						}
 					}
@@ -90,13 +91,18 @@ func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk f
 				continue
 			}
 			if err != nil {
-				writer.Send(chunk, err)
+				var zero T
+				writer.Send(zero, err)
 				draining = true
 				continue
 			}
 			if onChunk != nil {
 				if callbackErr := onChunk(chunk); callbackErr != nil {
-					writer.Send(chunk, callbackErr)
+					if onError != nil {
+						onError(callbackErr)
+					}
+					var zero T
+					writer.Send(zero, callbackErr)
 					draining = true
 					continue
 				}
@@ -114,10 +120,11 @@ type modelLifecycle struct {
 	io     *runIO
 	budget *runBudget
 	sink   *eventSink
+	media  *mediaProjection
 }
 
 func (m *modelLifecycle) WrapModel(_ context.Context, inner model.BaseModel[*schema.Message], _ *adk.ModelContext) (model.BaseModel[*schema.Message], error) {
-	return &trackedModel{inner: inner, io: m.io, budget: m.budget, sink: m.sink}, nil
+	return &trackedModel{inner: inner, io: m.io, budget: m.budget, sink: m.sink, media: m.media}, nil
 }
 
 type trackedModel struct {
@@ -125,6 +132,7 @@ type trackedModel struct {
 	io     *runIO
 	budget *runBudget
 	sink   *eventSink
+	media  *mediaProjection
 }
 
 func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
@@ -133,13 +141,23 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 		return nil, err
 	}
 	defer finish()
+	if m.media != nil {
+		input, err = m.media.hydrate(ctx, input, opts)
+		if err != nil {
+			return nil, err
+		}
+	}
 	reservation, opts, err := m.budget.reserve(input, opts)
 	if err != nil {
 		return nil, err
 	}
 	defer m.settle(ctx, reservation)
 	msg, err := m.inner.Generate(ctx, input, opts...)
-	if observeErr := reservation.observe(msg); observeErr != nil {
+	observeErr := reservation.observe(msg)
+	if mediaErr := validateProviderOutput(msg); mediaErr != nil {
+		return nil, errors.Join(err, observeErr, mediaErr)
+	}
+	if observeErr != nil {
 		return msg, errors.Join(err, observeErr)
 	}
 	return msg, err
@@ -148,6 +166,13 @@ func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts
 	ctx, finish, err := m.io.begin(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if m.media != nil {
+		input, err = m.media.hydrate(ctx, input, opts)
+		if err != nil {
+			finish()
+			return nil, err
+		}
 	}
 	reservation, opts, err := m.budget.reserve(input, opts)
 	if err != nil {
@@ -160,7 +185,7 @@ func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts
 		finish()
 		return nil, err
 	}
-	return relayStream(source, func() { m.settle(ctx, reservation); finish() }, nil, m.io.recordError, reservation.observe), nil
+	return relayStream(source, func() { m.settle(ctx, reservation); finish() }, validateProviderOutput, m.io.recordError, reservation.observe), nil
 }
 
 func (m *trackedModel) settle(ctx context.Context, r *modelReservation) {

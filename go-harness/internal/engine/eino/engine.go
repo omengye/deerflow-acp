@@ -3,13 +3,10 @@ package eino
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +37,8 @@ type Config struct {
 	SessionStore     adk.SessionEventStore[*schema.Message]
 	MaxIterations    int
 	Budget           harness.BudgetLimits
+	Media            harness.MediaConfig
+	AssetResolver    harness.AssetResolver
 	// Handlers extends native Eino middleware without introducing another loop.
 	Handlers        []adk.ChatModelAgentMiddleware
 	DisableSubAgent bool
@@ -80,6 +79,7 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 	}
 	config.Tools = append([]tool.BaseTool(nil), config.Tools...)
 	config.Handlers = append([]adk.ChatModelAgentMiddleware(nil), config.Handlers...)
+	config.Media.VisionModels = append([]string(nil), config.Media.VisionModels...)
 	chatModel := config.ChatModel
 	if chatModel == nil {
 		var err error
@@ -251,8 +251,13 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	}
 	sink.cancel = requestCancel
 	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle, budget: budget}
+	selectedModel := req.Session.Model
+	if selectedModel == "" {
+		selectedModel = e.config.Model
+	}
+	media := &mediaProjection{resolver: e.config.AssetResolver, policy: e.config.Media, sessionID: req.Session.ID, model: selectedModel}
 	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), extensions.Handlers...)
-	handlers = append(handlers, &modelLifecycle{io: ioLifecycle, budget: budget, sink: sink}, mw)
+	handlers = append(handlers, &modelLifecycle{io: ioLifecycle, budget: budget, sink: sink, media: media}, mw)
 	agent, err := deep.New(execCtx, &deep.Config{
 		Name: "deerflow", Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction,
 		ChatModel: chatModel, MaxIteration: e.config.MaxIterations,
@@ -336,6 +341,13 @@ func withoutNativeTermination(err error) error {
 }
 
 func (e *Engine) input(ctx context.Context, req harness.RunRequest) ([]*schema.Message, error) {
+	for _, message := range append(append([]harness.Message(nil), req.History...), harness.Message{Content: req.Input}) {
+		for _, part := range message.Content {
+			if part.Asset != nil && part.Asset.SessionID != req.Session.ID {
+				return nil, fmt.Errorf("%w: asset belongs to another session", harness.ErrPermissionDenied)
+			}
+		}
+	}
 	stored, err := e.config.SessionStore.LoadEvents(ctx, req.Session.ID, &adk.LoadSessionEventsRequest{Limit: 1})
 	if err != nil {
 		return nil, fmt.Errorf("load session: %w", err)
@@ -360,50 +372,6 @@ func (e *Engine) input(ctx context.Context, req harness.RunRequest) ([]*schema.M
 		return nil, err
 	}
 	return append(messages, message), nil
-}
-
-func convertContent(role schema.RoleType, content []harness.Content) (*schema.Message, error) {
-	msg := &schema.Message{Role: role}
-	var text strings.Builder
-	var parts []schema.MessageInputPart
-	var multimodal bool
-	for _, part := range content {
-		switch part.Type {
-		case "text", "":
-			text.WriteString(part.Text)
-			parts = append(parts, schema.MessageInputPart{Type: schema.ChatMessagePartTypeText, Text: part.Text})
-		case "image":
-			if role != schema.User {
-				return nil, errors.New("image content is only supported in user input")
-			}
-			const maxImageBytes = 20 * 1024 * 1024
-			if part.Data == "" || len(part.Data) > base64.StdEncoding.EncodedLen(maxImageBytes) {
-				return nil, errors.New("image must contain base64 data no larger than 20 MiB")
-			}
-			data, err := base64.StdEncoding.DecodeString(part.Data)
-			if err != nil || len(data) == 0 || len(data) > maxImageBytes {
-				return nil, errors.New("invalid image base64 data")
-			}
-			mime := http.DetectContentType(data)
-			if mime != "image/png" && mime != "image/jpeg" && mime != "image/gif" && mime != "image/webp" {
-				return nil, errors.New("unsupported image format; use PNG, JPEG, GIF or WebP")
-			}
-			if part.MimeType != mime {
-				return nil, errors.New("image MIME type does not match its data")
-			}
-			encoded := part.Data
-			parts = append(parts, schema.MessageInputPart{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageInputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &encoded, MIMEType: mime}}})
-			multimodal = true
-		default:
-			return nil, fmt.Errorf("engine does not support input content type %q", part.Type)
-		}
-	}
-	if multimodal {
-		msg.UserInputMultiContent = parts
-	} else {
-		msg.Content = text.String()
-	}
-	return msg, nil
 }
 
 func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *eventSink, result *harness.RunResult) error {

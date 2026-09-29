@@ -95,7 +95,7 @@ func (a *Agent) receiptRequest(ctx context.Context, method string, raw json.RawM
 				}
 			case "resource_link":
 				u, parseErr := url.Parse(content.URI)
-				if parseErr != nil || !u.IsAbs() || content.Text != "" || len(content.URI) > 4096 || len(content.Name) > 1024 || len(content.MimeType) > 256 {
+				if parseErr != nil || !u.IsAbs() || u.Scheme == "deerflow-asset" || content.Text != "" || len(content.URI) > 4096 || len(content.Name) > 1024 || len(content.MimeType) > 256 {
 					return invalid()
 				}
 			default:

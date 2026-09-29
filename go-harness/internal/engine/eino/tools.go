@@ -142,16 +142,20 @@ func enhancedContent(output *schema.ToolResult) []harness.Content {
 		}
 		if part.Type == schema.ToolPartTypeImage && part.Image != nil {
 			c := harness.Content{Type: "image", MimeType: part.Image.MIMEType}
-			if part.Image.Base64Data != nil {
-				c.Data = *part.Image.Base64Data
-			}
 			if part.Image.URL != nil {
 				c.URI = *part.Image.URL
+			}
+			if ref, err := assetFromPart(part.Extra); err == nil {
+				c.Asset, c.Name, c.Size = &ref, ref.Name, &ref.Size
 			}
 			contents = append(contents, c)
 		}
 		if part.Type == schema.ToolPartTypeFile && part.File != nil && part.File.URL != nil {
-			contents = append(contents, harness.Content{Type: "resource_link", URI: *part.File.URL, MimeType: part.File.MIMEType})
+			c := harness.Content{Type: "resource_link", URI: *part.File.URL, MimeType: part.File.MIMEType}
+			if ref, err := assetFromPart(part.Extra); err == nil {
+				c.Asset, c.Name, c.Size = &ref, ref.Name, &ref.Size
+			}
+			contents = append(contents, c)
 		}
 	}
 	return contents
@@ -171,6 +175,9 @@ func (m *toolMiddleware) WrapEnhancedInvokableToolCall(_ context.Context, next a
 			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
 		}
 		output, err := next(ctx, args, opts...)
+		var mediaErr error
+		output, mediaErr = validateToolMedia(output, m.sink.request.Session.ID)
+		err = errors.Join(err, mediaErr)
 		if emitErr := m.finish(ctx, tc, enhancedContent(output), err); emitErr != nil {
 			return nil, errors.Join(err, emitErr)
 		}
@@ -201,14 +208,16 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
 		}
 		handedOff = true
-		return relayToolStream(ctx, m, tc, stream, finish, enhancedContent), nil
+		return relayToolStream(ctx, m, tc, stream, finish, enhancedContent, func(result *schema.ToolResult) (*schema.ToolResult, error) {
+			return validateToolMedia(result, m.sink.request.Session.ID)
+		}), nil
 	}, nil
 }
 
 // Complete the durable tool receipt before exposing terminal EOF to Eino.
 // Errors after effects began, including errors while draining cleanup, remain
 // failures even if earlier chunks looked successful.
-func relayToolStream[T any](ctx context.Context, m *toolMiddleware, tc *adk.ToolContext, source *schema.StreamReader[T], release func(), content func(T) []harness.Content) *schema.StreamReader[T] {
+func relayToolStream[T any](ctx context.Context, m *toolMiddleware, tc *adk.ToolContext, source *schema.StreamReader[T], release func(), content func(T) []harness.Content, project ...func(T) (T, error)) *schema.StreamReader[T] {
 	reader, writer := schema.Pipe[T](1)
 	go func() {
 		var terminal error
@@ -239,12 +248,26 @@ func relayToolStream[T any](ctx context.Context, m *toolMiddleware, tc *adk.Tool
 			if err != nil {
 				terminal = errors.Join(terminal, err)
 				if !draining {
-					writer.Send(chunk, err)
+					var zero T
+					writer.Send(zero, err)
 					draining = true
 				}
 				continue
 			}
 			if draining {
+				continue
+			}
+			for _, transform := range project {
+				chunk, err = transform(chunk)
+				if err != nil {
+					break
+				}
+			}
+			if err != nil {
+				terminal = errors.Join(terminal, err)
+				var zero T
+				writer.Send(zero, err)
+				draining = true
 				continue
 			}
 			if err = m.sink.emit(ctx, harness.RunEvent{Kind: "tool_update", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress", Content: content(chunk)}); err != nil {

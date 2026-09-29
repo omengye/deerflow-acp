@@ -22,9 +22,9 @@
 | 领域事件 / 历史 | 持久事件、文本/工具 updates、load 重放 | 有界异步发送、计划/usage/产物投影、分页历史 |
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
-| 图片 / 附件 / 产物 | 引擎图片转换准备中；ACP 暂不声明支持 | 校验、文件持久化、引用和重放 |
+| 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image 与产物登记已验证 | MCP/模型生成媒体导入、可选对象存储发布 |
 | 后台子任务 / 长命令 | SQL provider 已写入，未完成调度接线 | Manager/TurnLoop、取消、租约、通知、重启恢复 |
-| Skills / memory / 压缩 | Skills 不可变注册表、原生 middleware、SDK 管理与逐步加载已接入 | Skills CLI 管理、memory、压缩及其共享预算 |
+| Skills / memory / 压缩 | Skills 不可变注册表、原生 middleware、SDK 管理、显式 CLI 启动配置与逐步加载已接入 | memory、压缩及其共享预算 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、多窗口、现有 Rust Bridge 实际二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 诊断子集 |
 | 可选外部 ACP Agent | 待实现 | 白名单、反向权限、预算和取消链 |
@@ -89,6 +89,21 @@ GOMAXPROCS=2 go test -mod=readonly -race -p=2 -count=1 -timeout=3m ./ ./internal
 Engine 的最终 checkpoint 回归、ACP agent/protocol、Skills 和 Sandbox 已分别通过限定包 race；MCP 新增连接代际恢复回归通过 race。整模块测试包含真实可执行文件、MCP、命令进程和本地模型 fixture，未调用付费模型。测试发现过的命令错误丢失结构化输出问题已修复，最终 SDK race 验证通过。
 
 本批 `go mod verify` 通过；`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -mod=readonly -p=2 ./...` 全模块交叉编译通过。
+
+## 第四阶段媒体与 Skills 启动配置
+
+- `--skills-config` 在两个 CLI 中复用同一 JSON profile。仅处理显式来源与安装条目；不扫描 HOME。每个安装单独提交，后续条目失败不回滚此前安装，重试相同内容复用已有版本。
+- 媒体资产位于独立数据目录内的只读快照，归属会话。输入图片限 8 张、每张 20 MiB、每轮合计 40 MiB；本地附件限 25 MiB。源文件改变后，已接受输入保留原快照。
+- 图片能力按模型显式白名单，默认关闭；ACP 初始化按可选模型交集声明能力，每轮按当前模型校验。`--vision-model` 不会自动把模型加入可选列表。
+- 输入资产、accepted input、user_message 同事务关联。原生 session/checkpoint 只保留 AssetRef 和稳定 URI，模型调用复制消息后临时加载图片；不会原地修改历史对象。历史恢复和前台子 Agent 走同一路径。
+- `view_image` 只读查看 workspace 图片。`present_files` 只接受 `.deerflow/outputs` 内文件并保存不可变快照，产物索引、tool_end 和 receipt 同事务提交；读取图片不会登记为用户产物。
+- SDK 支持 `ListArtifacts`/`ResolveAsset`，ACP 提供标准 resource_link 与 `_deerflow/artifacts/list`。HTTP(S) 普通链接只作引用，远程图片不自动下载。
+- 图片预算使用每张 4,096 tokens 的明确估值，provider usage 到达后结算。每次模型调用最多加载 32 个不同图片资产、总计 40 MiB；这项限制覆盖完整待发送历史。
+- 原始 MCP 图片输出、模型生成多媒体暂时拒绝，等待工具/模型输出导入器；不能把现有图片输入支持描述成全部多媒体闭环。
+
+本批验证通过真实 SDK+模型 fixture 的图片输入、重启后历史加载、引用持久化与无 Base64 入库，以及 present_files 实际工具调用、源文件修改后保持快照、重启查回而不重放。view_image 在 read_only 下通过真实工具调用验证，不请求写入审批、不登记产物。真实 ACP 可执行文件测试覆盖图片到模型、标准文件链接返回及重启后的图片与产物历史恢复。
+
+assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 race；资产事务回滚、会话隔离、故障清理、Close 并发、SDK 对账拒绝伪造资产等回归通过。真实管道 2 × 20 MiB 图片输入与 load 通过普通测试；大型管道用例在 race 构建下跳过，小图片相同路径参加 race。两个 CLI 的 Linux CGO-disabled 交叉编译通过。以上使用本地模型 fixture，不代表真实付费模型或编辑器互操作验收。
 
 ## 第二阶段已落地
 
