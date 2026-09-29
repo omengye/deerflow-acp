@@ -134,6 +134,21 @@ type ExecutionRecovery struct {
 	AttemptWasRunning bool
 }
 
+func (s *Store) blockRecoveredExecutionTx(ctx context.Context, tx *sql.Tx, scope budget.Scope) error {
+	const reason = "interrupted budget attempt requires reconciliation"
+	if err := settleOpenReceipts(ctx, tx, scope.MemberID, reason); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE harness_execution_intents SET state='cancelled',version=version+1,updated_at=? WHERE run_id=? AND state='pending'`, timestamp(), scope.MemberID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE harness_executions SET status='needs_reconciliation',version=version+1,blocked_reason=?,updated_at=? WHERE run_id=?`, reason, timestamp(), scope.MemberID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE harness_runs SET status='needs_reconciliation',error=?,updated_at=? WHERE id=?`, reason, timestamp(), scope.MemberID)
+	return err
+}
+
 // RecoverExecutionsTx is the execution-aware startup pass. Run it before the
 // legacy reconciliation pass, which must exclude executions preserved here.
 // It invokes no model/tool and never infers success from a checkpoint alone.

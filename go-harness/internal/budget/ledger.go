@@ -64,6 +64,9 @@ CREATE INDEX IF NOT EXISTS budget_reservation_root ON budget_reservations(root_i
 	if err != nil {
 		return nil, &PersistenceError{Operation: "migrate", Err: err}
 	}
+	if err = migrateToolContinuations(db); err != nil {
+		return nil, persist("migrate tool continuations", err)
+	}
 	return l, nil
 }
 
@@ -621,6 +624,9 @@ func (l *Ledger) MarkDispatched(ctx context.Context, grant Reservation) (first b
 			if old.State == "unknown" {
 				return ErrUnknown
 			}
+			if old.State == "paused" || old.State == "continued" {
+				return ErrConflict
+			}
 			return nil
 		}
 		r, e := readRoot(ctx, tx, old.Scope.RootBudgetID)
@@ -675,6 +681,9 @@ func (l *Ledger) Settle(ctx context.Context, grant Reservation, s Settlement) (u
 				return ErrConflict
 			}
 			return json.Unmarshal(stored, &usage)
+		}
+		if old.State == "paused" || old.State == "continued" {
+			return ErrConflict
 		}
 		r, e := readRoot(ctx, tx, old.Scope.RootBudgetID)
 		if e != nil {

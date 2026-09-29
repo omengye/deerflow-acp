@@ -77,7 +77,16 @@ func (s *Store) Session(ctx context.Context, id string) (harness.Session, error)
 	return scanSession(s.db.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, id))
 }
 func (s *Store) List(ctx context.Context, cwd, cursor string, limit int) ([]harness.Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE (?='' OR s.cwd=?) AND s.id>? ORDER BY s.id LIMIT ?`, cwd, cwd, cursor, limit)
+	children, err := s.hasBackgroundSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE (?='' OR s.cwd=?) AND s.id>?`
+	if children {
+		query += ` AND NOT EXISTS(SELECT 1 FROM harness_background_specs b WHERE b.child_session_id=s.id)`
+	}
+	query += ` ORDER BY s.id LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, query, cwd, cwd, cursor, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +140,14 @@ func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest, prepared .
 	if _, err = tx.ExecContext(ctx, `INSERT INTO harness_inputs VALUES(?,?,?)`, req.InputID, req.RunID, input); err != nil {
 		return err
 	}
+	if lease, ok := ctx.Value(executionLeaseKey{}).(ExecutionLease); ok {
+		if s.BudgetLedger == nil {
+			return executionInvalid("durable execution requires budget ledger")
+		}
+		if _, err = s.BeginExecutionTx(ctx, tx, req, lease.OwnerID, lease.Scope); err != nil {
+			return err
+		}
+	}
 	for _, p := range prepared {
 		if p != nil {
 			if err = p.Attach(ctx, tx, req.InputID); err != nil {
@@ -149,6 +166,18 @@ func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest, prepared .
 func (s *Store) Append(ctx context.Context, e harness.RunEvent, stores ...*assets.Store) (harness.RunEvent, error) {
 	if isToolEvent(e.Kind) {
 		return s.appendToolEvent(ctx, e, stores...)
+	}
+	if attempt, ok := ctx.Value(executionAttemptKey{}).(*executionAttempt); ok {
+		var saved harness.RunEvent
+		err := withExecutionTransaction(ctx, s, func(tx *sql.Tx) error {
+			if _, err := checkExecutionLease(ctx, tx, attempt.lease); err != nil {
+				return err
+			}
+			var err error
+			saved, err = appendEventTx(ctx, tx, e)
+			return err
+		})
+		return saved, err
 	}
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -239,7 +268,30 @@ func (s *Store) ReconcileInterrupted(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
+	recovered, err := s.RecoverExecutionsTx(ctx, tx)
+	if err != nil {
+		return err
+	}
 	if s.BudgetLedger != nil {
+		for _, recovery := range recovered {
+			if !recovery.AttemptWasRunning || recovery.Status != harness.ExecutionWaitingInput {
+				continue
+			}
+			var unresolved int
+			var state string
+			if err = tx.QueryRowContext(ctx, `SELECT state,(SELECT count(*) FROM budget_reservations WHERE attempt_id=? AND state IN ('reserved','dispatched','unknown')) FROM budget_attempts WHERE id=?`, recovery.Scope.AttemptID, recovery.Scope.AttemptID).Scan(&state, &unresolved); err != nil {
+				return err
+			}
+			if state == "active" && unresolved == 0 {
+				if err = s.BudgetLedger.EndAttemptTx(ctx, tx, recovery.Scope, budget.OutcomeWaitingInput); err != nil {
+					return err
+				}
+			} else {
+				if err = s.blockRecoveredExecutionTx(ctx, tx, recovery.Scope); err != nil {
+					return err
+				}
+			}
+		}
 		if err = s.BudgetLedger.ReconcileInterruptedTx(ctx, tx); err != nil {
 			return err
 		}

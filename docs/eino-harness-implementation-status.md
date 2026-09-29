@@ -18,7 +18,7 @@
 | SQLite 基础和 Eino providers | checkpoint、session events、background task stores；上游 conformance、崩溃恢复、SQL 故障注入测试已通过 | 后续 Manager/工具恢复装配 |
 | 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close 已写入 | 黑盒互操作、官方 TCK、真实编辑器 |
 | 执行与工作区工具 | Eino TurnLoop/DeepAgent、前台委派、文件工具、plan/read_only、主/子共享预算；执行回执与命令工具已接线 | 长期会话循环、后台委派和更完整的工具集 |
-| 权限 / 恢复 | 审批意图先落库、精确参数授权、版本绑定、断连拒绝；不确定工具结果阻止新运行；SDK/ACP 显式对账 | durable HITL 和公开执行检查点恢复 |
+| 权限 / 恢复 | 原生 durable HITL、审批/检查点/回执/预算联合恢复、SDK/ACP 显式执行查询与恢复已接入 | 后台任务 broker；真实编辑器与 MCP 重新绑定恢复 |
 | 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、分页历史与 load 重放 | 有界异步发送、计划/usage 投影 |
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
@@ -131,3 +131,18 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 后台基础层另已验证 native subagent interrupt → 重建服务 → broker resume、checkpoint/task/outbox 事务故障回滚、取消与清理 join、跨重启 child 隔离及通知去重。此时尚未向模型开放后台委派，也未开放公共执行恢复；不能据这些基础测试宣称完整 V1 已完成。
 
 第二阶段集成检查中发现并修正：取消与独立故障组成 joined error 时不能整条丢弃；provider 在取消之后排空流时上报的故障仍须返回；MCP Close 必须等本地连接和直接子进程真正清理完成后才允许 SDK 释放数据库锁。对应回归已增加。一次全量测试因 HTTP 测试服务在 middleware 内等待不可取消 context 而超时；该代际替换取消用例已改为可回收的真实 stdio 进程，限定包 race 复测通过。出站 HTTP 取消仍不代表远端副作用已经停止。
+
+
+## 第六阶段前台 durable HITL
+
+- 真实 Eino StatefulInterrupt 先暂停受保护工具，保存审批意图；资源全部 join 后，同事务提交 checkpoint manifest、waiting 状态与预算 attempt 结束。在线审批继续原 prompt；取消审批对话或审批阶段断连保留等待状态。
+- 恢复沿用原 run/input/tool call IDs，创建新 attempt/fence；必须重新审批全部 pending targets。一次性 grant 的消费与 tool_execute 或拒绝回执同事务，恢复不重新计入逻辑工具预算。
+- manifest 绑定原输入摘要、配置、checkpoint、原生历史位置、领域事件游标、工具回执和中断地址。审批参数原始字节保留，包括空格与换行；变更/缺失 target 在执行前拒绝。
+- SDK 提供 Execution（空 runID 查询最近执行）、ResumeExecution、CancelExecution；ACP 条件声明 _deerflow/executions/get、/resume、/cancel，resume 与 prompt 都在协议 reader 中同步准入。标准 session/resume 继续只做附着。
+- 等待执行阻止新 prompt 与配置切换。ACP 断连与显式 session/cancel 分开；SDK context 取消视为显式取消。不确定副作用仍须显式对账。
+- Eino 内建 task 是编排节点，记录 subagent_start/suspended/resumed/end。子模型与实际工具继续共用预算，只有实际外部工具生成 effect receipt；启用原生 subagent 时禁止自定义工具占用 task 名称。
+- 后台 child business sessions 已从普通 list/load/admit/run 入口隔离，准备接入独立 native task host；此项隔离不代表后台 host 已对外开放。
+
+验证使用真实 Eino、本地模型 SSE fixture、工作区 write_file、SQLite close/open 和双向 ACP pipes。SDK 覆盖暂停后重启的批准/拒绝/取消、原输入与参数保持、最大工具次数为 1 的续跑，以及重复恢复拒绝。ACP 覆盖审批断连后重新附着、fresh permission、latest discovery、owner/CAS/严格参数校验与繁忙准入。运行时覆盖 dispatch/receipt/grant 事务故障回滚和通知失败保留等待；引擎覆盖同级并行与嵌套子 Agent 中断恢复。
+
+限定包完整 race 检查已通过：SDK 47.736s、ACP agent 33.588s、runtime 46.3s、session 1.35s、engine 33.312s、budget 9.872s。这些记录对应当前阶段，尚未执行本阶段的整模块回归、Linux 交叉构建或真实编辑器/TCK 验收。完整 V1 仍在实施中。

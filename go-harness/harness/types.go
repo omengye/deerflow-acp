@@ -107,6 +107,9 @@ type EventHandler func(context.Context, RunEvent) error
 type RunResult struct {
 	StopReason string
 	Limit      string
+	// Execution describes a durable waiting/terminal state when execution
+	// recovery is enabled. It does not extend ACP's standard stopReason enum.
+	Execution *ExecutionState
 }
 
 // Engine must stop model/tool execution when ctx is cancelled and finish cleanup

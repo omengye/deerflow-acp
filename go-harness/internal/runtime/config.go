@@ -66,6 +66,9 @@ func (s *Service) SetConfigOption(ctx context.Context, owner, id, key, value str
 		return nil, err
 	}
 	defer release()
+	if err = s.Store.requireNoWaitingExecution(ctx, id); err != nil {
+		return nil, err
+	}
 	x, err := s.Store.Session(ctx, id)
 	if err != nil {
 		return nil, err

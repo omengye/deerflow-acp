@@ -52,6 +52,11 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 }
 
 func (e *Engine) turnLoop(ctx context.Context, req harness.RunRequest, resumeID, contract string, extension json.RawMessage, budget *runBudget, saved *checkpointEnvelope, agent adk.Agent, consume func(*adk.AsyncIterator[*adk.AgentEvent]) error) (*adk.TurnLoop[turnItem, *schema.Message], *checkedCheckpoints, error) {
+	hooks := executionHooks(ctx)
+	params, err := resumeParams(hooks, saved)
+	if err != nil {
+		return nil, nil, err
+	}
 	key := CheckpointID(req.RunID)
 	if resumeID != "" {
 		key = resumeID
@@ -62,14 +67,13 @@ func (e *Engine) turnLoop(ctx context.Context, req harness.RunRequest, resumeID,
 	item := itemFor(req)
 	item.Contract = contract
 	var input []*schema.Message
-	var err error
 	if resumeID == "" {
 		input, err = e.input(ctx, req)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
-	checkpoints := &checkedCheckpoints{inner: e.config.CheckpointStore, key: key, budget: budget, extension: append(json.RawMessage(nil), extension...), cached: saved}
+	checkpoints := &checkedCheckpoints{inner: e.config.CheckpointStore, key: key, budget: budget, extension: append(json.RawMessage(nil), extension...), cached: saved, hooks: hooks}
 	loop := adk.NewTurnLoop(adk.TurnLoopConfig[turnItem, *schema.Message]{
 		Store: checkpoints, CheckpointID: key, SessionID: req.Session.ID, SessionStore: e.config.SessionStore,
 		GenInput: func(_ context.Context, _ *adk.TurnLoop[turnItem, *schema.Message], items []turnItem) (*adk.GenInputResult[turnItem, *schema.Message], error) {
@@ -90,12 +94,16 @@ func (e *Engine) turnLoop(ctx context.Context, req harness.RunRequest, resumeID,
 				return nil, fmt.Errorf("%w: unexpected checkpoint input identity", harness.ErrInvalidInput)
 			}
 			previous := interrupted[0]
-			previous.InputID = item.InputID
+			// Local legacy callers historically supplied a fresh invocation ID.
+			// Durable execution preserves its original accepted input identity.
+			if saved.Version == 1 && hooks == nil {
+				previous.InputID = item.InputID
+			}
 			if previous != item {
 				return nil, fmt.Errorf("%w: checkpoint session or policy changed", harness.ErrInvalidInput)
 			}
 			checkpoints.allowWrites()
-			return &adk.GenResumeResult[turnItem, *schema.Message]{Consumed: interrupted, Decision: adk.TurnLoopResumeDecisionResume}, nil
+			return &adk.GenResumeResult[turnItem, *schema.Message]{Consumed: interrupted, Decision: adk.TurnLoopResumeDecisionResume, ResumeParams: params}, nil
 		},
 		PrepareAgent: func(context.Context, *adk.TurnLoop[turnItem, *schema.Message], []turnItem) (adk.Agent, error) {
 			return agent, nil
@@ -118,11 +126,12 @@ func (e *Engine) turnLoop(ctx context.Context, req harness.RunRequest, resumeID,
 // execution budget and extension state alongside it. Older development formats
 // are rejected rather than restoring execution with reset counters or policies.
 type checkpointEnvelope struct {
-	Version   int                     `json:"version"`
-	Native    []byte                  `json:"native"`
-	Budget    *budgetSnapshot         `json:"budget"`
-	Ledger    *durablebudget.Identity `json:"ledger,omitempty"`
-	Extension json.RawMessage         `json:"extension,omitempty"`
+	Version    int                         `json:"version"`
+	Native     []byte                      `json:"native"`
+	Budget     *budgetSnapshot             `json:"budget"`
+	Ledger     *durablebudget.Identity     `json:"ledger,omitempty"`
+	Extension  json.RawMessage             `json:"extension,omitempty"`
+	Interrupts []ExecutionInterruptBinding `json:"interrupts,omitempty"`
 }
 
 func decodeCheckpointEnvelope(data []byte) (*checkpointEnvelope, error) {
@@ -176,6 +185,14 @@ type checkedCheckpoints struct {
 	pending      bool
 	delete       bool
 	data         []byte
+	hooks        *ExecutionHooks
+	interrupts   []ExecutionInterruptBinding
+}
+
+func (s *checkedCheckpoints) setInterrupts(bindings []ExecutionInterruptBinding) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.interrupts = append([]ExecutionInterruptBinding(nil), bindings...)
 }
 
 func (s *checkedCheckpoints) allowWrites() { s.mu.Lock(); s.writeAllowed = true; s.mu.Unlock() }
@@ -238,14 +255,16 @@ func (s *checkedCheckpoints) commit(ctx context.Context, deleteAllowed bool) err
 		if !deleteAllowed {
 			return nil
 		}
-		if d, ok := s.inner.(adk.CheckPointDeleter); ok {
+		if s.hooks != nil && s.hooks.StageCheckpoint != nil {
+			err = s.hooks.StageCheckpoint(ctx, StagedExecutionCheckpoint{ID: s.key, Remove: true})
+		} else if d, ok := s.inner.(adk.CheckPointDeleter); ok {
 			err = d.Delete(ctx, s.key)
 		} else {
 			// Eino's Get/Set-only store contract uses empty data as no state.
 			err = s.inner.Set(ctx, s.key, nil)
 		}
 	} else {
-		envelope := checkpointEnvelope{Native: s.data, Extension: s.extension}
+		envelope := checkpointEnvelope{Native: s.data, Extension: s.extension, Interrupts: append([]ExecutionInterruptBinding(nil), s.interrupts...)}
 		if s.budget.ledger != nil {
 			envelope.Version = 2
 			envelope.Ledger, err = s.budget.durableIdentity(ctx)
@@ -259,7 +278,11 @@ func (s *checkedCheckpoints) commit(ctx context.Context, deleteAllowed bool) err
 			var data []byte
 			data, err = json.Marshal(envelope)
 			if err == nil {
-				err = s.inner.Set(ctx, s.key, data)
+				if s.hooks != nil && s.hooks.StageCheckpoint != nil {
+					err = s.hooks.StageCheckpoint(ctx, StagedExecutionCheckpoint{ID: s.key, Data: data, Interrupts: append([]ExecutionInterruptBinding(nil), s.interrupts...)})
+				} else {
+					err = s.inner.Set(ctx, s.key, data)
+				}
 			}
 		}
 	}

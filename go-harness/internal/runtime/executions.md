@@ -1,10 +1,10 @@
 # Durable execution storage and permission broker
 
-This package implements the storage groundwork for durable human interaction.
-The phase 1 change creates the tables and transaction APIs. It does not expose
-an ACP execution endpoint or make native Eino continuation publicly usable.
-Runtime orchestration and the native interrupt adapter are subsequent integration
-steps. Standard ACP `session/resume` still means attaching a session.
+This package implements storage, permission brokering, and runtime orchestration
+for durable human interaction. The service opts into native continuation only
+when the engine advertises `DurableExecutions` and the durable ledger is wired.
+The SDK and ACP adapt the service's explicit execution APIs separately.
+Standard ACP `session/resume` still means attaching a session.
 
 ## Identity and authority
 
@@ -43,11 +43,13 @@ error. SQLite uses the runtime's immediate transaction configuration.
    In one transaction call `SuspendExecutionTx` with the staged native bytes
    and trusted interrupt bindings, then ledger `EndAttemptTx(WaitingInput)`.
    This atomically promotes the final checkpoint and the execution manifest.
-4. **Claim a resume.** Acquire coordinator ownership, then call
-   `ClaimExecutionResumeTx` and ledger `BeginAttemptTx` in the same transaction.
-   Reconstruct the original input with `ExecutionRequestTx`. Issue fresh
-   permission requests from `PendingExecutionPermissionsTx`, then record each
-   answer with `RecordPermissionGrantTx`.
+4. **Claim a resume.** Hold coordinator ownership and validate the waiting
+   manifest before issuing fresh permission requests. Human permission I/O
+   occurs while the previous ledger attempt is ended. Once every answer is
+   available, call `ClaimExecutionResumeTx`, ledger `BeginAttemptTx`, and
+   `RecordPermissionGrantTx` in the same transaction. Reconstruct the original
+   input with `ExecutionRequestTx`. No budget attempt stays active while the
+   user is deciding.
 5. **Build native targets.** `ExecutionResumeBindingsTx` validates the manifest
    again and requires a fresh ready answer for every pending target. The
    trusted engine adapter builds Eino resume parameters from these bindings.
@@ -90,11 +92,32 @@ budget ledger and cannot be refunded by restoring checkpoint bytes.
 At startup, call `RecoverExecutionsTx` before legacy run/approval/receipt
 settlement. Valid waits are preserved; current grants are revoked. Interrupted
 attempts return their scopes for ledger cleanup in the same transaction.
-Legacy reconciliation must exclude these preserved waiting runs, or it would
-destroy the pending intents. Missing/stale manifests become
+Legacy reconciliation excludes runs with the committed `waiting_input`
+business status, including background host projections. Otherwise it would
+destroy pending intents. Missing/stale foreground manifests become
 `needs_reconciliation`; started effects become uncertain. Native adapter checks
 for tool/extension generation compatibility remain necessary in addition to
 these storage checks, including the existing MCP reconnect-generation guard.
+
+## Service behavior
+
+`Service.Run` drives native interruption, permission collection, and successive
+attempts within the original prompt call. An unanswered/cancelled permission
+request leaves the execution waiting. `ResumeExecution` resumes only a precise
+run/version; `CancelExecution` cancels an idle wait/reconciliation state.
+`Execution` accepts an empty run ID to discover the most recent execution after
+reconnection. Every public operation checks current session ownership.
+
+The coordinator distinguishes explicit cancellation from disconnect. ACP marks
+its connection-owned request context with `WithTransportCancellation`, because
+the peer can cancel request parents before coordinator disconnect executes.
+SDK context cancellation is explicit by default. Notification failures are
+reported after persisted execution state is finalized; they cannot roll back a
+valid waiting checkpoint or accidentally authorize automatic continuation.
+
+Pending execution blocks new prompts and configuration/mode changes. Background
+child sessions are hidden from the ordinary session list and rejected by
+foreground load/admission/run APIs; their native task lease controls execution.
 
 ## Verification
 
@@ -105,3 +128,9 @@ pending sibling bindings, disconnect with fresh authorization, startup recovery,
 and budget spending after a failed resume. SQL fault injection verifies rollback
 of checkpoint promotion, resume claim plus budget attempt, cancellation, grant
 consumption plus tool receipt, and zero-row CAS rejection.
+
+`execution_service_test.go` verifies automatic allow and deny, permission I/O
+with no active budget attempt, exact whitespace-preserving arguments, callback
+effects after grant/receipt commit, receipt-failure dispatch prevention,
+disconnect versus SDK cancellation, fresh authorization after owner replacement,
+latest-run discovery, notification failure, and real SQLite close/open recovery.

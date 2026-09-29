@@ -1,0 +1,170 @@
+package eino
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/prebuilt/deep"
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
+	"github.com/omengye/deerflow-acp/go-harness/harness"
+	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
+)
+
+// PreparedAttempt is one fresh assembly of the same model/tool/media/budget
+// stack used by foreground TurnLoop execution. A background host owns its
+// native runner, persistence and attempt lease; this value owns only the agent
+// and its real I/O/resources. Do not reuse it across attempts.
+type PreparedAttempt struct {
+	Agent        adk.ResumableAgent
+	Contract     string
+	State        json.RawMessage
+	budget       *runBudget
+	io           *runIO
+	sink         *eventSink
+	cleanups     []func() error
+	resourceOnce sync.Once
+	resourceErr  error
+	joinOnce     sync.Once
+	joinErr      error
+}
+
+// PrepareAttempt requires the already-active trusted budget scope when a
+// ledger is configured. Even if err is non-nil, a non-nil returned attempt must
+// be joined. name is the immutable host-registered agent version. cancel must
+// stop the caller's native runner without skipping provider/process cleanup.
+func (e *Engine) PrepareAttempt(ctx context.Context, req harness.RunRequest, name string, pinned json.RawMessage, events harness.EventHandler, permissions harness.PermissionHandler, cancel func()) (*PreparedAttempt, error) {
+	if req.Session.ID == "" || req.RunID == "" || name == "" {
+		return nil, errors.New("session, run and agent names are required")
+	}
+	b, err := e.newBudget(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	sink := &eventSink{request: req, callback: events, cancel: cancel, active: make(map[string]string), finished: make(map[string]bool)}
+	return e.prepareAgent(ctx, req, name, pinned, b, sink, newRunIO(ctx), permissions)
+}
+
+func (p *PreparedAttempt) closeResources() error {
+	p.resourceOnce.Do(func() {
+		for i := len(p.cleanups) - 1; i >= 0; i-- {
+			p.resourceErr = errors.Join(p.resourceErr, p.cleanups[i]())
+		}
+	})
+	return p.resourceErr
+}
+
+// JoinAndClose deliberately has no early deadline return: timeout does not
+// prove that a provider stream or child process has actually stopped.
+func (p *PreparedAttempt) JoinAndClose(ctx context.Context) error {
+	p.joinOnce.Do(func() {
+		p.io.closeAndWait()
+		p.joinErr = errors.Join(p.io.failure(), p.sink.closeOpen(context.WithoutCancel(ctx)), p.sink.failure(), p.closeResources())
+	})
+	return p.joinErr
+}
+
+func (p *PreparedAttempt) RemainingTime() (time.Duration, bool) {
+	return p.budget.remainingTime(), p.budget.limits.Timeout > 0
+}
+func (p *PreparedAttempt) BudgetFailure() error {
+	if err := p.budget.failure(); err != nil {
+		return &durablebudget.LimitError{Resource: err.resource}
+	}
+	return nil
+}
+
+func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name string, pinned json.RawMessage, b *runBudget, sink *eventSink, ioLifecycle *runIO, permissions harness.PermissionHandler) (*PreparedAttempt, error) {
+	p := &PreparedAttempt{budget: b, io: ioLifecycle, sink: sink}
+	chatModel := e.model
+	if e.config.ChatModel == nil && req.Session.Model != "" && req.Session.Model != e.config.Model {
+		var err error
+		chatModel, err = newModel(ctx, e.config, req.Session.Model)
+		if err != nil {
+			return p, err
+		}
+	}
+	tools := append([]tool.BaseTool(nil), e.config.Tools...)
+	extensions := RunExtensions{}
+	if e.config.ExtensionFactory != nil {
+		var err error
+		extensions, err = e.config.ExtensionFactory(ctx, req, append(json.RawMessage(nil), pinned...))
+		if extensions.Cleanup != nil {
+			p.cleanups = append(p.cleanups, extensions.Cleanup)
+		}
+		if err != nil {
+			return p, fmt.Errorf("run extensions: %w", err)
+		}
+		if len(extensions.State) > 0 && !json.Valid(extensions.State) {
+			return p, errors.New("extension state is not valid JSON")
+		}
+		tools = append(tools, extensions.Tools...)
+	}
+	p.State = append(json.RawMessage(nil), extensions.State...)
+	if e.config.ToolFactory != nil {
+		more, cleanup, err := e.config.ToolFactory(ctx, req)
+		if cleanup != nil {
+			p.cleanups = append(p.cleanups, func() error {
+				if err := cleanup(); err != nil {
+					return fmt.Errorf("workspace tools cleanup: %w", err)
+				}
+				return nil
+			})
+		}
+		if err != nil {
+			return p, fmt.Errorf("workspace tools: %w", err)
+		}
+		tools = append(tools, more...)
+	}
+	protected := make(map[string]bool, len(tools))
+	contracts := make([]*schema.ToolInfo, 0, len(tools))
+	for _, t := range tools {
+		if t == nil {
+			return p, errors.New("nil tool")
+		}
+		info, err := t.Info(ctx)
+		if err != nil {
+			return p, fmt.Errorf("tool info: %w", err)
+		}
+		if info == nil || info.Name == "" {
+			return p, errors.New("tool name is required")
+		}
+		if info.Name == "task" && !e.config.DisableSubAgent && !(req.Session.ConfigVersion > 0 && !req.Session.Subagents) {
+			return p, errors.New("tool name task is reserved for native Eino delegation")
+		}
+		if protected[info.Name] {
+			return p, fmt.Errorf("duplicate tool %q", info.Name)
+		}
+		protected[info.Name] = true
+		contracts = append(contracts, info)
+	}
+	var err error
+	p.Contract, err = e.executionContract(contracts, extensions.State)
+	if err != nil {
+		return p, err
+	}
+	selectedModel := req.Session.Model
+	if selectedModel == "" {
+		selectedModel = e.config.Model
+	}
+	media := &mediaProjection{resolver: e.config.AssetResolver, policy: e.config.Media, sessionID: req.Session.ID, model: selectedModel}
+	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle, budget: b}
+	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), extensions.Handlers...)
+	handlers = append(handlers, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media}, mw)
+	p.Agent, err = deep.New(ctx, &deep.Config{
+		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction,
+		ChatModel: chatModel, MaxIteration: e.config.MaxIterations,
+		ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}},
+		Handlers:    handlers, WithoutGeneralSubAgent: e.config.DisableSubAgent || (req.Session.ConfigVersion > 0 && !req.Session.Subagents),
+	})
+	if err != nil {
+		return p, fmt.Errorf("create deep agent: %w", err)
+	}
+	return p, nil
+}

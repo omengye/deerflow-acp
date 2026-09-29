@@ -46,6 +46,15 @@ overshoot is recorded and closes new token admissions. Availability occupied
 by concurrent holds is temporary denial, not permanent exhaustion. Hitting a
 call count denies new calls without cancelling calls already admitted.
 
+Native permission suspension preserves the already-counted tool admission.
+`PauseTool` only pauses a tool that has not dispatched. `ResumeTool` consumes
+that paused predecessor exactly once and issues a reservation for the new
+attempt without incrementing the tool-call count again. The predecessor must
+have ended in `waiting_input`; root, member, session, argument digest and
+monotonic attempt fence must match. This allows a budget of one tool call to
+pause and then execute after approval. A transferred/paused reservation cannot
+be dispatched or settled directly.
+
 Unjoined or indeterminate work remains held and blocks fresh effects. Lease
 expiry and process restart do not prove absence of provider charges. Startup
 reconciliation preserves holds and marks interrupted attempts/reservations
@@ -66,6 +75,13 @@ tail, marks it unknown and blocks new work. Long machine-off time is not
 charged as actual execution. Clock regression fails closed. Lease heartbeats
 must continue through cleanup, until I/O has really joined.
 
+`HeartbeatTx` can renew the same live attempt after quota exhaustion, so the
+native task's heartbeat transaction still protects cleanup. The standalone
+`Heartbeat` commits renewal before returning a quota signal. Neither admits
+new effects. A distinct optional heartbeat fence permits stopping cleanup;
+the stricter effect fence is checked by reserve and dispatch. Expired or
+unknown attempts cannot publish a normal completed/cancelled/waiting outcome.
+
 ## Checkpoints and limitations
 
 Ledger-backed checkpoint envelopes contain root/policy/revision identity;
@@ -73,6 +89,24 @@ local counters remain only for the no-ledger compatibility path. A newer
 ledger than the checkpoint is expected, while an older ledger or mismatched
 policy is rejected. Legacy local checkpoints cannot initialize production
 quota because failed retry spending cannot be reconstructed from them.
+
+Permission checkpoints also carry the exact native interruption bindings.
+The neutral `internal/interaction` seam accepts host-owned resume targets and
+grant IDs, and stages completed checkpoint bytes only after engine I/O and
+resource cleanup. The runtime publishes bytes, waiting state and attempt end
+atomically. Permission resolution is read-only; the grant is consumed in the
+same transaction as the tool-started receipt or terminal denial. The native
+state stores the original accepted input identity and paused tool reservation.
+
+The built-in Eino `task` endpoint is an orchestration boundary. It emits
+`subagent_start`, `subagent_suspended`, `subagent_resumed` and `subagent_end`
+events, and preserves native composite interruption state. It does not create
+an external-effect receipt or consume another tool-call admission on resume.
+Every child model and actual tool still uses the same ledger and permission
+middleware. User tools cannot collide with the active native `task` name.
+This distinction lets a child permission pause without leaving a misleading
+started/uncertain parent effect receipt or serializing native checkpoint bytes
+into a failed tool result.
 
 The ledger provides atomic host admission, not a strict provider currency cap.
 Input/image estimates and provider-internal HTTP retries can differ from actual

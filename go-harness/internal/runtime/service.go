@@ -62,6 +62,9 @@ func (s *Service) NewSession(ctx context.Context, owner, cwd string, servers ...
 }
 
 func (s *Service) Load(ctx context.Context, owner, id, cwd string, replay bool, emit harness.EventHandler, servers ...harness.MCPServer) (harness.Session, error) {
+	if err := s.Store.requireForegroundSession(ctx, id); err != nil {
+		return harness.Session{}, err
+	}
 	x, err := s.Store.Session(ctx, id)
 	if err != nil {
 		return x, err
@@ -121,6 +124,9 @@ type reservationKey struct{}
 
 // Admit must run in transport receive order, before asynchronous prompt dispatch.
 func (s *Service) Admit(ctx context.Context, owner, id string) (context.Context, func(), error) {
+	if err := s.Store.requireForegroundSession(ctx, id); err != nil {
+		return nil, nil, err
+	}
 	ctx, release, err := s.Coordinator.Begin(ctx, id, owner)
 	if err != nil {
 		return nil, nil, err
@@ -153,6 +159,9 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 	if len(input) == 0 {
 		return harness.RunResult{}, fmt.Errorf("%w: prompt must contain content", harness.ErrInvalidInput)
 	}
+	if err := s.Store.requireForegroundSession(ctx, id); err != nil {
+		return harness.RunResult{}, err
+	}
 	x, err := s.Store.Session(ctx, id)
 	if err != nil {
 		return harness.RunResult{}, err
@@ -169,6 +178,9 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 	}
 	if s.Engine == nil {
 		return harness.RunResult{}, fmt.Errorf("model engine is not configured")
+	}
+	if err = s.Store.requireNoWaitingExecution(ctx, id); err != nil {
+		return harness.RunResult{}, err
 	}
 	if err = s.Store.requireReconciled(ctx, id); err != nil {
 		return harness.RunResult{}, err
@@ -195,6 +207,9 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 				return harness.RunResult{}, fmt.Errorf("%w: media storage is not configured", harness.ErrInvalidInput)
 			}
 		}
+	}
+	if s.executionEngine() != nil {
+		return s.runDurableNew(ctx, owner, req, prepared, emit, approve)
 	}
 	if err = s.Store.BeginRun(ctx, req, prepared); err != nil {
 		if prepared != nil {
@@ -349,6 +364,9 @@ func (s *Service) SetMode(ctx context.Context, owner, id, mode string) error {
 		return err
 	}
 	defer release()
+	if err = s.Store.requireNoWaitingExecution(ctx, id); err != nil {
+		return err
+	}
 	x, err := s.Store.Session(ctx, id)
 	if err != nil {
 		return err

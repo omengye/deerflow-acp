@@ -43,6 +43,12 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores 
 		return e, err
 	}
 	defer tx.Rollback()
+	attempt, governed := ctx.Value(executionAttemptKey{}).(*executionAttempt)
+	if governed {
+		if _, err = checkExecutionLease(ctx, tx, attempt.lease); err != nil {
+			return e, err
+		}
+	}
 	var receipt harness.ToolReceipt
 	if e.Kind == "tool_start" {
 		if e.Status != "pending" || !json.Valid(e.Arguments) {
@@ -83,6 +89,19 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores 
 		}
 		if receipt.ToolName != e.ToolName {
 			return e, harness.ErrReceiptConflict
+		}
+		if governed {
+			grant, hasGrant := attempt.grants[e.ToolCallID]
+			consume := hasGrant && (e.Kind == "tool_execute" || e.Kind == "tool_end" && e.Status == "failed" && receipt.State == harness.ReceiptPending && (grant.Decision == harness.RejectOnce || grant.Decision == harness.RejectAlways))
+			if consume {
+				decision, err := s.ConsumePermissionGrantTx(ctx, tx, attempt.lease, grant, attempt.requests[e.ToolCallID])
+				if err != nil {
+					return e, err
+				}
+				if e.Kind == "tool_execute" && decision != harness.AllowOnce && decision != harness.AllowAlways {
+					return e, harness.ErrPermissionDenied
+				}
+			}
 		}
 		switch e.Kind {
 		case "tool_execute":
@@ -193,7 +212,7 @@ func appendEventTx(ctx context.Context, tx *sql.Tx, e harness.RunEvent) (harness
 // No execution is retried during recovery. A start boundary is deliberately
 // conservative: a crash immediately after that commit is still uncertain.
 func settleOpenReceipts(ctx context.Context, tx *sql.Tx, runID, reason string) error {
-	rows, err := tx.QueryContext(ctx, `SELECT receipt FROM harness_tool_receipts WHERE state IN ('pending','started') AND (?='' OR run_id=?) ORDER BY run_id,tool_call_id`, runID, runID)
+	rows, err := tx.QueryContext(ctx, `SELECT receipt FROM harness_tool_receipts WHERE state IN ('pending','started') AND (?='' OR run_id=?) AND (?<>'' OR NOT EXISTS(SELECT 1 FROM harness_runs r WHERE r.id=harness_tool_receipts.run_id AND r.status='waiting_input')) ORDER BY run_id,tool_call_id`, runID, runID, runID)
 	if err != nil {
 		return err
 	}

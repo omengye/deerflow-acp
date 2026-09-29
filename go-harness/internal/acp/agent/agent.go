@@ -42,11 +42,17 @@ func (a *Agent) Close() error { return a.peer.Close() }
 
 func (a *Agent) ready() bool { a.mu.Lock(); defer a.mu.Unlock(); return a.initialized }
 func (a *Agent) admit(ctx context.Context, method string, raw json.RawMessage) (context.Context, func(), error) {
-	if method != "session/prompt" {
+	if method != "session/prompt" && method != resumeExecutionMethod {
 		return ctx, nil, nil
 	}
+	ctx = hr.WithTransportCancellation(ctx)
 	if !a.ready() {
 		return nil, nil, rpcError(protocol.InvalidRequest, "initialize must complete first")
+	}
+	if method == resumeExecutionMethod {
+		if _, err := decodeExecutionRequest(method, raw); err != nil {
+			return nil, nil, err
+		}
 	}
 	var req struct {
 		SessionID string `json:"sessionId"`
@@ -77,6 +83,12 @@ func mapError(err error) error {
 		return err
 	}
 	switch {
+	case errors.Is(err, harness.ErrExecutionWaitingInput):
+		return executionRecoveryError(executionWaitingCode)
+	case errors.Is(err, harness.ErrExecutionConflict):
+		return executionRecoveryError(executionConflictCode)
+	case errors.Is(err, harness.ErrExecutionUnresumable):
+		return executionRecoveryError(executionUnresumableCode)
 	case errors.Is(err, harness.ErrReconciliationRequired):
 		return receiptRecoveryError(false)
 	case errors.Is(err, harness.ErrReceiptConflict):
@@ -119,12 +131,18 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		a.initialized = true
 		a.capabilities = req.ClientCapabilities
 		httpMCP, sseMCP := a.service.MCPCapabilities()
-		return map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": a.service.ImageInputEnabled(), "audio": false, "embeddedContext": false}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}}}, "_meta": map[string]any{"deerflow": map[string]any{"toolReceipts": receiptCapabilities(), "history": map[string]any{"version": 1, "listMethod": historyListMethod}, "artifacts": map[string]any{"version": 1, "listMethod": listArtifactsMethod}}}}, nil
+		response := map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": a.service.ImageInputEnabled(), "audio": false, "embeddedContext": false}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}}}, "_meta": map[string]any{"deerflow": map[string]any{"toolReceipts": receiptCapabilities(), "history": map[string]any{"version": 1, "listMethod": historyListMethod}, "artifacts": map[string]any{"version": 1, "listMethod": listArtifactsMethod}}}}
+		if a.service.DurableExecutionsEnabled() {
+			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["executions"] = executionCapabilities()
+		}
+		return response, nil
 	}
 	if !a.ready() {
 		return nil, rpcError(protocol.InvalidRequest, "initialize must complete first")
 	}
 	switch method {
+	case getExecutionMethod, resumeExecutionMethod, cancelExecutionMethod:
+		return a.executionRequest(ctx, method, raw)
 	case historyListMethod:
 		return a.historyRequest(ctx, raw)
 	case listArtifactsMethod:
@@ -249,39 +267,9 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err != nil {
 			return nil, err
 		}
-		var usageMu sync.Mutex
-		var usage harness.Usage
-		hasUsage := false
-		emit := func(ctx context.Context, e harness.RunEvent) error {
-			if e.Kind == "usage" && e.Usage != nil {
-				usageMu.Lock()
-				hasUsage = true
-				usage.InputTokens += e.Usage.InputTokens
-				usage.OutputTokens += e.Usage.OutputTokens
-				usage.TotalTokens += e.Usage.TotalTokens
-				usage.Estimated = usage.Estimated || e.Usage.Estimated
-				usageMu.Unlock()
-			}
-			return a.emit(ctx, e)
-		}
-		result, err := a.service.Run(ctx, a.owner, req.SessionID, req.Prompt, emit, a.permission)
-		if err != nil {
-			return nil, err
-		}
-		response := acp.PromptResponse{StopReason: acp.StopReason(result.StopReason)}
-		metadata := make(map[string]any)
-		if result.Limit != "" {
-			metadata["limit"] = result.Limit
-		}
-		usageMu.Lock()
-		if hasUsage {
-			metadata["usage"] = usage
-		}
-		usageMu.Unlock()
-		if len(metadata) > 0 {
-			response.Meta = map[string]any{"deerflow": metadata}
-		}
-		return response, nil
+		return a.runResponse(func(emit harness.EventHandler) (harness.RunResult, error) {
+			return a.service.Run(hr.WithTransportCancellation(ctx), a.owner, req.SessionID, req.Prompt, emit, a.permission)
+		})
 	case "session/cancel":
 		if !protocol.IsNotification(ctx) {
 			return nil, rpcError(protocol.InvalidRequest, "session/cancel is a notification")

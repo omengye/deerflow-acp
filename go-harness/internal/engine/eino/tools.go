@@ -2,11 +2,8 @@ package eino
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -33,27 +30,55 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 	if !json.Valid(arguments) {
 		return errors.New("tool arguments are not valid JSON")
 	}
-	if err := m.sink.emit(ctx, harness.RunEvent{Kind: "tool_start", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "pending", Arguments: append(json.RawMessage(nil), arguments...)}); err != nil {
+	if m.nativeDelegation(tc) {
+		// Eino's task endpoint is a resumable orchestration boundary. Its child
+		// models and actual tools own the effect admissions and receipts. Giving
+		// this boundary a started effect receipt would make every safe child
+		// permission suspension look like an unjoined external side effect.
+		m.sink.mu.Lock()
+		if m.sink.delegations == nil {
+			m.sink.delegations = make(map[string]bool)
+		}
+		m.sink.delegations[tc.CallID] = true
+		m.sink.mu.Unlock()
+		was, _, _ := tool.GetInterruptState[any](ctx)
+		kind := "subagent_start"
+		if was {
+			kind = "subagent_resumed"
+		}
+		return m.sink.emit(ctx, harness.RunEvent{Kind: kind, ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress"})
+	}
+	hooks := executionHooks(ctx)
+	governed := m.protected[tc.Name] && hooks != nil && hooks.Broker != nil
+	wasInterrupted, _, _ := tool.GetInterruptState[permissionState](ctx)
+	if governed && wasInterrupted {
+		// The first attempt already persisted this pending logical call. Resume
+		// changes its state; it does not create another pending receipt/event.
+		m.sink.mu.Lock()
+		m.sink.active[tc.CallID] = tc.Name
+		m.sink.mu.Unlock()
+	} else if err := m.sink.emit(ctx, harness.RunEvent{Kind: "tool_start", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "pending", Arguments: append(json.RawMessage(nil), arguments...)}); err != nil {
 		return err
 	}
-	if m.budget.ledger != nil {
-		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(tc.Name+"\x00"+args)))
-		grant, err := m.budget.ledger.ReserveTool(ctx, m.budget.scope, durablebudget.ToolRequest{OperationID: rand.Text(), Digest: digest})
-		if err != nil {
-			return m.budget.classify(err)
+	if !governed {
+		if err := m.admitTool(ctx, tc, args, nil); err != nil {
+			return err
 		}
-		m.grants.Store(tc, grant)
-	} else if err := m.budget.tool(); err != nil {
-		return err
 	}
 	if m.protected[tc.Name] {
-		if m.permissions == nil {
-			return harness.ErrPermissionDenied
+		var decision harness.PermissionDecision
+		var err error
+		if governed {
+			if hooks.StageCheckpoint == nil {
+				return errors.New("durable permission broker requires checkpoint staging")
+			}
+			decision, err = m.governedPermission(ctx, tc, args, hooks)
+		} else {
+			if m.permissions == nil {
+				return harness.ErrPermissionDenied
+			}
+			decision, err = m.permissions(ctx, m.requestFor(tc, arguments))
 		}
-		decision, err := m.permissions(ctx, harness.PermissionRequest{
-			ID: m.sink.request.RunID + "/" + tc.CallID, SessionID: m.sink.request.Session.ID,
-			RunID: m.sink.request.RunID, ToolCallID: tc.CallID, ToolName: tc.Name, Arguments: append(json.RawMessage(nil), arguments...),
-		})
 		if err != nil {
 			return err
 		}
@@ -81,6 +106,17 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 }
 
 func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, content []harness.Content, err error) error {
+	if m.nativeDelegation(tc) {
+		kind, status := "subagent_end", "completed"
+		if isPermissionInterrupt(err) {
+			kind, status = "subagent_suspended", "waiting_input"
+			content = nil
+		} else if err != nil {
+			status = "failed"
+			content = []harness.Content{{Type: "text", Text: err.Error()}}
+		}
+		return m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: kind, ToolCallID: tc.CallID, ToolName: tc.Name, Status: status, Content: content})
+	}
 	var settleErr error
 	if value, ok := m.grants.LoadAndDelete(tc); ok {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -102,6 +138,10 @@ func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, conten
 	return errors.Join(settleErr, m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "tool_end", ToolCallID: tc.CallID, ToolName: tc.Name, Status: status, Content: content, Receipt: receipt}))
 }
 
+func (m *toolMiddleware) nativeDelegation(tc *adk.ToolContext) bool {
+	return tc.Name == "task" && !m.protected[tc.Name]
+}
+
 func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.InvokableToolCallEndpoint, tc *adk.ToolContext) (adk.InvokableToolCallEndpoint, error) {
 	return func(ctx context.Context, args string, opts ...tool.Option) (string, error) {
 		ctx, finish, err := m.io.begin(ctx)
@@ -110,6 +150,9 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 		}
 		defer finish()
 		if err := m.start(ctx, tc, args); err != nil {
+			if isPermissionInterrupt(err) {
+				return "", err
+			}
 			if emitErr := m.finish(ctx, tc, nil, err); emitErr != nil {
 				return "", errors.Join(err, emitErr)
 			}
@@ -146,6 +189,9 @@ func (m *toolMiddleware) WrapStreamableToolCall(_ context.Context, next adk.Stre
 			}
 		}()
 		if err := m.start(ctx, tc, args); err != nil {
+			if isPermissionInterrupt(err) {
+				return nil, err
+			}
 			if emitErr := m.finish(ctx, tc, nil, err); emitErr != nil {
 				return nil, errors.Join(err, emitErr)
 			}
@@ -204,6 +250,9 @@ func (m *toolMiddleware) WrapEnhancedInvokableToolCall(_ context.Context, next a
 			return nil, errors.New("nil tool arguments")
 		}
 		if err := m.start(ctx, tc, args.Text); err != nil {
+			if isPermissionInterrupt(err) {
+				return nil, err
+			}
 			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
 		}
 		output, err := next(ctx, args, opts...)
@@ -233,6 +282,9 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 			return nil, errors.New("nil tool arguments")
 		}
 		if err := m.start(ctx, tc, args.Text); err != nil {
+			if isPermissionInterrupt(err) {
+				return nil, err
+			}
 			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
 		}
 		stream, err := next(ctx, args, opts...)

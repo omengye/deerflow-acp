@@ -234,11 +234,24 @@ func (s *Store) Execution(ctx context.Context, sessionID, runID string) (harness
 		return harness.ExecutionState{}, err
 	}
 	defer tx.Rollback()
+	if runID == "" {
+		err = tx.QueryRowContext(ctx, `SELECT run_id FROM harness_executions WHERE session_id=? ORDER BY created_at DESC,run_id DESC LIMIT 1`, sessionID).Scan(&runID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return harness.ExecutionState{}, harness.ErrNotFound
+		}
+		if err != nil {
+			return harness.ExecutionState{}, err
+		}
+	}
 	row, err := readExecution(ctx, tx, sessionID, runID)
 	if err != nil {
 		return row.State, err
 	}
 	row.State.WaitingInputs, err = executionInteractions(ctx, tx, runID)
+	if err != nil {
+		return row.State, err
+	}
+	row.State.EventCursor, err = executionEventCursor(ctx, tx, sessionID)
 	if err != nil {
 		return row.State, err
 	}

@@ -18,6 +18,33 @@ type PermissionGrant struct {
 	Decision      harness.PermissionDecision
 }
 
+// RawMessage marshaling compacts JSON. Keep exact original argument bytes
+// independently because receipt authorization binds those bytes, not merely
+// an equivalent JSON value.
+func encodeExecutionPermission(p harness.PermissionRequest) ([]byte, error) {
+	return json.Marshal(struct {
+		Version   int                       `json:"version"`
+		Request   harness.PermissionRequest `json:"request"`
+		Arguments []byte                    `json:"arguments"`
+	}{2, p, []byte(p.Arguments)})
+}
+func decodeExecutionPermission(data []byte, p *harness.PermissionRequest) error {
+	var stored struct {
+		Version   int                       `json:"version"`
+		Request   harness.PermissionRequest `json:"request"`
+		Arguments []byte                    `json:"arguments"`
+	}
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return err
+	}
+	if stored.Version != 2 || !json.Valid(stored.Arguments) {
+		return executionInvalid("unsupported stored permission intent")
+	}
+	*p = stored.Request
+	p.Arguments = append(json.RawMessage(nil), stored.Arguments...)
+	return nil
+}
+
 func executionInteractions(ctx context.Context, tx *sql.Tx, runID string) ([]harness.ExecutionInteraction, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT descriptor FROM harness_execution_intents WHERE run_id=? AND state='pending' ORDER BY id`, runID)
 	if err != nil {
@@ -62,7 +89,7 @@ func (s *Store) RecordPermissionIntentTx(ctx context.Context, tx *sql.Tx, lease 
 	err = tx.QueryRowContext(ctx, `SELECT request,descriptor,state FROM harness_execution_intents WHERE run_id=? AND tool_call_id=?`, p.RunID, p.ToolCallID).Scan(&oldRequest, &oldDescriptor, &state)
 	if err == nil {
 		var old harness.PermissionRequest
-		if err = json.Unmarshal(oldRequest, &old); err != nil {
+		if err = decodeExecutionPermission(oldRequest, &old); err != nil {
 			return descriptor, err
 		}
 		if state != "pending" || old.SessionID != p.SessionID || old.RunID != p.RunID || old.ConfigVersion != p.ConfigVersion || old.ToolName != p.ToolName || executionDigest(old.Arguments) != executionDigest(p.Arguments) || (p.ID != "" && p.ID != old.ID) {
@@ -81,7 +108,7 @@ func (s *Store) RecordPermissionIntentTx(ctx context.Context, tx *sql.Tx, lease 
 		return descriptor, executionInvalid("permission intent ID is too long")
 	}
 	descriptor = harness.ExecutionInteraction{ID: p.ID, Kind: "permission", Version: 1, ToolCallID: p.ToolCallID, ToolName: p.ToolName, ArgumentsDigest: receipt.ArgumentsDigest, ArgumentsSummary: receipt.ArgumentsSummary, ConfigVersion: p.ConfigVersion}
-	request, err := json.Marshal(p)
+	request, err := encodeExecutionPermission(p)
 	if err != nil {
 		return descriptor, err
 	}
@@ -117,7 +144,7 @@ func (s *Store) PendingExecutionPermissionsTx(ctx context.Context, tx *sql.Tx, l
 		if err = rows.Scan(&data); err != nil {
 			return nil, err
 		}
-		if err = json.Unmarshal(data, &p); err != nil {
+		if err = decodeExecutionPermission(data, &p); err != nil {
 			return nil, err
 		}
 		result = append(result, p)
@@ -137,7 +164,7 @@ func readExecutionIntent(ctx context.Context, tx *sql.Tx, runID, id string) (har
 	if err != nil {
 		return p, version, state, err
 	}
-	err = json.Unmarshal(data, &p)
+	err = decodeExecutionPermission(data, &p)
 	return p, version, state, err
 }
 

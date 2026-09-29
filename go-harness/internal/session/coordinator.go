@@ -9,11 +9,16 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
+var (
+	ErrExplicitCancel = errors.New("execution explicitly cancelled")
+	ErrDisconnected   = errors.New("execution owner disconnected")
+)
+
 type binding struct {
 	owner        string
 	busy         bool
 	closing      bool
-	cancel       context.CancelFunc
+	cancel       context.CancelCauseFunc
 	done         chan struct{}
 	cleanup      func(context.Context) error
 	closeAttempt *closeAttempt
@@ -104,12 +109,12 @@ func (c *Coordinator) beginLocked(parent context.Context, id, owner string) (con
 	if b.busy || b.closing {
 		return nil, nil, harness.ErrBusy
 	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancelCause(parent)
 	b.busy, b.cancel, b.done = true, cancel, make(chan struct{})
 	var once sync.Once
 	return ctx, func() {
 		once.Do(func() {
-			cancel()
+			cancel(nil)
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			b.busy = false
@@ -130,7 +135,7 @@ func (c *Coordinator) Cancel(id, owner string) error {
 		return harness.ErrNotAttached
 	}
 	if b.cancel != nil {
-		b.cancel()
+		b.cancel(ErrExplicitCancel)
 	}
 	return nil
 }
@@ -205,7 +210,7 @@ func (c *Coordinator) startCloseLocked(id string, b *binding, cleanup func(conte
 	b.closing, b.cleanup, b.closeAttempt = true, cleanup, attempt
 	var runDone <-chan struct{}
 	if b.busy {
-		b.cancel()
+		b.cancel(ErrDisconnected)
 		runDone = b.done
 	}
 	if cleanup == nil {

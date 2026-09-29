@@ -57,7 +57,7 @@ host capabilities; they are not security isolation. See
 [command lifecycle and providers](internal/sandbox/README.md) and
 [shared CLI flags](internal/launch/sandbox.md).
 
-Every tool has a durable receipt. Its `started` transition commits before the
+Every external tool has a durable receipt. Its `started` transition commits before the
 tool runs. Unknown outcomes block another run until the owner explicitly reviews
 the receipt. Review never executes a tool. The SDK exposes `ListToolReceipts` and
 `ReconcileToolReceipt`; ACP advertises the corresponding namespaced extensions.
@@ -103,8 +103,18 @@ independently of checkpoint success. Failed retries cannot reset spent quota;
 unknown interrupted work retains its holds. Production checkpoint envelopes use
 version 2, containing native Eino state and the ledger identity; older local
 counter checkpoints cannot authorize production resume. ACP `session/resume` reattaches a
-conversation; it does not resume suspended tool execution. Public durable
-execution resume and background notification scheduling are still pending.
+conversation; it does not resume suspended tool execution.
+
+Protected tools use native Eino interrupt/resume with persisted permission intent.
+The prompt asks for approval after a waiting checkpoint commits and the active
+budget attempt ends. Online answers continue that same run. A cancelled permission
+response or disconnected approval channel preserves the wait. The SDK provides
+`Execution`, `ResumeExecution`, and `CancelExecution`; ACP advertises
+`_deerflow/executions/get`, `/resume`, and `/cancel`. Reconnection requires fresh
+permission and exact run/version matching. See [execution recovery](internal/acp/executions.md).
+Eino's built-in `task` orchestration emits subagent lifecycle events; the child
+model and external tools share the original budget and individual tool receipts.
+Background host integration and notification scheduling are still in progress.
 
 ACP accepts text and file references. Images require an explicit
 `--vision-model <model-id>` (repeatable), and that model must also be selectable.
