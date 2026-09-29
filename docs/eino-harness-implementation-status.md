@@ -22,7 +22,7 @@
 | 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、分页历史与 load 重放 | 有界异步发送、计划/usage 投影 |
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
-| 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image 与产物登记已验证 | MCP/模型生成媒体导入、可选对象存储发布 |
+| 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image、产物登记及 MCP 工具图片导入已验证 | 流式工具与模型生成媒体导入、可选对象存储发布 |
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准及只读检索工具 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
@@ -222,3 +222,11 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 存储层与真实 CLI 测试覆盖预览、拒绝危险事实、重复导入、来源冲突回滚和重启后读取。操作方法见 [迁移说明](eino-memory-migration.md)。
 
 本批 SDK/ACP Flush 聚焦 race、迁移存储与 CLI 聚焦 race、整模块普通回归，以及 Linux amd64 无 CGO 全模块构建通过。源数据仅使用测试夹具，未对真实 Python 用户文件执行迁移。
+
+## 第十四阶段 MCP 工具图片导入
+
+- `officialmcp` 的实际结果路径会把 MCP 图片编码进 JSON 文本。现在通过官方结果 handler 在格式化前移除图片数据，执行侧的 enhanced wrapper 将图片块交给 Eino 原生增强工具中间件。工具与会话的连接代际、凭据检查、权限和调用预算沿用原边界。
+- 增强工具原始图片限 PNG/JPEG/GIF/WebP、单张 20 MiB、每次最多 8 张及 40 MiB；校验 MIME 与内容，存入会话归属的不可变快照。成功 `tool_end` 在同一事务登记资产、领域事件和工具回执；失败、事务故障及关机丢弃暂存快照。原生历史和 SQLite 不保存图片 Base64。随后模型调用在明确允许的视觉模型上临时加载图片。
+- 实际 MCP stdio 进程、Eino、ACP 双向管道和本地模型 fixture 验证图片到达下一次模型请求；存储测试验证发布前不可读取、SQL 事件故障回滚、文本与图片顺序及无内联字节落库。
+
+流式增强工具图片、模型生成媒体和可选对象存储发布仍待实现。MCP 的音频与嵌入式二进制资源现在明确拒绝，避免经官方文本格式化路径将 Base64 带入模型上下文。

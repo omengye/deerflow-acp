@@ -30,15 +30,16 @@ type Config struct {
 	ToolFactory func(context.Context, harness.RunRequest) ([]tool.BaseTool, func() error, error)
 	// ExtensionFactory pins one snapshot for both tools and middleware. On
 	// explicit resume, pinned is the state saved in the checkpoint envelope.
-	ExtensionFactory func(context.Context, harness.RunRequest, json.RawMessage) (RunExtensions, error)
-	CheckpointStore  adk.CheckPointStore
-	SessionStore     adk.SessionEventStore[*schema.Message]
-	MaxIterations    int
-	Budget           harness.BudgetLimits
-	BudgetLedger     *durablebudget.Ledger
-	Media            harness.MediaConfig
-	AssetResolver    harness.AssetResolver
-	Compaction       harness.CompactionConfig
+	ExtensionFactory  func(context.Context, harness.RunRequest, json.RawMessage) (RunExtensions, error)
+	CheckpointStore   adk.CheckPointStore
+	SessionStore      adk.SessionEventStore[*schema.Message]
+	MaxIterations     int
+	Budget            harness.BudgetLimits
+	BudgetLedger      *durablebudget.Ledger
+	Media             harness.MediaConfig
+	AssetResolver     harness.AssetResolver
+	ToolImageImporter harness.ToolImageImporter
+	Compaction        harness.CompactionConfig
 	// Handlers extends native Eino middleware without introducing another loop.
 	Handlers        []adk.ChatModelAgentMiddleware
 	DisableSubAgent bool

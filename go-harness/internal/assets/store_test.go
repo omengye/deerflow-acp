@@ -478,3 +478,58 @@ func TestFailedToolTerminalRemovesStagedSnapshot(t *testing.T) {
 		t.Fatal("failed output retained on disk")
 	}
 }
+
+func TestInlineToolImagesCommitWithReceiptAndRollBackOnEventFailure(t *testing.T) {
+	f := newAssetFixture(t)
+	ctx := context.Background()
+	image := imageInput(64)
+	run, call := f.startTool(t, "mcp_image")
+	contents, err := f.assets.StageToolImages(ctx, f.session, run, call, []harness.Content{image})
+	if err != nil || len(contents) != 1 || contents[0].Asset == nil {
+		t.Fatalf("stage: %+v %v", contents, err)
+	}
+	if _, err := f.assets.Resolve(ctx, f.session.ID, *contents[0].Asset); !errors.Is(err, harness.ErrNotFound) {
+		t.Fatalf("staged image published early: %v", err)
+	}
+	end := harness.RunEvent{SessionID: f.session.ID, RunID: run, ToolCallID: call, ToolName: "mcp_image", Kind: "tool_end", Status: "completed", Content: []harness.Content{{Type: "text", Text: "caption"}, contents[0]}}
+	if _, err := f.db.DB().Exec(`CREATE TRIGGER fail_tool_image_event BEFORE INSERT ON harness_events WHEN json_extract(NEW.event,'$.kind')='tool_end' BEGIN SELECT RAISE(ABORT,'fixture failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.runtime.Append(ctx, end, f.assets); err == nil {
+		t.Fatal("event failure did not roll back tool image")
+	}
+	if f.scalar(t, `SELECT count(*) FROM harness_assets`) != 0 {
+		t.Fatal("failed transaction published image")
+	}
+	if _, err := os.Stat(filepath.Join(f.dir, contents[0].Asset.ID+".blob")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed transaction retained blob: %v", err)
+	}
+	if _, err := f.db.DB().Exec(`DROP TRIGGER fail_tool_image_event`); err != nil {
+		t.Fatal(err)
+	}
+	// The rejected terminal event consumed the staging handle, so a new
+	// snapshot is required before retrying the receipt.
+	contents, err = f.assets.StageToolImages(ctx, f.session, run, call, []harness.Content{image})
+	if err != nil {
+		t.Fatal(err)
+	}
+	end.Content[1] = contents[0]
+	got, err := f.runtime.Append(ctx, end, f.assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Content) != 2 || got.Content[0].Text != "caption" || got.Receipt == nil || got.Receipt.State != harness.ReceiptCompleted || f.scalar(t, `SELECT count(*) FROM harness_artifacts`) != 0 {
+		t.Fatalf("tool result changed or registered artifact: %+v", got)
+	}
+	data, err := f.assets.Resolve(ctx, f.session.ID, *contents[0].Asset)
+	if err != nil || !bytes.Equal(data, pngBytes(64)) {
+		t.Fatalf("committed image: %v", err)
+	}
+	var eventData string
+	if err := f.db.DB().QueryRow(`SELECT CAST(event AS TEXT) FROM harness_events WHERE json_extract(event,'$.kind')='tool_end' AND json_extract(event,'$.runId')=?`, run).Scan(&eventData); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(eventData, image.Data) {
+		t.Fatal("inline bytes persisted in tool event")
+	}
+}

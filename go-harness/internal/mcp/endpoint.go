@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -274,7 +275,8 @@ func (e *endpoint) tools(ctx context.Context) ([]tool.BaseTool, error) {
 	result, err := official.GetTools(ctx, &official.Config{
 		Cli: &scopedClient{endpoint: e}, ServerName: e.name, ListToolsMode: official.ListToolsAllPages, MaxToolPages: e.policy.MaxToolPages,
 		MetadataMode: official.MetadataBasic, DescriptionPolicy: &official.DescriptionPolicy{MaxChars: 4096},
-		ResultPolicy: &official.ResultPolicy{MaxChars: e.policy.MaxResultChars, IncludeStructuredContent: true},
+		ResultPolicy:            &official.ResultPolicy{MaxChars: e.policy.MaxResultChars, IncludeStructuredContent: true},
+		ToolCallResultHandlerV2: captureToolImages,
 		ToolNameMapper: func(_ context.Context, in official.ToolNameMapperInput) (official.ToolNameMapperOutput, error) {
 			return official.ToolNameMapperOutput{ExposedName: toolName(in.ServerName, in.Tool.Name)}, nil
 		},
@@ -329,6 +331,65 @@ type guardTool struct {
 	endpoint *endpoint
 	raw      tool.InvokableTool
 	info     []byte
+}
+
+type toolImageCaptureKey struct{}
+
+type toolImageCapture struct{ images []*sdk.ImageContent }
+
+// The official adapter marshals MCP content into a JSON string. Strip image
+// data before that string is constructed; the enhanced Eino wrapper receives
+// the original image blocks through this per-call context instead.
+func captureToolImages(ctx context.Context, _ official.ToolCallInfo, result *sdk.CallToolResult) (*sdk.CallToolResult, error) {
+	var images []*sdk.ImageContent
+	content := make([]sdk.Content, 0, len(result.Content))
+	var total int64
+	for _, part := range result.Content {
+		switch image := part.(type) {
+		case *sdk.TextContent, *sdk.ResourceLink:
+			content = append(content, part)
+		case *sdk.ImageContent:
+			total += int64(len(image.Data))
+			if len(images) >= harness.MaxInputImagesPerTurn || int64(len(image.Data)) > harness.MaxInputImageBytes || total > harness.MaxInputImageTotalBytes {
+				return nil, fmt.Errorf("%w: MCP image result exceeds media limits", harness.ErrInvalidInput)
+			}
+			images = append(images, image)
+			content = append(content, &sdk.TextContent{Text: "[image content omitted from JSON text result]"})
+		default:
+			return nil, fmt.Errorf("%w: unsupported MCP binary content", harness.ErrInvalidInput)
+		}
+	}
+	if len(images) == 0 {
+		return result, nil
+	}
+	if capture, ok := ctx.Value(toolImageCaptureKey{}).(*toolImageCapture); ok {
+		capture.images = images
+	}
+	copyResult := *result
+	copyResult.Content = content
+	return &copyResult, nil
+}
+
+// enhancedGuardTool preserves the official MCP adapter's discovery, argument
+// mapping, call policy and text formatting while exposing actual image blocks
+// through Eino's structured tool result interface.
+type enhancedGuardTool struct{ *guardTool }
+
+func (t *enhancedGuardTool) InvokableRun(ctx context.Context, args *schema.ToolArgument, opts ...tool.Option) (*schema.ToolResult, error) {
+	if args == nil {
+		return nil, fmt.Errorf("%w: missing MCP arguments", harness.ErrInvalidInput)
+	}
+	capture := &toolImageCapture{}
+	textResult, err := t.guardTool.InvokableRun(context.WithValue(ctx, toolImageCaptureKey{}, capture), args.Text, opts...)
+	if err != nil {
+		return nil, err
+	}
+	result := &schema.ToolResult{Parts: []schema.ToolOutputPart{{Type: schema.ToolPartTypeText, Text: textResult}}}
+	for _, image := range capture.images {
+		data := base64.StdEncoding.EncodeToString(image.Data)
+		result.Parts = append(result.Parts, schema.ToolOutputPart{Type: schema.ToolPartTypeImage, Image: &schema.ToolOutputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &data, MIMEType: image.MIMEType}}})
+	}
+	return result, nil
 }
 
 func (t *guardTool) Info(context.Context) (*schema.ToolInfo, error) {

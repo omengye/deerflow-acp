@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	official "github.com/cloudwego/eino-ext/components/tool/mcp/officialmcp"
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
@@ -47,6 +50,15 @@ func TestMCPProcessHelper(t *testing.T) {
 	mode := os.Getenv("HARNESS_MCP_MODE")
 	if mode == "stall" {
 		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
+	if mode == "picture" {
+		s := sdk.NewServer(&sdk.Implementation{Name: "image-fixture", Version: "1"}, nil)
+		sdk.AddTool(s, &sdk.Tool{Name: "echo.value", Description: "Return a PNG image"}, func(context.Context, *sdk.CallToolRequest, echoArgs) (*sdk.CallToolResult, any, error) {
+			data, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=")
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "fixture image"}, &sdk.ImageContent{MIMEType: "image/png", Data: data}}}, nil, nil
+		})
+		_ = s.Run(context.Background(), &sdk.StdioTransport{})
 		os.Exit(0)
 	}
 	desc := "Echo fixture input"
@@ -139,6 +151,43 @@ func invoke(t *testing.T, tt tool.InvokableTool, value string) string {
 		t.Fatal(err)
 	}
 	return got
+}
+
+func TestRealMCPImageUsesEnhancedResultWithoutBase64Text(t *testing.T) {
+	cfg := processConfig(t, "picture")
+	cwd := t.TempDir()
+	m := testManager(t, harness.MCPPolicy{AllowedCommands: []string{cfg.Command}})
+	if err := m.Bind(context.Background(), "owner", "image-session", cwd, []harness.MCPServer{cfg}); err != nil {
+		t.Fatal(err)
+	}
+	plain := invoke(t, firstTool(t, m, "image-session"), "go")
+	if strings.Contains(plain, "iVBORw0KGgo") || !strings.Contains(plain, "omitted from JSON text result") {
+		t.Fatal("official text result retained inline image data")
+	}
+	tools, err := m.EnhancedTools(context.Background(), "image-session")
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("enhanced tools: %d, %v", len(tools), err)
+	}
+	run := tools[0].(tool.EnhancedInvokableTool)
+	result, err := run.InvokableRun(context.Background(), &schema.ToolArgument{Text: `{"value":"go"}`})
+	if err != nil || len(result.Parts) != 2 || result.Parts[1].Image == nil || result.Parts[1].Image.Base64Data == nil {
+		t.Fatalf("enhanced image missing: %+v %v", result, err)
+	}
+	if strings.Contains(result.Parts[0].Text, "iVBORw0KGgo") || result.Parts[1].Image.MIMEType != "image/png" {
+		t.Fatal("image data leaked into text or MIME changed")
+	}
+}
+
+func TestMCPBinaryResultGuardRejectsUnsupportedAndOversizedContent(t *testing.T) {
+	ctx := context.Background()
+	for _, content := range []sdk.Content{
+		&sdk.AudioContent{MIMEType: "audio/wav", Data: []byte("secret-audio")},
+		&sdk.ImageContent{MIMEType: "image/png", Data: make([]byte, harness.MaxInputImageBytes+1)},
+	} {
+		if _, err := captureToolImages(ctx, official.ToolCallInfo{}, &sdk.CallToolResult{Content: []sdk.Content{content}}); !errors.Is(err, harness.ErrInvalidInput) {
+			t.Fatalf("unsafe binary content accepted: %v", err)
+		}
+	}
 }
 
 func TestStdioLifecycleEnvironmentAndStaleTools(t *testing.T) {

@@ -230,7 +230,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			}
 			out.Tools = append(out.Tools, present)
 		}
-		remote, err := manager.Tools(ctx, req.Session.ID)
+		remote, err := manager.EnhancedTools(ctx, req.Session.ID)
 		if err != nil {
 			return out, err
 		}

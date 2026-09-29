@@ -397,3 +397,50 @@ func validateToolMedia(result *schema.ToolResult, sessionID string) (*schema.Too
 	}
 	return safe, nil
 }
+
+// normalizeToolImages imports raw enhanced-tool images before any event,
+// receipt, or native checkpoint can observe their Base64 payload. The store
+// publishes the staged snapshots with the successful tool_end transaction.
+func normalizeToolImages(ctx context.Context, result *schema.ToolResult, req harness.RunRequest, callID string, importer harness.ToolImageImporter) (*schema.ToolResult, error) {
+	if result == nil {
+		return nil, nil
+	}
+	var raw []harness.Content
+	for _, part := range result.Parts {
+		if part.Image == nil || part.Image.Base64Data == nil {
+			continue
+		}
+		if part.Type != schema.ToolPartTypeImage || part.Image.URL != nil || part.Image.MIMEType == "" || len(part.Extra) > 0 || part.Audio != nil || part.Video != nil || part.File != nil {
+			return nil, invalidMedia("ambiguous inline tool image")
+		}
+		raw = append(raw, harness.Content{Type: "image", Data: *part.Image.Base64Data, MimeType: part.Image.MIMEType})
+	}
+	if len(raw) == 0 {
+		return validateToolMedia(result, req.Session.ID)
+	}
+	if importer == nil {
+		return nil, invalidMedia("tool image importer is unavailable")
+	}
+	imported, err := importer.StageToolImages(ctx, req.Session, req.RunID, callID, raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(imported) != len(raw) {
+		return nil, invalidMedia("tool image importer returned the wrong number of assets")
+	}
+	safe := &schema.ToolResult{Parts: make([]schema.ToolOutputPart, 0, len(result.Parts))}
+	index := 0
+	for _, part := range result.Parts {
+		if part.Image != nil && part.Image.Base64Data != nil {
+			projected, err := ProjectToolContent([]harness.Content{imported[index]})
+			if err != nil {
+				return nil, err
+			}
+			safe.Parts = append(safe.Parts, projected.Parts...)
+			index++
+		} else {
+			safe.Parts = append(safe.Parts, part)
+		}
+	}
+	return validateToolMedia(safe, req.Session.ID)
+}

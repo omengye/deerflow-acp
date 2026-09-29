@@ -167,7 +167,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		selectedModel = e.config.Model
 	}
 	media := &mediaProjection{resolver: e.config.AssetResolver, policy: e.config.Media, sessionID: req.Session.ID, model: selectedModel}
-	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle, budget: b}
+	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle, budget: b, images: e.config.ToolImageImporter}
 	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), extensions.Handlers...)
 	if extensions.ModelHandlerFactory != nil || extensions.PostRunFactory != nil {
 		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: media}

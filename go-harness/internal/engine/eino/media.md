@@ -28,11 +28,18 @@ or fetched. Remote image references are rejected. Explicit tools are required
 to inspect attachment contents.
 
 `ProjectToolContent` converts normalized harness content into native enhanced
-tool output. Unary and streaming middleware validate structured media before
-either native history or durable tool receipts see it. Inline image results from
-MCP tools currently fail with a tool receipt error; they require asset-import
-wiring before they can be enabled. Generated model multimedia is also rejected
-until an output importer is available.
+tool output. Unary enhanced tools may also return inline PNG, JPEG, GIF or WebP
+images. The middleware stages at most eight images and 40 MiB per call, then
+replaces their bytes with session assets before native history or durable tool
+receipts see them. A successful `tool_end` publishes the snapshots with its
+receipt and event in one transaction; failed or uncommitted calls remove the
+staged snapshots. Streaming tool chunks still require normalized references.
+
+The official MCP adapter formats call results as JSON text. Its result handler
+removes image data from that text, and the enhanced wrapper passes actual MCP
+image blocks to the same import path. Other MCP binary content and generated
+model multimedia remain unsupported. An image is hydrated only for an allowed
+vision model immediately before the next model invocation.
 
 Each image reserves an explicit 4,096-token estimate; Base64 length is excluded
 from text token estimation. This is a model-independent estimate, not an exact

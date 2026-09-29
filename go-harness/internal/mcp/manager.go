@@ -243,6 +243,24 @@ func (m *Manager) Tools(ctx context.Context, id string) ([]tool.BaseTool, error)
 	return result, nil
 }
 
+// EnhancedTools projects MCP image blocks into Eino's native tool media path.
+// The run's tool middleware imports them before returning a result to Eino.
+func (m *Manager) EnhancedTools(ctx context.Context, id string) ([]tool.BaseTool, error) {
+	base, err := m.Tools(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]tool.BaseTool, 0, len(base))
+	for _, item := range base {
+		guard, ok := item.(*guardTool)
+		if !ok {
+			return nil, errors.New("MCP tool adapter is invalid")
+		}
+		result = append(result, &enhancedGuardTool{guardTool: guard})
+	}
+	return result, nil
+}
+
 // Generation is an opaque connection identity without credentials. Callers
 // hold the session lifecycle lease across Tools and Generation. Reconnecting
 // an endpoint invalidates suspended execution even when its schema is equal.

@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -137,6 +138,90 @@ func (p *Prepared) AttachArtifacts(ctx context.Context, tx *sql.Tx, runID, callI
 		}
 	}
 	return nil
+}
+
+// ToolImages reports that the prepared snapshots came from an inline tool
+// result. Its text and ordering are already represented in the event.
+func (p *Prepared) ToolImages() bool { return p.toolImages }
+
+// ValidateToolContent prevents a staged snapshot from being committed under a
+// terminal event that omits or changes the reference returned to Eino.
+func (p *Prepared) ValidateToolContent(content []harness.Content) error {
+	if !p.toolImages {
+		return nil
+	}
+	seen := make(map[string]bool, len(p.refs))
+	for _, c := range content {
+		if c.Asset == nil {
+			continue
+		}
+		for _, ref := range p.refs {
+			if c.Type == "image" && c.Data == "" && *c.Asset == ref && c.URI == harness.AssetURI(ref) && c.MimeType == ref.MimeType {
+				if seen[ref.ID] {
+					return invalid("duplicate staged tool image")
+				}
+				seen[ref.ID] = true
+			}
+		}
+	}
+	if len(seen) != len(p.refs) {
+		return invalid("terminal tool result lost a staged image")
+	}
+	return nil
+}
+
+// StageToolImages imports bounded inline images produced by an enhanced tool.
+// The terminal tool_end transaction owns publication and rollback.
+func (s *Store) StageToolImages(ctx context.Context, x harness.Session, runID, callID string, images []harness.Content) (contents []harness.Content, returnErr error) {
+	if runID == "" || callID == "" || len(images) == 0 || len(images) > harness.MaxInputImagesPerTurn {
+		return nil, invalid("tool image batch must contain 1 to 8 images")
+	}
+	var receiptData []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT receipt FROM harness_tool_receipts WHERE run_id=? AND tool_call_id=? AND session_id=? AND state='started'`, runID, callID, x.ID).Scan(&receiptData); err != nil {
+		return nil, harness.ErrReceiptConflict
+	}
+	var receipt harness.ToolReceipt
+	if json.Unmarshal(receiptData, &receipt) != nil {
+		return nil, harness.ErrReceiptConflict
+	}
+	p, err := s.begin(x)
+	if err != nil {
+		return nil, err
+	}
+	p.toolImages = true
+	defer func() {
+		if returnErr != nil {
+			returnErr = errors.Join(returnErr, p.Finish(false))
+		}
+	}()
+	var total int64
+	for i, c := range images {
+		if c.Type != "image" || c.Asset != nil || c.URI != "" || c.Text != "" {
+			return nil, invalid("tool image must contain only inline data")
+		}
+		data, mediaType, err := decodeImage(c.Data, c.MimeType)
+		if err != nil {
+			return nil, err
+		}
+		total += int64(len(data))
+		if total > harness.MaxInputImageTotalBytes {
+			return nil, invalid("tool image batch exceeds 40 MiB")
+		}
+		name := safeName(c.Name, "tool-image-"+strconv.Itoa(i+1)+imageExtension(mediaType))
+		ref, err := p.snapshot(ctx, bytes.NewReader(data), name, mediaType, harness.AssetImage, harness.MaxInputImageBytes)
+		if err != nil {
+			return nil, err
+		}
+		p.Input = append(p.Input, assetContent(ref, "Tool image"))
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := artifactKey(runID, callID)
+	if s.closing.Load() || s.staged[key] != nil {
+		return nil, harness.ErrReceiptConflict
+	}
+	s.staged[key] = p
+	return append([]harness.Content(nil), p.Input...), nil
 }
 
 // StageImage snapshots a workspace image for a view_image tool call. Its bytes

@@ -127,10 +127,15 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores 
 			receipt.Result, receipt.ResultTruncated = boundedReceiptResult(append(receipt.Result, e.Content...), receipt.ResultTruncated)
 		case "tool_end":
 			if artifacts != nil && e.Status == "completed" {
+				if err = artifacts.ValidateToolContent(e.Content); err != nil {
+					return e, err
+				}
 				if err = artifacts.AttachArtifacts(ctx, tx, e.RunID, e.ToolCallID); err != nil {
 					return e, err
 				}
-				e.Content = append([]harness.Content(nil), artifacts.Input...)
+				if !artifacts.ToolImages() {
+					e.Content = append([]harness.Content(nil), artifacts.Input...)
+				}
 			}
 			switch {
 			case e.Status == "completed" && receipt.State == harness.ReceiptStarted:

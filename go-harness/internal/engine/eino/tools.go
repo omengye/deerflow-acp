@@ -22,6 +22,7 @@ type toolMiddleware struct {
 	protected   map[string]bool
 	io          *runIO
 	budget      *runBudget
+	images      harness.ToolImageImporter
 	grants      sync.Map // *adk.ToolContext -> durablebudget.Reservation
 }
 
@@ -257,7 +258,7 @@ func (m *toolMiddleware) WrapEnhancedInvokableToolCall(_ context.Context, next a
 		}
 		output, err := next(ctx, args, opts...)
 		var mediaErr error
-		output, mediaErr = validateToolMedia(output, m.sink.request.Session.ID)
+		output, mediaErr = normalizeToolImages(ctx, output, m.sink.request, tc.CallID, m.images)
 		err = errors.Join(err, mediaErr)
 		if emitErr := m.finish(ctx, tc, enhancedContent(output), err); emitErr != nil {
 			return nil, errors.Join(err, emitErr)

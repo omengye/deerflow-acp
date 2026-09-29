@@ -44,13 +44,14 @@ type record struct {
 // Prepared keeps snapshots pinned until the accepting transaction completes.
 // Call Finish exactly once, including after an Attach or transaction failure.
 type Prepared struct {
-	Input     []harness.Content
-	store     *Store
-	session   harness.Session
-	records   []record
-	refs      []harness.AssetRef
-	once      sync.Once
-	finishErr error
+	Input      []harness.Content
+	store      *Store
+	session    harness.Session
+	records    []record
+	refs       []harness.AssetRef
+	toolImages bool
+	once       sync.Once
+	finishErr  error
 }
 
 func NewStore(ctx context.Context, path string, db *sql.DB) (*Store, error) {

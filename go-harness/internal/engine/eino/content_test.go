@@ -37,6 +37,38 @@ type testAssetResolver struct {
 	calls atomic.Int32
 }
 
+type testToolImageImporter struct {
+	ref   harness.AssetRef
+	data  string
+	calls atomic.Int32
+}
+
+func (i *testToolImageImporter) StageToolImages(_ context.Context, session harness.Session, runID, callID string, images []harness.Content) ([]harness.Content, error) {
+	i.calls.Add(1)
+	if session.ID != i.ref.SessionID || runID == "" || callID == "" || len(images) != 1 || images[0].Data != i.data {
+		return nil, harness.ErrInvalidInput
+	}
+	return []harness.Content{imageContent(i.ref)}, nil
+}
+
+func TestNormalizeToolImagesUsesStagedReference(t *testing.T) {
+	ref, _ := testImageAsset(t)
+	importer := &testToolImageImporter{ref: ref, data: testImageBase64}
+	data := testImageBase64
+	result := &schema.ToolResult{Parts: []schema.ToolOutputPart{{Type: schema.ToolPartTypeText, Text: "caption"}, {Type: schema.ToolPartTypeImage, Image: &schema.ToolOutputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &data, MIMEType: "image/png"}}}}}
+	safe, err := normalizeToolImages(context.Background(), result, request("tool-image"), "image-call", importer)
+	if err != nil || importer.calls.Load() != 1 {
+		t.Fatalf("normalize: %v", err)
+	}
+	if len(safe.Parts) != 2 || safe.Parts[0].Text != "caption" || safe.Parts[1].Image == nil || safe.Parts[1].Image.URL == nil || *safe.Parts[1].Image.URL != harness.AssetURI(ref) {
+		t.Fatalf("lost tool content: %+v", safe)
+	}
+	assertNoImageBytes(t, safe)
+	if _, err := normalizeToolImages(context.Background(), result, request("tool-image"), "image-call", nil); !errors.Is(err, harness.ErrInvalidInput) {
+		t.Fatalf("missing importer accepted: %v", err)
+	}
+}
+
 func (r *testAssetResolver) Resolve(_ context.Context, sessionID string, ref harness.AssetRef) ([]byte, error) {
 	r.calls.Add(1)
 	if sessionID != r.ref.SessionID || ref != r.ref {

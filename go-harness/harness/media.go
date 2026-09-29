@@ -28,6 +28,12 @@ type AssetResolver interface {
 	Resolve(context.Context, string, AssetRef) ([]byte, error)
 }
 
+// ToolImageImporter stages inline tool images for the terminal tool receipt.
+// The returned references become resolvable only after that receipt commits.
+type ToolImageImporter interface {
+	StageToolImages(context.Context, Session, string, string, []Content) ([]Content, error)
+}
+
 // MediaConfig is host policy. Vision support is an explicit per-model allowlist
 // and remains disabled when empty; provider names do not imply capabilities.
 type MediaConfig struct {
