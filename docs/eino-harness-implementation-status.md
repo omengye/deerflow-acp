@@ -19,7 +19,7 @@
 | 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close 已写入 | 黑盒互操作、官方 TCK、真实编辑器 |
 | 执行与工作区工具 | Eino TurnLoop/DeepAgent、前台委派、文件工具、plan/read_only、主/子共享预算；执行回执与命令工具已接线 | 长期会话循环、后台委派和更完整的工具集 |
 | 权限 / 恢复 | 前台与后台原生 durable HITL、审批/检查点/回执/预算联合恢复；SDK/ACP 查询、批准与取消已接入 | 真实编辑器与 MCP 重新绑定恢复 |
-| 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、分页历史与 load 重放、有界异步 ACP 更新队列 | 计划/usage 投影与真实编辑器流压验证 |
+| 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、原生子 Agent 生命周期投影、分页历史与 load 重放、有界异步 ACP 更新队列 | 计划/usage 投影与真实编辑器流压验证 |
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image、产物登记及 MCP 工具图片导入已验证 | 流式工具与模型生成媒体导入、可选对象存储发布 |
@@ -265,3 +265,9 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - ACP 会话更新先经过原有运行时持久化，再以不等待客户端读取的方式进入同一个协议 writer 队列。异步事件总占用默认不超过 64 MiB，队列最多 64 帧；超过上限立即关闭该连接并取消执行，已保存的事件可通过会话历史重放，不静默丢弃。
 - 入队后的事件使用连接生命周期，prompt 取消不会撤销已接受的帧；writer 保持与最终响应的入队顺序。同步的普通通知、权限请求和响应继续等待真实写入。
 - 协议测试覆盖慢写入背压、字节上限、prompt 取消后的已接受事件和响应排序。完整 ACP agent/protocol 普通测试、相关聚焦 race、整模块普通回归和 Linux amd64 无 CGO 构建通过。真实编辑器长流仍待验收。
+
+## 第二十阶段原生子 Agent 的 ACP 生命周期投影
+
+- Eino 原生 `subagent_start/suspended/resumed/end` 事件投影为 ACP `tool_call` 与 `tool_call_update`。暂停时保留合法的 `in_progress` 状态，并在 `_meta.deerflow.state` 标明 `waiting_input`；恢复时更新为 `running`，结束时输出 `completed` 或 `failed` 及内容。
+- ACP 卡片 ID 包含 RunID 与 Eino CallID，生命周期跟踪同时按会话隔离。跨会话/跨运行复用 CallID 不会覆盖卡片；缺少前序 start 的恢复事件会先补建卡片。会话关闭后清理该连接中的跟踪状态。
+- 真实 ACP stdio 管道测试覆盖并发会话、暂停→恢复→完成、响应顺序及持久历史 load 重放。整模块普通测试、聚焦 race 和 Linux amd64 无 CGO 构建已通过；真实编辑器仍待验收。

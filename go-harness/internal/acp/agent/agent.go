@@ -24,10 +24,13 @@ type Agent struct {
 	mu           sync.Mutex
 	initialized  bool
 	capabilities acp.ClientCapabilities
+	subagents    map[subagentKey]bool
 }
 
+type subagentKey struct{ sessionID, runID, callID string }
+
 func New(service *hr.Service, in io.ReadCloser, out io.WriteCloser) *Agent {
-	a := &Agent{service: service, owner: hr.NewID()}
+	a := &Agent{service: service, owner: hr.NewID(), subagents: make(map[subagentKey]bool)}
 	a.peer = protocol.NewPeer(in, out, a.Handle, protocol.Options{Admit: a.admit})
 	return a
 }
@@ -250,7 +253,11 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err := decode(raw, &req); err != nil {
 			return nil, err
 		}
-		return map[string]any{}, a.service.CloseSession(ctx, a.owner, string(req.SessionId))
+		if err := a.service.CloseSession(ctx, a.owner, string(req.SessionId)); err != nil {
+			return nil, err
+		}
+		a.clearSubagents(string(req.SessionId))
+		return map[string]any{}, nil
 	case "session/set_config_option":
 		var req struct {
 			SessionID string `json:"sessionId"`
@@ -346,6 +353,8 @@ func (a *Agent) connectionError(ctx context.Context, err error) error {
 func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 	var update map[string]any
 	switch e.Kind {
+	case "subagent_start", "subagent_resumed", "subagent_suspended", "subagent_end":
+		return a.emitSubagent(ctx, e)
 	case "user_message":
 		for _, c := range e.Content {
 			wire, err := a.wireContent(ctx, e.SessionID, c)
@@ -413,6 +422,69 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 		}
 	}
 	return nil
+}
+
+func (a *Agent) emitSubagent(ctx context.Context, e harness.RunEvent) error {
+	if e.SessionID == "" || e.RunID == "" || e.ToolCallID == "" {
+		return nil
+	}
+	id := "subagent:" + e.RunID + ":" + e.ToolCallID
+	key := subagentKey{sessionID: e.SessionID, runID: e.RunID, callID: e.ToolCallID}
+	a.mu.Lock()
+	started := a.subagents[key]
+	if e.Kind == "subagent_end" {
+		delete(a.subagents, key)
+	} else {
+		a.subagents[key] = true
+	}
+	a.mu.Unlock()
+	if e.Kind == "subagent_start" || !started {
+		title := e.ToolName
+		if title == "" {
+			title = "Subagent"
+		}
+		if err := a.updateAsync(ctx, e.SessionID, map[string]any{"sessionUpdate": "tool_call", "toolCallId": id, "title": title, "kind": "think", "status": "in_progress"}); err != nil {
+			return err
+		}
+		if e.Kind == "subagent_start" {
+			return nil
+		}
+	}
+	status := "in_progress"
+	if e.Kind == "subagent_end" {
+		status = e.Status
+		if status != "completed" {
+			status = "failed"
+		}
+	}
+	update := map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": id, "status": status}
+	if e.Kind == "subagent_suspended" {
+		update["_meta"] = map[string]any{"deerflow": map[string]any{"state": "waiting_input"}}
+	} else if e.Kind == "subagent_resumed" {
+		update["_meta"] = map[string]any{"deerflow": map[string]any{"state": "running"}}
+	}
+	if len(e.Content) > 0 {
+		content := make([]any, 0, len(e.Content))
+		for _, item := range e.Content {
+			wire, err := a.wireContent(ctx, e.SessionID, item)
+			if err != nil {
+				return err
+			}
+			content = append(content, map[string]any{"type": "content", "content": wire})
+		}
+		update["content"] = content
+	}
+	return a.updateAsync(ctx, e.SessionID, update)
+}
+
+func (a *Agent) clearSubagents(sessionID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for key := range a.subagents {
+		if key.sessionID == sessionID {
+			delete(a.subagents, key)
+		}
+	}
 }
 
 func (a *Agent) permission(ctx context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
