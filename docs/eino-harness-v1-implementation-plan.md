@@ -1,6 +1,6 @@
 # Go + Eino Harness 与 ACP 重构实施方案
 
-修订日期：2026-09-29。状态：方案阶段；本轮创建重构分支并更新方案，尚未开始 Go 运行时代码重构或组合编译。
+修订日期：2026-09-29。状态：实施中；进度、依赖落地差异与验证记录见 [实施状态](eino-harness-implementation-status.md)。下文保留完整 V1 目标和发布要求。
 
 **第一版交付可嵌入的 Go harness，以及能够被编辑器和其他 ACP client 启动的本地 ACP Agent。** 保留长任务、工具、子 Agent、沙箱、Skills、MCP、记忆、上下文压缩、权限与恢复能力。对外入口采用 Go SDK、ACP stdio 和本地 daemon IPC；HTTP API、ACP HTTP gateway、SSE 服务及远程传输接口后置。模型请求和 MCP 的出站 HTTP 传输仍属于正常工具能力。
 
@@ -27,7 +27,7 @@ Python `deerflow/acp/`、现有测试和 `bridge/` 是当前产品协议基线�
 
 | 依赖 | 拟固定版本/方案 | 说明 |
 | --- | --- | --- |
-| Go | 至少 1.25，实施时固定受支持补丁版本 | 满足当前 MCP/文件扩展模块要求 |
+| Go | 模块 1.26.0，工具链 1.26.8 | 实施时已固定；SQLite v1.60.0 要求 Go 1.26，覆盖 MCP/文件扩展要求 |
 | Eino | `v0.10.0-alpha.35` | 核心执行和会话运行机制 |
 | eino-ext openai | `v0.1.13` | OpenAI-compatible 模型 |
 | eino-ext claude | `v0.1.25` | 避开 v0.1.26 的字段不兼容 |
@@ -38,7 +38,7 @@ Python `deerflow/acp/`、现有测试和 `bridge/` 是当前产品协议基线�
 | 默认持久化 | SQLite，WAL + 单 daemon 所有权 | 本地启动无需 PostgreSQL；预留 store 接口 |
 | 沙箱/工作区 | 受控本地文件 backend + 可选 Docker/WSL2 backend | 兼顾当前 ACP cwd 行为和真正隔离的执行能力 |
 
-上述扩展和 SDK 是源码核对后的候选组合，尚未组合编译。阶段 0 冻结 `go.mod/go.sum` 并做模型、流式、checkpoint 和 ACP 双向调用实验。禁止所有模块统一浮动 `@latest`。
+Eino、三个模型扩展、SQLite 和 ACP SDK 类型已完成第一轮组合编译，版本固定在 `go-harness/go.mod/go.sum`。MCP 扩展待管理器接入时完成组合验证。阶段 0 的流式、checkpoint、ACP 双向调用与后续互操作记录见实施状态。禁止所有模块统一浮动 `@latest`。
 
 已确认最新部分模型扩展使用 `CacheWriteTokens`，Eino alpha.35 暂无该字段。V1 先采用 `*schema.Message`，新的原生 AgenticMessage 接口经 engine adapter 后续加入。
 
@@ -232,4 +232,4 @@ Docker provider 作为 V1 的隔离执行选项，实现 Eino Backend/Shell adap
 - 本仓库 `deerflow/acp/agent.py`、`event_mapper.py`、`permission.py`、`session_coordinator.py`、`daemon.py`、`client_mcp.py`、`workspace.py`，以及 `bridge/src/v2.rs`。
 - 本仓库 `tests/test_local_acp_agent.py`、`test_local_acp_stdio.py`、`test_local_acp_daemon.py`、`test_local_acp_bridge.py`、`test_local_acp_workspace.py`、`test_local_acp_v2_media.py`、`test_acp_artifacts.py`、`test_invoke_acp_agent_tool.py`。
 
-当前结论来自源码与现有测试内容的核对；本轮没有执行 Go 组合编译或运行 ACP 互操作测试。正式实施以阶段 0 冻结的版本、schema 和可重复测试为准。
+设计基线来自源码与现有测试内容的核对；实施后的组合编译、协议测试与尚未通过的发布门槛持续记录在 [实施状态](eino-harness-implementation-status.md)，以锁定依赖和可重复测试为准。

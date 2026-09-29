@@ -1,0 +1,38 @@
+name: Go harness
+
+on:
+  pull_request:
+    paths:
+      - "go-harness/**"
+      - ".github/workflows/go-harness.yml"
+  push:
+    paths:
+      - "go-harness/**"
+      - ".github/workflows/go-harness.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: go-harness
+    env:
+      GOMAXPROCS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.8"
+          cache-dependency-path: go-harness/go.sum
+      - run: go mod verify
+      - run: go test -count=1 -p=2 -timeout=5m ./...
+      - run: go test -race -p=2 -timeout=5m ./internal/... ./
