@@ -1,6 +1,6 @@
 # Eino harness 记忆与上下文压缩实施设计
 
-状态：设计已核对 pinned Eino alpha.35 和当前 Python DeerFlow；受共享预算计费的模型工厂、结构化事实存储、SDK/ACP 管理、只读注入、显式启用的同步提取与终态提升、显式启用的 Eino 摘要压缩，以及同步写入屏障 `FlushMemory` 已落地。旧数据迁移和提取策略实测校准仍待实现。
+状态：设计已核对 pinned Eino alpha.35 和当前 Python DeerFlow；受共享预算计费的模型工厂、结构化事实存储、SDK/ACP 管理、只读注入、显式启用的同步提取与终态提升、显式启用的 Eino 摘要压缩、同步写入屏障 `FlushMemory`，以及显式映射的旧 DeerMem JSON 导入已落地。提取策略与真实模型的校准仍待完成。
 
 ## 现有语义与边界
 
@@ -42,8 +42,10 @@ Eino `v0.10.0-alpha.35` 的 `automemory` 默认使用 `MEMORY.md` 和主题文�
 
 Eino `RunExtensions.ModelHandlerFactory` 与 `PostRunFactory` 能拿到与主 Agent 共用 I/O 生命周期和预算的 `trackedModel`。事实存储保留不可变 revision 和 tombstone；FTS5 可按范围修订号重建，CJK 与索引不可用时使用有界词法回退。SDK 与 ACP 管理接口共享会话归属和前台槽，ACP 只声明实际可用的 scope。Eino DeepAgent 本轮指令注入选中事实；所选内容和范围修订号保存在 extension state，显式恢复不重新检索。
 
-`MemoryExtraction` 默认关闭，可经 SDK 配置或两个 CLI 的 `--memory-extraction` 显式开启。成功的前台父 Agent 回答后，受控模型读取本轮真实用户输入与最终回答并输出受限 JSON；确定性筛选仅接受有界、durable、descriptive 的 workspace/user 候选。候选进入 attempt staging，来源绑定领域事件 sequence、run/input/attempt；只有执行完成且预算、运行终态同事务成功才提升。失败、取消或等待不会发布，scope revision 漂移会舍弃候选，同文重复不新增事实。额度不足时明确记录 `quota_skip`，避免已完成的主回答因可选提取而变成超额失败。后续需要扩充策略评测和完成旧 DeerMem 迁移。不要把默认 `automemory.New` + `WriteModeAsync` 直接加入 `RunExtensions.Handlers`；它的写入与 cursor 不能满足本设计的事务和恢复边界。
+`MemoryExtraction` 默认关闭，可经 SDK 配置或两个 CLI 的 `--memory-extraction` 显式开启。成功的前台父 Agent 回答后，受控模型读取本轮真实用户输入与最终回答并输出受限 JSON；确定性筛选仅接受有界、durable、descriptive 的 workspace/user 候选。候选进入 attempt staging，来源绑定领域事件 sequence、run/input/attempt；只有执行完成且预算、运行终态同事务成功才提升。失败、取消或等待不会发布，scope revision 漂移会舍弃候选，同文重复不新增事实。额度不足时明确记录 `quota_skip`，避免已完成的主回答因可选提取而变成超额失败。后续需要扩充策略评测。不要把默认 `automemory.New` + `WriteModeAsync` 直接加入 `RunExtensions.Handlers`；它的写入与 cursor 不能满足本设计的事务和恢复边界。
 
 `Compaction.Enabled` 默认关闭，CLI 使用 `--context-compaction` 显式开启。消息数和估算 token 任一阈值触发 Eino `summarization`，其模型经原 run 的 `trackedModel` 共享预算、usage 和 I/O 生命周期，不做额外重试。自定义 finalizer 拒绝空白、工具调用和过长摘要，保留活动用户回合及完整工具调用/结果链，最多保留 64 KiB 最近消息，并以最多 8 KiB 的历史片段保留已读取 Skill 文本。超限时显式失败而不丢弃活动回合。摘要成功后 Eino 写入 `messages_replaced` 原生事件；业务历史与工具回执不裁剪。执行与后台任务的恢复 manifest 额外绑定最近原生替换事件的序号、ID 和摘要载荷 SHA。当前实现尚未给完成态摘要单独建立业务索引；提取策略与真实模型的摘要质量仍须校准。
 
 当前提取在前台 run 的终态事务中同步完成，没有独立写入队列。`FlushMemory` 在 SDK/ACP 按会话归属等待前台槽，最多 10 秒，随后读取同一 SQLite 数据库形成持久化屏障；它不会重新提取额度不足的轮次，也不会提升失败或中断 attempt 留下的 staging。将来若引入异步队列，必须扩展该屏障的语义和验收。
+
+旧 DeerMem 的 `memory.json` 可用 [显式迁移命令](eino-memory-migration.md) 导入。旧 `acpmem-*` 桶无法反向证明工作区归属，迁移要求明确的既有 Go 会话、工作区与 scope。只导入通过内容筛选的 `facts`，不把旧摘要桶或 FTS 索引当作事实；事务内保持幂等和冲突回滚。Python 源文件不改动。

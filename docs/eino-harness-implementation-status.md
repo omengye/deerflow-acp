@@ -24,7 +24,7 @@
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image 与产物登记已验证 | MCP/模型生成媒体导入、可选对象存储发布 |
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
-| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、显式启用的受控提取/终态提升与摘要压缩已接入 | 旧 DeerMem 迁移和真实模型策略校准 |
+| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准及只读检索工具 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、多窗口、现有 Rust Bridge 实际二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 诊断子集 |
 | 可选外部 ACP Agent | 待实现 | 白名单、反向权限、预算和取消链 |
@@ -196,7 +196,7 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 候选写入按 attempt 隔离的 staging；终态 SQL 事务将事实提升与执行、预算结算一起提交。失败、取消、等待和终态事务错误不发布。范围 revision 漂移时舍弃候选，同文重复事实不累积；额度不足记录 `quota_skip`，不损害已完成的主回答。
 - 本地模型 fixture 验证真实 Eino 提取、重启保留、来源 event sequence、非法候选拒绝、重复去重、配额跳过、终态 SQL 故障不发布和跨会话范围冲突。
 
-下一项按 [记忆与上下文压缩设计](eino-memory-context-design.md) 实现 `FlushMemory` 和旧 DeerMem 迁移。完整 V1 的媒体输出、异步事件、外部 ACP agent、管理接口及真实编辑器/TCK 验收仍待完成。
+后续阶段按 [记忆与上下文压缩设计](eino-memory-context-design.md) 继续完成只读记忆检索工具及真实模型校准。完整 V1 的媒体输出、异步事件、外部 ACP agent、管理接口及真实编辑器/TCK 验收仍待完成。
 
 ## 第十一阶段 Eino 摘要压缩
 
@@ -207,10 +207,18 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 
 本批 `GOMAXPROCS=2 go test -mod=readonly -p=2 -count=1 -timeout=5m ./...` 通过；摘要、恢复 manifest 与启动参数的聚焦 race 测试通过；`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -mod=readonly -p=2 ./...` 通过。未使用真实付费模型或编辑器。
 
-本阶段不等于完整 V1：旧 DeerMem 迁移、媒体输出导入、计划/usage 投影、有界异步事件发送、外部 ACP agent、管理接口和真实编辑器/TCK 验收仍待完成。
+本阶段不等于完整 V1：媒体输出导入、计划/usage 投影、有界异步事件发送、外部 ACP agent、管理接口和真实编辑器/TCK 验收仍待完成。
 
 ## 第十二阶段同步 Memory flush 屏障
 
 - SDK `FlushMemory(ctx, sessionID)` 与 ACP `_deerflow/memory/flush` 已接入。它按会话归属等待前台槽，最多 10 秒，随后读取主 SQLite 数据库；此前同步提取的终态事务已完成才能返回成功。
 - 当前没有异步记忆写入队列。flush 不重新调用模型，不重试配额跳过，也不提升失败 attempt 的 staging。ACP 仅接受 `sessionId`，并在初始化能力中声明方法。
 - SDK 与双向 ACP 管道定向测试覆盖成功、繁忙等待、超时、参数严格校验和其他连接无权访问。
+
+## 第十三阶段旧 DeerMem 显式迁移
+
+- 新增独立 `deerflow-memory-migrate` 命令。默认仅预览源 JSON；写入需要 `--apply` 以及现有 Go 会话、工作区和 session/workspace/user 范围的显式映射。命令使用 Go 数据目录独占锁，不触发模型或 HTTP 服务。
+- 读取 Python DeerMem `version: "1.0"` 中的 `facts`，最多 4 MiB、1,000 条；旧摘要桶和 FTS 索引不自动迁移。内容经过与自动提取相同的保守筛选，来源记录为 `legacy-deermem`。同范围旧事实 ID 重试幂等；同 ID 内容改变时整个事务回滚。
+- 存储层与真实 CLI 测试覆盖预览、拒绝危险事实、重复导入、来源冲突回滚和重启后读取。操作方法见 [迁移说明](eino-memory-migration.md)。
+
+本批 SDK/ACP Flush 聚焦 race、迁移存储与 CLI 聚焦 race、整模块普通回归，以及 Linux amd64 无 CGO 全模块构建通过。源数据仅使用测试夹具，未对真实 Python 用户文件执行迁移。

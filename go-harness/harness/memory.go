@@ -4,6 +4,17 @@ import "time"
 
 type MemoryScope string
 
+// LegacyImportReport records what an explicit DeerMem JSON migration accepted.
+// Summary buckets and the old FTS index are not imported as facts.
+type LegacyImportReport struct {
+	Read             int            `json:"read"`
+	Imported         int            `json:"imported"`
+	Existing         int            `json:"existing"`
+	Duplicates       int            `json:"duplicates"`
+	Rejected         int            `json:"rejected"`
+	RejectionReasons map[string]int `json:"rejectionReasons,omitempty"`
+}
+
 const (
 	MemorySession   MemoryScope = "session"
 	MemoryWorkspace MemoryScope = "workspace"

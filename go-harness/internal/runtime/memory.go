@@ -34,6 +34,15 @@ func (s *Service) FlushMemory(ctx context.Context, owner, sessionID string) erro
 	}
 }
 
+func (s *Service) ImportDeerMem(ctx context.Context, owner, sessionID string, kind harness.MemoryScope, raw []byte) (harness.LegacyImportReport, error) {
+	ctx, scope, done, err := s.memoryScope(ctx, owner, sessionID, kind)
+	if err != nil {
+		return harness.LegacyImportReport{}, err
+	}
+	defer done()
+	return s.Memory.ImportLegacy(ctx, scope, raw)
+}
+
 func (s *Service) memoryScope(ctx context.Context, owner, sessionID string, kind harness.MemoryScope) (context.Context, memory.Scope, func(), error) {
 	if s.Memory == nil {
 		return nil, memory.Scope{}, nil, harness.ErrInvalidInput

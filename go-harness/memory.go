@@ -6,6 +6,18 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
+// ImportDeerMem imports one explicitly selected legacy memory.json into an
+// attached scope. The caller chooses the destination; hashed Python buckets
+// are never reverse-mapped to a workspace or user implicitly.
+func (c *Client) ImportDeerMem(ctx context.Context, sessionID string, kind harness.MemoryScope, raw []byte) (harness.LegacyImportReport, error) {
+	done, err := c.operation()
+	if err != nil {
+		return harness.LegacyImportReport{}, err
+	}
+	defer done()
+	return c.service.ImportDeerMem(ctx, c.owner, sessionID, kind, raw)
+}
+
 // FlushMemory waits until the session's earlier synchronous memory writes are
 // visible. It uses ctx as the wait bound and does not rerun skipped extraction.
 func (c *Client) FlushMemory(ctx context.Context, sessionID string) error {
