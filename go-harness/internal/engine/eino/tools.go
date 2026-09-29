@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -204,8 +205,8 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 					return m.sink.emit(ctx, harness.RunEvent{Kind: "tool_update", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress", Content: content})
 				},
 				Permission: func(_ context.Context, request acpclient.PermissionRequest) (string, error) {
-					// Durable attempts cannot suspend a second, remote permission
-					// frontier yet. Reject it instead of bypassing the broker.
+					// Only the owning live connection can answer a remote request.
+					// A lost connection stops the process; no stale option is replayed.
 					if m.permissions == nil {
 						return "", nil
 					}
@@ -217,14 +218,20 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 					if err := json.Unmarshal(request.ToolCall, &call); err != nil {
 						return "", err
 					}
-					if call.ToolCallID == "" {
-						return "", errors.New("external permission has no tool call ID")
+					if call.ToolCallID == "" || len(call.ToolCallID) > 256 || call.Title == "" || len(call.Title) > 128 || strings.ContainsAny(call.Title, "\r\n\x00") || len(call.RawInput) > 64<<10 {
+						return "", errors.New("external permission has invalid tool identity or arguments")
+					}
+					var invoked struct {
+						Agent string `json:"agent"`
+					}
+					if err := json.Unmarshal([]byte(args), &invoked); err != nil || invoked.Agent == "" {
+						return "", errors.New("external permission has no agent identity")
 					}
 					arguments := call.RawInput
 					if !json.Valid(arguments) {
 						arguments = json.RawMessage(`{}`)
 					}
-					decision, err := m.permissions(ctx, harness.PermissionRequest{ID: m.sink.request.RunID + "/" + tc.CallID + "/external/" + call.ToolCallID, SessionID: m.sink.request.Session.ID, RunID: m.sink.request.RunID, ConfigVersion: m.sink.request.Session.ConfigVersion, ToolCallID: tc.CallID + "/" + call.ToolCallID, ToolName: "external_acp/" + call.Title, Arguments: arguments})
+					decision, err := m.permissions(ctx, harness.PermissionRequest{ID: m.sink.request.RunID + "/" + tc.CallID + "/external/" + call.ToolCallID, SessionID: m.sink.request.Session.ID, RunID: m.sink.request.RunID, ConfigVersion: m.sink.request.Session.ConfigVersion, ToolCallID: tc.CallID + "/" + call.ToolCallID, ToolName: "external_acp/" + invoked.Agent + "/" + call.Title, Arguments: arguments})
 					if err != nil {
 						return "", err
 					}

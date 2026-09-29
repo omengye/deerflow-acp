@@ -27,7 +27,7 @@
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证 | draft v2 对照、完整配置映射 |
-| 可选外部 ACP Agent | 首轮接入：显式白名单、独立 workspace、stdio new/load/prompt、进度、取消和进程树回收；外层工具与一次估算模型调用计入父预算 | durable 反向权限暂停/恢复、远端真实模型用量约束、产物导入与异常会话对账 |
+| 可选外部 ACP Agent | 首轮接入：显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次估算模型调用计入父预算 | 断线后的反向权限暂停/恢复、远端真实模型用量约束、产物导入与异常会话对账 |
 | 打包 / 默认切换 | 未开始 | Windows/Linux 实机、回退、切换演练 |
 
 ## 已确认的实施差异
@@ -316,7 +316,7 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 ## 第二十七阶段可选外部 ACP stdio 委派首轮
 
 - `ACPAgents` 为宿主显式允许列表，两个 Go CLI 可用 `--acp-agents-config` 装入 JSON。没有配置时不暴露 `invoke_acp_agent`。`plan`/`read_only` 不暴露该工具；模型只可选择已配置的名字和发送文本任务，不能更改命令、参数和凭据。Bridge `--config` 如含 Python `acp_agents`，没有显式 Go 允许列表便拒绝启动，避免静默遗漏。
-- 每个父会话和外部 Agent 使用独立私有 workspace 与持久 remote session ID。客户端以 stdio 完成 `initialize → session/new` 或 `session/load → session/prompt`；只声明空 client capabilities，不代理尚未实现的客户端 fs/terminal。更新经 Eino `tool_update` 发出；普通非 durable 运行可将反向权限映射到原有权限处理器；durable 运行目前拒绝外部反向权限请求，不自动批准。外部资源链接只作更新引用，不下载。
+- 每个父会话和外部 Agent 使用独立私有 workspace 与持久 remote session ID。客户端以 stdio 完成 `initialize → session/new` 或 `session/load → session/prompt`；只声明空 client capabilities，不代理尚未实现的客户端 fs/terminal。更新经 Eino `tool_update` 发出；连接仍在时，外部反向权限经所属会话的策略及 ACP 客户端实时批准，不自动批准。断线不会重放旧权限响应，外部进程终止并保留未对账的外层工具回执。外部资源链接只作更新引用，不下载。
 - 外层工具调用和一次估算模型调用计入父预算；流式文本增加估算 token，用完即中止。标准 ACP 没有可靠的外部 Agent 内部模型调用/计费总量，因此这还不是完整的远端预算约束。外部可执行文件仍须由宿主信任，独立 cwd 和精简环境不是 OS 沙箱。父会话删除后回收私有 session 映射与 workspace。
-- 真实子进程协议测试覆盖 new/load、流式文字和工具更新、默认拒绝反向请求、显式选择、超时及回收；Eino 测试覆盖父模型调用额度和进度。配置说明见 [外部 ACP 委派](eino-external-acp.md)。完整 V1 仍需 durable 反向权限恢复、远端预算/副作用对账、媒体和真实编辑器验收。
+- 真实子进程协议测试覆盖 new/load、流式文字和工具更新、默认拒绝反向请求、显式选择、超时及回收；Eino 测试覆盖父模型调用额度和进度，durable runtime 测试覆盖连接内实时反向审批路由。配置说明见 [外部 ACP 委派](eino-external-acp.md)。完整 V1 仍需断线后的反向权限恢复、远端预算/副作用对账、媒体和真实编辑器验收。
 - 本批 Windows 整模块普通测试、ACP client/protocol/Eino/runtime/SDK 聚焦 race，以及 Linux amd64 无 CGO 全模块构建通过。资源链接校验限制本地文件须位于外部独立 workspace；HTTP(S) 链接只作为引用。

@@ -167,7 +167,7 @@ func Run(ctx context.Context, cfg Config, workspace, remoteSessionID, prompt str
 			mu.Lock()
 			valid := sessionID != "" && request.SessionID == sessionID
 			mu.Unlock()
-			if !valid || len(request.ToolCall) == 0 {
+			if !valid || len(request.ToolCall) == 0 || len(request.ToolCall) > 64<<10 || len(request.Options) > 16 {
 				return nil, report(errors.New("external permission request has invalid session or tool call"))
 			}
 			if callbacks.Permission == nil {

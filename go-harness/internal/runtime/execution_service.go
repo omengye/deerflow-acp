@@ -186,7 +186,7 @@ func (s *Service) runDurableNew(ctx context.Context, owner string, req harness.R
 
 func (s *Service) driveExecution(ctx context.Context, req harness.RunRequest, lease ExecutionLease, bindings []ExecutionResumeBinding, emit harness.EventHandler, approve harness.PermissionHandler) (harness.RunResult, error) {
 	for {
-		result, err := s.executeAttempt(ctx, req, lease, bindings, emit)
+		result, err := s.executeAttempt(ctx, req, lease, bindings, emit, approve)
 		if err != nil || result.Execution == nil || result.Execution.Status != harness.ExecutionWaitingInput || result.StopReason != "waiting_input" {
 			if result.StopReason == "waiting_input" {
 				result.StopReason = "end_turn"
@@ -201,7 +201,7 @@ func (s *Service) driveExecution(ctx context.Context, req harness.RunRequest, le
 	}
 }
 
-func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, lease ExecutionLease, bindings []ExecutionResumeBinding, emit harness.EventHandler) (harness.RunResult, error) {
+func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, lease ExecutionLease, bindings []ExecutionResumeBinding, emit harness.EventHandler, approve harness.PermissionHandler) (harness.RunResult, error) {
 	var inputSource *interaction.ExecutionInputSource
 	err := withExecutionTransaction(ctx, s.Store, func(tx *sql.Tx) error {
 		row, err := checkExecutionLease(ctx, tx, lease)
@@ -248,10 +248,17 @@ func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, le
 	runCtx = interaction.WithExecutionHooks(runCtx, interaction.ExecutionHooks{Broker: a, Targets: targets, StageCheckpoint: a.stage, InputSource: inputSource})
 	var result harness.RunResult
 	var runErr error
+	// Native tools still use the checkpoint broker. This live handler serves
+	// nested permission requests from an external ACP process while the owning
+	// connection exists. A disconnect cancels the process and leaves its outer
+	// started receipt uncertain; it cannot resume that remote prompt in place.
+	livePermission := func(ctx context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
+		return s.executionPermission(ctx, lease.OwnerID, req.Session, p, approve)
+	}
 	if len(bindings) == 0 {
-		result, runErr = s.Engine.Run(runCtx, req, a.publish(emit), nil)
+		result, runErr = s.Engine.Run(runCtx, req, a.publish(emit), livePermission)
 	} else {
-		result, runErr = s.executionEngine().Resume(runCtx, req, "harness/turn/v1/"+req.RunID, a.publish(emit), nil)
+		result, runErr = s.executionEngine().Resume(runCtx, req, "harness/turn/v1/"+req.RunID, a.publish(emit), livePermission)
 	}
 	if s.Assets != nil {
 		runErr = errors.Join(runErr, s.Assets.AbortRun(req.RunID))
