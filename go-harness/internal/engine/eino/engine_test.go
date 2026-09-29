@@ -25,10 +25,18 @@ type scriptedModel struct {
 	mu     sync.Mutex
 	calls  int
 	seen   [][]*schema.Message
+	tools  [][]string
 	stream func(context.Context, int, []*schema.Message) (*schema.StreamReader[*schema.Message], error)
 }
 
-func (m *scriptedModel) WithTools(_ []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+func (m *scriptedModel) WithTools(infos []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	names := make([]string, 0, len(infos))
+	for _, info := range infos {
+		names = append(names, info.Name)
+	}
+	m.mu.Lock()
+	m.tools = append(m.tools, names)
+	m.mu.Unlock()
 	return m, nil
 }
 func (m *scriptedModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
@@ -50,11 +58,18 @@ func (m *scriptedModel) Generate(ctx context.Context, input []*schema.Message, o
 	}
 	return schema.ConcatMessages(messages)
 }
-func (m *scriptedModel) Stream(ctx context.Context, input []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+func (m *scriptedModel) Stream(ctx context.Context, input []*schema.Message, options ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	m.mu.Lock()
 	call := m.calls
 	m.calls++
 	m.seen = append(m.seen, append([]*schema.Message(nil), input...))
+	if common := model.GetCommonOptions(nil, options...); common != nil && common.Tools != nil {
+		names := make([]string, 0, len(common.Tools))
+		for _, info := range common.Tools {
+			names = append(names, info.Name)
+		}
+		m.tools = append(m.tools, names)
+	}
 	m.mu.Unlock()
 	return m.stream(ctx, call, input)
 }
@@ -229,6 +244,45 @@ func toolScript() *scriptedModel {
 		}
 		return textStream("done"), nil
 	}}
+}
+
+func TestHostToolAllowlistFiltersNativeAndConfiguredTools(t *testing.T) {
+	fake := &scriptedModel{stream: func(_ context.Context, _ int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		return textStream("done"), nil
+	}}
+	e, err := New(context.Background(), Config{ChatModel: fake, Tools: []tool.BaseTool{&recordingTool{}}, ToolPolicy: harness.ToolPolicy{Allowlist: []string{"read_workspace"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Run(context.Background(), request("allowlist"), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.tools) == 0 {
+		t.Fatal("model received no tool contract")
+	}
+	for _, names := range fake.tools {
+		if len(names) != 1 || names[0] != "read_workspace" {
+			t.Fatalf("host allowlist was not applied to Eino native tools: %v", fake.tools)
+		}
+	}
+}
+
+func TestHostToolPolicyChangesExecutionContractWithoutConfiguredTools(t *testing.T) {
+	fake := &scriptedModel{stream: func(_ context.Context, _ int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		return textStream("done"), nil
+	}}
+	first := newTestEngine(t, Config{ChatModel: fake, ToolPolicy: harness.ToolPolicy{Denylist: []string{"write_todos"}}})
+	second := newTestEngine(t, Config{ChatModel: fake, ToolPolicy: harness.ToolPolicy{Denylist: []string{"task"}}})
+	a, err := first.executionContract(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := second.executionContract(nil, nil)
+	if err != nil || a == b {
+		t.Fatalf("native tool policy drift was not pinned: first=%s second=%s err=%v", a, b, err)
+	}
 }
 
 func TestNativeToolPermissionAndEvents(t *testing.T) {

@@ -202,6 +202,14 @@ func TestExtensionFactoryRestoresPinnedSkillAndRejectsChangedResources(t *testin
 		t.Fatal(err)
 	}
 	defer first.Cleanup()
+	filtered, err := extensionFactory(Config{Skills: cfg.Skills, ToolPolicy: harness.ToolPolicy{Denylist: []string{"skill"}}}, manager, registry, nil)(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer filtered.Cleanup()
+	if len(filtered.Handlers) != 0 {
+		t.Fatal("host-denied skill middleware still injected its native tool")
+	}
 	if err = os.WriteFile(filepath.Join(cfg.Skills.Sources[0].Root, "research", "guide.txt"), []byte("NEW_REFERENCE"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -252,5 +260,10 @@ func TestExtensionFactoryRestoresPinnedSkillAndRejectsChangedResources(t *testin
 	cfg.Sandbox.AllowShell = true
 	if _, err = extensionFactory(cfg, manager, registry, nil)(context.Background(), req, first.State); !errors.Is(err, harness.ErrInvalidInput) {
 		t.Fatalf("changed policy resume=%v", err)
+	}
+	cfg.Sandbox.AllowShell = false
+	cfg.ToolPolicy = harness.ToolPolicy{Allowlist: []string{"read_file"}}
+	if _, err = extensionFactory(cfg, manager, registry, nil)(context.Background(), req, first.State); !errors.Is(err, harness.ErrInvalidInput) {
+		t.Fatalf("changed host tool allowlist resumed=%v", err)
 	}
 }

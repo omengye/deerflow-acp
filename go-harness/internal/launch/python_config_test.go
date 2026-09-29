@@ -90,6 +90,49 @@ func TestApplyPythonConfigRejectsUnsupportedAuthority(t *testing.T) {
 	}
 }
 
+func TestApplyPythonConfigToolPolicyIntersectsHostBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := `local_acp:
+  tool_allowlist: [" read_file ", "task", "read_file", ""]
+  tool_denylist: ["task", " write_file ", "write_file"]
+models:
+  - name: one
+    use: langchain_openai:ChatOpenAI
+    model: one
+`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var cfg deerflow.Config
+	connections := 32
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ToolPolicy.Allowlist == nil || !cfg.ToolPolicy.Allows("read_file") || cfg.ToolPolicy.Allows("task") || cfg.ToolPolicy.Allows("write_file") || cfg.ToolPolicy.Allows("search_files") {
+		t.Fatalf("Python tool policy=%+v", cfg.ToolPolicy)
+	}
+	cfg.ToolPolicy = harness.ToolPolicy{Allowlist: []string{"read_file", "search_files"}, Denylist: []string{"read_file"}}
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ToolPolicy.Allowlist == nil || cfg.ToolPolicy.Allows("read_file") || cfg.ToolPolicy.Allows("search_files") || cfg.ToolPolicy.Allows("task") {
+		t.Fatalf("Python config widened existing Go tool policy: %+v", cfg.ToolPolicy)
+	}
+	if err := os.WriteFile(path, []byte(`local_acp:
+  tool_allowlist: []
+models:
+  - name: one
+    use: langchain_openai:ChatOpenAI
+    model: one
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var empty deerflow.Config
+	if _, err := ApplyPythonConfig(path, &empty, &connections, nil); err != nil || empty.ToolPolicy.Allowlist == nil || empty.ToolPolicy.Allows("read_file") {
+		t.Fatalf("empty allowlist did not disable all tools: %+v err=%v", empty.ToolPolicy, err)
+	}
+}
+
 func TestApplyPythonConfigDoesNotCarryCredentialsAcrossBackendOverride(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	raw := `local_acp:

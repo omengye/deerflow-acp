@@ -47,6 +47,9 @@ type Config struct {
 	// always included. Provider credentials never become session configuration.
 	Models           []harness.ConfigValue
 	DisableSubagents bool
+	// ToolPolicy bounds the tool surface for every run, including native Eino
+	// task and write_todos. Session configuration cannot enlarge this boundary.
+	ToolPolicy harness.ToolPolicy
 	// BackgroundWorkers bounds concurrent native background attempts. Zero uses
 	// four workers. Native Eino sessions expose delegation when subagents are on.
 	BackgroundWorkers int
@@ -99,6 +102,18 @@ type Client struct {
 }
 
 func Open(ctx context.Context, cfg Config) (client *Client, err error) {
+	if err := cfg.ToolPolicy.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", harness.ErrInvalidInput, err)
+	}
+	if !cfg.ToolPolicy.Allows("task") {
+		cfg.DisableSubagents = true
+	}
+	if cfg.ToolPolicy.Allowlist != nil {
+		cfg.ToolPolicy.Allowlist = append([]string{}, cfg.ToolPolicy.Allowlist...)
+	}
+	if cfg.ToolPolicy.Denylist != nil {
+		cfg.ToolPolicy.Denylist = append([]string{}, cfg.ToolPolicy.Denylist...)
+	}
 	if err := hr.ValidateRetention(cfg.Retention); err != nil {
 		return nil, fmt.Errorf("%w: invalid session retention policy", err)
 	}
@@ -268,7 +283,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			out.Tools = append(out.Tools, tools...)
 			return out, err
 		}
-		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, ModelImageImporter: assetStore, Compaction: cfg.Compaction, ContextWindows: contextWindows})
+		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, ToolPolicy: cfg.ToolPolicy, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, ModelImageImporter: assetStore, Compaction: cfg.Compaction, ContextWindows: contextWindows})
 		if err != nil {
 			return nil, err
 		}

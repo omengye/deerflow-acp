@@ -40,6 +40,36 @@ func TestDataDirectoryHasOneOwner(t *testing.T) {
 	}
 }
 
+func TestHostToolAllowlistCannotBeExpandedBySessionSubagentOption(t *testing.T) {
+	engine := engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	})
+	c, err := Open(context.Background(), Config{DataDir: t.TempDir(), Engine: engine, ToolPolicy: harness.ToolPolicy{Allowlist: []string{"read_file"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	session, err := c.NewSession(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Subagents {
+		t.Fatal("host-denied task enabled native subagents by default")
+	}
+	options, err := c.ConfigOptions(context.Background(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, option := range options {
+		if option.ID == "subagent" {
+			t.Fatal("client can enable host-denied task")
+		}
+	}
+	if _, err := c.SetConfigOption(context.Background(), session.ID, "subagent", "on"); !errors.Is(err, harness.ErrInvalidInput) {
+		t.Fatalf("client enabled host-denied task: %v", err)
+	}
+}
+
 func TestCloseWaitsForRunCleanupAndRejectsNewWork(t *testing.T) {
 	started, cancelled, finish := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	engine := engineFunc(func(ctx context.Context, r harness.RunRequest, emit harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {

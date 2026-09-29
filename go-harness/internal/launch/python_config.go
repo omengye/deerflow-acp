@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -94,6 +95,20 @@ func pythonScalar(value string) (string, error) {
 	return value, nil
 }
 
+func pythonToolNames(values []string) []string {
+	names := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		name := strings.TrimSpace(value)
+		if name != "" && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
 // ApplyPythonConfig maps model selection and portable daemon settings from
 // config.yaml. Explicit Go CLI flags win; unsupported executable/MCP policies
 // fail when enabled instead of silently widening Go's authority.
@@ -132,9 +147,26 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	if source.LocalACP.PermissionMode != "" && source.LocalACP.PermissionMode != "dangerous" {
 		return result, fmt.Errorf("local_acp.permission_mode %q has no equivalent Go policy", source.LocalACP.PermissionMode)
 	}
-	if source.LocalACP.ToolAllowlist != nil || len(source.LocalACP.ToolDenylist) != 0 {
-		return result, fmt.Errorf("local_acp tool allow/deny lists require a Go policy migration")
+	policy := cfg.ToolPolicy
+	if source.LocalACP.ToolAllowlist != nil {
+		selected := pythonToolNames(*source.LocalACP.ToolAllowlist)
+		if policy.Allowlist == nil {
+			policy.Allowlist = selected
+		} else {
+			intersection := make([]string, 0, len(policy.Allowlist))
+			for _, name := range policy.Allowlist {
+				if slices.Contains(selected, name) {
+					intersection = append(intersection, name)
+				}
+			}
+			policy.Allowlist = intersection
+		}
 	}
+	policy.Denylist = pythonToolNames(append(slices.Clone(policy.Denylist), source.LocalACP.ToolDenylist...))
+	if err := policy.Validate(); err != nil {
+		return result, fmt.Errorf("local_acp tool policy: %w", err)
+	}
+	cfg.ToolPolicy = policy
 	if source.LocalACP.GoalAutoContinue {
 		return result, fmt.Errorf("local_acp.goal_auto_continue has no Go equivalent")
 	}

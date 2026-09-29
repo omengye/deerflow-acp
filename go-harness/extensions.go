@@ -34,6 +34,7 @@ type extensionState struct {
 	MCPGeneration     string             `json:"mcpGeneration,omitempty"`
 	SandboxPolicy     string             `json:"sandboxPolicy"`
 	ExternalACPPolicy string             `json:"externalACPPolicy,omitempty"`
+	ToolPolicy        string             `json:"toolPolicy,omitempty"`
 	MemoryPolicy      string             `json:"memoryPolicy,omitempty"`
 	ExtractionEnabled bool               `json:"extractionEnabled,omitempty"`
 	Memory            []memorySnapshot   `json:"memory,omitempty"`
@@ -189,6 +190,11 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 	if len(cfg.ACPAgents) > 0 {
 		acpPolicy = fmt.Sprintf("%x", sha256.Sum256(acpEncoded))
 	}
+	toolPolicy := ""
+	if cfg.ToolPolicy.Allowlist != nil || len(cfg.ToolPolicy.Denylist) > 0 {
+		encoded, _ := json.Marshal(cfg.ToolPolicy)
+		toolPolicy = fmt.Sprintf("%x", sha256.Sum256(encoded))
+	}
 	memoryPolicy := ""
 	if memoryStore != nil {
 		identity := sha256.Sum256([]byte("memory/v1\x00" + cfg.MemoryUserID))
@@ -198,7 +204,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		selection := selectionPolicy
 		selection.Workspace = req.Session.CWD
 		readOnly := req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
-		state := extensionState{Version: 1, SandboxPolicy: policyHash, ExternalACPPolicy: acpPolicy, MemoryPolicy: memoryPolicy, ExtractionEnabled: cfg.MemoryExtraction}
+		state := extensionState{Version: 1, SandboxPolicy: policyHash, ExternalACPPolicy: acpPolicy, ToolPolicy: toolPolicy, MemoryPolicy: memoryPolicy, ExtractionEnabled: cfg.MemoryExtraction}
 		if !readOnly {
 			state.MCPGeneration, err = manager.Generation(ctx, req.Session.ID)
 			if err != nil {
@@ -214,7 +220,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 				return out, fmt.Errorf("%w: invalid extension checkpoint", harness.ErrInvalidInput)
 			}
 			var extra any
-			if dec.Decode(&extra) != io.EOF || previous.Version != state.Version || previous.MCPGeneration != state.MCPGeneration || previous.SandboxPolicy != state.SandboxPolicy || previous.ExternalACPPolicy != state.ExternalACPPolicy || previous.ExtractionEnabled != state.ExtractionEnabled {
+			if dec.Decode(&extra) != io.EOF || previous.Version != state.Version || previous.MCPGeneration != state.MCPGeneration || previous.SandboxPolicy != state.SandboxPolicy || previous.ExternalACPPolicy != state.ExternalACPPolicy || previous.ToolPolicy != state.ToolPolicy || previous.ExtractionEnabled != state.ExtractionEnabled {
 				return out, fmt.Errorf("%w: execution resources changed since checkpoint", harness.ErrInvalidInput)
 			}
 			if previous.MemoryPolicy != state.MemoryPolicy && (previous.MemoryPolicy != "" || len(previous.Memory) != 0) {
@@ -259,13 +265,15 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			}
 			out.Tools = append(out.Tools, search)
 		}
-		if len(state.Skills) > 0 {
+		if len(state.Skills) > 0 && cfg.ToolPolicy.Allows("skill") {
 			handler, err := einoskill.NewMiddleware(ctx, &einoskill.Config{Backend: snapshot, BuildContent: snapshot.BuildContent})
 			if err != nil {
 				return out, err
 			}
-			out.Tools = append(out.Tools, snapshot.ReadFileTool())
 			out.Handlers = []adk.ChatModelAgentMiddleware{handler}
+		}
+		if len(state.Skills) > 0 {
+			out.Tools = append(out.Tools, snapshot.ReadFileTool())
 		}
 		if assetStore != nil && cfg.Media.SupportsVision(req.Session.Model) {
 			view, err := tools.ViewImageTool(func(ctx context.Context, callID, path string) (*schema.ToolResult, error) {

@@ -137,6 +137,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	}
 	protected := make(map[string]bool, len(tools))
 	contracts := make([]*schema.ToolInfo, 0, len(tools))
+	allowedTools := make([]tool.BaseTool, 0, len(tools))
 	for _, t := range tools {
 		if t == nil {
 			return p, errors.New("nil tool")
@@ -147,6 +148,9 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		}
 		if info == nil || info.Name == "" {
 			return p, errors.New("tool name is required")
+		}
+		if !e.config.ToolPolicy.Allows(info.Name) {
+			continue
 		}
 		if info.Name == "task" && !e.config.DisableSubAgent && !(req.Session.ConfigVersion > 0 && !req.Session.Subagents) {
 			return p, errors.New("tool name task is reserved for native Eino delegation")
@@ -159,7 +163,9 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		}
 		protected[info.Name] = true
 		contracts = append(contracts, info)
+		allowedTools = append(allowedTools, t)
 	}
+	tools = allowedTools
 	var err error
 	p.Contract, err = e.executionContract(contracts, extensions.State)
 	if err != nil {
@@ -209,7 +215,8 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend,
 		ChatModel: chatModel, MaxIteration: e.config.MaxIterations,
 		ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}},
-		Handlers:    handlers, WithoutGeneralSubAgent: e.config.DisableSubAgent || (req.Session.ConfigVersion > 0 && !req.Session.Subagents),
+		Handlers:    handlers, WithoutWriteTodos: !e.config.ToolPolicy.Allows("write_todos"),
+		WithoutGeneralSubAgent: e.config.DisableSubAgent || !e.config.ToolPolicy.Allows("task") || (req.Session.ConfigVersion > 0 && !req.Session.Subagents),
 	})
 	if err != nil {
 		return p, fmt.Errorf("create deep agent: %w", err)

@@ -26,7 +26,7 @@
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复、父会话通知输入已接线 | 跨 run 长命令；真实编辑器中的通知处理与恢复互操作 |
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
-| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
+| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层（含工具允许/拒绝列表）、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
 | 可选外部 ACP Agent | 首轮接入：显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次估算模型调用计入父预算 | 断线后的反向权限暂停/恢复、远端真实模型用量约束、产物导入与异常会话对账 |
 | 打包 / 默认切换 | 独立 Go ACP 便携包脚本与包内说明已写入；Windows Debug/Release 与 WSL Ubuntu Linux Debug 包实测 Bridge 自动启动 Go daemon，并完成 status/stop；默认入口未切换 | 原生 Linux/远端 CI、真实编辑器、回退和默认切换演练 |
 
@@ -375,3 +375,9 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - WSL Ubuntu 22.04 的原生 Rust Bridge 与 Go daemon 运行 v1/v2 组合 100 轮通过，先前偶发的 v2 `_deerflow_error` 未复现；该结果不能证明根因已修复。
 - Linux 原生外部 ACP 子进程测试暴露进程组终止误判：主进程被 SIGKILL 后、`cmd.Wait` 前仍以 zombie 状态属于原进程组，串行检查会等待约 6 秒并错误报告终止未确认。现并发执行进程组终止检查与 `cmd.Wait` 回收；Linux `TestExternalACPProcess`、取消、会话复用及状态写入失败用例重跑通过，取消用例约 0.3 秒结束。
 - 修复后 Windows Go 整模块 `go test -count=1 -p=2 -timeout=5m ./...`、ACP client/sandbox race，以及 WSL Linux ACP client race 均通过；`git diff --check` 通过。尚未推送 CI、联调真实编辑器、运行 Docker 实机或切换默认入口。
+
+## 第三十六阶段宿主工具列表策略
+
+- 增加 SDK `Config.ToolPolicy`：`Allowlist=nil` 表示只应用拒绝列表，显式空允许列表表示禁用全部工具；拒绝列表优先。`--config` 映射 Python `local_acp.tool_allowlist`/`tool_denylist`，对名称去空白、去重，并与已有 Go 宿主策略求交集/并集，不能放宽已有边界。Python 权限模式 `off`/`all` 仍拒绝，`goal_auto_continue` 等配置仍待迁移。
+- 每轮 Eino 工具清单在模型调用前过滤工作区、MCP、外部 ACP 与后台工具；`task`、`write_todos` 由 DeepAgent 原生开关禁用，Skills middleware 注入的 `skill` 同样受约束。宿主禁用 `task` 时，不向 ACP 会话暴露可重新启用它的 subagent 选项。工具策略进入前台执行契约、扩展快照和后台宿主摘要，变更后不能继续旧检查点或后台任务。
+- 定向测试覆盖空允许列表、Python/Go 策略交集、模型可见工具清单、原生工具禁用、会话配置无法提升权限及检查点策略漂移。Windows `go test -count=1 -p=1 -timeout=5m ./...` 全模块、根 SDK/Eino/launch race 和 WSL Linux Eino/launch 定向测试通过。一次同时运行 Windows 全模块/race 与 WSL 测试时，本地 fixture/daemon 的 loopback 连接出现超时；待并发负载结束后，失败的根 SDK/daemon 包串行重跑和独立全模块重跑均通过。未在真实编辑器验证此策略映射。

@@ -45,13 +45,18 @@ type backgroundSpecKey struct{}
 func backgroundHostPolicy(cfg Config) (string, error) {
 	// Provider credentials stay process-local. Their presence is neither an
 	// execution grant nor part of an immutable checkpoint resource identity.
+	var toolPolicy *harness.ToolPolicy
+	if cfg.ToolPolicy.Allowlist != nil || len(cfg.ToolPolicy.Denylist) > 0 {
+		toolPolicy = &cfg.ToolPolicy
+	}
 	data, err := json.Marshal(struct {
 		Version                               int
 		Provider, BaseURL, Model, Instruction string
 		MaxIterations                         int
 		DisableSubagents                      bool
 		Media                                 harness.MediaConfig
-	}{1, cfg.Provider, cfg.BaseURL, cfg.Model, cfg.Instruction, cfg.MaxIterations, cfg.DisableSubagents, cfg.Media})
+		ToolPolicy                            *harness.ToolPolicy `json:",omitempty"`
+	}{1, cfg.Provider, cfg.BaseURL, cfg.Model, cfg.Instruction, cfg.MaxIterations, cfg.DisableSubagents, cfg.Media, toolPolicy})
 	if err != nil {
 		return "", err
 	}

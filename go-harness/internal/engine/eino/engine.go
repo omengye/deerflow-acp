@@ -49,6 +49,7 @@ type Config struct {
 	// Handlers extends native Eino middleware without introducing another loop.
 	Handlers        []adk.ChatModelAgentMiddleware
 	DisableSubAgent bool
+	ToolPolicy      harness.ToolPolicy
 }
 
 type Engine struct {
@@ -85,6 +86,9 @@ var _ harness.Engine = (*Engine)(nil)
 func (e *Engine) DurableExecutions() bool { return e.config.BudgetLedger != nil }
 
 func New(ctx context.Context, config Config) (*Engine, error) {
+	if err := config.ToolPolicy.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", harness.ErrInvalidInput, err)
+	}
 	if err := validateBudget(config.Budget); err != nil {
 		return nil, err
 	}
@@ -106,6 +110,12 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 		config.CheckpointStore = &memoryCheckpoints{items: make(map[string][]byte)}
 	}
 	config.Tools = append([]tool.BaseTool(nil), config.Tools...)
+	if config.ToolPolicy.Allowlist != nil {
+		config.ToolPolicy.Allowlist = append([]string{}, config.ToolPolicy.Allowlist...)
+	}
+	if config.ToolPolicy.Denylist != nil {
+		config.ToolPolicy.Denylist = append([]string{}, config.ToolPolicy.Denylist...)
+	}
 	config.Handlers = append([]adk.ChatModelAgentMiddleware(nil), config.Handlers...)
 	config.Media.VisionModels = append([]string(nil), config.Media.VisionModels...)
 	config.ContextWindows = maps.Clone(config.ContextWindows)

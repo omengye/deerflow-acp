@@ -37,6 +37,10 @@ func itemFor(req harness.RunRequest) turnItem {
 }
 
 func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawMessage) (string, error) {
+	var policy *harness.ToolPolicy
+	if e.config.ToolPolicy.Allowlist != nil || len(e.config.ToolPolicy.Denylist) > 0 {
+		policy = &e.config.ToolPolicy
+	}
 	data, err := json.Marshal(struct {
 		Provider, BaseURL, Model, Instruction string
 		MaxIterations                         int
@@ -46,7 +50,8 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 		Extension                             json.RawMessage
 		Media                                 harness.MediaConfig
 		Compaction                            harness.CompactionConfig
-	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction})
+		ToolPolicy                            *harness.ToolPolicy `json:",omitempty"`
+	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy})
 	if err != nil {
 		return "", fmt.Errorf("encode execution contract: %w", err)
 	}
