@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | Go SDK / 版本组合 | 模块、公共类型、嵌入式 Client 和模型适配器已写入 | 全量组合、跨平台构建、配置清单 |
 | SQLite 基础和 Eino providers | checkpoint、session events、background task stores；上游 conformance、崩溃恢复、SQL 故障注入测试已通过 | 后续 Manager/工具恢复装配 |
-| 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close 已写入 | 黑盒互操作、官方 TCK、真实编辑器 |
+| 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close 已写入；官方 ACP stable v1 TCK 判定 `CONFORMANT` | 真实编辑器互操作 |
 | 执行与工作区工具 | Eino TurnLoop/DeepAgent、前台委派、文件工具、plan/read_only、主/子共享预算；执行回执与命令工具已接线 | 长期会话循环、后台委派和更完整的工具集 |
 | 权限 / 恢复 | 前台与后台原生 durable HITL、审批/检查点/回执/预算联合恢复；SDK/ACP 查询、批准与取消已接入 | 真实编辑器与 MCP 重新绑定恢复 |
 | 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、原生子 Agent 生命周期、主 Agent 计划与真实上下文用量投影、分页历史与 load 重放、有界异步 ACP 更新队列 | 真实编辑器流压验证 |
@@ -58,7 +58,7 @@ go test -race -p=2 -timeout=5m ./internal/... ./
 
 最后两处修改后，另外重跑了 session/tools/runtime/ACP agent/SDK 的 race 检查，均通过。真实进程测试已关闭测试结果缓存重跑。设置 `GOOS=linux GOARCH=amd64 CGO_ENABLED=0` 后的 `go build -p=2 ./...` 交叉编译通过。
 
-新增 GitHub Actions Windows/Linux 验证定义尚未推送或在远端执行。真实模型联网测试、Linux 运行期验证、ACP TCK 和编辑器实测仍待后续阶段。本阶段尚不满足完整 V1 发布条件。
+新增 GitHub Actions Windows/Linux 验证定义尚未推送或在远端执行。真实模型联网测试、Linux 运行期验证和编辑器实测仍待后续阶段；官方 ACP TCK 结果见第二十三阶段。本阶段尚不满足完整 V1 发布条件。
 
 ## 下一阶段
 
@@ -283,3 +283,11 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - Eino DeepAgent 内建 `write_todos`，成功执行时返回完整的结构化 TODO 列表。仅从主 Agent 的真实工具结果生成 `plan_update` 领域事件，映射 ACP `plan`；默认优先级为 `medium`，清空列表发送空数组以替换客户端旧计划。
 - 子 Agent 的待办不覆盖主会话计划。自定义工具不能占用原生 `write_todos` 名称，以确保投影只解析 Eino 的可信内建结果。领域事件随会话历史持久化，`session/load` 可重放。
 - Eino 主/子 Agent 与 ACP stdio 管道定向测试覆盖计划生成、隔离、清空及重放；整模块普通测试、相关 race 和 Linux amd64 无 CGO 构建通过。真实编辑器互操作仍待验收。
+
+## 第二十三阶段官方 ACP TCK
+
+- 官方 `acp-tck v0.2.0`（仓库提交 `b15c7bdb`，stable v1，schema revision `6d08f412a7a1370d3cc9a124e3be3d6acf92641e`）使用真实 Go stdio 可执行文件和本地模型 fixture 完整运行。结果为 `CONFORMANT`：21 项 mandatory 全通过，11 项已启用 capability 全通过，8 项 capability 跳过；10 项 advisory 通过、1 项失败、1 项跳过；4 项 informational 通过。
+- 修复 `session/resume` 对 `mcpServers` 的错误强制要求。该字段按 ACP resume 类型允许省略；显式 `null` 仍拒绝，`session/new` 与 `session/load` 仍要求数组。ACP 管道回归和 TCK 中 `ACP-RESUME-001/002` 通过。
+- 唯一失败项 `ACP-PROMPT-003` 是 advisory。测试传入工作区外且不存在的 `file:///tmp/tck-example.txt`；当前文件引用策略要求引用可读取且位于授权工作区，故返回参数错误。TCK 自身将此条标为规范文本存在分歧的 advisory，不影响 conformance verdict。以后若调整协议兼容性，仍需保持文件读取边界。
+- 官方 TCK 不覆盖真实编辑器互操作、图片输入、MCP 重绑定、后台子任务、持久恢复、Docker 或打包；完整 V1 仍须逐项验收。
+- 本批整模块 `go test -count=1 ./...`、ACP/MCP/SQLite 聚焦 race 测试，以及 Linux amd64 无 CGO 全模块构建通过。整模块并行运行曾暴露测试夹具时序问题：MCP fixture 启动限时由 300 ms 放宽至 3 s；上游通知 outbox conformance 的 20 ms 租约改用夹具显式推进的固定时钟，避免调度延迟造成虚假租约丢失。运行时代码未因这两处测试调整而改变。

@@ -185,7 +185,7 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err := validateResources(req.AdditionalDirectories); err != nil {
 			return nil, err
 		}
-		servers, err := a.mcpServers(raw)
+		servers, err := a.mcpServers(raw, false)
 		if err != nil {
 			return nil, err
 		}
@@ -195,21 +195,38 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		}
 		return a.sessionResponse(x, true), nil
 	case "session/load", "session/resume":
-		var req acp.LoadSessionRequest
-		if err := decode(raw, &req); err != nil {
+		var sessionID, cwd string
+		var additional []string
+		if method == "session/load" {
+			var req acp.LoadSessionRequest
+			if err := decode(raw, &req); err != nil {
+				return nil, err
+			}
+			if err := req.Validate(); err != nil {
+				return nil, rpcError(protocol.InvalidParams, err.Error())
+			}
+			sessionID, cwd, additional = string(req.SessionId), req.Cwd, req.AdditionalDirectories
+		} else {
+			var req acp.ResumeSessionRequest
+			if err := decode(raw, &req); err != nil {
+				return nil, err
+			}
+			if err := req.Validate(); err != nil {
+				return nil, rpcError(protocol.InvalidParams, err.Error())
+			}
+			sessionID, cwd, additional = string(req.SessionId), req.Cwd, req.AdditionalDirectories
+		}
+		if sessionID == "" {
+			return nil, rpcError(protocol.InvalidParams, "sessionId is required")
+		}
+		if err := validateResources(additional); err != nil {
 			return nil, err
 		}
-		if err := req.Validate(); err != nil {
-			return nil, rpcError(protocol.InvalidParams, err.Error())
-		}
-		if err := validateResources(req.AdditionalDirectories); err != nil {
-			return nil, err
-		}
-		servers, err := a.mcpServers(raw)
+		servers, err := a.mcpServers(raw, method == "session/resume")
 		if err != nil {
 			return nil, err
 		}
-		x, err := a.service.Load(ctx, a.owner, string(req.SessionId), req.Cwd, method == "session/load", a.emit, servers...)
+		x, err := a.service.Load(ctx, a.owner, sessionID, cwd, method == "session/load", a.emit, servers...)
 		if err != nil {
 			return nil, err
 		}

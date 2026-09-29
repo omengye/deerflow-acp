@@ -485,6 +485,35 @@ func TestLoadReplaysHistoryBeforeResponseAndResumeDoesNot(t *testing.T) {
 	second.success(t, listed)
 }
 
+func TestResumeMCPServersOptionalButLoadRequiresArray(t *testing.T) {
+	f := newFixture(t, engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	}))
+	c := connect(t, f.service)
+	c.initialize(t)
+	sid := c.newSession(t, f.cwd)
+	c.success(t, c.request(t, "session/close", map[string]any{"sessionId": sid}))
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		params map[string]any
+	}{
+		{"resume null", "session/resume", map[string]any{"sessionId": sid, "cwd": f.cwd, "mcpServers": nil}},
+		{"load missing", "session/load", map[string]any{"sessionId": sid, "cwd": f.cwd}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := c.response(t, c.request(t, tc.method, tc.params))
+			if msg.Error == nil || msg.Error.Code != protocol.InvalidParams {
+				t.Fatalf("invalid MCP servers accepted: %+v", msg)
+			}
+		})
+	}
+
+	c.success(t, c.request(t, "session/resume", map[string]any{"sessionId": sid, "cwd": f.cwd}))
+	stopReason(t, c.success(t, c.request(t, "session/prompt", promptParams(sid, "resumed"))), "end_turn")
+}
+
 func TestTwoConnectionsAndEOFKeepOtherSessionRunning(t *testing.T) {
 	type activeRun struct {
 		sessionID string

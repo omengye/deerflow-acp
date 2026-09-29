@@ -16,14 +16,20 @@ import (
 // The SDK's union decoder intentionally accepts fallback variants. Validate the
 // discriminator and required arrays before using its typed fields. In particular,
 // an unknown transport must not silently turn into stdio or HTTP.
-func (a *Agent) mcpServers(raw json.RawMessage) ([]harness.MCPServer, error) {
+func (a *Agent) mcpServers(raw json.RawMessage, optional bool) ([]harness.MCPServer, error) {
 	invalid := func() ([]harness.MCPServer, error) {
 		return nil, rpcError(protocol.InvalidParams, "invalid MCP server configuration")
 	}
 	var request struct {
 		Servers json.RawMessage `json:"mcpServers"`
 	}
-	if json.Unmarshal(raw, &request) != nil || !isArray(request.Servers) {
+	if json.Unmarshal(raw, &request) != nil {
+		return invalid()
+	}
+	if len(request.Servers) == 0 && optional {
+		return []harness.MCPServer{}, nil
+	}
+	if !isArray(request.Servers) {
 		return invalid()
 	}
 	var values []json.RawMessage

@@ -250,7 +250,9 @@ func TestStdioLifecycleEnvironmentAndStaleTools(t *testing.T) {
 func TestAtomicReplacementAndFailedCandidate(t *testing.T) {
 	cfg := processConfig(t, "one")
 	cwd := t.TempDir()
-	m := testManager(t, harness.MCPPolicy{AllowedCommands: []string{cfg.Command}, ConnectTimeout: 300 * time.Millisecond})
+	// Spawning the fixture process can exceed 300 ms under a full package run.
+	// Keep the stalled candidate bounded while allowing ordinary startup time.
+	m := testManager(t, harness.MCPPolicy{AllowedCommands: []string{cfg.Command}, ConnectTimeout: 3 * time.Second})
 	if err := m.Bind(context.Background(), "owner", "s", cwd, []harness.MCPServer{cfg}); err != nil {
 		t.Fatal(err)
 	}

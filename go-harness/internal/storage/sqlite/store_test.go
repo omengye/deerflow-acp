@@ -74,7 +74,10 @@ func TestNotificationOutboxConformance(t *testing.T) {
 		New: func(t testing.TB) (bt.TaskStore, bt.NotificationOutbox) {
 			s := testStore(t).Tasks()
 			offset := new(atomic.Int64)
-			s.now = func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }
+			base := time.Now()
+			// The upstream conformance lease is only 20 ms. Advance it explicitly
+			// so package scheduling cannot expire the receipt before Ack.
+			s.now = func() time.Time { return base.Add(time.Duration(offset.Load())) }
 			clocks.Store(s, offset)
 			return s, s
 		},
