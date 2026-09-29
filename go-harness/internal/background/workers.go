@@ -129,11 +129,14 @@ func (s *Service) worker(ctx context.Context) {
 				delete(s.backoff, taskID)
 			}
 		}
-		// Keep uncertain attempts quarantined in memory until their durable
-		// binding has been marked; completed, joined state can be discarded.
-		for key, state := range s.attempts {
-			if state.scope.Binding.TaskID == id && state.isJoined() {
-				delete(s.attempts, key)
+		// Joined execution can still have an uncommitted terminal transaction.
+		// Keep its diagnostic, checkpoint and ledger state until a successful
+		// transition; lease recovery must not silently skip these projections.
+		if err == nil {
+			for key, state := range s.attempts {
+				if state.scope.Binding.TaskID == id && state.isJoined() {
+					delete(s.attempts, key)
+				}
 			}
 		}
 		s.mu.Unlock()

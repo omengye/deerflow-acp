@@ -163,6 +163,18 @@ func (m *toolMiddleware) governedPermission(ctx context.Context, tc *adk.ToolCon
 	if intent.ID == "" || intent.Version < 1 {
 		return "", errors.New("permission broker returned an invalid intent")
 	}
+	if policy, ok := hooks.Broker.(interaction.PolicyPermissionBroker); ok {
+		decision, handled, err := policy.ResolvePolicyPermission(ctx, req, intent)
+		if err != nil {
+			return "", err
+		}
+		if handled {
+			if decision != harness.AllowOnce && decision != harness.AllowAlways && decision != harness.RejectOnce && decision != harness.RejectAlways {
+				return "", fmt.Errorf("%w: policy permission has no definitive decision", harness.ErrInvalidInput)
+			}
+			return decision, nil
+		}
+	}
 	state := permissionState{Intent: intent, RequestHash: permissionHash(req), RootBudgetID: m.sink.request.RootBudgetID}
 	return "", m.interruptPermission(ctx, tc, state)
 }

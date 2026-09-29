@@ -261,6 +261,10 @@ func TestPreparedObserverProjectionFailureCancelsAndPreservesError(t *testing.T)
 	if !errors.Is(err, want) || !errors.Is(joinErr, want) {
 		t.Fatalf("projection failure lost: execute=%v join=%v", err, joinErr)
 	}
+	executionErr, cleanupErr := p.JoinAndCloseDetailed(context.Background())
+	if !errors.Is(executionErr, want) || cleanupErr != nil {
+		t.Fatalf("joined projection failure classified as cleanup uncertainty: %v / %v", executionErr, cleanupErr)
+	}
 }
 
 func TestPreparedObserverInterruptStagingFailureIsNotWaitingInput(t *testing.T) {

@@ -49,6 +49,12 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores 
 			return e, err
 		}
 	}
+	backgroundAttempt, backgroundGoverned := ctx.Value(backgroundInteractionAttemptKey{}).(*BackgroundInteractionAttempt)
+	if backgroundGoverned {
+		if err = backgroundAttempt.check(ctx, tx, e.Kind != "tool_execute"); err != nil {
+			return e, err
+		}
+	}
 	var receipt harness.ToolReceipt
 	if e.Kind == "tool_start" {
 		if e.Status != "pending" || !json.Valid(e.Arguments) {
@@ -89,6 +95,11 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores 
 		}
 		if receipt.ToolName != e.ToolName {
 			return e, harness.ErrReceiptConflict
+		}
+		if backgroundGoverned {
+			if err = backgroundAttempt.consumeEventTx(ctx, tx, e, receipt); err != nil {
+				return e, err
+			}
 		}
 		if governed {
 			grant, hasGrant := attempt.grants[e.ToolCallID]

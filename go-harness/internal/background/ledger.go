@@ -148,7 +148,30 @@ func (a *LedgerAdapter) HeartbeatAttemptTx(ctx context.Context, tx *sql.Tx, scop
 func (a *LedgerAdapter) HeartbeatInterval() time.Duration { return a.ledger.HeartbeatInterval() }
 
 func (a *LedgerAdapter) CheckAttemptBudget(ctx context.Context, scope TaskScope) error {
-	return a.ledger.Validate(ctx, BudgetScope(scope))
+	err := a.ledger.Validate(ctx, BudgetScope(scope))
+	if !errors.Is(err, bt.ErrLeaseLost) {
+		return err
+	}
+	// Durable cancellation closes new-effect admission while cleanup still
+	// owns the native and child leases. Validate wraps this normal fence denial
+	// as a persistence error; confirm the exact live cancellation before
+	// classifying it as an ordinary stop. Real lease loss stays diagnostic.
+	tx, readErr := a.store.DB().BeginTx(ctx, nil)
+	if readErr != nil {
+		return errors.Join(err, ledgerPersistence("inspect canceled budget attempt", readErr))
+	}
+	defer tx.Rollback()
+	if readErr = a.checkTaskTx(ctx, tx, scope, true); readErr != nil {
+		return errors.Join(err, readErr)
+	}
+	task, _, readErr := a.store.Tasks().TaskLeaseTx(ctx, tx, scope.Binding.TaskID)
+	if readErr != nil {
+		return errors.Join(err, ledgerPersistence("inspect canceled budget attempt", readErr))
+	}
+	if task.CancelRequestedAt != nil {
+		return context.Canceled
+	}
+	return err
 }
 
 func (a *LedgerAdapter) CommitAttemptTx(ctx context.Context, tx *sql.Tx, scope TaskScope, status string) error {

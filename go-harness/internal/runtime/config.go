@@ -123,7 +123,7 @@ func (s *Service) clearDecisions(owner, id string) {
 func configuredPermission(x harness.Session, p harness.PermissionRequest) (harness.PermissionDecision, bool) {
 	if x.Mode == "plan" || x.ApprovalMode == harness.ApprovalReadOnly {
 		switch p.ToolName {
-		case "read_file", "list_directory", "search_files", "read_skill_file", "view_image":
+		case "read_file", "list_directory", "search_files", "read_skill_file", "view_image", "task_status", "task_wait":
 			return harness.AllowOnce, true
 		default:
 			return harness.RejectOnce, true

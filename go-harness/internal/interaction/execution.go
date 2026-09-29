@@ -25,6 +25,15 @@ type InteractionBroker interface {
 	ResolvePermission(context.Context, harness.PermissionRequest, PermissionIntent, string) (harness.PermissionDecision, error)
 }
 
+// PolicyPermissionBroker optionally resolves a new intent from host-owned
+// inherited policy. A handled decision must be definitive and its current-
+// attempt grant must already exist; tool_execute or terminal denial consumes
+// that grant atomically with its receipt. It confers no foreground actor or
+// user approval. Unhandled intents use the normal native interrupt path.
+type PolicyPermissionBroker interface {
+	ResolvePolicyPermission(context.Context, harness.PermissionRequest, PermissionIntent) (harness.PermissionDecision, bool, error)
+}
+
 type ExecutionInterruptBinding struct {
 	IntentID          string
 	IntentVersion     int64

@@ -135,12 +135,19 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if a.service.DurableExecutionsEnabled() {
 			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["executions"] = executionCapabilities()
 		}
+		if a.service.Background != nil {
+			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["background"] = backgroundCapabilities(a.service.Background)
+		}
 		return response, nil
 	}
 	if !a.ready() {
 		return nil, rpcError(protocol.InvalidRequest, "initialize must complete first")
 	}
 	switch method {
+	case getBackgroundPermissionMethod:
+		return a.backgroundPermissionRequest(ctx, raw)
+	case listBackgroundTasksMethod, getBackgroundTaskMethod, waitBackgroundTaskMethod, cancelBackgroundTaskMethod, resumeBackgroundTaskMethod, approveBackgroundTaskMethod, listBackgroundNotificationsMethod, ackBackgroundNotificationMethod:
+		return a.backgroundRequest(ctx, method, raw)
 	case getExecutionMethod, resumeExecutionMethod, cancelExecutionMethod:
 		return a.executionRequest(ctx, method, raw)
 	case historyListMethod:

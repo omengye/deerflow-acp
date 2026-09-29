@@ -179,6 +179,18 @@ func (s *Store) Append(ctx context.Context, e harness.RunEvent, stores ...*asset
 		})
 		return saved, err
 	}
+	if attempt, ok := ctx.Value(backgroundInteractionAttemptKey{}).(*BackgroundInteractionAttempt); ok {
+		var saved harness.RunEvent
+		err := withExecutionTransaction(ctx, s, func(tx *sql.Tx) error {
+			if err := attempt.check(ctx, tx, true); err != nil {
+				return err
+			}
+			var err error
+			saved, err = appendEventTx(ctx, tx, e)
+			return err
+		})
+		return saved, err
+	}
 	data, err := json.Marshal(e)
 	if err != nil {
 		return e, err

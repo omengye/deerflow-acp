@@ -18,10 +18,22 @@ func (p *PreparedAttempt) ObserveAgent(inner adk.ResumableAgent, onInterrupt fun
 	return &preparedObserver{ResumableAgent: inner, attempt: p, onInterrupt: onInterrupt}
 }
 
+// ObserveAgentWithNativeCancel accepts a trusted attempt-local observation of
+// manager control delivery. Eino's outer Runner converts cancel graph
+// interrupts only after this observer sees them. During that native control,
+// opaque system roots must reach the Runner unchanged so it can save and
+// classify the checkpoint. Real permission targets are still validated and
+// staged, including a permission interrupt that wins a race against drain.
+// The callback must not infer control from model output or checkpoint payloads.
+func (p *PreparedAttempt) ObserveAgentWithNativeCancel(inner adk.ResumableAgent, onInterrupt func(context.Context, []ExecutionInterruptBinding) error, cancelRequested func() bool) adk.ResumableAgent {
+	return &preparedObserver{ResumableAgent: inner, attempt: p, onInterrupt: onInterrupt, nativeCancelRequested: cancelRequested}
+}
+
 type preparedObserver struct {
 	adk.ResumableAgent
-	attempt     *PreparedAttempt
-	onInterrupt func(context.Context, []ExecutionInterruptBinding) error
+	attempt               *PreparedAttempt
+	onInterrupt           func(context.Context, []ExecutionInterruptBinding) error
+	nativeCancelRequested func() bool
 }
 
 func (a *preparedObserver) Run(ctx context.Context, input *adk.AgentInput, options ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
@@ -91,8 +103,8 @@ func (a *preparedObserver) observe(parent context.Context, begin func(context.Co
 				sawEventError = true
 			}
 			if event.Action != nil && event.Action.Interrupted != nil {
-				bindings, observeErr := PermissionInterruptBindings(event.Action.Interrupted.InterruptContexts)
-				if observeErr == nil && a.onInterrupt != nil {
+				bindings, observeErr := a.interruptBindings(event.Action.Interrupted.InterruptContexts)
+				if observeErr == nil && len(bindings) > 0 && a.onInterrupt != nil {
 					observeErr = a.onInterrupt(ctx, bindings)
 				}
 				if observeErr != nil {
@@ -143,6 +155,24 @@ func (a *preparedObserver) observe(parent context.Context, begin func(context.Co
 		}
 	}()
 	return output
+}
+
+func (a *preparedObserver) interruptBindings(contexts []*adk.InterruptCtx) ([]ExecutionInterruptBinding, error) {
+	if a.nativeCancelRequested == nil || !a.nativeCancelRequested() {
+		return PermissionInterruptBindings(contexts)
+	}
+	var permissions []*adk.InterruptCtx
+	for _, item := range contexts {
+		if item != nil {
+			if _, ok := item.Info.(*permissionInterrupt); ok {
+				permissions = append(permissions, item)
+			}
+		}
+	}
+	if len(permissions) == 0 {
+		return nil, nil
+	}
+	return PermissionInterruptBindings(permissions)
 }
 
 func (p *PreparedAttempt) observeText(ctx context.Context, role schema.RoleType, message *schema.Message) error {

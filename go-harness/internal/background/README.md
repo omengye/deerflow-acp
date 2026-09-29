@@ -20,6 +20,16 @@ match `AgentVersion`. No foreground run closures are captured by the registry.
 `Open` must return cleanup ownership for any resources it allocated, including
 when it also returns an error. `JoinAndClose` must wait for actual I/O and process
 cleanup; returning an error quarantines the task and child session.
+Optional `ExecutionFailure` reports late errors from work that has already
+joined. These produce a failed task without retaining shared resources as
+uncertain cleanup. Such diagnostics persist with final task transitions, even
+when native explicit cancellation determines the terminal `canceled` status.
+
+`ObserveControl` sees actual manager-owned controls before forwarding them to
+the native executor. The host uses this attempt-local signal to let native
+drain/cancel graph interrupts reach Eino's outer Runner; unknown business
+interrupts without a control remain rejected. This observer provides no tool
+permission. The forwarding goroutine is stopped and joined before cleanup.
 
 `SubmitNativeSubagent` uses Eino's public submission helper, leaving native
 payload and checkpoint bytes opaque. `Submit` supports explicitly configured
@@ -121,14 +131,17 @@ reentry. A lost budget lease or uncertain cleanup cannot publish a safe normal
 outcome. Quota cancellation uses a private context, so it does not stop the
 native heartbeat while cleanup joins.
 
-## Explicit remaining integration
+## Host integration and remaining scope
 
-The host must wire the supplied durable budget adapter, full model/tool attempt
-factory, durable HITL broker, SDK and ACP ownership checks, and parent input
-admission. None is replaced with an in-memory fallback here. Native raw
+The root SDK now wires the durable budget adapter, rebuilt model/tool attempt
+factory, durable HITL broker, SDK and ACP ownership checks. Parent notification
+input admission is still pending. None is replaced with an in-memory fallback.
+Native raw
 `task_output`/`task_stop` tools must not be exposed because they lack business
-owner checks. A `background_agent` tool should be advertised only after the
-real attempt factory and all these gates are connected.
+owner checks. The host exposes `background_agent` with these gates, plus bounded
+status/wait/cancel tools. See [public task management](../acp/background.md).
+`ReleaseSuspensionVersion` checks the owner's observed version inside the native
+transition transaction; process startup leaves saved suspensions untouched.
 
 This package does not make local shell processes recoverable. A future command
 executor must fail after lease expiry unless its backend can recover the exact

@@ -23,6 +23,7 @@ type attemptState struct {
 	writes                map[string]checkpointWrite
 	joined, ready, failed bool
 	cleanupErr            error
+	executionErr          error
 }
 
 func (a *attemptState) isJoined() bool { a.mu.Lock(); defer a.mu.Unlock(); return a.joined }
@@ -80,6 +81,11 @@ func (s *Service) onCreate(ctx context.Context, tx *sql.Tx, task *bt.Task) error
 }
 
 func (s *Service) onTransition(ctx context.Context, tx *sql.Tx, before, after *bt.Task) error {
+	if expected, ok := ctx.Value(suspensionVersionKey{}).(int64); ok {
+		if before.Status != bt.StatusSuspended || after.Status != bt.StatusPending || before.Version != expected {
+			return bt.ErrVersionConflict
+		}
+	}
 	b, blocked, err := loadBinding(ctx, tx, after.Spec.ID)
 	if err != nil {
 		return err
@@ -142,6 +148,11 @@ func (s *Service) onTransition(ctx context.Context, tx *sql.Tx, before, after *b
 			}
 			if s.config.Budgets == nil {
 				return harness.ErrBackgroundUnavailable
+			}
+			if after.Status == bt.StatusCompleted || after.Status == bt.StatusFailed || after.Status == bt.StatusCanceled {
+				if err = persistExecutionFailureTx(ctx, tx, scope, state.executionErr); err != nil {
+					return err
+				}
 			}
 			if err = s.config.Budgets.CommitAttemptTx(ctx, tx, scope, string(after.Status)); err != nil {
 				return err
@@ -244,19 +255,30 @@ func (e *managedExecutor) Execute(ctx context.Context, task *bt.Task, runtime bt
 				result = nil
 			}
 		}
-		var cleanupErr error
+		var executionErr, cleanupErr error
 		if v.attempt != nil {
 			if v.attempt.JoinAndClose == nil {
 				cleanupErr = errors.New("background: attempt returned resources without cleanup ownership")
 			} else {
-				cleanupErr = joinAttempt(context.WithoutCancel(ctx), v.attempt)
+				executionErr, cleanupErr = joinAttempt(context.WithoutCancel(ctx), v.attempt)
 			}
+		}
+		if executionErr != nil {
+			returnErr = errors.Join(returnErr, executionErr)
+			result = nil
+		}
+		if cleanupErr == nil && errors.Is(returnErr, bt.ErrDrainCheckpointUnavailable) {
+			// Native Manager otherwise skips its final transaction for this
+			// sentinel. Joined execution is safe to fail and settle durably.
+			returnErr = &joinedDrainFailure{cause: returnErr}
+			result = nil
 		}
 		state.mu.Lock()
 		state.joined = cleanupErr == nil
 		state.ready = true
 		state.failed = returnErr != nil || cleanupErr != nil
 		state.cleanupErr = cleanupErr
+		state.executionErr = backgroundExecutionDiagnostic(returnErr)
 		state.mu.Unlock()
 		if cleanupErr != nil {
 			_, persistErr := s.store.DB().ExecContext(context.WithoutCancel(ctx), "UPDATE harness_background_bindings SET blocked_reason=? WHERE task_id=?", cleanupErr.Error(), b.TaskID)
@@ -288,16 +310,22 @@ func (e *managedExecutor) Execute(ctx context.Context, task *bt.Task, runtime bt
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
+	runtime, stopControls := observeRuntimeControls(ctx, runtime, v.attempt)
+	defer stopControls()
 	return e.inner.Execute(ctx, task, runtime)
 }
 
-func joinAttempt(ctx context.Context, attempt *Attempt) (err error) {
+func joinAttempt(ctx context.Context, attempt *Attempt) (executionErr, cleanupErr error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("background cleanup panic: %v", recovered)
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("background cleanup panic: %v", recovered))
 		}
 	}()
-	return attempt.JoinAndClose(ctx)
+	cleanupErr = attempt.JoinAndClose(ctx)
+	if attempt.ExecutionFailure != nil {
+		executionErr = attempt.ExecutionFailure()
+	}
+	return executionErr, cleanupErr
 }
 
 type resumeContextKey struct{}
@@ -349,4 +377,16 @@ func (s *Service) ReleaseSuspension(ctx context.Context, actor harness.TaskActor
 	}
 	s.wake()
 	return s.Get(ctx, actor, id)
+}
+
+type suspensionVersionKey struct{}
+
+// ReleaseSuspensionVersion requires the version the owner inspected. The check
+// runs in the native transition transaction, so a concurrent cancel or another
+// suspend cycle cannot accidentally authorize different saved work.
+func (s *Service) ReleaseSuspensionVersion(ctx context.Context, actor harness.TaskActor, id string, expected int64) (harness.BackgroundTask, error) {
+	if expected < 1 {
+		return harness.BackgroundTask{}, harness.ErrInvalidInput
+	}
+	return s.ReleaseSuspension(context.WithValue(ctx, suspensionVersionKey{}, expected), actor, id)
 }

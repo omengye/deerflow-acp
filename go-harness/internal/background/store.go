@@ -27,6 +27,10 @@ CREATE INDEX IF NOT EXISTS harness_background_parent ON harness_background_bindi
 CREATE TABLE IF NOT EXISTS harness_background_child_leases (
  child_session_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES eino_background_tasks(id), attempt INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS harness_background_execution_failures (
+ task_id TEXT NOT NULL REFERENCES eino_background_tasks(id),attempt INTEGER NOT NULL,
+ error TEXT NOT NULL,persistence_failure INTEGER NOT NULL,PRIMARY KEY(task_id,attempt)
+);
 CREATE TABLE IF NOT EXISTS harness_background_inbox (
  seq INTEGER PRIMARY KEY AUTOINCREMENT, notification_id TEXT UNIQUE NOT NULL,
  parent_session_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES eino_background_tasks(id),
@@ -136,7 +140,18 @@ func (s *Service) Get(ctx context.Context, actor harness.TaskActor, id string) (
 	if err != nil {
 		return harness.BackgroundTask{}, err
 	}
-	return project(task, b, blocked), nil
+	result := project(task, b, blocked)
+	if err = s.projectExecutionFailure(ctx, &result); err != nil {
+		return harness.BackgroundTask{}, err
+	}
+	return result, nil
+}
+
+// BindingForTask is a host-only lookup used to enrich an authorized task with
+// broker state. It repeats attachment checks and never accepts caller bindings.
+func (s *Service) BindingForTask(ctx context.Context, actor harness.TaskActor, id string) (Binding, error) {
+	binding, _, err := s.authorizedBinding(ctx, actor, id)
+	return binding, err
 }
 
 // List uses a task-ID keyset cursor scoped by the authenticated parent session.

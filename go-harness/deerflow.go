@@ -3,6 +3,8 @@ package deerflow
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/gofrs/flock"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -35,6 +38,9 @@ type Config struct {
 	// always included. Provider credentials never become session configuration.
 	Models           []harness.ConfigValue
 	DisableSubagents bool
+	// BackgroundWorkers bounds concurrent native background attempts. Zero uses
+	// four workers. Native Eino sessions expose delegation when subagents are on.
+	BackgroundWorkers int
 	// Nil uses DefaultBudgetLimits. A non-nil zero value disables all quotas.
 	// Token accounting is estimated until the provider reports actual usage.
 	Budget  *harness.BudgetLimits
@@ -57,6 +63,7 @@ type Client struct {
 	skills     *skills.Registry
 	assets     *assets.Store
 	budgets    *budgetledger.Ledger
+	background *backgroundHost
 	lock       *flock.Flock
 	owner      string
 	mu         sync.Mutex
@@ -68,6 +75,9 @@ type Client struct {
 }
 
 func Open(ctx context.Context, cfg Config) (client *Client, err error) {
+	if cfg.BackgroundWorkers < 0 || cfg.BackgroundWorkers > 64 {
+		return nil, fmt.Errorf("%w: background worker limit must be 0..64", harness.ErrInvalidInput)
+	}
 	cfg.Media.VisionModels = slices.Clone(cfg.Media.VisionModels)
 	if cfg.DataDir == "" {
 		base, e := os.UserConfigDir()
@@ -119,7 +129,23 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if cfg.Budget != nil {
 		limits = *cfg.Budget
 	}
-	ledger, err := budgetledger.New(store.DB(), budgetledger.Config{})
+	var background *backgroundHost
+	ledger, err := budgetledger.New(store.DB(), budgetledger.Config{CheckEffectTx: func(ctx context.Context, tx *sql.Tx, scope budgetledger.Scope) error {
+		var kind string
+		if err := tx.QueryRowContext(ctx, "SELECT kind FROM budget_members WHERE id=?", scope.MemberID).Scan(&kind); err != nil {
+			return err
+		}
+		if kind == "task" {
+			if background == nil {
+				return harness.ErrBackgroundUnavailable
+			}
+			return background.CheckEffectTx(ctx, tx, scope)
+		}
+		if cfg.Engine == nil {
+			return business.CheckExecutionEffectTx(ctx, tx, scope)
+		}
+		return nil
+	}})
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +194,17 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	}()
 	engine := cfg.Engine
 	if engine == nil {
-		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensionFactory(cfg, manager, registry, assetStore), Media: cfg.Media, AssetResolver: assetStore})
+		baseExtensions := extensionFactory(cfg, manager, registry, assetStore)
+		extensions := func(ctx context.Context, req harness.RunRequest, pinned json.RawMessage) (einoengine.RunExtensions, error) {
+			out, err := baseExtensions(ctx, req, pinned)
+			if err != nil {
+				return out, err
+			}
+			tools, err := background.ToolsForRun(ctx, req, out.State)
+			out.Tools = append(out.Tools, tools...)
+			return out, err
+		}
+		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore})
 		if err != nil {
 			return nil, err
 		}
@@ -177,7 +213,17 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	service.Resources = manager
 	service.Media, service.Assets = cfg.Media, assetStore
 	service.Settings = hr.ConfigSettings{Models: append([]harness.ConfigValue(nil), cfg.Models...), EnableSubagents: !cfg.DisableSubagents, DefaultSubagents: !cfg.DisableSubagents}
-	return &Client{service: service, store: store, mcp: manager, skills: registry, assets: assetStore, budgets: ledger, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
+	if native, ok := engine.(*einoengine.Engine); ok && cfg.Engine == nil {
+		background, err = newBackgroundHost(ctx, cfg, store, service, native, ledger, assetStore, manager, cfg.BackgroundWorkers)
+		if err != nil {
+			return nil, err
+		}
+		service.Background = background
+		if err = background.service.StartWorkers(context.Background()); err != nil {
+			return nil, err
+		}
+	}
+	return &Client{service: service, store: store, mcp: manager, skills: registry, assets: assetStore, budgets: ledger, background: background, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
 }
 
 func (c *Client) operation() (func(), error) {
@@ -313,6 +359,25 @@ func (c *Client) Close() error {
 	}
 	disconnectErr := c.service.Disconnect(context.Background(), c.owner)
 	c.operations.Wait()
+	if c.background != nil {
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			drainErr := c.background.service.DrainAndClose(ctx)
+			timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+			cancel()
+			// Close has no deadline. Keep actual worker resources alive until
+			// cleanup joins; native close requires bounded waits per attempt.
+			if timedOut && !errors.Is(drainErr, harness.ErrBackgroundUncertain) {
+				continue
+			}
+			if drainErr != nil {
+				c.closeErr = errors.Join(disconnectErr, drainErr)
+				close(c.closeDone)
+				return c.closeErr
+			}
+			break
+		}
+	}
 	c.closeErr = errors.Join(disconnectErr, c.mcp.Close(), c.skills.Close(), c.assets.Close(), c.store.Close(), c.lock.Close())
 	close(c.closeDone)
 	return c.closeErr

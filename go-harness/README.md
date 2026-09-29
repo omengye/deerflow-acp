@@ -114,7 +114,13 @@ response or disconnected approval channel preserves the wait. The SDK provides
 permission and exact run/version matching. See [execution recovery](internal/acp/executions.md).
 Eino's built-in `task` orchestration emits subagent lifecycle events; the child
 model and external tools share the original budget and individual tool receipts.
-Background host integration and notification scheduling are still in progress.
+The default Eino backend also exposes durable `background_agent`, `task_status`,
+`task_wait` and `task_cancel` tools. Isolated child agents inherit the workspace,
+policy and existing budget; only explicit text instructions are copied. Both
+launchers accept `--background-workers` (default 4, maximum 64). Saved child
+approvals survive disconnect/restart and can be resolved through the SDK or ACP.
+Client-owned MCP configurations currently disable background submission. See
+[background task management](internal/acp/background.md).
 
 ACP accepts text and file references. Images require an explicit
 `--vision-model <model-id>` (repeatable), and that model must also be selectable.
@@ -134,7 +140,7 @@ access; ACP exposes `_deerflow/artifacts/list`. See
 [ACP media behavior](internal/acp/media.md).
 
 Raw image outputs from MCP and model-generated media still need importer wiring.
-Durable background task scheduling, memory, compression, and full
+Parent notification input scheduling, memory, compression, and full
 Bridge compatibility are being integrated. Their incomplete
 status is not represented as a capability promise. This build is not the V1
 completion or default-launcher switch.

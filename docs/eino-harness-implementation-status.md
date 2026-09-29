@@ -18,12 +18,12 @@
 | SQLite 基础和 Eino providers | checkpoint、session events、background task stores；上游 conformance、崩溃恢复、SQL 故障注入测试已通过 | 后续 Manager/工具恢复装配 |
 | 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close 已写入 | 黑盒互操作、官方 TCK、真实编辑器 |
 | 执行与工作区工具 | Eino TurnLoop/DeepAgent、前台委派、文件工具、plan/read_only、主/子共享预算；执行回执与命令工具已接线 | 长期会话循环、后台委派和更完整的工具集 |
-| 权限 / 恢复 | 原生 durable HITL、审批/检查点/回执/预算联合恢复、SDK/ACP 显式执行查询与恢复已接入 | 后台任务 broker；真实编辑器与 MCP 重新绑定恢复 |
+| 权限 / 恢复 | 前台与后台原生 durable HITL、审批/检查点/回执/预算联合恢复；SDK/ACP 查询、批准与取消已接入 | 真实编辑器与 MCP 重新绑定恢复 |
 | 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、分页历史与 load 重放 | 有界异步发送、计划/usage 投影 |
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image 与产物登记已验证 | MCP/模型生成媒体导入、可选对象存储发布 |
-| 后台子任务 / 长命令 | 原生 Manager、有界 worker、child 租约、fenced stores、事务化 checkpoint 与通知 inbox 已通过 fixture 验证 | 真实模型/工具 factory、审批、SDK/ACP 与父会话输入接线 |
+| 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
 | Skills / memory / 压缩 | Skills 不可变注册表、原生 middleware、SDK 管理、显式 CLI 启动配置与逐步加载已接入 | memory、压缩及其共享预算 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、多窗口、现有 Rust Bridge 实际二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 诊断子集 |
@@ -64,7 +64,7 @@ go test -race -p=2 -timeout=5m ./internal/... ./
 
 历史查询现提供 SDK `HistoryPage` 与 ACP `_deerflow/history/list`，游标绑定会话并固定首次查询的事件上限。`session/load` 持有会话租约分页读取并完整重放，`session/resume` 仍不重放。验证覆盖分页间新增事件、全量重放、跨会话游标、其他连接访问、繁忙会话与大事件边界，runtime 与真实 ACP 管道限定测试通过 race。
 
-继续装配长期 TurnLoop、公开 durable HITL 恢复、Memory、压缩及后台任务 host。后台 Manager 与原生 fixture 已通过测试，实际模型/工具 factory、审批、SDK/ACP 与父会话通知输入尚需接线。
+继续实现父会话通知输入、Memory、压缩及共享预算。前台公开 durable HITL 和后台任务 host 已接线。以下各阶段记录保留当时的实现状态，最新进度以本表及最后一节为准。
 
 ## 第三阶段装配
 
@@ -146,3 +146,24 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 验证使用真实 Eino、本地模型 SSE fixture、工作区 write_file、SQLite close/open 和双向 ACP pipes。SDK 覆盖暂停后重启的批准/拒绝/取消、原输入与参数保持、最大工具次数为 1 的续跑，以及重复恢复拒绝。ACP 覆盖审批断连后重新附着、fresh permission、latest discovery、owner/CAS/严格参数校验与繁忙准入。运行时覆盖 dispatch/receipt/grant 事务故障回滚和通知失败保留等待；引擎覆盖同级并行与嵌套子 Agent 中断恢复。
 
 限定包完整 race 检查已通过：SDK 47.736s、ACP agent 33.588s、runtime 46.3s、session 1.35s、engine 33.312s、budget 9.872s。这些记录对应当前阶段，尚未执行本阶段的整模块回归、Linux 交叉构建或真实编辑器/TCK 验收。完整 V1 仍在实施中。
+
+## 第七阶段后台任务 SDK / ACP 闭环
+
+- 默认 Eino SDK 启动持久后台 host 和有界 worker。两个 CLI 共用 `--background-workers`，默认 4、最大 64。每个 attempt 从保存的 child input、配置与扩展版本重建模型和工具，不复用父 run 的闭包。
+- 模型可用 `background_agent`、`task_status`、`task_wait`、`task_cancel`。提交身份来自真实父工具回执；创建 task、child session/run/input 和共享预算成员在一个事务中完成。子任务只接收显式文本指令，历史隔离；普通会话入口不能附着 child。
+- `BackgroundController` 与 SDK 开放任务列表、查询、最长 10 秒等待、取消、审批和通知查询/确认。ACP 对应 `_deerflow/tasks/*`、`_deerflow/notifications/*`，按实际宿主能力协商；不开放任意 native submit、checkpoint 或 resume targets。
+- 后台审批使用原生 Eino interrupt、保存批次与当前 task version。grant 消费与工具 dispatch/拒绝回执同事务。权限和关机暂停各有独立 manifest，绑定原始输入、配置、native checkpoint/history、领域事件和回执位置。
+- 列表仅含审批摘要；SDK `BackgroundPermission` 与 ACP `_deerflow/tasks/permission/get` 让当前会话持有人读取指定批次、版本、intent 的真实工具参数，用于审批前展示。预览不产生授权、不改变通知或任务状态。公开审批仅允许 `allow_once/reject_once`。
+- 子任务继承持久权限配置。`allow_always/reject_always` 通过独立 policy 审计生成当前 attempt 的一次性 grant；不伪造人工批准人。plan/read_only 允许 `task_status/task_wait`，仍禁止提交和取消工具。
+- `Client.Close` 排空后台 I/O 后才释放数据库等共享资源。重启保留 `suspended`，SDK `ResumeBackgroundTask` 与 ACP `_deerflow/tasks/resume` 按精确版本显式恢复；旧 grant 不跨暂停复用。native 控制信号在转发前被观测，以区分系统 drain 和普通业务中断。
+- 已 join 的模型/事件错误按执行失败处理；真正无法确认的资源清理继续隔离。取消与晚到故障同时发生时保留独立持久诊断。终态事务失败时 worker 保留 joined attempt，避免丢失预算、checkpoint 与错误证据。
+
+真实 SDK 与本地 OpenAI fixture 覆盖后台写文件的批准/拒绝/取消、SQLite close/open 后审批、继承 allow_always、共享预算、child 隔离和重复请求拒绝。真实 ACP pipes 覆盖断连重附着、跨 owner 拒绝、任务管理、参数预览和通知确认。关机恢复测试在已完成写入后暂停下一次模型调用，重启时确认不自动执行，显式恢复后确认磁盘 marker 未被覆盖且只有一条原工具回执。
+
+当前限制：非空 ACP client MCP 配置不向后台复制，因此隐藏后台提交；parent asset 能力和 child 产物不会自动互相导入。父会话 notification inbox 尚未作为持久模型输入消费。Memory、上下文压缩、MCP/模型媒体输出导入、计划/usage 投影、有界异步事件发送、可选外部 ACP agent、MANAGE/Python 配置迁移、打包与默认入口切换仍属于完整 V1 的待办。
+
+本批最终组合验证：整模块普通回归的 SDK、CLI/daemon、runtime、engine、ACP、存储、MCP、进程集成等包通过；后台包的两个通知测试因 fixture 的 20 ms outbox lease 在并发编译时提前到期而失败。测试租约改为 5 秒，过期场景继续显式推进 SQL 中的租约；生产租约与恢复语义未改。后台全包串行普通测试 5.340s、race 11.020s 通过。最终 SDK 后台组合 race 62.354s，权限预览 runtime/ACP race 12.075s/9.629s 通过；真实 ACP 权限预览 race 12.080s、关机恢复 race 17.747s 通过。`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -mod=readonly -p=2 ./...` 通过。
+
+以上仍为本地模型和协议 fixture；未进行真实付费模型、编辑器、官方 TCK 或 Docker 实机验收。下一项按 [通知 continuation 设计](eino-notification-continuation-design.md) 实施，使父 prompt 结束后的后台结果也能进入共享原预算的持久模型输入。
+
+最后补充：SDK Close 仅在自身等待期限真正到期且没有 cleanup uncertainty 时继续等待，避免将底层错误中的 DeadlineExceeded 误当成可重试等待。对应 SDK 后台审批与关机恢复组合 race 再次通过（25.481s）。

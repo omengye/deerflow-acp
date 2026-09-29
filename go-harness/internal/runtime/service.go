@@ -20,6 +20,7 @@ type Service struct {
 	Store       *Store
 	Coordinator *session.Coordinator
 	Engine      harness.Engine
+	Background  harness.BackgroundController
 	Model       string
 	Settings    ConfigSettings
 	Resources   SessionResources

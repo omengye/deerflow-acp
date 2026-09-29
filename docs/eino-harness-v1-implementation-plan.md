@@ -33,7 +33,7 @@ Python `deerflow/acp/`、现有测试和 `bridge/` 是当前产品协议基线�
 | eino-ext claude | `v0.1.25` | 避开 v0.1.26 的字段不兼容 |
 | eino-ext ark | `v0.1.71` | 火山方舟 |
 | eino-ext officialmcp | `v0.1.1` | 官方 MCP Go SDK 的适配模块 |
-| ACP Go transport/SDK | 社区 `github.com/coder/acp-go-sdk v0.13.5` 为候选 | stdio 双向 JSON-RPC；需补齐与当前 ACP schema 的差异 |
+| ACP Go transport/SDK | 固定 `github.com/coder/acp-go-sdk v0.13.5` 的协议类型 | 独立有界 stdio 双向 JSON-RPC；同步准入，避免 SDK 默认 prompt 自动抢占 |
 | ACP 规范 | 官方 stable `protocolVersion = 1`，固定 schema 快照 | 不把项目已有 draft v2 facade 当成稳定协议 |
 | 默认持久化 | SQLite，WAL + 单 daemon 所有权 | 本地启动无需 PostgreSQL；预留 store 接口 |
 | 沙箱/工作区 | 受控本地文件 backend + 可选 Docker/WSL2 backend | 兼顾当前 ACP cwd 行为和真正隔离的执行能力 |
@@ -153,6 +153,8 @@ go-harness/
 **客户端 MCP。** 当前 stable ACP 要求支持 session 请求中的 stdio MCP 配置，没有关闭 stdio 的 capability 位。V1 实现 name/绝对 command/args/env 的解析与运行，允许列表和审批约束实际进程启动；策略拒绝时返回明确错误。不能把旧版本“完全不支持 client MCP”的受限 profile 描述为完整支持此协议能力。HTTP/SSE 是可选 MCP capability，默认由配置决定。env/headers 作为凭据处理，不进入模型上下文、公开事件或普通日志。
 
 **Harness 专有操作。** 暂停、回滚、后台任务管理没有可直接套用的通用 stable ACP RPC。SDK/本地控制通道可提供这些操作；若客户端需要协议入口，只通过协商过的 `_deerflow/...` 扩展暴露，并明确其自定义性质。子 Agent 进度先映射为可追踪 tool_call/update，无须为每个子 Agent 创建一个对外 ACP session。
+
+实施中已确定前台执行与后台任务分开管理。前台使用 `_deerflow/executions/*`，后台使用 `_deerflow/tasks/*` 与 `_deerflow/notifications/*`；均按真实宿主能力协商。标准 `session/resume` 只重新附着会话。后台审批需要先查询固定批次中工具的实际参数，再提交一次性决定；关机保存的 `suspended` 任务通过带版本校验的显式恢复入口继续。原生 checkpoint 和 resume target 不允许由客户端传入。后台提交沿用父 run 的预算，并只复制显式文本指令；V1 当前阶段不向后台复制 ACP client 所有的 MCP 连接或父会话附件能力。
 
 **媒体与产物。** 支持文本、图片和本地 resource_link；逐会话检查模型视觉能力。图片经大小/数量/MIME 校验后持久化，checkpoint 保存引用。输出使用 ACP 标准内容/资源块及工具结果；本地文件链接可供同机客户端使用，不能假定不同机器能读取宿主路径。远程产物托管和自动下载不属于当前无 HTTP 服务的交付范围。
 

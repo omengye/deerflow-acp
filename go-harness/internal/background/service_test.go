@@ -92,7 +92,9 @@ func newFixture(t *testing.T, config func(*Config)) (*Service, *fixtureBudget) {
 	t.Helper()
 	store := openFixtureStore(t, filepath.Join(t.TempDir(), "background.db"))
 	budget := &fixtureBudget{}
-	cfg := Config{Store: store, Authorizer: fixtureAuthorizer{}, Budgets: budget, AdditionalExecutors: []bt.Executor{&fixtureExecutor{}}, PollInterval: 5 * time.Millisecond, HeartbeatInterval: 20 * time.Millisecond, NotificationLease: 20 * time.Millisecond}
+	// Outbox replay tests expire leases explicitly in SQL. Leave enough wall
+	// time for receive/commit/ack under race instrumentation and shared runners.
+	cfg := Config{Store: store, Authorizer: fixtureAuthorizer{}, Budgets: budget, AdditionalExecutors: []bt.Executor{&fixtureExecutor{}}, PollInterval: 5 * time.Millisecond, HeartbeatInterval: 20 * time.Millisecond, NotificationLease: 5 * time.Second}
 	if config != nil {
 		config(&cfg)
 	}

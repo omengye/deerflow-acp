@@ -40,6 +40,13 @@ type Attempt struct {
 	// JoinAndClose must not return nil until all providers, tools and process
 	// cleanup have joined. It must be safe even after Run/Resume fails.
 	JoinAndClose func(context.Context) error
+	// ExecutionFailure is inspected after JoinAndClose returns. It preserves
+	// late provider/event failures whose I/O has definitely joined, without
+	// treating an ordinary failed task as unconfirmed resource cleanup.
+	ExecutionFailure func() error
+	// ObserveControl runs before a native control request reaches the executor.
+	// It lets the rebuilt agent distinguish drain checkpoints from cancellation.
+	ObserveControl func(bt.ControlRequest)
 }
 
 // AttemptFactory is deployment-owned and process-wide. Implementations rebuild

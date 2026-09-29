@@ -33,7 +33,8 @@ type PreparedAttempt struct {
 	resourceOnce sync.Once
 	resourceErr  error
 	joinOnce     sync.Once
-	joinErr      error
+	executionErr error
+	cleanupErr   error
 }
 
 // PrepareAttempt requires the already-active trusted budget scope when a
@@ -64,11 +65,21 @@ func (p *PreparedAttempt) closeResources() error {
 // JoinAndClose deliberately has no early deadline return: timeout does not
 // prove that a provider stream or child process has actually stopped.
 func (p *PreparedAttempt) JoinAndClose(ctx context.Context) error {
+	executionErr, cleanupErr := p.JoinAndCloseDetailed(ctx)
+	return errors.Join(executionErr, cleanupErr)
+}
+
+// JoinAndCloseDetailed separates errors observed from already joined execution
+// from resource teardown uncertainty. Both are failures, but only the latter
+// means a host must retain shared resources because cleanup is unconfirmed.
+// Receipt/ledger persistence still independently gates every task transition.
+func (p *PreparedAttempt) JoinAndCloseDetailed(ctx context.Context) (executionErr, cleanupErr error) {
 	p.joinOnce.Do(func() {
 		p.io.closeAndWait()
-		p.joinErr = errors.Join(p.io.failure(), p.sink.closeOpen(context.WithoutCancel(ctx)), p.sink.failure(), p.closeResources())
+		p.executionErr = errors.Join(p.io.failure(), p.sink.closeOpen(context.WithoutCancel(ctx)), p.sink.failure())
+		p.cleanupErr = p.closeResources()
 	})
-	return p.joinErr
+	return p.executionErr, p.cleanupErr
 }
 
 func (p *PreparedAttempt) RemainingTime() (time.Duration, bool) {
