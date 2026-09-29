@@ -29,6 +29,7 @@ type pythonModel struct {
 	APIKey         string `yaml:"api_key"`
 	BaseURL        string `yaml:"base_url"`
 	SupportsVision bool   `yaml:"supports_vision"`
+	ContextWindow  int    `yaml:"context_window"`
 }
 
 type pythonRuntimeConfig struct {
@@ -205,11 +206,20 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 		if keyErr != nil || urlErr != nil || key != apiKey || url != baseURL {
 			continue
 		}
+		if option.ContextWindow < 0 || option.ContextWindow > 1<<30 {
+			return result, fmt.Errorf("invalid context_window for model %q", option.Name)
+		}
 		name := option.DisplayName
 		if name == "" {
 			name = option.Name
 		}
 		cfg.Models = append(cfg.Models, harness.ConfigValue{Value: option.Model, Name: name})
+		if option.ContextWindow > 0 && !(explicit["context-window"] && option.Model == cfg.Model) {
+			if cfg.ContextWindows == nil {
+				cfg.ContextWindows = make(map[string]int)
+			}
+			cfg.ContextWindows[option.Model] = option.ContextWindow
+		}
 		if option.SupportsVision {
 			cfg.Media.VisionModels = append(cfg.Media.VisionModels, option.Model)
 		}

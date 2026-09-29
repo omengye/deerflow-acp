@@ -28,6 +28,7 @@ func RuntimeFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
 	flags.Int64Var(&budget.MaxTokens, "max-tokens", budget.MaxTokens, "aggregate run token budget, estimated until provider usage arrives; 0 disables")
 	flags.IntVar(&budget.MaxOutputTokens, "max-output-tokens", budget.MaxOutputTokens, "output token cap per model request; 0 disables")
 	flags.DurationVar(&budget.Timeout, "run-timeout", budget.Timeout, "run execution timeout; 0 disables")
+	flags.IntVar(&cfg.ContextWindow, "context-window", 0, "configured context size for the default model; 0 omits ACP usage_update")
 	flags.BoolVar(&cfg.DisableSubagents, "disable-subagents", false, "disable subagent delegation")
 	flags.IntVar(&cfg.BackgroundWorkers, "background-workers", 4, "maximum concurrent background attempts (1..64)")
 	flags.BoolVar(&cfg.MemoryExtraction, "memory-extraction", false, "extract durable descriptive facts after successful foreground turns")

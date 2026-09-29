@@ -80,6 +80,13 @@ zero disables an individual limit. Token usage is estimated until reported by
 the provider, so these limits cannot guarantee exact billing. Provider-internal
 transport retries are not counted as separate logical calls.
 
+Set `--context-window <tokens>` for the default model when its context size is
+known. ACP then reports `usage_update` from the last main-agent model call's
+reported input and output tokens. The SDK accepts `Config.ContextWindow` and
+per-model `Config.ContextWindows`; the Bridge config maps model
+`context_window`. Without a configured size or provider usage, ACP omits this
+context indicator. It is separate from aggregate run token usage.
+
 Use repeatable `--allow-model` to expose additional model IDs in session config;
 they use the same configured provider and credentials. Model, subagent and
 approval settings persist across restarts. `--disable-subagents` disables the

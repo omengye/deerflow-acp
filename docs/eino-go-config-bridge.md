@@ -8,7 +8,7 @@ Rust Bridge 和桌面端可以继续传入现有 `config.yaml`。Go daemon 读�
 | --- | --- |
 | `local_acp.model_name`，否则 `api.model_name`、`default_model`、首个模型 | 选中的模型 ID 与提供商 |
 | 模型 `use` | `langchain_openai:ChatOpenAI` → OpenAI，`langchain_anthropic:ChatAnthropic` → Claude |
-| 模型 `api_key`、`base_url`、`supports_vision` | 对应 Go 模型配置；支持 Python 的完整标量 `$NAME`、`${NAME}` 和 `${NAME:-fallback}` |
+| 模型 `api_key`、`base_url`、`supports_vision`、`context_window` | 对应 Go 模型配置；已知窗口与主模型单次 usage 生成 ACP `usage_update`；支持 Python 的完整标量 `$NAME`、`${NAME}` 和 `${NAME:-fallback}` |
 | 同提供商、同凭据与同端点的其他模型 | ACP 模型选项 |
 | `local_acp.subagent_enabled`、`max_active_connections`、`run_timeout_seconds` | 子 Agent 开关、ACP 连接上限、共享预算运行期限 |
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"sync"
 
 	"github.com/cloudwego/eino/adk"
@@ -40,6 +41,9 @@ type Config struct {
 	AssetResolver     harness.AssetResolver
 	ToolImageImporter harness.ToolImageImporter
 	Compaction        harness.CompactionConfig
+	// ContextWindows contains configured model context sizes. A missing size
+	// suppresses ACP context occupancy rather than guessing from run budgets.
+	ContextWindows map[string]int
 	// Handlers extends native Eino middleware without introducing another loop.
 	Handlers        []adk.ChatModelAgentMiddleware
 	DisableSubAgent bool
@@ -102,6 +106,12 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 	config.Tools = append([]tool.BaseTool(nil), config.Tools...)
 	config.Handlers = append([]adk.ChatModelAgentMiddleware(nil), config.Handlers...)
 	config.Media.VisionModels = append([]string(nil), config.Media.VisionModels...)
+	config.ContextWindows = maps.Clone(config.ContextWindows)
+	for name, size := range config.ContextWindows {
+		if name == "" || size <= 0 {
+			return nil, fmt.Errorf("%w: invalid context window for model %q", harness.ErrInvalidInput, name)
+		}
+	}
 	chatModel := config.ChatModel
 	if chatModel == nil {
 		var err error
@@ -253,6 +263,7 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	result = harness.RunResult{StopReason: "end_turn"}
 	var runErr error
 	var lastRootAnswer string
+	var lastRootUsage *harness.Usage
 	var bindings []ExecutionInterruptBinding
 	captureInterrupt := func(contexts []*adk.InterruptCtx) error {
 		hooks := executionHooks(ctx)
@@ -304,6 +315,7 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 				observed, err := consumeMessage(execCtx, event.Output.MessageOutput, sink, &result)
 				if event.AgentName == "deerflow" && observed.assistant {
 					lastRootAnswer = observed.text
+					lastRootUsage = observed.usage
 					if observed.toolCalls {
 						lastRootAnswer = ""
 					}
@@ -350,6 +362,14 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	}
 	ioLifecycle.closeAndWait()
 	runErr = errors.Join(runErr, ioLifecycle.failure())
+	selectedModel := req.Session.Model
+	if selectedModel == "" {
+		selectedModel = e.config.Model
+	}
+	if size := e.config.ContextWindows[selectedModel]; size > 0 && lastRootUsage != nil {
+		used := lastRootUsage.InputTokens + lastRootUsage.OutputTokens
+		runErr = errors.Join(runErr, sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "context_usage", ContextUsage: &harness.ContextUsage{Size: int64(size), Used: used}}))
+	}
 	if err := sink.closeOpen(execCtx); err != nil {
 		runErr = errors.Join(runErr, err)
 	}
@@ -411,6 +431,7 @@ type consumedMessage struct {
 	assistant bool
 	toolCalls bool
 	text      string
+	usage     *harness.Usage
 }
 
 func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *eventSink, result *harness.RunResult) (consumedMessage, error) {
@@ -438,6 +459,14 @@ func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *even
 				}
 			}
 			if meta := msg.ResponseMeta; meta != nil {
+				if u := meta.Usage; u != nil && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
+					if observed.usage == nil {
+						observed.usage = &harness.Usage{}
+					}
+					observed.usage.InputTokens = max(observed.usage.InputTokens, int64(u.PromptTokens))
+					observed.usage.OutputTokens = max(observed.usage.OutputTokens, int64(u.CompletionTokens))
+					observed.usage.TotalTokens = max(observed.usage.TotalTokens, int64(u.TotalTokens))
+				}
 				if meta.FinishReason == "length" {
 					result.StopReason = "max_tokens"
 				}

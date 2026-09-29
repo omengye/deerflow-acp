@@ -75,6 +75,90 @@ func textStream(text string) *schema.StreamReader[*schema.Message] {
 	return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, Content: text}})
 }
 
+func TestContextUsageUsesConfiguredWindowAndLastLeadCall(t *testing.T) {
+	fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		if call == 0 {
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "first", Type: "function", Function: schema.FunctionCall{Name: "read_workspace", Arguments: `{}`}}}, ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}}}}), nil
+		}
+		return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, Content: "done", ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: 30, CompletionTokens: 3, TotalTokens: 33}}}}), nil
+	}}
+	// The model may return tool calls before its final answer. Only the last
+	// lead call describes the next turn's approximate context occupancy.
+	e := newTestEngine(t, Config{ChatModel: fake, Model: "fixture", Tools: []tool.BaseTool{&recordingTool{}}, ContextWindows: map[string]int{"fixture": 4096}})
+	input := request("context-usage")
+	input.Session.Model = "fixture"
+	var events []harness.RunEvent
+	result, err := e.Run(context.Background(), input, func(_ context.Context, event harness.RunEvent) error { events = append(events, event); return nil }, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+		return harness.AllowOnce, nil
+	})
+	if err == nil && result.StopReason == "end_turn" {
+		var contextEvents []harness.ContextUsage
+		for _, event := range events {
+			if event.ContextUsage != nil {
+				contextEvents = append(contextEvents, *event.ContextUsage)
+			}
+		}
+		if len(contextEvents) != 1 || contextEvents[0].Size != 4096 || contextEvents[0].Used != 33 {
+			t.Fatalf("context updates=%+v events=%+v", contextEvents, events)
+		}
+		return
+	}
+	t.Fatalf("result=%+v err=%v", result, err)
+}
+
+func TestContextUsageExcludesNativeSubagentCalls(t *testing.T) {
+	fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		switch call {
+		case 0:
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "delegate", Type: "function", Function: schema.FunctionCall{Name: "task", Arguments: `{"subagent_type":"general-purpose","prompt":"inspect","description":"inspect"}`}}}, ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: 10, CompletionTokens: 2}}}}), nil
+		case 1:
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, Content: "child answer", ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: 400, CompletionTokens: 50}}}}), nil
+		default:
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, Content: "parent answer", ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: 30, CompletionTokens: 3}}}}), nil
+		}
+	}}
+	e, err := New(context.Background(), Config{ChatModel: fake, Model: "fixture", ContextWindows: map[string]int{"fixture": 4096}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := request("context-subagent")
+	input.Session.Model = "fixture"
+	var contextEvents []harness.ContextUsage
+	result, err := e.Run(context.Background(), input, func(_ context.Context, event harness.RunEvent) error {
+		if event.ContextUsage != nil {
+			contextEvents = append(contextEvents, *event.ContextUsage)
+		}
+		return nil
+	}, nil)
+	if err != nil || result.StopReason != "end_turn" || len(contextEvents) != 1 || contextEvents[0].Used != 33 {
+		t.Fatalf("result=%+v err=%v context=%+v", result, err, contextEvents)
+	}
+}
+
+func TestContextUsageSkipsMissingLastLeadUsage(t *testing.T) {
+	fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		if call == 0 {
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "first", Type: "function", Function: schema.FunctionCall{Name: "read_workspace", Arguments: `{}`}}}, ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: 10, CompletionTokens: 2}}}}), nil
+		}
+		return textStream("done without usage"), nil
+	}}
+	e := newTestEngine(t, Config{ChatModel: fake, Model: "fixture", Tools: []tool.BaseTool{&recordingTool{}}, ContextWindows: map[string]int{"fixture": 4096}})
+	input := request("context-last-missing")
+	input.Session.Model = "fixture"
+	var contextEvents int
+	result, err := e.Run(context.Background(), input, func(_ context.Context, event harness.RunEvent) error {
+		if event.ContextUsage != nil {
+			contextEvents++
+		}
+		return nil
+	}, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+		return harness.AllowOnce, nil
+	})
+	if err != nil || result.StopReason != "end_turn" || contextEvents != 0 {
+		t.Fatalf("result=%+v err=%v context updates=%d", result, err, contextEvents)
+	}
+}
+
 func TestNativeRunnerStreamsAndReconstructsSession(t *testing.T) {
 	dir := t.TempDir()
 	store, err := einosession.NewFileStore[*schema.Message](dir, nil)

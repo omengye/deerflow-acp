@@ -372,6 +372,11 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 			kind = "agent_thought_chunk"
 		}
 		update = map[string]any{"sessionUpdate": kind, "content": harness.Content{Type: "text", Text: e.Text}}
+	case "context_usage":
+		if e.ContextUsage == nil || e.ContextUsage.Size <= 0 || e.ContextUsage.Used < 0 {
+			return nil
+		}
+		update = map[string]any{"sessionUpdate": "usage_update", "size": e.ContextUsage.Size, "used": e.ContextUsage.Used}
 	case "budget_exhausted":
 		update = map[string]any{"sessionUpdate": "agent_message_chunk", "content": harness.Content{Type: "text", Text: e.Text}, "_meta": map[string]any{"deerflow": map[string]any{"event": "budget_exhausted"}}}
 	case "tool_start":

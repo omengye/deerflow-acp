@@ -37,6 +37,10 @@ type Config struct {
 	Model         string
 	Instruction   string
 	MaxIterations int
+	// ContextWindow applies to Model. ContextWindows can specify sizes for
+	// additional selectable models; unknown sizes do not produce ACP occupancy.
+	ContextWindow  int
+	ContextWindows map[string]int
 	// Models allow session selection within the configured provider. Model is
 	// always included. Provider credentials never become session configuration.
 	Models           []harness.ConfigValue
@@ -87,6 +91,22 @@ type Client struct {
 }
 
 func Open(ctx context.Context, cfg Config) (client *Client, err error) {
+	if cfg.ContextWindow < 0 || cfg.ContextWindow > 1<<30 {
+		return nil, fmt.Errorf("%w: context window must be 0..2^30", harness.ErrInvalidInput)
+	}
+	contextWindows := make(map[string]int, len(cfg.ContextWindows)+1)
+	for modelID, size := range cfg.ContextWindows {
+		if modelID == "" || size <= 0 || size > 1<<30 {
+			return nil, fmt.Errorf("%w: invalid context window for model %q", harness.ErrInvalidInput, modelID)
+		}
+		contextWindows[modelID] = size
+	}
+	if cfg.ContextWindow > 0 {
+		if cfg.Model == "" {
+			return nil, fmt.Errorf("%w: context window requires a default model", harness.ErrInvalidInput)
+		}
+		contextWindows[cfg.Model] = cfg.ContextWindow
+	}
 	if cfg.BackgroundWorkers < 0 || cfg.BackgroundWorkers > 64 {
 		return nil, fmt.Errorf("%w: background worker limit must be 0..64", harness.ErrInvalidInput)
 	}
@@ -223,7 +243,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			out.Tools = append(out.Tools, tools...)
 			return out, err
 		}
-		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, Compaction: cfg.Compaction})
+		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, Compaction: cfg.Compaction, ContextWindows: contextWindows})
 		if err != nil {
 			return nil, err
 		}

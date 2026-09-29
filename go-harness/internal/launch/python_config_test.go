@@ -33,6 +33,7 @@ models:
     api_key: $FIXTURE_MODEL_KEY
     base_url: https://example.test/v1
     supports_vision: true
+    context_window: 131072
 `
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 		t.Fatal(err)
@@ -47,7 +48,7 @@ models:
 	if result.Path != path || len(result.Revision) != 64 || cfg.Provider != "openai" || cfg.Model != "real-model-id" || cfg.APIKey != "from-environment" || cfg.BaseURL != "https://example.test/v1" || cfg.DataDir != filepath.Join(filepath.Dir(path), "go-harness-state") || !cfg.DisableSubagents || connections != 7 || cfg.Budget.Timeout != 33*time.Second {
 		t.Fatalf("config=%+v connections=%d result=%+v", cfg, connections, result)
 	}
-	if len(cfg.Models) != 1 || cfg.Models[0].Name != "Selected model" || len(cfg.Media.VisionModels) != 1 || cfg.Media.VisionModels[0] != "real-model-id" {
+	if len(cfg.Models) != 1 || cfg.Models[0].Name != "Selected model" || len(cfg.Media.VisionModels) != 1 || cfg.Media.VisionModels[0] != "real-model-id" || cfg.ContextWindows["real-model-id"] != 131072 {
 		t.Fatalf("model capabilities: %+v %+v", cfg.Models, cfg.Media)
 	}
 	cfg.Model, cfg.Provider, cfg.BaseURL, cfg.DataDir = "flag-model", "claude", "https://flag.test", "flag-state"
@@ -55,6 +56,11 @@ models:
 	_, err = ApplyPythonConfig(path, &cfg, &connections, map[string]bool{"model": true, "provider": true, "base-url": true, "data-dir": true, "max-connections": true, "disable-subagents": true})
 	if err != nil || cfg.Model != "flag-model" || cfg.Provider != "claude" || cfg.BaseURL != "https://flag.test" || cfg.DataDir != "flag-state" || connections != 2 {
 		t.Fatalf("explicit flags lost: %+v %d %v", cfg, connections, err)
+	}
+	explicitWindow := deerflow.Config{Model: "real-model-id", ContextWindow: 2048}
+	_, err = ApplyPythonConfig(path, &explicitWindow, &connections, map[string]bool{"model": true, "context-window": true})
+	if err != nil || explicitWindow.ContextWindow != 2048 || explicitWindow.ContextWindows["real-model-id"] != 0 {
+		t.Fatalf("explicit context window lost: %+v err=%v", explicitWindow, err)
 	}
 }
 
@@ -80,7 +86,7 @@ func TestApplyCurrentExamplePythonConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Model != "qwen3.6-plus" || cfg.Provider != "openai" || !cfg.DisableSubagents || connections != 16 {
+	if cfg.Model != "qwen3.6-plus" || cfg.Provider != "openai" || !cfg.DisableSubagents || connections != 16 || cfg.ContextWindows["qwen3.6-plus"] != 262144 {
 		t.Fatalf("example config mapping: %+v connections=%d", cfg, connections)
 	}
 }

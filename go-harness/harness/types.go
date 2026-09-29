@@ -66,19 +66,27 @@ type Usage struct {
 	Estimated    bool  `json:"estimated,omitempty"`
 }
 
+// ContextUsage is the last lead-model request's context occupancy, not the
+// aggregate token cost of the run or its delegated agents.
+type ContextUsage struct {
+	Size int64 `json:"size"`
+	Used int64 `json:"used"`
+}
+
 type RunEvent struct {
-	Sequence   int64           `json:"sequence,omitempty"`
-	SessionID  string          `json:"sessionId"`
-	RunID      string          `json:"runId"`
-	Kind       string          `json:"kind"`
-	Text       string          `json:"text,omitempty"`
-	ToolCallID string          `json:"toolCallId,omitempty"`
-	ToolName   string          `json:"toolName,omitempty"`
-	Status     string          `json:"status,omitempty"`
-	Arguments  json.RawMessage `json:"arguments,omitempty"`
-	Content    []Content       `json:"content,omitempty"`
-	Usage      *Usage          `json:"usage,omitempty"`
-	Receipt    *ToolReceipt    `json:"receipt,omitempty"`
+	Sequence     int64           `json:"sequence,omitempty"`
+	SessionID    string          `json:"sessionId"`
+	RunID        string          `json:"runId"`
+	Kind         string          `json:"kind"`
+	Text         string          `json:"text,omitempty"`
+	ToolCallID   string          `json:"toolCallId,omitempty"`
+	ToolName     string          `json:"toolName,omitempty"`
+	Status       string          `json:"status,omitempty"`
+	Arguments    json.RawMessage `json:"arguments,omitempty"`
+	Content      []Content       `json:"content,omitempty"`
+	Usage        *Usage          `json:"usage,omitempty"`
+	ContextUsage *ContextUsage   `json:"contextUsage,omitempty"`
+	Receipt      *ToolReceipt    `json:"receipt,omitempty"`
 }
 
 type PermissionRequest struct {
