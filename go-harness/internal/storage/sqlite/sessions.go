@@ -19,6 +19,20 @@ var _ adk.SessionEventStore[*schema.Message] = (*Store)(nil)
 // input batch are rejected with Eino's sentinel.
 // Ordering is the committed append position, never timestamps or event IDs.
 func (s *Store) AppendEvents(ctx context.Context, sessionID string, events []*adk.SessionEvent[*schema.Message]) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = s.AppendEventsTx(ctx, tx, sessionID, events); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// AppendEventsTx allows an owning task lease and event writes to commit in one
+// transaction. The caller owns commit/rollback and must use this Store's DB.
+func (s *Store) AppendEventsTx(ctx context.Context, tx *sql.Tx, sessionID string, events []*adk.SessionEvent[*schema.Message]) error {
 	if sessionID == "" {
 		return errors.New("sqlite: session id is empty")
 	}
@@ -51,14 +65,9 @@ func (s *Store) AppendEvents(ctx context.Context, sessionID string, events []*ad
 	if len(pending) == 0 {
 		return ctx.Err()
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	for _, event := range pending {
 		var persisted []byte
-		err = tx.QueryRowContext(ctx, "SELECT payload FROM eino_session_events WHERE session_id=? AND event_id=?", sessionID, event.id).Scan(&persisted)
+		err := tx.QueryRowContext(ctx, "SELECT payload FROM eino_session_events WHERE session_id=? AND event_id=?", sessionID, event.id).Scan(&persisted)
 		if err == nil {
 			if bytes.Equal(persisted, event.data) {
 				continue
@@ -72,7 +81,7 @@ func (s *Store) AppendEvents(ctx context.Context, sessionID string, events []*ad
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) LoadEvents(ctx context.Context, sessionID string, req *adk.LoadSessionEventsRequest) (*adk.LoadSessionEventsResult[*schema.Message], error) {

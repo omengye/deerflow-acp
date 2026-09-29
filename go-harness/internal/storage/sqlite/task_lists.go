@@ -137,7 +137,11 @@ func (s *TaskStore) listTasks(ctx context.Context, keys []string, value string, 
 			return nil, "", err
 		}
 		before := r.task.Version
+		previous := cloneTaskSnapshot(r.task)
 		if s.expire(r) {
+			if err = s.transitionHook(ctx, tx, previous, r.task); err != nil {
+				return nil, "", err
+			}
 			if err = saveTask(ctx, tx, r, before); err != nil {
 				return nil, "", err
 			}

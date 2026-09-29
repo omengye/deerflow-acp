@@ -20,6 +20,7 @@ type TaskStore struct {
 	maxValue      int64
 	now           func() time.Time
 	namespace     string
+	hooks         TaskHooks
 }
 
 var (
@@ -131,6 +132,11 @@ func (s *TaskStore) Create(ctx context.Context, req *bt.CreateTaskRequest) (*bt.
 	if n == 0 {
 		return nil, bt.ErrAlreadyExists
 	}
+	if s.hooks.Create != nil {
+		if err = s.hooks.Create(ctx, tx, cloneTaskSnapshot(task)); err != nil {
+			return nil, err
+		}
+	}
 	if err = s.enqueueLifecycle(ctx, tx, task, bt.NotificationTaskCreated); err != nil {
 		return nil, err
 	}
@@ -217,7 +223,11 @@ func (s *TaskStore) withTask(ctx context.Context, id string, resolve bool, fn fu
 		return nil, err
 	}
 	before := r.task.Version
+	previous := cloneTaskSnapshot(r.task)
 	if resolve && s.expire(r) {
+		if err = s.transitionHook(ctx, tx, previous, r.task); err != nil {
+			return nil, err
+		}
 		if err = saveTask(ctx, tx, r, before); err != nil {
 			return nil, err
 		}
@@ -226,11 +236,15 @@ func (s *TaskStore) withTask(ctx context.Context, id string, resolve bool, fn fu
 		}
 	}
 	before = r.task.Version
+	previous = cloneTaskSnapshot(r.task)
 	semanticErr := fn(tx, r)
 	if semanticErr != nil && !taskSemanticError(semanticErr) {
 		return nil, semanticErr
 	}
 	if semanticErr == nil && r.task.Version != before {
+		if err = s.transitionHook(ctx, tx, previous, r.task); err != nil {
+			return nil, err
+		}
 		if err = saveTask(ctx, tx, r, before); err != nil {
 			return nil, err
 		}
