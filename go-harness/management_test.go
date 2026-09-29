@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +34,215 @@ func localManagementFields(operation string, fields map[string]string) localhost
 func managementFacts(t *testing.T, value any) []map[string]any {
 	t.Helper()
 	return value.(map[string]any)["memory"].(map[string]any)["facts"].([]map[string]any)
+}
+
+func TestLocalManagementDeletesDetachedSessionAndPrivateState(t *testing.T) {
+	ctx := context.Background()
+	dataDir, workspace := t.TempDir(), t.TempDir()
+	c, err := Open(ctx, Config{DataDir: dataDir, Engine: engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	x, err := c.NewSession(ctx, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := localManagementFields("session.delete", map[string]string{"session_id": x.ID})
+	if _, err = c.ManageLocal(ctx, request); !errors.Is(err, harness.ErrBusy) {
+		var known *localhost.ManagementError
+		if !errors.As(err, &known) || known.Code != "busy" {
+			t.Fatalf("attached deletion: %v", err)
+		}
+	}
+	if _, err = c.CreateMemoryFact(ctx, x.ID, harness.MemorySession, harness.MemoryCandidate{Content: "private", Category: "preference", Confidence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.CreateMemoryFact(ctx, x.ID, harness.MemoryWorkspace, harness.MemoryCandidate{Content: "shared", Category: "context", Confidence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	var sessionScopeKey string
+	if err = c.store.DB().QueryRowContext(ctx, `SELECT key FROM memory_scopes WHERE kind='session' AND subject=?`, x.ID).Scan(&sessionScopeKey); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(workspace, "notes.txt")
+	if err = os.WriteFile(path, []byte("snapshot content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	uriPath := filepath.ToSlash(path)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	uri := (&url.URL{Scheme: "file", Path: uriPath}).String()
+	if _, err = c.Run(ctx, x.ID, []harness.Content{{Type: "resource_link", URI: uri, Name: "notes.txt"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	var runID, assetPath string
+	if err = c.store.DB().QueryRowContext(ctx, `SELECT id FROM harness_runs WHERE session_id=?`, x.ID).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.store.DB().QueryRowContext(ctx, `SELECT path FROM harness_assets WHERE session_id=?`, x.ID).Scan(&assetPath); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.store.Set(ctx, "harness/turn/v1/"+runID, []byte("checkpoint")); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.CloseSession(ctx, x.ID); err != nil {
+		t.Fatal(err)
+	}
+	value, err := c.ManageLocal(ctx, request)
+	if err != nil || value.(map[string]any)["already_deleted"] != false {
+		t.Fatalf("delete: %+v %v", value, err)
+	}
+	for _, query := range []string{
+		`SELECT count(*) FROM harness_sessions WHERE id=?`,
+		`SELECT count(*) FROM harness_runs WHERE session_id=?`,
+		`SELECT count(*) FROM harness_events WHERE session_id=?`,
+		`SELECT count(*) FROM eino_session_events WHERE session_id=?`,
+		`SELECT count(*) FROM harness_assets WHERE session_id=?`,
+		`SELECT count(*) FROM harness_artifacts WHERE session_id=?`,
+		`SELECT count(*) FROM budget_roots WHERE session_id=?`,
+		`SELECT count(*) FROM budget_members WHERE session_id=?`,
+		`SELECT count(*) FROM budget_attempts WHERE session_id=?`,
+		`SELECT count(*) FROM budget_reservations WHERE session_id=?`,
+		`SELECT count(*) FROM memory_scopes WHERE kind='session' AND subject=?`,
+	} {
+		var n int
+		if err = c.store.DB().QueryRowContext(ctx, query, x.ID).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("private state remains (%s): %d %v", query, n, err)
+		}
+	}
+	var n int
+	if err = c.store.DB().QueryRowContext(ctx, `SELECT count(*) FROM memory_scopes WHERE kind='workspace'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("shared memory removed: %d %v", n, err)
+	}
+	for _, query := range []string{`SELECT count(*) FROM memory_facts`, `SELECT count(*) FROM memory_fact_revisions`} {
+		if err = c.store.DB().QueryRowContext(ctx, query).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("private memory remains or shared memory disappeared (%s): %d %v", query, n, err)
+		}
+	}
+	if err = c.store.DB().QueryRowContext(ctx, `SELECT count(*) FROM memory_facts_fts WHERE scope_key=?`, sessionScopeKey).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("session FTS rows remain: %d %v", n, err)
+	}
+	if err = c.store.DB().QueryRowContext(ctx, `SELECT count(*) FROM eino_checkpoints WHERE id=?`, "harness/turn/v1/"+runID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("checkpoint remains: %d %v", n, err)
+	}
+	if _, err = os.Stat(filepath.Join(dataDir, "assets", assetPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("snapshot remains: %v", err)
+	}
+	check, err := c.store.DB().QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Next() {
+		check.Close()
+		t.Fatal("delete left a foreign key violation")
+	}
+	if err = check.Err(); err != nil {
+		t.Fatal(err)
+	}
+	check.Close()
+	value, err = c.ManageLocal(ctx, request)
+	if err != nil || value.(map[string]any)["already_deleted"] != true {
+		t.Fatalf("idempotent delete: %+v %v", value, err)
+	}
+}
+
+func TestLocalManagementDeleteRejectsBackgroundAndUnresolvedReceipt(t *testing.T) {
+	ctx := context.Background()
+	c, err := Open(ctx, Config{DataDir: t.TempDir(), Engine: engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	x, err := c.NewSession(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.Run(ctx, x.ID, []harness.Content{{Type: "text", Text: "one"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	var runID string
+	if err = c.store.DB().QueryRowContext(ctx, `SELECT id FROM harness_runs WHERE session_id=?`, x.ID).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.CloseSession(ctx, x.ID); err != nil {
+		t.Fatal(err)
+	}
+	request := localManagementFields("session.delete", map[string]string{"session_id": x.ID})
+	// The custom engine leaves background workers disabled. Install their
+	// persistent binding schema to exercise the deletion guard directly.
+	if _, err = c.store.DB().ExecContext(ctx, `CREATE TABLE harness_background_bindings (task_id TEXT PRIMARY KEY REFERENCES eino_background_tasks(id),parent_session_id TEXT NOT NULL,child_session_id TEXT NOT NULL,origin_run_id TEXT NOT NULL,origin_tool_call_id TEXT NOT NULL,intent_hash TEXT NOT NULL,payload BLOB NOT NULL,blocked_reason TEXT NOT NULL DEFAULT '')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.store.DB().ExecContext(ctx, `INSERT INTO eino_background_tasks(id,executor_key,status,version,payload) VALUES('task-fixture','fixture','completed',1,x'00')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.store.DB().ExecContext(ctx, `INSERT INTO harness_background_bindings(task_id,parent_session_id,child_session_id,origin_run_id,origin_tool_call_id,intent_hash,payload) VALUES('task-fixture',?,'child-fixture',?,'call-fixture','hash',x'00')`, x.ID, runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.ManageLocal(ctx, request); err == nil {
+		t.Fatal("background parent was deleted")
+	}
+	if _, err = c.store.DB().ExecContext(ctx, `DELETE FROM harness_background_bindings WHERE task_id='task-fixture'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.store.DB().ExecContext(ctx, `DELETE FROM eino_background_tasks WHERE id='task-fixture'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.store.DB().ExecContext(ctx, `INSERT INTO harness_tool_receipts(run_id,tool_call_id,session_id,state,version,receipt) VALUES(?,'call-fixture',?,'uncertain',1,x'7b7d')`, runID, x.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.ManageLocal(ctx, request); err == nil {
+		t.Fatal("unresolved receipt was deleted")
+	}
+	if _, err = c.store.DB().ExecContext(ctx, `UPDATE harness_tool_receipts SET state='completed' WHERE run_id=?`, runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.ManageLocal(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLocalManagementDeleteFailureRollsBackAndCanRetry(t *testing.T) {
+	ctx := context.Background()
+	c, err := Open(ctx, Config{DataDir: t.TempDir(), Engine: engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	x, err := c.NewSession(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = c.CloseSession(ctx, x.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.store.DB().ExecContext(ctx, `CREATE TRIGGER deny_purge BEFORE DELETE ON harness_sessions BEGIN SELECT RAISE(ABORT,'fixture purge failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	request := localManagementFields("session.delete", map[string]string{"session_id": x.ID})
+	if _, err = c.ManageLocal(ctx, request); err == nil {
+		t.Fatal("failed purge reported success")
+	}
+	if _, err = c.store.DB().ExecContext(ctx, `DROP TRIGGER deny_purge`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.LoadSession(ctx, x.ID, x.CWD, false, nil); err != nil {
+		t.Fatalf("failed purge left a reconnect fence: %v", err)
+	}
+	if err = c.CloseSession(ctx, x.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.ManageLocal(ctx, request); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestLocalManagementMemoryAcrossDetachedSession(t *testing.T) {

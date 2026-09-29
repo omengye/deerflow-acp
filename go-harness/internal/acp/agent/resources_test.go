@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -199,6 +200,35 @@ func TestMCPFailedReconfigurationPreservesBoundResources(t *testing.T) {
 	}
 	prompt := c.request(t, "session/prompt", promptParams(result.ID, "still usable"))
 	stopReason(t, c.success(t, prompt), "end_turn")
+}
+
+func TestDeleteResourceFailureKeepsSessionClosingUntilRetry(t *testing.T) {
+	var attempts atomic.Int32
+	resources := &fakeResources{beforeRelease: func(context.Context, string) error {
+		if attempts.Add(1) == 1 {
+			return fmt.Errorf("fixture cleanup failure")
+		}
+		return nil
+	}}
+	f := newFixture(t, engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	}))
+	f.service.Resources = resources
+	c := connect(t, f.service)
+	c.initialize(t)
+	sid := c.newSession(t, f.cwd)
+	deleted := c.request(t, "session/delete", map[string]any{"sessionId": sid})
+	if msg := c.response(t, deleted); msg.Error == nil {
+		t.Fatalf("failed resource cleanup deleted session: %+v", msg)
+	}
+	if msg := c.response(t, c.request(t, "session/prompt", promptParams(sid, "should not run"))); msg.Error == nil {
+		t.Fatalf("prompt entered after failed cleanup: %+v", msg)
+	}
+	c.success(t, c.request(t, "session/close", map[string]any{"sessionId": sid}))
+	c.success(t, c.request(t, "session/delete", map[string]any{"sessionId": sid}))
+	if attempts.Load() != 2 {
+		t.Fatalf("resource cleanup attempts=%d", attempts.Load())
+	}
 }
 
 func TestResourceCloseCompletesBeforeAnotherConnectionCanAttach(t *testing.T) {

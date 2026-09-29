@@ -34,6 +34,7 @@ type closeAttempt struct {
 type Coordinator struct {
 	mu       sync.Mutex
 	bindings map[string]*binding
+	cleanups map[string]bool
 	retired  map[string]bool
 	draining bool
 }
@@ -60,7 +61,11 @@ func (c *Coordinator) Activity() Activity {
 }
 
 func (c *Coordinator) activityLocked() Activity {
-	out := Activity{Draining: c.draining, Phases: make(map[string]string, len(c.bindings))}
+	out := Activity{Draining: c.draining, Phases: make(map[string]string, len(c.bindings)+len(c.cleanups))}
+	for id := range c.cleanups {
+		out.Phases[id] = "deleting"
+		out.ActiveOperations++
+	}
 	for id, b := range c.bindings {
 		switch {
 		case b.closing:
@@ -78,7 +83,70 @@ func (c *Coordinator) activityLocked() Activity {
 }
 
 func NewCoordinator() *Coordinator {
-	return &Coordinator{bindings: make(map[string]*binding), retired: make(map[string]bool)}
+	return &Coordinator{bindings: make(map[string]*binding), cleanups: make(map[string]bool), retired: make(map[string]bool)}
+}
+
+// ReserveCleanup fences Attach for the whole purge, including file cleanup
+// after the database transaction. It succeeds only for a detached session.
+func (c *Coordinator) ReserveCleanup(id string) (func(), error) {
+	if id == "" {
+		return nil, harness.ErrInvalidInput
+	}
+	c.mu.Lock()
+	if c.bindings[id] != nil || c.cleanups[id] {
+		c.mu.Unlock()
+		return nil, harness.ErrBusy
+	}
+	c.cleanups[id] = true
+	c.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			c.mu.Lock()
+			delete(c.cleanups, id)
+			c.mu.Unlock()
+		})
+	}, nil
+}
+
+// ReserveOwnerCleanup atomically replaces an idle owner's attachment with a
+// deletion fence. finish(true) restores a closing attachment when resource
+// cleanup fails, so no prompt can enter before the owner retries close.
+// finish(false) leaves it detached after resource release or purge.
+func (c *Coordinator) ReserveOwnerCleanup(id, owner string) (func(bool), error) {
+	c.mu.Lock()
+	if c.cleanups[id] {
+		c.mu.Unlock()
+		return nil, harness.ErrBusy
+	}
+	b := c.bindings[id]
+	if b == nil {
+		c.mu.Unlock()
+		return nil, harness.ErrNotAttached
+	}
+	if b.owner != owner {
+		c.mu.Unlock()
+		return nil, harness.ErrAttachedElsewhere
+	}
+	if b.busy || b.closing {
+		c.mu.Unlock()
+		return nil, harness.ErrBusy
+	}
+	delete(c.bindings, id)
+	c.cleanups[id] = true
+	c.mu.Unlock()
+	var once sync.Once
+	return func(restore bool) {
+		once.Do(func() {
+			c.mu.Lock()
+			if restore && !c.retired[owner] {
+				b.closing = true
+				c.bindings[id] = b
+			}
+			delete(c.cleanups, id)
+			c.mu.Unlock()
+		})
+	}, nil
 }
 
 // Authorize checks the current connection generation without reserving a new
@@ -101,7 +169,7 @@ func (c *Coordinator) Attach(id, owner string) (bool, error) {
 }
 
 func (c *Coordinator) attachLocked(id, owner string) (bool, error) {
-	if c.draining {
+	if c.draining || c.cleanups[id] {
 		return false, harness.ErrBusy
 	}
 	if c.retired[owner] {

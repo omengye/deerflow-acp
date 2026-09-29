@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | Go SDK / 版本组合 | 模块、公共类型、嵌入式 Client 和模型适配器已写入 | 全量组合、跨平台构建、配置清单 |
 | SQLite 基础和 Eino providers | checkpoint、session events、background task stores；上游 conformance、崩溃恢复、SQL 故障注入测试已通过 | 后续 Manager/工具恢复装配 |
-| 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close 已写入；官方 ACP stable v1 TCK 判定 `CONFORMANT` | 真实编辑器互操作 |
+| 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close/delete 已写入；官方 ACP stable v1 TCK 判定 `CONFORMANT` | 自动 retention、真实编辑器互操作 |
 | 执行与工作区工具 | Eino TurnLoop/DeepAgent、前台委派、文件工具、plan/read_only、主/子共享预算；执行回执与命令工具已接线 | 长期会话循环、后台委派和更完整的工具集 |
 | 权限 / 恢复 | 前台与后台原生 durable HITL、审批/检查点/回执/预算联合恢复；SDK/ACP 查询、批准与取消已接入 | 真实编辑器与 MCP 重新绑定恢复 |
 | 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、原生子 Agent 生命周期、主 Agent 计划与真实上下文用量投影、分页历史与 load 重放、有界异步 ACP 更新队列 | 真实编辑器流压验证 |
@@ -26,7 +26,7 @@
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
-| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/记忆读取与删除、Python `--config` 有界兼容层、多窗口及 Rust Bridge 二进制互操作已验证 | draft v2 对照、完整配置映射、MANAGE 会话清理操作 |
+| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层、多窗口及 Rust Bridge 二进制互操作已验证 | draft v2 对照、完整配置映射、自动 retention |
 | 可选外部 ACP Agent | 待实现 | 白名单、反向权限、预算和取消链 |
 | 打包 / 默认切换 | 未开始 | Windows/Linux 实机、回退、切换演练 |
 
@@ -291,3 +291,11 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 唯一失败项 `ACP-PROMPT-003` 是 advisory。测试传入工作区外且不存在的 `file:///tmp/tck-example.txt`；当前文件引用策略要求引用可读取且位于授权工作区，故返回参数错误。TCK 自身将此条标为规范文本存在分歧的 advisory，不影响 conformance verdict。以后若调整协议兼容性，仍需保持文件读取边界。
 - 官方 TCK 不覆盖真实编辑器互操作、图片输入、MCP 重绑定、后台子任务、持久恢复、Docker 或打包；完整 V1 仍须逐项验收。
 - 本批整模块 `go test -count=1 ./...`、ACP/MCP/SQLite 聚焦 race 测试，以及 Linux amd64 无 CGO 全模块构建通过。整模块并行运行曾暴露测试夹具时序问题：MCP fixture 启动限时由 300 ms 放宽至 3 s；上游通知 outbox conformance 的 20 ms 租约改用夹具显式推进的固定时钟，避免调度延迟造成虚假租约丢失。运行时代码未因这两处测试调整而改变。
+
+## 第二十四阶段会话删除
+
+- 本地 `MANAGE session.delete` 和 ACP `session/delete` 清除普通前台会话。协调器在持久清理及资产回收期间阻止重连；ACP 持有者可将空闲附着会话原子转换为删除预留，其他连接不能删除正在附着的会话。未知会话删除幂等成功。
+- 删除事务按外键顺序清除会话输入、事件、执行、检查点、回执、预算、会话记忆及内部资产引用。提交后仅回收已无数据库引用的内部快照；工作区文件与 workspace/user 记忆保留。存在关联后台任务或未对账工具回执时拒绝删除，避免留下孤立任务或丢失未知副作用证据。
+- SDK、数据库回滚/重试、真实 daemon MANAGE 管道和 ACP stdio 测试覆盖附着拒绝、跨连接隔离、持久行与文件清理。官方 ACP stable v1 TCK 再次判定 `CONFORMANT`：21 项 mandatory、12 项已启用 capability（含 `ACP-DELETE-001`）全通过；11 项 advisory 通过（含 `ACP-DELETE-002`），`ACP-PROMPT-003` 因工作区外不存在的文件引用仍失败。完整回归结果以本阶段最终测试记录为准。
+- 自动保留期策略尚未实施，管理清单的 `cleanup_eligible` 仍固定为 false。后台任务图的安全删除和真实编辑器互操作仍待验收。
+- Windows 整模块普通测试、会话/runtime/资产/ACP/daemon/SDK 聚焦 race 检查及 Linux amd64 无 CGO 全模块构建通过。额外故障路径验证：资源释放失败后会话保持 `closing`，不能继续 prompt，owner 可重试 close；SQL 删除失败可重新 load 并重试删除。

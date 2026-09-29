@@ -77,6 +77,82 @@ func TestDrainStopsNewAdmissionsWithoutCancellingActiveRun(t *testing.T) {
 	release()
 }
 
+func TestCleanupReservationFencesReconnect(t *testing.T) {
+	c := NewCoordinator()
+	if _, err := c.Attach("busy", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ReserveCleanup("busy"); !errors.Is(err, harness.ErrBusy) {
+		t.Fatalf("attached session reserved: %v", err)
+	}
+	release, err := c.ReserveCleanup("deleted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err = c.ReserveCleanup("deleted"); !errors.Is(err, harness.ErrBusy) {
+		t.Fatalf("duplicate cleanup: %v", err)
+	}
+	if _, err = c.Attach("deleted", "racing-owner"); !errors.Is(err, harness.ErrBusy) {
+		t.Fatalf("reconnect during cleanup: %v", err)
+	}
+	activity := c.Activity()
+	if activity.Phases["deleted"] != "deleting" || activity.ActiveOperations != 1 {
+		t.Fatalf("cleanup activity: %+v", activity)
+	}
+	release()
+	release()
+	if _, err = c.Attach("deleted", "racing-owner"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOwnerCleanupAtomicallyDetachesIdleSession(t *testing.T) {
+	c := NewCoordinator()
+	if _, err := c.ReserveOwnerCleanup("missing", "owner"); !errors.Is(err, harness.ErrNotAttached) {
+		t.Fatalf("unknown session: %v", err)
+	}
+	if _, err := c.Attach("session", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ReserveOwnerCleanup("session", "other"); !errors.Is(err, harness.ErrAttachedElsewhere) {
+		t.Fatalf("foreign delete: %v", err)
+	}
+	_, releaseRun, err := c.Begin(context.Background(), "session", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.ReserveOwnerCleanup("session", "owner"); !errors.Is(err, harness.ErrBusy) {
+		t.Fatalf("running delete: %v", err)
+	}
+	releaseRun()
+	finish, err := c.ReserveOwnerCleanup("session", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.Attach("session", "other"); !errors.Is(err, harness.ErrBusy) {
+		t.Fatalf("reconnect during deletion: %v", err)
+	}
+	finish(true)
+	if err = c.Authorize("session", "owner"); !errors.Is(err, harness.ErrNotAttached) {
+		t.Fatalf("failed cleanup reopened execution: %v", err)
+	}
+	if err = c.Detach(context.Background(), "session", "owner"); err != nil {
+		t.Fatalf("failed cleanup could not be retried: %v", err)
+	}
+	if _, err = c.Attach("session", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	finish, err = c.ReserveOwnerCleanup("session", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish(false)
+	if err = c.Authorize("session", "owner"); !errors.Is(err, harness.ErrNotAttached) {
+		t.Fatalf("deleted attachment survived: %v", err)
+	}
+}
+
 func TestDisconnectWaitsForOwnedCleanup(t *testing.T) {
 	c := NewCoordinator()
 	_, _ = c.Attach("a", "one")

@@ -255,6 +255,28 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 		return map[string]any{"sessions": sessions, "truncated": truncated}, nil
 	case "memory.get", "memory.delete":
 		return c.managementMemory(ctx, request)
+	case "session.delete":
+		if len(request.Fields) != 2 {
+			return nil, managementInvalid("session delete requires only session_id")
+		}
+		id, err := managementID(request.Fields, "session_id")
+		if err != nil {
+			return nil, err
+		}
+		alreadyDeleted, err := c.service.DeleteSession(ctx, id)
+		if err != nil {
+			switch {
+			case errors.Is(err, harness.ErrBusy), errors.Is(err, harness.ErrAttachedElsewhere):
+				return nil, &localhost.ManagementError{Code: "busy", Message: "session is attached or has background work"}
+			case errors.Is(err, harness.ErrReceiptConflict):
+				return nil, &localhost.ManagementError{Code: "unresolved_receipts", Message: "reconcile uncertain tool receipts before deleting the session"}
+			case errors.Is(err, harness.ErrInvalidInput):
+				return nil, managementInvalid("background child sessions cannot be deleted directly")
+			default:
+				return nil, err
+			}
+		}
+		return map[string]any{"deleted": []string{id}, "already_deleted": alreadyDeleted}, nil
 	default:
 		return nil, &localhost.ManagementError{Code: "unsupported_operation", Message: fmt.Sprintf("unsupported management operation: %s", request.Operation)}
 	}

@@ -366,6 +366,36 @@ func (s *Store) CleanupOrphans(ctx context.Context) error {
 	return nil
 }
 
+// RemoveOrphans removes only snapshots recorded for a purged session. A
+// database check prevents deleting a path that another committed asset owns.
+// Startup CleanupOrphans can retry a failed removal after a crash.
+func (s *Store) RemoveOrphans(ctx context.Context, paths []string) error {
+	s.lifecycle.RLock()
+	defer s.lifecycle.RUnlock()
+	if s.closed {
+		return errors.New("asset store is closed")
+	}
+	for _, name := range paths {
+		if !strings.HasSuffix(name, ".blob") || !generatedID(strings.TrimSuffix(name, ".blob")) {
+			return invalid("invalid snapshot path during cleanup")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var live bool
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_assets WHERE path=?)`, name).Scan(&live); err != nil {
+			return err
+		}
+		if live {
+			return harness.ErrBusy
+		}
+		if err := s.root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 func generatedID(id string) bool {
 	if len(id) < 20 || len(id) > 128 {
 		return false

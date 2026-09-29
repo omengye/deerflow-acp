@@ -39,7 +39,7 @@ Bridge. See [daemon setup and compatibility](internal/localhost/README.md).
 `ACP → session coordinator → durable accepted input → Eino TurnLoop/DeepAgent →
 permission-protected tools → session/checkpoint stores → ACP updates`.
 
-The executable supports initialize, new, list, load, resume, close, prompt,
+The executable supports initialize, new, list, load, resume, close, delete, prompt,
 cancel, session config options, and default/plan modes. Load replays history before its response; resume
 restores without replay. A second active prompt is rejected before the first
 can be canceled. Cancellation retains session ownership until cleanup and final

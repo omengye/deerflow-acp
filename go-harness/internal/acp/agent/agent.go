@@ -142,7 +142,7 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		a.initialized = true
 		a.capabilities = req.ClientCapabilities
 		httpMCP, sseMCP := a.service.MCPCapabilities()
-		response := map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": a.service.ImageInputEnabled(), "audio": false, "embeddedContext": false}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}}}, "_meta": map[string]any{"deerflow": map[string]any{"toolReceipts": receiptCapabilities(), "history": map[string]any{"version": 1, "listMethod": historyListMethod}, "artifacts": map[string]any{"version": 1, "listMethod": listArtifactsMethod}}}}
+		response := map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": a.service.ImageInputEnabled(), "audio": false, "embeddedContext": false}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}, "delete": map[string]any{}}}, "_meta": map[string]any{"deerflow": map[string]any{"toolReceipts": receiptCapabilities(), "history": map[string]any{"version": 1, "listMethod": historyListMethod}, "artifacts": map[string]any{"version": 1, "listMethod": listArtifactsMethod}}}}
 		if a.service.Memory != nil {
 			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["memory"] = memoryCapabilities(a.service.MemoryUserID != "")
 		}
@@ -274,6 +274,20 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 			return nil, err
 		}
 		a.clearSubagents(string(req.SessionId))
+		return map[string]any{}, nil
+	case "session/delete":
+		var req acp.UnstableDeleteSessionRequest
+		if err := decode(raw, &req); err != nil {
+			return nil, err
+		}
+		id := string(req.SessionId)
+		if !validID(id, 256) {
+			return nil, rpcError(protocol.InvalidParams, "invalid sessionId")
+		}
+		if _, err := a.service.DeleteAttachedSession(ctx, a.owner, id); err != nil {
+			return nil, err
+		}
+		a.clearSubagents(id)
 		return map[string]any{}, nil
 	case "session/set_config_option":
 		var req struct {

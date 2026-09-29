@@ -514,6 +514,33 @@ func TestResumeMCPServersOptionalButLoadRequiresArray(t *testing.T) {
 	stopReason(t, c.success(t, c.request(t, "session/prompt", promptParams(sid, "resumed"))), "end_turn")
 }
 
+func TestDeleteAttachedAndUnknownSessions(t *testing.T) {
+	f := newFixture(t, engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	}))
+	a := connect(t, f.service)
+	a.initialize(t)
+	sid := a.newSession(t, f.cwd)
+	b := connect(t, f.service)
+	b.initialize(t)
+	foreign := b.request(t, "session/delete", map[string]any{"sessionId": sid})
+	if msg := b.response(t, foreign); msg.Error == nil || msg.Error.Code != protocol.ServerBusy {
+		t.Fatalf("foreign deletion: %+v", msg)
+	}
+	a.success(t, a.request(t, "session/delete", map[string]any{"sessionId": sid}))
+	var listed struct {
+		Sessions []any `json:"sessions"`
+	}
+	if err := json.Unmarshal(a.success(t, a.request(t, "session/list", map[string]any{})), &listed); err != nil || len(listed.Sessions) != 0 {
+		t.Fatalf("deleted session listed: %+v %v", listed, err)
+	}
+	a.success(t, a.request(t, "session/delete", map[string]any{"sessionId": "never-created"}))
+	msg := a.response(t, a.request(t, "session/prompt", promptParams(sid, "deleted")))
+	if msg.Error == nil {
+		t.Fatalf("deleted session still runs: %+v", msg)
+	}
+}
+
 func TestTwoConnectionsAndEOFKeepOtherSessionRunning(t *testing.T) {
 	type activeRun struct {
 		sessionID string

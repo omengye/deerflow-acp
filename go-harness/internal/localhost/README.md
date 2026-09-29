@@ -30,12 +30,18 @@ subagents and MCP allowlists (`--max-model-calls`, `--max-tool-calls`,
 the daemon directly with those flags and connect the Bridge using
 `--no-auto-start --runtime-dir /private/go-runtime`.
 
-**Do not pass Bridge `--config`:** Python YAML configuration is not interpreted
-by this binary. The daemon rejects it explicitly and publishes an empty
-`config_path`. Management requests currently return
-`{"ok":false,"code":"unsupported_operation",...}`. This includes Python
-skill proposal, memory and session management operations. Session operations
-implemented by the Go harness remain available over ACP.
+The Go daemon accepts the Bridge's `--config` for the documented bounded YAML
+mapping; see [configuration compatibility](../../../docs/eino-go-config-bridge.md).
+`MANAGE` implements daemon status/drain/resume, session list/delete, and memory
+get/delete. Unsupported operations return
+`{"ok":false,"code":"unsupported_operation",...}`.
+
+`session.delete` requires a detached foreground session. It refuses sessions
+with a background task graph or unresolved tool receipts, then removes the
+session's private database records and internal asset snapshots. Workspace
+files and workspace/user memory remain. The operation is idempotent so a client
+can retry after a lost response. `cleanup_eligible` remains false until
+automatic retention rules are implemented; it does not control manual deletion.
 
 ## Lifetime and capacity
 

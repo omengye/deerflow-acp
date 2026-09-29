@@ -247,6 +247,21 @@ func TestDaemonProcessCancellationRestartAndOwnership(t *testing.T) {
 	if memory := manageDaemonRequest(t, ep, map[string]any{"operation": "memory.delete", "session_id": session.ID, "fact_id": fact.ID}); bytes.Contains(memory["memory"], []byte(fact.ID)) {
 		t.Fatalf("management memory deletion: %+v", memory)
 	}
+	temporary := b.success(t, "session/new", map[string]any{"cwd": workspace, "mcpServers": []any{}})
+	var temporarySession struct {
+		ID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(temporary, &temporarySession); err != nil || temporarySession.ID == "" {
+		t.Fatalf("temporary session: %s %v", temporary, err)
+	}
+	b.success(t, "session/close", map[string]any{"sessionId": temporarySession.ID})
+	deleted := manageDaemonRequest(t, ep, map[string]any{"operation": "session.delete", "session_id": temporarySession.ID})
+	if string(deleted["already_deleted"]) != "false" {
+		t.Fatalf("management delete: %+v", deleted)
+	}
+	if inventory := manageDaemon(t, ep, "session.list"); bytes.Contains(inventory["sessions"], []byte(temporarySession.ID)) {
+		t.Fatalf("deleted session remains: %+v", inventory)
+	}
 	if drain := manageDaemon(t, ep, "daemon.drain"); string(drain["draining"]) != "true" {
 		t.Fatalf("drain: %+v", drain)
 	}
