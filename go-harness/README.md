@@ -63,6 +63,10 @@ the receipt. Review never executes a tool. The SDK exposes `ListToolReceipts` an
 `ReconcileToolReceipt`; ACP advertises the corresponding namespaced extensions.
 See [receipt queries and reconciliation](internal/acp/receipts.md).
 
+`Client.HistoryPage` and ACP `_deerflow/history/list` provide bounded event pages
+with a stable snapshot cursor. Standard `session/load` still replays the complete
+conversation and now reads it in pages. See [history pagination](internal/acp/history.md).
+
 ACP client MCP servers are scoped to the attached session. Use repeatable
 `--mcp-allow-command` with an absolute executable to allow client stdio servers.
 Outbound MCP HTTP/SSE need `--mcp-allow-http` / `--mcp-allow-sse`. These flags do

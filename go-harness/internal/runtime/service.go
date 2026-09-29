@@ -88,17 +88,24 @@ func (s *Service) Load(ctx context.Context, owner, id, cwd string, replay bool, 
 	}
 	s.clearDecisions(owner, id)
 	if replay {
-		var events []harness.RunEvent
-		events, err = s.Store.History(ctx, id)
-		if err != nil {
-			return x, err
-		}
-		for _, e := range events {
-			if emit != nil {
-				err = emit(ctx, e)
-				if err != nil {
-					return x, err
+		cursor := ""
+		for {
+			var page harness.EventPage
+			page, err = s.Store.HistoryPage(ctx, id, cursor, 128)
+			if err != nil {
+				return x, err
+			}
+			for _, e := range page.Events {
+				if emit != nil {
+					err = emit(ctx, e)
+					if err != nil {
+						return x, err
+					}
 				}
+			}
+			cursor = page.NextCursor
+			if cursor == "" {
+				break
 			}
 		}
 	}

@@ -19,7 +19,7 @@
 | 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close 已写入 | 黑盒互操作、官方 TCK、真实编辑器 |
 | 执行与工作区工具 | Eino TurnLoop/DeepAgent、前台委派、文件工具、plan/read_only、主/子共享预算；执行回执与命令工具已接线 | 长期会话循环、后台委派和更完整的工具集 |
 | 权限 / 恢复 | 审批意图先落库、精确参数授权、版本绑定、断连拒绝；不确定工具结果阻止新运行；SDK/ACP 显式对账 | durable HITL 和公开执行检查点恢复 |
-| 领域事件 / 历史 | 持久事件、文本/工具 updates、load 重放 | 有界异步发送、计划/usage/产物投影、分页历史 |
+| 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、分页历史与 load 重放 | 有界异步发送、计划/usage 投影 |
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image 与产物登记已验证 | MCP/模型生成媒体导入、可选对象存储发布 |
@@ -61,6 +61,8 @@ go test -race -p=2 -timeout=5m ./internal/... ./
 新增 GitHub Actions Windows/Linux 验证定义尚未推送或在远端执行。真实模型联网测试、Linux 运行期验证、ACP TCK 和编辑器实测仍待后续阶段。本阶段尚不满足完整 V1 发布条件。
 
 ## 下一阶段
+
+历史查询现提供 SDK `HistoryPage` 与 ACP `_deerflow/history/list`，游标绑定会话并固定首次查询的事件上限。`session/load` 持有会话租约分页读取并完整重放，`session/resume` 仍不重放。验证覆盖分页间新增事件、全量重放、跨会话游标、其他连接访问、繁忙会话与大事件边界，runtime 与真实 ACP 管道限定测试通过 race。
 
 继续装配长期 TurnLoop/backgroundtask Manager、公开 durable HITL 恢复、Memory、压缩、媒体/产物。后台任务 SQL provider 已通过测试，但不能据此宣称后台任务已能通过当前可执行文件使用。
 
