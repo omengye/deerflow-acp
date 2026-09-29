@@ -130,9 +130,13 @@ func (m *toolMiddleware) governedPermission(ctx context.Context, tc *adk.ToolCon
 		if !has || saved.Intent.ID == "" || saved.Intent.Version < 1 || saved.RequestHash != permissionHash(req) || saved.RootBudgetID != m.sink.request.RootBudgetID {
 			return "", fmt.Errorf("%w: permission checkpoint identity changed", harness.ErrInvalidInput)
 		}
-		target, hasData, resume := tool.GetResumeContext[PermissionResume](ctx)
+		target, hasData, data := tool.GetResumeContext[any](ctx)
 		if !target || !hasData {
 			return "", m.interruptPermission(ctx, tc, saved)
+		}
+		resume, err := decodePermissionResume(data, hooks)
+		if err != nil {
+			return "", err
 		}
 		if resume.IntentID != saved.Intent.ID || resume.IntentVersion != saved.Intent.Version || resume.GrantID == "" {
 			return "", fmt.Errorf("%w: permission resume identity changed", harness.ErrInvalidInput)
@@ -161,6 +165,39 @@ func (m *toolMiddleware) governedPermission(ctx context.Context, tc *adk.ToolCon
 	}
 	state := permissionState{Intent: intent, RequestHash: permissionHash(req), RootBudgetID: m.sink.request.RootBudgetID}
 	return "", m.interruptPermission(ctx, tc, state)
+}
+
+// Native backgroundtask/subagent persists resume data as JSON and decodes it
+// with UseNumber. Accept that exact representation only when it matches a
+// host-owned grant; never coerce floats, arbitrary objects, or native targets.
+func decodePermissionResume(data any, hooks *ExecutionHooks) (PermissionResume, error) {
+	if resume, ok := data.(PermissionResume); ok {
+		return resume, nil
+	}
+	invalid := fmt.Errorf("%w: invalid permission resume data", harness.ErrInvalidInput)
+	object, ok := data.(map[string]any)
+	if !ok || len(object) != 3 {
+		return PermissionResume{}, invalid
+	}
+	intentID, intentOK := object["IntentID"].(string)
+	grantID, grantOK := object["GrantID"].(string)
+	version, versionOK := object["IntentVersion"].(json.Number)
+	if !intentOK || intentID == "" || !grantOK || grantID == "" || !versionOK {
+		return PermissionResume{}, invalid
+	}
+	intentVersion, err := version.Int64()
+	if err != nil || intentVersion < 1 {
+		return PermissionResume{}, invalid
+	}
+	resume := PermissionResume{IntentID: intentID, IntentVersion: intentVersion, GrantID: grantID}
+	if hooks != nil {
+		for _, trusted := range hooks.Targets {
+			if trusted == resume {
+				return resume, nil
+			}
+		}
+	}
+	return PermissionResume{}, fmt.Errorf("%w: permission resume data has no trusted grant", harness.ErrInvalidInput)
 }
 
 func isPermissionInterrupt(err error) bool { _, ok := compose.IsInterruptRerunError(err); return ok }

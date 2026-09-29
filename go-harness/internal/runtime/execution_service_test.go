@@ -278,14 +278,62 @@ func TestDurableRuntimeStartupChecksInterruptedBudgetBeforeResume(t *testing.T) 
 	}
 }
 
-func TestDurableRuntimeNotifyFailurePreservesWaitingCheckpoint(t *testing.T) {
-	s, _, _, x := budgetService(t, harness.BudgetLimits{}, budget.Config{})
+func TestDurableRuntimeEventFailureStopsBeforeEffect(t *testing.T) {
+	for _, eventKind := range []string{"tool_start", "tool_execute"} {
+		t.Run(eventKind, func(t *testing.T) {
+			s, _, _, x := budgetService(t, harness.BudgetLimits{}, budget.Config{})
+			effects, approvals := 0, 0
+			engine := &durableRuntimeEngine{t: t, onEffect: func() { effects++ }}
+			s.Engine = engine
+			broken := errors.New("event handler refused execution")
+			result, err := s.Run(context.Background(), "owner", x.ID, []harness.Content{{Type: "text", Text: "write"}}, func(_ context.Context, event harness.RunEvent) error {
+				if event.Kind == eventKind {
+					return broken
+				}
+				return nil
+			}, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+				approvals++
+				return harness.AllowOnce, nil
+			})
+			if !errors.Is(err, broken) || effects != 0 || result.Execution == nil || result.Execution.Resumable {
+				t.Fatalf("effect escaped event failure: effects=%d result=%+v state=%+v err=%v", effects, result, result.Execution, err)
+			}
+			if eventKind == "tool_start" && (approvals != 0 || engine.resumes.Load() != 0) {
+				t.Fatal("failed tool_start continued into permission/resume", approvals, engine.resumes.Load())
+			}
+		})
+	}
+}
+
+func TestDurableRuntimePermissionFailurePreservesCommittedWaitingCheckpoint(t *testing.T) {
+	s, native, _, x := budgetService(t, harness.BudgetLimits{}, budget.Config{})
 	engine := &durableRuntimeEngine{t: t}
 	s.Engine = engine
-	broken := errors.New("connection lost")
-	result, err := s.Run(context.Background(), "owner", x.ID, []harness.Content{{Type: "text", Text: "write"}}, func(context.Context, harness.RunEvent) error { return broken }, nil)
-	if !errors.Is(err, broken) || result.Execution == nil || result.Execution.Status != harness.ExecutionWaitingInput || !result.Execution.Resumable || engine.resumes.Load() != 0 {
+	broken := errors.New("permission channel lost")
+	var committed harness.ExecutionState
+	result, err := s.Run(context.Background(), "owner", x.ID, []harness.Content{{Type: "text", Text: "write"}}, nil, func(ctx context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
+		var err error
+		committed, err = s.Execution(ctx, "owner", x.ID, p.RunID)
+		if err != nil || committed.Status != harness.ExecutionWaitingInput || !committed.Resumable {
+			t.Fatal("permission requested before waiting checkpoint committed", committed, err)
+		}
+		return "", broken
+	})
+	if !errors.Is(err, broken) || result.Execution == nil || result.Execution.Status != harness.ExecutionWaitingInput || !result.Execution.Resumable || result.Execution.Version != committed.Version || engine.resumes.Load() != 0 {
 		t.Fatalf("result=%+v state=%+v err=%v", result, result.Execution, err)
+	}
+	var checkpoints, grants int
+	if err = native.DB().QueryRow(`SELECT count(*) FROM eino_checkpoints WHERE id=?`, "harness/turn/v1/"+committed.RunID).Scan(&checkpoints); err != nil || checkpoints != 1 {
+		t.Fatal("permission failure removed committed checkpoint", checkpoints, err)
+	}
+	if err = native.DB().QueryRow(`SELECT count(*) FROM harness_execution_grants`).Scan(&grants); err != nil || grants != 0 {
+		t.Fatal("permission failure created a grant", grants, err)
+	}
+	result, err = s.ResumeExecution(context.Background(), "owner", x.ID, harness.ResumeExecutionRequest{RunID: committed.RunID, ExpectedVersion: committed.Version}, nil, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+		return harness.AllowOnce, nil
+	})
+	if err != nil || result.Execution == nil || result.Execution.Status != harness.ExecutionCompleted || engine.resumes.Load() != 1 {
+		t.Fatalf("committed checkpoint did not resume: result=%+v state=%+v err=%v", result, result.Execution, err)
 	}
 }
 

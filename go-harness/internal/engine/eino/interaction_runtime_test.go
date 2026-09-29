@@ -2,6 +2,7 @@ package eino
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -117,5 +118,51 @@ func TestRuntimeNativeNestedSubagentPermission(t *testing.T) {
 	}
 	if toolCalls != 1 || modelCalls != 4 || receipts != 1 {
 		t.Fatalf("delegation accounting tools=%d models=%d receipts=%d", toolCalls, modelCalls, receipts)
+	}
+}
+
+func TestRuntimeNativeEventFailureStopsBeforeToolEffect(t *testing.T) {
+	for _, failedKind := range []string{"tool_start", "tool_execute"} {
+		t.Run(failedKind, func(t *testing.T) {
+			want := errors.New("consumer rejected " + failedKind)
+			var effects, permissions atomic.Int32
+			fake := toolScript()
+			s, session, native := runtimeWithDurableInteraction(t, fake, &receiptEffectTool{run: func(context.Context) (string, error) {
+				effects.Add(1)
+				return "effect must not run", nil
+			}}, false)
+			result, err := s.Run(context.Background(), "owner", session.ID, []harness.Content{{Type: "text", Text: "test callback failure"}}, func(_ context.Context, event harness.RunEvent) error {
+				if event.Kind == failedKind {
+					return want
+				}
+				return nil
+			}, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+				permissions.Add(1)
+				return harness.AllowOnce, nil
+			})
+			if !errors.Is(err, want) || effects.Load() != 0 {
+				t.Fatalf("callback failure allowed effect: result=%+v err=%v effects=%d", result, err, effects.Load())
+			}
+			fake.mu.Lock()
+			modelCalls := fake.calls
+			fake.mu.Unlock()
+			wantPermissions := int32(0)
+			if failedKind == "tool_execute" {
+				wantPermissions = 1
+			}
+			if modelCalls != 1 || permissions.Load() != wantPermissions {
+				t.Fatalf("execution continued after callback failure: modelCalls=%d permissions=%d", modelCalls, permissions.Load())
+			}
+			if result.Execution == nil || result.Execution.Status == harness.ExecutionCompleted {
+				t.Fatalf("callback failure reported successful completion: %+v", result.Execution)
+			}
+			var ledgerModels, held int64
+			if err = native.DB().QueryRow(`SELECT model_calls,held_tokens FROM budget_roots`).Scan(&ledgerModels, &held); err != nil {
+				t.Fatal(err)
+			}
+			if ledgerModels != 1 || held != 0 {
+				t.Fatalf("failed callback accounting: modelCalls=%d held=%d", ledgerModels, held)
+			}
+		})
 	}
 }

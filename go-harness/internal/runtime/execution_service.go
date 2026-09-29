@@ -78,7 +78,7 @@ type executionAttempt struct {
 	requests   map[string]harness.PermissionRequest
 	mu         sync.Mutex
 	checkpoint *interaction.StagedExecutionCheckpoint
-	notifyErr  error
+	eventErr   error
 }
 
 func (a *executionAttempt) PreparePermission(ctx context.Context, p harness.PermissionRequest) (interaction.PermissionIntent, error) {
@@ -132,6 +132,9 @@ func (a *executionAttempt) publish(emit harness.EventHandler) harness.EventHandl
 	return func(ctx context.Context, e harness.RunEvent) error {
 		a.mu.Lock()
 		defer a.mu.Unlock()
+		if a.eventErr != nil {
+			return a.eventErr
+		}
 		e.SessionID, e.RunID = a.lease.Scope.SessionID, a.lease.Scope.MemberID
 		if e.Kind == "tool_execute" {
 			if err := ctx.Err(); err != nil {
@@ -155,9 +158,10 @@ func (a *executionAttempt) publish(emit harness.EventHandler) harness.EventHandl
 		}
 		if emit != nil {
 			if err := emit(ctx, saved); err != nil {
-				// Persistence has succeeded. A broken notification channel must
-				// not roll back a native permission checkpoint on unwind.
-				a.notifyErr = errors.Join(a.notifyErr, err)
+				// Event handlers are execution gates, including before an effect.
+				// Persistence succeeding does not permit ignoring a failed gate.
+				a.eventErr = err
+				return err
 			}
 		}
 		return nil
@@ -238,11 +242,10 @@ func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, le
 		runErr = errors.Join(runErr, s.Assets.AbortRun(req.RunID))
 	}
 	runErr = errors.Join(runErr, applyBudgetHeartbeat(&result, stopHeartbeat()))
-	result, runErr = s.finishExecutionAttempt(ctx, lease, result, runErr, a.checkpoint)
-	if a.notifyErr != nil {
-		runErr = errors.Join(runErr, a.notifyErr)
-	}
-	return result, runErr
+	// Retain callback failures even if an engine incorrectly discards one. The
+	// engine has joined here, so checkpoint/error fields are no longer changing.
+	runErr = errors.Join(runErr, a.eventErr)
+	return s.finishExecutionAttempt(ctx, lease, result, runErr, a.checkpoint)
 }
 
 func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLease, result harness.RunResult, runErr error, cp *interaction.StagedExecutionCheckpoint) (harness.RunResult, error) {

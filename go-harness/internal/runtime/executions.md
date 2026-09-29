@@ -111,9 +111,13 @@ reconnection. Every public operation checks current session ownership.
 The coordinator distinguishes explicit cancellation from disconnect. ACP marks
 its connection-owned request context with `WithTransportCancellation`, because
 the peer can cancel request parents before coordinator disconnect executes.
-SDK context cancellation is explicit by default. Notification failures are
-reported after persisted execution state is finalized; they cannot roll back a
-valid waiting checkpoint or accidentally authorize automatic continuation.
+SDK context cancellation is explicit by default. Event-handler errors stop
+execution immediately, including before a tool effect, and block subsequent
+events in that attempt. Persisting the event does not waive the callback gate.
+A failed `tool_start` does not manufacture a new waiting checkpoint. Permission
+callback errors occur after waiting checkpoint commit and preserve that valid
+checkpoint without creating a resume attempt or grant. A failed resumed attempt
+can preserve an earlier checkpoint only if its manifest still validates.
 
 Pending execution blocks new prompts and configuration/mode changes. Background
 child sessions are hidden from the ordinary session list and rejected by
@@ -133,4 +137,5 @@ consumption plus tool receipt, and zero-row CAS rejection.
 with no active budget attempt, exact whitespace-preserving arguments, callback
 effects after grant/receipt commit, receipt-failure dispatch prevention,
 disconnect versus SDK cancellation, fresh authorization after owner replacement,
-latest-run discovery, notification failure, and real SQLite close/open recovery.
+latest-run discovery, event failure before effects, preservation of committed
+waits after permission callback failure, and real SQLite close/open recovery.
