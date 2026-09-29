@@ -23,7 +23,7 @@
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image、产物登记、MCP 增强工具图片导入及模型生成图片的导入/ACP 回放已验证 | 模型生成音视频、远程图片 URL、可选对象存储发布及真实图片模型验收 |
-| 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
+| 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复、父会话通知输入已接线 | 跨 run 长命令；真实编辑器中的通知处理与恢复互操作 |
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
@@ -64,7 +64,7 @@ go test -race -p=2 -timeout=5m ./internal/... ./
 
 历史查询现提供 SDK `HistoryPage` 与 ACP `_deerflow/history/list`，游标绑定会话并固定首次查询的事件上限。`session/load` 持有会话租约分页读取并完整重放，`session/resume` 仍不重放。验证覆盖分页间新增事件、全量重放、跨会话游标、其他连接访问、繁忙会话与大事件边界，runtime 与真实 ACP 管道限定测试通过 race。
 
-继续实现父会话通知输入、Memory、压缩及共享预算。前台公开 durable HITL 和后台任务 host 已接线。以下各阶段记录保留当时的实现状态，最新进度以本表及最后一节为准。
+以下各阶段记录保留当时的实现状态，最新进度以本表及最后一节为准。
 
 ## 第三阶段装配
 
@@ -367,3 +367,11 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 本地 Eino 模型 fixture 验证生成、事件先于原生会话写入、下一轮历史加载及字节隔离；ACP 管道测试验证实时图片块与历史回放；SQLite 故障注入验证事件/资产一起回滚。缺少真实图片生成模型和编辑器联调，不能据此宣称完整多媒体或完整 V1 验收。
 - 图片事件为保证资产引用先于原生会话持久化而提前提交，可能先于同一模型回复的较早文本分片到达 ACP；混合文本/图片的显示顺序尚待真实编辑器验收及调整。
 - Windows 全 Go 模块 `go test -mod=readonly -p=2 -count=1 -timeout=5m ./...`、三个新增用例的 `-race` 聚焦检查和 `git diff --check` 通过。本批未重新打包、运行远端 CI、Docker 或真实编辑器。
+
+## 第三十五阶段通知状态核对与外部 ACP 会话落盘
+
+- 核对真实 Eino/SQLite SDK continuation、真实双向 ACP 管道的断连重连及待批恢复测试，确认父会话通知输入已完成并修正工作项表中的滞后缺口。通知在真实编辑器中的互操作仍待验收。
+- 外部 ACP `session/new` 返回后，先原子保存远端 session ID 和配置摘要，再发出 `session/prompt`；状态写入失败时停止调用，避免已经产生远端 prompt 却丢失可用于 `session/load` 的 ID。真实子进程测试检查远端收到 prompt 时状态已存在，以及落盘失败时没有发出 prompt。远端 prompt 断线后的原位恢复、实际模型用量和产物导入仍未完成。
+- WSL Ubuntu 22.04 的原生 Rust Bridge 与 Go daemon 运行 v1/v2 组合 100 轮通过，先前偶发的 v2 `_deerflow_error` 未复现；该结果不能证明根因已修复。
+- Linux 原生外部 ACP 子进程测试暴露进程组终止误判：主进程被 SIGKILL 后、`cmd.Wait` 前仍以 zombie 状态属于原进程组，串行检查会等待约 6 秒并错误报告终止未确认。现并发执行进程组终止检查与 `cmd.Wait` 回收；Linux `TestExternalACPProcess`、取消、会话复用及状态写入失败用例重跑通过，取消用例约 0.3 秒结束。
+- 修复后 Windows Go 整模块 `go test -count=1 -p=2 -timeout=5m ./...`、ACP client/sandbox race，以及 WSL Linux ACP client race 均通过；`git diff --check` 通过。尚未推送 CI、联调真实编辑器、运行 Docker 实机或切换默认入口。

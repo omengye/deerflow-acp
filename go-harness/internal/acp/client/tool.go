@@ -178,16 +178,24 @@ func (t *invokeTool) InvokableRun(ctx context.Context, args string, _ ...tool.Op
 		}
 	}
 	callbacks, _ := CallbacksFromContext(ctx)
-	result, runErr := Run(ctx, Config{Command: config.Command, Args: config.Args, Env: config.Env, Timeout: timeout}, workspace, state.SessionID, input.Prompt, callbacks)
-	if result.SessionID != "" && state.SessionID == "" {
-		data, err := json.Marshal(sessionState{SessionID: result.SessionID, Policy: policy})
+	previousReady := callbacks.SessionReady
+	callbacks.SessionReady = func(callCtx context.Context, sessionID string) error {
+		if previousReady != nil {
+			if err := previousReady(callCtx, sessionID); err != nil {
+				return err
+			}
+		}
+		data, err := json.Marshal(sessionState{SessionID: sessionID, Policy: policy})
 		if err != nil {
-			return "", errors.Join(runErr, err)
+			return err
 		}
 		if err := writeSessionState(stateFile, data); err != nil {
-			return "", errors.Join(runErr, err)
+			return err
 		}
+		state.SessionID = sessionID
+		return nil
 	}
+	result, runErr := Run(ctx, Config{Command: config.Command, Args: config.Args, Env: config.Env, Timeout: timeout}, workspace, state.SessionID, input.Prompt, callbacks)
 	if runErr != nil {
 		if result.SessionID != "" {
 			return "", errors.Join(runErr, harness.ErrCommandUncertain)

@@ -39,6 +39,9 @@ type PermissionRequest struct {
 }
 
 type Callbacks struct {
+	// SessionReady persists a newly created remote session before prompt is
+	// dispatched. A failure stops the invocation without sending the prompt.
+	SessionReady func(context.Context, string) error
 	// Update receives the complete ACP update. The caller must validate resource
 	// links before importing them into a local artifact store.
 	Update func(context.Context, json.RawMessage) error
@@ -88,8 +91,11 @@ func Run(ctx context.Context, cfg Config, workspace, remoteSessionID, prompt str
 		return Result{}, err
 	}
 	if err = tree.Attach(cmd); err != nil {
-		_ = tree.Terminate()
+		_ = cmd.Process.Kill()
+		terminated := make(chan error, 1)
+		go func() { terminated <- tree.Terminate() }()
 		_ = cmd.Wait()
+		_ = <-terminated
 		return Result{}, fmt.Errorf("attach external process tree: %w", err)
 	}
 	stderrDone := make(chan struct{})
@@ -196,8 +202,12 @@ func Run(ctx context.Context, cfg Config, workspace, remoteSessionID, prompt str
 			cancel()
 		}
 		_ = peer.Close()
-		terminationErr := tree.Terminate()
+		// On Unix a killed process remains in its process group as a zombie until
+		// Wait reaps it. Verify group termination concurrently with that reap.
+		terminated := make(chan error, 1)
+		go func() { terminated <- tree.Terminate() }()
 		_ = cmd.Wait()
+		terminationErr := <-terminated
 		<-serveDone
 		<-stderrDone
 		select {
@@ -237,6 +247,11 @@ func Run(ctx context.Context, cfg Config, workspace, remoteSessionID, prompt str
 		sessionID = created.SessionID
 		mu.Unlock()
 		result.SessionID = created.SessionID
+		if callbacks.SessionReady != nil {
+			if err := callbacks.SessionReady(ctx, created.SessionID); err != nil {
+				return Result{}, fmt.Errorf("persist external session before prompt: %w", err)
+			}
+		}
 	} else {
 		if !initialized.AgentCapabilities.LoadSession {
 			return Result{}, errors.New("external agent does not support session/load")

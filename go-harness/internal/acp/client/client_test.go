@@ -130,7 +130,9 @@ func TestInvokeToolPersistsRemoteSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	tool, err := Tool(root, harness.Session{ID: "parent-1"}, map[string]harness.ACPAgentConfig{"fixture": {Command: executable, Args: []string{"-test.run=^TestInvokeToolPersistsRemoteSession$"}, Env: map[string]string{"DEERFLOW_ACP_HELPER": "1"}, TimeoutSeconds: 5}})
+	identity := sha256.Sum256([]byte("parent-1"))
+	stateFile := filepath.Join(root, "acp-agent-sessions", fmt.Sprintf("%x", identity[:]), "fixture.json")
+	tool, err := Tool(root, harness.Session{ID: "parent-1"}, map[string]harness.ACPAgentConfig{"fixture": {Command: executable, Args: []string{"-test.run=^TestInvokeToolPersistsRemoteSession$"}, Env: map[string]string{"DEERFLOW_ACP_HELPER": "1", "DEERFLOW_ACP_STATE_FILE": stateFile}, TimeoutSeconds: 5}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,11 +149,35 @@ func TestInvokeToolPersistsRemoteSession(t *testing.T) {
 	if err := CleanupSession(root, "parent-1"); err != nil {
 		t.Fatal(err)
 	}
-	identity := sha256.Sum256([]byte("parent-1"))
 	for _, category := range []string{"acp-workspaces", "acp-agent-sessions"} {
 		if _, err := os.Stat(filepath.Join(root, category, fmt.Sprintf("%x", identity[:]))); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("%s survived cleanup: %v", category, err)
 		}
+	}
+}
+
+func TestExternalACPSessionPersistenceFailureStopsBeforePrompt(t *testing.T) {
+	if os.Getenv("DEERFLOW_ACP_HELPER") != "" {
+		helperAgent()
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "prompt-sent")
+	sentinel := errors.New("state store unavailable")
+	result, err := Run(context.Background(), Config{Command: executable, Args: []string{"-test.run=^TestExternalACPSessionPersistenceFailureStopsBeforePrompt$"}, Env: map[string]string{"DEERFLOW_ACP_HELPER": "1", "DEERFLOW_ACP_PROMPT_MARKER": marker}, Timeout: 5 * time.Second}, t.TempDir(), "", "first", Callbacks{SessionReady: func(_ context.Context, sessionID string) error {
+		if sessionID != "child-1" {
+			t.Errorf("remote session ID=%q", sessionID)
+		}
+		return sentinel
+	}})
+	if !errors.Is(err, sentinel) || result.SessionID != "" {
+		t.Fatalf("unpersisted session dispatched: result=%+v err=%v", result, err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("prompt reached remote agent before state commit: %v", statErr)
 	}
 }
 
@@ -181,6 +207,18 @@ func helperAgent() {
 			write(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": "child-1", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "old history"}}}})
 			write(map[string]any{"jsonrpc": "2.0", "id": frame.ID, "result": map[string]any{}})
 		case "session/prompt":
+			if stateFile := os.Getenv("DEERFLOW_ACP_STATE_FILE"); stateFile != "" {
+				raw, err := os.ReadFile(stateFile)
+				var state sessionState
+				if err != nil || json.Unmarshal(raw, &state) != nil || state.SessionID != "child-1" || state.Policy == "" {
+					os.Exit(6)
+				}
+			}
+			if marker := os.Getenv("DEERFLOW_ACP_PROMPT_MARKER"); marker != "" {
+				if os.WriteFile(marker, []byte("sent"), 0600) != nil {
+					os.Exit(7)
+				}
+			}
 			if strings.Contains(string(frame.Params), "hang") {
 				continue
 			}
