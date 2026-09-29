@@ -121,6 +121,9 @@ response or disconnected approval channel preserves the wait. The SDK provides
 permission and exact run/version matching. See [execution recovery](internal/acp/executions.md).
 Eino's built-in `task` orchestration emits subagent lifecycle events; the child
 model and external tools share the original budget and individual tool receipts.
+Eino's built-in `write_todos` provides structured lead-agent plans; successful
+updates become ACP `plan` updates and replay from durable history. Child-agent
+todo lists do not replace the lead agent's plan.
 The default Eino backend also exposes durable `background_agent`, `task_status`,
 `task_wait` and `task_cancel` tools. Isolated child agents inherit the workspace,
 policy and existing budget; only explicit text instructions are copied. Both

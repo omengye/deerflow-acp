@@ -151,6 +151,9 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		if info.Name == "task" && !e.config.DisableSubAgent && !(req.Session.ConfigVersion > 0 && !req.Session.Subagents) {
 			return p, errors.New("tool name task is reserved for native Eino delegation")
 		}
+		if info.Name == "write_todos" {
+			return p, errors.New("tool name write_todos is reserved for native Eino planning")
+		}
 		if protected[info.Name] {
 			return p, fmt.Errorf("duplicate tool %q", info.Name)
 		}

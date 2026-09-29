@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strings"
 	"sync"
 
 	"github.com/cloudwego/eino/adk"
@@ -320,6 +321,12 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 						lastRootAnswer = ""
 					}
 				}
+				if event.AgentName == "deerflow" && observed.planSeen {
+					if err := sink.emit(execCtx, harness.RunEvent{Kind: "plan_update", Plan: observed.plan}); err != nil {
+						runErr = errors.Join(runErr, withoutNativeTermination(err))
+						requestCancel()
+					}
+				}
 				if err != nil {
 					runErr = errors.Join(runErr, withoutNativeTermination(err))
 					requestCancel()
@@ -432,6 +439,37 @@ type consumedMessage struct {
 	toolCalls bool
 	text      string
 	usage     *harness.Usage
+	plan      []harness.PlanEntry
+	planSeen  bool
+}
+
+// Eino's built-in write_todos returns a localized sentence followed by the
+// complete JSON TODO array. Parse only that trusted tool result after it runs;
+// a model-requested tool call alone does not establish an updated plan.
+func planFromTodoResult(output string) ([]harness.PlanEntry, bool) {
+	start := strings.IndexByte(output, '[')
+	if start < 0 {
+		return nil, false
+	}
+	var todos []struct {
+		Content string `json:"content"`
+		Status  string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(output[start:]), &todos); err != nil {
+		return nil, false
+	}
+	entries := make([]harness.PlanEntry, 0, len(todos))
+	for _, todo := range todos {
+		if strings.TrimSpace(todo.Content) == "" {
+			continue
+		}
+		status := todo.Status
+		if status != "in_progress" && status != "completed" {
+			status = "pending"
+		}
+		entries = append(entries, harness.PlanEntry{Content: todo.Content, Status: status, Priority: "medium"})
+	}
+	return entries, true
 }
 
 func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *eventSink, result *harness.RunResult) (consumedMessage, error) {
@@ -443,6 +481,9 @@ func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *even
 		}
 		if (variant.Role == schema.Tool || msg.Role == schema.Tool) && msg.ToolCallID != "" {
 			toolCallID = msg.ToolCallID
+			if variant.ToolName == "write_todos" {
+				observed.plan, observed.planSeen = planFromTodoResult(msg.Content)
+			}
 		}
 		if variant.Role == schema.Assistant || (variant.Role == "" && msg.Role == schema.Assistant) {
 			observed.assistant = true

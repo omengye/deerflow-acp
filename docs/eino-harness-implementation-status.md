@@ -19,7 +19,7 @@
 | 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close 已写入 | 黑盒互操作、官方 TCK、真实编辑器 |
 | 执行与工作区工具 | Eino TurnLoop/DeepAgent、前台委派、文件工具、plan/read_only、主/子共享预算；执行回执与命令工具已接线 | 长期会话循环、后台委派和更完整的工具集 |
 | 权限 / 恢复 | 前台与后台原生 durable HITL、审批/检查点/回执/预算联合恢复；SDK/ACP 查询、批准与取消已接入 | 真实编辑器与 MCP 重新绑定恢复 |
-| 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、原生子 Agent 生命周期、真实上下文用量投影、分页历史与 load 重放、有界异步 ACP 更新队列 | 计划投影与真实编辑器流压验证 |
+| 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、原生子 Agent 生命周期、主 Agent 计划与真实上下文用量投影、分页历史与 load 重放、有界异步 ACP 更新队列 | 真实编辑器流压验证 |
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image、产物登记及 MCP 工具图片导入已验证 | 流式工具与模型生成媒体导入、可选对象存储发布 |
@@ -276,4 +276,10 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 
 - 为每个可选模型显式配置 `context_window`；Go 命令行新增默认模型的 `--context-window`，Bridge YAML 中兼容模型的窗口大小进入对应模型配置。模型切换后按当前模型查找窗口。
 - Eino 只从最后一次主 Agent 模型响应读取实际 input/output usage，保存独立的 `context_usage` 领域事件并投影为 ACP `usage_update`。子 Agent、记忆和压缩调用的 token 仍进入原有累计预算，但不冒充主线程上下文占用。缺少窗口或模型 usage 时不发送该更新。
-- Eino 单次/多次模型调用、原生子 Agent 隔离、ACP stdio 更新和历史重放、Bridge 配置映射已有定向测试。计划投影需先有真实的结构化计划源，不能把普通工具卡直接当作 `plan_update`。
+- Eino 单次/多次模型调用、原生子 Agent 隔离、ACP stdio 更新和历史重放、Bridge 配置映射已有定向测试。计划投影在随后确认 Eino 内建 `write_todos` 的结构化输出后接入。
+
+## 第二十二阶段 Eino 原生计划的 ACP 投影
+
+- Eino DeepAgent 内建 `write_todos`，成功执行时返回完整的结构化 TODO 列表。仅从主 Agent 的真实工具结果生成 `plan_update` 领域事件，映射 ACP `plan`；默认优先级为 `medium`，清空列表发送空数组以替换客户端旧计划。
+- 子 Agent 的待办不覆盖主会话计划。自定义工具不能占用原生 `write_todos` 名称，以确保投影只解析 Eino 的可信内建结果。领域事件随会话历史持久化，`session/load` 可重放。
+- Eino 主/子 Agent 与 ACP stdio 管道定向测试覆盖计划生成、隔离、清空及重放；整模块普通测试、相关 race 和 Linux amd64 无 CGO 构建通过。真实编辑器互操作仍待验收。

@@ -73,6 +73,12 @@ type ContextUsage struct {
 	Used int64 `json:"used"`
 }
 
+type PlanEntry struct {
+	Content  string `json:"content"`
+	Status   string `json:"status"`
+	Priority string `json:"priority"`
+}
+
 type RunEvent struct {
 	Sequence     int64           `json:"sequence,omitempty"`
 	SessionID    string          `json:"sessionId"`
@@ -86,6 +92,7 @@ type RunEvent struct {
 	Content      []Content       `json:"content,omitempty"`
 	Usage        *Usage          `json:"usage,omitempty"`
 	ContextUsage *ContextUsage   `json:"contextUsage,omitempty"`
+	Plan         []PlanEntry     `json:"plan,omitempty"`
 	Receipt      *ToolReceipt    `json:"receipt,omitempty"`
 }
 

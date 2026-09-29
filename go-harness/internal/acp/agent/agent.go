@@ -377,6 +377,23 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 			return nil
 		}
 		update = map[string]any{"sessionUpdate": "usage_update", "size": e.ContextUsage.Size, "used": e.ContextUsage.Used}
+	case "plan_update":
+		entries := make([]acp.PlanEntry, 0, len(e.Plan))
+		for _, item := range e.Plan {
+			if item.Content == "" {
+				continue
+			}
+			status := acp.PlanEntryStatus(item.Status)
+			if status != acp.PlanEntryStatusInProgress && status != acp.PlanEntryStatusCompleted {
+				status = acp.PlanEntryStatusPending
+			}
+			priority := acp.PlanEntryPriority(item.Priority)
+			if priority != acp.PlanEntryPriorityHigh && priority != acp.PlanEntryPriorityLow {
+				priority = acp.PlanEntryPriorityMedium
+			}
+			entries = append(entries, acp.PlanEntry{Content: item.Content, Status: status, Priority: priority})
+		}
+		update = map[string]any{"sessionUpdate": "plan", "entries": entries}
 	case "budget_exhausted":
 		update = map[string]any{"sessionUpdate": "agent_message_chunk", "content": harness.Content{Type: "text", Text: e.Text}, "_meta": map[string]any{"deerflow": map[string]any{"event": "budget_exhausted"}}}
 	case "tool_start":
