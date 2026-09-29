@@ -28,12 +28,13 @@ import (
 
 // No credentials or mutable source text enter the persisted execution state.
 type extensionState struct {
-	Version       int                `json:"version"`
-	Skills        []harness.SkillRef `json:"skills"`
-	MCPGeneration string             `json:"mcpGeneration,omitempty"`
-	SandboxPolicy string             `json:"sandboxPolicy"`
-	MemoryPolicy  string             `json:"memoryPolicy,omitempty"`
-	Memory        []memorySnapshot   `json:"memory,omitempty"`
+	Version           int                `json:"version"`
+	Skills            []harness.SkillRef `json:"skills"`
+	MCPGeneration     string             `json:"mcpGeneration,omitempty"`
+	SandboxPolicy     string             `json:"sandboxPolicy"`
+	MemoryPolicy      string             `json:"memoryPolicy,omitempty"`
+	ExtractionEnabled bool               `json:"extractionEnabled,omitempty"`
+	Memory            []memorySnapshot   `json:"memory,omitempty"`
 }
 
 type memorySnapshot struct {
@@ -144,7 +145,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		selection := selectionPolicy
 		selection.Workspace = req.Session.CWD
 		readOnly := req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
-		state := extensionState{Version: 1, SandboxPolicy: policyHash, MemoryPolicy: memoryPolicy}
+		state := extensionState{Version: 1, SandboxPolicy: policyHash, MemoryPolicy: memoryPolicy, ExtractionEnabled: cfg.MemoryExtraction}
 		if !readOnly {
 			state.MCPGeneration, err = manager.Generation(ctx, req.Session.ID)
 			if err != nil {
@@ -160,7 +161,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 				return out, fmt.Errorf("%w: invalid extension checkpoint", harness.ErrInvalidInput)
 			}
 			var extra any
-			if dec.Decode(&extra) != io.EOF || previous.Version != state.Version || previous.MCPGeneration != state.MCPGeneration || previous.SandboxPolicy != state.SandboxPolicy {
+			if dec.Decode(&extra) != io.EOF || previous.Version != state.Version || previous.MCPGeneration != state.MCPGeneration || previous.SandboxPolicy != state.SandboxPolicy || previous.ExtractionEnabled != state.ExtractionEnabled {
 				return out, fmt.Errorf("%w: execution resources changed since checkpoint", harness.ErrInvalidInput)
 			}
 			if previous.MemoryPolicy != state.MemoryPolicy && (previous.MemoryPolicy != "" || len(previous.Memory) != 0) {
@@ -182,6 +183,9 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		}
 		state.Skills = snapshot.Refs()
 		out.InstructionAppend = memoryInstruction(state.Memory)
+		if memoryStore != nil && cfg.MemoryExtraction {
+			out.PostRunFactory = memoryPostRunFactory(memoryStore, req, cfg.MemoryUserID, state.Memory)
+		}
 		out.State, err = json.Marshal(state)
 		if err != nil {
 			return out, err

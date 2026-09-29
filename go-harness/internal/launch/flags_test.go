@@ -75,3 +75,14 @@ func TestSandboxFlagsRejectMalformedOperatorInput(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryFlagsAreExplicit(t *testing.T) {
+	cfg, err := parseRuntimeFlags(t)
+	if err != nil || cfg.MemoryExtraction || cfg.MemoryUserID != "" {
+		t.Fatalf("defaults=%+v err=%v", cfg, err)
+	}
+	cfg, err = parseRuntimeFlags(t, "--memory-extraction", "--memory-user-id=operator-1")
+	if err != nil || !cfg.MemoryExtraction || cfg.MemoryUserID != "operator-1" {
+		t.Fatalf("configured=%+v err=%v", cfg, err)
+	}
+}

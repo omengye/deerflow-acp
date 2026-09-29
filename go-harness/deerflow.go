@@ -11,8 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gofrs/flock"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -55,6 +57,9 @@ type Config struct {
 	// MemoryUserID enables workspace-bound user memory for an explicitly known
 	// host identity. Empty leaves only session/workspace memory available.
 	MemoryUserID string
+	// MemoryExtraction enables a bounded post-turn model call that proposes
+	// descriptive facts for terminal promotion. Disabled by default.
+	MemoryExtraction bool
 	// Engine allows embedding a custom execution backend without importing Eino.
 	// When nil, the real Eino DeepAgent and durable SQLite stores are used.
 	Engine harness.Engine
@@ -81,6 +86,9 @@ type Client struct {
 func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if cfg.BackgroundWorkers < 0 || cfg.BackgroundWorkers > 64 {
 		return nil, fmt.Errorf("%w: background worker limit must be 0..64", harness.ErrInvalidInput)
+	}
+	if cfg.MemoryUserID != "" && (len(cfg.MemoryUserID) > 256 || strings.TrimSpace(cfg.MemoryUserID) != cfg.MemoryUserID || strings.ContainsRune(cfg.MemoryUserID, 0) || !utf8.ValidString(cfg.MemoryUserID)) {
+		return nil, fmt.Errorf("%w: invalid memory user identity", harness.ErrInvalidInput)
 	}
 	cfg.Media.VisionModels = slices.Clone(cfg.Media.VisionModels)
 	if cfg.DataDir == "" {

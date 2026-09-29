@@ -141,6 +141,21 @@ CREATE TABLE IF NOT EXISTS memory_fact_revisions (
  source_input_id TEXT NOT NULL, source_event_sequence INTEGER NOT NULL, policy_version TEXT NOT NULL,
  deleted INTEGER NOT NULL, created_at TEXT NOT NULL,
  PRIMARY KEY(fact_id,revision));`)
+	if err == nil {
+		_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS memory_staged_facts (
+ run_id TEXT NOT NULL, input_id TEXT NOT NULL, attempt_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+ scope_key TEXT NOT NULL, scope_kind TEXT NOT NULL, workspace TEXT NOT NULL, subject TEXT NOT NULL, agent TEXT NOT NULL, scope_revision INTEGER NOT NULL,
+ content TEXT NOT NULL, category TEXT NOT NULL, confidence REAL NOT NULL, source_id TEXT NOT NULL,
+ source_event_sequence INTEGER NOT NULL, policy_version TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'staged',
+ PRIMARY KEY(run_id,attempt_id,ordinal));
+ CREATE INDEX IF NOT EXISTS memory_staged_attempt ON memory_staged_facts(run_id,attempt_id,status);`)
+		if err == nil {
+			_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS memory_extraction_audit (
+ run_id TEXT NOT NULL, attempt_id TEXT NOT NULL, input_id TEXT NOT NULL, status TEXT NOT NULL,
+ response_sha TEXT NOT NULL DEFAULT '', notes BLOB NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL,
+ PRIMARY KEY(run_id,attempt_id));`)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

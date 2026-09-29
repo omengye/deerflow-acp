@@ -24,7 +24,7 @@
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image 与产物登记已验证 | MCP/模型生成媒体导入、可选对象存储发布 |
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
-| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理和 Eino 只读固定快照注入已接入 | 自动事实提取、终态提升、压缩及共享预算验收 |
+| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入和显式启用的受控提取/终态提升已接入 | 摘要压缩、旧 DeerMem 迁移和真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、多窗口、现有 Rust Bridge 实际二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 诊断子集 |
 | 可选外部 ACP Agent | 待实现 | 白名单、反向权限、预算和取消链 |
@@ -187,6 +187,13 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - ACP 请求严格校验字段和嵌套 fact；真实双向管道覆盖 owner、跨 session、版本和删除后的检索。真实 Eino 与本地模型服务验证注入及删除后不再注入；extension factory 验证恢复固定快照。
 - 协议 reader 现在在 handler 完成后、写响应前释放 admission。客户端收到响应即可连续请求同一会话；原有通知续跑时序用例重复五次通过。整模块普通回归通过。
 
-自动提取、attempt staging/终态提升、摘要压缩、旧 DeerMem 迁移和真实模型/编辑器验收仍未完成；此阶段不能标记为完整记忆闭环。
+此阶段的手工管理和只读注入已完成；自动提取的实现与验收见下节。摘要压缩、旧 DeerMem 迁移和真实模型/编辑器验收仍未完成。
 
-下一项按 [记忆与上下文压缩设计](eino-memory-context-design.md) 实施受共享预算约束的事实提取、attempt staging 与终态提升，再实现摘要压缩。`RunExtensions.ModelHandlerFactory` 已提供受控模型；1/2 次模型额度的真实 TurnLoop 测试验证内部调用扣减原预算并受限额阻断。
+## 第十阶段受控提取与终态提升
+
+- 显式开启 `MemoryExtraction` 后，根 Agent 成功答复触发一次由原 run 的 `trackedModel` 执行的有界 JSON 提取；后台 child 与通知 continuation 不视作新的用户偏好来源。默认关闭可选模型调用，两个 CLI 提供 `--memory-extraction` 和显式 `--memory-user-id`。
+- 筛选要求 durable、descriptive、workspace 或已配置的 user scope、置信度阈值及有界内容，拒绝权限、当前任务、路径和凭据类候选。提取审计保存响应 SHA 与拒绝原因；模型 usage 仍进入原预算和领域事件。
+- 候选写入按 attempt 隔离的 staging；终态 SQL 事务将事实提升与执行、预算结算一起提交。失败、取消、等待和终态事务错误不发布。范围 revision 漂移时舍弃候选，同文重复事实不累积；额度不足记录 `quota_skip`，不损害已完成的主回答。
+- 本地模型 fixture 验证真实 Eino 提取、重启保留、来源 event sequence、非法候选拒绝、重复去重、配额跳过、终态 SQL 故障不发布和跨会话范围冲突。
+
+下一项按 [记忆与上下文压缩设计](eino-memory-context-design.md) 实现摘要压缩、`FlushMemory` 和旧 DeerMem 迁移。完整 V1 的媒体输出、异步事件、外部 ACP agent、管理接口及真实编辑器/TCK 验收仍待完成。

@@ -35,6 +35,7 @@ type PreparedAttempt struct {
 	joinOnce     sync.Once
 	executionErr error
 	cleanupErr   error
+	postRun      func(context.Context, string, bool) error
 }
 
 // PrepareAttempt requires the already-active trusted budget scope when a
@@ -168,13 +169,22 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	media := &mediaProjection{resolver: e.config.AssetResolver, policy: e.config.Media, sessionID: req.Session.ID, model: selectedModel}
 	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle, budget: b}
 	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), extensions.Handlers...)
-	if extensions.ModelHandlerFactory != nil {
+	if extensions.ModelHandlerFactory != nil || extensions.PostRunFactory != nil {
 		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: media}
-		modelHandlers, err := extensions.ModelHandlerFactory(ctx, metered)
-		if err != nil {
-			return p, fmt.Errorf("build tracked model middleware: %w", err)
+		if extensions.ModelHandlerFactory != nil {
+			modelHandlers, err := extensions.ModelHandlerFactory(ctx, metered)
+			if err != nil {
+				return p, fmt.Errorf("build tracked model middleware: %w", err)
+			}
+			handlers = append(handlers, modelHandlers...)
 		}
-		handlers = append(handlers, modelHandlers...)
+		if extensions.PostRunFactory != nil {
+			var err error
+			p.postRun, err = extensions.PostRunFactory(ctx, metered)
+			if err != nil {
+				return p, fmt.Errorf("build tracked post-run model: %w", err)
+			}
+		}
 	}
 	handlers = append(handlers, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media}, mw)
 	p.Agent, err = deep.New(ctx, &deep.Config{

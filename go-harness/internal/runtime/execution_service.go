@@ -309,6 +309,12 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 		if err = s.Store.BudgetLedger.EndAttemptTx(persist, tx, lease.Scope, outcome); err != nil {
 			return err
 		}
+		if s.Memory != nil {
+			publish := state.Status == harness.ExecutionCompleted && runErr == nil && result.StopReason == "end_turn"
+			if _, err = s.Memory.SettleStagingTx(persist, tx, lease.Scope.MemberID, lease.Scope.AttemptID, publish); err != nil {
+				return err
+			}
+		}
 		if state.Status != harness.ExecutionWaitingInput {
 			if result.StopReason == "" {
 				result.StopReason = "end_turn"

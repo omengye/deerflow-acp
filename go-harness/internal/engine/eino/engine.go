@@ -62,8 +62,12 @@ type RunExtensions struct {
 	// by the same I/O lifecycle and durable budget as the main agent. It must
 	// be used instead of an unwrapped provider model for those calls.
 	ModelHandlerFactory func(context.Context, model.BaseModel[*schema.Message]) ([]adk.ChatModelAgentMiddleware, error)
-	Cleanup             func() error
-	State               json.RawMessage
+	// PostRunFactory receives the same tracked model for one root-agent final
+	// answer. The callback runs before I/O join and terminal transaction. Its
+	// boolean reports whether the shared root has room for an optional call.
+	PostRunFactory func(context.Context, model.BaseModel[*schema.Message]) (func(context.Context, string, bool) error, error)
+	Cleanup        func() error
+	State          json.RawMessage
 }
 
 var _ harness.Engine = (*Engine)(nil)
@@ -241,6 +245,7 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	}
 	result = harness.RunResult{StopReason: "end_turn"}
 	var runErr error
+	var lastRootAnswer string
 	var bindings []ExecutionInterruptBinding
 	captureInterrupt := func(contexts []*adk.InterruptCtx) error {
 		hooks := executionHooks(ctx)
@@ -289,7 +294,14 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 				runErr = errors.Join(runErr, withoutNativeTermination(event.Err))
 			}
 			if event.Output != nil && event.Output.MessageOutput != nil {
-				if err := consumeMessage(execCtx, event.Output.MessageOutput, sink, &result); err != nil {
+				observed, err := consumeMessage(execCtx, event.Output.MessageOutput, sink, &result)
+				if event.AgentName == "deerflow" && observed.assistant {
+					lastRootAnswer = observed.text
+					if observed.toolCalls {
+						lastRootAnswer = ""
+					}
+				}
+				if err != nil {
 					runErr = errors.Join(runErr, withoutNativeTermination(err))
 					requestCancel()
 				}
@@ -326,6 +338,9 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	}
 	checkpoints.setInterrupts(bindings)
 	runErr = errors.Join(runErr, withoutNativeTermination(exitErr), exit.CheckpointErr, checkpoints.failure())
+	if runErr == nil && result.StopReason == "end_turn" && ctx.Err() == nil && lastRootAnswer != "" && prepared.postRun != nil {
+		runErr = errors.Join(runErr, prepared.postRun(ctx, lastRootAnswer, budget.canOptionalModelCall(ctx, 2048)))
+	}
 	ioLifecycle.closeAndWait()
 	runErr = errors.Join(runErr, ioLifecycle.failure())
 	if err := sink.closeOpen(execCtx); err != nil {
@@ -385,7 +400,14 @@ func (e *Engine) input(ctx context.Context, req harness.RunRequest) ([]*schema.M
 	return append(messages, message), nil
 }
 
-func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *eventSink, result *harness.RunResult) error {
+type consumedMessage struct {
+	assistant bool
+	toolCalls bool
+	text      string
+}
+
+func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *eventSink, result *harness.RunResult) (consumedMessage, error) {
+	var observed consumedMessage
 	var toolCallID string
 	consume := func(msg *schema.Message) error {
 		if msg == nil {
@@ -395,6 +417,9 @@ func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *even
 			toolCallID = msg.ToolCallID
 		}
 		if variant.Role == schema.Assistant || (variant.Role == "" && msg.Role == schema.Assistant) {
+			observed.assistant = true
+			observed.text += msg.Content
+			observed.toolCalls = observed.toolCalls || len(msg.ToolCalls) > 0
 			if msg.Content != "" {
 				if err := sink.emit(ctx, harness.RunEvent{Kind: "text_delta", Text: msg.Content}); err != nil {
 					return err
@@ -424,21 +449,21 @@ func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *even
 				break
 			}
 			if err != nil {
-				return err
+				return observed, err
 			}
 			if err := consume(msg); err != nil {
-				return err
+				return observed, err
 			}
 		}
 	} else if err := consume(variant.Message); err != nil {
-		return err
+		return observed, err
 	}
 	if toolCallID != "" {
 		if err := sink.emit(ctx, harness.RunEvent{Kind: "tool_end", ToolCallID: toolCallID, ToolName: variant.ToolName, Status: "completed"}); err != nil {
-			return err
+			return observed, err
 		}
 	}
-	return nil
+	return observed, nil
 }
 
 // eventSink serializes concurrent tools and remembers transport failures. The

@@ -30,6 +30,8 @@ func RuntimeFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
 	flags.DurationVar(&budget.Timeout, "run-timeout", budget.Timeout, "run execution timeout; 0 disables")
 	flags.BoolVar(&cfg.DisableSubagents, "disable-subagents", false, "disable subagent delegation")
 	flags.IntVar(&cfg.BackgroundWorkers, "background-workers", 4, "maximum concurrent background attempts (1..64)")
+	flags.BoolVar(&cfg.MemoryExtraction, "memory-extraction", false, "extract durable descriptive facts after successful foreground turns")
+	flags.StringVar(&cfg.MemoryUserID, "memory-user-id", "", "explicit host user identity for workspace-bound user memory")
 	flags.Func("allow-model", "additional model ID allowed in session config (repeatable, same provider)", func(value string) error {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("model ID is empty")

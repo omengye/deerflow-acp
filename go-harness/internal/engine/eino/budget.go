@@ -106,6 +106,31 @@ func (b *runBudget) fail(resource string) *budgetError {
 	return b.exhausted
 }
 func (b *runBudget) failure() *budgetError { b.mu.Lock(); defer b.mu.Unlock(); return b.exhausted }
+
+// Optional model work must leave an already completed answer intact when the
+// shared root cannot afford another bounded call. The subsequent reservation
+// remains authoritative; this read is only an early skip.
+func (b *runBudget) canOptionalModelCall(ctx context.Context, minimumTokens int64) bool {
+	if b.limits.Timeout > 0 && b.remainingTime() < 5*time.Second {
+		return false
+	}
+	if b.ledger != nil {
+		snapshot, err := b.ledger.Snapshot(ctx, b.scope.RootBudgetID)
+		if err != nil || snapshot.BlockedReason != "" {
+			return false
+		}
+		if snapshot.Limits.MaxModelCalls > 0 && snapshot.ModelCalls >= snapshot.Limits.MaxModelCalls {
+			return false
+		}
+		return snapshot.Limits.MaxTokens == 0 || snapshot.Limits.MaxTokens-snapshot.SpentTokens-snapshot.HeldTokens >= minimumTokens
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.exhausted != nil || b.limits.MaxModelCalls > 0 && b.modelCalls >= b.limits.MaxModelCalls {
+		return false
+	}
+	return b.limits.MaxTokens == 0 || b.limits.MaxTokens-b.spent-b.held >= minimumTokens
+}
 func (b *runBudget) tool() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
