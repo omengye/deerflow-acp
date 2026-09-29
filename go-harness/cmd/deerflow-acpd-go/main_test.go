@@ -46,10 +46,11 @@ type daemonProcess struct {
 	stderr, stdout bytes.Buffer
 }
 
-func launchDaemon(t *testing.T, dataDir, runtimeDir, baseURL string) *daemonProcess {
+func launchDaemon(t *testing.T, dataDir, runtimeDir, baseURL string, extra ...string) *daemonProcess {
 	t.Helper()
 	p := &daemonProcess{done: make(chan struct{})}
-	p.cmd = exec.Command(os.Args[0], "-test.run=^TestDaemonProcessHelper$", "--", "--data-dir", dataDir, "--runtime-dir", runtimeDir, "--model", "fixture-model", "--base-url", baseURL, "--max-connections", "2")
+	args := []string{"-test.run=^TestDaemonProcessHelper$", "--", "--data-dir", dataDir, "--runtime-dir", runtimeDir, "--model", "fixture-model", "--base-url", baseURL, "--max-connections", "2"}
+	p.cmd = exec.Command(os.Args[0], append(args, extra...)...)
 	p.cmd.Env = append(os.Environ(), "DEERFLOW_TEST_DAEMON_HELPER=1", "DEERFLOW_MODEL_PROVIDER=openai", "DEERFLOW_MODEL_API_KEY=fixture-only-key")
 	p.cmd.Stdout, p.cmd.Stderr = &p.stdout, &p.stderr
 	if err := p.cmd.Start(); err != nil {
@@ -65,6 +66,59 @@ func launchDaemon(t *testing.T, dataDir, runtimeDir, baseURL string) *daemonProc
 		}
 	})
 	return p
+}
+
+func TestDaemonRetentionOnRestartHonorsExplicitFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process integration")
+	}
+	dataDir, runtimeDir, workspace := t.TempDir(), t.TempDir(), t.TempDir()
+	baseURL := "http://127.0.0.1:1/v1"
+	first := launchDaemon(t, dataDir, runtimeDir, baseURL, "--session-cleanup-enabled=false")
+	ep := first.endpoint(t, runtimeDir)
+	client := acpClient(t, ep)
+	created := client.success(t, "session/new", map[string]any{"cwd": workspace, "mcpServers": []any{}})
+	var session struct {
+		ID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(created, &session); err != nil || session.ID == "" {
+		t.Fatalf("session: %s %v", created, err)
+	}
+	client.success(t, "session/close", map[string]any{"sessionId": session.ID})
+	if inventory := manageDaemon(t, ep, "session.list"); !bytes.Contains(inventory["sessions"], []byte(session.ID)) {
+		t.Fatalf("disabled cleanup removed session: %+v", inventory)
+	}
+	conn, _, line := connectCommand(t, ep, "STOP")
+	_ = conn.Close()
+	if line != "OK" {
+		t.Fatal(line)
+	}
+	first.wait(t, true)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	config := "local_acp:\n  session_cleanup_enabled: true\n  closed_session_retention_days: 30\nmodels:\n  - name: fixture\n    use: langchain_openai:ChatOpenAI\n    model: fixture-model\n"
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	second := launchDaemon(t, dataDir, runtimeDir, baseURL, "--config", configPath, "--closed-session-retention-days", "0")
+	ep = second.endpoint(t, runtimeDir)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		inventory := manageDaemon(t, ep, "session.list")
+		if !bytes.Contains(inventory["sessions"], []byte(session.ID)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("startup retention did not honor explicit flag: %+v; %s", inventory, second.stderr.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	conn, _, line = connectCommand(t, ep, "STOP")
+	_ = conn.Close()
+	if line != "OK" {
+		t.Fatal(line)
+	}
+	second.wait(t, true)
 }
 
 func (p *daemonProcess) endpoint(t *testing.T, dir string) localhost.Endpoint {

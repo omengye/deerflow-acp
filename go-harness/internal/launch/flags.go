@@ -6,12 +6,17 @@ import (
 	"flag"
 	"fmt"
 	"strings"
+	"time"
 
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
 func RuntimeFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
+	flags.BoolVar(&cfg.Retention.Enabled, "session-cleanup-enabled", true, "periodically delete expired detached sessions")
+	flags.IntVar(&cfg.Retention.ClosedDays, "closed-session-retention-days", 30, "days to retain explicitly closed sessions; 0 permits immediate cleanup")
+	flags.IntVar(&cfg.Retention.InactiveDays, "inactive-session-retention-days", 30, "days to retain inactive open sessions")
+	flags.DurationVar(&cfg.Retention.CheckInterval, "session-cleanup-interval", time.Hour, "interval between automatic retention sweeps")
 	sandboxFlags(flags, &cfg.Sandbox)
 	skillsFlags(flags, cfg)
 	flags.Func("vision-model", "explicit model ID supporting image input (repeatable; must also be the default or an allow-model)", func(value string) error {

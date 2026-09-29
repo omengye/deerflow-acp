@@ -102,6 +102,10 @@ func run(args []string) (err error) {
 	// Never print ep or its token. The Bridge discovers credentials in the
 	// protected endpoint file; stdout remains unused.
 	fmt.Fprintf(os.Stderr, "deerflow-acpd-go: listening on %s:%d (pid %d)\n", ep.Host, ep.Port, ep.PID)
+	stopRetention := launch.StartRetention(ctx, client, cfg.Retention, func(err error) {
+		fmt.Fprintf(os.Stderr, "deerflow-acpd-go: session cleanup: %v\n", err)
+	})
+	defer stopRetention()
 	return host.Wait()
 }
 

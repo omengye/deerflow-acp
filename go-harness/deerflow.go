@@ -66,6 +66,8 @@ type Config struct {
 	MemoryExtraction bool
 	// Compaction enables budgeted native Eino session summarization.
 	Compaction harness.CompactionConfig
+	// Retention controls optional automatic cleanup of detached sessions.
+	Retention harness.RetentionPolicy
 	// Engine allows embedding a custom execution backend without importing Eino.
 	// When nil, the real Eino DeepAgent and durable SQLite stores are used.
 	Engine harness.Engine
@@ -79,6 +81,7 @@ type Client struct {
 	assets     *assets.Store
 	budgets    *budgetledger.Ledger
 	background *backgroundHost
+	retention  harness.RetentionPolicy
 	lock       *flock.Flock
 	owner      string
 	mu         sync.Mutex
@@ -91,6 +94,9 @@ type Client struct {
 }
 
 func Open(ctx context.Context, cfg Config) (client *Client, err error) {
+	if err := hr.ValidateRetention(cfg.Retention); err != nil {
+		return nil, fmt.Errorf("%w: invalid session retention policy", err)
+	}
 	if cfg.ContextWindow < 0 || cfg.ContextWindow > 1<<30 {
 		return nil, fmt.Errorf("%w: context window must be 0..2^30", harness.ErrInvalidInput)
 	}
@@ -263,7 +269,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			return nil, err
 		}
 	}
-	return &Client{service: service, store: store, mcp: manager, skills: registry, assets: assetStore, budgets: ledger, background: background, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
+	return &Client{service: service, store: store, mcp: manager, skills: registry, assets: assetStore, budgets: ledger, background: background, retention: cfg.Retention, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
 }
 
 func (c *Client) operation() (func(), error) {

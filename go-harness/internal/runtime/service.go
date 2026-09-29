@@ -119,6 +119,9 @@ func (s *Service) Load(ctx context.Context, owner, id, cwd string, replay bool, 
 			}
 		}
 	}
+	if err = s.Store.MarkOpen(ctx, id); err != nil {
+		return x, err
+	}
 	return x, nil
 }
 

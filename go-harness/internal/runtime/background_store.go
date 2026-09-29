@@ -183,7 +183,7 @@ func (s *BackgroundExecutionStore) BindTx(ctx context.Context, tx *sql.Tx, bindi
 			return harness.ErrTaskOriginConflict
 		}
 	} else if errors.Is(err, sql.ErrNoRows) {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO harness_sessions VALUES(?,?,?,?,?,?,?)`, child.ID, child.CWD, child.Title, child.Mode, child.Model, child.CreatedAt.Format(time.RFC3339Nano), child.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO harness_sessions(id,cwd,title,mode,model,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, child.ID, child.CWD, child.Title, child.Mode, child.Model, child.CreatedAt.Format(time.RFC3339Nano), child.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO harness_session_configs VALUES(?,?,?,?)`, child.ID, child.ApprovalMode, child.Subagents, child.ConfigVersion); err != nil {

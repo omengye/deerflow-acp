@@ -50,9 +50,11 @@ func (s *Service) CloseSession(ctx context.Context, owner, id string) error {
 	return s.Coordinator.DetachWithCleanup(ctx, id, owner, func(cleanup context.Context) error {
 		s.clearDecisions(owner, id)
 		if s.Resources != nil {
-			return s.Resources.Release(cleanup, owner, id)
+			if err := s.Resources.Release(cleanup, owner, id); err != nil {
+				return err
+			}
 		}
-		return nil
+		return s.Store.MarkClosed(cleanup, id)
 	})
 }
 

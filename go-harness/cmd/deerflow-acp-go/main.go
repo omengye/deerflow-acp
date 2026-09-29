@@ -51,6 +51,10 @@ func run() error {
 		return err
 	}
 	defer client.Close()
+	stopRetention := launch.StartRetention(ctx, client, cfg.Retention, func(err error) {
+		fmt.Fprintf(os.Stderr, "deerflow-acp-go: session cleanup: %v\n", err)
+	})
+	defer stopRetention()
 	err = client.ServeACP(ctx, os.Stdin, os.Stdout)
 	if errors.Is(err, io.EOF) || errors.Is(err, protocol.ErrClosed) || errors.Is(err, context.Canceled) {
 		return nil

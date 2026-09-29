@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | Go SDK / 版本组合 | 模块、公共类型、嵌入式 Client 和模型适配器已写入 | 全量组合、跨平台构建、配置清单 |
 | SQLite 基础和 Eino providers | checkpoint、session events、background task stores；上游 conformance、崩溃恢复、SQL 故障注入测试已通过 | 后续 Manager/工具恢复装配 |
-| 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close/delete 已写入；官方 ACP stable v1 TCK 判定 `CONFORMANT` | 自动 retention、真实编辑器互操作 |
+| 会话协调 / stdio | 双向传输、同步准入、占用、取消、new/list/load/resume/close/delete 及自动 retention 已写入；官方 ACP stable v1 TCK 判定 `CONFORMANT` | 真实编辑器互操作、后台任务图安全清理 |
 | 执行与工作区工具 | Eino TurnLoop/DeepAgent、前台委派、文件工具、plan/read_only、主/子共享预算；执行回执与命令工具已接线 | 长期会话循环、后台委派和更完整的工具集 |
 | 权限 / 恢复 | 前台与后台原生 durable HITL、审批/检查点/回执/预算联合恢复；SDK/ACP 查询、批准与取消已接入 | 真实编辑器与 MCP 重新绑定恢复 |
 | 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、原生子 Agent 生命周期、主 Agent 计划与真实上下文用量投影、分页历史与 load 重放、有界异步 ACP 更新队列 | 真实编辑器流压验证 |
@@ -26,7 +26,7 @@
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
-| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层、多窗口及 Rust Bridge 二进制互操作已验证 | draft v2 对照、完整配置映射、自动 retention |
+| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证 | draft v2 对照、完整配置映射 |
 | 可选外部 ACP Agent | 待实现 | 白名单、反向权限、预算和取消链 |
 | 打包 / 默认切换 | 未开始 | Windows/Linux 实机、回退、切换演练 |
 
@@ -299,3 +299,10 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - SDK、数据库回滚/重试、真实 daemon MANAGE 管道和 ACP stdio 测试覆盖附着拒绝、跨连接隔离、持久行与文件清理。官方 ACP stable v1 TCK 再次判定 `CONFORMANT`：21 项 mandatory、12 项已启用 capability（含 `ACP-DELETE-001`）全通过；11 项 advisory 通过（含 `ACP-DELETE-002`），`ACP-PROMPT-003` 因工作区外不存在的文件引用仍失败。完整回归结果以本阶段最终测试记录为准。
 - 自动保留期策略尚未实施，管理清单的 `cleanup_eligible` 仍固定为 false。后台任务图的安全删除和真实编辑器互操作仍待验收。
 - Windows 整模块普通测试、会话/runtime/资产/ACP/daemon/SDK 聚焦 race 检查及 Linux amd64 无 CGO 全模块构建通过。额外故障路径验证：资源释放失败后会话保持 `closing`，不能继续 prompt，owner 可重试 close；SQL 删除失败可重新 load 并重试删除。
+
+## 第二十五阶段自动会话保留期
+
+- Go stdio 和 daemon 默认启动时扫描一次，此后每小时扫描；显式关闭的会话和未关闭但已脱离连接的会话默认分别保留 30 天。CLI 可设置开关、两种保留天数与扫描间隔，Bridge `--config` 映射对应 `local_acp` 字段；显式 CLI 标志优先。嵌入式 SDK 的零值仍关闭自动清理，可显式配置策略并调用单次扫描。
+- 旧 Go 数据库迁移增加 `closed_at`。显式 `session/close` 在资源释放成功后记录关闭时间；成功 `session/load` 清除关闭状态并刷新活动时间；普通与 durable run 的结束事务也刷新活动时间，避免长执行后立即到期。扫描按 ID 有界分页，删除预留阻止重连，并在事务清理前复核到期时间。
+- 已附着/运行/正在关闭的会话、后台任务图及未对账工具回执不会自动清理。`MANAGE session.list` 的 `cleanup_eligible` 结合时间、进程状态与持久阻塞条件计算；它只是即时提示，实际删除再次复核。后台任务图的安全删除留待独立策略。
+- SDK、迁移、分页、配置优先级、启动扫描及真实 daemon 重启测试覆盖上述路径。Windows 整模块普通测试、SDK/runtime/launch/daemon 聚焦 race 和 Linux amd64 无 CGO 全模块构建通过。官方 `acp-tck v0.2.0` 使用真实 Go stdio 可执行文件和本地模型夹具再次判定 `CONFORMANT`：21 项 mandatory、12 项已启用 capability 全通过；唯一失败仍是工作区外不存在文件的 `ACP-PROMPT-003` advisory。

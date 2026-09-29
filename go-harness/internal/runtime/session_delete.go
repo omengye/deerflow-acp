@@ -174,6 +174,30 @@ func (s *Service) DeleteSession(ctx context.Context, id string) (bool, error) {
 	return alreadyDeleted, nil
 }
 
+// DeleteExpiredSession repeats the age check under the same reconnect fence
+// used for the purge. A session revived after candidate discovery survives.
+func (s *Service) DeleteExpiredSession(ctx context.Context, id string, now time.Time, policy harness.RetentionPolicy) (bool, error) {
+	release, err := s.Coordinator.ReserveCleanup(id)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	expired, err := s.Store.IsExpiredSession(ctx, id, now, policy)
+	if err != nil || !expired {
+		return false, err
+	}
+	_, paths, err := s.Store.purgeSession(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if s.Assets != nil {
+		if err = s.Assets.RemoveOrphans(ctx, paths); err != nil {
+			return true, err
+		}
+	}
+	return true, nil
+}
+
 // DeleteAttachedSession handles ACP deletion of an idle session owned by the
 // calling connection. A detached session follows the management path. Once
 // admitted, resource release and purge finish under a bounded cleanup context

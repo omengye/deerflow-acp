@@ -321,6 +321,10 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 			}
 			_, err = tx.ExecContext(persist, `UPDATE harness_runs SET stop_reason=? WHERE id=?`, result.StopReason, lease.Scope.MemberID)
 		}
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(persist, `UPDATE harness_sessions SET updated_at=? WHERE id=?`, timestamp(), lease.Scope.SessionID)
 		return err
 	})
 	if err != nil {

@@ -40,8 +40,17 @@ get/delete. Unsupported operations return
 with a background task graph or unresolved tool receipts, then removes the
 session's private database records and internal asset snapshots. Workspace
 files and workspace/user memory remain. The operation is idempotent so a client
-can retry after a lost response. `cleanup_eligible` remains false until
-automatic retention rules are implemented; it does not control manual deletion.
+can retry after a lost response. `cleanup_eligible` becomes true when the
+configured retention age is reached, the session is detached, and no background
+task or unresolved tool receipt blocks deletion. This inventory field is a
+point-in-time hint; the sweep repeats checks before deleting.
+
+Automatic cleanup is enabled by default in both Go executables. It runs once
+at startup and then every hour, retaining closed and inactive sessions for 30
+days by default. `--session-cleanup-enabled=false` disables it; the two
+`--*-session-retention-days` flags and `--session-cleanup-interval` adjust the
+policy. The daemon also reads the corresponding `local_acp` YAML fields when
+launched with `--config`; explicit Go flags take precedence.
 
 ## Lifetime and capacity
 

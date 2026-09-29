@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS harness_tool_reconciliations (run_id TEXT NOT NULL, t
 	if err != nil {
 		return nil, err
 	}
+	if err = migrateSessionRetention(ctx, db); err != nil {
+		return nil, err
+	}
 	if err = migrateExecutions(ctx, db); err != nil {
 		return nil, err
 	}
@@ -53,7 +56,7 @@ func timestamp() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 func (s *Store) CreateSession(ctx context.Context, cwd, model string) (harness.Session, error) {
 	x := harness.Session{ID: NewID(), CWD: cwd, Mode: "default", Model: model, CreatedAt: time.Now().UTC()}
 	x.UpdatedAt = x.CreatedAt
-	_, err := s.db.ExecContext(ctx, `INSERT INTO harness_sessions VALUES(?,?,?,?,?,?,?)`, x.ID, x.CWD, x.Title, x.Mode, x.Model, x.CreatedAt.Format(time.RFC3339Nano), x.UpdatedAt.Format(time.RFC3339Nano))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO harness_sessions(id,cwd,title,mode,model,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, x.ID, x.CWD, x.Title, x.Mode, x.Model, x.CreatedAt.Format(time.RFC3339Nano), x.UpdatedAt.Format(time.RFC3339Nano))
 	return x, err
 }
 
@@ -294,7 +297,11 @@ func (s *Store) Finish(ctx context.Context, id, reason string, runErr error, sco
 	if err = settleOpenReceipts(ctx, tx, id, "run ended without a final tool receipt"); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE harness_runs SET status=?,stop_reason=?,error=?,updated_at=? WHERE id=?`, status, reason, detail, timestamp(), id); err != nil {
+	now := timestamp()
+	if _, err = tx.ExecContext(ctx, `UPDATE harness_runs SET status=?,stop_reason=?,error=?,updated_at=? WHERE id=?`, status, reason, detail, now, id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE harness_sessions SET updated_at=? WHERE id=(SELECT session_id FROM harness_runs WHERE id=?)`, now, id); err != nil {
 		return err
 	}
 	return tx.Commit()

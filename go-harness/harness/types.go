@@ -48,6 +48,16 @@ type Session struct {
 	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
+// RetentionPolicy controls automatic cleanup of detached sessions. A zero
+// ClosedDays expires explicitly closed sessions immediately; InactiveDays must
+// be positive whenever Enabled is true.
+type RetentionPolicy struct {
+	Enabled       bool
+	ClosedDays    int
+	InactiveDays  int
+	CheckInterval time.Duration
+}
+
 type RunRequest struct {
 	Session Session
 	RunID   string

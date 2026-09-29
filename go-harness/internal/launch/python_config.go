@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,10 @@ type pythonRuntimeConfig struct {
 		RunTimeoutSeconds      int       `yaml:"run_timeout_seconds"`
 		EnableBash             bool      `yaml:"enable_bash"`
 		AcceptClientMCPServers bool      `yaml:"accept_client_mcp_servers"`
+		SessionCleanupEnabled  *bool     `yaml:"session_cleanup_enabled"`
+		InactiveRetentionDays  *int      `yaml:"inactive_session_retention_days"`
+		ClosedRetentionDays    *int      `yaml:"closed_session_retention_days"`
+		CleanupIntervalSeconds *float64  `yaml:"session_cleanup_interval_seconds"`
 	} `yaml:"local_acp"`
 }
 
@@ -135,6 +140,15 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	if source.LocalACP.MaxActiveConnections < 0 || source.LocalACP.MaxActiveConnections > 1024 {
 		return result, fmt.Errorf("local_acp.max_active_connections must be 0..1024")
 	}
+	if p := source.LocalACP.InactiveRetentionDays; p != nil && (*p < 1 || *p > 3650) {
+		return result, fmt.Errorf("local_acp.inactive_session_retention_days must be 1..3650")
+	}
+	if p := source.LocalACP.ClosedRetentionDays; p != nil && (*p < 0 || *p > 3650) {
+		return result, fmt.Errorf("local_acp.closed_session_retention_days must be 0..3650")
+	}
+	if p := source.LocalACP.CleanupIntervalSeconds; p != nil && (math.IsNaN(*p) || math.IsInf(*p, 0) || *p < 60 || *p > 86400) {
+		return result, fmt.Errorf("local_acp.session_cleanup_interval_seconds must be 60..86400")
+	}
 	if source.LocalACP.AcceptClientMCPServers && len(cfg.MCP.AllowedCommands) == 0 && !cfg.MCP.AllowHTTP && !cfg.MCP.AllowSSE {
 		return result, fmt.Errorf("local_acp.accept_client_mcp_servers requires explicit Go MCP allow flags")
 	}
@@ -196,6 +210,18 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	}
 	if !explicit["run-timeout"] && source.LocalACP.RunTimeoutSeconds > 0 && cfg.Budget != nil {
 		cfg.Budget.Timeout = time.Duration(source.LocalACP.RunTimeoutSeconds) * time.Second
+	}
+	if p := source.LocalACP.SessionCleanupEnabled; p != nil && !explicit["session-cleanup-enabled"] {
+		cfg.Retention.Enabled = *p
+	}
+	if p := source.LocalACP.InactiveRetentionDays; p != nil && !explicit["inactive-session-retention-days"] {
+		cfg.Retention.InactiveDays = *p
+	}
+	if p := source.LocalACP.ClosedRetentionDays; p != nil && !explicit["closed-session-retention-days"] {
+		cfg.Retention.ClosedDays = *p
+	}
+	if p := source.LocalACP.CleanupIntervalSeconds; p != nil && !explicit["session-cleanup-interval"] {
+		cfg.Retention.CheckInterval = time.Duration(*p * float64(time.Second))
 	}
 	for _, option := range source.Models {
 		if option.Model == "" || option.Use != model.Use {

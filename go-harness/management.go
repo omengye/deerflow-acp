@@ -229,6 +229,13 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 			if current, exists := activity.Phases[x.ID]; exists {
 				phase = current
 			}
+			eligible := false
+			if c.retention.Enabled && phase == nil {
+				eligible, err = c.service.Store.IsCleanupEligible(ctx, x.ID, time.Now().UTC(), c.retention)
+				if err != nil {
+					return nil, err
+				}
+			}
 			entry := map[string]any{
 				"session_id":       x.ID,
 				"cwd":              x.CWD,
@@ -239,7 +246,7 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 				"plan_mode":        x.Mode == "plan",
 				"approval_mode":    x.ApprovalMode,
 				"phase":            phase,
-				"cleanup_eligible": false, // Retention and purge are not implemented.
+				"cleanup_eligible": eligible,
 			}
 			encoded, err := json.Marshal(entry)
 			if err != nil {

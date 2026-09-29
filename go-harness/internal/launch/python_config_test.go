@@ -22,6 +22,10 @@ local_acp:
   max_active_connections: 7
   run_timeout_seconds: 33
   subagent_enabled: false
+  session_cleanup_enabled: false
+  inactive_session_retention_days: 7
+  closed_session_retention_days: 0
+  session_cleanup_interval_seconds: 120
 models:
   - name: other
     use: langchain_openai:ChatOpenAI
@@ -51,11 +55,18 @@ models:
 	if len(cfg.Models) != 1 || cfg.Models[0].Name != "Selected model" || len(cfg.Media.VisionModels) != 1 || cfg.Media.VisionModels[0] != "real-model-id" || cfg.ContextWindows["real-model-id"] != 131072 {
 		t.Fatalf("model capabilities: %+v %+v", cfg.Models, cfg.Media)
 	}
+	if cfg.Retention.Enabled || cfg.Retention.InactiveDays != 7 || cfg.Retention.ClosedDays != 0 || cfg.Retention.CheckInterval != 2*time.Minute {
+		t.Fatalf("retention mapping: %+v", cfg.Retention)
+	}
 	cfg.Model, cfg.Provider, cfg.BaseURL, cfg.DataDir = "flag-model", "claude", "https://flag.test", "flag-state"
 	connections = 2
-	_, err = ApplyPythonConfig(path, &cfg, &connections, map[string]bool{"model": true, "provider": true, "base-url": true, "data-dir": true, "max-connections": true, "disable-subagents": true})
+	cfg.Retention = harness.RetentionPolicy{Enabled: true, InactiveDays: 90, ClosedDays: 60, CheckInterval: time.Hour}
+	_, err = ApplyPythonConfig(path, &cfg, &connections, map[string]bool{"model": true, "provider": true, "base-url": true, "data-dir": true, "max-connections": true, "disable-subagents": true, "session-cleanup-enabled": true, "inactive-session-retention-days": true, "closed-session-retention-days": true, "session-cleanup-interval": true})
 	if err != nil || cfg.Model != "flag-model" || cfg.Provider != "claude" || cfg.BaseURL != "https://flag.test" || cfg.DataDir != "flag-state" || connections != 2 {
 		t.Fatalf("explicit flags lost: %+v %d %v", cfg, connections, err)
+	}
+	if !cfg.Retention.Enabled || cfg.Retention.InactiveDays != 90 || cfg.Retention.ClosedDays != 60 || cfg.Retention.CheckInterval != time.Hour {
+		t.Fatalf("explicit retention lost: %+v", cfg.Retention)
 	}
 	explicitWindow := deerflow.Config{Model: "real-model-id", ContextWindow: 2048}
 	_, err = ApplyPythonConfig(path, &explicitWindow, &connections, map[string]bool{"model": true, "context-window": true})
@@ -75,6 +86,25 @@ func TestApplyPythonConfigRejectsUnsupportedAuthority(t *testing.T) {
 		connections := 0
 		if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err == nil || !strings.Contains(err.Error(), "requires") {
 			t.Fatalf("unsupported authority accepted: %v", err)
+		}
+	}
+}
+
+func TestApplyPythonConfigRejectsInvalidRetention(t *testing.T) {
+	for _, field := range []string{
+		"inactive_session_retention_days: 0",
+		"closed_session_retention_days: -1",
+		"session_cleanup_interval_seconds: 30",
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		raw := "local_acp:\n  " + field + "\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var cfg deerflow.Config
+		connections := 32
+		if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err == nil {
+			t.Fatalf("invalid retention accepted: %s", field)
 		}
 	}
 }

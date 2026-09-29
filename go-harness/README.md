@@ -45,6 +45,18 @@ restores without replay. A second active prompt is rejected before the first
 can be canceled. Cancellation retains session ownership until cleanup and final
 persistence finish.
 
+Both executables run a session retention sweep at startup and every hour by
+default. Detached sessions explicitly closed with `session/close` are retained
+for 30 days; other detached sessions expire 30 days after their last activity.
+`--closed-session-retention-days`, `--inactive-session-retention-days`, and
+`--session-cleanup-interval` set those limits; `--session-cleanup-enabled=false`
+disables automatic deletion. Zero closed days permits cleanup at the next sweep.
+Attached or running sessions, background task graphs, and sessions with
+unreconciled tool receipts are preserved. A successful `session/load` reopens a
+closed session and restarts its inactivity clock. Embedded SDK clients leave
+retention disabled unless `Config.Retention` is explicitly configured; hosts
+can call `Client.CleanupExpiredSessions` for a single sweep.
+
 Native workspace tools provide read, list, search, write, and edit. Plan and
 read_only modes expose trusted local read tools without prompts. Other modes
 follow the configured ask/allow_always/reject_always approval policy. An
