@@ -319,4 +319,4 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 每个父会话和外部 Agent 使用独立私有 workspace 与持久 remote session ID。客户端以 stdio 完成 `initialize → session/new` 或 `session/load → session/prompt`；只声明空 client capabilities，不代理尚未实现的客户端 fs/terminal。更新经 Eino `tool_update` 发出；连接仍在时，外部反向权限经所属会话的策略及 ACP 客户端实时批准，不自动批准。断线不会重放旧权限响应，外部进程终止并保留未对账的外层工具回执。外部资源链接只作更新引用，不下载。
 - 外层工具调用和一次估算模型调用计入父预算；流式文本增加估算 token，用完即中止。标准 ACP 没有可靠的外部 Agent 内部模型调用/计费总量，因此这还不是完整的远端预算约束。外部可执行文件仍须由宿主信任，独立 cwd 和精简环境不是 OS 沙箱。父会话删除后回收私有 session 映射与 workspace。
 - 真实子进程协议测试覆盖 new/load、流式文字和工具更新、默认拒绝反向请求、显式选择、超时及回收；Eino 测试覆盖父模型调用额度和进度，durable runtime 测试覆盖连接内实时反向审批路由。配置说明见 [外部 ACP 委派](eino-external-acp.md)。完整 V1 仍需断线后的反向权限恢复、远端预算/副作用对账、媒体和真实编辑器验收。
-- 本批 Windows 整模块普通测试、ACP client/protocol/Eino/runtime/SDK 聚焦 race，以及 Linux amd64 无 CGO 全模块构建通过。资源链接校验限制本地文件须位于外部独立 workspace；HTTP(S) 链接只作为引用。
+- 本批 Windows 整模块普通测试、ACP client/protocol/Eino/runtime/SDK 聚焦 race，以及 Linux amd64 无 CGO 全模块构建通过。资源链接校验限制本地文件须位于外部独立 workspace；HTTP(S) 链接只作为引用。启动时依据持久会话清单回收删除事务提交后残留的私有外部目录，保留仍有效会话的目录。

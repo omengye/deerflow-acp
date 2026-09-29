@@ -182,6 +182,9 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if err != nil {
 		return nil, err
 	}
+	if err = acpclient.CleanupOrphans(ctx, cfg.DataDir, store.DB()); err != nil {
+		return nil, fmt.Errorf("cleanup external ACP session orphans: %w", err)
+	}
 	limits := harness.DefaultBudgetLimits()
 	if cfg.Budget != nil {
 		limits = *cfg.Budget
