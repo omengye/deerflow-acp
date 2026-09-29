@@ -13,6 +13,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
@@ -28,6 +29,8 @@ type Service struct {
 	Resources              SessionResources
 	Assets                 *assets.Store
 	Media                  harness.MediaConfig
+	Memory                 *memory.Store
+	MemoryUserID           string
 	mu                     sync.Mutex
 	decisions              map[string]harness.PermissionDecision
 }

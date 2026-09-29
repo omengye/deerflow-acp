@@ -1,6 +1,6 @@
 # Eino harness 记忆与上下文压缩实施设计
 
-状态：设计已核对 pinned Eino alpha.35 和当前 Python DeerFlow；受共享预算计费的中间件模型工厂已落地，记忆和压缩功能仍待实现。
+状态：设计已核对 pinned Eino alpha.35 和当前 Python DeerFlow；受共享预算计费的中间件模型工厂、结构化事实存储、SDK/ACP 管理与只读注入已落地。自动提取、终态提升及压缩仍待实现。
 
 ## 现有语义与边界
 
@@ -40,4 +40,4 @@ Eino `v0.10.0-alpha.35` 的 `automemory` 默认使用 `MEMORY.md` 和主题文�
 4. 加 Eino 摘要 middleware 的受控模型包装和快照；覆盖 1 次触发、失败保持历史、Skills/工具配对、resume 和 usage 计费。
 5. 接入 tool 模式、FlushMemory、迁移旧 DeerMem 数据，并做真实 SDK/ACP 管道与 Go race。真实模型与编辑器验收留在完整 V1 发布门槛。
 
-Eino `RunExtensions.ModelHandlerFactory` 现在能拿到与主 Agent 共用 I/O 生命周期和预算的 `trackedModel`，并已用真实 TurnLoop 验证中间件调用会占用原预算。下一步从上述第一项的 SQLite 事实存储实施。不要把默认 `automemory.New` + `WriteModeAsync` 直接加入 `RunExtensions.Handlers`；它的写入与 cursor 不能满足本设计的事务和恢复边界。
+Eino `RunExtensions.ModelHandlerFactory` 能拿到与主 Agent 共用 I/O 生命周期和预算的 `trackedModel`，并已用真实 TurnLoop 验证中间件调用会占用原预算。事实存储保留不可变 revision 和 tombstone；FTS5 可按范围修订号重建，CJK 与索引不可用时使用有界词法回退。SDK 与 ACP 管理接口共享会话归属和前台槽，ACP 只声明实际可用的 scope。Eino DeepAgent 本轮指令注入选中事实；所选内容和范围修订号保存在 extension state，显式恢复不重新检索。接下来实现受控提取的 attempt staging 与终态事务提升，再实现压缩。不要把默认 `automemory.New` + `WriteModeAsync` 直接加入 `RunExtensions.Handlers`；它的写入与 cursor 不能满足本设计的事务和恢复边界。

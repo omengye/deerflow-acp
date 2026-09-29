@@ -54,6 +54,9 @@ type Engine struct {
 type RunExtensions struct {
 	Tools    []tool.BaseTool
 	Handlers []adk.ChatModelAgentMiddleware
+	// InstructionAppend is pinned by State and added to this run's native
+	// DeepAgent instruction. It contains only host-selected descriptive data.
+	InstructionAppend string
 	// ModelHandlerFactory builds middleware that makes its own model calls,
 	// such as summarization or memory extraction. The supplied model is tracked
 	// by the same I/O lifecycle and durable budget as the main agent. It must

@@ -178,7 +178,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	}
 	handlers = append(handlers, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media}, mw)
 	p.Agent, err = deep.New(ctx, &deep.Config{
-		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction,
+		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend,
 		ChatModel: chatModel, MaxIteration: e.config.MaxIterations,
 		ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}},
 		Handlers:    handlers, WithoutGeneralSubAgent: e.config.DisableSubAgent || (req.Session.ConfigVersion > 0 && !req.Session.Subagents),

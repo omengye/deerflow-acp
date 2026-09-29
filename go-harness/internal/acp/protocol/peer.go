@@ -25,8 +25,9 @@ type Handler func(context.Context, string, json.RawMessage) (any, error)
 // Admission executes synchronously in wire order before a request is dispatched.
 // It can reserve a session and return a derived context carrying that reservation.
 // It must not perform network calls or block waiting for other requests. A nonnil
-// release function runs exactly once, after the handler and response write finish
-// (or immediately if admission fails). This keeps session busy through cleanup.
+// release function runs exactly once after the handler finishes and before its
+// response is written (or immediately if admission fails). A client that has
+// received the response can therefore start the next operation on the session.
 // Returning a nil context retains the original request context.
 type Admission func(context.Context, string, json.RawMessage) (context.Context, func(), error)
 
@@ -410,6 +411,10 @@ func (p *Peer) dispatchRequest(msg envelope) {
 			if err != nil {
 				response.Error = asRPCError(err)
 			}
+		}
+		if release != nil {
+			release()
+			release = nil
 		}
 		// A canceled prompt can still return its ACP stopReason. Only connection
 		// cancellation should suppress the final response.

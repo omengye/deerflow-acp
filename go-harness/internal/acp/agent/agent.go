@@ -140,6 +140,9 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		a.capabilities = req.ClientCapabilities
 		httpMCP, sseMCP := a.service.MCPCapabilities()
 		response := map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": a.service.ImageInputEnabled(), "audio": false, "embeddedContext": false}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}}}, "_meta": map[string]any{"deerflow": map[string]any{"toolReceipts": receiptCapabilities(), "history": map[string]any{"version": 1, "listMethod": historyListMethod}, "artifacts": map[string]any{"version": 1, "listMethod": listArtifactsMethod}}}}
+		if a.service.Memory != nil {
+			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["memory"] = memoryCapabilities(a.service.MemoryUserID != "")
+		}
 		if a.service.DurableExecutionsEnabled() {
 			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["executions"] = executionCapabilities()
 		}
@@ -166,6 +169,8 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		return a.artifactRequest(ctx, raw)
 	case listReceiptsMethod, reconcileReceiptMethod:
 		return a.receiptRequest(ctx, method, raw)
+	case listMemoryMethod, searchMemoryMethod, getMemoryMethod, createMemoryMethod, replaceMemoryMethod, deleteMemoryMethod, clearMemoryMethod:
+		return a.memoryRequest(ctx, method, raw)
 	case "session/new":
 		var req acp.NewSessionRequest
 		if err := decode(raw, &req); err != nil {

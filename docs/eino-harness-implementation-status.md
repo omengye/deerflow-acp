@@ -24,7 +24,7 @@
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image 与产物登记已验证 | MCP/模型生成媒体导入、可选对象存储发布 |
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
-| Skills / memory / 压缩 | Skills 不可变注册表、原生 middleware、SDK 管理、显式 CLI 启动配置与逐步加载已接入 | memory、压缩及其共享预算 |
+| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理和 Eino 只读固定快照注入已接入 | 自动事实提取、终态提升、压缩及共享预算验收 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、多窗口、现有 Rust Bridge 实际二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 诊断子集 |
 | 可选外部 ACP Agent | 待实现 | 白名单、反向权限、预算和取消链 |
@@ -179,4 +179,14 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 
 尚待完整 V1 的工作包括记忆与上下文压缩、MCP/模型媒体输出导入、计划与 usage 投影、有界异步事件发送、可选外部 ACP agent、MANAGE/Python 配置迁移、默认入口切换和真实编辑器/TCK/Docker 验证。自动通知调度可在显式处理接口之上继续实施。
 
-下一项记忆与压缩的存储、预算和恢复边界已核对并写入 [设计](eino-memory-context-design.md)。Eino `RunExtensions.ModelHandlerFactory` 已为摘要和记忆中间件提供与主模型共用的受控模型；1/2 次模型额度的真实 TurnLoop 测试验证内部调用实际扣减原预算并受限额阻断。事实存储、提取、注入和压缩仍待实施。
+## 第九阶段记忆基础层与只读注入
+
+- SQLite 事实按规范化 workspace、session、显式 user 身份隔离；head 与不可变 revision、来源和 tombstone 持久化。FTS5/BM25 索引可按范围 revision 重建，故障或 CJK 子词命中不足时用有界词法回退。
+- SDK 创建、查询、检索、替换、删除、清空事实；ACP `_deerflow/memory/*` 条件声明相应管理方法。所有操作按当前会话归属校验并占用前台槽，写入使用事实或范围版本检查。
+- Eino DeepAgent 在模型指令中接收有界、明确标为描述性数据的相关事实。选择过程使用单个读事务取得事实与范围 revision；extension state 固定选中事实，恢复时沿用原快照，并绑定 host memory identity。
+- ACP 请求严格校验字段和嵌套 fact；真实双向管道覆盖 owner、跨 session、版本和删除后的检索。真实 Eino 与本地模型服务验证注入及删除后不再注入；extension factory 验证恢复固定快照。
+- 协议 reader 现在在 handler 完成后、写响应前释放 admission。客户端收到响应即可连续请求同一会话；原有通知续跑时序用例重复五次通过。整模块普通回归通过。
+
+自动提取、attempt staging/终态提升、摘要压缩、旧 DeerMem 迁移和真实模型/编辑器验收仍未完成；此阶段不能标记为完整记忆闭环。
+
+下一项按 [记忆与上下文压缩设计](eino-memory-context-design.md) 实施受共享预算约束的事实提取、attempt staging 与终态提升，再实现摘要压缩。`RunExtensions.ModelHandlerFactory` 已提供受控模型；1/2 次模型额度的真实 TurnLoop 测试验证内部调用扣减原预算并受限额阻断。

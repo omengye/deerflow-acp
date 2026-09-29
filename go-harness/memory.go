@@ -1,0 +1,72 @@
+package deerflow
+
+import (
+	"context"
+
+	"github.com/omengye/deerflow-acp/go-harness/harness"
+)
+
+// MemoryFacts lists descriptive facts in one attached scope. Memory operations
+// hold the same foreground slot as prompts, preserving a run's selected view.
+func (c *Client) MemoryFacts(ctx context.Context, sessionID string, kind harness.MemoryScope, after string, limit int) (harness.MemoryPage, error) {
+	done, err := c.operation()
+	if err != nil {
+		return harness.MemoryPage{}, err
+	}
+	defer done()
+	return c.service.MemoryFacts(ctx, c.owner, sessionID, kind, after, limit)
+}
+
+func (c *Client) SearchMemory(ctx context.Context, sessionID string, kind harness.MemoryScope, query string, limit int) ([]harness.MemoryFact, error) {
+	done, err := c.operation()
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	return c.service.SearchMemory(ctx, c.owner, sessionID, kind, query, limit)
+}
+
+func (c *Client) MemoryFact(ctx context.Context, sessionID string, kind harness.MemoryScope, id string) (harness.MemoryFact, error) {
+	done, err := c.operation()
+	if err != nil {
+		return harness.MemoryFact{}, err
+	}
+	defer done()
+	return c.service.MemoryFact(ctx, c.owner, sessionID, kind, id)
+}
+
+func (c *Client) CreateMemoryFact(ctx context.Context, sessionID string, kind harness.MemoryScope, candidate harness.MemoryCandidate) (harness.MemoryFact, error) {
+	done, err := c.operation()
+	if err != nil {
+		return harness.MemoryFact{}, err
+	}
+	defer done()
+	return c.service.CreateMemoryFact(ctx, c.owner, sessionID, kind, candidate)
+}
+
+func (c *Client) ReplaceMemoryFact(ctx context.Context, sessionID string, kind harness.MemoryScope, id string, expectedRevision int64, candidate harness.MemoryCandidate) (harness.MemoryFact, error) {
+	done, err := c.operation()
+	if err != nil {
+		return harness.MemoryFact{}, err
+	}
+	defer done()
+	return c.service.ReplaceMemoryFact(ctx, c.owner, sessionID, kind, id, expectedRevision, candidate)
+}
+
+func (c *Client) DeleteMemoryFact(ctx context.Context, sessionID string, kind harness.MemoryScope, id string, expectedRevision int64) error {
+	done, err := c.operation()
+	if err != nil {
+		return err
+	}
+	defer done()
+	return c.service.DeleteMemoryFact(ctx, c.owner, sessionID, kind, id, expectedRevision)
+}
+
+func (c *Client) ClearMemory(ctx context.Context, sessionID string, kind harness.MemoryScope, expectedScopeRevision int64) (int, error) {
+	done, err := c.operation()
+	if err != nil {
+		return 0, err
+	}
+	defer done()
+	return c.service.ClearMemory(ctx, c.owner, sessionID, kind, expectedScopeRevision)
+}

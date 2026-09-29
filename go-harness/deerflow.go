@@ -21,6 +21,7 @@ import (
 	budgetledger "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
+	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
@@ -51,6 +52,9 @@ type Config struct {
 	// SkillSelection is host policy. Workspace is derived from each session;
 	// global skills require IncludeGlobal. Sources are never installed implicitly.
 	SkillSelection harness.SkillSelection
+	// MemoryUserID enables workspace-bound user memory for an explicitly known
+	// host identity. Empty leaves only session/workspace memory available.
+	MemoryUserID string
 	// Engine allows embedding a custom execution backend without importing Eino.
 	// When nil, the real Eino DeepAgent and durable SQLite stores are used.
 	Engine harness.Engine
@@ -192,9 +196,13 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			_ = assetStore.Close()
 		}
 	}()
+	memoryStore, err := memory.New(ctx, store.DB())
+	if err != nil {
+		return nil, err
+	}
 	engine := cfg.Engine
 	if engine == nil {
-		baseExtensions := extensionFactory(cfg, manager, registry, assetStore)
+		baseExtensions := extensionFactory(cfg, manager, registry, assetStore, memoryStore)
 		extensions := func(ctx context.Context, req harness.RunRequest, pinned json.RawMessage) (einoengine.RunExtensions, error) {
 			out, err := baseExtensions(ctx, req, pinned)
 			if err != nil {
@@ -210,6 +218,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		}
 	}
 	service := hr.NewService(business, engine, cfg.Model)
+	service.Memory, service.MemoryUserID = memoryStore, cfg.MemoryUserID
 	service.Resources = manager
 	service.Media, service.Assets = cfg.Media, assetStore
 	service.Settings = hr.ConfigSettings{Models: append([]harness.ConfigValue(nil), cfg.Models...), EnableSubagents: !cfg.DisableSubagents, DefaultSubagents: !cfg.DisableSubagents}
