@@ -465,9 +465,12 @@ fn find_daemon(cli: &Cli) -> DaemonCommand {
     if let Some(path) = env::var_os("DEER_FLOW_ACP_DAEMON") {
         return executable_daemon(PathBuf::from(path));
     }
-    if let Ok(executable) = env::current_exe()
-        && let Some(parent) = executable.parent()
-    {
+    let executable = env::current_exe().ok();
+    find_layout_daemon(executable.as_deref(), cli.config.as_deref())
+}
+
+fn find_layout_daemon(executable: Option<&Path>, config: Option<&Path>) -> DaemonCommand {
+    if let Some(parent) = executable.and_then(Path::parent) {
         let bundled_python = if cfg!(windows) {
             parent.join("runtime").join("python.exe")
         } else {
@@ -476,10 +479,19 @@ fn find_daemon(cli: &Cli) -> DaemonCommand {
         if bundled_python.is_file() {
             return python_daemon(bundled_python);
         }
+        // A portable Go package places its daemon next to the Bridge. Prefer
+        // that explicit package layout to an unrelated .venv in a parent
+        // directory where the archive happened to be extracted.
+        let sibling = parent.join(if cfg!(windows) {
+            "deerflow-acpd.exe"
+        } else {
+            "deerflow-acpd"
+        });
+        if sibling.is_file() {
+            return executable_daemon(sibling);
+        }
     }
-    if let Some(config) = &cli.config
-        && let Some(root) = config.parent()
-    {
+    if let Some(root) = config.and_then(Path::parent) {
         let python = if cfg!(windows) {
             root.join(".venv").join("Scripts").join("python.exe")
         } else {
@@ -492,9 +504,7 @@ fn find_daemon(cli: &Cli) -> DaemonCommand {
     // Development layouts: a pip-installed entry-point wrapper sits directly
     // next to its interpreter (.venv\Scripts), and cargo build outputs live
     // under bridge\target\<profile> with the repo root a few levels up.
-    if let Ok(executable) = env::current_exe()
-        && let Some(parent) = executable.parent()
-    {
+    if let Some(parent) = executable.and_then(Path::parent) {
         let sibling_python = if cfg!(windows) {
             parent.join("python.exe")
         } else {
@@ -525,18 +535,6 @@ fn find_daemon(cli: &Cli) -> DaemonCommand {
             if !dir.pop() {
                 break;
             }
-        }
-    }
-    if let Ok(executable) = env::current_exe()
-        && let Some(parent) = executable.parent()
-    {
-        let sibling = parent.join(if cfg!(windows) {
-            "deerflow-acpd.exe"
-        } else {
-            "deerflow-acpd"
-        });
-        if sibling.is_file() {
-            return executable_daemon(sibling);
         }
     }
     executable_daemon(PathBuf::from(if cfg!(windows) {
@@ -1024,6 +1022,46 @@ mod process_tests {
             portable_root_for(&root.join("deerflow-acp.exe")),
             Some(root.to_path_buf())
         );
+    }
+
+    #[test]
+    fn packaged_go_daemon_precedes_parent_python_venv() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let bundle = root.join("bundle");
+        let venv = if cfg!(windows) {
+            root.join(".venv").join("Scripts").join("python.exe")
+        } else {
+            root.join(".venv").join("bin").join("python3")
+        };
+        fs::create_dir_all(&bundle).unwrap();
+        fs::create_dir_all(venv.parent().unwrap()).unwrap();
+        fs::write(&venv, b"python").unwrap();
+        let bridge = bundle.join(if cfg!(windows) {
+            "deerflow-acp.exe"
+        } else {
+            "deerflow-acp"
+        });
+        let sibling = bundle.join(if cfg!(windows) {
+            "deerflow-acpd.exe"
+        } else {
+            "deerflow-acpd"
+        });
+        fs::write(&sibling, b"go daemon").unwrap();
+        let config = root.join("config.yaml");
+        let selected = find_layout_daemon(Some(&bridge), Some(&config));
+        assert_eq!(selected.program, sibling);
+        assert!(selected.prefix_args.is_empty());
+
+        let bundled_python = if cfg!(windows) {
+            bundle.join("runtime").join("python.exe")
+        } else {
+            bundle.join("runtime").join("bin").join("python3")
+        };
+        fs::create_dir_all(bundled_python.parent().unwrap()).unwrap();
+        fs::write(&bundled_python, b"python").unwrap();
+        let selected = find_layout_daemon(Some(&bridge), Some(&config));
+        assert_eq!(selected.program, bundled_python);
     }
 
     #[test]

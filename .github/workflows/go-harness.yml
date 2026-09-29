@@ -5,11 +5,15 @@ on:
     paths:
       - "go-harness/**"
       - "bridge/**"
+      - "scripts/build-go-acp-portable.*"
+      - "docs/go-acp-portable.md"
       - ".github/workflows/go-harness.yml"
   push:
     paths:
       - "go-harness/**"
       - "bridge/**"
+      - "scripts/build-go-acp-portable.*"
+      - "docs/go-acp-portable.md"
       - ".github/workflows/go-harness.yml"
   workflow_dispatch:
 
@@ -23,7 +27,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: go-harness
@@ -48,3 +52,51 @@ jobs:
         env:
           DEERFLOW_TEST_BRIDGE: ${{ github.workspace }}/bridge/target/debug/deerflow-acp${{ runner.os == 'Windows' && '.exe' || '' }}
         run: go test -count=1 -run TestExistingRustBridge -timeout=5m ./cmd/deerflow-acpd-go
+      - name: Assemble Windows Go ACP package
+        if: runner.os == 'Windows'
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: ./scripts/build-go-acp-portable.ps1 -Configuration Debug -OutputDirectory dist/go-acp/windows-x64-ci
+      - name: Smoke Windows Go ACP package
+        if: runner.os == 'Windows'
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: |
+          $env:DEERFLOW_MODEL = 'fixture-model'
+          $env:DEERFLOW_MODEL_API_KEY = 'fixture-only-key'
+          $env:DEERFLOW_GO_DATA_DIR = Join-Path $env:RUNNER_TEMP 'go-acp-state'
+          $bridge = Join-Path $env:GITHUB_WORKSPACE 'dist/go-acp/windows-x64-ci/deerflow-acp.exe'
+          $runtime = Join-Path $env:RUNNER_TEMP 'go-acp-runtime'
+          try {
+            & $bridge --runtime-dir $runtime --start-daemon
+            if ($LASTEXITCODE -ne 0) { throw 'portable daemon start failed' }
+            & $bridge --runtime-dir $runtime --status
+            if ($LASTEXITCODE -ne 0) { throw 'portable daemon status failed' }
+          }
+          finally {
+            if (Test-Path -LiteralPath (Join-Path $runtime 'endpoint.json')) {
+              & $bridge --runtime-dir $runtime --stop-daemon
+              if ($LASTEXITCODE -ne 0) { throw 'portable daemon stop failed' }
+            }
+          }
+      - name: Assemble Linux Go ACP package
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: bash ./scripts/build-go-acp-portable.sh Debug dist/go-acp/linux-x64-ci
+      - name: Smoke Linux Go ACP package
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEERFLOW_MODEL=fixture-model
+          export DEERFLOW_MODEL_API_KEY=fixture-only-key
+          export DEERFLOW_GO_DATA_DIR="$RUNNER_TEMP/go-acp-state"
+          bridge="$GITHUB_WORKSPACE/dist/go-acp/linux-x64-ci/deerflow-acp"
+          runtime="$RUNNER_TEMP/go-acp-runtime"
+          trap '"$bridge" --runtime-dir "$runtime" --stop-daemon || true' EXIT
+          "$bridge" --runtime-dir "$runtime" --start-daemon
+          "$bridge" --runtime-dir "$runtime" --status
+          "$bridge" --runtime-dir "$runtime" --stop-daemon
+          trap - EXIT

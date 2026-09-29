@@ -170,11 +170,12 @@ access; ACP exposes `_deerflow/artifacts/list`. See
 [media projection and limits](internal/engine/eino/media.md) and
 [ACP media behavior](internal/acp/media.md).
 
-Raw image outputs from MCP and model-generated media still need importer wiring.
-Automatic parent notification scheduling, memory, compression, and full
-Bridge compatibility are being integrated. Their incomplete
-status is not represented as a capability promise. This build is not the V1
-completion or default-launcher switch.
+MCP image blocks and enhanced tool images use the staged asset importer.
+Model-generated media, automatic parent notification scheduling, full draft v2
+coverage and external ACP recovery remain open. This build is not the V1
+completion or default-launcher switch. Isolated Windows/Linux ACP package
+scripts and their startup instructions are in
+[the portable Go ACP guide](../docs/go-acp-portable.md).
 
 ## Embed
 

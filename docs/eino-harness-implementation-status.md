@@ -28,7 +28,7 @@
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
 | 可选外部 ACP Agent | 首轮接入：显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次估算模型调用计入父预算 | 断线后的反向权限暂停/恢复、远端真实模型用量约束、产物导入与异常会话对账 |
-| 打包 / 默认切换 | 未开始 | Windows/Linux 实机、回退、切换演练 |
+| 打包 / 默认切换 | 独立 Go ACP 便携包脚本与包内说明已写入；Windows Debug/Release 包实测 Bridge 自动启动 Go daemon，并完成 status/stop；默认入口未切换 | Linux 包的完整运行、真实编辑器、回退和默认切换演练 |
 
 ## 已确认的实施差异
 
@@ -340,3 +340,10 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - GitHub Actions 的 `go-harness.yml` 现在对 `bridge/**` 变更触发 Windows/Linux 双平台任务；Go 全模块和 race 回归后构建并测试 Rust Bridge，随后以 `DEERFLOW_TEST_BRIDGE` 运行真实 Go daemon 与 Bridge 的 v1/v2 互操作测试。该工作流尚未推送，远端执行结果待验收。
 - 在本机 WSL `Ubuntu-22.04` 中运行 Linux amd64、无 CGO 的 Go stdio 可执行文件，真实完成 ACP v1 `initialize`、`session/new`、`session/list` 并正常退出。该检查验证 Linux 进程启动、SQLite 初始化及基础 stdio 管道；没有覆盖 Linux 下的真实模型执行或 daemon/Bridge 生命周期。Windows 上按工作流命令组合运行 v1/v2 Bridge 测试通过。
 - 当前 Docker Desktop daemon 未运行，容器 backend 的真实执行与取消验收仍待可用 Docker 环境。打包、默认入口切换和真实编辑器联调仍未完成。
+
+## 第三十一阶段独立 Go ACP 便携包
+
+- 增加 Windows PowerShell 与 Linux x86_64 打包脚本，分别编译 Rust Bridge、Go daemon 与 Go 直接 stdio Agent，加入许可证和包内运行说明；Windows 可生成 ZIP，Linux 可生成 tar.gz。包放在独立 `dist/go-acp/` 路径，数据目录与 runtime 目录单独指定；现有 Python 默认入口没有改变。
+- Bridge 查找同目录 `deerflow-acpd` 的顺序提前到父目录 Python `.venv` 之前，包内 `runtime/python` 仍优先。测试覆盖这两种布局，避免解压在已有 Python 开发目录下时误启动 Python daemon。
+- Windows Debug 包和 Release 包均从包内 Bridge 实测 `--start-daemon`、`--status`、`--stop-daemon` 成功；Release ZIP 包含三份非空可执行文件、许可证和 README。`cargo fmt --check` 与 `cargo test --locked` 已通过，Rust 共 11 项测试。Linux 打包脚本通过 `bash -n`，尚未在 Linux 编译与运行完整包。
+- CI 定义增加 Windows/Linux 包构建和 daemon 生命周期 smoke；该工作流尚未推送，不能视为远端跨平台通过。本机 WSL 仅完成此前记录的直接 stdio 基础验证；Docker daemon 仍不可用。真实编辑器、配置映射、模型生成媒体、外部 ACP 断线审批与远端预算、完整 Linux 包和默认切换演练仍待验收。
