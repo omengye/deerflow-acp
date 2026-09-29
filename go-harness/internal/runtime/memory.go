@@ -3,10 +3,36 @@ package runtime
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
 )
+
+// FlushMemory waits for an active foreground run to leave the session slot,
+// then observes the synchronous extraction transaction. Context bounds the
+// wait; there is no independent queue or model retry hidden in this operation.
+func (s *Service) FlushMemory(ctx context.Context, owner, sessionID string) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	for {
+		barrier, _, done, err := s.memoryScope(ctx, owner, sessionID, harness.MemorySession)
+		if err == nil {
+			defer done()
+			return s.Memory.Flush(barrier)
+		}
+		if !errors.Is(err, harness.ErrBusy) {
+			return err
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
 
 func (s *Service) memoryScope(ctx context.Context, owner, sessionID string, kind harness.MemoryScope) (context.Context, memory.Scope, func(), error) {
 	if s.Memory == nil {

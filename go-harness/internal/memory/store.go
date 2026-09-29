@@ -171,6 +171,15 @@ CREATE TABLE IF NOT EXISTS memory_fact_revisions (
 	return store, nil
 }
 
+// Flush is a durable barrier for the synchronous V1 extraction pipeline. The
+// service first acquires the session's foreground slot, so any earlier run has
+// committed its terminal memory transaction before this read begins. Failed
+// attempt staging remains audit evidence and is never promoted by a flush.
+func (s *Store) Flush(ctx context.Context) error {
+	var ready int
+	return s.db.QueryRowContext(ctx, `SELECT 1`).Scan(&ready)
+}
+
 func validSource(s Source) bool {
 	return s.ID != "" && len(s.ID) <= 256 && utf8.ValidString(s.ID) && !strings.ContainsRune(s.ID, 0) &&
 		(s.Kind == "model" || s.Kind == "operator") && s.EventSequence >= 0 &&

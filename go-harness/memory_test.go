@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
@@ -43,6 +44,9 @@ func TestSDKMemoryScopesOwnerBusyAndReopen(t *testing.T) {
 	if err != nil || sessionFact.Revision != 1 || sessionFact.Source.ActorID == "" || sessionFact.Source.Kind != "operator" {
 		t.Fatalf("session fact=%+v err=%v", sessionFact, err)
 	}
+	if err := c.FlushMemory(ctx, a.ID); err != nil {
+		t.Fatalf("synchronous memory barrier: %v", err)
+	}
 	if _, err := c.MemoryFact(ctx, b.ID, harness.MemorySession, sessionFact.ID); !errors.Is(err, harness.ErrNotFound) {
 		t.Fatalf("session fact leaked to peer: %v", err)
 	}
@@ -70,10 +74,18 @@ func TestSDKMemoryScopesOwnerBusyAndReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	short, stop := context.WithTimeout(ctx, 35*time.Millisecond)
+	if err := c.FlushMemory(short, a.ID); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("flush did not wait for active run: %v", err)
+	}
+	stop()
 	if _, err := c.ReplaceMemoryFact(ctx, a.ID, harness.MemorySession, sessionFact.ID, 1, candidate); !errors.Is(err, harness.ErrBusy) {
 		t.Fatalf("memory changed during active run: %v", err)
 	}
 	release()
+	if err := c.FlushMemory(ctx, a.ID); err != nil {
+		t.Fatalf("flush after active run: %v", err)
+	}
 	changed, err := c.ReplaceMemoryFact(ctx, a.ID, harness.MemorySession, sessionFact.ID, 1, harness.MemoryCandidate{Content: "Prefers short technical answers", Category: "preference", Confidence: .95})
 	if err != nil || changed.Revision != 2 {
 		t.Fatalf("replace=%+v err=%v", changed, err)

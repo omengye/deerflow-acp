@@ -207,4 +207,10 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 
 本批 `GOMAXPROCS=2 go test -mod=readonly -p=2 -count=1 -timeout=5m ./...` 通过；摘要、恢复 manifest 与启动参数的聚焦 race 测试通过；`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -mod=readonly -p=2 ./...` 通过。未使用真实付费模型或编辑器。
 
-本阶段不等于完整 V1：`FlushMemory`、旧 DeerMem 迁移、媒体输出导入、计划/usage 投影、有界异步事件发送、外部 ACP agent、管理接口和真实编辑器/TCK 验收仍待完成。
+本阶段不等于完整 V1：旧 DeerMem 迁移、媒体输出导入、计划/usage 投影、有界异步事件发送、外部 ACP agent、管理接口和真实编辑器/TCK 验收仍待完成。
+
+## 第十二阶段同步 Memory flush 屏障
+
+- SDK `FlushMemory(ctx, sessionID)` 与 ACP `_deerflow/memory/flush` 已接入。它按会话归属等待前台槽，最多 10 秒，随后读取主 SQLite 数据库；此前同步提取的终态事务已完成才能返回成功。
+- 当前没有异步记忆写入队列。flush 不重新调用模型，不重试配额跳过，也不提升失败 attempt 的 staging。ACP 仅接受 `sessionId`，并在初始化能力中声明方法。
+- SDK 与双向 ACP 管道定向测试覆盖成功、繁忙等待、超时、参数严格校验和其他连接无权访问。

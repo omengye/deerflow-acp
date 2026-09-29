@@ -6,6 +6,17 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
+// FlushMemory waits until the session's earlier synchronous memory writes are
+// visible. It uses ctx as the wait bound and does not rerun skipped extraction.
+func (c *Client) FlushMemory(ctx context.Context, sessionID string) error {
+	done, err := c.operation()
+	if err != nil {
+		return err
+	}
+	defer done()
+	return c.service.FlushMemory(ctx, c.owner, sessionID)
+}
+
 // MemoryFacts lists descriptive facts in one attached scope. Memory operations
 // hold the same foreground slot as prompts, preserving a run's selected view.
 func (c *Client) MemoryFacts(ctx context.Context, sessionID string, kind harness.MemoryScope, after string, limit int) (harness.MemoryPage, error) {

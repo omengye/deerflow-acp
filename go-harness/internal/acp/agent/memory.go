@@ -17,6 +17,7 @@ const (
 	replaceMemoryMethod = "_deerflow/memory/replace"
 	deleteMemoryMethod  = "_deerflow/memory/delete"
 	clearMemoryMethod   = "_deerflow/memory/clear"
+	flushMemoryMethod   = "_deerflow/memory/flush"
 	memoryConflictCode  = -32016
 )
 
@@ -25,7 +26,7 @@ func memoryCapabilities(user bool) map[string]any {
 	if user {
 		scopes = append(scopes, "user")
 	}
-	return map[string]any{"version": 1, "scopes": scopes, "listMethod": listMemoryMethod, "searchMethod": searchMemoryMethod, "getMethod": getMemoryMethod, "createMethod": createMemoryMethod, "replaceMethod": replaceMemoryMethod, "deleteMethod": deleteMemoryMethod, "clearMethod": clearMemoryMethod}
+	return map[string]any{"version": 1, "scopes": scopes, "listMethod": listMemoryMethod, "searchMethod": searchMemoryMethod, "getMethod": getMemoryMethod, "createMethod": createMemoryMethod, "replaceMethod": replaceMemoryMethod, "deleteMethod": deleteMemoryMethod, "clearMethod": clearMemoryMethod, "flushMethod": flushMemoryMethod}
 }
 
 type memoryRequest struct {
@@ -48,6 +49,8 @@ func decodeMemoryRequest(method string, raw json.RawMessage, userEnabled bool) (
 	}
 	keys := []string{"sessionId", "scope"}
 	switch method {
+	case flushMemoryMethod:
+		keys = []string{"sessionId"}
 	case listMemoryMethod:
 		keys = append(keys, "cursor", "limit")
 	case searchMemoryMethod:
@@ -69,11 +72,13 @@ func decodeMemoryRequest(method string, raw json.RawMessage, userEnabled bool) (
 	if err != nil || json.Unmarshal(raw, &req) != nil || !validID(req.SessionID, 256) {
 		return req, invalid
 	}
-	if _, ok := fields["scope"]; !ok {
-		return req, invalid
-	}
-	if req.Scope != harness.MemorySession && req.Scope != harness.MemoryWorkspace && !(userEnabled && req.Scope == harness.MemoryUser) {
-		return req, invalid
+	if method != flushMemoryMethod {
+		if _, ok := fields["scope"]; !ok {
+			return req, invalid
+		}
+		if req.Scope != harness.MemorySession && req.Scope != harness.MemoryWorkspace && !(userEnabled && req.Scope == harness.MemoryUser) {
+			return req, invalid
+		}
 	}
 	if _, ok := fields["fact"]; ok {
 		parts, err := strictObject(fields["fact"], "content", "category", "confidence")
@@ -145,6 +150,9 @@ func (a *Agent) memoryRequest(ctx context.Context, method string, raw json.RawMe
 		var count int
 		count, err = a.service.ClearMemory(ctx, a.owner, req.SessionID, req.Scope, req.ExpectedScopeRevision)
 		result = map[string]any{"cleared": count}
+	case flushMemoryMethod:
+		err = a.service.FlushMemory(ctx, a.owner, req.SessionID)
+		result = map[string]any{"flushed": err == nil}
 	}
 	if errors.Is(err, harness.ErrExecutionConflict) {
 		return nil, &protocol.Error{Code: memoryConflictCode, Message: "Memory revision changed; list the scope and retry with its current version", Data: map[string]any{"listMethod": listMemoryMethod}}

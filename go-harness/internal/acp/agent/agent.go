@@ -169,7 +169,7 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		return a.artifactRequest(ctx, raw)
 	case listReceiptsMethod, reconcileReceiptMethod:
 		return a.receiptRequest(ctx, method, raw)
-	case listMemoryMethod, searchMemoryMethod, getMemoryMethod, createMemoryMethod, replaceMemoryMethod, deleteMemoryMethod, clearMemoryMethod:
+	case listMemoryMethod, searchMemoryMethod, getMemoryMethod, createMemoryMethod, replaceMemoryMethod, deleteMemoryMethod, clearMemoryMethod, flushMemoryMethod:
 		return a.memoryRequest(ctx, method, raw)
 	case "session/new":
 		var req acp.NewSessionRequest
