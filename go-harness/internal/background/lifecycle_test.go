@@ -271,6 +271,7 @@ func (*fixtureBroker) CommitResumeTx(ctx context.Context, tx *sql.Tx, _ harness.
 func TestNativeSubagentCheckpointAndApprovalResumeAfterReconstruction(t *testing.T) {
 	var target atomic.Value
 	var opened, joined, resumed atomic.Int64
+	var published atomic.Int64
 	factory := &fixtureFactory{open: func(_ context.Context, scope TaskScope) (*Attempt, error) {
 		opened.Add(1)
 		return &Attempt{Agent: &fixtureNativeAgent{name: scope.Binding.AgentVersion, target: &target, resumed: &resumed}, JoinAndClose: func(context.Context) error { joined.Add(1); return nil }}, nil
@@ -280,6 +281,26 @@ func TestNativeSubagentCheckpointAndApprovalResumeAfterReconstruction(t *testing
 		c.AgentNames = []string{"fixture-v1"}
 		c.Attempts = factory
 		c.Approvals = &fixtureBroker{target: &target}
+		c.OnTransitionTx = func(ctx context.Context, tx *sql.Tx, scope TaskScope, before, after *bt.Task) error {
+			if before.Status != bt.StatusRunning || after.Status != bt.StatusWaitingInput {
+				return nil
+			}
+			var checkpointBytes, commits, leases int
+			if err := tx.QueryRowContext(ctx, "SELECT length(payload) FROM eino_checkpoints WHERE id=?", scope.Binding.TaskID+"/checkpoint").Scan(&checkpointBytes); err != nil {
+				return err
+			}
+			if err := tx.QueryRowContext(ctx, "SELECT commits FROM fixture_budget WHERE task_id=?", scope.Binding.TaskID).Scan(&commits); err != nil {
+				return err
+			}
+			if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM harness_background_child_leases WHERE task_id=? AND attempt=?", scope.Binding.TaskID, scope.Attempt).Scan(&leases); err != nil {
+				return err
+			}
+			if checkpointBytes == 0 || commits != 1 || leases != 1 || joined.Load() != 1 {
+				return errors.New("host transition observed before checkpoint/budget/join or after lease release")
+			}
+			published.Add(1)
+			return nil
+		}
 	})
 	if _, err := s.store.DB().Exec("CREATE TABLE fixture_approvals(task_id TEXT PRIMARY KEY)"); err != nil {
 		t.Fatal(err)
@@ -310,6 +331,9 @@ func TestNativeSubagentCheckpointAndApprovalResumeAfterReconstruction(t *testing
 	}
 	if opened.Load() != 1 || joined.Load() != 1 {
 		t.Fatalf("attempt ownership open=%d join=%d", opened.Load(), joined.Load())
+	}
+	if published.Load() != 1 {
+		t.Fatalf("host waiting projections=%d", published.Load())
 	}
 	reopened, err := New(ctx, s.config)
 	if err != nil {

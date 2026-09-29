@@ -51,6 +51,15 @@ modify callbacks on the shared base provider. Hooks use only the supplied SQL
 transaction. SQLite uses one connection, so calling the database pool from
 inside a hook would deadlock.
 
+`Config.OnTransitionTx` lets the host commit child business projections and
+permission manifests with the native transition. For an active final transition
+it sees promoted runner checkpoints and settled budget, while the child lease
+still exists and all execution resources have joined. It also observes idle
+cancel/resume and pending-to-running claim transitions; running heartbeats do
+not invoke it. It must use the provided transaction and must not invoke
+`CheckEffectTx` after execution has joined. An error rolls back native state,
+outbox, checkpoint, budget, and business changes together.
+
 `BudgetLedger.BindTaskTx` must resolve the root from the durable origin run and
 compare the requested root, then bind the task in the same transaction.
 `BeforeAttempt` registers the attempt with the durable ledger. The injected

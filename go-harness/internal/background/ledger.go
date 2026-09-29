@@ -106,13 +106,20 @@ func (a *LedgerAdapter) BeforeAttempt(ctx context.Context, scope TaskScope) erro
 		return ledgerPersistence("begin task attempt", err)
 	}
 	defer tx.Rollback()
-	if err = a.checkTaskTx(ctx, tx, scope, false); err != nil {
-		return err
-	}
-	if err = a.ledger.BeginAttemptTx(ctx, tx, BudgetScope(scope)); err != nil {
+	if err = a.BeforeAttemptTx(ctx, tx, scope); err != nil {
 		return err
 	}
 	return ledgerPersistence("commit task attempt", tx.Commit())
+}
+
+// BeforeAttemptTx permits the host to make its child business-run projection
+// runnable in the same transaction as budget admission and task/child fencing.
+// It exclusively uses tx; the caller owns commit and rollback.
+func (a *LedgerAdapter) BeforeAttemptTx(ctx context.Context, tx *sql.Tx, scope TaskScope) error {
+	if err := a.checkTaskTx(ctx, tx, scope, false); err != nil {
+		return err
+	}
+	return a.ledger.BeginAttemptTx(ctx, tx, BudgetScope(scope))
 }
 
 func (a *LedgerAdapter) attemptExistsTx(ctx context.Context, tx *sql.Tx, scope TaskScope) (bool, error) {

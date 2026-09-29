@@ -101,6 +101,13 @@ type Config struct {
 	PollInterval, HeartbeatInterval, NotificationLease, DrainCancelTimeout time.Duration
 	MaxCheckpointBytes                                                     int
 	OnError                                                                func(error)
+	// OnTransitionTx extends non-heartbeat lifecycle transactions. On an active
+	// attempt's final transition it runs after joined cleanup, budget settlement
+	// and checkpoint promotion, but before the child lease is released. It also
+	// observes pending/waiting cancellation and approval transitions. It must use
+	// only tx, not the DB pool or CheckEffectTx (execution has already joined).
+	// Returning an error rolls back native state, outbox, budget and projections.
+	OnTransitionTx func(context.Context, *sql.Tx, TaskScope, *bt.Task, *bt.Task) error
 }
 
 type Submission struct {

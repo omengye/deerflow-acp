@@ -88,7 +88,10 @@ func (s *Service) onTransition(ctx context.Context, tx *sql.Tx, before, after *b
 		if blocked != "" {
 			return fmt.Errorf("%w: %s", harness.ErrBackgroundUncertain, blocked)
 		}
-		return s.acquireChildTx(ctx, tx, b, after.Attempt)
+		if err = s.acquireChildTx(ctx, tx, b, after.Attempt); err != nil {
+			return err
+		}
+		return s.hostTransitionTx(ctx, tx, TaskScope{Binding: b, Attempt: after.Attempt}, before, after)
 	}
 	if before.Status == bt.StatusWaitingInput && after.Status == bt.StatusPending {
 		resolution, ok := ctx.Value(resumeContextKey{}).(*resumeContext)
@@ -106,7 +109,7 @@ func (s *Service) onTransition(ctx context.Context, tx *sql.Tx, before, after *b
 		return nil
 	}
 	if before.Status != bt.StatusRunning {
-		return nil
+		return s.hostTransitionTx(ctx, tx, TaskScope{Binding: b, Attempt: before.Attempt}, before, after)
 	}
 	scope := TaskScope{Binding: b, Attempt: before.Attempt}
 	s.mu.Lock()
@@ -174,8 +177,18 @@ func (s *Service) onTransition(ctx context.Context, tx *sql.Tx, before, after *b
 			}
 		}
 	}
+	if err = s.hostTransitionTx(ctx, tx, scope, before, after); err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, "DELETE FROM harness_background_child_leases WHERE child_session_id=? AND task_id=? AND attempt=?", b.ChildSessionID, b.TaskID, before.Attempt)
 	return err
+}
+
+func (s *Service) hostTransitionTx(ctx context.Context, tx *sql.Tx, scope TaskScope, before, after *bt.Task) error {
+	if s.config.OnTransitionTx == nil {
+		return nil
+	}
+	return s.config.OnTransitionTx(ctx, tx, scope, before, after)
 }
 
 type managedExecutor struct {
