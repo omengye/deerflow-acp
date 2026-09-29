@@ -168,6 +168,45 @@ func TestConfigurationConflictsCancelAndCachedPermissionReset(t *testing.T) {
 	stopReason(t, c.success(t, fourth), "end_turn")
 }
 
+func TestDeploymentAllRequiresACPApprovalForReadTool(t *testing.T) {
+	f := newFixture(t, engineFunc(func(ctx context.Context, _ harness.RunRequest, emit harness.EventHandler, permission harness.PermissionHandler) (harness.RunResult, error) {
+		decision, err := callTestPermission(ctx, emit, permission, harness.PermissionRequest{ToolCallID: "read", ToolName: "read_file", Arguments: json.RawMessage(`{"path":"note.txt"}`)})
+		if err != nil {
+			return harness.RunResult{}, err
+		}
+		if err := emit(ctx, harness.RunEvent{Kind: "text_delta", Text: string(decision)}); err != nil {
+			return harness.RunResult{}, err
+		}
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	}))
+	f.service.PermissionMode = harness.PermissionModeAll
+	c := connect(t, f.service)
+	c.initialize(t)
+	sid := c.newSession(t, f.cwd)
+	first := c.request(t, "session/prompt", promptParams(sid, "read"))
+	update(t, c.read(t), sid, "tool_call")
+	permission := c.read(t)
+	if permission.Method != "session/request_permission" {
+		t.Fatalf("all mode did not ask for read permission: %+v", permission)
+	}
+	c.send(t, map[string]any{"jsonrpc": "2.0", "id": permission.ID, "result": map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": "allow_once"}}})
+	update(t, c.read(t), sid, "tool_call_update")
+	update(t, c.read(t), sid, "tool_call_update")
+	if event := update(t, c.read(t), sid, "agent_message_chunk"); chunkText(t, event) != "allow_once" {
+		t.Fatalf("approval response=%s", chunkText(t, event))
+	}
+	stopReason(t, c.success(t, first), "end_turn")
+	c.configure(t, sid, "approval", "allow_always")
+	second := c.request(t, "session/prompt", promptParams(sid, "read again"))
+	update(t, c.read(t), sid, "tool_call")
+	update(t, c.read(t), sid, "tool_call_update")
+	update(t, c.read(t), sid, "tool_call_update")
+	if event := update(t, c.read(t), sid, "agent_message_chunk"); chunkText(t, event) != "allow_once" {
+		t.Fatalf("session allowance response=%s", chunkText(t, event))
+	}
+	stopReason(t, c.success(t, second), "end_turn")
+}
+
 func TestBudgetLimitAndEstimatedUsageUseStableProtocolMetadata(t *testing.T) {
 	f := newFixture(t, engineFunc(func(ctx context.Context, _ harness.RunRequest, emit harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
 		for _, e := range []harness.RunEvent{{Kind: "usage", Usage: &harness.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12, Estimated: true}}, {Kind: "usage", Usage: &harness.Usage{InputTokens: 5, OutputTokens: 1, TotalTokens: 6}}, {Kind: "budget_exhausted", Text: "run tokens budget exhausted"}} {

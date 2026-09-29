@@ -24,6 +24,7 @@ type Service struct {
 	Background  harness.BackgroundController
 	// Set by the host at construction; public requests cannot supply policy.
 	ContinuationHostPolicy string
+	PermissionMode         harness.PermissionMode
 	Model                  string
 	Settings               ConfigSettings
 	Resources              SessionResources
@@ -303,7 +304,7 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 		if err = s.Store.Approval(pctx, p); err != nil {
 			return harness.RejectOnce, err
 		}
-		decision, cached := configuredPermission(x, p)
+		decision, cached := s.configuredPermission(x, p)
 		if !cached {
 			s.mu.Lock()
 			decision, cached = s.decisions[key]

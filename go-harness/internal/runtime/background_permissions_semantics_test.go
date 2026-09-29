@@ -60,6 +60,30 @@ func TestBackgroundPermissionInheritedPolicyGrant(t *testing.T) {
 	}
 }
 
+func TestBackgroundDeploymentPermissionModes(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		mode        harness.PermissionMode
+		tool        string
+		wantHandled bool
+	}{
+		{"off-write", harness.PermissionModeOff, "write_file", true},
+		{"dangerous-read", harness.PermissionModeDangerous, "read_file", true},
+		{"dangerous-write", harness.PermissionModeDangerous, "write_file", false},
+		{"all-read", harness.PermissionModeAll, "read_file", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBackgroundPermissionFixture(t)
+			f.permissions.PermissionMode = tc.mode
+			f.pending(t, "one", tc.tool)
+			decision, handled, err := f.attempt.ResolvePolicyPermission(context.Background(), f.requests[0], f.intents[0])
+			if err != nil || handled != tc.wantHandled || handled && decision != harness.AllowOnce {
+				t.Fatalf("mode=%s tool=%s decision=%s handled=%t err=%v", tc.mode, tc.tool, decision, handled, err)
+			}
+		})
+	}
+}
+
 func TestBackgroundPermissionSuspendAfterApproval(t *testing.T) {
 	f := newBackgroundPermissionFixture(t)
 	ctx := context.Background()

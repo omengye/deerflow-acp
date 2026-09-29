@@ -124,10 +124,14 @@ func (f *backgroundPermissionFixture) open(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-func (f *backgroundPermissionFixture) pending(t *testing.T, call string) {
+func (f *backgroundPermissionFixture) pending(t *testing.T, call string, toolName ...string) {
 	t.Helper()
 	ctx := context.Background()
-	p := harness.PermissionRequest{ID: f.binding.TaskID + "/" + call, SessionID: f.binding.ChildSessionID, RunID: f.binding.TaskID, ConfigVersion: f.binding.ConfigVersion, ToolCallID: call, ToolName: "write_file", Arguments: json.RawMessage("{ \"path\": \"report.txt\",\n \"content\": \"private content\" }")}
+	name := "write_file"
+	if len(toolName) > 0 {
+		name = toolName[0]
+	}
+	p := harness.PermissionRequest{ID: f.binding.TaskID + "/" + call, SessionID: f.binding.ChildSessionID, RunID: f.binding.TaskID, ConfigVersion: f.binding.ConfigVersion, ToolCallID: call, ToolName: name, Arguments: json.RawMessage("{ \"path\": \"report.txt\",\n \"content\": \"private content\" }")}
 	if err := f.attempt.Publish(ctx, harness.RunEvent{Kind: "tool_start", ToolCallID: call, ToolName: p.ToolName, Status: "pending", Arguments: p.Arguments}); err != nil {
 		t.Fatal(err)
 	}

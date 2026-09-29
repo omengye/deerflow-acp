@@ -56,7 +56,8 @@ func backgroundHostPolicy(cfg Config) (string, error) {
 		DisableSubagents                      bool
 		Media                                 harness.MediaConfig
 		ToolPolicy                            *harness.ToolPolicy `json:",omitempty"`
-	}{1, cfg.Provider, cfg.BaseURL, cfg.Model, cfg.Instruction, cfg.MaxIterations, cfg.DisableSubagents, cfg.Media, toolPolicy})
+		PermissionMode                        harness.PermissionMode
+	}{1, cfg.Provider, cfg.BaseURL, cfg.Model, cfg.Instruction, cfg.MaxIterations, cfg.DisableSubagents, cfg.Media, toolPolicy, cfg.PermissionMode})
 	if err != nil {
 		return "", err
 	}
@@ -79,6 +80,7 @@ func newBackgroundHost(ctx context.Context, cfg Config, store *sqlite.Store, run
 	if h.interactions, err = hr.NewBackgroundInteractionStore(ctx, runtime.Store, h); err != nil {
 		return nil, err
 	}
+	h.interactions.PermissionMode = cfg.PermissionMode
 	h.interactions.Assets = assets
 	if h.ledger, err = background.NewLedgerAdapter(store, ledger); err != nil {
 		return nil, err

@@ -446,7 +446,7 @@ func (s *Service) executionPermission(ctx context.Context, owner string, config 
 		return "", err
 	}
 	key := owner + "/" + config.ID + "/" + fmt.Sprintf("%x", sha256.Sum256(data))
-	decision, cached := configuredPermission(config, p)
+	decision, cached := s.configuredPermission(config, p)
 	if !cached {
 		s.mu.Lock()
 		decision, cached = s.decisions[key]

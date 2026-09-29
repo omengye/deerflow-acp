@@ -133,6 +133,37 @@ models:
 	}
 }
 
+func TestApplyPythonConfigPermissionModes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	for _, tc := range []struct {
+		value string
+		want  harness.PermissionMode
+	}{
+		{"", harness.PermissionModeDangerous},
+		{"off", harness.PermissionModeOff},
+		{"dangerous", harness.PermissionModeDangerous},
+		{"all", harness.PermissionModeAll},
+	} {
+		raw := "local_acp:\n  permission_mode: " + tc.value + "\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var cfg deerflow.Config
+		connections := 1
+		if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err != nil || cfg.PermissionMode != tc.want {
+			t.Fatalf("mode=%q mapped=%q err=%v", tc.value, cfg.PermissionMode, err)
+		}
+	}
+	if err := os.WriteFile(path, []byte("local_acp:\n  permission_mode: unknown\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var cfg deerflow.Config
+	connections := 1
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err == nil {
+		t.Fatal("accepted an unknown Python permission mode")
+	}
+}
+
 func TestApplyPythonConfigDoesNotCarryCredentialsAcrossBackendOverride(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	raw := `local_acp:

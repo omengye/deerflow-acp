@@ -123,7 +123,7 @@ func (s *Service) clearDecisions(owner, id string) {
 func configuredPermission(x harness.Session, p harness.PermissionRequest) (harness.PermissionDecision, bool) {
 	if x.Mode == "plan" || x.ApprovalMode == harness.ApprovalReadOnly {
 		switch p.ToolName {
-		case "read_file", "list_directory", "search_files", "read_skill_file", "view_image", "search_memory", "task_status", "task_wait":
+		case "read_file", "list_directory", "search_files", "skill", "read_skill_file", "view_image", "search_memory", "task_status", "task_wait":
 			return harness.AllowOnce, true
 		default:
 			return harness.RejectOnce, true
@@ -136,6 +136,16 @@ func configuredPermission(x harness.Session, p harness.PermissionRequest) (harne
 		return harness.RejectOnce, true
 	}
 	return "", false
+}
+
+func (s *Service) configuredPermission(x harness.Session, p harness.PermissionRequest) (harness.PermissionDecision, bool) {
+	if x.Mode == "plan" || x.ApprovalMode == harness.ApprovalReadOnly {
+		return configuredPermission(x, p)
+	}
+	if !s.PermissionMode.RequiresPermission(p.ToolName) {
+		return harness.AllowOnce, true
+	}
+	return configuredPermission(x, p)
 }
 
 func (s *Store) SaveConfig(ctx context.Context, x harness.Session) error {

@@ -21,7 +21,7 @@
 | 权限 / 恢复 | 前台与后台原生 durable HITL、审批/检查点/回执/预算联合恢复；SDK/ACP 查询、批准与取消已接入 | 真实编辑器与 MCP 重新绑定恢复 |
 | 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、原生子 Agent 生命周期、主 Agent 计划与真实上下文用量投影、分页历史与 load 重放、有界异步 ACP 更新队列 | 真实编辑器流压验证 |
 | MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
-| 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化 | thinking/profile 仅在真实能力落地后开放 |
+| 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化；Python `off`/`dangerous`/`all` 权限模式已映射到 Go | thinking/profile 仅在真实能力落地后开放；真实编辑器审批体验待验收 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image、产物登记、MCP 增强工具图片导入及模型生成图片的导入/ACP 回放已验证 | 模型生成音视频、远程图片 URL、可选对象存储发布及真实图片模型验收 |
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复、父会话通知输入已接线 | 跨 run 长命令；真实编辑器中的通知处理与恢复互操作 |
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
@@ -378,6 +378,14 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 
 ## 第三十六阶段宿主工具列表策略
 
-- 增加 SDK `Config.ToolPolicy`：`Allowlist=nil` 表示只应用拒绝列表，显式空允许列表表示禁用全部工具；拒绝列表优先。`--config` 映射 Python `local_acp.tool_allowlist`/`tool_denylist`，对名称去空白、去重，并与已有 Go 宿主策略求交集/并集，不能放宽已有边界。Python 权限模式 `off`/`all` 仍拒绝，`goal_auto_continue` 等配置仍待迁移。
+- 增加 SDK `Config.ToolPolicy`：`Allowlist=nil` 表示只应用拒绝列表，显式空允许列表表示禁用全部工具；拒绝列表优先。`--config` 映射 Python `local_acp.tool_allowlist`/`tool_denylist`，对名称去空白、去重，并与已有 Go 宿主策略求交集/并集，不能放宽已有边界。`goal_auto_continue` 等配置仍待迁移。
 - 每轮 Eino 工具清单在模型调用前过滤工作区、MCP、外部 ACP 与后台工具；`task`、`write_todos` 由 DeepAgent 原生开关禁用，Skills middleware 注入的 `skill` 同样受约束。宿主禁用 `task` 时，不向 ACP 会话暴露可重新启用它的 subagent 选项。工具策略进入前台执行契约、扩展快照和后台宿主摘要，变更后不能继续旧检查点或后台任务。
 - 定向测试覆盖空允许列表、Python/Go 策略交集、模型可见工具清单、原生工具禁用、会话配置无法提升权限及检查点策略漂移。Windows `go test -count=1 -p=1 -timeout=5m ./...` 全模块、根 SDK/Eino/launch race 和 WSL Linux Eino/launch 定向测试通过。一次同时运行 Windows 全模块/race 与 WSL 测试时，本地 fixture/daemon 的 loopback 连接出现超时；待并发负载结束后，失败的根 SDK/daemon 包串行重跑和独立全模块重跑均通过。未在真实编辑器验证此策略映射。
+
+## 第三十七阶段 Python 权限模式
+
+- 核对 Python `LocalACPCapabilityPolicy.requires_permission` 与 `ACPPermissionBroker._known_decision`：`off` 所有工具免询问，`dangerous` 依工具名称分类，`all` 所有工具受审批规则约束。只有需审批工具才应用会话 `allow_always`/`reject_always` 和按工具记住的决定；因此 Python 的 `all` 并非每次调用都强制弹窗，会话允许或先前的“总是允许”仍可跳过询问。Go 保持 `plan`/`read_only` 的更严格本地约束。
+- Go `Config.PermissionMode` 与 Python `local_acp.permission_mode` 已支持 `off`、`dangerous`、`all`；Python 未填时默认 `dangerous`，独立 Go SDK 未填时保持旧有的每工具询问行为。前台普通/持久化与后台权限路径共用该分类。Eino 原生 `write_todos` 和 Skills `skill` 也按模式进入工具审批。
+- Eino 原生 `task` 自有子 Agent 中断状态，不能在其外层套第二层持久化权限中断。`all` 下对 `task` 入口使用当前会话权限回调，并在进入子 Agent 前完成一条无外部副作用的授权边界回执；子 Agent 的实际工具仍由独立的持久化审批和回执保护。子 Agent 中断恢复时，Eino 原生状态只重用已批准的同一次 `task` 入口。若客户端恰在入口审批过程中断连，该次 prompt 会取消，入口审批不会跨连接保留；真实编辑器对此仍需联调。
+- 权限模式进入 Eino 执行契约和后台宿主摘要，部署配置变化会使旧检查点和后台任务不再匹配。定向测试覆盖三种模式、原生 `task`/`write_todos` 拒绝及 `task` 批准后子工具审批与恢复、后台策略授权；真实 ACP 管道测试确认 `all` 下读工具会触发反向审批，会话 `allow_always` 可跳过后续询问。
+- Windows 全 Go 模块 `go test -mod=readonly -p=2 -count=1 -timeout=5m ./...` 通过；新增 Eino/ACP 路径的 `-race` 定向检查通过，WSL Ubuntu 22.04 使用 Go 1.26.8 运行权限模式相关的 harness/launch/Eino/runtime 定向测试通过，`git diff --check` 通过。首次全模块运行发现原有只读 Skills 用例被新保护映射拒绝；将只读技能加载纳入受控白名单后，定向用例及全模块重跑通过。真实编辑器、Docker 与远端 CI 仍未验收。

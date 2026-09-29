@@ -21,7 +21,11 @@ func (a *BackgroundInteractionAttempt) ResolvePolicyPermission(ctx context.Conte
 		if err != nil {
 			return err
 		}
-		decision, handled = configuredPermission(req.Session, p)
+		if req.Session.Mode != "plan" && req.Session.ApprovalMode != harness.ApprovalReadOnly && !a.store.PermissionMode.RequiresPermission(p.ToolName) {
+			decision, handled = harness.AllowOnce, true
+		} else {
+			decision, handled = configuredPermission(req.Session, p)
+		}
 		if !handled {
 			return nil
 		}

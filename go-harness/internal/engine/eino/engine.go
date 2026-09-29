@@ -50,6 +50,7 @@ type Config struct {
 	Handlers        []adk.ChatModelAgentMiddleware
 	DisableSubAgent bool
 	ToolPolicy      harness.ToolPolicy
+	PermissionMode  harness.PermissionMode
 }
 
 type Engine struct {
@@ -86,6 +87,9 @@ var _ harness.Engine = (*Engine)(nil)
 func (e *Engine) DurableExecutions() bool { return e.config.BudgetLedger != nil }
 
 func New(ctx context.Context, config Config) (*Engine, error) {
+	if err := config.PermissionMode.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", harness.ErrInvalidInput, err)
+	}
 	if err := config.ToolPolicy.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", harness.ErrInvalidInput, err)
 	}

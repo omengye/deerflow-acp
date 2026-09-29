@@ -136,6 +136,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		tools = append(tools, more...)
 	}
 	protected := make(map[string]bool, len(tools))
+	seenTools := make(map[string]bool, len(tools))
 	contracts := make([]*schema.ToolInfo, 0, len(tools))
 	allowedTools := make([]tool.BaseTool, 0, len(tools))
 	for _, t := range tools {
@@ -158,14 +159,22 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		if info.Name == "write_todos" {
 			return p, errors.New("tool name write_todos is reserved for native Eino planning")
 		}
-		if protected[info.Name] {
+		if seenTools[info.Name] {
 			return p, fmt.Errorf("duplicate tool %q", info.Name)
 		}
-		protected[info.Name] = true
+		seenTools[info.Name] = true
+		protected[info.Name] = e.config.PermissionMode.RequiresPermission(info.Name) || req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
 		contracts = append(contracts, info)
 		allowedTools = append(allowedTools, t)
 	}
 	tools = allowedTools
+	// DeepAgent injects these native tools after ToolsNodeConfig is assembled.
+	// Govern them through the same middleware when the host policy requires it.
+	for _, name := range []string{"task", "write_todos", "skill"} {
+		if e.config.ToolPolicy.Allows(name) && e.config.PermissionMode != "" && e.config.PermissionMode.RequiresPermission(name) {
+			protected[name] = true
+		}
+	}
 	var err error
 	p.Contract, err = e.executionContract(contracts, extensions.State)
 	if err != nil {

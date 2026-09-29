@@ -16,6 +16,10 @@ import (
 )
 
 func runtimeWithDurableInteraction(t *testing.T, fake *scriptedModel, underlying tool.BaseTool, subagents bool) (*hr.Service, harness.Session, *sqlite.Store) {
+	return runtimeWithDurableInteractionMode(t, fake, underlying, subagents, "")
+}
+
+func runtimeWithDurableInteractionMode(t *testing.T, fake *scriptedModel, underlying tool.BaseTool, subagents bool, mode harness.PermissionMode) (*hr.Service, harness.Session, *sqlite.Store) {
 	t.Helper()
 	ctx := context.Background()
 	native, err := sqlite.Open(filepath.Join(t.TempDir(), "runtime.db"))
@@ -33,11 +37,12 @@ func runtimeWithDurableInteraction(t *testing.T, fake *scriptedModel, underlying
 	}
 	limits := harness.BudgetLimits{MaxModelCalls: 10, MaxToolCalls: 10, MaxTokens: 100000, MaxOutputTokens: 100}
 	store.BudgetLedger, store.BudgetLimits = ledger, limits
-	e, err := New(ctx, Config{ChatModel: fake, Tools: []tool.BaseTool{underlying}, Budget: limits, BudgetLedger: ledger, SessionStore: native, CheckpointStore: native, DisableSubAgent: !subagents})
+	e, err := New(ctx, Config{ChatModel: fake, Tools: []tool.BaseTool{underlying}, Budget: limits, BudgetLedger: ledger, SessionStore: native, CheckpointStore: native, DisableSubAgent: !subagents, PermissionMode: mode})
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := hr.NewService(store, e, "test")
+	s.PermissionMode = mode
 	s.Settings.EnableSubagents, s.Settings.DefaultSubagents = subagents, subagents
 	session, err := s.NewSession(ctx, "owner", t.TempDir())
 	if err != nil {
@@ -78,6 +83,96 @@ func TestRuntimeNativeDurablePermissionAllowAndDeny(t *testing.T) {
 				t.Fatalf("grants=%d attempts=%d", grants, attempts)
 			}
 		})
+	}
+}
+
+func TestRuntimePermissionModesGateSafeToolBeforeEffect(t *testing.T) {
+	for _, tc := range []struct {
+		mode         harness.PermissionMode
+		wantApproval int32
+		wantEffect   int32
+	}{
+		{harness.PermissionModeOff, 0, 1},
+		{harness.PermissionModeDangerous, 0, 1},
+		{harness.PermissionModeAll, 1, 0},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			var approvals, effects atomic.Int32
+			s, session, _ := runtimeWithDurableInteractionMode(t, toolScript(), &receiptEffectTool{run: func(context.Context) (string, error) {
+				effects.Add(1)
+				return "read", nil
+			}}, false, tc.mode)
+			result, err := s.Run(context.Background(), "owner", session.ID, []harness.Content{{Type: "text", Text: "read"}}, nil, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+				approvals.Add(1)
+				return harness.RejectOnce, nil
+			})
+			if err != nil || result.StopReason != "end_turn" || approvals.Load() != tc.wantApproval || effects.Load() != tc.wantEffect {
+				t.Fatalf("mode=%s result=%+v err=%v approvals=%d effects=%d", tc.mode, result, err, approvals.Load(), effects.Load())
+			}
+		})
+	}
+}
+
+func TestRuntimePermissionModeAllGatesNativeTools(t *testing.T) {
+	for _, name := range []string{"task", "write_todos"} {
+		t.Run(name, func(t *testing.T) {
+			fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+				if call == 0 {
+					arguments := `{"todos":[{"content":"Inspect","activeForm":"Inspecting","status":"in_progress"}]}`
+					if name == "task" {
+						arguments = `{"subagent_type":"general-purpose","prompt":"inspect","description":"inspect"}`
+					}
+					return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "native", Type: "function", Function: schema.FunctionCall{Name: name, Arguments: arguments}}}}}), nil
+				}
+				return textStream("done"), nil
+			}}
+			var approvals atomic.Int32
+			s, session, _ := runtimeWithDurableInteractionMode(t, fake, &receiptEffectTool{run: func(context.Context) (string, error) { return "unexpected", nil }}, true, harness.PermissionModeAll)
+			result, err := s.Run(context.Background(), "owner", session.ID, []harness.Content{{Type: "text", Text: "use native"}}, nil, func(_ context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
+				if p.ToolName != name {
+					t.Errorf("unexpected approval request: %s", p.ToolName)
+				}
+				approvals.Add(1)
+				return harness.RejectOnce, nil
+			})
+			if err != nil || result.StopReason != "end_turn" || approvals.Load() != 1 {
+				t.Fatalf("native %s result=%+v err=%v approvals=%d", name, result, err, approvals.Load())
+			}
+			fake.mu.Lock()
+			calls := fake.calls
+			fake.mu.Unlock()
+			if calls != 2 {
+				t.Fatalf("native %s executed or failed to continue after denial: model calls=%d", name, calls)
+			}
+		})
+	}
+}
+
+func TestRuntimePermissionModeAllNestedDelegationResume(t *testing.T) {
+	fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		switch call {
+		case 0:
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "delegate", Type: "function", Function: schema.FunctionCall{Name: "task", Arguments: `{"subagent_type":"general-purpose","prompt":"inspect","description":"inspect"}`}}}}}), nil
+		case 1:
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "child-read", Type: "function", Function: schema.FunctionCall{Name: "read_workspace", Arguments: `{}`}}}}}), nil
+		default:
+			return textStream("done"), nil
+		}
+	}}
+	var approvals, effects atomic.Int32
+	s, session, _ := runtimeWithDurableInteractionMode(t, fake, &receiptEffectTool{run: func(context.Context) (string, error) {
+		effects.Add(1)
+		return "child effect", nil
+	}}, true, harness.PermissionModeAll)
+	var names []string
+	result, err := s.Run(context.Background(), "owner", session.ID, []harness.Content{{Type: "text", Text: "delegate"}}, nil, func(_ context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
+		approvals.Add(1)
+		names = append(names, p.ToolName)
+		return harness.AllowOnce, nil
+	})
+	if err != nil || result.StopReason != "end_turn" || effects.Load() != 1 || approvals.Load() != 2 || len(names) != 2 || names[0] != "task" || names[1] != "read_workspace" {
+		receipts, _ := s.Store.ListToolReceipts(context.Background(), session.ID)
+		t.Fatalf("nested all result=%+v err=%v effects=%d approvals=%v receipts=%+v", result, err, effects.Load(), names, receipts)
 	}
 }
 

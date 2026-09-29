@@ -20,9 +20,10 @@ type BackgroundInteractionFence func(context.Context, *sql.Tx, background.TaskSc
 // of foreground executions. Authorizer must check process-local ownership and
 // must not open this database's connection pool from CommitResumeTx.
 type BackgroundInteractionStore struct {
-	store      *Store
-	authorizer background.Authorizer
-	Assets     *assets.Store // configure before sharing with workers
+	store          *Store
+	authorizer     background.Authorizer
+	Assets         *assets.Store          // configure before sharing with workers
+	PermissionMode harness.PermissionMode // immutable host policy, set before workers start
 }
 
 func NewBackgroundInteractionStore(ctx context.Context, store *Store, authorizer background.Authorizer) (*BackgroundInteractionStore, error) {

@@ -38,13 +38,47 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 		// models and actual tools own the effect admissions and receipts. Giving
 		// this boundary a started effect receipt would make every safe child
 		// permission suspension look like an unjoined external side effect.
+		// The native task tool owns its interrupt state as well. A permission
+		// interrupt here would be mistaken for its own child interrupt, so the
+		// boundary uses the live session broker; child effects remain durable.
+		was, _, _ := tool.GetInterruptState[any](ctx)
+		if m.protected[tc.Name] && !was {
+			// Persist a terminal receipt for the orchestration boundary before
+			// entering the child. The child may suspend; an open parent receipt
+			// would otherwise be classified as an uncertain external effect.
+			if err := m.sink.emit(ctx, harness.RunEvent{Kind: "tool_start", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "pending", Arguments: append(json.RawMessage(nil), arguments...)}); err != nil {
+				return err
+			}
+			decision := harness.RejectOnce
+			var err error
+			if m.permissions != nil {
+				decision, err = m.permissions(ctx, m.requestFor(tc, arguments))
+			}
+			if err != nil || (decision != harness.AllowOnce && decision != harness.AllowAlways) {
+				failure := harness.ErrPermissionDenied
+				if err != nil {
+					failure = err
+				} else if decision == harness.PermissionCancelled {
+					failure = context.Canceled
+				}
+				if endErr := m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "tool_end", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "failed", Content: []harness.Content{{Type: "text", Text: failure.Error()}}, Receipt: &harness.ToolReceipt{Error: failure.Error()}}); endErr != nil {
+					return errors.Join(failure, endErr)
+				}
+				return failure
+			}
+			if err := m.sink.emit(ctx, harness.RunEvent{Kind: "tool_execute", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress"}); err != nil {
+				return err
+			}
+			if err := m.sink.emit(ctx, harness.RunEvent{Kind: "tool_end", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "completed"}); err != nil {
+				return err
+			}
+		}
 		m.sink.mu.Lock()
 		if m.sink.delegations == nil {
 			m.sink.delegations = make(map[string]bool)
 		}
 		m.sink.delegations[tc.CallID] = true
 		m.sink.mu.Unlock()
-		was, _, _ := tool.GetInterruptState[any](ctx)
 		kind := "subagent_start"
 		if was {
 			kind = "subagent_resumed"
@@ -110,6 +144,12 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 
 func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, content []harness.Content, err error) error {
 	if m.nativeDelegation(tc) {
+		m.sink.mu.Lock()
+		started := m.sink.delegations[tc.CallID]
+		m.sink.mu.Unlock()
+		if !started {
+			return nil
+		}
 		kind, status := "subagent_end", "completed"
 		if isPermissionInterrupt(err) {
 			kind, status = "subagent_suspended", "waiting_input"
@@ -142,7 +182,7 @@ func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, conten
 }
 
 func (m *toolMiddleware) nativeDelegation(tc *adk.ToolContext) bool {
-	return tc.Name == "task" && !m.protected[tc.Name]
+	return tc.Name == "task"
 }
 
 func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.InvokableToolCallEndpoint, tc *adk.ToolContext) (adk.InvokableToolCallEndpoint, error) {

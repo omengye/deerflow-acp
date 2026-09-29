@@ -285,6 +285,22 @@ func TestHostToolPolicyChangesExecutionContractWithoutConfiguredTools(t *testing
 	}
 }
 
+func TestPermissionModeChangesExecutionContract(t *testing.T) {
+	fake := &scriptedModel{stream: func(_ context.Context, _ int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		return textStream("done"), nil
+	}}
+	first := newTestEngine(t, Config{ChatModel: fake, PermissionMode: harness.PermissionModeDangerous})
+	second := newTestEngine(t, Config{ChatModel: fake, PermissionMode: harness.PermissionModeAll})
+	a, err := first.executionContract(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := second.executionContract(nil, nil)
+	if err != nil || a == b {
+		t.Fatalf("deployment permission drift was not pinned: first=%s second=%s err=%v", a, b, err)
+	}
+}
+
 func TestNativeToolPermissionAndEvents(t *testing.T) {
 	for _, allow := range []bool{true, false} {
 		t.Run(map[bool]string{true: "allow", false: "deny"}[allow], func(t *testing.T) {

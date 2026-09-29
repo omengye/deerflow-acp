@@ -144,9 +144,14 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	if source.LocalACP.EnableBash && (!explicit["sandbox-provider"] || !cfg.Sandbox.Enabled || !cfg.Sandbox.AllowShell) {
 		return result, fmt.Errorf("local_acp.enable_bash requires an explicit Go --sandbox-provider and shell policy")
 	}
-	if source.LocalACP.PermissionMode != "" && source.LocalACP.PermissionMode != "dangerous" {
-		return result, fmt.Errorf("local_acp.permission_mode %q has no equivalent Go policy", source.LocalACP.PermissionMode)
+	mode := harness.PermissionMode(source.LocalACP.PermissionMode)
+	if mode == "" {
+		mode = harness.PermissionModeDangerous
 	}
+	if err := mode.Validate(); err != nil {
+		return result, fmt.Errorf("local_acp.permission_mode: %w", err)
+	}
+	cfg.PermissionMode = mode
 	policy := cfg.ToolPolicy
 	if source.LocalACP.ToolAllowlist != nil {
 		selected := pythonToolNames(*source.LocalACP.ToolAllowlist)

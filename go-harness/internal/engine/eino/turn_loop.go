@@ -51,7 +51,8 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 		Media                                 harness.MediaConfig
 		Compaction                            harness.CompactionConfig
 		ToolPolicy                            *harness.ToolPolicy `json:",omitempty"`
-	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy})
+		PermissionMode                        harness.PermissionMode
+	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode})
 	if err != nil {
 		return "", fmt.Errorf("encode execution contract: %w", err)
 	}
