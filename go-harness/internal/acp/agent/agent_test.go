@@ -243,6 +243,7 @@ type sessionUpdate struct {
 	SessionID string `json:"sessionId"`
 	Update    struct {
 		Kind       string          `json:"sessionUpdate"`
+		MessageID  string          `json:"messageId"`
 		Content    json.RawMessage `json:"content"`
 		ToolCallID string          `json:"toolCallId"`
 		Status     string          `json:"status"`
@@ -304,8 +305,14 @@ func TestInitializeNewListAndPromptStreaming(t *testing.T) {
 	}
 	prompt := c.request(t, "session/prompt", promptParams(sessionID, "greet"))
 	var text string
+	var messageID string
 	for range 2 {
-		text += chunkText(t, update(t, c.read(t), sessionID, "agent_message_chunk"))
+		chunk := update(t, c.read(t), sessionID, "agent_message_chunk")
+		if chunk.Update.MessageID == "" || (messageID != "" && chunk.Update.MessageID != messageID) {
+			t.Fatalf("streaming message IDs changed: %q %q", messageID, chunk.Update.MessageID)
+		}
+		messageID = chunk.Update.MessageID
+		text += chunkText(t, chunk)
 	}
 	stopReason(t, c.success(t, prompt), "end_turn")
 	if text != "Hello world" {
@@ -463,7 +470,10 @@ func TestLoadReplaysHistoryBeforeResponseAndResumeDoesNot(t *testing.T) {
 	first.initialize(t)
 	sid := first.newSession(t, f.cwd)
 	prompt := first.request(t, "session/prompt", promptParams(sid, "durable question"))
-	update(t, first.read(t), sid, "agent_message_chunk")
+	live := update(t, first.read(t), sid, "agent_message_chunk")
+	if live.Update.MessageID == "" {
+		t.Fatal("live content lacks message ID")
+	}
 	stopReason(t, first.success(t, prompt), "end_turn")
 	closed := first.request(t, "session/close", map[string]any{"sessionId": sid})
 	first.success(t, closed)
@@ -474,6 +484,9 @@ func TestLoadReplaysHistoryBeforeResponseAndResumeDoesNot(t *testing.T) {
 	answer := update(t, second.read(t), sid, "agent_message_chunk")
 	if chunkText(t, question) != "durable question" || chunkText(t, answer) != "durable answer" {
 		t.Fatalf("history=%+v %+v", question, answer)
+	}
+	if question.Update.MessageID == "" || answer.Update.MessageID != live.Update.MessageID || question.Update.MessageID == answer.Update.MessageID {
+		t.Fatalf("replay message IDs changed: question=%q answer=%q live=%q", question.Update.MessageID, answer.Update.MessageID, live.Update.MessageID)
 	}
 	second.success(t, load)
 	closed = second.request(t, "session/close", map[string]any{"sessionId": sid})

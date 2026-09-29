@@ -95,3 +95,9 @@ rejects a second process using the same data directory.
 Set `DEERFLOW_TEST_BRIDGE` to an existing native Rust Bridge executable to also
 exercise its `--status`, `--manage`, ACP stdio proxy and `--stop-daemon` paths.
 This optional test neither builds nor changes the Rust Bridge.
+
+The same variable enables `TestExistingRustBridgeV2Lifecycle` in
+`cmd/deerflow-acpd-go`. It launches the real Go daemon and the Rust Bridge with
+`--protocol v2`, using a local SSE model fixture to check prompt state order,
+permission forwarding, cancellation, session isolation, resume and replay.
+Build the Bridge with `cargo build --locked` in `bridge/` before running it.

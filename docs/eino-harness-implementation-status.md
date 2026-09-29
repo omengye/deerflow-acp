@@ -26,7 +26,7 @@
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
-| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证 | draft v2 对照、完整配置映射 |
+| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
 | 可选外部 ACP Agent | 首轮接入：显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次估算模型调用计入父预算 | 断线后的反向权限暂停/恢复、远端真实模型用量约束、产物导入与异常会话对账 |
 | 打包 / 默认切换 | 未开始 | Windows/Linux 实机、回退、切换演练 |
 
@@ -327,3 +327,10 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 流式工具的终态事件带完整图片引用供存储校验；回执保留此前 `tool_update` 的文字与图片证据，不被终态图片列表覆盖。资产存储测试验证两批图片的提交和文字保留，Eino 测试验证模型可继续使用引用且事件与历史没有内联图片字节。
 - 模型自身生成的图片/其他媒体仍拒绝进入持久历史；这批不覆盖该缺口。
 - Windows 整模块普通测试、资产/Eino/runtime 聚焦 race 和 Linux amd64 无 CGO 全模块构建通过；尚未用真实图片输出 MCP server 或付费模型做端到端验收。
+
+## 第二十九阶段 Rust ACP v2 门面与 Go daemon 互操作
+
+- 保留 Go daemon 的稳定 ACP v1 连接，通过现有 Rust Bridge `--protocol v2` 提供 draft v2 stdio 门面。真实 Go daemon、Rust 二进制和本地 OpenAI SSE fixture 的进程测试验证 initialize、新建与列出两个会话、prompt 的 ACK→running→idle、跨会话更新归属、cancel、重新连接后 `session/resume`、`replayFrom: start` 历史重放、默认不重放、close，以及 v2 反向权限批准后执行文件工具。
+- 互操作测试暴露 Go daemon 的 v1 文本分片缺少可选 `messageId`，Rust 的 v1→v2 转换会跳过该分片。Go 的 user/assistant/thought 内容更新现使用基于 RunID 的稳定消息 ID；同一流的分片共享 ID，重新连接后历史回放保留该 ID。流式和回放的 ACP 单元测试已加入断言。
+- 这验证了当前门面的主要生命周期和现有能力映射，尚未覆盖 draft v2 的全部扩展、真实编辑器、复杂多段 assistant 消息的分组及端到端图片客户端。外部 ACP 委派的断线权限恢复和完整远端预算仍是独立缺口。
+- Windows 验证通过：`cargo build --locked` 与 `cargo test --locked`；配置 `DEERFLOW_TEST_BRIDGE` 后的真实 Go daemon/Bridge v2 进程测试；Go 整模块 `go test -count=1 -p=2 -timeout=5m ./...`，ACP agent 与 daemon 的 `-race` 回归；Linux amd64、CGO 关闭的全模块交叉构建。官方 stable v1 TCK 未在本批重跑；此前的合规判定不等同于 draft v2 完整验收。

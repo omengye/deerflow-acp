@@ -392,7 +392,7 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 			if err != nil {
 				return err
 			}
-			if err := a.updateAsync(ctx, e.SessionID, map[string]any{"sessionUpdate": "user_message_chunk", "content": wire}); err != nil {
+			if err := a.updateAsync(ctx, e.SessionID, map[string]any{"sessionUpdate": "user_message_chunk", "messageId": contentMessageID(e, "user"), "content": wire}); err != nil {
 				return err
 			}
 		}
@@ -402,7 +402,11 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 		if e.Kind == "reasoning_delta" {
 			kind = "agent_thought_chunk"
 		}
-		update = map[string]any{"sessionUpdate": kind, "content": harness.Content{Type: "text", Text: e.Text}}
+		role := "assistant"
+		if e.Kind == "reasoning_delta" {
+			role = "thought"
+		}
+		update = map[string]any{"sessionUpdate": kind, "messageId": contentMessageID(e, role), "content": harness.Content{Type: "text", Text: e.Text}}
 	case "context_usage":
 		if e.ContextUsage == nil || e.ContextUsage.Size <= 0 || e.ContextUsage.Used < 0 {
 			return nil
@@ -426,7 +430,7 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 		}
 		update = map[string]any{"sessionUpdate": "plan", "entries": entries}
 	case "budget_exhausted":
-		update = map[string]any{"sessionUpdate": "agent_message_chunk", "content": harness.Content{Type: "text", Text: e.Text}, "_meta": map[string]any{"deerflow": map[string]any{"event": "budget_exhausted"}}}
+		update = map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": contentMessageID(e, "assistant"), "content": harness.Content{Type: "text", Text: e.Text}, "_meta": map[string]any{"deerflow": map[string]any{"event": "budget_exhausted"}}}
 	case "tool_start":
 		update = map[string]any{"sessionUpdate": "tool_call", "toolCallId": e.ToolCallID, "title": e.ToolName, "kind": "other", "status": e.Status, "rawInput": e.Arguments}
 	case "tool_execute", "tool_update", "tool_end", "tool_reconciled":
@@ -469,12 +473,22 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 			if err != nil {
 				return err
 			}
-			if err := a.updateAsync(ctx, e.SessionID, map[string]any{"sessionUpdate": "agent_message_chunk", "content": wire}); err != nil {
+			if err := a.updateAsync(ctx, e.SessionID, map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": contentMessageID(e, "assistant"), "content": wire}); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// ACP v1 permits an omitted messageId, but the v2 Bridge requires one to
+// preserve streamed and replayed content. A run ID remains stable across both
+// paths; the sequence is a fallback for synthetic events without a run ID.
+func contentMessageID(e harness.RunEvent, role string) string {
+	if e.RunID != "" {
+		return e.RunID + "/" + role
+	}
+	return fmt.Sprintf("%s/%d/%s", e.SessionID, e.Sequence, role)
 }
 
 func (a *Agent) emitSubagent(ctx context.Context, e harness.RunEvent) error {
