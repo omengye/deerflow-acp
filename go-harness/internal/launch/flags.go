@@ -58,4 +58,12 @@ func RuntimeFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
 	})
 	flags.BoolVar(&cfg.MCP.AllowHTTP, "mcp-allow-http", false, "allow outgoing MCP streamable HTTP connections")
 	flags.BoolVar(&cfg.MCP.AllowSSE, "mcp-allow-sse", false, "allow outgoing MCP SSE connections")
+	flags.Func("acp-agents-config", "JSON allowlist for optional external ACP stdio agents", func(path string) error {
+		agents, err := LoadACPAgentsConfig(path)
+		if err != nil {
+			return err
+		}
+		cfg.ACPAgents = agents
+		return nil
+	})
 }

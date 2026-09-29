@@ -17,6 +17,7 @@ import (
 	einoskill "github.com/cloudwego/eino/adk/middlewares/skill"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	acpclient "github.com/omengye/deerflow-acp/go-harness/internal/acp/client"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
@@ -32,6 +33,7 @@ type extensionState struct {
 	Skills            []harness.SkillRef `json:"skills"`
 	MCPGeneration     string             `json:"mcpGeneration,omitempty"`
 	SandboxPolicy     string             `json:"sandboxPolicy"`
+	ExternalACPPolicy string             `json:"externalACPPolicy,omitempty"`
 	MemoryPolicy      string             `json:"memoryPolicy,omitempty"`
 	ExtractionEnabled bool               `json:"extractionEnabled,omitempty"`
 	Memory            []memorySnapshot   `json:"memory,omitempty"`
@@ -173,6 +175,20 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 	commandPolicy.Environment = maps.Clone(commandPolicy.Environment)
 	encoded, _ := json.Marshal(commandPolicy)
 	policyHash := fmt.Sprintf("%x", sha256.Sum256(encoded))
+	acpEncoded, _ := json.Marshal(struct {
+		Agents    map[string]harness.ACPAgentConfig
+		Durations map[string]string
+	}{cfg.ACPAgents, func() map[string]string {
+		values := make(map[string]string)
+		for name, agent := range cfg.ACPAgents {
+			values[name] = agent.Timeout.String()
+		}
+		return values
+	}()})
+	acpPolicy := ""
+	if len(cfg.ACPAgents) > 0 {
+		acpPolicy = fmt.Sprintf("%x", sha256.Sum256(acpEncoded))
+	}
 	memoryPolicy := ""
 	if memoryStore != nil {
 		identity := sha256.Sum256([]byte("memory/v1\x00" + cfg.MemoryUserID))
@@ -182,7 +198,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		selection := selectionPolicy
 		selection.Workspace = req.Session.CWD
 		readOnly := req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
-		state := extensionState{Version: 1, SandboxPolicy: policyHash, MemoryPolicy: memoryPolicy, ExtractionEnabled: cfg.MemoryExtraction}
+		state := extensionState{Version: 1, SandboxPolicy: policyHash, ExternalACPPolicy: acpPolicy, MemoryPolicy: memoryPolicy, ExtractionEnabled: cfg.MemoryExtraction}
 		if !readOnly {
 			state.MCPGeneration, err = manager.Generation(ctx, req.Session.ID)
 			if err != nil {
@@ -198,7 +214,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 				return out, fmt.Errorf("%w: invalid extension checkpoint", harness.ErrInvalidInput)
 			}
 			var extra any
-			if dec.Decode(&extra) != io.EOF || previous.Version != state.Version || previous.MCPGeneration != state.MCPGeneration || previous.SandboxPolicy != state.SandboxPolicy || previous.ExtractionEnabled != state.ExtractionEnabled {
+			if dec.Decode(&extra) != io.EOF || previous.Version != state.Version || previous.MCPGeneration != state.MCPGeneration || previous.SandboxPolicy != state.SandboxPolicy || previous.ExternalACPPolicy != state.ExternalACPPolicy || previous.ExtractionEnabled != state.ExtractionEnabled {
 				return out, fmt.Errorf("%w: execution resources changed since checkpoint", harness.ErrInvalidInput)
 			}
 			if previous.MemoryPolicy != state.MemoryPolicy && (previous.MemoryPolicy != "" || len(previous.Memory) != 0) {
@@ -266,6 +282,13 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		}
 		if readOnly {
 			return out, nil
+		}
+		if len(cfg.ACPAgents) > 0 {
+			invoke, err := acpclient.Tool(cfg.DataDir, req.Session, cfg.ACPAgents)
+			if err != nil {
+				return out, err
+			}
+			out.Tools = append(out.Tools, invoke)
 		}
 		if assetStore != nil {
 			present, err := tools.PresentFilesTool(func(ctx context.Context, callID string, paths []string) ([]harness.Content, error) {

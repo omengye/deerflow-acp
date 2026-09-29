@@ -34,8 +34,9 @@ type pythonModel struct {
 }
 
 type pythonRuntimeConfig struct {
-	DefaultModel string        `yaml:"default_model"`
-	Models       []pythonModel `yaml:"models"`
+	ACPAgents    map[string]any `yaml:"acp_agents"`
+	DefaultModel string         `yaml:"default_model"`
+	Models       []pythonModel  `yaml:"models"`
 	API          struct {
 		ModelName string `yaml:"model_name"`
 	} `yaml:"api"`
@@ -121,6 +122,9 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	var source pythonRuntimeConfig
 	if err = yaml.Unmarshal(raw, &source); err != nil {
 		return result, fmt.Errorf("parse Python config: %w", err)
+	}
+	if len(source.ACPAgents) > 0 && !explicit["acp-agents-config"] {
+		return result, fmt.Errorf("Python acp_agents require an explicit Go --acp-agents-config allowlist")
 	}
 	if source.LocalACP.EnableBash && (!explicit["sandbox-provider"] || !cfg.Sandbox.Enabled || !cfg.Sandbox.AllowShell) {
 		return result, fmt.Errorf("local_acp.enable_bash requires an explicit Go --sandbox-provider and shell policy")

@@ -12,6 +12,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	acpclient "github.com/omengye/deerflow-acp/go-harness/internal/acp/client"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 )
 
@@ -162,7 +163,87 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 			}
 			return "", err
 		}
+		var externalReservation *modelReservation
+		if tc.Name == "invoke_acp_agent" {
+			var err error
+			externalReservation, _, err = m.budget.reserveContext(ctx, []*schema.Message{schema.UserMessage(args)}, nil)
+			if err != nil {
+				if emitErr := m.finish(ctx, tc, nil, err); emitErr != nil {
+					return "", errors.Join(err, emitErr)
+				}
+				return "", err
+			}
+			ctx = acpclient.WithCallbacks(ctx, acpclient.Callbacks{
+				Update: func(_ context.Context, raw json.RawMessage) error {
+					var update struct {
+						SessionUpdate string          `json:"sessionUpdate"`
+						Title         string          `json:"title"`
+						Status        string          `json:"status"`
+						Content       harness.Content `json:"content"`
+					}
+					if err := json.Unmarshal(raw, &update); err != nil {
+						return err
+					}
+					var content []harness.Content
+					switch update.SessionUpdate {
+					case "agent_message_chunk":
+						if update.Content.Type == "text" || update.Content.Type == "resource_link" {
+							content = append(content, update.Content)
+						}
+						if update.Content.Type == "text" {
+							if err := externalReservation.observe(&schema.Message{Content: update.Content.Text}); err != nil {
+								return err
+							}
+						}
+					case "tool_call", "tool_call_update":
+						content = append(content, harness.Content{Type: "text", Text: "External tool " + update.Title + ": " + update.Status})
+					}
+					if len(content) == 0 {
+						return nil
+					}
+					return m.sink.emit(ctx, harness.RunEvent{Kind: "tool_update", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress", Content: content})
+				},
+				Permission: func(_ context.Context, request acpclient.PermissionRequest) (string, error) {
+					// Durable attempts cannot suspend a second, remote permission
+					// frontier yet. Reject it instead of bypassing the broker.
+					if m.permissions == nil {
+						return "", nil
+					}
+					var call struct {
+						ToolCallID string          `json:"toolCallId"`
+						Title      string          `json:"title"`
+						RawInput   json.RawMessage `json:"rawInput"`
+					}
+					if err := json.Unmarshal(request.ToolCall, &call); err != nil {
+						return "", err
+					}
+					if call.ToolCallID == "" {
+						return "", errors.New("external permission has no tool call ID")
+					}
+					arguments := call.RawInput
+					if !json.Valid(arguments) {
+						arguments = json.RawMessage(`{}`)
+					}
+					decision, err := m.permissions(ctx, harness.PermissionRequest{ID: m.sink.request.RunID + "/" + tc.CallID + "/external/" + call.ToolCallID, SessionID: m.sink.request.Session.ID, RunID: m.sink.request.RunID, ConfigVersion: m.sink.request.Session.ConfigVersion, ToolCallID: tc.CallID + "/" + call.ToolCallID, ToolName: "external_acp/" + call.Title, Arguments: arguments})
+					if err != nil {
+						return "", err
+					}
+					for _, option := range request.Options {
+						if option.Kind == string(decision) {
+							return option.OptionID, nil
+						}
+					}
+					return "", nil
+				},
+			})
+		}
 		output, err := next(ctx, args, opts...)
+		if externalReservation != nil {
+			settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_, settleErr := externalReservation.settleContext(settleCtx, true)
+			cancel()
+			err = errors.Join(err, settleErr)
+		}
 		// Eino alpha discards a tool's returned value when it also returns an
 		// error. Command failures carry their bounded execution evidence on the
 		// error so durable receipts retain stdout, exit code and termination state.

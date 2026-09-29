@@ -85,24 +85,27 @@ func IsNotification(ctx context.Context) bool {
 // stream in a no-op closer. Close or parent cancellation interrupts both loops.
 // Stdout must be exclusively owned by this peer; diagnostics belong on stderr.
 type Peer struct {
-	in            io.ReadCloser
-	out           io.WriteCloser
-	handler       Handler
-	opts          Options
-	ctx           context.Context
-	cancel        context.CancelCauseFunc
-	closeOnce     sync.Once
-	serving       atomic.Bool
-	nextID        atomic.Uint64
-	queuedEvents  atomic.Int64
-	writes        chan writeJob
-	notifications chan envelope
-	requestSlots  chan struct{}
-	loops         sync.WaitGroup
-	handlers      sync.WaitGroup
-	mu            sync.Mutex
-	pending       map[string]chan envelope
-	inflight      map[string]context.CancelFunc
+	in                   io.ReadCloser
+	out                  io.WriteCloser
+	handler              Handler
+	opts                 Options
+	ctx                  context.Context
+	cancel               context.CancelCauseFunc
+	closeOnce            sync.Once
+	serving              atomic.Bool
+	nextID               atomic.Uint64
+	queuedEvents         atomic.Int64
+	queuedNotifications  atomic.Uint64
+	handledNotifications atomic.Uint64
+	writes               chan writeJob
+	notifications        chan envelope
+	notificationProgress chan struct{}
+	requestSlots         chan struct{}
+	loops                sync.WaitGroup
+	handlers             sync.WaitGroup
+	mu                   sync.Mutex
+	pending              map[string]chan envelope
+	inflight             map[string]context.CancelFunc
 }
 
 func NewPeer(in io.ReadCloser, out io.WriteCloser, handler Handler, options Options) *Peer {
@@ -110,10 +113,11 @@ func NewPeer(in io.ReadCloser, out io.WriteCloser, handler Handler, options Opti
 	ctx, cancel := context.WithCancelCause(context.Background())
 	return &Peer{
 		in: in, out: out, handler: handler, opts: options, ctx: ctx, cancel: cancel,
-		writes:        make(chan writeJob, options.WriteQueueCapacity),
-		notifications: make(chan envelope, options.NotificationQueueSize),
-		requestSlots:  make(chan struct{}, options.MaxConcurrentRequests),
-		pending:       make(map[string]chan envelope), inflight: make(map[string]context.CancelFunc),
+		writes:               make(chan writeJob, options.WriteQueueCapacity),
+		notifications:        make(chan envelope, options.NotificationQueueSize),
+		notificationProgress: make(chan struct{}, 1),
+		requestSlots:         make(chan struct{}, options.MaxConcurrentRequests),
+		pending:              make(map[string]chan envelope), inflight: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -142,6 +146,23 @@ func (p *Peer) Serve(ctx context.Context) error {
 // Done closes as soon as disconnect is detected. Serve additionally waits for
 // cleanup, so Done must not be used as evidence that a session is idle.
 func (p *Peer) Done() <-chan struct{} { return p.ctx.Done() }
+
+// DrainNotifications joins notifications already read from the wire. It is
+// useful for a client whose final request response follows streamed updates:
+// the read loop may see the response before the notification handler finishes.
+func (p *Peer) DrainNotifications(ctx context.Context) error {
+	target := p.queuedNotifications.Load()
+	for p.handledNotifications.Load() < target {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-p.ctx.Done():
+			return ErrClosed
+		case <-p.notificationProgress:
+		}
+	}
+	return nil
+}
 
 func (p *Peer) Close() error {
 	p.shutdown(ErrClosed)
@@ -408,6 +429,7 @@ func (p *Peer) readLoop() {
 			continue
 		}
 		if msg.ID == nil {
+			p.queuedNotifications.Add(1)
 			select {
 			case p.notifications <- msg:
 			case <-p.ctx.Done():
@@ -501,6 +523,11 @@ func (p *Peer) notificationLoop() {
 			return
 		case msg := <-p.notifications:
 			_, _ = p.invoke(ctx, msg.Method, msg.Params)
+			p.handledNotifications.Add(1)
+			select {
+			case p.notificationProgress <- struct{}{}:
+			default:
+			}
 		}
 	}
 }

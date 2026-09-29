@@ -27,12 +27,15 @@ type Service struct {
 	Model                  string
 	Settings               ConfigSettings
 	Resources              SessionResources
-	Assets                 *assets.Store
-	Media                  harness.MediaConfig
-	Memory                 *memory.Store
-	MemoryUserID           string
-	mu                     sync.Mutex
-	decisions              map[string]harness.PermissionDecision
+	// SessionCleanup runs after a successful durable session purge while the
+	// coordinator still holds its deletion fence.
+	SessionCleanup func(string) error
+	Assets         *assets.Store
+	Media          harness.MediaConfig
+	Memory         *memory.Store
+	MemoryUserID   string
+	mu             sync.Mutex
+	decisions      map[string]harness.PermissionDecision
 }
 
 func NewService(store *Store, engine harness.Engine, model string) *Service {

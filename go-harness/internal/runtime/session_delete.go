@@ -170,7 +170,10 @@ func (s *Service) DeleteSession(ctx context.Context, id string) (bool, error) {
 			return alreadyDeleted, err
 		}
 	}
-	return alreadyDeleted, nil
+	if s.SessionCleanup != nil {
+		err = errors.Join(err, s.SessionCleanup(id))
+	}
+	return alreadyDeleted, err
 }
 
 // DeleteExpiredSession repeats the age check under the same reconnect fence
@@ -194,7 +197,10 @@ func (s *Service) DeleteExpiredSession(ctx context.Context, id string, now time.
 			return true, err
 		}
 	}
-	return true, nil
+	if s.SessionCleanup != nil {
+		err = errors.Join(err, s.SessionCleanup(id))
+	}
+	return true, err
 }
 
 // DeleteAttachedSession handles ACP deletion of an idle session owned by the
@@ -239,5 +245,8 @@ func (s *Service) DeleteAttachedSession(ctx context.Context, owner, id string) (
 			return alreadyDeleted, err
 		}
 	}
-	return alreadyDeleted, nil
+	if s.SessionCleanup != nil {
+		err = errors.Join(err, s.SessionCleanup(id))
+	}
+	return alreadyDeleted, err
 }

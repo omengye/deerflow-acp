@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/acp/agent"
+	acpclient "github.com/omengye/deerflow-acp/go-harness/internal/acp/client"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
 	budgetledger "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
@@ -50,11 +52,14 @@ type Config struct {
 	BackgroundWorkers int
 	// Nil uses DefaultBudgetLimits. A non-nil zero value disables all quotas.
 	// Token accounting is estimated until the provider reports actual usage.
-	Budget  *harness.BudgetLimits
-	MCP     harness.MCPPolicy
-	Sandbox harness.SandboxConfig
-	Skills  harness.SkillsConfig
-	Media   harness.MediaConfig
+	Budget *harness.BudgetLimits
+	MCP    harness.MCPPolicy
+	// ACPAgents is an explicit allowlist for optional external stdio delegation.
+	// Empty disables the invoke_acp_agent tool.
+	ACPAgents map[string]harness.ACPAgentConfig
+	Sandbox   harness.SandboxConfig
+	Skills    harness.SkillsConfig
+	Media     harness.MediaConfig
 	// SkillSelection is host policy. Workspace is derived from each session;
 	// global skills require IncludeGlobal. Sources are never installed implicitly.
 	SkillSelection harness.SkillSelection
@@ -120,6 +125,12 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		return nil, fmt.Errorf("%w: invalid memory user identity", harness.ErrInvalidInput)
 	}
 	cfg.Media.VisionModels = slices.Clone(cfg.Media.VisionModels)
+	cfg.ACPAgents = maps.Clone(cfg.ACPAgents)
+	for name, agent := range cfg.ACPAgents {
+		agent.Args = slices.Clone(agent.Args)
+		agent.Env = maps.Clone(agent.Env)
+		cfg.ACPAgents[name] = agent
+	}
 	if cfg.DataDir == "" {
 		base, e := os.UserConfigDir()
 		if e != nil {
@@ -139,6 +150,11 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	cfg.DataDir, err = filepath.EvalSymlinks(cfg.DataDir)
 	if err != nil {
 		return nil, err
+	}
+	if len(cfg.ACPAgents) > 0 {
+		if _, err = acpclient.Tool(cfg.DataDir, harness.Session{ID: "configuration"}, cfg.ACPAgents); err != nil {
+			return nil, err
+		}
 	}
 	lock := flock.New(filepath.Join(cfg.DataDir, "runtime.lock"))
 	locked, err := lock.TryLock()
@@ -255,6 +271,9 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		}
 	}
 	service := hr.NewService(business, engine, cfg.Model)
+	if len(cfg.ACPAgents) > 0 {
+		service.SessionCleanup = func(id string) error { return acpclient.CleanupSession(cfg.DataDir, id) }
+	}
 	service.Memory, service.MemoryUserID = memoryStore, cfg.MemoryUserID
 	service.Resources = manager
 	service.Media, service.Assets = cfg.Media, assetStore
