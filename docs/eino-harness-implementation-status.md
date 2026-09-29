@@ -26,7 +26,7 @@
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复已接线 | 父会话通知输入；跨 run 长命令 |
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
-| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单、多窗口及 Rust Bridge 二进制互操作已验证 | draft v2 对照、Python --config 迁移、MANAGE 记忆及清理操作 |
+| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/记忆读取与删除、Python `--config` 有界兼容层、多窗口及 Rust Bridge 二进制互操作已验证 | draft v2 对照、完整配置映射、MANAGE 会话清理操作 |
 | 可选外部 ACP Agent | 待实现 | 白名单、反向权限、预算和取消链 |
 | 打包 / 默认切换 | 未开始 | Windows/Linux 实机、回退、切换演练 |
 
@@ -245,3 +245,17 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - SDK、真实 daemon 进程与 ACP 管道测试验证状态、清单、排空阻止新会话及新执行、恢复和独占资源；可选 Rust Bridge 二进制测试增加 `--manage daemon.status` 验证。Go daemon 仍未接受 Python `--config`，Bridge 自动启动迁移尚未完成。
 
 本批整模块普通测试、管理与后台排空聚焦 race 测试，以及 Linux amd64 无 CGO 全模块构建通过。后台执行的 drain 回归测试确认活动 worker 完成前活动数不归零，新提交在排空期间被拒绝，恢复后可以继续提交。
+
+## 第十七阶段 Bridge 配置入口兼容
+
+- Go daemon 接受 Bridge 的 `--config`，解析最多 2 MiB 的现有 YAML，按 `local_acp.model_name`、`api.model_name`、`default_model` 顺序选择模型，并映射提供商、凭据、端点、视觉能力、子 Agent、连接数及运行期限。显式 Go 标志覆盖对应值；同提供商、同凭据和端点的模型进入会话选项。
+- endpoint 保存规范化配置路径，MANAGE 状态返回原配置文件 SHA-256；Bridge 能校验当前 daemon 的配置身份。Go 数据库仍在独立目录，不读取 Python checkpoint。权限模式、工具名单和自动 goal continuation 未迁移时拒绝启动，不悄悄扩大执行授权。
+- 使用仓库当前 `config.example.yaml`、特制 YAML、环境引用及真实 daemon 进程验证加载、配置身份与状态。映射范围和限制见 [Go daemon 配置兼容](eino-go-config-bridge.md)。
+
+## 第十八阶段本机 MANAGE 记忆操作
+
+- `memory.get` 按已有普通会话的工作区解析 session/workspace 和显式 user 事实，最多 1,000 条和 3 MiB。后台 child 不可用作管理作用域；本机管理 token 可以读取已脱离 ACP 客户端的会话。
+- `memory.delete` 以事实 ID 查找当前会话可见的作用域，暂时排空前台与后台准入，活动任务不为零时拒绝。写入使用事实 revision 条件；操作结束恢复原排空状态。响应沿用桌面需要的 `memory.facts` 结构。
+- SDK 与真实 ACP/daemon/MANAGE 管道测试覆盖脱离会话、跨工作区拒绝、运行中拒绝以及成功删除后状态恢复。`session.delete` 仍待实现，清理资格继续固定为 false。
+
+第十七、十八阶段合并验证：整模块普通测试、管理/配置/真实 daemon 聚焦 race 和 Linux amd64 无 CGO 全模块构建通过。真实付费模型、编辑器、官方 ACP TCK 和 Docker 实机仍未验收；本进度不代表完整 V1 完成。

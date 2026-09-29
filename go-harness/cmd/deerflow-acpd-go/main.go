@@ -29,6 +29,7 @@ func run(args []string) (err error) {
 	var cfg deerflow.Config
 	var hostCfg localhost.Config
 	var pythonConfig string
+	var imported launch.PythonConfig
 	flags := flag.NewFlagSet("deerflow-acpd-go", flag.ContinueOnError)
 	flags.StringVar(&cfg.DataDir, "data-dir", os.Getenv("DEERFLOW_GO_DATA_DIR"), "Go state directory (separate from Python)")
 	flags.StringVar(&hostCfg.RuntimeDir, "runtime-dir", os.Getenv("DEERFLOW_GO_RUNTIME_DIR"), "private Go daemon endpoint directory")
@@ -37,7 +38,7 @@ func run(args []string) (err error) {
 	flags.StringVar(&cfg.BaseURL, "base-url", os.Getenv("DEERFLOW_MODEL_BASE_URL"), "model endpoint override")
 	flags.IntVar(&cfg.MaxIterations, "max-iterations", 50, "maximum model/tool iterations per run")
 	flags.IntVar(&hostCfg.MaxConnections, "max-connections", 32, "ACP connection limit; control requests are independent")
-	flags.StringVar(&pythonConfig, "config", "", "unsupported Python config path; configure Go with flags/environment")
+	flags.StringVar(&pythonConfig, "config", "", "DeerFlow config.yaml for model and portable ACP settings")
 	launch.RuntimeFlags(flags, &cfg)
 	if err = flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -49,9 +50,17 @@ func run(args []string) (err error) {
 		return fmt.Errorf("unexpected positional arguments")
 	}
 	if pythonConfig != "" {
-		return fmt.Errorf("--config is not supported by the Go daemon; omit Bridge --config and use DEERFLOW_MODEL_PROVIDER, DEERFLOW_MODEL, DEERFLOW_MODEL_BASE_URL, and DEERFLOW_MODEL_API_KEY")
+		explicit := make(map[string]bool)
+		flags.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+		imported, err = launch.ApplyPythonConfig(pythonConfig, &cfg, &hostCfg.MaxConnections, explicit)
+		if err != nil {
+			return err
+		}
+		hostCfg.ConfigPath = imported.Path
 	}
-	cfg.APIKey = os.Getenv("DEERFLOW_MODEL_API_KEY")
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("DEERFLOW_MODEL_API_KEY")
+	}
 	if cfg.APIKey == "" {
 		switch cfg.Provider {
 		case "claude":
@@ -74,7 +83,14 @@ func run(args []string) (err error) {
 	}
 	// Also covers host construction/start failure. Client.Close is idempotent.
 	defer func() { err = errors.Join(err, client.Close()) }()
-	hostCfg.BuildID, hostCfg.ServeACP, hostCfg.Manage, hostCfg.Cleanup = buildID, client.ServeACP, client.ManageLocal, client.Close
+	hostCfg.BuildID, hostCfg.ServeACP, hostCfg.Cleanup = buildID, client.ServeACP, client.Close
+	hostCfg.Manage = func(ctx context.Context, request localhost.ManagementRequest) (any, error) {
+		data, err := client.ManageLocal(ctx, request)
+		if err == nil && imported.Revision != "" && (request.Operation == "daemon.status" || request.Operation == "daemon.drain" || request.Operation == "daemon.resume") {
+			data.(map[string]any)["config_revision"] = imported.Revision
+		}
+		return data, err
+	}
 	host, err := localhost.New(hostCfg)
 	if err != nil {
 		return err

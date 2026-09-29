@@ -78,6 +78,7 @@ type Client struct {
 	lock       *flock.Flock
 	owner      string
 	mu         sync.Mutex
+	manageMu   sync.Mutex
 	closed     bool
 	agents     map[*agent.Agent]struct{}
 	operations sync.WaitGroup

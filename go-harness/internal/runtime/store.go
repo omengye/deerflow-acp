@@ -79,6 +79,15 @@ func scanSession(row scanner) (harness.Session, error) {
 func (s *Store) Session(ctx context.Context, id string) (harness.Session, error) {
 	return scanSession(s.db.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, id))
 }
+
+// ManagementSession resolves an existing foreground session without requiring
+// a live ACP attachment. The local management token is the authority boundary.
+func (s *Store) ManagementSession(ctx context.Context, id string) (harness.Session, error) {
+	if err := s.requireForegroundSession(ctx, id); err != nil {
+		return harness.Session{}, err
+	}
+	return s.Session(ctx, id)
+}
 func (s *Store) List(ctx context.Context, cwd, cursor string, limit int) ([]harness.Session, error) {
 	children, err := s.hasBackgroundSessions(ctx)
 	if err != nil {

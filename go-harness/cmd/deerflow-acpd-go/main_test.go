@@ -173,12 +173,16 @@ func acpClient(t *testing.T, ep localhost.Endpoint) *rpcClient {
 }
 
 func manageDaemon(t *testing.T, ep localhost.Endpoint, operation string) map[string]json.RawMessage {
+	return manageDaemonRequest(t, ep, map[string]any{"operation": operation})
+}
+
+func manageDaemonRequest(t *testing.T, ep localhost.Endpoint, request map[string]any) map[string]json.RawMessage {
 	t.Helper()
 	conn, reader, line := connectCommand(t, ep, "MANAGE")
 	if line != "OK" {
 		t.Fatalf("MANAGE handshake: %s", line)
 	}
-	if err := json.NewEncoder(conn).Encode(map[string]string{"operation": operation}); err != nil {
+	if err := json.NewEncoder(conn).Encode(request); err != nil {
 		t.Fatal(err)
 	}
 	var envelope struct {
@@ -192,7 +196,7 @@ func manageDaemon(t *testing.T, ep localhost.Endpoint, operation string) map[str
 	}
 	_ = conn.Close()
 	if !envelope.OK {
-		t.Fatalf("MANAGE %s: %s %s", operation, envelope.Code, envelope.Error)
+		t.Fatalf("MANAGE %s: %s %s", request["operation"], envelope.Code, envelope.Error)
 	}
 	return envelope.Data
 }
@@ -229,6 +233,19 @@ func TestDaemonProcessCancellationRestartAndOwnership(t *testing.T) {
 	}
 	if inventory := manageDaemon(t, ep, "session.list"); !bytes.Contains(inventory["sessions"], []byte(session.ID)) {
 		t.Fatalf("management inventory: %+v", inventory)
+	}
+	var fact struct {
+		ID string `json:"id"`
+	}
+	createdFact := a.success(t, "_deerflow/memory/create", map[string]any{"sessionId": session.ID, "scope": "session", "fact": map[string]any{"content": "remember this", "category": "preference", "confidence": 1}})
+	if err := json.Unmarshal(createdFact, &fact); err != nil || fact.ID == "" {
+		t.Fatalf("memory fact: %s %v", createdFact, err)
+	}
+	if memory := manageDaemonRequest(t, ep, map[string]any{"operation": "memory.get", "session_id": session.ID}); !bytes.Contains(memory["memory"], []byte(fact.ID)) {
+		t.Fatalf("management memory: %+v", memory)
+	}
+	if memory := manageDaemonRequest(t, ep, map[string]any{"operation": "memory.delete", "session_id": session.ID, "fact_id": fact.ID}); bytes.Contains(memory["memory"], []byte(fact.ID)) {
+		t.Fatalf("management memory deletion: %+v", memory)
 	}
 	if drain := manageDaemon(t, ep, "daemon.drain"); string(drain["draining"]) != "true" {
 		t.Fatalf("drain: %+v", drain)
@@ -299,10 +316,47 @@ func TestDaemonProcessCancellationRestartAndOwnership(t *testing.T) {
 	q.wait(t, true)
 }
 
-func TestRejectPythonConfiguration(t *testing.T) {
-	if err := run([]string{"--config", "python-config.yaml"}); err == nil || !strings.Contains(err.Error(), "not supported") {
-		t.Fatalf("Python config silently accepted: %v", err)
+func TestConfigDaemonPublishesBridgeIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process integration")
 	}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte("default_model: fixture\nlocal_acp:\n  max_active_connections: 2\nmodels:\n  - name: fixture\n    use: langchain_openai:ChatOpenAI\n    model: fixture-model\n    api_key: fixture-only-key\n    base_url: http://127.0.0.1:1/v1\n")
+	if err := os.WriteFile(configPath, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := t.TempDir()
+	p := &daemonProcess{done: make(chan struct{})}
+	p.cmd = exec.Command(os.Args[0], "-test.run=^TestDaemonProcessHelper$", "--", "--config", configPath, "--runtime-dir", runtimeDir)
+	p.cmd.Env = append(os.Environ(), "DEERFLOW_TEST_DAEMON_HELPER=1")
+	p.cmd.Stdout, p.cmd.Stderr = &p.stdout, &p.stderr
+	if err := p.cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { p.err = p.cmd.Wait(); close(p.done) }()
+	t.Cleanup(func() {
+		select {
+		case <-p.done:
+		default:
+			_ = p.cmd.Process.Kill()
+			<-p.done
+		}
+	})
+	ep := p.endpoint(t, runtimeDir)
+	if ep.ConfigPath != configPath {
+		t.Fatalf("Bridge config identity=%q want %q", ep.ConfigPath, configPath)
+	}
+	status := manageDaemon(t, ep, "daemon.status")
+	var revision string
+	if err := json.Unmarshal(status["config_revision"], &revision); err != nil || len(revision) != 64 {
+		t.Fatalf("config revision: %s %v", status["config_revision"], err)
+	}
+	conn, _, line := connectCommand(t, ep, "STOP")
+	_ = conn.Close()
+	if line != "OK" {
+		t.Fatal(line)
+	}
+	p.wait(t, true)
 }
 
 // Supply an existing native Bridge executable to exercise its actual endpoint,
