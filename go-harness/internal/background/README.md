@@ -40,6 +40,7 @@ attachment and scope task IDs to that parent.
 | --- | --- |
 | Create | Native task, immutable business binding, root-budget member binding, native created outbox record |
 | Claim | Native pending-to-running CAS and attempt increment, child-session lease acquisition |
+| Native running update/heartbeat | Native version/lease change and root-budget active clock/lease renewal |
 | Child append | Native attempt/lease check, child lease check, session event append |
 | Safe pause/complete | Joined attempt, budget settlement gate, staged runner checkpoint changes, native task metadata/state, native outbox, child lease release |
 | Approval resume | Broker's durable one-time approval consumption, versioned native waiting-to-pending transition |
@@ -58,6 +59,23 @@ that shared root. `Service.CheckEffectTx` allows the ledger to check the task
 attempt and child lease in the reservation/dispatch transaction.
 `CommitAttemptTx` must reject unresolved or uncertain effects before publishing
 a safe checkpoint or normal terminal outcome.
+
+`NewLedgerAdapter(store, ledger)` implements these gates using `internal/budget`.
+Both instances must share the same SQLite database. It verifies that the durable
+origin member belongs to both the supplied root and the authenticated parent
+session; the task budget member belongs to the child session. `BudgetScope`
+produces the stable task/attempt identity for engine middleware. Route background
+reservations through `Service.CheckBudgetEffectTx` in the ledger's transaction
+callback; foreground reservations need their own host fence.
+
+Configure native `HeartbeatInterval` no greater than the adapter's
+`HeartbeatInterval()` (the default background interval of 5 seconds fits the
+default 30-second budget lease). The optional `HeartbeatBudgetLedger` hook
+renews the budget in native running-update transactions even when quota has been
+exhausted, retaining ownership through real cleanup. The optional `BudgetMonitor`
+cancels a private factory/provider context when limits or accounting errors are
+detected; it leaves native heartbeat ownership intact. A monitor error overrides
+an inner executor that incorrectly reports success after cancellation.
 
 Runner checkpoint Set/Delete calls are staged in the attempt. The previous raw
 checkpoint is retained until cleanup has joined and the native task transition
@@ -86,9 +104,17 @@ deadline error, keep storage/resources alive and call it again to wait. A
 cleanup error returns `ErrBackgroundUncertain` and persists a quarantine that
 also prevents another task from reusing that child after restart.
 
+Eino alpha.35 stops native heartbeats after explicit user cancellation. Cleanup
+must therefore join within the remaining native and budget leases to publish a
+normal canceled result. Expiry follows the native recovery policy; retry tasks
+remain pending with their cancel intent, and live local cleanup prevents child
+reentry. A lost budget lease or uncertain cleanup cannot publish a safe normal
+outcome. Quota cancellation uses a private context, so it does not stop the
+native heartbeat while cleanup joins.
+
 ## Explicit remaining integration
 
-The host must supply the real durable budget adapter, full model/tool attempt
+The host must wire the supplied durable budget adapter, full model/tool attempt
 factory, durable HITL broker, SDK and ACP ownership checks, and parent input
 admission. None is replaced with an in-memory fallback here. Native raw
 `task_output`/`task_stop` tools must not be exposed because they lack business

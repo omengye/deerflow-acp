@@ -99,7 +99,13 @@ func (s *Service) onTransition(ctx context.Context, tx *sql.Tx, before, after *b
 			return err
 		}
 	}
-	if before.Status != bt.StatusRunning || after.Status == bt.StatusRunning {
+	if before.Status == bt.StatusRunning && after.Status == bt.StatusRunning {
+		if ledger, ok := s.config.Budgets.(HeartbeatBudgetLedger); ok {
+			return ledger.HeartbeatAttemptTx(ctx, tx, TaskScope{Binding: b, Attempt: before.Attempt})
+		}
+		return nil
+	}
+	if before.Status != bt.StatusRunning {
 		return nil
 	}
 	scope := TaskScope{Binding: b, Attempt: before.Attempt}
@@ -112,6 +118,9 @@ func (s *Service) onTransition(ctx context.Context, tx *sql.Tx, before, after *b
 	if state != nil {
 		state.mu.Lock()
 		defer state.mu.Unlock()
+		if !state.ready && (after.Status == bt.StatusCanceled || after.Status == bt.StatusFailed) {
+			return errors.Join(harness.ErrBackgroundUncertain, errors.New("background: native lease expired before local cleanup joined"))
+		}
 		if !state.ready && (after.Status == bt.StatusCompleted || after.Status == bt.StatusWaitingInput || after.Status == bt.StatusSuspended) {
 			return errors.New("background: transition before attempt cleanup")
 		}
@@ -210,10 +219,17 @@ func (e *managedExecutor) Execute(ctx context.Context, task *bt.Task, runtime bt
 	s.mu.Unlock()
 	v := &attemptContext{state: state}
 	ctx = context.WithValue(ctx, attemptContextKey{}, v)
+	var stopMonitor func() error
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			returnErr = fmt.Errorf("background executor panic: %v", recovered)
 			result = nil
+		}
+		if stopMonitor != nil {
+			if monitorErr := stopMonitor(); monitorErr != nil {
+				returnErr = errors.Join(returnErr, monitorErr)
+				result = nil
+			}
 		}
 		var cleanupErr error
 		if v.attempt != nil {
@@ -241,6 +257,9 @@ func (e *managedExecutor) Execute(ctx context.Context, task *bt.Task, runtime bt
 	if err = s.config.Budgets.BeforeAttempt(ctx, state.scope); err != nil {
 		return nil, err
 	}
+	if monitor, ok := s.config.Budgets.(BudgetMonitor); ok {
+		ctx, stopMonitor = startBudgetMonitor(ctx, monitor, state.scope, s.config.HeartbeatInterval)
+	}
 	if s.config.Attempts != nil {
 		v.attempt, err = s.config.Attempts.Open(ctx, state.scope)
 		if err != nil {
@@ -252,6 +271,9 @@ func (e *managedExecutor) Execute(ctx context.Context, task *bt.Task, runtime bt
 		if b.ExecutorKey == ds.ExecutorKey && (v.attempt.Agent == nil || v.attempt.Agent.Name(ctx) != b.AgentVersion) {
 			return nil, errors.New("background: rebuilt agent name does not match durable registration")
 		}
+	}
+	if err = ctx.Err(); err != nil {
+		return nil, err
 	}
 	return e.inner.Execute(ctx, task, runtime)
 }

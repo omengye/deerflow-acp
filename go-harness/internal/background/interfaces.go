@@ -59,6 +59,19 @@ type BudgetLedger interface {
 	CommitAttemptTx(context.Context, *sql.Tx, TaskScope, string) error
 }
 
+// HeartbeatBudgetLedger extends the native task lease transaction to the root
+// budget's active clock. Quota exhaustion must not abort this transaction:
+// cleanup still owns a live attempt until CommitAttemptTx succeeds.
+type HeartbeatBudgetLedger interface {
+	HeartbeatAttemptTx(context.Context, *sql.Tx, TaskScope) error
+}
+
+// BudgetMonitor stops an attempt's provider/factory context when admission has
+// closed. Native task heartbeats separately retain ownership through cleanup.
+type BudgetMonitor interface {
+	CheckAttemptBudget(context.Context, TaskScope) error
+}
+
 type ResumeGrant struct {
 	Data     json.RawMessage
 	Approval harness.TaskApproval

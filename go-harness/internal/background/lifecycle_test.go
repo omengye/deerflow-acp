@@ -165,6 +165,69 @@ func TestCleanupFailureQuarantinesAcrossRestartAndChildContinuation(t *testing.T
 	}
 }
 
+func TestCancelLeaseExpiryDoesNotPublishBeforeLocalCleanup(t *testing.T) {
+	started, joining, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var released atomic.Bool
+	t.Cleanup(func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
+	})
+	executor := &fixtureExecutor{run: func(ctx context.Context, _ *bt.Task, rt bt.ExecutionRuntime) (*bt.ExecutionResult, error) {
+		close(started)
+		select {
+		case <-rt.Controls():
+			return &bt.ExecutionResult{Status: bt.StatusCanceled, Error: "stop"}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}}
+	s, _ := newFixture(t, func(c *Config) {
+		c.AdditionalExecutors = []bt.Executor{executor}
+		c.Attempts = &fixtureFactory{open: func(context.Context, TaskScope) (*Attempt, error) {
+			return &Attempt{JoinAndClose: func(context.Context) error { close(joining); <-release; return nil }}, nil
+		}}
+	})
+	task := submitFixture(t, s, submission("parent", "one"))
+	done := make(chan error, 1)
+	go func() { done <- s.manager.Execute(context.Background(), task.ID) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("not started")
+	}
+	if _, err := s.Cancel(context.Background(), actor("parent"), task.ID, "stop"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-joining:
+	case <-time.After(time.Second):
+		t.Fatal("not joining")
+	}
+	if _, err := s.store.DB().Exec("UPDATE eino_background_tasks SET lease_expires_at=1 WHERE id=?", task.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(context.Background(), actor("parent"), task.ID)
+	if err != nil || got.Status != "pending" {
+		t.Fatalf("retry expiry must preserve pending cancellation before cleanup: %+v %v", got, err)
+	}
+	if _, err = s.tasks.Start(context.Background(), &bt.StartTaskRequest{TaskID: task.ID, ExpectedVersion: got.Version}); !errors.Is(err, harness.ErrChildSessionBusy) {
+		t.Fatalf("expired cancellation reentered child before cleanup: %v", err)
+	}
+	var status string
+	if err := s.store.DB().QueryRow("SELECT status FROM eino_background_tasks WHERE id=?", task.ID).Scan(&status); err != nil || status != "pending" {
+		t.Fatalf("unsafe terminal persisted: %s %v", status, err)
+	}
+	if released.CompareAndSwap(false, true) {
+		close(release)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("executor did not join after release")
+	}
+}
+
 type fixtureNativeAgent struct {
 	name    string
 	target  *atomic.Value
