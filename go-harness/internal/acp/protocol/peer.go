@@ -36,6 +36,7 @@ type Options struct {
 	MaxConcurrentRequests int
 	MaxPendingCalls       int
 	WriteQueueCapacity    int
+	MaxQueuedEventBytes   int64
 	NotificationQueueSize int
 	Admit                 Admission
 }
@@ -53,6 +54,9 @@ func (o Options) defaults() Options {
 	if o.WriteQueueCapacity <= 0 {
 		o.WriteQueueCapacity = 64
 	}
+	if o.MaxQueuedEventBytes <= 0 {
+		o.MaxQueuedEventBytes = 64 << 20
+	}
 	if o.NotificationQueueSize <= 0 {
 		o.NotificationQueueSize = 64
 	}
@@ -60,9 +64,10 @@ func (o Options) defaults() Options {
 }
 
 type writeJob struct {
-	ctx   context.Context
-	frame []byte
-	done  chan error
+	ctx        context.Context
+	frame      []byte
+	done       chan error
+	eventBytes int64
 }
 
 type notificationKey struct{}
@@ -89,6 +94,7 @@ type Peer struct {
 	closeOnce     sync.Once
 	serving       atomic.Bool
 	nextID        atomic.Uint64
+	queuedEvents  atomic.Int64
 	writes        chan writeJob
 	notifications chan envelope
 	requestSlots  chan struct{}
@@ -165,6 +171,63 @@ func (p *Peer) Notify(ctx context.Context, method string, params any) error {
 		raw = nil
 	}
 	return p.send(ctx, envelope{JSONRPC: "2.0", Method: method, Params: raw})
+}
+
+// NotifyAsync accepts a bounded event frame without waiting for the client to
+// read it. Once admitted, the connection owns delivery, including after the
+// prompt context ends. The single writer preserves queue order with replies;
+// a full queue terminates the connection so unsent events can be replayed from
+// the durable session log instead of being silently dropped.
+func (p *Peer) NotifyAsync(ctx context.Context, method string, params any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if p.ctx.Err() != nil {
+		return ErrClosed
+	}
+	if method == "" {
+		return &Error{Code: InvalidRequest, Message: "Method must be non-empty"}
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	if params == nil {
+		raw = nil
+	}
+	frame, err := marshalFrame(envelope{JSONRPC: "2.0", Method: method, Params: raw}, p.opts.MaxFrameBytes)
+	if err != nil {
+		return err
+	}
+	size := int64(len(frame))
+	for {
+		current := p.queuedEvents.Load()
+		if size > p.opts.MaxQueuedEventBytes-current {
+			p.shutdown(ErrBackpressure)
+			return ErrBackpressure
+		}
+		if p.queuedEvents.CompareAndSwap(current, current+size) {
+			break
+		}
+	}
+	job := writeJob{ctx: p.ctx, frame: frame, eventBytes: size}
+	select {
+	case <-ctx.Done():
+		p.queuedEvents.Add(-size)
+		return ctx.Err()
+	case <-p.ctx.Done():
+		p.queuedEvents.Add(-size)
+		return ErrClosed
+	case p.writes <- job:
+		if p.ctx.Err() != nil {
+			return ErrClosed
+		}
+		return nil
+	default:
+		p.queuedEvents.Add(-size)
+		p.shutdown(ErrBackpressure)
+		return ErrBackpressure
+	}
 }
 
 // Call sends an agent-to-client request and routes its response independently of
@@ -273,6 +336,9 @@ func (p *Peer) writeLoop() {
 			return
 		case job := <-p.writes:
 			if err := job.ctx.Err(); err != nil {
+				if job.eventBytes != 0 {
+					p.queuedEvents.Add(-job.eventBytes)
+				}
 				if job.done != nil {
 					job.done <- err
 				}
@@ -298,6 +364,9 @@ func (p *Peer) writeLoop() {
 			}
 			if job.done != nil {
 				job.done <- err
+			}
+			if job.eventBytes != 0 {
+				p.queuedEvents.Add(-job.eventBytes)
 			}
 			if err != nil {
 				p.shutdown(err)

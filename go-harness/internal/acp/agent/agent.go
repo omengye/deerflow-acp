@@ -324,6 +324,10 @@ func (a *Agent) update(ctx context.Context, id string, update any) error {
 	return a.connectionError(ctx, a.peer.Notify(ctx, "session/update", map[string]any{"sessionId": id, "update": update}))
 }
 
+func (a *Agent) updateAsync(ctx context.Context, id string, update any) error {
+	return a.connectionError(ctx, a.peer.NotifyAsync(ctx, "session/update", map[string]any{"sessionId": id, "update": update}))
+}
+
 func (a *Agent) connectionError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
@@ -348,7 +352,7 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 			if err != nil {
 				return err
 			}
-			if err := a.update(ctx, e.SessionID, map[string]any{"sessionUpdate": "user_message_chunk", "content": wire}); err != nil {
+			if err := a.updateAsync(ctx, e.SessionID, map[string]any{"sessionUpdate": "user_message_chunk", "content": wire}); err != nil {
 				return err
 			}
 		}
@@ -391,7 +395,7 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 	if e.Receipt != nil {
 		update["_meta"] = map[string]any{"deerflow": map[string]any{"receipt": map[string]any{"runId": e.Receipt.RunID, "toolCallId": e.Receipt.ToolCallID, "state": e.Receipt.State, "version": e.Receipt.Version, "review": e.Receipt.Review}}}
 	}
-	if err := a.update(ctx, e.SessionID, update); err != nil {
+	if err := a.updateAsync(ctx, e.SessionID, update); err != nil {
 		return err
 	}
 	if e.Kind == "tool_end" {
@@ -403,7 +407,7 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 			if err != nil {
 				return err
 			}
-			if err := a.update(ctx, e.SessionID, map[string]any{"sessionUpdate": "agent_message_chunk", "content": wire}); err != nil {
+			if err := a.updateAsync(ctx, e.SessionID, map[string]any{"sessionUpdate": "agent_message_chunk", "content": wire}); err != nil {
 				return err
 			}
 		}
