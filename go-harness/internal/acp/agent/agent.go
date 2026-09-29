@@ -42,7 +42,7 @@ func (a *Agent) Close() error { return a.peer.Close() }
 
 func (a *Agent) ready() bool { a.mu.Lock(); defer a.mu.Unlock(); return a.initialized }
 func (a *Agent) admit(ctx context.Context, method string, raw json.RawMessage) (context.Context, func(), error) {
-	if method != "session/prompt" && method != resumeExecutionMethod {
+	if method != "session/prompt" && method != resumeExecutionMethod && method != processBackgroundNotificationMethod {
 		return ctx, nil, nil
 	}
 	ctx = hr.WithTransportCancellation(ctx)
@@ -51,6 +51,14 @@ func (a *Agent) admit(ctx context.Context, method string, raw json.RawMessage) (
 	}
 	if method == resumeExecutionMethod {
 		if _, err := decodeExecutionRequest(method, raw); err != nil {
+			return nil, nil, err
+		}
+	}
+	if method == processBackgroundNotificationMethod {
+		if _, err := a.notificationProcessor(); err != nil {
+			return nil, nil, err
+		}
+		if _, err := decodeBackgroundRequest(method, raw); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -144,6 +152,8 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		return nil, rpcError(protocol.InvalidRequest, "initialize must complete first")
 	}
 	switch method {
+	case processBackgroundNotificationMethod:
+		return a.processBackgroundNotification(ctx, raw)
 	case getBackgroundPermissionMethod:
 		return a.backgroundPermissionRequest(ctx, raw)
 	case listBackgroundTasksMethod, getBackgroundTaskMethod, waitBackgroundTaskMethod, cancelBackgroundTaskMethod, resumeBackgroundTaskMethod, approveBackgroundTaskMethod, listBackgroundNotificationsMethod, ackBackgroundNotificationMethod:

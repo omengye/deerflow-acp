@@ -5,6 +5,8 @@ package interaction
 
 import (
 	"context"
+	"encoding/json"
+
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
@@ -46,6 +48,16 @@ type StagedExecutionCheckpoint struct {
 	Interrupts []ExecutionInterruptBinding
 }
 
+// ExecutionInputSource is reconstructed only by the runtime from its immutable
+// accepted continuation record. It is not a public prompt or tool argument.
+// Input contains notification data, never the originating user's prompt.
+type ExecutionInputSource struct {
+	Kind            string
+	SHA             string
+	Input           []harness.Content
+	PinnedExtension json.RawMessage
+}
+
 // ExecutionHooks carries host-owned native addresses and server-issued grants.
 // StageCheckpoint is called only after all engine resources and I/O join; the
 // runtime must publish it atomically with the execution state and budget end.
@@ -53,6 +65,7 @@ type ExecutionHooks struct {
 	Broker          InteractionBroker
 	Targets         map[string]PermissionResume
 	StageCheckpoint func(context.Context, StagedExecutionCheckpoint) error
+	InputSource     *ExecutionInputSource
 }
 type executionHooksKey struct{}
 
@@ -62,6 +75,22 @@ func WithExecutionHooks(ctx context.Context, hooks ExecutionHooks) context.Conte
 		cloned[id] = target
 	}
 	hooks.Targets = cloned
+	if hooks.InputSource != nil {
+		source := *hooks.InputSource
+		source.PinnedExtension = append(json.RawMessage(nil), source.PinnedExtension...)
+		source.Input = append([]harness.Content(nil), source.Input...)
+		for i := range source.Input {
+			if source.Input[i].Asset != nil {
+				asset := *source.Input[i].Asset
+				source.Input[i].Asset = &asset
+			}
+			if source.Input[i].Size != nil {
+				size := *source.Input[i].Size
+				source.Input[i].Size = &size
+			}
+		}
+		hooks.InputSource = &source
+	}
 	return context.WithValue(ctx, executionHooksKey{}, &hooks)
 }
 func FromContext(ctx context.Context) *ExecutionHooks {

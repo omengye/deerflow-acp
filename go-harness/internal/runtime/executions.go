@@ -27,6 +27,8 @@ type executionRow struct {
 	RootBudgetID string
 	Config       harness.Session
 	InputDigest  string
+	SourceKind   string
+	SourceSHA    string
 	Manifest     *ExecutionManifest
 }
 
@@ -60,8 +62,8 @@ func readExecution(ctx context.Context, q executionQuery, sessionID, runID strin
 	var row executionRow
 	var config, manifest []byte
 	var created, updated string
-	err := q.QueryRowContext(ctx, `SELECT session_id,run_id,input_id,status,version,attempt_id,attempt,root_budget_id,config,input_digest,manifest,blocked_reason,created_at,updated_at FROM harness_executions WHERE session_id=? AND run_id=?`, sessionID, runID).Scan(
-		&row.State.SessionID, &row.State.RunID, &row.State.InputID, &row.State.Status, &row.State.Version, &row.State.AttemptID, &row.State.Attempt, &row.RootBudgetID, &config, &row.InputDigest, &manifest, &row.State.BlockedReason, &created, &updated)
+	err := q.QueryRowContext(ctx, `SELECT session_id,run_id,input_id,status,version,attempt_id,attempt,root_budget_id,config,input_digest,manifest,blocked_reason,created_at,updated_at,source_kind,source_sha FROM harness_executions WHERE session_id=? AND run_id=?`, sessionID, runID).Scan(
+		&row.State.SessionID, &row.State.RunID, &row.State.InputID, &row.State.Status, &row.State.Version, &row.State.AttemptID, &row.State.Attempt, &row.RootBudgetID, &config, &row.InputDigest, &manifest, &row.State.BlockedReason, &created, &updated, &row.SourceKind, &row.SourceSHA)
 	if errors.Is(err, sql.ErrNoRows) {
 		return row, harness.ErrNotFound
 	}
@@ -211,6 +213,9 @@ func (s *Store) CheckExecutionEffectTx(ctx context.Context, tx *sql.Tx, scope bu
 		return err
 	}
 	_, err = checkExecutionLease(ctx, tx, ExecutionLease{Scope: scope, OwnerID: owner, InputID: row.State.InputID})
+	if err == nil && row.SourceKind != "" {
+		err = validateExecutionConfig(ctx, tx, row)
+	}
 	return err
 }
 
@@ -282,5 +287,6 @@ func validateExecutionConfig(ctx context.Context, tx *sql.Tx, row executionRow) 
 	if executionDigest(input) != row.InputDigest {
 		return fmt.Errorf("%w: accepted input changed", harness.ErrExecutionUnresumable)
 	}
-	return nil
+	_, err = loadContinuationSource(ctx, tx, row)
+	return err
 }

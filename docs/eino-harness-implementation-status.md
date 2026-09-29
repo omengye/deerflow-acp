@@ -167,3 +167,14 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 以上仍为本地模型和协议 fixture；未进行真实付费模型、编辑器、官方 TCK 或 Docker 实机验收。下一项按 [通知 continuation 设计](eino-notification-continuation-design.md) 实施，使父 prompt 结束后的后台结果也能进入共享原预算的持久模型输入。
 
 最后补充：SDK Close 仅在自身等待期限真正到期且没有 cleanup uncertainty 时继续等待，避免将底层错误中的 DeadlineExceeded 误当成可重试等待。对应 SDK 后台审批与关机恢复组合 race 再次通过（25.481s）。
+
+## 第八阶段后台通知显式 continuation
+
+- SDK `ProcessBackgroundNotification` 和 ACP 协商扩展 `_deerflow/notifications/process` 接受已保存通知 ID，并同步占用父会话的前台执行槽。通知绑定独立 run/input 与不可变来源快照，复用前台 Eino TurnLoop、持久审批和恢复路径；UI 已读状态与模型投递各自独立。
+- 准入事务验证当前持有人、原任务 binding/spec、原始输入与预算成员、父会话配置和宿主策略，再保存来源、run/input、预算成员、attempt、execution 与 `continuation_started` 事件。原预算已用完时准入回滚，不新建预算 root。重复 process 返回原 execution，不重跑模型。
+- 模型接收带来源标记、可读任务结果的通知数据。原用户 prompt 和原工具结果仍只在历史中各保留一次。来源种类与 SHA 固定在 execution、manifest 和 TurnLoop checkpoint；首次运行和恢复都重新检查保存的来源、扩展 pin、原始预算与当前策略。新工具的审批不继承原有 `allow_once`。
+- 未提供 SDK 审批回调时，ask 策略留下 durable waiting；使用现有 `ResumeExecution` 批准。ACP 断连后也保留待批状态，重新附着可查询原执行并按版本恢复。
+
+真实 Eino + 本地模型服务 + SQLite close/reopen 的 SDK 测试验证父 prompt 已完成、原预算计费、较晚的新 prompt 预算独立、UI 已读后处理、重复处理、无审批等待与恢复、配置漂移、原预算耗尽及来源篡改。真实双向 ACP 管道验证断连后重新附着、待批恢复、旧版本冲突和重复处理。整模块普通测试通过；SDK/真实 ACP continuation 聚焦 race、runtime/budget/ACP/engine 全包 race、Linux amd64 无 CGO 全模块交叉编译均通过。ACP 将原预算准入失败映射为 `-32015`，携带资源名并保留通知。
+
+尚待完整 V1 的工作包括记忆与上下文压缩、MCP/模型媒体输出导入、计划与 usage 投影、有界异步事件发送、可选外部 ACP agent、MANAGE/Python 配置迁移、默认入口切换和真实编辑器/TCK/Docker 验证。自动通知调度可在显式处理接口之上继续实施。

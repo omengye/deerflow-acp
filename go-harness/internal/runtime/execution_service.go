@@ -202,6 +202,21 @@ func (s *Service) driveExecution(ctx context.Context, req harness.RunRequest, le
 }
 
 func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, lease ExecutionLease, bindings []ExecutionResumeBinding, emit harness.EventHandler) (harness.RunResult, error) {
+	var inputSource *interaction.ExecutionInputSource
+	err := withExecutionTransaction(ctx, s.Store, func(tx *sql.Tx) error {
+		row, err := checkExecutionLease(ctx, tx, lease)
+		if err != nil {
+			return err
+		}
+		if err = validateExecutionConfig(ctx, tx, row); err != nil {
+			return err
+		}
+		inputSource, err = s.executionInputSourceTx(ctx, tx, row)
+		return err
+	})
+	if err != nil {
+		return s.finishExecutionAttempt(ctx, lease, harness.RunResult{}, err, nil)
+	}
 	a := &executionAttempt{service: s, lease: lease, grants: make(map[string]PermissionGrant), requests: make(map[string]harness.PermissionRequest)}
 	targets := make(map[string]interaction.PermissionResume, len(bindings))
 	if len(bindings) > 0 {
@@ -230,7 +245,7 @@ func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, le
 	}
 	runCtx := context.WithValue(ctx, taskActorKey{}, harness.TaskActor{OwnerID: lease.OwnerID, SessionID: req.Session.ID})
 	runCtx, stopHeartbeat := keepBudgetAlive(budget.WithScope(runCtx, lease.Scope), s.Store.BudgetLedger, lease.Scope)
-	runCtx = interaction.WithExecutionHooks(runCtx, interaction.ExecutionHooks{Broker: a, Targets: targets, StageCheckpoint: a.stage})
+	runCtx = interaction.WithExecutionHooks(runCtx, interaction.ExecutionHooks{Broker: a, Targets: targets, StageCheckpoint: a.stage, InputSource: inputSource})
 	var result harness.RunResult
 	var runErr error
 	if len(bindings) == 0 {
@@ -336,6 +351,9 @@ func (s *Service) prepareExecutionResume(ctx context.Context, owner, sessionID s
 		if err = validateExecutionManifest(ctx, tx, row); err != nil {
 			return err
 		}
+		if _, err = s.executionInputSourceTx(ctx, tx, row); err != nil {
+			return err
+		}
 		config = row.Config
 		for _, b := range row.Manifest.Interrupts {
 			p, version, state, err := readExecutionIntent(ctx, tx, request.RunID, b.IntentID)
@@ -376,6 +394,13 @@ func (s *Service) prepareExecutionResume(ctx context.Context, owner, sessionID s
 	}
 	err = withExecutionTransaction(ctx, s.Store, func(tx *sql.Tx) error {
 		var err error
+		row, err := readExecution(ctx, tx, sessionID, request.RunID)
+		if err != nil {
+			return err
+		}
+		if _, err = s.executionInputSourceTx(ctx, tx, row); err != nil {
+			return err
+		}
 		lease, err = s.Store.ClaimExecutionResumeTx(ctx, tx, sessionID, owner, request, NewID())
 		if err != nil {
 			return err
@@ -465,7 +490,26 @@ func (s *Service) Execution(ctx context.Context, owner, sessionID, runID string)
 	if err := s.Coordinator.Authorize(sessionID, owner); err != nil {
 		return harness.ExecutionState{}, err
 	}
-	return s.Store.Execution(ctx, sessionID, runID)
+	state, err := s.Store.Execution(ctx, sessionID, runID)
+	if err != nil || state.Status != harness.ExecutionWaitingInput || !state.Resumable {
+		return state, err
+	}
+	// The store validates immutable source bytes; the host additionally pins the
+	// current execution policy. Report drift before displaying a resume action.
+	err = withExecutionTransaction(ctx, s.Store, func(tx *sql.Tx) error {
+		row, err := readExecution(ctx, tx, sessionID, state.RunID)
+		if err != nil {
+			return err
+		}
+		_, err = s.executionInputSourceTx(ctx, tx, row)
+		return err
+	})
+	if errors.Is(err, harness.ErrExecutionUnresumable) || errors.Is(err, harness.ErrReconciliationRequired) || errors.Is(err, harness.ErrExecutionConflict) {
+		state.Resumable = false
+		state.BlockedReason = err.Error()
+		return state, nil
+	}
+	return state, err
 }
 
 func (s *Service) ResumeExecution(ctx context.Context, owner, sessionID string, request harness.ResumeExecutionRequest, emit harness.EventHandler, approve harness.PermissionHandler) (harness.RunResult, error) {

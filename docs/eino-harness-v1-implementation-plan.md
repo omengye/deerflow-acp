@@ -156,6 +156,8 @@ go-harness/
 
 实施中已确定前台执行与后台任务分开管理。前台使用 `_deerflow/executions/*`，后台使用 `_deerflow/tasks/*` 与 `_deerflow/notifications/*`；均按真实宿主能力协商。标准 `session/resume` 只重新附着会话。后台审批需要先查询固定批次中工具的实际参数，再提交一次性决定；关机保存的 `suspended` 任务通过带版本校验的显式恢复入口继续。原生 checkpoint 和 resume target 不允许由客户端传入。后台提交沿用父 run 的预算，并只复制显式文本指令；V1 当前阶段不向后台复制 ACP client 所有的 MCP 连接或父会话附件能力。
 
+后台结果进入父模型采用独立持久 continuation。SDK `ProcessBackgroundNotification` 和协商扩展 `_deerflow/notifications/process` 只接收已保存通知 ID，以新 run/input 绑定原预算和来源快照；UI 已读、native outbox ACK 与模型投递分别记录。重复 process 返回原 execution，待批工具通过已有 executions 恢复；来源、配置或扩展版本冲突时保留通知并拒绝执行。初期使用显式处理，自动调度后续复用同一准入逻辑，详见 [通知设计](eino-notification-continuation-design.md)。
+
 **媒体与产物。** 支持文本、图片和本地 resource_link；逐会话检查模型视觉能力。图片经大小/数量/MIME 校验后持久化，checkpoint 保存引用。输出使用 ACP 标准内容/资源块及工具结果；本地文件链接可供同机客户端使用，不能假定不同机器能读取宿主路径。远程产物托管和自动下载不属于当前无 HTTP 服务的交付范围。
 
 **外部 ACP Agent。** 可选 client adapter 执行 initialize → new/load → prompt，转发工具/进度/产物和权限，并传播取消。仅启动配置白名单中的程序，使用独立 workspace，禁止默认 auto-approve。把外部 Agent 请求的 fs/terminal/permission 映射到自身策略；没有实现的 client capability 不声明。默认本地 ACP profile 保持禁用外部委派，需要显式配置启用。

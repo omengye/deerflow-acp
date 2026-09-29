@@ -21,13 +21,15 @@ type Service struct {
 	Coordinator *session.Coordinator
 	Engine      harness.Engine
 	Background  harness.BackgroundController
-	Model       string
-	Settings    ConfigSettings
-	Resources   SessionResources
-	Assets      *assets.Store
-	Media       harness.MediaConfig
-	mu          sync.Mutex
-	decisions   map[string]harness.PermissionDecision
+	// Set by the host at construction; public requests cannot supply policy.
+	ContinuationHostPolicy string
+	Model                  string
+	Settings               ConfigSettings
+	Resources              SessionResources
+	Assets                 *assets.Store
+	Media                  harness.MediaConfig
+	mu                     sync.Mutex
+	decisions              map[string]harness.PermissionDecision
 }
 
 func NewService(store *Store, engine harness.Engine, model string) *Service {

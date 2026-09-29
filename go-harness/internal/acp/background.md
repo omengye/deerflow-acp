@@ -37,6 +37,7 @@ opened or prompted through ordinary foreground APIs. Reconnect with standard
 | `_deerflow/tasks/approve` | `taskId`, `approval` | Snapshot after approval commits |
 | `_deerflow/notifications/list` | Optional numeric `after` sequence and `limit` (1..100) | `{ "notifications": [...] }` |
 | `_deerflow/notifications/ack` | `notificationId` | `{}` |
+| `_deerflow/notifications/process` | `notificationId` | Prompt-style stop reason and `_meta.deerflow.execution` |
 
 Omitted/zero limits use 100. A wait timeout returns a current snapshot. Disconnect
 or request cancellation stops that wait, not the task. Explicit task cancellation
@@ -115,11 +116,38 @@ not automatically replayed. Unowned IDs and malformed parameters are rejected.
 
 The persistent notification inbox deduplicates native outbox deliveries before
 acknowledging the outbox. Listing notifications does not acknowledge them or
-approve work. At this stage, inbox consumption as a new durable parent model
-input is still being implemented; merely acknowledging an item does not run
-the parent agent.
+approve work. UI acknowledgement does not run the parent model.
+
+### Processing a notification
+
+`background.notifications.processMethod` is advertised only when the host
+implements the optional notification processor. Call it with exactly
+`sessionId` and `notificationId`. It reserves the same foreground session slot
+as prompt and execution resume, emits standard session updates, and uses the
+normal permission exchange. An occupied foreground execution blocks a new
+admission without consuming the inbox item.
+
+Processing accepts an immutable snapshot as a new parent run/input under the
+originating budget. It preserves the original prompt, input and tool receipt;
+the model receives a marked notification, including readable task output.
+Current host/session configuration must still match the originating task.
+Earlier one-use tool approvals do not authorize new continuation tools.
+
+Repeated processing returns the execution already bound to that notification
+without calling the model again. A waiting continuation uses
+`_deerflow/executions/get|resume|cancel` with its run/version. Approval-channel
+disconnect preserves the wait for a newly attached owner. Native checkpoints
+and resume targets are never supplied by the client.
+
+Native outbox acknowledgement, UI acknowledgement, and model delivery are
+independent: processing does not mark an inbox item read, and a known UI-acked
+notification can still be processed. Processing does not happen automatically.
+If the originating budget is exhausted, processing returns `-32015` with the
+limited resource and leaves the notification unadmitted.
 
 The SDK equivalents are `BackgroundTasks`, `BackgroundTask`,
 `WaitBackgroundTask`, `CancelBackgroundTask`, `ResumeBackgroundTask`, `ApproveBackgroundTask`,
 `BackgroundNotifications` and `AcknowledgeBackgroundNotification`.
 `BackgroundPermission` provides the owner-only argument preview.
+`ProcessBackgroundNotification` performs explicit model delivery; omitting its
+SDK permission handler leaves ask-policy tools durably waiting for approval.

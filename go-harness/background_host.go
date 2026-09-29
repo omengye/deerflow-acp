@@ -67,6 +67,7 @@ func newBackgroundHost(ctx context.Context, cfg Config, store *sqlite.Store, run
 	if h.policy, err = backgroundHostPolicy(cfg); err != nil {
 		return nil, err
 	}
+	runtime.ContinuationHostPolicy = h.policy
 	if h.specs, err = hr.NewBackgroundExecutionStore(ctx, runtime.Store); err != nil {
 		return nil, err
 	}

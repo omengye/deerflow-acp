@@ -115,6 +115,10 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	if req.Session.ID == "" || req.RunID == "" {
 		return harness.RunResult{}, errors.New("session ID and run ID are required")
 	}
+	source, err := executionInputSource(ctx, req)
+	if err != nil {
+		return harness.RunResult{}, err
+	}
 	budget, err := e.newBudget(ctx, req)
 	if err != nil {
 		return harness.RunResult{}, err
@@ -165,6 +169,9 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		if err != nil {
 			return harness.RunResult{}, err
 		}
+		if !sameExecutionSource(source, savedCheckpoint.InputSource) {
+			return harness.RunResult{}, fmt.Errorf("%w: checkpoint input source changed", harness.ErrInvalidInput)
+		}
 		if budget.ledger != nil {
 			if savedCheckpoint.Ledger == nil {
 				return harness.RunResult{}, fmt.Errorf("%w: a local checkpoint cannot authorize durable quota", harness.ErrInvalidInput)
@@ -213,6 +220,8 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	var pinned json.RawMessage
 	if savedCheckpoint != nil {
 		pinned = savedCheckpoint.Extension
+	} else if source != nil {
+		pinned = executionHooks(ctx).InputSource.PinnedExtension
 	}
 	prepared, err := e.prepareAgent(ctx, req, "deerflow", pinned, budget, sink, ioLifecycle, permissions)
 	if prepared != nil {
@@ -332,6 +341,9 @@ func withoutNativeTermination(err error) error {
 }
 
 func (e *Engine) input(ctx context.Context, req harness.RunRequest) ([]*schema.Message, error) {
+	if hooks := executionHooks(ctx); hooks != nil && hooks.InputSource != nil {
+		return notificationInput(ctx, req)
+	}
 	for _, message := range append(append([]harness.Message(nil), req.History...), harness.Message{Content: req.Input}) {
 		for _, part := range message.Content {
 			if part.Asset != nil && part.Asset.SessionID != req.Session.ID {

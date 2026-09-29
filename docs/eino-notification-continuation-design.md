@@ -1,6 +1,6 @@
 # 后台通知进入父模型的实施设计
 
-状态：待实施。基于已接入的 native background host、共享预算和前台 durable HITL。
+状态：显式处理路径已实施并通过本地集成测试；自动调度仍待实施。基于已接入的 native background host、共享预算和前台 durable HITL。
 
 ## 目标与入口
 

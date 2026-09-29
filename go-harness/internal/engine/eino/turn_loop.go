@@ -19,12 +19,13 @@ import (
 // Runtime.BeginRun commits the actual accepted content before Engine.Run.
 // An explicit resume never substitutes new prompt text for the interrupted item.
 type turnItem struct {
-	InputID, SessionID        string
-	ConfigVersion             int64
-	Model, Mode, ApprovalMode string
-	Subagents                 bool
-	Workspace, Contract       string
-	RootBudgetID              string
+	InputID, SessionID                      string
+	ConfigVersion                           int64
+	Model, Mode, ApprovalMode               string
+	Subagents                               bool
+	Workspace, Contract                     string
+	RootBudgetID                            string
+	SourceKind, SourceSHA, SourceContentSHA string
 }
 
 func itemFor(req harness.RunRequest) turnItem {
@@ -66,6 +67,13 @@ func (e *Engine) turnLoop(ctx context.Context, req harness.RunRequest, resumeID,
 	}
 	item := itemFor(req)
 	item.Contract = contract
+	source, err := executionInputSource(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	if source != nil {
+		item.SourceKind, item.SourceSHA, item.SourceContentSHA = source.Kind, source.SHA, source.ContentSHA
+	}
 	var input []*schema.Message
 	if resumeID == "" {
 		input, err = e.input(ctx, req)
@@ -73,7 +81,7 @@ func (e *Engine) turnLoop(ctx context.Context, req harness.RunRequest, resumeID,
 			return nil, nil, err
 		}
 	}
-	checkpoints := &checkedCheckpoints{inner: e.config.CheckpointStore, key: key, budget: budget, extension: append(json.RawMessage(nil), extension...), cached: saved, hooks: hooks}
+	checkpoints := &checkedCheckpoints{inner: e.config.CheckpointStore, key: key, budget: budget, extension: append(json.RawMessage(nil), extension...), cached: saved, hooks: hooks, inputSource: source}
 	loop := adk.NewTurnLoop(adk.TurnLoopConfig[turnItem, *schema.Message]{
 		Store: checkpoints, CheckpointID: key, SessionID: req.Session.ID, SessionStore: e.config.SessionStore,
 		GenInput: func(_ context.Context, _ *adk.TurnLoop[turnItem, *schema.Message], items []turnItem) (*adk.GenInputResult[turnItem, *schema.Message], error) {
@@ -126,12 +134,13 @@ func (e *Engine) turnLoop(ctx context.Context, req harness.RunRequest, resumeID,
 // execution budget and extension state alongside it. Older development formats
 // are rejected rather than restoring execution with reset counters or policies.
 type checkpointEnvelope struct {
-	Version    int                         `json:"version"`
-	Native     []byte                      `json:"native"`
-	Budget     *budgetSnapshot             `json:"budget"`
-	Ledger     *durablebudget.Identity     `json:"ledger,omitempty"`
-	Extension  json.RawMessage             `json:"extension,omitempty"`
-	Interrupts []ExecutionInterruptBinding `json:"interrupts,omitempty"`
+	Version     int                         `json:"version"`
+	Native      []byte                      `json:"native"`
+	Budget      *budgetSnapshot             `json:"budget"`
+	Ledger      *durablebudget.Identity     `json:"ledger,omitempty"`
+	Extension   json.RawMessage             `json:"extension,omitempty"`
+	Interrupts  []ExecutionInterruptBinding `json:"interrupts,omitempty"`
+	InputSource *executionSourceIdentity    `json:"inputSource,omitempty"`
 }
 
 func decodeCheckpointEnvelope(data []byte) (*checkpointEnvelope, error) {
@@ -187,6 +196,7 @@ type checkedCheckpoints struct {
 	data         []byte
 	hooks        *ExecutionHooks
 	interrupts   []ExecutionInterruptBinding
+	inputSource  *executionSourceIdentity
 }
 
 func (s *checkedCheckpoints) setInterrupts(bindings []ExecutionInterruptBinding) {
@@ -264,7 +274,7 @@ func (s *checkedCheckpoints) commit(ctx context.Context, deleteAllowed bool) err
 			err = s.inner.Set(ctx, s.key, nil)
 		}
 	} else {
-		envelope := checkpointEnvelope{Native: s.data, Extension: s.extension, Interrupts: append([]ExecutionInterruptBinding(nil), s.interrupts...)}
+		envelope := checkpointEnvelope{Native: s.data, Extension: s.extension, Interrupts: append([]ExecutionInterruptBinding(nil), s.interrupts...), InputSource: s.inputSource}
 		if s.budget.ledger != nil {
 			envelope.Version = 2
 			envelope.Ledger, err = s.budget.durableIdentity(ctx)

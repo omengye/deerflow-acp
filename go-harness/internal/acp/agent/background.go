@@ -37,6 +37,9 @@ func backgroundCapabilities(controller harness.BackgroundController) map[string]
 	if _, ok := controller.(harness.BackgroundPermissionReader); ok {
 		capabilities["permissionMethod"] = getBackgroundPermissionMethod
 	}
+	if _, ok := controller.(harness.BackgroundNotificationProcessor); ok {
+		capabilities["notifications"].(map[string]any)["processMethod"] = processBackgroundNotificationMethod
+	}
 	return capabilities
 }
 
@@ -93,7 +96,7 @@ func decodeBackgroundRequest(method string, raw json.RawMessage) (backgroundRequ
 		keys = append(keys, "taskId", "version")
 	case approveBackgroundTaskMethod:
 		keys = append(keys, "taskId", "approval")
-	case ackBackgroundNotificationMethod:
+	case ackBackgroundNotificationMethod, processBackgroundNotificationMethod:
 		keys = append(keys, "notificationId")
 	default:
 		return req, rpcError(protocol.MethodNotFound, "Method not found")
@@ -109,7 +112,7 @@ func decodeBackgroundRequest(method string, raw json.RawMessage) (backgroundRequ
 		if !validID(req.TaskID, 256) {
 			return req, invalid
 		}
-	case ackBackgroundNotificationMethod:
+	case ackBackgroundNotificationMethod, processBackgroundNotificationMethod:
 		if !validID(req.NotificationID, 1024) {
 			return req, invalid
 		}

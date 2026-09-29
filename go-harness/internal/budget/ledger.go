@@ -524,6 +524,32 @@ func (l *Ledger) Snapshot(ctx context.Context, id string) (out Snapshot, err err
 	return
 }
 
+// CheckModelAdmissionTx checks whether a new model-backed member can enter a
+// root before the caller commits its business identity. Actual input/output
+// token reservation still happens at ReserveModel, where the request size is
+// known. This check prevents an already exhausted root from gaining a durable
+// continuation that cannot make its first model call.
+func (l *Ledger) CheckModelAdmissionTx(ctx context.Context, tx *sql.Tx, rootBudgetID string) (err error) {
+	defer func() { err = persist("check model admission", err) }()
+	r, err := readRoot(ctx, tx, rootBudgetID)
+	if err != nil {
+		return err
+	}
+	if err = l.advance(ctx, tx, r, l.config.Now().UnixNano()); err != nil {
+		return err
+	}
+	if err = blocked(r); err != nil {
+		return err
+	}
+	if r.Limits.MaxModelCalls > 0 && r.ModelCalls >= r.Limits.MaxModelCalls {
+		return &LimitError{Resource: "model_calls"}
+	}
+	if r.Limits.MaxTokens > 0 && (r.SpentTokens >= r.Limits.MaxTokens || r.HeldTokens >= r.Limits.MaxTokens-r.SpentTokens) {
+		return &LimitError{Resource: "tokens", Temporary: r.HeldTokens > 0 && r.SpentTokens < r.Limits.MaxTokens}
+	}
+	return saveRoot(ctx, tx, r)
+}
+
 func readReservation(ctx context.Context, tx *sql.Tx, id string) (Reservation, string, error) {
 	var r Reservation
 	var digest string

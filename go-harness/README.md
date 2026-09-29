@@ -122,6 +122,14 @@ approvals survive disconnect/restart and can be resolved through the SDK or ACP.
 Client-owned MCP configurations currently disable background submission. See
 [background task management](internal/acp/background.md).
 
+`ProcessBackgroundNotification` delivers a saved notification to the parent
+model as a separate durable run/input, charging the originating budget. ACP
+advertises `_deerflow/notifications/process` when this capability is available.
+Processing is explicit and independent from UI acknowledgement. Repeated calls
+return the existing execution; tools needing approval use the same durable
+execution recovery methods. With no SDK permission handler, an ask-policy tool
+remains waiting for `ResumeExecution`.
+
 ACP accepts text and file references. Images require an explicit
 `--vision-model <model-id>` (repeatable), and that model must also be selectable.
 The corresponding SDK policy is `Config.Media.VisionModels`. Up to eight images
@@ -140,7 +148,7 @@ access; ACP exposes `_deerflow/artifacts/list`. See
 [ACP media behavior](internal/acp/media.md).
 
 Raw image outputs from MCP and model-generated media still need importer wiring.
-Parent notification input scheduling, memory, compression, and full
+Automatic parent notification scheduling, memory, compression, and full
 Bridge compatibility are being integrated. Their incomplete
 status is not represented as a capability promise. This build is not the V1
 completion or default-launcher switch.

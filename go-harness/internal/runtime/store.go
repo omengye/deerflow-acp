@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS harness_tool_reconciliations (run_id TEXT NOT NULL, t
 	if err = migrateExecutions(ctx, db); err != nil {
 		return nil, err
 	}
+	if err = migrateContinuations(ctx, db); err != nil {
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 

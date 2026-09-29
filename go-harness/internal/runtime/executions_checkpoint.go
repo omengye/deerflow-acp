@@ -26,6 +26,7 @@ type ExecutionNativeHead struct {
 type ExecutionManifest struct {
 	Version                                                           int `json:"version"`
 	SessionID, RunID, InputID                                         string
+	SourceKind, SourceSHA                                             string
 	CheckpointID, CheckpointSHA, ConfigSHA, InputSHA, ReceiptFrontier string
 	EventCursor                                                       int64
 	NativeHead                                                        ExecutionNativeHead
@@ -151,7 +152,7 @@ func (s *Store) SuspendExecutionTx(ctx context.Context, tx *sql.Tx, lease Execut
 	if err = checkExecutionBindings(ctx, tx, row.State.RunID, cp.Interrupts); err != nil {
 		return row.State, err
 	}
-	m := ExecutionManifest{Version: 1, SessionID: row.State.SessionID, RunID: row.State.RunID, InputID: row.State.InputID, CheckpointID: cp.ID, CheckpointSHA: executionDigest(cp.Data), ConfigSHA: executionConfigDigest(row.Config), InputSHA: row.InputDigest, Interrupts: append([]ExecutionInterruptBinding(nil), cp.Interrupts...)}
+	m := ExecutionManifest{Version: 1, SessionID: row.State.SessionID, RunID: row.State.RunID, InputID: row.State.InputID, SourceKind: row.SourceKind, SourceSHA: row.SourceSHA, CheckpointID: cp.ID, CheckpointSHA: executionDigest(cp.Data), ConfigSHA: executionConfigDigest(row.Config), InputSHA: row.InputDigest, Interrupts: append([]ExecutionInterruptBinding(nil), cp.Interrupts...)}
 	m.NativeHead, err = executionNativeHead(ctx, tx, row.State.SessionID)
 	if err != nil {
 		return row.State, err
@@ -194,7 +195,7 @@ func (s *Store) SuspendExecutionTx(ctx context.Context, tx *sql.Tx, lease Execut
 
 func validateExecutionManifest(ctx context.Context, tx *sql.Tx, row executionRow) error {
 	m := row.Manifest
-	if m == nil || m.Version != 1 || m.SessionID != row.State.SessionID || m.RunID != row.State.RunID || m.InputID != row.State.InputID || m.CheckpointID != "harness/turn/v1/"+row.State.RunID || m.ConfigSHA != executionConfigDigest(row.Config) || m.InputSHA != row.InputDigest {
+	if m == nil || m.Version != 1 || m.SessionID != row.State.SessionID || m.RunID != row.State.RunID || m.InputID != row.State.InputID || m.SourceKind != row.SourceKind || m.SourceSHA != row.SourceSHA || m.CheckpointID != "harness/turn/v1/"+row.State.RunID || m.ConfigSHA != executionConfigDigest(row.Config) || m.InputSHA != row.InputDigest {
 		return fmt.Errorf("%w: missing or mismatched checkpoint manifest", harness.ErrExecutionUnresumable)
 	}
 	if err := validateExecutionConfig(ctx, tx, row); err != nil {
