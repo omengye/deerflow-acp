@@ -435,9 +435,11 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 	case "budget_exhausted":
 		update = map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": a.streamMessageID(e, "assistant"), "content": harness.Content{Type: "text", Text: e.Text}, "_meta": map[string]any{"deerflow": map[string]any{"event": "budget_exhausted"}}}
 	case "tool_start":
-		a.resetContentStream(e)
 		update = map[string]any{"sessionUpdate": "tool_call", "toolCallId": e.ToolCallID, "title": e.ToolName, "kind": "other", "status": e.Status, "rawInput": e.Arguments}
 	case "tool_execute", "tool_update", "tool_end", "tool_reconciled":
+		if e.Kind == "tool_end" || e.Kind == "tool_reconciled" {
+			a.resetContentStream(e)
+		}
 		update = map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": e.ToolCallID, "status": e.Status}
 		if e.Kind == "tool_reconciled" && e.Status != "completed" {
 			update["status"] = "failed"
@@ -494,9 +496,11 @@ func contentMessageID(e harness.RunEvent, role string) string {
 	return fmt.Sprintf("%s/%d/%s", e.SessionID, e.Sequence, role)
 }
 
-// A tool call separates assistant messages within a run. The first persisted
-// event sequence after that boundary identifies the new message, so live
-// streaming and a full session/load replay derive the same IDs.
+// A terminal tool event separates assistant messages within a run. Eino can
+// publish the pending tool card before the model's preceding text delta, so
+// resetting at tool_start would give both that text and the next model reply
+// the same ID. The first persisted event sequence after the terminal boundary
+// identifies the new message in live streaming and session/load replay.
 func (a *Agent) streamMessageID(e harness.RunEvent, role string) string {
 	key := contentKey{e.SessionID, role}
 	a.mu.Lock()

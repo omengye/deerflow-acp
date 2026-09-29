@@ -28,7 +28,7 @@
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
 | 可选外部 ACP Agent | 首轮接入：显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次估算模型调用计入父预算 | 断线后的反向权限暂停/恢复、远端真实模型用量约束、产物导入与异常会话对账 |
-| 打包 / 默认切换 | 独立 Go ACP 便携包脚本与包内说明已写入；Windows Debug/Release 包实测 Bridge 自动启动 Go daemon，并完成 status/stop；默认入口未切换 | Linux 包的完整运行、真实编辑器、回退和默认切换演练 |
+| 打包 / 默认切换 | 独立 Go ACP 便携包脚本与包内说明已写入；Windows Debug/Release 与 WSL Ubuntu Linux Debug 包实测 Bridge 自动启动 Go daemon，并完成 status/stop；默认入口未切换 | 原生 Linux/远端 CI、真实编辑器、回退和默认切换演练 |
 
 ## 已确认的实施差异
 
@@ -346,4 +346,11 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 增加 Windows PowerShell 与 Linux x86_64 打包脚本，分别编译 Rust Bridge、Go daemon 与 Go 直接 stdio Agent，加入许可证和包内运行说明；Windows 可生成 ZIP，Linux 可生成 tar.gz。包放在独立 `dist/go-acp/` 路径，数据目录与 runtime 目录单独指定；现有 Python 默认入口没有改变。
 - Bridge 查找同目录 `deerflow-acpd` 的顺序提前到父目录 Python `.venv` 之前，包内 `runtime/python` 仍优先。测试覆盖这两种布局，避免解压在已有 Python 开发目录下时误启动 Python daemon。
 - Windows Debug 包和 Release 包均从包内 Bridge 实测 `--start-daemon`、`--status`、`--stop-daemon` 成功；Release ZIP 包含三份非空可执行文件、许可证和 README。`cargo fmt --check` 与 `cargo test --locked` 已通过，Rust 共 11 项测试。Linux 打包脚本通过 `bash -n`，尚未在 Linux 编译与运行完整包。
-- CI 定义增加 Windows/Linux 包构建和 daemon 生命周期 smoke；该工作流尚未推送，不能视为远端跨平台通过。本机 WSL 仅完成此前记录的直接 stdio 基础验证；Docker daemon 仍不可用。真实编辑器、配置映射、模型生成媒体、外部 ACP 断线审批与远端预算、完整 Linux 包和默认切换演练仍待验收。
+- CI 定义增加 Windows/Linux 包构建和 daemon 生命周期 smoke；该工作流尚未推送，不能视为远端跨平台通过。Linux 包的 WSL 运行及 Bridge 互操作结果见下一阶段；Docker daemon 仍不可用。真实编辑器、配置映射、模型生成媒体、外部 ACP 断线审批与远端预算、原生 Linux 和默认切换演练仍待验收。
+
+## 第三十二阶段 Linux 包运行与 Bridge 流式修复
+
+- 在本机 WSL Ubuntu 22.04 安装 Go 1.26.8 和 Rust 1.98.1 后，Linux Debug 打包脚本完整生成三份 ELF 可执行文件及 tar.gz；核对归档内容并从包内 Bridge 实测 Go daemon 的启动、状态查询和停止。修复后重打包的 Bridge 还完成了真实 stdio `initialize → session/new`。该结果是 WSL Linux 运行验证，不等同于远端 CI 或独立 Linux 主机验收。
+- Linux 真实 v1 Bridge 进程测试发现 `initialize` 响应积在 Rust stdout，直到代理退出才被客户端读到。Bridge 现在逐块转发 daemon 输出并立即 flush。修复后 Windows/Linux 的 `TestExistingRustBridge` 均通过三轮，避免客户端在等待首个响应时卡住。
+- Linux v2 进程测试发现 Eino 可先发出 `tool_start` 再发出工具前的模型文本，按 `tool_start` 重置消息 ID 会把工具前后文本合并。现改在 `tool_end`/`tool_reconciled` 终态重置；ACP 单测模拟该顺序，历史回放与实时 ID 由现有 v2 进程测试覆盖。Linux v2 单独十轮和 v1/v2 组合三轮通过；Windows v1/v2 组合三轮、ACP agent 全包测试及 Rust 11 项单测通过。
+- 五轮 Linux v1/v2 组合测试曾有一轮 v2 权限 prompt 返回内部错误，后续十轮 v2 与三轮组合未复现。失败时的测试输出现包含协议更新，便于后续定位；这项偶发性仍需在远端 CI 和真实编辑器中观察。`cargo fmt --check`、`git diff --check` 通过。默认入口、Docker、外部 ACP 断线审批与远端预算等完整 V1 缺口仍未关闭。

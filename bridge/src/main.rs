@@ -819,8 +819,18 @@ fn proxy(mut stream: TcpStream) -> Result<()> {
     });
 
     let mut output = io::stdout().lock();
-    io::copy(&mut stream, &mut output)?;
-    output.flush()?;
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(size) => {
+                output.write_all(&buffer[..size])?;
+                output.flush()?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
     Ok(())
 }
 

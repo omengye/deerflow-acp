@@ -318,7 +318,11 @@ func TestExistingRustBridgeV2Lifecycle(t *testing.T) {
 	client.request(t, "session/prompt", map[string]any{"sessionId": first, "prompt": []any{map[string]string{"type": "text", "text": "write-permission"}}})
 	client.waitState(t, first, "running")
 	if idle := client.waitState(t, first, "idle"); idle["stopReason"] != "end_turn" {
-		t.Fatalf("permission prompt idle: %+v", idle)
+		var updates []string
+		for _, raw := range client.seen[permissionStart:] {
+			updates = append(updates, string(raw))
+		}
+		t.Fatalf("permission prompt idle: %+v updates=%s", idle, strings.Join(updates, "\n"))
 	}
 	client.assertUpdateSession(t, permissionStart, first)
 	var beforeToolID, afterToolID string
@@ -346,7 +350,11 @@ func TestExistingRustBridgeV2Lifecycle(t *testing.T) {
 		}
 	}
 	if beforeToolID == "" || afterToolID == "" || beforeToolID == afterToolID {
-		t.Fatalf("tool-separated assistant messages lack distinct IDs: before=%q after=%q", beforeToolID, afterToolID)
+		var updates []string
+		for _, raw := range client.seen[permissionStart:] {
+			updates = append(updates, string(raw))
+		}
+		t.Fatalf("tool-separated assistant messages lack distinct IDs: before=%q after=%q updates=%s", beforeToolID, afterToolID, strings.Join(updates, "\n"))
 	}
 	if client.permissions != 1 {
 		t.Fatalf("v2 permission requests: %d", client.permissions)

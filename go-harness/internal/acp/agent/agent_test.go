@@ -331,10 +331,11 @@ func TestReversePermissionDuringActivePrompt(t *testing.T) {
 	decision := make(chan harness.PermissionDecision, 1)
 	f := newFixture(t, engineFunc(func(ctx context.Context, req harness.RunRequest, emit harness.EventHandler, permission harness.PermissionHandler) (harness.RunResult, error) {
 		args := json.RawMessage(`{"path":"result.txt","text":"ok"}`)
-		if err := emit(ctx, harness.RunEvent{Kind: "text_delta", Text: "Preparing."}); err != nil {
+		if err := emit(ctx, harness.RunEvent{Kind: "tool_start", ToolCallID: "write-1", ToolName: "write_file", Status: "pending", Arguments: args}); err != nil {
 			return harness.RunResult{}, err
 		}
-		if err := emit(ctx, harness.RunEvent{Kind: "tool_start", ToolCallID: "write-1", ToolName: "write_file", Status: "pending", Arguments: args}); err != nil {
+		// Eino may publish the pending card before the model's preceding text.
+		if err := emit(ctx, harness.RunEvent{Kind: "text_delta", Text: "Preparing."}); err != nil {
 			return harness.RunResult{}, err
 		}
 		approved, err := permission(ctx, harness.PermissionRequest{ToolCallID: "write-1", ToolName: "write_file", Arguments: args})
@@ -360,11 +361,11 @@ func TestReversePermissionDuringActivePrompt(t *testing.T) {
 	c.initialize(t)
 	sessionID := c.newSession(t, f.cwd)
 	id := c.request(t, "session/prompt", promptParams(sessionID, "write result"))
-	beforeTool := update(t, c.read(t), sessionID, "agent_message_chunk")
 	started := update(t, c.read(t), sessionID, "tool_call")
 	if started.Update.ToolCallID != "write-1" || started.Update.Status != "pending" {
 		t.Fatalf("tool start=%+v", started)
 	}
+	beforeTool := update(t, c.read(t), sessionID, "agent_message_chunk")
 	permission := c.read(t)
 	if permission.Method != "session/request_permission" || permission.ID == nil {
 		t.Fatalf("reverse request=%+v", permission)
