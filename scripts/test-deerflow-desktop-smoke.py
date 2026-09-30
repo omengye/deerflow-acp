@@ -375,7 +375,7 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-def isolated_environment(root):
+def isolated_environment(root, backend):
     # Build an allowlist, rather than inheriting provider credentials or PYTHONPATH.
     keep = {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "NUMBER_OF_PROCESSORS",
             "PROCESSOR_ARCHITECTURE", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA", "OS"}
@@ -392,11 +392,13 @@ def isolated_environment(root):
         "DEER_FLOW_PORTABLE_ROOT": str(root), "DEER_FLOW_CONFIG_PATH": str(root / "user-data/config/config.yaml"),
         "DEER_FLOW_ACP_RUNTIME_DIR": str(root / "user-data/runtime/acp"),
         "DEER_FLOW_ACP_PYTHON": str(root / "runtime/python.exe"),
-        "DEER_FLOW_DESKTOP_ACP_BACKEND": "python",
+        "DEER_FLOW_DESKTOP_ACP_BACKEND": backend,
         "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONNOUSERSITE": "1", "WAKU_APP_EXECUTABLE": str(root / "deerflow-desktop.exe"),
         "LANGCHAIN_TRACING_V2": "false", "LANGSMITH_TRACING": "false", "NO_PROXY": "127.0.0.1,localhost",
     })
+    if backend == "go":
+        env["DEERFLOW_GO_DATA_DIR"] = str(root / "user-data/data/go-harness")
     return env
 
 
@@ -431,6 +433,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", required=True, type=Path, help="Fresh extracted Windows Desktop package")
     parser.add_argument("--no-chat", action="store_true", help="Skip the optional local fake-model conversation checks")
+    parser.add_argument("--backend", choices=("python", "go"), default="python", help="ACP daemon selected by Desktop")
     args = parser.parse_args()
     require(os.name == "nt", "This smoke test targets the Windows portable package")
     package = args.package.resolve(strict=True)
@@ -442,6 +445,8 @@ def main():
     require(not below(root, package), "Smoke output must not be inside the supplied package")
     for item in ("runtime/python.exe", "resources/default-config.yaml", "waku-daemon.exe", "deerflow-acp.exe", "deerflow-desktop.exe"):
         require((package / item).is_file(), f"Incomplete package: {item}")
+    if args.backend == "go":
+        require((package / "deerflow-acpd.exe").is_file(), "Incomplete package: deerflow-acpd.exe")
     root.mkdir(parents=True)
     logs.mkdir()
     report = {"package": str(package), "smoke_root": str(root), "ok": False, "checks": [], "cleanup_errors": []}
@@ -465,14 +470,18 @@ def main():
                     source = Path(current) / name
                     require(not source.is_symlink() and not source.is_junction(), f"Package contains a reparse point: {source}")
             shutil.copytree(package / directory, root / directory)
-        for name in ("waku-daemon.exe", "deerflow-acp.exe", "deerflow-desktop.exe"):
+        binaries = ["waku-daemon.exe", "deerflow-acp.exe", "deerflow-desktop.exe"]
+        if args.backend == "go":
+            binaries.append("deerflow-acpd.exe")
+        for name in binaries:
             shutil.copy2(package / name, root / name)
         log("Copied immutable package allowlist")
-        env = isolated_environment(root)
+        env = isolated_environment(root, args.backend)
         config = root / "user-data/config/config.yaml"
-        runtime = root / "user-data/runtime/acp"
+        runtime = root / ("user-data/runtime/acp-go" if args.backend == "go" else "user-data/runtime/acp")
         interpreter = root / "runtime/python.exe"
-        bridge_args = [root / "deerflow-acp.exe", "--config", config, "--python", interpreter, "--runtime-dir", runtime]
+        backend_args = ["--daemon", root / "deerflow-acpd.exe"] if args.backend == "go" else ["--python", interpreter]
+        bridge_args = [root / "deerflow-acp.exe", "--config", config, *backend_args, "--runtime-dir", runtime]
         token = secrets.token_hex(24)
         daemon_env = {**env, "WAKU_DAEMON_TOKEN": token}
         process = JsonProcess([root / "waku-daemon.exe", "--bind", "127.0.0.1:0", "--parent-pid", os.getpid()], daemon_env, root, logs, "waku-daemon")
@@ -483,6 +492,7 @@ def main():
         snapshot = waku.deerflow("snapshot")
         require(below(Path(snapshot["paths"]["config"]), root), "Snapshot config escaped isolated package")
         require(snapshot["models"], "Default snapshot contains no model")
+        require(waku.deerflow("status").get("acp_backend") == args.backend, "Desktop selected the wrong ACP backend")
         document = copy.deepcopy(snapshot)
         for model in document["models"]:
             model.update(api_key="", clear_api_key=True, base_url="http://127.0.0.1:9/v1")
@@ -788,10 +798,13 @@ def main():
                     capture_output=True, timeout=40, creationflags=CREATE_FLAGS)
                 (logs / "cleanup-bridge.log").write_bytes(result.stdout + result.stderr)
                 if result.returncode:
-                    stop_verified_python(root / "user-data/runtime/acp/endpoint.json", root / "runtime/python.exe",
-                                         root / "user-data/config/config.yaml", log)
+                    if args.backend == "python":
+                        stop_verified_python(root / "user-data/runtime/acp/endpoint.json", root / "runtime/python.exe",
+                                             root / "user-data/config/config.yaml", log)
+                    else:
+                        report["cleanup_errors"].append(f"Go daemon stop returned {result.returncode}")
             except Exception as exc:
-                report["cleanup_errors"].append(f"Python daemon: {exc}")
+                report["cleanup_errors"].append(f"ACP daemon: {exc}")
         if fake:
             fake.shutdown()
             fake.server_close()

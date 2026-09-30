@@ -20,7 +20,12 @@ DeerFlow publishing endpoints.
 
 Run `deerflow-desktop.exe` from an extracted Windows package. `waku-daemon.exe`
 remains the internal companion executable; its name is not a separate product.
-The runtime and `deerflow-acp.exe` sit beside the desktop executable.
+The Python settings runtime, `deerflow-acp.exe` Bridge and `deerflow-acpd.exe`
+Go daemon sit beside the desktop executable. New installations use Go for ACP.
+Existing Python ACP session databases continue on Python until migrated.
+`DEER_FLOW_DESKTOP_ACP_BACKEND=python` selects the old runtime explicitly;
+`go` selects the bundled Go daemon. The two backends have separate data and
+endpoint directories, so rollback does not overwrite either history.
 
 All desktop state lives in `user-data/desktop`, including `app.db`, `app.json`,
 `state.json`, daemon `settings.json`, blobs, model-cache, projectless workspaces,
@@ -43,7 +48,7 @@ From the repository root run:
 ./scripts/build-deerflow-desktop.ps1
 ```
 
-The script builds the native desktop, internal daemon and ACP bridge, then copies
+The script builds the native desktop, internal daemon, ACP Bridge and Go ACP daemon, then copies
 a clean embedded runtime from `dist/portable/DeerFlow` when available (or builds
 one in a fresh staging directory). It never copies the source package's
 `user-data`, and it refuses to replace an existing output directory. Each build
@@ -53,7 +58,13 @@ runtime source; `-RebuildRuntime` forces a fresh locked Python runtime build.
 `.build-cache/desktop-build` beneath the repository, or `CARGO_TARGET_DIR` when
 set). `-SkipBuild` packages binaries already present there. Templates and bundled
 skills always come from the current repository; the existing runtime contributes
-Python/dependencies and its Python license only.
+Python/dependencies and its Python license only. Python remains in the package
+for Settings and ACP rollback.
+
+After extracting a new package, run
+`python scripts/test-deerflow-desktop-smoke.py --package PATH --backend go`
+to exercise the default Go path. Use `--backend python` to check the rollback
+path. The smoke script copies the package into an isolated build-cache directory.
 
 The desktop-derived code and its changes are GPL-3.0-only. DeerFlow's separate
 source tree retains its existing license. Binary distribution must include the
