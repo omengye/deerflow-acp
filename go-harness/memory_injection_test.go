@@ -239,3 +239,101 @@ func TestMemoryExtensionResumePinsSelectedFactsAndIdentity(t *testing.T) {
 		t.Fatalf("changed memory identity=%v", err)
 	}
 }
+
+func TestDesktopMemoryPolicyScopesInjectionAndTool(t *testing.T) {
+	ctx := context.Background()
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	registry, err := skills.NewRegistry(ctx, harness.SkillsConfig{}, db.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	manager, err := mcp.New(harness.MCPPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	store, err := memory.New(ctx, db.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	for _, item := range []struct {
+		kind      memory.ScopeKind
+		sessionID string
+		content   string
+	}{
+		{memory.SessionScope, "first", "orchid first-session preference"},
+		{memory.SessionScope, "second", "orchid second-session preference"},
+		{memory.WorkspaceScope, "", "orchid workspace preference"},
+		{memory.SessionScope, "first", "unrelated cobalt preference"},
+	} {
+		scope, err := memory.NewScope(item.kind, workspace, item.sessionID, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Create(ctx, scope, memory.Candidate{Content: item.content, Category: "preference", Confidence: .9, Source: memory.Source{ID: item.content, Kind: "operator"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := harness.RunRequest{Session: harness.Session{ID: "first", CWD: workspace, Mode: "plan"}, Input: []harness.Content{{Type: "text", Text: "orchid"}}}
+	disabled := false
+	for _, tc := range []struct {
+		name       string
+		cfg        Config
+		want       []string
+		absent     []string
+		searchTool bool
+	}{
+		{"session middleware", Config{MemoryScope: harness.MemorySession, MemoryMode: "middleware", MemoryExtraction: true}, []string{"first-session"}, []string{"second-session", "workspace", "cobalt"}, false},
+		{"workspace middleware", Config{MemoryScope: harness.MemoryWorkspace, MemoryMode: "middleware"}, []string{"workspace"}, []string{"first-session", "second-session"}, false},
+		{"session tool", Config{MemoryScope: harness.MemorySession, MemoryMode: "tool", MemoryExtraction: true}, nil, []string{"first-session", "workspace"}, true},
+		{"injection disabled", Config{MemoryScope: harness.MemorySession, MemoryMode: "middleware", MemoryInjectionEnabled: &disabled, MemoryExtraction: true}, nil, []string{"first-session", "workspace"}, false},
+		{"retrieval disabled", Config{MemoryScope: harness.MemorySession, MemoryMode: "middleware", MemoryRetrievalEnabled: &disabled}, []string{"first-session", "cobalt"}, []string{"second-session", "workspace"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := extensionFactory(tc.cfg, manager, registry, nil, store)(ctx, req, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer out.Cleanup()
+			for _, value := range tc.want {
+				if !strings.Contains(out.InstructionAppend, value) {
+					t.Fatalf("memory %q absent from injection: %s", value, out.InstructionAppend)
+				}
+			}
+			for _, value := range tc.absent {
+				if strings.Contains(out.InstructionAppend, value) {
+					t.Fatalf("memory %q crossed policy: %s", value, out.InstructionAppend)
+				}
+			}
+			if (out.PostRunFactory != nil) != tc.cfg.MemoryExtraction {
+				t.Fatalf("extraction enabled=%v, want=%v", out.PostRunFactory != nil, tc.cfg.MemoryExtraction)
+			}
+			found := false
+			for _, tool := range out.Tools {
+				info, err := tool.Info(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found = found || info.Name == "search_memory"
+			}
+			if found != tc.searchTool {
+				t.Fatalf("search_memory present=%v, want=%v", found, tc.searchTool)
+			}
+		})
+	}
+	firstHits, err := searchMemory(ctx, store, req, Config{MemoryScope: harness.MemorySession}, "orchid", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Session.ID = "second"
+	secondHits, err := searchMemory(ctx, store, req, Config{MemoryScope: harness.MemorySession}, "orchid", 12)
+	if err != nil || len(firstHits) != 1 || len(secondHits) != 1 || firstHits[0].Content == secondHits[0].Content {
+		t.Fatalf("session search leaked facts: first=%+v second=%+v err=%v", firstHits, secondHits, err)
+	}
+}

@@ -1434,6 +1434,12 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                 "JSON 字符串数组",
                 Kind::Json,
             );
+            add(
+                "/client_mcp_servers".into(),
+                "会话 MCP 服务器（Go ACP）",
+                "JSON 数组；仅支持 stdio。每项填写 name、绝对 command、args 数组及 env 名值数组；敏感值请放在 env。须先在宿主 config.yaml 启用 local_acp.accept_client_mcp_servers，并将命令加入 client_mcp_allowed_commands。环境变量值保存后会脱敏。",
+                Kind::Json,
+            );
             if state.advanced {
                 add(
                     "/tools".into(),
@@ -1451,6 +1457,7 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
             }
         }
         Section::Runtime => {
+            let go_backend = state.status["acp_backend"] == "go";
             for (key, label, hint, kind) in [
                 (
                     "model_name",
@@ -1461,7 +1468,11 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                 (
                     "agent_name",
                     "默认智能体",
-                    "留空使用默认智能体",
+                    if go_backend {
+                        "Go ACP 当前仅运行默认智能体；此项暂不生效"
+                    } else {
+                        "留空使用默认智能体"
+                    },
                     Kind::Optional,
                 ),
                 (
@@ -1474,7 +1485,11 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                 (
                     "subagent_enabled",
                     "启用子智能体",
-                    "允许委派独立工作",
+                    if go_backend {
+                        "Go ACP 当前提供通用 task 委派；自定义子智能体配置尚未接入"
+                    } else {
+                        "允许委派独立工作"
+                    },
                     Kind::Bool,
                 ),
                 (
@@ -1505,7 +1520,11 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                 (
                     "memory_scope",
                     "记忆范围",
-                    "",
+                    if go_backend {
+                        "Go ACP 支持工作区和会话范围；全局范围暂不支持"
+                    } else {
+                        ""
+                    },
                     Kind::Choice(&[
                         ("workspace", "工作区"),
                         ("session", "单个会话"),
@@ -3104,6 +3123,20 @@ fn redact_deerflow_message(message: &str, document: Option<&Value>) -> String {
     let mut secrets = Vec::new();
     if let Some(document) = document {
         collect(document, false, &mut secrets);
+        for server in document["client_mcp_servers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            for env in server["env"].as_array().into_iter().flatten() {
+                if let Some(value) = env["value"].as_str()
+                    && !value.is_empty()
+                    && value != "__DEERFLOW_REDACTED__"
+                {
+                    secrets.push(value.to_owned());
+                }
+            }
+        }
     }
     secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
     secrets.dedup();
@@ -3266,13 +3299,14 @@ mod integrity_tests {
     }
     #[test]
     fn service_errors_hide_unsaved_and_nested_secrets() {
-        let doc = json!({"models":[{"api_key":"sk-test-private"}],"tools":[{"headers":{"authorization":"Bearer local-secret"}}]});
+        let doc = json!({"models":[{"api_key":"sk-test-private"}],"tools":[{"headers":{"authorization":"Bearer local-secret"}}],"client_mcp_servers":[{"name":"fixture","env":[{"name":"MCP_KEY","value":"mcp-private"}]}]});
         let text = redact_deerflow_message(
-            "request sk-test-private failed: Bearer local-secret",
+            "request sk-test-private failed: Bearer local-secret mcp-private",
             Some(&doc),
         );
         assert!(!text.contains("sk-test-private"));
         assert!(!text.contains("local-secret"));
+        assert!(!text.contains("mcp-private"));
         assert!(text.contains("[REDACTED]"));
     }
     #[test]

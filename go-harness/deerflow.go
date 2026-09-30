@@ -81,6 +81,16 @@ type Config struct {
 	// SDK default (enabled). False keeps facts available to operator management
 	// while disabling prompt injection, search_memory and extraction.
 	MemoryEnabled *bool
+	// MemoryScope limits model-visible memory to the selected desktop ACP
+	// attachment. Empty preserves the Go SDK's session/workspace/user behavior.
+	MemoryScope harness.MemoryScope
+	// MemoryMode is empty for the Go SDK's original injection-plus-tool surface.
+	// Desktop middleware mode injects facts; tool mode exposes search_memory.
+	MemoryMode string
+	// Nil retains the SDK defaults. Injection and retrieval are independent:
+	// disabling retrieval injects a bounded list of facts in middleware mode.
+	MemoryInjectionEnabled *bool
+	MemoryRetrievalEnabled *bool
 	// MemoryExtraction enables a bounded post-turn model call that proposes
 	// descriptive facts for terminal promotion. Disabled by default.
 	MemoryExtraction bool
@@ -159,6 +169,15 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	}
 	if cfg.MemoryUserID != "" && (len(cfg.MemoryUserID) > 256 || strings.TrimSpace(cfg.MemoryUserID) != cfg.MemoryUserID || strings.ContainsRune(cfg.MemoryUserID, 0) || !utf8.ValidString(cfg.MemoryUserID)) {
 		return nil, fmt.Errorf("%w: invalid memory user identity", harness.ErrInvalidInput)
+	}
+	if cfg.MemoryScope != "" && cfg.MemoryScope != harness.MemorySession && cfg.MemoryScope != harness.MemoryWorkspace {
+		return nil, fmt.Errorf("%w: memory scope must be session or workspace; global is not supported by the Go store", harness.ErrInvalidInput)
+	}
+	if cfg.MemoryMode != "" && cfg.MemoryMode != "middleware" && cfg.MemoryMode != "tool" {
+		return nil, fmt.Errorf("%w: memory mode must be middleware or tool", harness.ErrInvalidInput)
+	}
+	if cfg.MemoryMode == "tool" && cfg.MemoryRetrievalEnabled != nil && !*cfg.MemoryRetrievalEnabled && (cfg.MemoryEnabled == nil || *cfg.MemoryEnabled) {
+		return nil, fmt.Errorf("%w: memory tool mode requires retrieval_enabled=true", harness.ErrInvalidInput)
 	}
 	cfg.Media.VisionModels = slices.Clone(cfg.Media.VisionModels)
 	cfg.ACPAgents = maps.Clone(cfg.ACPAgents)

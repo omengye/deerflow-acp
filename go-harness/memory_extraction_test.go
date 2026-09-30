@@ -104,6 +104,67 @@ func TestEinoMemoryExtractionPromotesOnlyCompletedTurn(t *testing.T) {
 	}
 }
 
+func TestDesktopSessionMemoryExtractionStaysInSession(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			http.Error(w, "decode", 400)
+			return
+		}
+		for _, message := range request.Messages {
+			if message.Role == "system" && strings.Contains(string(message.Content), "Extract only durable facts") {
+				if !strings.Contains(string(message.Content), `\"scope\":\"session\"`) {
+					t.Errorf("extraction scope prompt=%s", message.Content)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				content := `{"facts":[{"scope":"session","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise Chinese answers","confidence":0.92},{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"Should not enter workspace","confidence":0.92}]}`
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}})
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"id\":\"main\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer provider.Close()
+	ctx := context.Background()
+	limits := harness.BudgetLimits{MaxModelCalls: 3, MaxTokens: 20000, MaxOutputTokens: 512}
+	c, err := Open(ctx, Config{DataDir: t.TempDir(), Provider: "openai", Model: "fixture", APIKey: "fixture", BaseURL: provider.URL + "/v1", Budget: &limits, MemoryScope: harness.MemorySession, MemoryMode: "middleware", MemoryExtraction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	workspace := t.TempDir()
+	first, err := c.NewSession(ctx, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.NewSession(ctx, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Run(ctx, first.ID, []harness.Content{{Type: "text", Text: "Please answer concisely in Chinese"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	firstFacts, err := c.MemoryFacts(ctx, first.ID, harness.MemorySession, "", 10)
+	if err != nil || len(firstFacts.Facts) != 1 {
+		t.Fatalf("first session facts=%+v err=%v", firstFacts, err)
+	}
+	secondFacts, err := c.MemoryFacts(ctx, second.ID, harness.MemorySession, "", 10)
+	if err != nil || len(secondFacts.Facts) != 0 {
+		t.Fatalf("second session facts=%+v err=%v", secondFacts, err)
+	}
+	workspaceFacts, err := c.MemoryFacts(ctx, first.ID, harness.MemoryWorkspace, "", 10)
+	if err != nil || len(workspaceFacts.Facts) != 0 {
+		t.Fatalf("workspace facts=%+v err=%v", workspaceFacts, err)
+	}
+}
+
 func TestEinoOptionalMemoryExtractionSkipsWhenModelQuotaUsed(t *testing.T) {
 	var calls atomic.Int32
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

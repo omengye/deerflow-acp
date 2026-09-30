@@ -72,15 +72,23 @@ func memoryQuery(input []harness.Content) string {
 	return query.String()
 }
 
-func selectMemory(ctx context.Context, store *memory.Store, req harness.RunRequest, userID string) ([]memorySnapshot, error) {
-	query := memoryQuery(req.Input)
-	if query == "" {
-		return nil, nil
+func modelMemoryScopes(cfg Config) []harness.MemoryScope {
+	if cfg.MemoryScope != "" {
+		return []harness.MemoryScope{cfg.MemoryScope}
 	}
+	return []harness.MemoryScope{harness.MemorySession, harness.MemoryWorkspace, harness.MemoryUser}
+}
+
+func injectMemory(cfg Config) bool {
+	return cfg.MemoryMode != "tool" && (cfg.MemoryInjectionEnabled == nil || *cfg.MemoryInjectionEnabled)
+}
+
+func selectMemory(ctx context.Context, store *memory.Store, req harness.RunRequest, cfg Config) ([]memorySnapshot, error) {
+	query := memoryQuery(req.Input)
 	snapshots := make([]memorySnapshot, 0, 3)
 	bytesLeft := 4096
-	for _, kind := range []harness.MemoryScope{harness.MemorySession, harness.MemoryWorkspace, harness.MemoryUser} {
-		if kind == harness.MemoryUser && userID == "" {
+	for _, kind := range modelMemoryScopes(cfg) {
+		if kind == harness.MemoryUser && cfg.MemoryUserID == "" {
 			continue
 		}
 		var sessionID, subjectUser string
@@ -88,13 +96,33 @@ func selectMemory(ctx context.Context, store *memory.Store, req harness.RunReque
 			sessionID = req.Session.ID
 		}
 		if kind == harness.MemoryUser {
-			subjectUser = userID
+			subjectUser = cfg.MemoryUserID
 		}
 		scope, err := memory.NewScope(memory.ScopeKind(kind), req.Session.CWD, sessionID, subjectUser, "")
 		if err != nil {
 			return nil, err
 		}
-		facts, revision, err := store.SnapshotSearch(ctx, scope, query, 6)
+		var facts []memory.Fact
+		var revision int64
+		if !injectMemory(cfg) || query == "" {
+			// Extraction still needs a pinned scope revision when memory is not
+			// exposed to the model in this turn.
+			page, listErr := store.List(ctx, scope, "", 1)
+			if listErr != nil {
+				return nil, listErr
+			}
+			revision = page.ScopeRevision
+		} else if cfg.MemoryRetrievalEnabled != nil && !*cfg.MemoryRetrievalEnabled {
+			// DeerMem's retrieval switch selects between relevant facts and a
+			// bounded fact list. A page keeps facts and revision consistent.
+			page, listErr := store.List(ctx, scope, "", 100)
+			if listErr != nil {
+				return nil, listErr
+			}
+			facts, revision = page.Facts, page.ScopeRevision
+		} else {
+			facts, revision, err = store.SnapshotSearch(ctx, scope, query, 6)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -112,11 +140,11 @@ func selectMemory(ctx context.Context, store *memory.Store, req harness.RunReque
 	return snapshots, nil
 }
 
-func searchMemory(ctx context.Context, store *memory.Store, req harness.RunRequest, userID, query string, limit int) ([]tools.MemorySearchHit, error) {
+func searchMemory(ctx context.Context, store *memory.Store, req harness.RunRequest, cfg Config, query string, limit int) ([]tools.MemorySearchHit, error) {
 	hits := make([]tools.MemorySearchHit, 0, limit)
 	bytesLeft := 8192
-	for _, kind := range []harness.MemoryScope{harness.MemorySession, harness.MemoryWorkspace, harness.MemoryUser} {
-		if kind == harness.MemoryUser && userID == "" {
+	for _, kind := range modelMemoryScopes(cfg) {
+		if kind == harness.MemoryUser && cfg.MemoryUserID == "" {
 			continue
 		}
 		var sessionID, subjectUser string
@@ -124,7 +152,7 @@ func searchMemory(ctx context.Context, store *memory.Store, req harness.RunReque
 			sessionID = req.Session.ID
 		}
 		if kind == harness.MemoryUser {
-			subjectUser = userID
+			subjectUser = cfg.MemoryUserID
 		}
 		scope, err := memory.NewScope(memory.ScopeKind(kind), req.Session.CWD, sessionID, subjectUser, "")
 		if err != nil {
@@ -197,7 +225,14 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 	}
 	memoryPolicy := ""
 	if memoryStore != nil {
-		identity := sha256.Sum256([]byte("memory/v1\x00" + cfg.MemoryUserID))
+		policy, _ := json.Marshal(struct {
+			UserID           string
+			Scope            harness.MemoryScope
+			Mode             string
+			InjectionEnabled *bool
+			RetrievalEnabled *bool
+		}{cfg.MemoryUserID, cfg.MemoryScope, cfg.MemoryMode, cfg.MemoryInjectionEnabled, cfg.MemoryRetrievalEnabled})
+		identity := sha256.Sum256(append([]byte("memory/v2\x00"), policy...))
 		memoryPolicy = fmt.Sprintf("%x", identity)
 	}
 	return func(ctx context.Context, req harness.RunRequest, pinned json.RawMessage) (out einoengine.RunExtensions, err error) {
@@ -234,16 +269,18 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		} else {
 			snapshot, err = registry.Snapshot(ctx, selection)
 			if err == nil && memoryStore != nil {
-				state.Memory, err = selectMemory(ctx, memoryStore, req, cfg.MemoryUserID)
+				state.Memory, err = selectMemory(ctx, memoryStore, req, cfg)
 			}
 		}
 		if err != nil {
 			return out, err
 		}
 		state.Skills = snapshot.Refs()
-		out.InstructionAppend = memoryInstruction(state.Memory)
+		if injectMemory(cfg) {
+			out.InstructionAppend = memoryInstruction(state.Memory)
+		}
 		if memoryStore != nil && cfg.MemoryExtraction {
-			out.PostRunFactory = memoryPostRunFactory(memoryStore, req, cfg.MemoryUserID, state.Memory)
+			out.PostRunFactory = memoryPostRunFactory(memoryStore, req, cfg.MemoryUserID, cfg.MemoryScope, state.Memory)
 		}
 		out.State, err = json.Marshal(state)
 		if err != nil {
@@ -256,9 +293,9 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		if err != nil {
 			return out, err
 		}
-		if memoryStore != nil {
+		if memoryStore != nil && (cfg.MemoryMode == "" || cfg.MemoryMode == "tool") {
 			search, toolErr := tools.MemorySearchTool(func(ctx context.Context, query string, limit int) ([]tools.MemorySearchHit, error) {
-				return searchMemory(ctx, memoryStore, req, cfg.MemoryUserID, query, limit)
+				return searchMemory(ctx, memoryStore, req, cfg, query, limit)
 			})
 			if toolErr != nil {
 				return out, toolErr

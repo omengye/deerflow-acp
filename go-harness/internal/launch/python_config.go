@@ -54,6 +54,7 @@ type pythonRuntimeConfig struct {
 		MaxActiveRuns          *int      `yaml:"max_active_runs"`
 		QueueTimeoutSeconds    *float64  `yaml:"queue_timeout_seconds"`
 		SubagentEnabled        *bool     `yaml:"subagent_enabled"`
+		MemoryScope            string    `yaml:"memory_scope"`
 		PermissionMode         string    `yaml:"permission_mode"`
 		ToolAllowlist          *[]string `yaml:"tool_allowlist"`
 		ToolDenylist           []string  `yaml:"tool_denylist"`
@@ -78,7 +79,13 @@ type pythonRuntimeConfig struct {
 		ExtensionsFile string `yaml:"extensions_file"`
 	} `yaml:"skills"`
 	Memory struct {
-		Enabled *bool `yaml:"enabled"`
+		Enabled          *bool  `yaml:"enabled"`
+		Mode             string `yaml:"mode"`
+		InjectionEnabled *bool  `yaml:"injection_enabled"`
+		RetrievalEnabled *bool  `yaml:"retrieval_enabled"`
+		BackendConfig    struct {
+			RetrievalEnabled *bool `yaml:"retrieval_enabled"`
+		} `yaml:"backend_config"`
 	} `yaml:"memory"`
 	Summarization struct {
 		Enabled   bool      `yaml:"enabled"`
@@ -385,6 +392,36 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 			enabled := true
 			cfg.MemoryEnabled = &enabled
 		}
+	}
+	if source.LocalACP.MemoryScope != "" {
+		switch source.LocalACP.MemoryScope {
+		case string(harness.MemorySession), string(harness.MemoryWorkspace):
+			cfg.MemoryScope = harness.MemoryScope(source.LocalACP.MemoryScope)
+		case "global":
+			if cfg.MemoryEnabled == nil || *cfg.MemoryEnabled {
+				return result, fmt.Errorf("local_acp.memory_scope=global is not supported by the Go memory store")
+			}
+		default:
+			return result, fmt.Errorf("local_acp.memory_scope must be global, workspace, or session")
+		}
+	}
+	if source.Memory.Mode != "" {
+		if source.Memory.Mode != "middleware" && source.Memory.Mode != "tool" {
+			return result, fmt.Errorf("memory.mode must be middleware or tool")
+		}
+		cfg.MemoryMode = source.Memory.Mode
+	}
+	if source.Memory.InjectionEnabled != nil {
+		cfg.MemoryInjectionEnabled = source.Memory.InjectionEnabled
+	}
+	if source.Memory.RetrievalEnabled != nil {
+		cfg.MemoryRetrievalEnabled = source.Memory.RetrievalEnabled
+	}
+	if source.Memory.BackendConfig.RetrievalEnabled != nil {
+		cfg.MemoryRetrievalEnabled = source.Memory.BackendConfig.RetrievalEnabled
+	}
+	if cfg.MemoryMode == "tool" && cfg.MemoryRetrievalEnabled != nil && !*cfg.MemoryRetrievalEnabled && (cfg.MemoryEnabled == nil || *cfg.MemoryEnabled) {
+		return result, fmt.Errorf("memory.mode=tool requires memory.backend_config.retrieval_enabled=true")
 	}
 	if err := applyPythonSummarization(source, cfg, explicit); err != nil {
 		return result, err

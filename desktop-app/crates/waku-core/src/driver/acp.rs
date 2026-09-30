@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelNotification, ClientCapabilities, ContentBlock, Implementation, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, NewSessionRequest, PermissionOptionKind, PromptRequest,
-    PromptResponse, RequestId, RequestPermissionOutcome, RequestPermissionRequest,
+    InitializeResponse, LoadSessionRequest, McpServer, NewSessionRequest, PermissionOptionKind,
+    PromptRequest, PromptResponse, RequestId, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind,
     SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
     SessionConfigSelectOptions, SessionId, SessionModeId, SessionModeState, SessionNotification,
@@ -214,6 +214,11 @@ impl AcpDriver {
         };
 
         let launch = launch_for(provider, reasoning_effort.as_deref())?;
+        let client_mcp_servers = if provider == ProviderKind::DeerFlow {
+            crate::deerflow_config::client_mcp_servers()?
+        } else {
+            Vec::new()
+        };
         let computer_use = (provider == ProviderKind::Grok && computer_use_enabled)
             .then(|| super::support::HeadlessComputerUseRuntime::start(provider, events.clone()))
             .transpose()?;
@@ -256,6 +261,7 @@ impl AcpDriver {
                     service_tier,
                     context_window,
                     resume_session_id,
+                    client_mcp_servers,
                     fork_context,
                     grok_title_home,
                     command_rx,
@@ -441,6 +447,7 @@ async fn run_sdk_connection(
     service_tier: Option<String>,
     context_window: Option<String>,
     resume_session_id: Option<String>,
+    client_mcp_servers: Vec<McpServer>,
     fork_context: Option<String>,
     grok_title_home: Option<std::path::PathBuf>,
     commands: smol::channel::Receiver<CommandMessage>,
@@ -606,6 +613,7 @@ async fn run_sdk_connection(
                 &initialize,
                 resume_session_id.as_deref(),
                 &cwd,
+                &client_mcp_servers,
                 &suppress_session_updates,
             )
             .await?;
@@ -1018,6 +1026,7 @@ async fn establish_session(
     initialize: &InitializeResponse,
     resume_session_id: Option<&str>,
     cwd: &Path,
+    client_mcp_servers: &[McpServer],
     suppress_session_updates: &AtomicBool,
 ) -> agent_client_protocol::Result<(
     SessionId,
@@ -1033,7 +1042,10 @@ async fn establish_session(
             .is_some()
         {
             match connection
-                .send_request(ResumeSessionRequest::new(existing.to_owned(), cwd))
+                .send_request(
+                    ResumeSessionRequest::new(existing.to_owned(), cwd)
+                        .mcp_servers(client_mcp_servers.to_vec()),
+                )
                 .block_task()
                 .await
             {
@@ -1051,7 +1063,10 @@ async fn establish_session(
         if initialize.agent_capabilities.load_session {
             suppress_session_updates.store(true, Ordering::Release);
             let response = connection
-                .send_request(LoadSessionRequest::new(existing.to_owned(), cwd))
+                .send_request(
+                    LoadSessionRequest::new(existing.to_owned(), cwd)
+                        .mcp_servers(client_mcp_servers.to_vec()),
+                )
                 .block_task()
                 .await;
             suppress_session_updates.store(false, Ordering::Release);
@@ -1083,7 +1098,7 @@ async fn establish_session(
     }
 
     let response = connection
-        .send_request(NewSessionRequest::new(cwd))
+        .send_request(NewSessionRequest::new(cwd).mcp_servers(client_mcp_servers.to_vec()))
         .block_task()
         .await?;
     Ok((response.session_id, response.modes, response.config_options))
@@ -2896,6 +2911,7 @@ mod tests {
                     &initialize,
                     Some("original-session"),
                     &cwd,
+                    &[],
                     &suppression_state,
                 )
                 .await
@@ -2909,6 +2925,81 @@ mod tests {
         );
         assert_eq!(*calls.lock(), ["resume", "load"]);
         assert!(!suppressed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn deerflow_passes_client_mcp_servers_to_new_resume_and_load() {
+        use agent_client_protocol::schema::v1::{
+            EnvVariable, LoadSessionResponse, McpServerStdio, NewSessionResponse,
+            ResumeSessionResponse,
+        };
+        let cwd = std::env::temp_dir();
+        let servers = vec![McpServer::Stdio(
+            McpServerStdio::new("workspace", cwd.join("mcp-server"))
+                .args(vec!["serve".into()])
+                .env(vec![EnvVariable::new("MCP_TOKEN", "private")]),
+        )];
+        for (expected_method, existing, resume_capability) in [
+            ("new", None, false),
+            ("resume", Some("session-1"), true),
+            ("load", Some("session-1"), false),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::<(&'static str, Vec<McpServer>)>::new()));
+            let new_calls = calls.clone();
+            let resume_calls = calls.clone();
+            let load_calls = calls.clone();
+            let agent = Agent
+                .builder()
+                .on_receive_request(
+                    async move |request: NewSessionRequest,
+                                responder: Responder<NewSessionResponse>,
+                                _connection| {
+                        new_calls.lock().push(("new", request.mcp_servers));
+                        responder.respond(NewSessionResponse::new("session-1"))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_request(
+                    async move |request: ResumeSessionRequest,
+                                responder: Responder<ResumeSessionResponse>,
+                                _connection| {
+                        resume_calls.lock().push(("resume", request.mcp_servers));
+                        responder.respond(ResumeSessionResponse::new())
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_request(
+                    async move |request: LoadSessionRequest,
+                                responder: Responder<LoadSessionResponse>,
+                                _connection| {
+                        load_calls.lock().push(("load", request.mcp_servers));
+                        responder.respond(LoadSessionResponse::new())
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                );
+            let initialize: InitializeResponse = serde_json::from_value(json!({
+                "protocolVersion": 1,
+                "agentCapabilities": {
+                    "loadSession": true,
+                    "sessionCapabilities": {"resume": if resume_capability { json!({}) } else { Value::Null }}
+                }
+            }))
+            .unwrap();
+            let suppression = AtomicBool::new(false);
+            smol::block_on(Client.builder().connect_with(agent, async |connection| {
+                establish_session(
+                    &connection,
+                    &initialize,
+                    existing,
+                    &cwd,
+                    &servers,
+                    &suppression,
+                )
+                .await
+            }))
+            .unwrap();
+            assert_eq!(*calls.lock(), [(expected_method, servers.clone())]);
+        }
     }
 
     #[test]

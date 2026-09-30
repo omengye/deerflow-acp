@@ -1,8 +1,8 @@
 # Eino Harness / ACP 实施状态
 
-本文件跟踪完整 V1，不能以当前已实现子集代替原方案的验收范围。
+本文件保留原完整 V1 方案及历史验证记录。当前交付目标是可运行的 Go harness 与本地 ACP；下表的后续验收项不作为本轮完成门槛。
 
-当前实施优先级是可运行的 Go harness 与本地 ACP；Python 运行时兼容/回退、可选外部 ACP Agent 和远端 CI 可在后续阶段处理。
+Python 运行时兼容/回退、可选外部 ACP Agent、手工 UI、Docker 实机、远端 CI 和真实模型验收均留待后续按需处理。
 
 ## 基线
 
@@ -22,11 +22,11 @@
 | 执行与工作区工具 | Eino TurnLoop/DeepAgent、前台委派、文件工具、plan/read_only、主/子共享预算；执行回执与命令工具已接线 | 长期会话循环、后台委派和更完整的工具集 |
 | 权限 / 恢复 | 前台与后台原生 durable HITL、审批/检查点/回执/预算联合恢复；SDK/ACP 查询、批准与取消已接入 | 真实编辑器与 MCP 重新绑定恢复 |
 | 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、原生子 Agent 生命周期、主 Agent 计划与真实上下文用量投影、分页历史与 load 重放、有界异步 ACP 更新队列 | 真实编辑器流压验证 |
-| MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入；桌面 Go 启动现可从宿主 YAML 下发 stdio 命令允许列表 | 真实编辑器互操作、与后台任务生命周期组合 |
+| MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入；桌面 Go 启动可从宿主 YAML 下发 stdio 命令允许列表，Waku 会话的 new/load/resume 也可发送受此列表约束的 stdio 服务 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化；Python `off`/`dangerous`/`all` 权限模式已映射到 Go | thinking/profile 仅在真实能力落地后开放；真实编辑器审批体验待验收 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image、产物登记、MCP 增强工具图片导入及模型生成图片的导入/ACP 回放已验证 | 模型生成音视频、远程图片 URL、可选对象存储发布及真实图片模型验收 |
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复、父会话通知输入已接线 | 跨 run 长命令；真实编辑器中的通知处理与恢复互操作 |
-| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载，22 个内置 Skill 已装入；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入；大工具输出可保存会话私有快照并有界分段读取 | 真实模型策略校准、流式自定义工具大输出快照 |
+| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载，22 个内置 Skill 已装入；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入；桌面 session/workspace 范围和注入/检索模式映射已接入；大工具输出可保存会话私有快照并有界分段读取 | 真实模型策略校准、流式自定义工具大输出快照、跨工作区 global scope |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层（含工具允许/拒绝列表、默认超时和宿主 prompt overlay）、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
 | 可选外部 ACP Agent | 显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次模型调用计入父预算，远端提供的终态 usage 可用于结算；未决 prompt 先落盘，超时后阻止重复派发，SDK/ACP 扩展可按终态/已复核回执确认解除 | 原 prompt 的通用断线原位恢复、远端真实模型用量硬约束、产物导入与真实编辑器中的对账互操作 |
@@ -434,3 +434,12 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 桌面 Go 后端从宿主 YAML 的 `local_acp.accept_client_mcp_servers` 与 `client_mcp_allowed_commands` 读取 stdio 命令允许列表。配置服务在 validate/save 前验证 1–32 个存在的绝对路径；Waku 仅在 Go 后端启动时下发，Bridge 只转发给 Go daemon。ACP 客户端不能通过自己的会话配置增加宿主允许的可执行文件。默认关闭；这条桌面配置路径尚未开放 HTTP/SSE 客户端 MCP。
 - 更新后的 Windows Debug 桌面包 `dist/desktop/DeerFlow-Desktop-20260930-harness-mcp-debug` 经隔离 smoke 验证：Waku 启动 Go daemon，ACP 客户端传入真实 stdio MCP 进程，模型发现并调用工具，一次性审批后产生文件效果，凭据未进入模型请求或 ACP 更新，`session/close` 与空 MCP 配置重新加载后工具消失；随后 Skills、文件审批、应用重启、会话恢复、历史删除及 daemon 停止均通过。报告位于 `.build-cache/desktop-smoke/20260930-144028-1ae34731/logs/report.json`，`ok: true`、`cleanup_errors: []`。
 - Windows Go 全模块 `go test -mod=readonly -count=1 -p=2 -timeout=5m ./...` 最终重跑通过；assets/Eino/runtime 新增路径的定向 `-race` 通过，Linux amd64、CGO 关闭的全模块交叉构建通过。Bridge 13 项单测、Waku 配置 7 项单测和 Python 配置 21 项测试通过。Eino 当前使用 `v0.10.0-alpha.35`，核对 Go 模块版本列表时它仍是最新的 alpha 标签。本阶段以本地模型 fixture 验证 Go 产品链路；手工编辑器与真实模型未验收。
+- 同源代码另构建了不含 Python runtime 的 Windows Debug Go ACP 便携包 `dist/go-acp/windows-x64-20260930-harness`，包内三份二进制齐全；从该包内 Bridge 实测 Go daemon 启动、状态查询和停止。使用该 Bridge 运行真实 Go daemon 的 ACP v1 与 draft v2 互操作测试均通过。
+
+## 第四十四阶段桌面记忆策略与 Waku 会话 MCP
+
+- Go `Config` 增加记忆 scope、mode、注入和检索策略，桌面 YAML 的 `local_acp.memory_scope`、`memory.mode`、`memory.injection_enabled`、`memory.backend_config.retrieval_enabled` 可映射到模型侧。`session` 只读取并提取当前会话事实，`workspace` 只使用当前工作区事实；`middleware` 自动注入，`tool` 暴露 `search_memory`。关闭注入不停止受控提取，关闭检索时自动注入有界事实列表。Go SDK 未指定这些策略时保留原行为。
+- Go 存储中的 `user` scope 仍绑定工作区，因此启用记忆时的 `memory_scope: global` 会明确报错，不能把工作区事实冒充全局事实；关闭记忆时忽略旧配置中留下的 global 选项。宿主 ACP/管理 API 的显式 scope 操作仍按原有授权运行，桌面选择范围限制的是模型可见事实与自动提取。
+- Waku 的 DeerFlow 设置新增 `client_mcp_servers` stdio 列表，保存于独立 `user-data/config/client-mcp-servers.json`。新建、加载及恢复 ACP 会话都发送该列表；宿主 YAML 的开关和可执行文件允许列表仍由 Go daemon 最终校验。设置快照对 env 值脱敏，只有同名服务器的 command 和 args 未变时才恢复旧密钥；修改目标后须重填。网络型会话 MCP 未开放。Waku 的配置服务仍使用原 Python `config_tool`，独立 Go ACP 便携包则不依赖 Python。
+- 新增 Go 测试覆盖跨会话隔离、关闭注入/检索、session 提取和配置拒绝；`go test -mod=readonly -count=1 -p=2 -timeout=5m ./...` 全模块通过。Waku Core 的 4 项 MCP 定向测试与 `cargo check -p waku` 通过，包含 ACP new/load/resume 下发、允许列表、脱敏、网络类型拒绝及 Windows 二次保存。`git diff --check` 通过。
+- 重建不含 Python runtime 的 Windows Debug 包 `dist/go-acp/windows-x64-20260930-memory-policy`，三份二进制齐全；包内 Bridge 的 Go daemon 启动、状态查询和停止均通过。按当前收敛目标，手工 UI、Docker 实机、远端 CI 和真实模型验收由后续人工操作处理，本阶段不作为完成门槛。

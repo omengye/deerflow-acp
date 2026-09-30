@@ -534,6 +534,70 @@ func TestApplyPythonConfigDisabledMemoryAndExplicitExtraction(t *testing.T) {
 	}
 }
 
+func TestApplyPythonConfigMapsDesktopMemoryPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := `local_acp:
+  memory_scope: session
+memory:
+  enabled: true
+  mode: middleware
+  injection_enabled: false
+  retrieval_enabled: true
+  backend_config:
+    retrieval_enabled: false
+models:
+  - name: one
+    use: langchain_openai:ChatOpenAI
+    model: one
+`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var cfg deerflow.Config
+	connections := 0
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MemoryScope != harness.MemorySession || cfg.MemoryMode != "middleware" || cfg.MemoryInjectionEnabled == nil || *cfg.MemoryInjectionEnabled || cfg.MemoryRetrievalEnabled == nil || *cfg.MemoryRetrievalEnabled || !cfg.MemoryExtraction {
+		t.Fatalf("desktop memory policy was not mapped: %+v", cfg)
+	}
+}
+
+func TestApplyPythonConfigRejectsUnsupportedMemoryPolicy(t *testing.T) {
+	const model = "models:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
+	for _, tc := range []struct{ name, body, message string }{
+		{"global", "local_acp:\n  memory_scope: global\n", "memory_scope=global"},
+		{"invalid scope", "local_acp:\n  memory_scope: unknown\n", "memory_scope must"},
+		{"invalid mode", "memory:\n  mode: unknown\n", "memory.mode must"},
+		{"tool without retrieval", "memory:\n  mode: tool\n  backend_config:\n    retrieval_enabled: false\n", "requires memory.backend_config.retrieval_enabled=true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.body+model), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var cfg deerflow.Config
+			connections := 0
+			if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err == nil || !strings.Contains(err.Error(), tc.message) {
+				t.Fatalf("memory policy error=%v", err)
+			}
+		})
+	}
+}
+
+func TestApplyPythonConfigIgnoresGlobalScopeWhenMemoryDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := "local_acp:\n  memory_scope: global\nmemory:\n  enabled: false\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var cfg deerflow.Config
+	connections := 0
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err != nil || cfg.MemoryScope != "" || cfg.MemoryEnabled == nil || *cfg.MemoryEnabled {
+		t.Fatalf("disabled global memory policy: %+v err=%v", cfg, err)
+	}
+}
+
 func TestApplyPythonConfigRejectsUnsupportedSummarization(t *testing.T) {
 	for _, yamlBody := range []string{
 		"  enabled: true\n",

@@ -35,6 +35,8 @@ local_acp:
   # Host-owned stdio MCP executable allowlist used only when the switch above is true.
   # Entries must be absolute paths to installed executables.
   client_mcp_allowed_commands: []
+  # Waku's session MCP list is edited in desktop Settings > DeerFlow > Tools
+  # and stored separately in user-data/config/client-mcp-servers.json.
   session_cleanup_enabled: false
   inactive_session_retention_days: 30
   session_cleanup_interval_seconds: 3600

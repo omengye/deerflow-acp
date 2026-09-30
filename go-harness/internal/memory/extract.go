@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -23,6 +24,17 @@ var credentialLike = regexp.MustCompile(`(?i)(?:sk-[a-z0-9]{12,}|[a-f0-9]{32,})`
 // prefers false negatives: a candidate must be durable, descriptive, bounded,
 // and free of permission, secret, path, or current-task claims.
 func FilterExtraction(raw []byte, userEnabled bool) ([]ExtractedFact, []string, error) {
+	allowed := []ScopeKind{WorkspaceScope}
+	if userEnabled {
+		allowed = append(allowed, UserScope)
+	}
+	return FilterExtractionForScopes(raw, allowed)
+}
+
+// FilterExtractionForScopes constrains model-proposed facts to host-selected
+// destinations. The desktop session policy uses this to avoid writing into a
+// workspace scope after selecting session-isolated memory.
+func FilterExtractionForScopes(raw []byte, allowed []ScopeKind) ([]ExtractedFact, []string, error) {
 	if len(raw) == 0 || len(raw) > 16*1024 || !utf8.Valid(raw) {
 		return nil, nil, errors.New("invalid extraction response size or encoding")
 	}
@@ -53,7 +65,7 @@ func FilterExtraction(raw []byte, userEnabled bool) ([]ExtractedFact, []string, 
 		switch {
 		case fact.Durability != "durable" || fact.Authority != "descriptive":
 			reason = "authority_or_durability"
-		case fact.Scope != string(WorkspaceScope) && !(userEnabled && fact.Scope == string(UserScope)):
+		case !slices.Contains(allowed, ScopeKind(fact.Scope)):
 			reason = "scope"
 		case fact.Category != "preference" && fact.Category != "profile" && fact.Category != "project":
 			reason = "category"

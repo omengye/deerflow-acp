@@ -1,6 +1,6 @@
 # Go + Eino Harness 与 ACP 重构实施方案
 
-修订日期：2026-09-29。状态：实施中；进度、依赖落地差异与验证记录见 [实施状态](eino-harness-implementation-status.md)。下文保留完整 V1 目标和发布要求。
+修订日期：2026-09-30。状态：Go harness 与本地 ACP 里程碑实施中；进度、依赖落地差异与验证记录见 [实施状态](eino-harness-implementation-status.md)。下文保留原完整 V1 目标和发布要求，当前里程碑的后置事项以实施状态为准。
 
 **第一版交付可嵌入的 Go harness，以及能够被编辑器和其他 ACP client 启动的本地 ACP Agent。** 保留长任务、工具、子 Agent、沙箱、Skills、MCP、记忆、上下文压缩、权限与恢复能力。对外入口采用 Go SDK、ACP stdio 和本地 daemon IPC；HTTP API、ACP HTTP gateway、SSE 服务及远程传输接口后置。模型请求和 MCP 的出站 HTTP 传输仍属于正常工具能力。
 

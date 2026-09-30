@@ -73,3 +73,25 @@ passes it to the Go daemon at startup. An ACP client can choose arguments and
 per-session environment values for an authorized command but cannot add a new
 executable to the host list. The default is disabled. HTTP and SSE client MCP
 servers are outside this desktop configuration path.
+
+For sessions created by the desktop app itself, configure `client_mcp_servers`
+in DeerFlow settings as a JSON array. The app saves the list in
+`user-data/config/client-mcp-servers.json` and sends it with ACP session/new,
+session/load, and session/resume. For example:
+
+```json
+[
+  {
+    "name": "workspace",
+    "type": "stdio",
+    "command": "C:/absolute/path/to/mcp-server.exe",
+    "args": ["serve"],
+    "env": [{"name": "MCP_TOKEN", "value": "your-token"}]
+  }
+]
+```
+
+The `command` must also appear in `client_mcp_allowed_commands`. Environment
+values are redacted in settings snapshots and restored when saving an unchanged
+server entry. Empty the list to detach these tools from subsequent desktop ACP
+sessions.
