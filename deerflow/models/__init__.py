@@ -10,7 +10,7 @@ __all__ = ["create_chat_model", "aclose_chat_model"]
 
 
 async def aclose_chat_model(model: Any) -> None:
-    """Drain a chat model's underlying async HTTP clients.
+    """Drain a chat model's owned HTTP clients.
 
     Call this in ``finally`` blocks around model usage whose surrounding
     event loop is about to be closed (worker-thread ``asyncio.run`` paths
@@ -54,3 +54,12 @@ async def aclose_chat_model(model: Any) -> None:
                 attr,
                 exc_info=True,
             )
+
+    # The ACP cold-start path may also inject a sync httpx.Client. Only close
+    # the one created by our factory; a caller-provided client remains theirs.
+    owned_sync_finalizer = getattr(model, "_deerflow_owned_http_client_finalizer", None)
+    if owned_sync_finalizer is not None:
+        try:
+            owned_sync_finalizer()
+        except Exception:
+            logger.debug("Failed to close factory-owned sync HTTP client", exc_info=True)

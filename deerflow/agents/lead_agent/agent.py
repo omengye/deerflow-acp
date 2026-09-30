@@ -135,6 +135,7 @@ def _create_summarization_middleware(
     run_model_name: str | None = None,
     *,
     memory_enabled: bool = True,
+    lead_model: BaseChatModel | None = None,
 ) -> DeerFlowSummarizationMiddleware | None:
     """Create and configure the summarization middleware from config.
 
@@ -189,7 +190,28 @@ def _create_summarization_middleware(
     # The summarization middleware is built once per lead-agent instance and
     # reused for every summarisation turn — same long-lived-pool risk as the
     # lead agent itself, so opt out of keep-alive consistently.
-    model = create_chat_model(name=primary_model_name, thinking_enabled=False, disable_keepalive=True)
+    # The lead model has already been constructed by embedded clients. When
+    # both roles use the same configured model, its profile and tokenizer
+    # behavior are sufficient to set up the summarization middleware. Defer
+    # the separate non-thinking model until compression actually fires; most
+    # sessions never summarize, and creating both models at graph startup
+    # loads the same HTTPS client stack twice.
+    primary_config = app_config.get_model_config(primary_model_name or default_model_name)
+    profile_overrides = any(
+        key in (getattr(primary_config, setting, None) or {})
+        for setting in ("when_thinking_enabled", "when_thinking_disabled")
+        for key in ("model", "profile")
+    )
+    defer_primary_model = (
+        lead_model is not None
+        and (primary_model_name or default_model_name) == valid_run_model_name
+        and not profile_overrides
+    )
+    model = (
+        lead_model
+        if defer_primary_model
+        else create_chat_model(name=primary_model_name, thinking_enabled=False, disable_keepalive=True)
+    )
 
     trigger, keep, has_usable_trigger = _drop_unusable_fraction_clauses(
         model,
@@ -238,6 +260,7 @@ def _create_summarization_middleware(
 
     return DeerFlowSummarizationMiddleware(
         **kwargs,
+        deferred_primary_model_name=(primary_model_name or default_model_name) if defer_primary_model else None,
         skills_container_path=skills_container_path,
         skill_file_read_tool_names=config.skill_file_read_tool_names,
         before_summarization=hooks,
@@ -381,6 +404,7 @@ def _build_middlewares(
     memory_enabled: bool = True,
     custom_middlewares: list[AgentMiddleware] | None = None,
     recursion_limit: int | None = None,
+    lead_model: BaseChatModel | None = None,
 ) -> list[AgentMiddleware[Any, Any, Any]]:
     """Build middleware chain based on runtime configuration.
 
@@ -400,6 +424,7 @@ def _build_middlewares(
     summarization_middleware = _create_summarization_middleware(
         run_model_name=model_name,
         memory_enabled=memory_enabled,
+        lead_model=lead_model,
     )
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)

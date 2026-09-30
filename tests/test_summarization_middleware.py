@@ -12,6 +12,7 @@ Covers the two defects behind the summarization hardening work:
    history, silently destroying the messages it had failed to summarize.
 """
 
+import asyncio
 import logging
 import time
 from types import SimpleNamespace
@@ -161,6 +162,51 @@ def test_summarization_follows_run_model_when_not_configured() -> None:
     assert created_names == ["run-model"]
     # Retrying on the same model would be pointless, so no tier-2 fallback.
     assert captured["fallback_model_name"] is None
+
+
+def test_same_lead_model_defers_separate_summarizer_construction() -> None:
+    """The lead model supplies the exact profile for fraction thresholds."""
+    config = SummarizationConfig(
+        enabled=True,
+        trigger=ContextSize(type="fraction", value=0.8),
+        keep=ContextSize(type="fraction", value=0.2),
+    )
+    lead_model = SimpleNamespace(profile={"max_input_tokens": 100_000}, _llm_type="chat-deepseek")
+    captured: dict = {}
+    with (
+        patch.object(lead_agent, "get_summarization_config", return_value=config),
+        patch.object(lead_agent, "get_app_config", return_value=_app_config()),
+        patch.object(lead_agent, "get_memory_config", return_value=SimpleNamespace(enabled=False)),
+        patch.object(lead_agent, "create_chat_model") as create_model,
+        patch.object(lead_agent, "DeerFlowSummarizationMiddleware", side_effect=lambda **kwargs: captured.update(kwargs) or "middleware"),
+    ):
+        assert lead_agent._create_summarization_middleware("run-model", lead_model=lead_model) == "middleware"
+
+    create_model.assert_not_called()
+    assert captured["model"] is lead_model
+    assert captured["deferred_primary_model_name"] == "run-model"
+    assert captured["trigger"] == ("fraction", 0.8)
+    assert captured["keep"] == ("fraction", 0.2)
+
+
+def test_distinct_summary_model_still_constructs_during_agent_build() -> None:
+    config = SummarizationConfig(
+        enabled=True,
+        model_name="cheap-model",
+        trigger=ContextSize(type="messages", value=50),
+    )
+    captured: dict = {}
+    with (
+        patch.object(lead_agent, "get_summarization_config", return_value=config),
+        patch.object(lead_agent, "get_app_config", return_value=_app_config()),
+        patch.object(lead_agent, "get_memory_config", return_value=SimpleNamespace(enabled=False)),
+        patch.object(lead_agent, "create_chat_model", return_value=SimpleNamespace(profile=None)) as create_model,
+        patch.object(lead_agent, "DeerFlowSummarizationMiddleware", side_effect=lambda **kwargs: captured.update(kwargs) or "middleware"),
+    ):
+        lead_agent._create_summarization_middleware("run-model", lead_model=SimpleNamespace(profile=None))
+
+    create_model.assert_called_once_with(name="cheap-model", thinking_enabled=False, disable_keepalive=True)
+    assert captured["deferred_primary_model_name"] is None
 
 
 def test_summarization_prefers_explicit_config_model_over_run_model() -> None:
@@ -324,6 +370,44 @@ def test_successful_summary_replaces_history_with_the_summary() -> None:
     (replacement,) = _replacements(update)
     assert replacement.additional_kwargs["lc_source"] == "summarization"
     assert "the summary" in replacement.content
+
+
+def test_deferred_summarizer_is_created_only_for_first_compression() -> None:
+    lead_model = _FakeModel(text="lead model should not summarize")
+    summary_model = _FakeModel(text="separate non-thinking summary")
+    middleware = _middleware(lead_model, deferred_primary_model_name="run-model")
+
+    with patch("deerflow.models.create_chat_model", return_value=summary_model) as create_model:
+        assert middleware.before_model(_state(4), _runtime()) is None
+        create_model.assert_not_called()
+        for _ in range(2):
+            update = middleware.before_model(_state(), _runtime())
+            assert "separate non-thinking summary" in _replacements(update)[0].content
+
+    create_model.assert_called_once_with(name="run-model", thinking_enabled=False, disable_keepalive=True)
+    assert lead_model.calls == 0
+    assert summary_model.calls == 2
+
+
+async def test_concurrent_first_compressions_share_one_deferred_summarizer() -> None:
+    lead_model = _FakeModel(text="lead model should not summarize")
+    summary_model = _FakeModel(text="summary")
+    middleware = _middleware(lead_model, deferred_primary_model_name="run-model")
+
+    def build_model(**kwargs):
+        time.sleep(0.05)
+        return summary_model
+
+    with patch("deerflow.models.create_chat_model", side_effect=build_model) as create_model:
+        results = await asyncio.gather(
+            middleware.abefore_model(_state(), _runtime()),
+            middleware.abefore_model(_state(), _runtime()),
+        )
+
+    assert all(result is not None for result in results)
+    assert create_model.call_count == 1
+    assert lead_model.calls == 0
+    assert summary_model.calls == 2
 
 
 def test_latest_user_request_survives_tool_heavy_summarization() -> None:

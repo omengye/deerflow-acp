@@ -5,7 +5,6 @@ from __future__ import annotations
 from langchain.tools import ToolRuntime, tool
 
 from deerflow.agents.thread_state import AgentContext, ThreadState
-from deerflow.skills.evolution import SkillEvolutionService
 from deerflow.tools.sync import make_sync_tool_wrapper
 
 
@@ -40,6 +39,8 @@ async def _skill_manage_impl(
         expected_count: Optional expected number of replacements for patch.
         reason: Short explanation of the reusable improvement and supporting evidence.
     """
+    from deerflow.skills.evolution import SkillEvolutionService
+
     proposal = await SkillEvolutionService().create_proposal(
         action=action,
         name=name,

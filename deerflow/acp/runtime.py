@@ -298,6 +298,7 @@ class LocalACPRuntime:
                     ),
                     "recursion_limit": session.recursion_limit,
                     "agent_name": session.agent_name,
+                    "share_ssl_context_for_http_clients": True,
                     "excluded_tool_names": self.policy.excluded_tool_names(
                         enable_bash=self.config.enable_bash
                     ),

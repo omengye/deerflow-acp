@@ -63,8 +63,7 @@ from deerflow.config.extensions_config import (
     write_extensions_config_data,
 )
 from deerflow.config.paths import get_paths
-from deerflow.models import create_chat_model
-from deerflow.skills.installer import install_skill_from_archive
+from deerflow.models import aclose_chat_model, create_chat_model
 from deerflow.uploads.manager import (
     copy_file_exclusive,
     delete_file_safe,
@@ -192,6 +191,7 @@ class DeerFlowClient:
         recursion_limit: int = 200,
         checkpoint_channel_mode: CheckpointChannelMode | None = None,
         checkpoint_snapshot_frequency: int | None = None,
+        share_ssl_context_for_http_clients: bool = False,
     ):
         """Initialize the client.
 
@@ -215,6 +215,9 @@ class DeerFlowClient:
             system_prompt_overlay: Server-owned instructions appended to the generated prompt.
             subagent_system_prompt_overlay: Server-owned instructions appended to subagent prompts.
             subagent_middlewares: Guardrail middlewares inherited by internal subagents.
+            share_ssl_context_for_http_clients: Reuse one verified SSL context
+                for the lead model's sync and async HTTP clients during ACP
+                cold startup.
         """
         if config_path is not None:
             reload_app_config(config_path)
@@ -260,6 +263,7 @@ class DeerFlowClient:
             else self._system_prompt_overlay
         ).strip()
         self._recursion_limit = recursion_limit
+        self._share_ssl_context_for_http_clients = share_ssl_context_for_http_clients
         configured_checkpointer = getattr(self._app_config, "checkpointer", None)
         self._checkpoint_channel_mode: CheckpointChannelMode = (
             checkpoint_channel_mode
@@ -491,55 +495,80 @@ class DeerFlowClient:
 
         freeze_checkpoint_channel_mode(checkpoint_mode)
         freeze_checkpoint_snapshot_frequency(checkpoint_frequency)
-        middlewares = _build_middlewares(
-            config,
-            model_name=model_name,
-            agent_name=self._agent_name,
-            custom_middlewares=self._middlewares,
-            recursion_limit=self._recursion_limit,
-            memory_enabled=memory_enabled,
+        # Build the lead model first so the summarization middleware can use
+        # its model profile without initializing a duplicate HTTP client at
+        # startup when both roles resolve to the same configured model.
+        lead_model = create_chat_model(
+            name=model_name,
+            thinking_enabled=thinking_enabled,
+            disable_keepalive=True,
+            share_ssl_context_for_http_clients=self._share_ssl_context_for_http_clients,
         )
-        middlewares = normalize_middleware_state_schemas(
-            middlewares,
-            checkpoint_mode,
-            checkpoint_frequency,
-        )
-        tools = self._get_tools(model_name=model_name, subagent_enabled=subagent_enabled)
-        effective_tool_names = {tool.name for tool in tools}
-        effective_subagent_enabled = subagent_enabled and "task" in effective_tool_names
-        kwargs: dict[str, Any] = {
-            # disable_keepalive: the lead agent's ChatOpenAI is cached per
-            # config and reused across requests; opting out of keep-alive
-            # ensures the httpx pool never carries SSL transports that
-            # could later be torn down on a foreign loop.
-            "model": create_chat_model(name=model_name, thinking_enabled=thinking_enabled, disable_keepalive=True),
-            "tools": tools,
-            "middleware": middlewares,
-            "system_prompt": apply_prompt_template(
-                subagent_enabled=effective_subagent_enabled,
-                max_concurrent_subagents=max_concurrent_subagents,
+        try:
+            middlewares = _build_middlewares(
+                config,
+                model_name=model_name,
                 agent_name=self._agent_name,
-                available_skills=self._available_skills,
-                available_tool_names=effective_tool_names,
-                system_prompt_overlay=getattr(self, "_system_prompt_overlay", ""),
-                current_date=current_date,
+                custom_middlewares=self._middlewares,
+                recursion_limit=self._recursion_limit,
                 memory_enabled=memory_enabled,
-            ),
-            "state_schema": get_thread_state_schema(
+                lead_model=lead_model,
+            )
+            middlewares = normalize_middleware_state_schemas(
+                middlewares,
                 checkpoint_mode,
                 checkpoint_frequency,
-            ),
-            "context_schema": AgentContext,
-        }
-        checkpointer = self._checkpointer
-        if checkpointer is None:
-            from deerflow.agents.checkpointer import get_checkpointer
+            )
+            tools = self._get_tools(model_name=model_name, subagent_enabled=subagent_enabled)
+            effective_tool_names = {tool.name for tool in tools}
+            effective_subagent_enabled = subagent_enabled and "task" in effective_tool_names
+            kwargs: dict[str, Any] = {
+                # disable_keepalive: the lead model is cached per config and
+                # reused across requests, so its HTTP pool must not retain
+                # SSL transports created on a foreign event loop.
+                "model": lead_model,
+                "tools": tools,
+                "middleware": middlewares,
+                "system_prompt": apply_prompt_template(
+                    subagent_enabled=effective_subagent_enabled,
+                    max_concurrent_subagents=max_concurrent_subagents,
+                    agent_name=self._agent_name,
+                    available_skills=self._available_skills,
+                    available_tool_names=effective_tool_names,
+                    system_prompt_overlay=getattr(self, "_system_prompt_overlay", ""),
+                    current_date=current_date,
+                    memory_enabled=memory_enabled,
+                ),
+                "state_schema": get_thread_state_schema(
+                    checkpoint_mode,
+                    checkpoint_frequency,
+                ),
+                "context_schema": AgentContext,
+            }
+            checkpointer = self._checkpointer
+            if checkpointer is None:
+                from deerflow.agents.checkpointer import get_checkpointer
 
-            checkpointer = get_checkpointer()
-        if checkpointer is not None:
-            kwargs["checkpointer"] = checkpointer
+                checkpointer = get_checkpointer()
+            if checkpointer is not None:
+                kwargs["checkpointer"] = checkpointer
 
-        self._agent = create_agent(**kwargs)
+            agent = create_agent(**kwargs)
+        except BaseException:
+            # A failed graph build has no owner for the model we constructed
+            # early. Drain its factory-owned HTTP clients before re-raising.
+            try:
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    asyncio.run(aclose_chat_model(lead_model))
+                else:
+                    loop.create_task(aclose_chat_model(lead_model))
+            except Exception:
+                logger.debug("Failed to close lead model after graph build error", exc_info=True)
+            raise
+
+        self._agent = agent
         self._effective_checkpointer = checkpointer
         self._agent_config_key = key
         logger.info("Agent created: agent_name=%s, model=%s, thinking=%s", self._agent_name, model_name, thinking_enabled)
@@ -1757,6 +1786,8 @@ class DeerFlowClient:
             FileNotFoundError: If the file does not exist.
             ValueError: If the file is invalid.
         """
+        from deerflow.skills.installer import install_skill_from_archive
+
         result = install_skill_from_archive(skill_path)
         try:
             from deerflow.agents.lead_agent.prompt import clear_skills_system_prompt_cache

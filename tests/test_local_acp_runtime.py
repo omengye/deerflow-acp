@@ -185,6 +185,7 @@ async def test_runtime_warmup_builds_and_reuses_default_client(
     assert kwargs["subagent_enabled"] is True
     assert kwargs["max_concurrent_subagents"] == 3
     assert kwargs["agent_name"] == "test-agent"
+    assert kwargs["share_ssl_context_for_http_clients"] is True
     # DeerFlowClient must derive full/delta mode and snapshot frequency from
     # config.yaml. Local ACP must not silently force full checkpoints.
     assert "checkpoint_channel_mode" not in kwargs

@@ -1,4 +1,8 @@
+import asyncio
 import logging
+import os
+import ssl
+import weakref
 
 from langchain.chat_models import BaseChatModel
 from langchain_core.callbacks import BaseCallbackManager
@@ -10,10 +14,37 @@ from deerflow.tracing import build_tracing_callbacks
 logger = logging.getLogger(__name__)
 
 
+def _verified_ssl_context_for_http_clients() -> ssl.SSLContext:
+    """Use LangChain's already-loaded certifi context when trust rules match.
+
+    Importing BaseChatOpenAI creates a verified certifi context at module load.
+    HTTPX uses the same certifi bundle when neither SSL_CERT_FILE nor
+    SSL_CERT_DIR is set, so loading it again adds seconds on Windows. Keep
+    HTTPX's own path for explicit certificate overrides and future LangChain
+    versions that do not expose a suitable context.
+    """
+    import httpx
+
+    if not (os.getenv("SSL_CERT_FILE") or os.getenv("SSL_CERT_DIR")):
+        try:
+            from langchain_openai.chat_models import base as openai_base
+
+            context = getattr(openai_base, "global_ssl_context", None)
+            if (
+                isinstance(context, ssl.SSLContext)
+                and context.verify_mode == ssl.CERT_REQUIRED
+                and context.check_hostname
+            ):
+                return context
+        except ImportError:
+            pass
+    return httpx.create_ssl_context(verify=True, trust_env=True)
+
+
 def _build_no_keepalive_async_client():
     """Build an httpx.AsyncClient with keep-alive disabled.
 
-    Used as the ``http_async_client`` for long-lived ChatOpenAI instances
+    Used as the ``http_async_client`` for long-lived BaseChatOpenAI instances
     on hot paths (lead agent, shared summarization middleware) so the
     openai/httpx connection pool never retains SSL transports across LLM
     calls — eliminating the residual `RuntimeError: Event loop is closed`
@@ -25,10 +56,64 @@ def _build_no_keepalive_async_client():
     """
     import httpx
 
+    # AsyncClient builds one transport per configured proxy. Passing verify=True
+    # would load the same CA bundle separately for each transport on startup.
+    # Use HTTPX's own trust_env rules once, then share that context within this
+    # client so SSL_CERT_FILE, SSL_CERT_DIR, and proxy settings keep their meaning.
+    ssl_context = _verified_ssl_context_for_http_clients()
     return httpx.AsyncClient(
+        verify=ssl_context,
         limits=httpx.Limits(max_keepalive_connections=0),
         timeout=httpx.Timeout(timeout=None),
     )
+
+
+def _build_no_keepalive_http_clients():
+    """Build sync and async HTTP clients using one verified SSL context.
+
+    ACP constructs both OpenAI clients even though its lead agent invokes the
+    model asynchronously. Sharing the context avoids loading the CA bundle a
+    second time during cold graph construction. Neither client retains idle
+    connections, so replacing a cached graph cannot strand open transports.
+    """
+    import httpx
+
+    ssl_context = _verified_ssl_context_for_http_clients()
+    limits = httpx.Limits(max_keepalive_connections=0)
+    sync_client = httpx.Client(
+        verify=ssl_context,
+        limits=limits,
+        timeout=httpx.Timeout(timeout=None),
+    )
+    try:
+        async_client = httpx.AsyncClient(
+            verify=ssl_context,
+            limits=limits,
+            timeout=httpx.Timeout(timeout=None),
+        )
+    except BaseException:
+        sync_client.close()
+        raise
+    return sync_client, async_client
+
+
+def _close_unattached_http_clients(sync_client, async_client) -> None:
+    """Release factory-owned clients if model construction fails."""
+    if sync_client is not None:
+        try:
+            sync_client.close()
+        except Exception:
+            logger.debug("Failed to close unattached sync HTTP client", exc_info=True)
+    if async_client is not None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                asyncio.run(async_client.aclose())
+            except Exception:
+                logger.debug("Failed to close unattached async HTTP client", exc_info=True)
+        else:
+            loop.create_task(async_client.aclose())
 
 
 def _deep_merge_dicts(base: dict | None, override: dict) -> dict:
@@ -73,6 +158,7 @@ def create_chat_model(
     thinking_enabled: bool = False,
     *,
     disable_keepalive: bool = False,
+    share_ssl_context_for_http_clients: bool = False,
     **kwargs,
 ) -> BaseChatModel:
     """Create a chat model instance from the config.
@@ -81,12 +167,15 @@ def create_chat_model(
         name: The name of the model to create. If None, the configured default model will be used.
         thinking_enabled: Enable thinking-mode settings declared in the model config.
         disable_keepalive: Inject an httpx.AsyncClient with keep-alive disabled
-            for ChatOpenAI subclasses. Opt in for long-lived shared models on
+            for BaseChatOpenAI subclasses. Opt in for long-lived shared models on
             hot paths (lead agent, shared summarization middleware) so the
             openai connection pool never carries SSL transports across LLM
             calls. Adds a TCP+TLS handshake per request; do not enable for
             short-lived per-call models — they already drain on close via
             ``aclose_chat_model``.
+        share_ssl_context_for_http_clients: When ``disable_keepalive`` is true,
+            also inject a sync client sharing the same verified SSL context.
+            Intended for ACP's long-lived lead model on cold startup.
 
     Returns:
         A chat model instance.
@@ -160,15 +249,6 @@ def create_chat_model(
 
     _enable_stream_usage_by_default(model_config.use, model_settings_from_config)
 
-    if disable_keepalive:
-        try:
-            from langchain_openai import ChatOpenAI
-
-            if issubclass(model_class, ChatOpenAI) and "http_async_client" not in model_settings_from_config and "http_async_client" not in kwargs:
-                model_settings_from_config["http_async_client"] = _build_no_keepalive_async_client()
-        except Exception:
-            logger.debug("Failed to inject no-keepalive http_async_client; falling back to default", exc_info=True)
-
     # For Codex Responses API models: map thinking mode to reasoning_effort
     from deerflow.models.openai_codex_provider import CodexChatModel
 
@@ -229,7 +309,53 @@ def create_chat_model(
             kwargs.pop("retry_max_attempts", None)
             model_settings_from_config["retry_max_attempts"] = 1
 
-    model_instance = model_class(**{**model_settings_from_config, **kwargs})
+    owned_sync_client = None
+    owned_async_client = None
+    if disable_keepalive:
+        try:
+            from langchain_openai.chat_models.base import BaseChatOpenAI
+
+            # LangChain rejects an explicit openai_proxy combined with either
+            # custom HTTP client. Honor that setting and caller-supplied clients.
+            openai_proxy = kwargs.get("openai_proxy", model_settings_from_config.get("openai_proxy"))
+            if (
+                issubclass(model_class, BaseChatOpenAI)
+                and not openai_proxy
+                and "http_async_client" not in model_settings_from_config
+                and "http_async_client" not in kwargs
+            ):
+                if (
+                    share_ssl_context_for_http_clients
+                    and "http_client" not in model_settings_from_config
+                    and "http_client" not in kwargs
+                ):
+                    owned_sync_client, owned_async_client = _build_no_keepalive_http_clients()
+                    model_settings_from_config["http_client"] = owned_sync_client
+                else:
+                    owned_async_client = _build_no_keepalive_async_client()
+                model_settings_from_config["http_async_client"] = owned_async_client
+        except Exception:
+            logger.debug("Failed to inject no-keepalive http_async_client; falling back to default", exc_info=True)
+
+    try:
+        model_instance = model_class(**{**model_settings_from_config, **kwargs})
+    except BaseException:
+        _close_unattached_http_clients(owned_sync_client, owned_async_client)
+        raise
+    if owned_sync_client is not None:
+        # A graph can be replaced while another turn still uses it. Closing at
+        # model collection, rather than at reset_agent(), preserves that turn.
+        # aclose_chat_model() may invoke this finalizer earlier when appropriate.
+        finalizer = None
+        try:
+            finalizer = weakref.finalize(model_instance, owned_sync_client.close)
+            finalizer.atexit = False
+            object.__setattr__(model_instance, "_deerflow_owned_http_client_finalizer", finalizer)
+        except BaseException:
+            if finalizer is not None:
+                finalizer.detach()
+            _close_unattached_http_clients(owned_sync_client, owned_async_client)
+            raise
     # Direct model consumers such as summarization do not pass through the
     # agent middleware chain.  Keep only the declarative source mapping on the
     # instance; actual values are resolved per invocation, never shared here.

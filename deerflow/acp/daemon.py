@@ -34,7 +34,6 @@ from .daemon_endpoint import (
     ensure_runtime_dir,
     get_runtime_dir,
 )
-from .proposal_control import handle_proposal_management_request
 from .runtime import LocalACPRuntime
 from .session_cleanup import cleanup_expired_sessions, run_session_cleanup_loop
 from .session_store import LocalACPSessionStore
@@ -114,6 +113,13 @@ def _default_agent_factory(
     )
 
 
+async def _default_management_handler(request: dict[str, Any]) -> dict[str, Any]:
+    """Load proposal management only when a proposal request arrives."""
+    from .proposal_control import handle_proposal_management_request
+
+    return await handle_proposal_management_request(request)
+
+
 class ACPDaemon:
     """Serve multiple local ACP clients while reusing the expensive runtime."""
 
@@ -127,7 +133,7 @@ class ACPDaemon:
         agent_factory: Callable[..., DeerFlowACPAgent] | None = None,
         management_handler: Callable[
             [dict[str, Any]], Awaitable[dict[str, Any]]
-        ] = handle_proposal_management_request,
+        ] = _default_management_handler,
         token: str | None = None,
     ) -> None:
         self.config = config

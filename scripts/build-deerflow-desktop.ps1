@@ -125,6 +125,8 @@ Copy-Item -LiteralPath $bridgeBinary -Destination (Join-Path $outputRoot "deerfl
 Copy-Item -LiteralPath (Join-Path $binaryRoot "waku.exe") -Destination (Join-Path $outputRoot "deerflow-desktop.exe")
 Copy-Item -LiteralPath (Join-Path $binaryRoot "waku-daemon.exe") -Destination $outputRoot
 Copy-Item -LiteralPath $desktopDefault -Destination (Join-Path $outputRoot "resources\default-config.yaml") -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "deerflow-login-prewarm.py") -Destination $outputRoot
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "register-deerflow-login-prewarm.ps1") -Destination $outputRoot
 $licenses = Join-Path $outputRoot "resources\licenses"
 New-Item -ItemType Directory -Path $licenses -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $runtimeSource "resources\licenses\Python.txt") -Destination $licenses
@@ -132,19 +134,33 @@ Copy-Item -LiteralPath (Join-Path $desktopRoot "LICENSE") -Destination (Join-Pat
 Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $licenses "DeerFlow.txt")
 Copy-Item -LiteralPath (Join-Path $desktopRoot "FORK.md") -Destination $outputRoot
 
-# Refresh the application package even when reusing an older dependency runtime.
+# Refresh locked dependencies and application code when reusing an older runtime.
 # Only the new package is changed. The source portable directory stays untouched.
 $sitePackages = Join-Path $outputRoot "runtime\Lib\site-packages"
+$dependencyExportRoot = Join-Path $repoRoot ".build-cache"
+New-Item -ItemType Directory -Path $dependencyExportRoot -Force | Out-Null
+$requirements = Join-Path $dependencyExportRoot "deerflow-desktop-requirements-$buildId.txt"
 $previousScmVersion = $env:SETUPTOOLS_SCM_PRETEND_VERSION
 Push-Location $repoRoot
 try {
     if ($sourceVersion) { $env:SETUPTOOLS_SCM_PRETEND_VERSION = $sourceVersion }
+    & uv export --quiet --frozen --no-dev --no-emit-project --extra rustfs --prune agent-sandbox --output-file $requirements
+    if ($LASTEXITCODE -ne 0) { throw "Locked Desktop dependency export failed" }
+    & uv pip install --quiet --target $sitePackages --python-version ($PythonVersion.Split('.')[0..1] -join '.') --python-platform x86_64-pc-windows-msvc --link-mode copy --requirements $requirements
+    if ($LASTEXITCODE -ne 0) { throw "Refreshing packaged Desktop dependencies failed" }
     & uv pip install --quiet --target $sitePackages --python-version ($PythonVersion.Split('.')[0..1] -join '.') --python-platform x86_64-pc-windows-msvc --link-mode copy --no-deps --reinstall $repoRoot
     if ($LASTEXITCODE -ne 0) { throw "Refreshing packaged DeerFlow code failed" }
 } finally {
     $env:SETUPTOOLS_SCM_PRETEND_VERSION = $previousScmVersion
     Pop-Location
 }
+# Refreshing the application replaces its .py files after the portable runtime
+# was precompiled. Generate matching bytecode now so the first Desktop launch
+# does not compile the entire DeerFlow import graph while opening ACP.
+& (Join-Path $outputRoot "runtime\python.exe") -m compileall -q $sitePackages
+if ($LASTEXITCODE -ne 0) { throw "Pre-compiling packaged dependencies failed" }
+& (Join-Path $outputRoot "runtime\python.exe") -m compileall -q -f (Join-Path $sitePackages "deerflow")
+if ($LASTEXITCODE -ne 0) { throw "Pre-compiling packaged DeerFlow code failed" }
 $metadataDirectories = @(Get-ChildItem -LiteralPath $sitePackages -Directory -Filter "deerflow_api-*.dist-info")
 if ($metadataDirectories.Count -ne 1) { throw "Expected one installed DeerFlow distribution" }
 $metadata = Join-Path $metadataDirectories[0].FullName "METADATA"
@@ -168,6 +184,14 @@ DEER_FLOW_PORTABLE_ROOT can select another complete portable directory (includin
 runtime, resources and executables) before launch; it is not a data-only profile.
 Debug packages default to the build checkout's desktop-app/temp unless this
 variable is set to the extracted package directory.
+
+Optional ACP login prewarm for Windows: after the first Desktop launch has
+created user-data/config/config.yaml, run this from PowerShell in the package
+directory:
+  .\register-deerflow-login-prewarm.ps1 install -BundleRoot .
+The current-user task starts ACP after sign-in. Run the install command again
+after moving or upgrading the package so it points to the new directory.
+Use the same script with status or uninstall to inspect or remove the task.
 
 This Waku-derived desktop is GPL-3.0-only. See FORK.md and resources/licenses.
 The matching source ZIP is supplied beside this archive. Upstream Waku updates

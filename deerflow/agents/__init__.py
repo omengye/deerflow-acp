@@ -1,7 +1,25 @@
-from .checkpointer import get_checkpointer, make_checkpointer, reset_checkpointer
-from .factory import create_deerflow_agent
-from .features import Next, Prev, RuntimeFeatures
-from .thread_state import SandboxState, ThreadState
+from importlib import import_module
+
+_EXPORTS = {
+    "get_checkpointer": "checkpointer",
+    "make_checkpointer": "checkpointer",
+    "reset_checkpointer": "checkpointer",
+    "create_deerflow_agent": "factory",
+    "Next": "features",
+    "Prev": "features",
+    "RuntimeFeatures": "features",
+    "SandboxState": "thread_state",
+    "ThreadState": "thread_state",
+}
+
+
+def __getattr__(name: str):
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(f".{module_name}", __name__), name)
+    globals()[name] = value
+    return value
 
 
 def make_lead_agent(*args, **kwargs):

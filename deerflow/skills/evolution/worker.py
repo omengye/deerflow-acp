@@ -7,10 +7,12 @@ import logging
 import queue
 import threading
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from .service import SkillEvolutionService
 from .store import FileEvolutionStore, utc_now_iso
+
+if TYPE_CHECKING:
+    from .service import SkillEvolutionService
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,11 @@ class EvolutionWorker:
         service: SkillEvolutionService | None = None,
     ):
         self.store = store or FileEvolutionStore()
-        self.service = service or SkillEvolutionService(self.store)
+        if service is None:
+            from .service import SkillEvolutionService
+
+            service = SkillEvolutionService(self.store)
+        self.service = service
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None

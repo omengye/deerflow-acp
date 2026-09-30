@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -129,12 +130,19 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         preserve_recent_skill_tokens: int = 25_000,
         preserve_recent_skill_tokens_per_skill: int = 5_000,
         fallback_model_name: str | None = None,
+        deferred_primary_model_name: str | None = None,
         max_consecutive_failures: int = 3,
         circuit_recovery_timeout_sec: int = 60,
         pii_redaction: PiiRedactionConfig | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        # For the shared-model case, `model` is initially the lead model: it
+        # supplies the exact profile and token counter behavior required by
+        # LangChain's constructor. The independent non-thinking summarizer is
+        # constructed only when a compression is actually requested.
+        self._deferred_primary_model_name = deferred_primary_model_name
+        self._primary_model_lock = threading.Lock()
         self.pii_redaction = (pii_redaction or PiiRedactionConfig()).model_copy(deep=True)
         self._skills_container_path = skills_container_path or "/mnt/skills"
         self._skill_file_read_tool_names = frozenset(skill_file_read_tool_names or {"read_file", "read", "view", "cat"})
@@ -243,6 +251,25 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
                 logger.exception("Failed to build fallback summarization model '%s'", self._fallback_model_name)
                 return None
         return self._fallback_model
+
+    def _get_primary_model(self) -> BaseChatModel:
+        if self._deferred_primary_model_name is None:
+            return self.model
+        with self._primary_model_lock:
+            if self._deferred_primary_model_name is not None:
+                from deerflow.models import create_chat_model
+
+                try:
+                    model = create_chat_model(
+                        name=self._deferred_primary_model_name,
+                        thinking_enabled=False,
+                        disable_keepalive=True,
+                    )
+                except Exception as exc:
+                    raise _SummarizationFailed(str(exc)) from exc
+                self.model = model
+                self._deferred_primary_model_name = None
+        return self.model
 
     def _circuit_check(self) -> bool:
         """Return True if the summarization circuit is OPEN (skip the LLM entirely).
@@ -414,7 +441,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         # Serialize as XML so URL-based multimodal blocks remain visible in the summary
         # prompt while excluding raw message metadata from the token budget.
         formatted_messages = get_buffer_string(trimmed_messages, format="xml")
-        llm = model if model is not None else self.model
+        llm = model if model is not None else self._get_primary_model()
         from deerflow.agents.middlewares.runtime_headers_middleware import bind_runtime_headers
 
         llm = bind_runtime_headers(llm)
@@ -447,7 +474,11 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         # Serialize as XML so URL-based multimodal blocks remain visible in the summary
         # prompt while excluding raw message metadata from the token budget.
         formatted_messages = get_buffer_string(trimmed_messages, format="xml")
-        llm = model if model is not None else self.model
+        llm = model if model is not None else (
+            await asyncio.to_thread(self._get_primary_model)
+            if self._deferred_primary_model_name is not None
+            else self.model
+        )
         from deerflow.agents.middlewares.runtime_headers_middleware import bind_runtime_headers
 
         llm = bind_runtime_headers(llm)

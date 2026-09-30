@@ -97,6 +97,12 @@ impl Section {
         (Self::Runtime, "ACP 运行"),
     ];
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProposalView {
+    Pending,
+    History,
+}
+
 #[derive(Clone, Copy)]
 enum Kind {
     Text,
@@ -181,6 +187,7 @@ pub(super) struct DeerFlowSettings {
     memory_page: usize,
     selected_session: Option<String>,
     memory_data: Value,
+    proposal_view: Option<ProposalView>,
     proposals: Vec<Value>,
     proposal: Option<Value>,
     revisions: Vec<Value>,
@@ -242,6 +249,7 @@ impl DeerFlowSettings {
             memory_page: 0,
             selected_session: None,
             memory_data: Value::Null,
+            proposal_view: None,
             proposals: Vec::new(),
             proposal: None,
             revisions: Vec::new(),
@@ -2667,6 +2675,26 @@ impl Waku {
         cx.notify();
     }
 
+    fn deerflow_show_proposals(&mut self, view: ProposalView, cx: &mut Context<Self>) {
+        if self.deerflow_settings.busy() {
+            return;
+        }
+        self.deerflow_settings.proposal_view = Some(view);
+        self.deerflow_settings.proposals.clear();
+        self.deerflow_settings.proposal = None;
+        self.deerflow_settings.revisions.clear();
+        self.deerflow_settings.confirm_manage = None;
+        self.deerflow_settings
+            .proposal_diff
+            .update(cx, |input, cx| input.set_content(String::new(), cx));
+        let request = match view {
+            ProposalView::Pending => json!({"operation":"proposal.list","status":"pending_review"}),
+            ProposalView::History => json!({"operation":"proposal.history"}),
+        };
+        self.deerflow_request("manage", request, cx);
+        cx.notify();
+    }
+
     fn deerflow_managed(&mut self, operation: &str, data: Value, cx: &mut Context<Self>) {
         self.deerflow_settings.confirm_manage = None;
         match operation {
@@ -2683,10 +2711,16 @@ impl Waku {
                 }
             }
             "proposal.list" | "proposal.history" => {
+                self.deerflow_settings.proposal_view = Some(if operation == "proposal.list" {
+                    ProposalView::Pending
+                } else {
+                    ProposalView::History
+                });
                 self.deerflow_settings.proposals =
                     data["proposals"].as_array().cloned().unwrap_or_default();
                 self.deerflow_settings.revisions =
                     data["revisions"].as_array().cloned().unwrap_or_default();
+                self.deerflow_settings.proposal = None;
             }
             "proposal.get" => {
                 let diff = data["diff"].as_str().unwrap_or("暂无差异").to_owned();
@@ -2696,8 +2730,7 @@ impl Waku {
                 self.deerflow_settings.proposal = Some(data);
             }
             "proposal.approve" | "proposal.reject" | "proposal.rollback" => {
-                self.deerflow_settings.proposal = None;
-                self.deerflow_request("manage", json!({"operation":"proposal.history"}), cx);
+                self.deerflow_show_proposals(ProposalView::History, cx);
                 self.deerflow_settings.notice = Some(
                     match operation {
                         "proposal.approve" => "提案已批准并发布。",
@@ -2916,33 +2949,52 @@ impl Waku {
                         "df-proposal-pending",
                         "待审查提案",
                         unavailable,
-                        false,
+                        state.proposal_view == Some(ProposalView::Pending),
                         theme,
                         cx,
-                        |this, _, cx| {
-                            this.deerflow_request(
-                                "manage",
-                                json!({"operation":"proposal.list","status":"pending_review"}),
-                                cx,
-                            )
-                        },
+                        |this, _, cx| this.deerflow_show_proposals(ProposalView::Pending, cx),
                     ))
                     .child(df_button(
                         "df-proposal-history",
                         "自进化历史",
                         unavailable,
-                        false,
+                        state.proposal_view == Some(ProposalView::History),
                         theme,
                         cx,
-                        |this, _, cx| {
-                            this.deerflow_request(
-                                "manage",
-                                json!({"operation":"proposal.history"}),
-                                cx,
-                            )
-                        },
+                        |this, _, cx| this.deerflow_show_proposals(ProposalView::History, cx),
                     )),
             );
+        group = match state.proposal_view {
+            None => group.child(df_label(
+                "选择查看内容",
+                "点击上方按钮查看待审查提案或自进化历史。",
+                theme,
+            )),
+            Some(ProposalView::Pending) => {
+                group.child(df_label("待审查提案", "仅显示等待审查的技能提案。", theme))
+            }
+            Some(ProposalView::History) => group.child(df_label(
+                "自进化历史",
+                "查看全部提案及技能版本修订。",
+                theme,
+            )),
+        };
+        if state.proposal_view.is_some()
+            && state.proposals.is_empty()
+            && state.revisions.is_empty()
+            && state.pending.as_deref() != Some("manage")
+            && state.error.is_none()
+        {
+            group = group.child(df_label(
+                if state.proposal_view == Some(ProposalView::Pending) {
+                    "暂无待审查提案"
+                } else {
+                    "暂无自进化历史"
+                },
+                "",
+                theme,
+            ));
+        }
         for proposal in &state.proposals {
             let id = proposal["id"].as_str().unwrap_or("").to_owned();
             let title = format!(
