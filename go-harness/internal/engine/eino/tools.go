@@ -2,8 +2,10 @@ package eino
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -205,6 +207,7 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 			return "", err
 		}
 		var externalReservation *modelReservation
+		var externalCommit func(context.Context) error
 		if tc.Name == "invoke_acp_agent" {
 			var err error
 			externalReservation, _, err = m.budget.reserveContext(ctx, []*schema.Message{schema.UserMessage(args)}, nil)
@@ -215,6 +218,10 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 				return "", err
 			}
 			ctx = acpclient.WithCallbacks(ctx, acpclient.Callbacks{
+				ParentRunID:        m.sink.request.RunID,
+				ParentToolCallID:   tc.CallID,
+				ParentArgumentsSHA: fmt.Sprintf("%x", sha256.Sum256([]byte(args))),
+				RegisterCompletion: func(complete func(context.Context) error) { externalCommit = complete },
 				Update: func(_ context.Context, raw json.RawMessage) error {
 					var update struct {
 						SessionUpdate string          `json:"sessionUpdate"`
@@ -300,6 +307,15 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 		}
 		if emitErr := m.finish(ctx, tc, []harness.Content{{Type: "text", Text: output}}, err); emitErr != nil {
 			return "", errors.Join(err, emitErr)
+		}
+		if err == nil && externalCommit != nil {
+			commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			commitErr := externalCommit(commitCtx)
+			cancel()
+			if commitErr != nil {
+				m.io.recordError(commitErr)
+				return "", commitErr
+			}
 		}
 		return output, err
 	}, nil

@@ -156,6 +156,67 @@ func TestInvokeToolPersistsRemoteSession(t *testing.T) {
 	}
 }
 
+func TestInvokeToolWaitsForCommittedReceiptBeforeNextPrompt(t *testing.T) {
+	if os.Getenv("DEERFLOW_ACP_HELPER") != "" {
+		helperAgent()
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	tool, err := Tool(root, harness.Session{ID: "parent-ack"}, map[string]harness.ACPAgentConfig{"fixture": {Command: executable, Args: []string{"-test.run=^TestInvokeToolWaitsForCommittedReceiptBeforeNextPrompt$"}, Env: map[string]string{"DEERFLOW_ACP_HELPER": "1"}, TimeoutSeconds: 5}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var complete func(context.Context) error
+	ctx := WithCallbacks(context.Background(), Callbacks{RegisterCompletion: func(fn func(context.Context) error) { complete = fn }})
+	output, err := tool.InvokableRun(ctx, `{"agent":"fixture","prompt":"first"}`)
+	if err != nil || output != "hello" || complete == nil {
+		t.Fatalf("first prompt=%q err=%v completion=%t", output, err, complete != nil)
+	}
+	identity := sha256.Sum256([]byte("parent-ack"))
+	stateFile := filepath.Join(root, "acp-agent-sessions", fmt.Sprintf("%x", identity[:]), "fixture.json")
+	raw, err := readSessionState(stateFile)
+	var state sessionState
+	if err != nil || json.Unmarshal(raw, &state) != nil || state.Pending == nil || state.Pending.ID == "" {
+		t.Fatalf("unacknowledged prompt not pinned: %+v %v", state, err)
+	}
+	if _, err := tool.InvokableRun(context.Background(), `{"agent":"fixture","prompt":"second"}`); !errors.Is(err, harness.ErrCommandUncertain) {
+		t.Fatalf("new prompt bypassed unacknowledged remote result: %v", err)
+	}
+	if err := complete(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	output, err = tool.InvokableRun(context.Background(), `{"agent":"fixture","prompt":"second"}`)
+	if err != nil || output != "hello" {
+		t.Fatalf("prompt after receipt acknowledgement=%q err=%v", output, err)
+	}
+}
+
+func TestInvokeToolBlocksAfterRemotePromptBecomesUncertain(t *testing.T) {
+	if os.Getenv("DEERFLOW_ACP_HELPER") != "" {
+		helperAgent()
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	tool, err := Tool(root, harness.Session{ID: "parent-uncertain"}, map[string]harness.ACPAgentConfig{"fixture": {Command: executable, Args: []string{"-test.run=^TestInvokeToolBlocksAfterRemotePromptBecomesUncertain$"}, Env: map[string]string{"DEERFLOW_ACP_HELPER": "1"}, TimeoutSeconds: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.InvokableRun(context.Background(), `{"agent":"fixture","prompt":"hang"}`); !errors.Is(err, harness.ErrCommandUncertain) {
+		t.Fatalf("timed-out remote prompt was not marked uncertain: %v", err)
+	}
+	if _, err := tool.InvokableRun(context.Background(), `{"agent":"fixture","prompt":"retry"}`); !errors.Is(err, harness.ErrCommandUncertain) {
+		t.Fatalf("uncertain prompt allowed a new remote invocation: %v", err)
+	}
+}
+
 func TestExternalACPSessionPersistenceFailureStopsBeforePrompt(t *testing.T) {
 	if os.Getenv("DEERFLOW_ACP_HELPER") != "" {
 		helperAgent()
@@ -178,6 +239,31 @@ func TestExternalACPSessionPersistenceFailureStopsBeforePrompt(t *testing.T) {
 	}
 	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("prompt reached remote agent before state commit: %v", statErr)
+	}
+}
+
+func TestExternalACPPromptPersistenceFailureStopsBeforeDispatch(t *testing.T) {
+	if os.Getenv("DEERFLOW_ACP_HELPER") != "" {
+		helperAgent()
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "prompt-sent")
+	sentinel := errors.New("prompt journal unavailable")
+	result, err := Run(context.Background(), Config{Command: executable, Args: []string{"-test.run=^TestExternalACPPromptPersistenceFailureStopsBeforeDispatch$"}, Env: map[string]string{"DEERFLOW_ACP_HELPER": "1", "DEERFLOW_ACP_PROMPT_MARKER": marker}, Timeout: 5 * time.Second}, t.TempDir(), "", "first", Callbacks{PromptReady: func(_ context.Context, sessionID string) error {
+		if sessionID != "child-1" {
+			t.Errorf("unexpected remote session %q", sessionID)
+		}
+		return sentinel
+	}})
+	if !errors.Is(err, sentinel) || result.PromptDispatched {
+		t.Fatalf("unpersisted prompt dispatched: result=%+v err=%v", result, err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("prompt reached remote agent before journal commit: %v", statErr)
 	}
 }
 

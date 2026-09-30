@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -115,8 +116,17 @@ func cloneEnv(src map[string]string) map[string]string {
 func (t *invokeTool) Info(context.Context) (*schema.ToolInfo, error) { return t.info, nil }
 
 type sessionState struct {
-	SessionID string `json:"session_id"`
-	Policy    string `json:"policy"`
+	SessionID string         `json:"session_id"`
+	Policy    string         `json:"policy"`
+	Pending   *pendingPrompt `json:"pending,omitempty"`
+}
+
+type pendingPrompt struct {
+	ID           string `json:"id"`
+	PromptSHA    string `json:"prompt_sha"`
+	RunID        string `json:"run_id,omitempty"`
+	CallID       string `json:"call_id,omitempty"`
+	ArgumentsSHA string `json:"arguments_sha,omitempty"`
 }
 
 func (t *invokeTool) InvokableRun(ctx context.Context, args string, _ ...tool.Option) (string, error) {
@@ -167,6 +177,9 @@ func (t *invokeTool) InvokableRun(ctx context.Context, args string, _ ...tool.Op
 		if state.Policy != policy || state.SessionID == "" || len(state.SessionID) > 512 {
 			return "", errors.New("external ACP agent configuration changed; existing session requires reconciliation")
 		}
+		if state.Pending != nil {
+			return "", fmt.Errorf("%w: external ACP prompt %s has no committed terminal receipt; reconcile the remote session before sending another prompt", harness.ErrCommandUncertain, state.Pending.ID)
+		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return "", readErr
 	}
@@ -178,6 +191,8 @@ func (t *invokeTool) InvokableRun(ctx context.Context, args string, _ ...tool.Op
 		}
 	}
 	callbacks, _ := CallbacksFromContext(ctx)
+	promptID := rand.Text()
+	promptDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(input.Prompt)))
 	previousReady := callbacks.SessionReady
 	callbacks.SessionReady = func(callCtx context.Context, sessionID string) error {
 		if previousReady != nil {
@@ -193,14 +208,65 @@ func (t *invokeTool) InvokableRun(ctx context.Context, args string, _ ...tool.Op
 			return err
 		}
 		state.SessionID = sessionID
+		state.Policy = policy
 		return nil
+	}
+	previousPromptReady := callbacks.PromptReady
+	callbacks.PromptReady = func(callCtx context.Context, sessionID string) error {
+		if previousPromptReady != nil {
+			if err := previousPromptReady(callCtx, sessionID); err != nil {
+				return err
+			}
+		}
+		state.SessionID = sessionID
+		state.Pending = &pendingPrompt{ID: promptID, PromptSHA: promptDigest, RunID: callbacks.ParentRunID, CallID: callbacks.ParentToolCallID, ArgumentsSHA: callbacks.ParentArgumentsSHA}
+		data, err := json.Marshal(state)
+		if err != nil {
+			return err
+		}
+		return writeSessionState(stateFile, data)
 	}
 	result, runErr := Run(ctx, Config{Command: config.Command, Args: config.Args, Env: config.Env, Timeout: timeout}, workspace, state.SessionID, input.Prompt, callbacks)
 	if runErr != nil {
-		if result.SessionID != "" {
+		if result.PromptDispatched {
 			return "", errors.Join(runErr, harness.ErrCommandUncertain)
 		}
 		return "", runErr
+	}
+	complete := func(context.Context) error {
+		lock.Lock()
+		defer lock.Unlock()
+		raw, err := readSessionState(stateFile)
+		if err != nil {
+			return err
+		}
+		var current sessionState
+		if err := json.Unmarshal(raw, &current); err != nil {
+			return err
+		}
+		if current.SessionID != result.SessionID || current.Policy != policy || current.Pending == nil || current.Pending.ID != promptID || current.Pending.PromptSHA != promptDigest {
+			return fmt.Errorf("%w: external ACP prompt completion state changed", harness.ErrCommandUncertain)
+		}
+		current.Pending = nil
+		data, err := json.Marshal(current)
+		if err != nil {
+			return err
+		}
+		return writeSessionState(stateFile, data)
+	}
+	if callbacks.RegisterCompletion != nil {
+		callbacks.RegisterCompletion(complete)
+	} else {
+		// Direct callers have no harness receipt; their own successful return
+		// is the only available completion boundary.
+		state.Pending = nil
+		data, err := json.Marshal(state)
+		if err != nil {
+			return "", err
+		}
+		if err := writeSessionState(stateFile, data); err != nil {
+			return "", errors.Join(err, harness.ErrCommandUncertain)
+		}
 	}
 	return result.Text, nil
 }

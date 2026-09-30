@@ -25,9 +25,13 @@ type Service struct {
 	// Set by the host at construction; public requests cannot supply policy.
 	ContinuationHostPolicy string
 	PermissionMode         harness.PermissionMode
-	Model                  string
-	Settings               ConfigSettings
-	Resources              SessionResources
+	// Optional host callbacks for the external ACP prompt reconciliation
+	// extension. They receive the connection owner for the usual session fence.
+	ExternalPromptPending     func(context.Context, string, string, string) (harness.ExternalPromptState, error)
+	ExternalPromptAcknowledge func(context.Context, string, string, string, string) error
+	Model                     string
+	Settings                  ConfigSettings
+	Resources                 SessionResources
 	// SessionCleanup runs after a successful durable session purge while the
 	// coordinator still holds its deletion fence.
 	SessionCleanup func(string) error

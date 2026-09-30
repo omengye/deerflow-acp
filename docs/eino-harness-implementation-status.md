@@ -27,7 +27,7 @@
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层（含工具允许/拒绝列表）、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
-| 可选外部 ACP Agent | 首轮接入：显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次估算模型调用计入父预算 | 断线后的反向权限暂停/恢复、远端真实模型用量约束、产物导入与异常会话对账 |
+| 可选外部 ACP Agent | 显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次估算模型调用计入父预算；未决 prompt 先落盘，超时后阻止重复派发，SDK/ACP 扩展可按终态/已复核回执确认解除 | 原 prompt 的通用断线原位恢复、远端真实模型用量约束、产物导入与真实编辑器中的对账互操作 |
 | 打包 / 默认切换 | 独立 Go ACP 便携包脚本与包内说明已写入；Windows Debug/Release 与 WSL Ubuntu Linux Debug 包实测 Bridge 自动启动 Go daemon，并完成 status/stop；默认入口未切换 | 原生 Linux/远端 CI、真实编辑器、回退和默认切换演练 |
 
 ## 已确认的实施差异
@@ -389,3 +389,10 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - Eino 原生 `task` 自有子 Agent 中断状态，不能在其外层套第二层持久化权限中断。`all` 下对 `task` 入口使用当前会话权限回调，并在进入子 Agent 前完成一条无外部副作用的授权边界回执；子 Agent 的实际工具仍由独立的持久化审批和回执保护。子 Agent 中断恢复时，Eino 原生状态只重用已批准的同一次 `task` 入口。若客户端恰在入口审批过程中断连，该次 prompt 会取消，入口审批不会跨连接保留；真实编辑器对此仍需联调。
 - 权限模式进入 Eino 执行契约和后台宿主摘要，部署配置变化会使旧检查点和后台任务不再匹配。定向测试覆盖三种模式、原生 `task`/`write_todos` 拒绝及 `task` 批准后子工具审批与恢复、后台策略授权；真实 ACP 管道测试确认 `all` 下读工具会触发反向审批，会话 `allow_always` 可跳过后续询问。
 - Windows 全 Go 模块 `go test -mod=readonly -p=2 -count=1 -timeout=5m ./...` 通过；新增 Eino/ACP 路径的 `-race` 定向检查通过，WSL Ubuntu 22.04 使用 Go 1.26.8 运行权限模式相关的 harness/launch/Eino/runtime 定向测试通过，`git diff --check` 通过。首次全模块运行发现原有只读 Skills 用例被新保护映射拒绝；将只读技能加载纳入受控白名单后，定向用例及全模块重跑通过。真实编辑器、Docker 与远端 CI 仍未验收。
+
+## 第三十八阶段外部 ACP 未决 prompt 保护
+
+- 外部 ACP `session/prompt` 发送前，把 prompt 摘要、随机调用 ID 和已落盘的远端 session ID 原子保存；Eino 调用还记录父 run/tool call 与参数摘要。远端返回成功后保持未决标记，直到外层 `tool_end` 回执提交才清除。若回执提交失败、连接中断或进程异常退出，下一次调用会看到未决标记并拒绝派发新 prompt，避免不明副作用被盲目重做。
+- SDK `PendingExternalPrompt` 可读取未决身份；`AcknowledgeExternalPrompt` 只接受精确 prompt ID，并要求匹配的父工具回执已完成，或不明回执已通过原有 `ReconcileToolReceipt` 完成复核。ACP stdio/daemon 的 `_deerflow/external_prompt/pending` 与 `_deerflow/external_prompt/acknowledge` 扩展复用同一会话所有权和回执校验；只在宿主配置外部 Agent 时宣告 capability。该确认仅清除本地阻断标记，不会调用远端。对账人员仍须先检查远端 session 的实际结果；真实编辑器中的扩展互操作尚未验收。
+- 标准 ACP 的 `session/load` 不提供“原 prompt 是否已执行及全部副作用”的可靠证明，因此仍不能宣称通用原位恢复或远端 exactly-once。新的保护使结果不明时停在可检查状态；真正恢复仍需远端 Agent 支持幂等调用身份或可核验的任务状态协议。
+- 真实子进程测试覆盖 `session/prompt` 前日志失败、未确认回执阻断下一 prompt、超时后的跨调用阻断；SDK 测试覆盖未复核回执拒绝确认及复核后解除；ACP 测试覆盖扩展连接归属与参数校验。Windows 全 Go 模块 `go test -mod=readonly -p=2 -count=1 -timeout=5m ./...`、根 SDK/ACP agent/client/Eino 的相关 `-race` 定向测试，以及 WSL Ubuntu 22.04 Go 1.26.8 的相同范围定向测试均通过。Docker daemon 仍不可用；真实编辑器与远端 CI 尚未验收。

@@ -155,6 +155,9 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if a.service.Background != nil {
 			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["background"] = backgroundCapabilities(a.service.Background)
 		}
+		if a.service.ExternalPromptPending != nil && a.service.ExternalPromptAcknowledge != nil {
+			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["externalPrompts"] = externalPromptCapabilities()
+		}
 		return response, nil
 	}
 	if !a.ready() {
@@ -175,6 +178,8 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		return a.artifactRequest(ctx, raw)
 	case listReceiptsMethod, reconcileReceiptMethod:
 		return a.receiptRequest(ctx, method, raw)
+	case pendingExternalPromptMethod, ackExternalPromptMethod:
+		return a.externalPromptRequest(ctx, method, raw)
 	case listMemoryMethod, searchMemoryMethod, getMemoryMethod, createMemoryMethod, replaceMemoryMethod, deleteMemoryMethod, clearMemoryMethod, flushMemoryMethod:
 		return a.memoryRequest(ctx, method, raw)
 	case "session/new":

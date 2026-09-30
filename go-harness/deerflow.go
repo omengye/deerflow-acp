@@ -297,6 +297,14 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	service := hr.NewService(business, engine, cfg.Model)
 	service.PermissionMode = cfg.PermissionMode
 	if len(cfg.ACPAgents) > 0 {
+		service.ExternalPromptPending = func(ctx context.Context, owner, sessionID, agent string) (harness.ExternalPromptState, error) {
+			return pendingExternalPrompt(ctx, service, cfg.DataDir, cfg.ACPAgents, owner, sessionID, agent)
+		}
+		service.ExternalPromptAcknowledge = func(ctx context.Context, owner, sessionID, agent, promptID string) error {
+			return acknowledgeExternalPrompt(ctx, service, cfg.DataDir, cfg.ACPAgents, owner, sessionID, agent, promptID)
+		}
+	}
+	if len(cfg.ACPAgents) > 0 {
 		service.SessionCleanup = func(id string) error { return acpclient.CleanupSession(cfg.DataDir, id) }
 	}
 	service.Memory, service.MemoryUserID = memoryStore, cfg.MemoryUserID

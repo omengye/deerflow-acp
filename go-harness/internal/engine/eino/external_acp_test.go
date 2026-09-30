@@ -3,6 +3,7 @@ package eino
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -12,7 +13,10 @@ import (
 	acpclient "github.com/omengye/deerflow-acp/go-harness/internal/acp/client"
 )
 
-type externalToolFixture struct{ calls atomic.Int32 }
+type externalToolFixture struct {
+	calls      atomic.Int32
+	completion func() error
+}
 
 func (*externalToolFixture) Info(context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{Name: "invoke_acp_agent", Desc: "test external delegate", ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{"agent": {Type: schema.String}, "prompt": {Type: schema.String}})}, nil
@@ -26,7 +30,68 @@ func (f *externalToolFixture) InvokableRun(ctx context.Context, _ string, _ ...t
 	if err := callbacks.Update(ctx, json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"delegated"}}`)); err != nil {
 		return "", err
 	}
+	if callbacks.RegisterCompletion != nil {
+		callbacks.RegisterCompletion(func(context.Context) error {
+			if f.completion != nil {
+				return f.completion()
+			}
+			return nil
+		})
+	}
 	return "delegated", nil
+}
+
+func TestExternalCompletionFollowsTerminalReceipt(t *testing.T) {
+	var ended, acknowledged bool
+	fixture := &externalToolFixture{completion: func() error {
+		if !ended {
+			t.Error("external completion preceded terminal tool receipt")
+		}
+		acknowledged = true
+		return nil
+	}}
+	fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		if call == 0 {
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "delegate-1", Type: "function", Function: schema.FunctionCall{Name: "invoke_acp_agent", Arguments: `{"agent":"fixture","prompt":"work"}`}}}}}), nil
+		}
+		return textStream("done"), nil
+	}}
+	engine := newTestEngine(t, Config{ChatModel: fake, Tools: []tool.BaseTool{fixture}})
+	_, err := engine.Run(context.Background(), request("external-ack"), func(_ context.Context, event harness.RunEvent) error {
+		if event.Kind == "tool_end" && event.ToolName == "invoke_acp_agent" {
+			ended = true
+		}
+		return nil
+	}, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+		return harness.AllowOnce, nil
+	})
+	if err != nil || !ended || !acknowledged {
+		t.Fatalf("terminal receipt=%t acknowledged=%t err=%v", ended, acknowledged, err)
+	}
+}
+
+func TestExternalCompletionWaitsWhenTerminalReceiptFails(t *testing.T) {
+	var acknowledged bool
+	fixture := &externalToolFixture{completion: func() error { acknowledged = true; return nil }}
+	fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		if call == 0 {
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "delegate-1", Type: "function", Function: schema.FunctionCall{Name: "invoke_acp_agent", Arguments: `{"agent":"fixture","prompt":"work"}`}}}}}), nil
+		}
+		return textStream("done"), nil
+	}}
+	engine := newTestEngine(t, Config{ChatModel: fake, Tools: []tool.BaseTool{fixture}})
+	sentinel := errors.New("terminal receipt store unavailable")
+	_, err := engine.Run(context.Background(), request("external-ack-failure"), func(_ context.Context, event harness.RunEvent) error {
+		if event.Kind == "tool_end" && event.ToolName == "invoke_acp_agent" {
+			return sentinel
+		}
+		return nil
+	}, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+		return harness.AllowOnce, nil
+	})
+	if !errors.Is(err, sentinel) || acknowledged {
+		t.Fatalf("failed receipt was acknowledged: acknowledged=%t err=%v", acknowledged, err)
+	}
 }
 
 func TestExternalDelegationUsesParentModelQuotaAndProgress(t *testing.T) {

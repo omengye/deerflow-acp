@@ -39,9 +39,19 @@ type PermissionRequest struct {
 }
 
 type Callbacks struct {
+	ParentRunID        string
+	ParentToolCallID   string
+	ParentArgumentsSHA string
 	// SessionReady persists a newly created remote session before prompt is
 	// dispatched. A failure stops the invocation without sending the prompt.
 	SessionReady func(context.Context, string) error
+	// PromptReady persists the logical invocation immediately before sending
+	// session/prompt. A failure prevents remote dispatch.
+	PromptReady func(context.Context, string) error
+	// RegisterCompletion receives an acknowledgement callback after the remote
+	// prompt succeeds. The Eino host calls it only after its terminal receipt
+	// has committed; a direct caller may call it after recording its own result.
+	RegisterCompletion func(func(context.Context) error)
 	// Update receives the complete ACP update. The caller must validate resource
 	// links before importing them into a local artifact store.
 	Update func(context.Context, json.RawMessage) error
@@ -50,9 +60,10 @@ type Callbacks struct {
 }
 
 type Result struct {
-	SessionID  string
-	Text       string
-	StopReason string
+	SessionID        string
+	Text             string
+	StopReason       string
+	PromptDispatched bool
 }
 
 // Run starts one allowed executable. A previous remote session is loaded when
@@ -264,12 +275,18 @@ func Run(ctx context.Context, cfg Config, workspace, remoteSessionID, prompt str
 		}
 		result.SessionID = sessionID
 	}
+	if callbacks.PromptReady != nil {
+		if err := callbacks.PromptReady(ctx, sessionID); err != nil {
+			return result, fmt.Errorf("persist external prompt before dispatch: %w", err)
+		}
+	}
 	mu.Lock()
 	promptActive = true
 	mu.Unlock()
 	var prompted struct {
 		StopReason string `json:"stopReason"`
 	}
+	result.PromptDispatched = true
 	if err := peer.Call(ctx, "session/prompt", map[string]any{"sessionId": sessionID, "prompt": []map[string]string{{"type": "text", "text": prompt}}}, &prompted); err != nil {
 		return result, fmt.Errorf("prompt external agent: %w", err)
 	}
@@ -277,7 +294,7 @@ func Run(ctx context.Context, cfg Config, workspace, remoteSessionID, prompt str
 		return result, fmt.Errorf("drain external updates: %w", err)
 	}
 	mu.Lock()
-	result = Result{SessionID: sessionID, Text: text.String(), StopReason: prompted.StopReason}
+	result = Result{SessionID: sessionID, Text: text.String(), StopReason: prompted.StopReason, PromptDispatched: true}
 	mu.Unlock()
 	if result.StopReason == "" {
 		return result, errors.New("external agent omitted prompt stop reason")
