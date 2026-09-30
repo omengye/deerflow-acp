@@ -93,6 +93,15 @@ function Copy-BundledSkills([string]$Source, [string]$Destination) {
         if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
         if ($entry.PSIsContainer) {
             if ($entry.Name -notin @(".git", ".venv", "node_modules", "__pycache__", ".cache", "user-data", "logs")) {
+                # Keep the portable package usable without Python: a Skill
+                # whose implementation includes Python scripts is omitted as
+                # a unit so its instructions never point at missing scripts.
+                if (Test-Path -LiteralPath (Join-Path $entry.FullName "SKILL.md")) {
+                    $pythonScript = Get-ChildItem -LiteralPath $entry.FullName -Recurse -File -Force |
+                        Where-Object { $_.Extension -in @(".py", ".pyw") } |
+                        Select-Object -First 1
+                    if ($pythonScript) { continue }
+                }
                 Copy-BundledSkills $entry.FullName (Join-Path $Destination $entry.Name)
             }
         } elseif ($entry.Name -notmatch '^\.env($|\.(?!example$))' -and $entry.Extension -notin @(".pyc", ".pyo", ".key", ".pfx", ".p12", ".log", ".db", ".sqlite")) {
@@ -125,8 +134,7 @@ selected by name without Python class paths. See resources/go-native-tools.md.
 Optional host_opencli calls an installed OpenCLI/Node.js; browser commands need
 the user's OpenCLI browser bridge. It does not require Python.
 The optional stdio MCP executable allowlist is in local_acp of config.yaml.
-Some bundled Skills contain Python scripts. Those particular scripts require a
-separately installed Python interpreter; the Desktop and Go harness do not.
+Skills that require Python scripts are excluded from this portable package.
 To update, close Desktop and copy user-data into a new package. Do not replace
 or delete it. A previous Python session database cannot be opened by Go.
 
@@ -141,7 +149,7 @@ foreach ($forbidden in @("runtime", "python.exe", "pythonw.exe", ".venv", "site-
     if (Test-Path -LiteralPath (Join-Path $outputRoot $forbidden)) { throw "Unexpected Python dependency in package: $forbidden" }
 }
 $forbiddenEntries = Get-ChildItem -LiteralPath $outputRoot -Recurse -Force | Where-Object {
-    $_.Name -match '^(python(?:w)?(?:[0-9.]+)?\.exe|pyvenv\.cfg|site-packages|conda-meta|\.venv)$'
+    $_.Name -match '^(python(?:w)?(?:[0-9.]+)?\.exe|pyvenv\.cfg|site-packages|conda-meta|\.venv)$' -or $_.Extension -in @('.py', '.pyw', '.pyc', '.pyo')
 }
 if ($forbiddenEntries) { throw "Unexpected Python runtime component in package: $($forbiddenEntries[0].FullName)" }
 if ($CreateZip) {
