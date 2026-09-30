@@ -13,7 +13,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
@@ -83,11 +82,11 @@ func ConfiguredWorkspaceFactory(ctx context.Context, req harness.RunRequest, con
 }
 
 func workspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root) ([]tool.BaseTool, error) {
-	read, err := utils.InferTool("read_file", "Read a UTF-8 text file inside the workspace, at most 512 KiB.", func(ctx context.Context, in pathInput) (string, error) { return readRootFile(ctx, root, in.Path) })
+	read, err := inferTool("read_file", "Read a UTF-8 text file inside the workspace, at most 512 KiB.", func(ctx context.Context, in pathInput) (string, error) { return readRootFile(ctx, root, in.Path) })
 	if err != nil {
 		return nil, err
 	}
-	list, err := utils.InferTool("list_directory", "List immediate entries inside a workspace directory.", func(ctx context.Context, in pathInput) ([]string, error) {
+	list, err := inferTool("list_directory", "List immediate entries inside a workspace directory.", func(ctx context.Context, in pathInput) ([]string, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -121,7 +120,7 @@ func workspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root) 
 	if err != nil {
 		return nil, err
 	}
-	search, err := utils.InferTool("search_files", "Search literal text in bounded workspace files. Returns at most 100 matches from at most 2000 entries; symlinks are not traversed.", func(ctx context.Context, in searchInput) ([]string, error) {
+	search, err := inferTool("search_files", "Search literal text in bounded workspace files. Returns at most 100 matches from at most 2000 entries; symlinks are not traversed.", func(ctx context.Context, in searchInput) ([]string, error) {
 		if in.Text == "" {
 			return nil, fmt.Errorf("text is required")
 		}
@@ -187,7 +186,7 @@ func workspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root) 
 	if req.Session.Mode == "plan" {
 		return result, nil
 	}
-	write, err := utils.InferTool("write_file", "Write UTF-8 text inside the workspace. Existing contents are replaced; maximum 512 KiB.", func(ctx context.Context, in writeInput) (string, error) {
+	write, err := inferTool("write_file", "Write UTF-8 text inside the workspace. Existing contents are replaced; maximum 512 KiB.", func(ctx context.Context, in writeInput) (string, error) {
 		if err := writeRootFile(ctx, root, in.Path, in.Content); err != nil {
 			return "", err
 		}
@@ -196,16 +195,16 @@ func workspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root) 
 	if err != nil {
 		return nil, err
 	}
-	edit, err := utils.InferTool("edit_file", "Replace exactly one occurrence of old_text in a workspace text file.", func(ctx context.Context, in editInput) (string, error) {
+	edit, err := inferTool("edit_file", "Replace exactly one occurrence of old_text in a workspace text file.", func(ctx context.Context, in editInput) (string, error) {
 		if in.OldText == "" {
-			return "", fmt.Errorf("old_text must not be empty")
+			return "", harness.MarkToolNotExecuted(fmt.Errorf("old_text must not be empty"))
 		}
 		original, err := readRootFile(ctx, root, in.Path)
 		if err != nil {
-			return "", err
+			return "", harness.MarkToolNotExecuted(err)
 		}
 		if strings.Count(original, in.OldText) != 1 {
-			return "", fmt.Errorf("old_text must match exactly once")
+			return "", harness.MarkToolNotExecuted(fmt.Errorf("old_text must match exactly once"))
 		}
 		if err = writeRootFile(ctx, root, in.Path, strings.Replace(original, in.OldText, in.NewText, 1)); err != nil {
 			return "", err
@@ -298,26 +297,26 @@ func writeFile(ctx context.Context, cwd, path, content string) error {
 }
 func writeRootFile(ctx context.Context, root *os.Root, path, content string) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return harness.MarkToolNotExecuted(err)
 	}
 	if len(content) > maxFileBytes {
-		return fmt.Errorf("content exceeds 512 KiB")
+		return harness.MarkToolNotExecuted(fmt.Errorf("content exceeds 512 KiB"))
 	}
 	if !utf8.ValidString(content) {
-		return fmt.Errorf("content is not valid UTF-8 text")
+		return harness.MarkToolNotExecuted(fmt.Errorf("content is not valid UTF-8 text"))
 	}
 	path, err := localPath(path)
 	if err != nil {
-		return err
+		return harness.MarkToolNotExecuted(err)
 	}
 	mode := os.FileMode(0600)
 	if info, statErr := root.Stat(path); statErr == nil {
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("target is not a regular file")
+			return harness.MarkToolNotExecuted(fmt.Errorf("target is not a regular file"))
 		}
 		mode = info.Mode().Perm()
 	} else if !os.IsNotExist(statErr) {
-		return statErr
+		return harness.MarkToolNotExecuted(statErr)
 	}
 	if err = root.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err

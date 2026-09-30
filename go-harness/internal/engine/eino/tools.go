@@ -180,6 +180,15 @@ func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, conten
 		status = "failed"
 		content = append(content, harness.Content{Type: "text", Text: err.Error()})
 		receipt = &harness.ToolReceipt{Error: err.Error()}
+		var notExecuted *harness.ToolNotExecutedError
+		var noEffect *harness.ToolNoEffectError
+		if !errors.Is(err, harness.ErrCommandUncertain) {
+			if errors.As(err, &notExecuted) {
+				receipt.State = harness.ReceiptNotExecuted
+			} else if errors.As(err, &noEffect) {
+				receipt.State = harness.ReceiptNoEffect
+			}
+		}
 	}
 	// Terminal cards and their durable events must survive cancellation of the
 	// actual tool operation. The run still joins this callback before returning.

@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
@@ -22,7 +21,7 @@ func ReadToolOutputTool(store harness.ToolOutputStore, x harness.Session) (tool.
 	if store == nil {
 		return nil, errors.New("tool output store is required")
 	}
-	return utils.InferTool("read_tool_output", "Read one bounded chunk of an oversized tool result snapshot. Supply the returned opaque ID and use nextOffset to continue. This reads only snapshots from the current session, not arbitrary files.", func(ctx context.Context, in toolOutputReadInput) (harness.ToolOutputChunk, error) {
+	return inferTool("read_tool_output", "Read one bounded chunk of an oversized tool result snapshot. Supply the returned opaque ID and use nextOffset to continue. This reads only snapshots from the current session, not arbitrary files.", func(ctx context.Context, in toolOutputReadInput) (harness.ToolOutputChunk, error) {
 		return store.ReadToolOutput(ctx, x, in.ID, in.Offset, in.MaxBytes)
 	})
 }

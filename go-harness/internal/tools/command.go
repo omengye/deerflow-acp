@@ -22,6 +22,11 @@ type commandInput struct {
 	TimeoutSeconds int64    `json:"timeout_seconds,omitempty" jsonschema:"description=Optional shorter execution timeout; zero uses host policy"`
 }
 
+type powerShellCommandInput struct {
+	Script         string `json:"script" jsonschema:"description=Nonempty PowerShell script to execute in the workspace; use PowerShell syntax"`
+	TimeoutSeconds int64  `json:"timeout_seconds,omitempty" jsonschema:"description=Optional shorter execution timeout; zero uses host policy"`
+}
+
 type commandTool struct {
 	info    *schema.ToolInfo
 	backend harness.CommandBackend
@@ -47,6 +52,10 @@ func CommandTool(backend harness.CommandBackend, provider harness.SandboxProvide
 	}
 	desc := fmt.Sprintf("Execute a foreground command using the configured %s provider in this session's workspace. Return bounded stdout/stderr, state and exit code. Inspect the exit code: a returned result does not imply the command succeeded. Scripts require host authorization. This tool cannot start persistent background jobs.", provider)
 	info, err := utils.GoStruct2ToolInfo[commandInput]("execute", desc)
+	if provider == harness.SandboxPowerShell {
+		desc = "Execute a foreground PowerShell script in this session's workspace. Supply a nonempty script using PowerShell syntax, for example & 'curl.exe' '-s' 'https://example.com'. Executable/args requests are not supported by this provider. Return bounded stdout/stderr, state and exit code. This tool cannot start persistent background jobs."
+		info, err = utils.GoStruct2ToolInfo[powerShellCommandInput]("execute", desc)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -58,20 +67,20 @@ func (t *commandTool) InvokableRun(ctx context.Context, args string, _ ...tool.O
 	decoder := json.NewDecoder(strings.NewReader(args))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&in); err != nil {
-		return "", fmt.Errorf("invalid command input: %w", err)
+		return "", harness.MarkToolNotExecuted(fmt.Errorf("invalid command input: %w", err))
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return "", errors.New("command input must contain exactly one JSON object")
+		return "", harness.MarkToolNotExecuted(errors.New("command input must contain exactly one JSON object"))
 	}
 	if !strings.HasPrefix(strings.TrimSpace(args), "{") {
-		return "", errors.New("command input must be a JSON object")
+		return "", harness.MarkToolNotExecuted(errors.New("command input must be a JSON object"))
 	}
 	if in.TimeoutSeconds < 0 || in.TimeoutSeconds > int64((1<<63-1)/int64(time.Second)) {
-		return "", errors.New("invalid command timeout")
+		return "", harness.MarkToolNotExecuted(errors.New("invalid command timeout"))
 	}
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return "", harness.MarkToolNotExecuted(err)
 	}
 	result, runErr := executeCommand(ctx, t.backend, harness.CommandRequest{Executable: in.Executable, Args: in.Args, Script: in.Script, Timeout: time.Duration(in.TimeoutSeconds) * time.Second})
 	data, marshalErr := json.Marshal(result)

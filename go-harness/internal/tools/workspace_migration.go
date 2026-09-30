@@ -19,7 +19,6 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
@@ -80,7 +79,10 @@ type migratedMove struct {
 // including recursive deletion; no absolute path is passed to a shell.
 func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root, standard []tool.BaseTool, configs []harness.BuiltinToolConfig) ([]tool.BaseTool, error) {
 	var mu sync.Mutex
-	path := func(value string) (string, error) { return migratedLocalPath(req.Session.CWD, value) }
+	path := func(value string) (string, error) {
+		p, err := migratedLocalPath(req.Session.CWD, value)
+		return p, harness.MarkToolNotExecuted(err)
+	}
 	add := func(t tool.BaseTool, err error) error {
 		if err != nil {
 			return err
@@ -106,7 +108,7 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 		var err error
 		switch c.Name {
 		case "ls":
-			err = add(utils.InferTool("ls", "List workspace entries up to two levels deep, with bounded pages and a version-checked cursor.", func(ctx context.Context, in migratedLS) (string, error) {
+			err = add(inferTool("ls", "List workspace entries up to two levels deep, with bounded pages and a version-checked cursor.", func(ctx context.Context, in migratedLS) (string, error) {
 				p, err := path(in.Path)
 				if err != nil {
 					return "", err
@@ -164,7 +166,7 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 				return marshalString(map[string]any{"entries": entries[offset:end], "version": version, "next_cursor": next, "truncated": truncated || next != ""})
 			}))
 		case "read_file":
-			err = add(utils.InferTool("read_file", "Read a UTF-8 workspace file with line ranges or version-checked byte continuation. Returns content, version and next_offset. At most 1 MiB per page; files up to 16 MiB.", func(ctx context.Context, in migratedRead) (string, error) {
+			err = add(inferTool("read_file", "Read a UTF-8 workspace file with line ranges or version-checked byte continuation. Returns content, version and next_offset. At most 1 MiB per page; files up to 16 MiB.", func(ctx context.Context, in migratedRead) (string, error) {
 				p, err := path(in.Path)
 				if err != nil {
 					return "", err
@@ -175,7 +177,7 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 			if req.Session.Mode == "plan" {
 				continue
 			}
-			err = add(utils.InferTool("write_file", "Atomically write or append UTF-8 text to a workspace file, at most 512 KiB total.", func(ctx context.Context, in migratedWrite) (string, error) {
+			err = add(inferTool("write_file", "Atomically write or append UTF-8 text to a workspace file, at most 512 KiB total.", func(ctx context.Context, in migratedWrite) (string, error) {
 				mu.Lock()
 				defer mu.Unlock()
 				p, err := path(in.Path)
@@ -186,7 +188,7 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 				if in.Append {
 					old, e := readRootFile(ctx, root, p)
 					if e != nil && !errors.Is(e, os.ErrNotExist) {
-						return "", e
+						return "", harness.MarkToolNotExecuted(e)
 					}
 					content = old + content
 				}
@@ -196,7 +198,7 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 			if req.Session.Mode == "plan" {
 				continue
 			}
-			err = add(utils.InferTool("str_replace", "Replace old_str with new_str in a workspace text file. Without replace_all, old_str must appear exactly once.", func(ctx context.Context, in migratedReplace) (string, error) {
+			err = add(inferTool("str_replace", "Replace old_str with new_str in a workspace text file. Without replace_all, old_str must appear exactly once.", func(ctx context.Context, in migratedReplace) (string, error) {
 				mu.Lock()
 				defer mu.Unlock()
 				p, err := path(in.Path)
@@ -204,15 +206,15 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 					return "", err
 				}
 				if in.OldStr == "" {
-					return "", errors.New("old_str must not be empty")
+					return "", harness.MarkToolNotExecuted(errors.New("old_str must not be empty"))
 				}
 				content, err := readRootFile(ctx, root, p)
 				if err != nil {
-					return "", err
+					return "", harness.MarkToolNotExecuted(err)
 				}
 				count := strings.Count(content, in.OldStr)
 				if count == 0 || (!in.ReplaceAll && count != 1) {
-					return "", errors.New("old_str must match; without replace_all it must match exactly once")
+					return "", harness.MarkToolNotExecuted(errors.New("old_str must match; without replace_all it must match exactly once"))
 				}
 				n := 1
 				if in.ReplaceAll {
@@ -221,7 +223,7 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 				return "OK", writeRootFile(ctx, root, p, strings.Replace(content, in.OldStr, in.NewStr, n))
 			}))
 		case "glob":
-			err = add(utils.InferTool("glob", "Find workspace paths by glob, including **. Bounded traversal; returns matches and truncation/coverage flags.", func(ctx context.Context, in migratedGlob) (string, error) {
+			err = add(inferTool("glob", "Find workspace paths by glob, including **. Bounded traversal; returns matches and truncation/coverage flags.", func(ctx context.Context, in migratedGlob) (string, error) {
 				p, err := path(in.Path)
 				if err != nil {
 					return "", err
@@ -259,7 +261,7 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 				return marshalString(map[string]any{"matches": matches, "truncated": truncated})
 			}))
 		case "grep":
-			err = add(utils.InferTool("grep", "Search text with RE2 regex or literal matching; optional glob filter and case sensitivity. Skips symlinks, binary files and files over 512 KiB; bounded traversal.", func(ctx context.Context, in migratedGrep) (string, error) {
+			err = add(inferTool("grep", "Search text with RE2 regex or literal matching; optional glob filter and case sensitivity. Skips symlinks, binary files and files over 512 KiB; bounded traversal.", func(ctx context.Context, in migratedGrep) (string, error) {
 				p, err := path(in.Path)
 				if err != nil {
 					return "", err
@@ -349,7 +351,7 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 			if req.Session.Mode == "plan" {
 				continue
 			}
-			err = add(utils.InferTool("delete_path", "Delete a workspace file/symlink or empty directory. recursive explicitly allows a directory tree. Workspace root cannot be deleted.", func(ctx context.Context, in migratedDelete) (string, error) {
+			err = add(inferTool("delete_path", "Delete a workspace file/symlink or empty directory. recursive explicitly allows a directory tree. Workspace root cannot be deleted.", func(ctx context.Context, in migratedDelete) (string, error) {
 				mu.Lock()
 				defer mu.Unlock()
 				p, err := path(in.Path)
@@ -357,13 +359,13 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 					return "", err
 				}
 				if p == "." {
-					return "", errors.New("cannot delete workspace root")
+					return "", harness.MarkToolNotExecuted(errors.New("cannot delete workspace root"))
 				}
 				if err := ctx.Err(); err != nil {
-					return "", err
+					return "", harness.MarkToolNotExecuted(err)
 				}
 				if _, err = root.Lstat(p); err != nil {
-					return "", err
+					return "", harness.MarkToolNotExecuted(err)
 				}
 				if in.Recursive {
 					err = root.RemoveAll(p)
@@ -376,7 +378,7 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 			if req.Session.Mode == "plan" {
 				continue
 			}
-			err = add(utils.InferTool("move_path", "Move/rename within the workspace. Creates destination parents. Existing file/symlink requires overwrite=true; existing directories cannot be overwritten.", func(ctx context.Context, in migratedMove) (string, error) {
+			err = add(inferTool("move_path", "Move/rename within the workspace. Creates destination parents. Existing file/symlink requires overwrite=true; existing directories cannot be overwritten.", func(ctx context.Context, in migratedMove) (string, error) {
 				mu.Lock()
 				defer mu.Unlock()
 				src, err := path(in.Source)
@@ -388,21 +390,21 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 					return "", err
 				}
 				if src == "." || dst == "." || src == dst {
-					return "", errors.New("cannot move workspace root or move path onto itself")
+					return "", harness.MarkToolNotExecuted(errors.New("cannot move workspace root or move path onto itself"))
 				}
 				if err := ctx.Err(); err != nil {
-					return "", err
+					return "", harness.MarkToolNotExecuted(err)
 				}
 				if _, err = root.Lstat(src); err != nil {
-					return "", err
+					return "", harness.MarkToolNotExecuted(err)
 				}
 				info, err := root.Lstat(dst)
 				if err == nil {
 					if !in.Overwrite || info.IsDir() {
-						return "", errors.New("destination exists or is a directory")
+						return "", harness.MarkToolNotExecuted(errors.New("destination exists or is a directory"))
 					}
 				} else if !errors.Is(err, os.ErrNotExist) {
-					return "", err
+					return "", harness.MarkToolNotExecuted(err)
 				}
 				if err = root.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 					return "", err

@@ -44,28 +44,28 @@ type opencliTool struct {
 func (t *opencliTool) Info(context.Context) (*schema.ToolInfo, error) { return t.info, nil }
 func (t *opencliTool) InvokableRun(ctx context.Context, raw string, _ ...tool.Option) (string, error) {
 	if len(raw) > 64<<10 {
-		return "", errors.New("OpenCLI input exceeds 64 KiB")
+		return "", harness.MarkToolNotExecuted(errors.New("OpenCLI input exceeds 64 KiB"))
 	}
 	var in opencliInput
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
-		return "", errors.New("invalid OpenCLI input")
+		return "", harness.MarkToolNotExecuted(errors.New("invalid OpenCLI input"))
 	}
 	var extra any
 	if dec.Decode(&extra) != io.EOF || !strings.HasPrefix(strings.TrimSpace(raw), "{") {
-		return "", errors.New("OpenCLI input must be exactly one object")
+		return "", harness.MarkToolNotExecuted(errors.New("OpenCLI input must be exactly one object"))
 	}
 	if !slices.Contains(t.sites, in.Site) || !harness.ValidOpenCLIWord(in.Site) {
-		return "", errors.New("OpenCLI site is not allowed by host configuration")
+		return "", harness.MarkToolNotExecuted(errors.New("OpenCLI site is not allowed by host configuration"))
 	}
 	if !harness.ValidOpenCLIWord(in.Command) || len(in.Arguments) > 128 {
-		return "", errors.New("invalid OpenCLI command or argument count")
+		return "", harness.MarkToolNotExecuted(errors.New("invalid OpenCLI command or argument count"))
 	}
 	formatted := false
 	for _, arg := range in.Arguments {
 		if len(arg) > 16<<10 || strings.ContainsRune(arg, 0) {
-			return "", errors.New("invalid OpenCLI argument")
+			return "", harness.MarkToolNotExecuted(errors.New("invalid OpenCLI argument"))
 		}
 		if arg == "-f" || arg == "--format" || strings.HasPrefix(arg, "--format=") || strings.HasPrefix(arg, "-f=") {
 			formatted = true
@@ -77,7 +77,7 @@ func (t *opencliTool) InvokableRun(ctx context.Context, raw string, _ ...tool.Op
 		argv = append(argv, "--format", "json")
 	}
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return "", harness.MarkToolNotExecuted(err)
 	}
 	result, runErr := executeCommand(ctx, t.backend, harness.CommandRequest{Executable: t.plan.Executable, Args: argv})
 	data, marshalErr := json.Marshal(struct {

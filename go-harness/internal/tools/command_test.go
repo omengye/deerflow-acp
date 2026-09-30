@@ -154,8 +154,10 @@ func TestCommandRejectsMalformedInputBeforeStarting(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, input := range []string{`null`, `[]`, `{"unknown":true}`, `{"executable":"/allowed"} {}`, `{"executable":"/allowed"} trailing`, `{"timeout_seconds":-1}`, `{"timeout_seconds":9223372036854775807}`} {
-		if _, err := command.InvokableRun(context.Background(), input); err == nil {
-			t.Fatalf("accepted %q", input)
+		_, err := command.InvokableRun(context.Background(), input)
+		var rejected *harness.ToolNotExecutedError
+		if !errors.As(err, &rejected) {
+			t.Fatalf("missing pre-execution evidence for %q: %v", input, err)
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -165,6 +167,28 @@ func TestCommandRejectsMalformedInputBeforeStarting(t *testing.T) {
 	}
 	if backend.starts != 0 {
 		t.Fatalf("started %d malformed calls", backend.starts)
+	}
+}
+
+func TestPowerShellCommandSchemaRequiresScript(t *testing.T) {
+	command, err := CommandTool(&commandBackendFixture{}, harness.SandboxPowerShell)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := command.Info(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, err := info.ParamsOneOf.ToJSONSchema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"script"`) || strings.Contains(string(encoded), `"executable"`) || strings.Contains(string(encoded), `"args"`) || !strings.Contains(info.Desc, "PowerShell script") {
+		t.Fatalf("misleading PowerShell contract: %s %s", info.Desc, encoded)
 	}
 }
 

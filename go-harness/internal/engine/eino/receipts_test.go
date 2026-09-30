@@ -3,6 +3,7 @@ package eino
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,6 +49,10 @@ func (t *receiptStreamTool) StreamableRun(context.Context, string, ...tool.Optio
 }
 
 func runtimeWithReceiptTool(t *testing.T, underlying tool.BaseTool) (*hr.Service, harness.Session, *sqlite.Store) {
+	return runtimeWithReceiptInvocation(t, underlying, `{"value":"x"}`)
+}
+
+func runtimeWithReceiptInvocation(t *testing.T, underlying tool.BaseTool, args string) (*hr.Service, harness.Session, *sqlite.Store) {
 	t.Helper()
 	native, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
 	if err != nil {
@@ -58,13 +63,88 @@ func runtimeWithReceiptTool(t *testing.T, underlying tool.BaseTool) (*hr.Service
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := newTestEngine(t, Config{ChatModel: toolScript(), Tools: []tool.BaseTool{underlying}})
+	info, err := underlying.Info(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		if call == 0 {
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "call-1", Type: "function", Function: schema.FunctionCall{Name: info.Name, Arguments: args}}}}}), nil
+		}
+		return textStream("done"), nil
+	}}
+	e := newTestEngine(t, Config{ChatModel: model, Tools: []tool.BaseTool{underlying}})
 	s := hr.NewService(store, e, "test")
 	x, err := s.NewSession(context.Background(), "owner", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s, x, native
+}
+
+type namedReceiptEffectTool struct {
+	receiptEffectTool
+	name string
+}
+
+func (t *namedReceiptEffectTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
+	info, err := t.receiptEffectTool.Info(ctx)
+	if info != nil {
+		info.Name = t.name
+	}
+	return info, err
+}
+
+func TestTypedToolFailureEvidenceSurvivesEinoWrappers(t *testing.T) {
+	cause := errors.New("fixture failure")
+	for _, test := range []struct {
+		name string
+		err  error
+		want harness.ReceiptState
+	}{
+		{"pre_execution", fmt.Errorf("adapter: %w", harness.MarkToolNotExecuted(cause)), harness.ReceiptNotExecuted},
+		{"native_read", fmt.Errorf("adapter: %w", harness.MarkToolNoEffect(cause)), harness.ReceiptNoEffect},
+		{"unknown", cause, harness.ReceiptUncertain},
+		{"uncertainty_wins", errors.Join(harness.MarkToolNotExecuted(cause), harness.ErrCommandUncertain), harness.ReceiptUncertain},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, x, _ := runtimeWithReceiptTool(t, &receiptEffectTool{run: func(context.Context) (string, error) { return "", test.err }})
+			_, _ = s.Run(context.Background(), "owner", x.ID, []harness.Content{{Type: "text", Text: "run"}}, nil, approveReceiptTool)
+			receipts, err := s.ListToolReceipts(context.Background(), "owner", x.ID)
+			if err != nil || len(receipts) != 1 || receipts[0].State != test.want {
+				t.Fatalf("receipt=%+v err=%v", receipts, err)
+			}
+			_, err = s.Run(context.Background(), "owner", x.ID, []harness.Content{{Type: "text", Text: "continue"}}, nil, approveReceiptTool)
+			if errors.Is(err, harness.ErrReconciliationRequired) != (test.want == harness.ReceiptUncertain) {
+				t.Fatalf("incorrect next-prompt gate: %v", err)
+			}
+		})
+	}
+}
+
+func TestSDKToolWithNativeReadOnlyNameRetainsUncertainEffects(t *testing.T) {
+	for _, name := range []string{"ls", "glob", "grep", "web_search", "web_fetch", "image_search"} {
+		t.Run(name, func(t *testing.T) {
+			underlying := &namedReceiptEffectTool{name: name}
+			s, x, _ := runtimeWithReceiptTool(t, underlying)
+			output := filepath.Join(x.CWD, "actual-effect.txt")
+			underlying.run = func(context.Context) (string, error) {
+				if err := os.WriteFile(output, []byte("effect occurred"), 0600); err != nil {
+					return "", err
+				}
+				return "", errors.New("confirmation failed after writing")
+			}
+			_, _ = s.Run(context.Background(), "owner", x.ID, []harness.Content{{Type: "text", Text: "run"}}, nil, approveReceiptTool)
+			body, err := os.ReadFile(output)
+			if err != nil || string(body) != "effect occurred" {
+				t.Fatalf("fixture did not write: %q %v", body, err)
+			}
+			receipts, err := s.ListToolReceipts(context.Background(), "owner", x.ID)
+			if err != nil || len(receipts) != 1 || receipts[0].State != harness.ReceiptUncertain {
+				t.Fatalf("SDK effect incorrectly downgraded: %+v %v", receipts, err)
+			}
+		})
+	}
 }
 
 func approveReceiptTool(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {

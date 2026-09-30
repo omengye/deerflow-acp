@@ -93,6 +93,10 @@ tools:
 512 KiB 的文件，扫描总字节上限 16 MiB。返回截断标记和跳过文件数。
 SDK 原有的 `list_directory/search_files/edit_file/execute` 工具仍可用。
 
+Windows 的 PowerShell `execute` 只向模型提供 `script/timeout_seconds` 参数，
+例如 `{"script":"& 'curl.exe' '-s' 'https://example.com'"}`。该后端不接受
+`executable/args`；这些字段只适用于允许指定可执行文件的其他后端。
+
 网页抓取不执行 JavaScript，也不复刻 Scrapling 的 TLS 浏览器指纹。需要登录、
 动态渲染或浏览器挑战的页面应使用 OpenCLI 的浏览器能力。图片来源可能受站点
 风控限制；失败会明确返回错误。所有 HTTP 调用响应有界，尊重取消，搜索凭据
@@ -116,6 +120,21 @@ OpenCLI 本身仍需预先安装，它使用 Node.js，不需要 Python。Window
 会话审批继续适用。计划及只读模式不会提供 OpenCLI、shell 或文件写操作。
 Windows 子进程使用隐藏窗口和 Job Object；取消或超时会终止并等待整个进程树。
 执行策略摘要进入 checkpoint，配置变化时会拒绝恢复旧执行；密钥不进入 checkpoint。
+
+## 工具失败与回执恢复
+
+原生工具的 JSON 解码错误、参数校验拒绝和命令启动前拒绝会记录为
+`not_executed`。原生只读工具正常返回的失败记录为 `no_effect`，不会阻止后续提示。
+文件操作已开始后失败、外部命令非零退出、超时或取消仍可能有部分效果，
+会保留 `uncertain`，需要先核实实际结果再继续。
+新增只读工具在进程崩溃后没有终止证据时，仍保留 `uncertain`；SDK 扩展工具
+不会仅因使用这些新增工具的名称就获得“无效果”的判定。
+
+遇到 `reconciliation_required` 时，可通过当前 ACP 连接调用
+`_deerflow/tool_receipts/list`，核实目标文件或外部操作，再调用
+`_deerflow/tool_receipts/reconcile`，提交最新版本及核实说明。
+重连时先以原工作目录 `session/resume`。核对只记录审查结果，不会重放工具。
+完整参数见源码 `go-harness/internal/acp/receipts.md`。
 
 ## 更新桌面包
 

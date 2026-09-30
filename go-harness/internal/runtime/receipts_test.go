@@ -336,3 +336,49 @@ func TestFailedToolAfterExecutionRemainsUncertain(t *testing.T) {
 		})
 	}
 }
+
+func TestStartedReceiptUsesOnlyExplicitTerminalEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		evidence harness.ReceiptState
+		want     harness.ReceiptState
+	}{
+		{"rejected", harness.ReceiptNotExecuted, harness.ReceiptNotExecuted},
+		{"native_read", harness.ReceiptNoEffect, harness.ReceiptNoEffect},
+		{"unknown_failure", "", harness.ReceiptUncertain},
+		{"unsupported_claim", harness.ReceiptCompleted, harness.ReceiptUncertain},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, req := receiptFixture(t)
+			appendReceiptEvent(t, s, req, "tool_start", "call", "execute")
+			appendReceiptEvent(t, s, req, "tool_execute", "call", "execute")
+			end := receiptEvent(req, "tool_end", "call", "execute")
+			end.Status = "failed"
+			end.Receipt = &harness.ToolReceipt{State: test.evidence, Error: "fixture failure"}
+			result, err := s.Store.Append(context.Background(), end)
+			if err != nil || result.Receipt.State != test.want || result.Receipt.Error != "fixture failure" {
+				t.Fatalf("receipt=%+v err=%v", result.Receipt, err)
+			}
+			err = s.Store.requireReconciled(context.Background(), req.Session.ID)
+			if errors.Is(err, harness.ErrReconciliationRequired) != (test.want == harness.ReceiptUncertain) {
+				t.Fatalf("incorrect next-run gate: %v", err)
+			}
+		})
+	}
+}
+
+func TestMigratedToolNamesDoNotCertifyUnknownEffects(t *testing.T) {
+	for _, name := range []string{"ls", "glob", "grep", "web_search", "web_fetch", "image_search"} {
+		t.Run(name, func(t *testing.T) {
+			s, req := receiptFixture(t)
+			appendReceiptEvent(t, s, req, "tool_start", "call", name)
+			appendReceiptEvent(t, s, req, "tool_execute", "call", name)
+			end := receiptEvent(req, "tool_end", "call", name)
+			end.Status = "failed"
+			result, err := s.Store.Append(context.Background(), end)
+			if err != nil || result.Receipt.State != harness.ReceiptUncertain {
+				t.Fatalf("same-name unknown tool downgraded: %+v %v", result.Receipt, err)
+			}
+		})
+	}
+}

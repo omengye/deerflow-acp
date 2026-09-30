@@ -123,14 +123,28 @@ func TestDefaultDisabledAndRequestPolicies(t *testing.T) {
 	cfg := testConfig(t)
 	b := newTestBackend(t, cfg, t.TempDir())
 	for _, request := range []harness.CommandRequest{{Executable: "relative.exe"}, {Script: "echo unapproved"}, {Executable: cfg.AllowedExecutables[0], Timeout: time.Hour}, {Executable: cfg.AllowedExecutables[0], Args: []string{"nul\x00argument"}}} {
-		if _, err := b.Start(context.Background(), request); err == nil {
-			t.Fatalf("invalid request accepted: %+v", request)
+		_, err := b.Start(context.Background(), request)
+		var rejected *harness.ToolNotExecutedError
+		if !errors.As(err, &rejected) {
+			t.Fatalf("invalid request lacks rejection evidence: %+v %v", request, err)
 		}
 	}
 	cfg.Provider = harness.SandboxPowerShell
 	cfg.AllowShell = false
 	if _, err := New(context.Background(), cfg, t.TempDir()); err == nil {
 		t.Fatal("shell enabled without explicit grant")
+	}
+}
+
+func TestPowerShellArgvRejectedBeforeProcessStart(t *testing.T) {
+	b := newTestBackend(t, harness.SandboxConfig{Enabled: true, Provider: harness.SandboxPowerShell, AllowShell: true, Shell: testConfig(t).AllowedExecutables[0]}, t.TempDir())
+	_, err := b.Start(context.Background(), harness.CommandRequest{Executable: "curl", Args: []string{"-s", "https://example.com"}})
+	var rejected *harness.ToolNotExecutedError
+	if !errors.As(err, &rejected) || !strings.Contains(err.Error(), "PowerShell provider requires a nonempty script") {
+		t.Fatalf("incorrect rejection: %v", err)
+	}
+	if b.active != 0 || len(b.tasks) != 0 {
+		t.Fatal("rejected argv created an execution task")
 	}
 }
 

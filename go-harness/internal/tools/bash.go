@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
@@ -17,9 +16,9 @@ type bashInput struct {
 }
 
 func BashTool(backend harness.CommandBackend, provider harness.SandboxProvider) (tool.InvokableTool, error) {
-	return utils.InferTool("bash", "Run a foreground shell command in the workspace using the configured "+string(provider)+" provider. On Windows powershell, use PowerShell syntax. Requires host shell opt-in and session permission. Returns bounded stdout/stderr and exit code; background jobs are not supported.", func(ctx context.Context, in bashInput) (string, error) {
+	return inferTool("bash", "Run a foreground shell command in the workspace using the configured "+string(provider)+" provider. On Windows powershell, use PowerShell syntax. Requires host shell opt-in and session permission. Returns bounded stdout/stderr and exit code; background jobs are not supported.", func(ctx context.Context, in bashInput) (string, error) {
 		if in.Command == "" || in.Timeout < 0 || in.Timeout > 120 {
-			return "", errors.New("command is required; timeout must be 0..120 seconds")
+			return "", harness.MarkToolNotExecuted(errors.New("command is required; timeout must be 0..120 seconds"))
 		}
 		result, err := executeCommand(ctx, backend, harness.CommandRequest{Script: in.Command, Timeout: time.Duration(in.Timeout) * time.Second})
 		out, marshalErr := marshalString(result)

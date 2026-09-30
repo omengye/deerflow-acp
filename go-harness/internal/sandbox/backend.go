@@ -41,27 +41,27 @@ var _ harness.CommandBackend = (*Backend)(nil)
 
 func (b *Backend) Start(ctx context.Context, request harness.CommandRequest) (harness.CommandSnapshot, error) {
 	if err := ctx.Err(); err != nil {
-		return harness.CommandSnapshot{}, err
+		return harness.CommandSnapshot{}, harness.MarkToolNotExecuted(err)
 	}
 	if err := b.checkWorkspace(); err != nil {
-		return harness.CommandSnapshot{}, err
+		return harness.CommandSnapshot{}, harness.MarkToolNotExecuted(err)
 	}
 	request.Args = append([]string(nil), request.Args...)
 	if err := b.validateRequest(&request); err != nil {
-		return harness.CommandSnapshot{}, err
+		return harness.CommandSnapshot{}, harness.MarkToolNotExecuted(err)
 	}
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
-		return harness.CommandSnapshot{}, err
+		return harness.CommandSnapshot{}, harness.MarkToolNotExecuted(err)
 	}
 	id := hex.EncodeToString(random[:])
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
-		return harness.CommandSnapshot{}, fmt.Errorf("command backend is closed")
+		return harness.CommandSnapshot{}, harness.MarkToolNotExecuted(fmt.Errorf("command backend is closed"))
 	}
 	if b.active >= b.cfg.Limits.MaxConcurrent || len(b.tasks) >= b.cfg.Limits.MaxRetained {
-		return harness.CommandSnapshot{}, fmt.Errorf("%w: command capacity exhausted; release completed task records", harness.ErrBusy)
+		return harness.CommandSnapshot{}, harness.MarkToolNotExecuted(fmt.Errorf("%w: command capacity exhausted; release completed task records", harness.ErrBusy))
 	}
 	runCtx, cancel := context.WithTimeout(ctx, request.Timeout)
 	t := &task{snapshot: harness.CommandSnapshot{ID: id, Provider: b.cfg.Provider, State: harness.CommandStarting, StartedAt: time.Now().UTC(), ProcessLocal: true}, cancel: cancel, done: make(chan struct{}), stdout: newCapture(b.cfg.Limits.OutputBytes), stderr: newCapture(b.cfg.Limits.OutputBytes)}

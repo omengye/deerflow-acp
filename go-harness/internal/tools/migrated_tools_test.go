@@ -134,6 +134,63 @@ func TestMigratedWorkspaceSymlinkMutationBoundary(t *testing.T) {
 	}
 }
 
+func TestWorkspacePreMutationRejectionsCarryEvidence(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "existing.txt"), []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	items, cleanup, err := ConfiguredWorkspaceFactory(context.Background(), harness.RunRequest{Session: harness.Session{CWD: cwd}}, []harness.BuiltinToolConfig{{Name: "write_file"}, {Name: "str_replace"}, {Name: "move_path"}, {Name: "delete_path"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	named := map[string]tool.InvokableTool{}
+	for _, item := range items {
+		info, _ := item.Info(context.Background())
+		named[info.Name] = item.(tool.InvokableTool)
+	}
+	for _, test := range []struct {
+		name string
+		args any
+	}{
+		{"write_file", map[string]any{"path": "new/file.txt", "content": strings.Repeat("x", maxFileBytes+1)}},
+		{"write_file", map[string]any{"path": "../outside.txt", "content": "escape"}},
+		{"str_replace", map[string]any{"path": "existing.txt", "old_str": "absent", "new_str": "changed"}},
+		{"move_path", map[string]any{"source": "existing.txt", "destination": "existing.txt"}},
+		{"delete_path", map[string]any{"path": ".", "recursive": true}},
+	} {
+		encoded, _ := json.Marshal(test.args)
+		_, err := named[test.name].InvokableRun(context.Background(), string(encoded))
+		var rejected *harness.ToolNotExecutedError
+		if !errors.As(err, &rejected) {
+			t.Fatalf("pre-mutation %s lacks evidence: %v", test.name, err)
+		}
+	}
+	if body, err := os.ReadFile(filepath.Join(cwd, "existing.txt")); err != nil || string(body) != "keep" {
+		t.Fatalf("rejected operation changed file: %q %v", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "new")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oversized write created a parent directory: %v", err)
+	}
+	// Once a mutation is attempted, do not claim that the operation was never
+	// executed merely because the OS rejects it.
+	_, err = named["delete_path"].InvokableRun(context.Background(), `{"path":".","recursive":false}`)
+	var rejected *harness.ToolNotExecutedError
+	if !errors.As(err, &rejected) {
+		t.Fatal("workspace-root check must remain pre-execution")
+	}
+	if err := os.Mkdir(filepath.Join(cwd, "nonempty"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "nonempty", "keep.txt"), []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = named["delete_path"].InvokableRun(context.Background(), `{"path":"nonempty"}`)
+	if err == nil || errors.As(err, &rejected) {
+		t.Fatalf("attempted removal falsely certified not executed: %v", err)
+	}
+}
+
 func TestNativeWebToolsUseProxyBoundsAndPreserveURLs(t *testing.T) {
 	var seenSearch, seenImages, seenPage bool
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

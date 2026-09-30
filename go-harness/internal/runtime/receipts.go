@@ -155,6 +155,12 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores 
 				receipt.Error = eventError(e)
 			case e.Status == "failed" && receipt.State == harness.ReceiptStarted:
 				receipt.State = failedStartedState(receipt.ToolName)
+				// This state is supplied only by the trusted engine after a native
+				// tool returns typed evidence of pre-execution rejection or a
+				// completed read-only operation. Recovery has no such evidence.
+				if e.Receipt != nil && (e.Receipt.State == harness.ReceiptNotExecuted || e.Receipt.State == harness.ReceiptNoEffect) {
+					receipt.State = e.Receipt.State
+				}
 				receipt.Error = eventError(e)
 			default:
 				return e, harness.ErrReceiptConflict

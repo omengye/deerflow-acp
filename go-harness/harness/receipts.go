@@ -10,6 +10,37 @@ var (
 	ErrReconciliationRequired = errors.New("uncertain tool effects require explicit reconciliation")
 )
 
+// ToolNotExecutedError certifies that a tool rejected a call before starting
+// its operation. Only use it at a verified pre-execution boundary; a failed
+// process or a partially applied mutation does not provide this evidence.
+type ToolNotExecutedError struct{ cause error }
+
+func (e *ToolNotExecutedError) Error() string { return e.cause.Error() }
+func (e *ToolNotExecutedError) Unwrap() error { return e.cause }
+
+// MarkToolNotExecuted preserves the failure while recording that no operation
+// was started. Wrappers must preserve the error chain so receipts can use it.
+func MarkToolNotExecuted(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &ToolNotExecutedError{cause: err}
+}
+
+// ToolNoEffectError carries terminal evidence from a native read-only tool.
+// It must not be used for a command merely because its process has exited.
+type ToolNoEffectError struct{ cause error }
+
+func (e *ToolNoEffectError) Error() string { return e.cause.Error() }
+func (e *ToolNoEffectError) Unwrap() error { return e.cause }
+
+func MarkToolNoEffect(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &ToolNoEffectError{cause: err}
+}
+
 type ReceiptState string
 
 const (
@@ -22,7 +53,8 @@ const (
 )
 
 // ToolReceipt records evidence about one attempt. A started operation that
-// fails is uncertain even when its provider reports an error or cancellation.
+// fails is uncertain unless the native tool supplies evidence that it rejected
+// the call before execution, or it has a verified read-only contract.
 // ArgumentsSummary contains parameter names/types, never argument values.
 type ToolReceipt struct {
 	SessionID        string         `json:"sessionId"`
