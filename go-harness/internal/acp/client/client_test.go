@@ -30,15 +30,19 @@ func TestExternalACPProcess(t *testing.T) {
 	workspace := t.TempDir()
 	config := Config{Command: executable, Args: []string{"-test.run=^TestExternalACPProcess$"}, Env: map[string]string{"DEERFLOW_ACP_HELPER": "1"}, Timeout: 5 * time.Second}
 	var updates []string
+	var reported Usage
 	result, err := Run(context.Background(), config, workspace, "", "first", Callbacks{Update: func(_ context.Context, raw json.RawMessage) error {
 		updates = append(updates, string(raw))
 		return nil
-	}})
+	}, Usage: func(_ context.Context, usage Usage) error { reported = usage; return nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.SessionID != "child-1" || result.Text != "hello" || result.StopReason != "end_turn" {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.Usage == nil || *result.Usage != (Usage{InputTokens: 7, OutputTokens: 2, TotalTokens: 9}) || reported != *result.Usage {
+		t.Fatalf("remote usage not reported: result=%+v callback=%+v", result.Usage, reported)
 	}
 	if len(updates) != 2 || !strings.Contains(updates[1], "tool_call") {
 		t.Fatalf("updates not forwarded: %v", updates)
@@ -54,6 +58,10 @@ func TestExternalACPProcess(t *testing.T) {
 	}
 	if result.Text != "hello" {
 		t.Fatalf("load/prompt: %+v", result)
+	}
+	result, err = Run(context.Background(), config, workspace, result.SessionID, "bad-usage", Callbacks{})
+	if err == nil || result.Usage != nil || !result.PromptDispatched {
+		t.Fatalf("invalid remote usage was accepted: result=%+v err=%v", result, err)
 	}
 	_, err = Run(context.Background(), Config{Command: "relative", Timeout: time.Second}, workspace, "", "first", Callbacks{})
 	if err == nil {
@@ -327,7 +335,11 @@ func helperAgent() {
 			if json.Unmarshal(reader.Bytes(), &answer) != nil || answer.ID != "permission-1" || (answer.Result.Outcome.Outcome != "cancelled" && answer.Result.Outcome.OptionID != "allow_once") {
 				os.Exit(4)
 			}
-			write(map[string]any{"jsonrpc": "2.0", "id": frame.ID, "result": map[string]string{"stopReason": "end_turn"}})
+			usage := map[string]any{"inputTokens": 7, "outputTokens": 2, "totalTokens": 9}
+			if strings.Contains(string(frame.Params), "bad-usage") {
+				usage["inputTokens"] = -1
+			}
+			write(map[string]any{"jsonrpc": "2.0", "id": frame.ID, "result": map[string]any{"stopReason": "end_turn", "usage": usage}})
 		case "session/cancel":
 			os.Exit(0)
 		default:

@@ -243,3 +243,62 @@ func TestApplyCurrentExamplePythonConfig(t *testing.T) {
 		t.Fatalf("example config mapping: %+v connections=%d", cfg, connections)
 	}
 }
+
+func TestApplyPythonConfigDefaultsAndPromptOverlay(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(filepath.Join(root, "instructions.md"), []byte("  File-owned instruction.\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	raw := `api:
+  chat_request_timeout: 7.5
+local_acp:
+  prompt_overlay: Inline instruction.
+  prompt_overlay_file: instructions.md
+models:
+  - name: one
+    use: langchain_openai:ChatOpenAI
+    model: one
+`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := deerflow.Config{Instruction: "Base instruction."}
+	connections := 32
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err != nil {
+		t.Fatal(err)
+	}
+	if connections != 16 || !cfg.DisableSubagents || cfg.Budget == nil || cfg.Budget.Timeout != 7500*time.Millisecond {
+		t.Fatalf("Python defaults not mapped: connections=%d subagents=%v budget=%+v", connections, cfg.DisableSubagents, cfg.Budget)
+	}
+	if cfg.Instruction != "Base instruction.\n<deployment_instructions>\nFile-owned instruction.\n</deployment_instructions>" {
+		t.Fatalf("prompt overlay not applied with file precedence: %q", cfg.Instruction)
+	}
+	budget := harness.DefaultBudgetLimits()
+	budget.Timeout = 12 * time.Second
+	cfg = deerflow.Config{Instruction: "Base instruction.", Budget: &budget}
+	connections = 5
+	_, err := ApplyPythonConfig(path, &cfg, &connections, map[string]bool{"run-timeout": true, "max-connections": true, "disable-subagents": true})
+	if err != nil || cfg.Budget.Timeout != 12*time.Second || connections != 5 || cfg.DisableSubagents {
+		t.Fatalf("explicit Go flags lost: connections=%d subagents=%v budget=%+v err=%v", connections, cfg.DisableSubagents, cfg.Budget, err)
+	}
+}
+
+func TestApplyPythonConfigRejectsInvalidPortableBounds(t *testing.T) {
+	for _, local := range []string{
+		"run_timeout_seconds: 0", "run_timeout_seconds: -1", "run_timeout_seconds: .nan",
+		"max_active_connections: 0", "max_active_connections: 129",
+		"prompt_overlay_file: missing.md",
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		raw := "local_acp:\n  " + local + "\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var cfg deerflow.Config
+		connections := 32
+		if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err == nil {
+			t.Fatalf("accepted invalid Python setting %q", local)
+		}
+	}
+}

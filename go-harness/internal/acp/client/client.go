@@ -55,6 +55,9 @@ type Callbacks struct {
 	// Update receives the complete ACP update. The caller must validate resource
 	// links before importing them into a local artifact store.
 	Update func(context.Context, json.RawMessage) error
+	// Usage reports the remote agent's terminal prompt usage when supplied.
+	// The host applies it to the parent budget before accepting the result.
+	Usage func(context.Context, Usage) error
 	// Permission returns an offered option ID. Nil means deny every request.
 	Permission func(context.Context, PermissionRequest) (string, error)
 }
@@ -64,6 +67,13 @@ type Result struct {
 	Text             string
 	StopReason       string
 	PromptDispatched bool
+	Usage            *Usage
+}
+
+type Usage struct {
+	InputTokens  int64 `json:"inputTokens"`
+	OutputTokens int64 `json:"outputTokens"`
+	TotalTokens  int64 `json:"totalTokens"`
 }
 
 // Run starts one allowed executable. A previous remote session is loaded when
@@ -285,16 +295,30 @@ func Run(ctx context.Context, cfg Config, workspace, remoteSessionID, prompt str
 	mu.Unlock()
 	var prompted struct {
 		StopReason string `json:"stopReason"`
+		Usage      *Usage `json:"usage"`
 	}
 	result.PromptDispatched = true
 	if err := peer.Call(ctx, "session/prompt", map[string]any{"sessionId": sessionID, "prompt": []map[string]string{{"type": "text", "text": prompt}}}, &prompted); err != nil {
 		return result, fmt.Errorf("prompt external agent: %w", err)
 	}
+	if prompted.Usage != nil {
+		u := prompted.Usage
+		if u.InputTokens < 0 || u.OutputTokens < 0 || u.TotalTokens < 0 || u.InputTokens > (1<<30) || u.OutputTokens > (1<<30) || u.TotalTokens > (1<<30) || (u.TotalTokens > 0 && u.TotalTokens < u.InputTokens+u.OutputTokens) {
+			return result, errors.New("external agent reported invalid prompt usage")
+		}
+		u.TotalTokens = max(u.TotalTokens, u.InputTokens+u.OutputTokens)
+		result.Usage = u
+		if callbacks.Usage != nil {
+			if err := callbacks.Usage(ctx, *u); err != nil {
+				return result, fmt.Errorf("account external agent usage: %w", err)
+			}
+		}
+	}
 	if err := peer.DrainNotifications(ctx); err != nil {
 		return result, fmt.Errorf("drain external updates: %w", err)
 	}
 	mu.Lock()
-	result = Result{SessionID: sessionID, Text: text.String(), StopReason: prompted.StopReason, PromptDispatched: true}
+	result = Result{SessionID: sessionID, Text: text.String(), StopReason: prompted.StopReason, PromptDispatched: true, Usage: result.Usage}
 	mu.Unlock()
 	if result.StopReason == "" {
 		return result, errors.New("external agent omitted prompt stop reason")

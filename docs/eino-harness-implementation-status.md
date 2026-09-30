@@ -26,8 +26,8 @@
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复、父会话通知输入已接线 | 跨 run 长命令；真实编辑器中的通知处理与恢复互操作 |
 | Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
-| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层（含工具允许/拒绝列表）、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
-| 可选外部 ACP Agent | 显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次估算模型调用计入父预算；未决 prompt 先落盘，超时后阻止重复派发，SDK/ACP 扩展可按终态/已复核回执确认解除 | 原 prompt 的通用断线原位恢复、远端真实模型用量约束、产物导入与真实编辑器中的对账互操作 |
+| daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层（含工具允许/拒绝列表、默认超时和宿主 prompt overlay）、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
+| 可选外部 ACP Agent | 显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次模型调用计入父预算，远端提供的终态 usage 可用于结算；未决 prompt 先落盘，超时后阻止重复派发，SDK/ACP 扩展可按终态/已复核回执确认解除 | 原 prompt 的通用断线原位恢复、远端真实模型用量硬约束、产物导入与真实编辑器中的对账互操作 |
 | 打包 / 默认切换 | 独立 Go ACP 便携包脚本与包内说明已写入；Windows Debug/Release 与 WSL Ubuntu Linux Debug 包实测 Bridge 自动启动 Go daemon，并完成 status/stop；默认入口未切换 | 原生 Linux/远端 CI、真实编辑器、回退和默认切换演练 |
 
 ## 已确认的实施差异
@@ -396,3 +396,10 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - SDK `PendingExternalPrompt` 可读取未决身份；`AcknowledgeExternalPrompt` 只接受精确 prompt ID，并要求匹配的父工具回执已完成，或不明回执已通过原有 `ReconcileToolReceipt` 完成复核。ACP stdio/daemon 的 `_deerflow/external_prompt/pending` 与 `_deerflow/external_prompt/acknowledge` 扩展复用同一会话所有权和回执校验；只在宿主配置外部 Agent 时宣告 capability。该确认仅清除本地阻断标记，不会调用远端。对账人员仍须先检查远端 session 的实际结果；真实编辑器中的扩展互操作尚未验收。
 - 标准 ACP 的 `session/load` 不提供“原 prompt 是否已执行及全部副作用”的可靠证明，因此仍不能宣称通用原位恢复或远端 exactly-once。新的保护使结果不明时停在可检查状态；真正恢复仍需远端 Agent 支持幂等调用身份或可核验的任务状态协议。
 - 真实子进程测试覆盖 `session/prompt` 前日志失败、未确认回执阻断下一 prompt、超时后的跨调用阻断；SDK 测试覆盖未复核回执拒绝确认及复核后解除；ACP 测试覆盖扩展连接归属与参数校验。Windows 全 Go 模块 `go test -mod=readonly -p=2 -count=1 -timeout=5m ./...`、根 SDK/ACP agent/client/Eino 的相关 `-race` 定向测试，以及 WSL Ubuntu 22.04 Go 1.26.8 的相同范围定向测试均通过。Docker daemon 仍不可用；真实编辑器与远端 CI 尚未验收。
+
+## 第三十九阶段 Python 配置语义与远端 ACP 用量
+
+- `--config` 现按 Python 便携 ACP 缺省值处理连接数 16、子 Agent 关闭和运行超时 600 秒；运行超时缺省可继承 `api.chat_request_timeout`，接受秒的小数值。即使嵌入式配置尚无预算对象也会建立默认预算再设置超时。显式 Go 标志继续优先；超时和连接数按 Python 范围校验。
+- `local_acp.prompt_overlay` 和相对配置文件目录解析的 `prompt_overlay_file` 会进入 Go 主 Agent 宿主指令，文件内容优先。该指令在引擎执行契约和后台宿主摘要内，配置变化不能沿用旧执行检查点。`goal_auto_continue: true` 仍明确拒绝，因为 Go 尚无等价的目标评估及隐藏续跑机制。
+- 可选外部 ACP Agent 的终态 `session/prompt.usage` 现经过非负值及总量校验，写入父预算并发出用量事件；远端没有提供 usage 时仍用估算。远端调用失败按未完成的预算预留额度保守结算。ACP 没有强制远端实际模型调用数或 token 上限的通用机制，自报 usage 也不能作为硬约束证据。
+- Windows 全 Go 模块 `go test -mod=readonly -p=2 -count=1 -timeout=5m ./...`、ACP client/Eino/launch 的 `-race` 全包检查通过；配置和外部 ACP 子进程定向测试涵盖缺省、覆盖、无效边界、overlay 优先级和终态用量。本批仍未运行真实编辑器、Docker、远端 CI 或默认入口切换演练。

@@ -16,6 +16,7 @@ import (
 type externalToolFixture struct {
 	calls      atomic.Int32
 	completion func() error
+	usage      *acpclient.Usage
 }
 
 func (*externalToolFixture) Info(context.Context) (*schema.ToolInfo, error) {
@@ -29,6 +30,14 @@ func (f *externalToolFixture) InvokableRun(ctx context.Context, _ string, _ ...t
 	}
 	if err := callbacks.Update(ctx, json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"delegated"}}`)); err != nil {
 		return "", err
+	}
+	if f.usage != nil {
+		if callbacks.Usage == nil {
+			return "", errors.New("external usage callback is missing")
+		}
+		if err := callbacks.Usage(ctx, *f.usage); err != nil {
+			return "", err
+		}
 	}
 	if callbacks.RegisterCompletion != nil {
 		callbacks.RegisterCompletion(func(context.Context) error {
@@ -133,5 +142,30 @@ func TestExternalDelegationUsesParentModelQuotaAndProgress(t *testing.T) {
 				t.Fatalf("unexpected result: %+v", result)
 			}
 		})
+	}
+}
+
+func TestExternalDelegationAccountsReportedUsage(t *testing.T) {
+	fixture := &externalToolFixture{usage: &acpclient.Usage{InputTokens: 5980, OutputTokens: 20, TotalTokens: 6000}}
+	fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		if call == 0 {
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "delegate-1", Type: "function", Function: schema.FunctionCall{Name: "invoke_acp_agent", Arguments: `{"agent":"fixture","prompt":"work"}`}}}}}), nil
+		}
+		return textStream("done"), nil
+	}}
+	budget := harness.DefaultBudgetLimits()
+	budget.MaxTokens = 20000
+	engine := newTestEngine(t, Config{ChatModel: fake, Tools: []tool.BaseTool{fixture}, Budget: budget})
+	var reported bool
+	_, err := engine.Run(context.Background(), request("external-usage"), func(_ context.Context, event harness.RunEvent) error {
+		if event.Kind == "usage" && event.Usage != nil && event.Usage.TotalTokens == 6000 && !event.Usage.Estimated {
+			reported = true
+		}
+		return nil
+	}, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+		return harness.AllowOnce, nil
+	})
+	if err != nil || !reported {
+		t.Fatalf("reported external usage was not committed to parent budget: reported=%t err=%v", reported, err)
 	}
 }

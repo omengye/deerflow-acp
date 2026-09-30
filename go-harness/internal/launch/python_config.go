@@ -2,6 +2,7 @@ package launch
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -39,17 +41,20 @@ type pythonRuntimeConfig struct {
 	DefaultModel string         `yaml:"default_model"`
 	Models       []pythonModel  `yaml:"models"`
 	API          struct {
-		ModelName string `yaml:"model_name"`
+		ModelName          string   `yaml:"model_name"`
+		ChatRequestTimeout *float64 `yaml:"chat_request_timeout"`
 	} `yaml:"api"`
 	LocalACP struct {
 		ModelName              string    `yaml:"model_name"`
-		MaxActiveConnections   int       `yaml:"max_active_connections"`
+		MaxActiveConnections   *int      `yaml:"max_active_connections"`
 		SubagentEnabled        *bool     `yaml:"subagent_enabled"`
 		PermissionMode         string    `yaml:"permission_mode"`
 		ToolAllowlist          *[]string `yaml:"tool_allowlist"`
 		ToolDenylist           []string  `yaml:"tool_denylist"`
 		GoalAutoContinue       bool      `yaml:"goal_auto_continue"`
-		RunTimeoutSeconds      int       `yaml:"run_timeout_seconds"`
+		RunTimeoutSeconds      *float64  `yaml:"run_timeout_seconds"`
+		PromptOverlay          string    `yaml:"prompt_overlay"`
+		PromptOverlayFile      string    `yaml:"prompt_overlay_file"`
 		EnableBash             bool      `yaml:"enable_bash"`
 		AcceptClientMCPServers bool      `yaml:"accept_client_mcp_servers"`
 		SessionCleanupEnabled  *bool     `yaml:"session_cleanup_enabled"`
@@ -175,11 +180,18 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	if source.LocalACP.GoalAutoContinue {
 		return result, fmt.Errorf("local_acp.goal_auto_continue has no Go equivalent")
 	}
-	if source.LocalACP.RunTimeoutSeconds < 0 || source.LocalACP.RunTimeoutSeconds > 86400 {
-		return result, fmt.Errorf("local_acp.run_timeout_seconds must be 0..86400")
+	runTimeout := 600.0
+	if source.API.ChatRequestTimeout != nil {
+		runTimeout = *source.API.ChatRequestTimeout
 	}
-	if source.LocalACP.MaxActiveConnections < 0 || source.LocalACP.MaxActiveConnections > 1024 {
-		return result, fmt.Errorf("local_acp.max_active_connections must be 0..1024")
+	if source.LocalACP.RunTimeoutSeconds != nil {
+		runTimeout = *source.LocalACP.RunTimeoutSeconds
+	}
+	if math.IsNaN(runTimeout) || math.IsInf(runTimeout, 0) || runTimeout <= 0 || runTimeout > 86400 {
+		return result, fmt.Errorf("local_acp.run_timeout_seconds must be greater than 0 and at most 86400")
+	}
+	if p := source.LocalACP.MaxActiveConnections; p != nil && (*p < 1 || *p > 128) {
+		return result, fmt.Errorf("local_acp.max_active_connections must be 1..128")
 	}
 	if p := source.LocalACP.InactiveRetentionDays; p != nil && (*p < 1 || *p > 3650) {
 		return result, fmt.Errorf("local_acp.inactive_session_retention_days must be 1..3650")
@@ -247,14 +259,51 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	if !explicit["data-dir"] && cfg.DataDir == "" {
 		cfg.DataDir = filepath.Join(filepath.Dir(abs), "go-harness-state")
 	}
-	if !explicit["max-connections"] && source.LocalACP.MaxActiveConnections > 0 {
-		*maxConnections = source.LocalACP.MaxActiveConnections
+	if !explicit["max-connections"] {
+		*maxConnections = 16
+		if source.LocalACP.MaxActiveConnections != nil {
+			*maxConnections = *source.LocalACP.MaxActiveConnections
+		}
 	}
-	if !explicit["disable-subagents"] && source.LocalACP.SubagentEnabled != nil {
-		cfg.DisableSubagents = !*source.LocalACP.SubagentEnabled
+	if !explicit["disable-subagents"] {
+		cfg.DisableSubagents = source.LocalACP.SubagentEnabled == nil || !*source.LocalACP.SubagentEnabled
 	}
-	if !explicit["run-timeout"] && source.LocalACP.RunTimeoutSeconds > 0 && cfg.Budget != nil {
-		cfg.Budget.Timeout = time.Duration(source.LocalACP.RunTimeoutSeconds) * time.Second
+	if !explicit["run-timeout"] {
+		if cfg.Budget == nil {
+			budget := harness.DefaultBudgetLimits()
+			cfg.Budget = &budget
+		}
+		cfg.Budget.Timeout = time.Duration(runTimeout * float64(time.Second))
+	}
+	overlay := strings.TrimSpace(source.LocalACP.PromptOverlay)
+	if source.LocalACP.PromptOverlayFile != "" {
+		overlayPath := source.LocalACP.PromptOverlayFile
+		if !filepath.IsAbs(overlayPath) {
+			overlayPath = filepath.Join(filepath.Dir(abs), overlayPath)
+		}
+		file, readErr := os.Open(overlayPath)
+		if readErr != nil {
+			return result, fmt.Errorf("read local_acp.prompt_overlay_file: %w", readErr)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, 4<<20+1))
+		readErr = errors.Join(readErr, file.Close())
+		if readErr != nil {
+			return result, fmt.Errorf("read local_acp.prompt_overlay_file: %w", readErr)
+		}
+		if len(data) > 4<<20 || !utf8.Valid(data) {
+			return result, fmt.Errorf("local_acp.prompt_overlay_file must be UTF-8 and at most 4 MiB")
+		}
+		overlay = strings.TrimSpace(string(data))
+	}
+	if utf8.RuneCountInString(overlay) > 65536 {
+		return result, fmt.Errorf("local_acp.prompt_overlay must be at most 65536 characters")
+	}
+	if overlay != "" {
+		base := strings.TrimSpace(cfg.Instruction)
+		if base != "" {
+			base += "\n"
+		}
+		cfg.Instruction = base + "<deployment_instructions>\n" + overlay + "\n</deployment_instructions>"
 	}
 	if p := source.LocalACP.SessionCleanupEnabled; p != nil && !explicit["session-cleanup-enabled"] {
 		cfg.Retention.Enabled = *p

@@ -20,4 +20,4 @@
 
 断线、超时或回执写入失败后，如果 remote prompt 的结果不明，后续调用会被阻止。嵌入式 Go SDK 提供 `PendingExternalPrompt(ctx, sessionID, agent)` 查询未决身份。核对远端会话结果后，先用现有 `ReconcileToolReceipt` 审核不明的父工具回执，再用 `AcknowledgeExternalPrompt(ctx, sessionID, agent, promptID)` 清除精确匹配的阻断标记。已成功提交的父工具回执可直接作为确认依据。stdio ACP/daemon 连接可调用 `_deerflow/external_prompt/pending`，参数为 `sessionId` 和 `agent`；确认时调用 `_deerflow/external_prompt/acknowledge`，再传 `promptId`。能力仅在配置外部 Agent 时宣告于 `initialize._meta.deerflow.externalPrompts`。这些方法不会重新发送远端 prompt。
 
-目前外部 Agent 请求客户端 fs/terminal 时会收到不支持。连接仍在时，反向工具权限经当前会话策略和 ACP 客户端实时决定；标准 ACP 的 `session/load` 不能证明原 prompt 是否已执行，因此断线后不能通用地原位恢复该 prompt。远端的实际模型调用数和完整 token 用量无法从标准 ACP 强制读取，父预算仅预留一次模型调用并估算传入/流出的文本。外部媒体和资源链接尚未导入本地资产库；文件链接仅允许指向外部独立 workspace。需要完整远端预算或断线续批的任务应继续使用本机 Eino 工具或原生子 Agent。
+目前外部 Agent 请求客户端 fs/terminal 时会收到不支持。连接仍在时，反向工具权限经当前会话策略和 ACP 客户端实时决定；标准 ACP 的 `session/load` 不能证明原 prompt 是否已执行，因此断线后不能通用地原位恢复该 prompt。远端终态响应若提供 `usage`，Go 校验后将其记入父预算及用量事件；没有提供时继续估算，失败且结果不明时保守结算预留额度。标准 ACP 仍不能强制远端限制模型调用数或实际 token 消耗，也不能证明其自报用量完整。外部媒体和资源链接尚未导入本地资产库；文件链接仅允许指向外部独立 workspace。需要完整远端预算或断线续批的任务应继续使用本机 Eino 工具或原生子 Agent。

@@ -222,6 +222,11 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 				ParentToolCallID:   tc.CallID,
 				ParentArgumentsSHA: fmt.Sprintf("%x", sha256.Sum256([]byte(args))),
 				RegisterCompletion: func(complete func(context.Context) error) { externalCommit = complete },
+				Usage: func(_ context.Context, usage acpclient.Usage) error {
+					return externalReservation.observe(&schema.Message{ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{
+						PromptTokens: int(usage.InputTokens), CompletionTokens: int(usage.OutputTokens), TotalTokens: int(usage.TotalTokens),
+					}}})
+				},
 				Update: func(_ context.Context, raw json.RawMessage) error {
 					var update struct {
 						SessionUpdate string          `json:"sessionUpdate"`
@@ -294,7 +299,10 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 		output, err := next(ctx, args, opts...)
 		if externalReservation != nil {
 			settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			_, settleErr := externalReservation.settleContext(settleCtx, true)
+			usage, settleErr := externalReservation.settleContext(settleCtx, err == nil)
+			if settleErr == nil {
+				settleErr = m.sink.emit(settleCtx, harness.RunEvent{Kind: "usage", Usage: &usage})
+			}
 			cancel()
 			err = errors.Join(err, settleErr)
 		}
