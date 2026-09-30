@@ -367,7 +367,7 @@ func TestOpenCLIArgumentsAndFailedReceipt(t *testing.T) {
 		t.Fatal(b.request)
 	}
 	starts := b.starts
-	for _, raw := range []string{`{"site":"github","command":"create"}`, `{"site":"web","command":"--help"}`, `{"site":"web","command":"fetch","executable":"evil"}`, `{"site":"web","command":"fetch"} {}`} {
+	for _, raw := range []string{`{"site":"github","command":"create"}`, `{"site":"web","command":"--delete"}`, `{"site":"web","command":"fetch","executable":"evil"}`, `{"site":"web","command":"fetch"} {}`} {
 		if _, err := item.InvokableRun(context.Background(), raw); err == nil {
 			t.Fatal("untrusted input accepted")
 		}

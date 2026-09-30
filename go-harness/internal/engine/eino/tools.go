@@ -199,6 +199,35 @@ func (m *toolMiddleware) nativeDelegation(tc *adk.ToolContext) bool {
 	return tc.Name == "task"
 }
 
+// A failed tool call may be returned to the model only when the tool supplied
+// trustworthy evidence that it did not execute or that it had no effect.
+// Cancellation and uncertain command termination must still stop the run.
+func recoverableToolFailure(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, harness.ErrCommandUncertain) || isPermissionInterrupt(err) {
+		return false
+	}
+	var notExecuted *harness.ToolNotExecutedError
+	var noEffect *harness.ToolNoEffectError
+	return errors.As(err, &notExecuted) || errors.As(err, &noEffect)
+}
+
+func failedToolModelText(output string, err error) string {
+	if output == "" {
+		return "Tool failed: " + err.Error()
+	}
+	return "Tool failed: " + err.Error() + "\nTool output: " + output
+}
+
+func failedEnhancedToolResult(output *schema.ToolResult, err error) *schema.ToolResult {
+	result := &schema.ToolResult{}
+	if output != nil {
+		*result = *output
+		result.Parts = append([]schema.ToolOutputPart(nil), output.Parts...)
+	}
+	result.Parts = append(result.Parts, schema.ToolOutputPart{Type: schema.ToolPartTypeText, Text: "Tool failed: " + err.Error()})
+	return result
+}
+
 func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.InvokableToolCallEndpoint, tc *adk.ToolContext) (adk.InvokableToolCallEndpoint, error) {
 	return func(ctx context.Context, args string, opts ...tool.Option) (string, error) {
 		ctx, finish, err := m.io.begin(ctx)
@@ -308,16 +337,18 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 				},
 			})
 		}
-		output, err := next(ctx, args, opts...)
+		output, toolErr := next(ctx, args, opts...)
+		var settleErr error
 		if externalReservation != nil {
 			settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			usage, settleErr := externalReservation.settleContext(settleCtx, err == nil)
+			usage, err := externalReservation.settleContext(settleCtx, toolErr == nil)
+			settleErr = err
 			if settleErr == nil {
 				settleErr = m.sink.emit(settleCtx, harness.RunEvent{Kind: "usage", Usage: &usage})
 			}
 			cancel()
-			err = errors.Join(err, settleErr)
 		}
+		err = errors.Join(toolErr, settleErr)
 		// Eino alpha discards a tool's returned value when it also returns an
 		// error. Command failures carry their bounded execution evidence on the
 		// error so durable receipts retain stdout, exit code and termination state.
@@ -325,11 +356,16 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 		if output == "" && errors.As(err, &evidence) {
 			output = evidence.ToolResult()
 		}
+		recoverable := settleErr == nil && recoverableToolFailure(ctx, toolErr)
 		modelOutput := output
-		if err == nil && tc.Name != "read_tool_output" {
+		if recoverable {
+			modelOutput = failedToolModelText(output, toolErr)
+		}
+		if (err == nil || recoverable) && tc.Name != "read_tool_output" {
 			var snapshotErr error
-			modelOutput, snapshotErr = m.modelToolOutput(ctx, output)
+			modelOutput, snapshotErr = m.modelToolOutput(ctx, modelOutput)
 			err = errors.Join(err, snapshotErr)
+			recoverable = recoverable && snapshotErr == nil
 		}
 		if emitErr := m.finish(ctx, tc, []harness.Content{{Type: "text", Text: output}}, err); emitErr != nil {
 			return "", errors.Join(err, emitErr)
@@ -342,6 +378,9 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 				m.io.recordError(commitErr)
 				return "", commitErr
 			}
+		}
+		if recoverable {
+			return modelOutput, nil
 		}
 		return modelOutput, err
 	}, nil
@@ -373,7 +412,21 @@ func (m *toolMiddleware) WrapStreamableToolCall(_ context.Context, next adk.Stre
 		}
 		stream, err := next(ctx, args, opts...)
 		if err != nil {
-			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
+			recoverable := recoverableToolFailure(ctx, err)
+			modelOutput := ""
+			if recoverable {
+				var snapshotErr error
+				modelOutput, snapshotErr = m.modelToolOutput(ctx, failedToolModelText("", err))
+				recoverable = snapshotErr == nil
+				err = errors.Join(err, snapshotErr)
+			}
+			if finishErr := m.finish(ctx, tc, nil, err); finishErr != nil {
+				return nil, errors.Join(err, finishErr)
+			}
+			if recoverable {
+				return schema.StreamReaderFromArray([]string{modelOutput}), nil
+			}
+			return nil, err
 		}
 		handedOff = true
 		return relayToolStream(ctx, m, tc, stream, finish, func(chunk string) []harness.Content { return []harness.Content{{Type: "text", Text: chunk}} }), nil
@@ -426,19 +479,27 @@ func (m *toolMiddleware) WrapEnhancedInvokableToolCall(_ context.Context, next a
 			}
 			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
 		}
-		output, err := next(ctx, args, opts...)
+		output, toolErr := next(ctx, args, opts...)
 		var mediaErr error
 		output, mediaErr = normalizeToolImages(ctx, output, m.sink.request, tc.CallID, m.images)
-		err = errors.Join(err, mediaErr)
+		err = errors.Join(toolErr, mediaErr)
 		fullContent := enhancedContent(output)
 		modelOutput := output
-		if err == nil {
+		recoverable := mediaErr == nil && recoverableToolFailure(ctx, toolErr)
+		if recoverable {
+			modelOutput = failedEnhancedToolResult(output, toolErr)
+		}
+		if err == nil || recoverable {
 			var snapshotErr error
-			modelOutput, snapshotErr = m.modelEnhancedToolOutput(ctx, output)
+			modelOutput, snapshotErr = m.modelEnhancedToolOutput(ctx, modelOutput)
 			err = errors.Join(err, snapshotErr)
+			recoverable = recoverable && snapshotErr == nil
 		}
 		if emitErr := m.finish(ctx, tc, fullContent, err); emitErr != nil {
 			return nil, errors.Join(err, emitErr)
+		}
+		if recoverable {
+			return modelOutput, nil
 		}
 		return modelOutput, err
 	}, nil
@@ -467,7 +528,21 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 		}
 		stream, err := next(ctx, args, opts...)
 		if err != nil {
-			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
+			recoverable := recoverableToolFailure(ctx, err)
+			var modelOutput *schema.ToolResult
+			if recoverable {
+				var snapshotErr error
+				modelOutput, snapshotErr = m.modelEnhancedToolOutput(ctx, failedEnhancedToolResult(nil, err))
+				recoverable = snapshotErr == nil
+				err = errors.Join(err, snapshotErr)
+			}
+			if finishErr := m.finish(ctx, tc, nil, err); finishErr != nil {
+				return nil, errors.Join(err, finishErr)
+			}
+			if recoverable {
+				return schema.StreamReaderFromArray([]*schema.ToolResult{modelOutput}), nil
+			}
+			return nil, err
 		}
 		handedOff = true
 		return relayToolStream(ctx, m, tc, stream, finish, enhancedContent, func(result *schema.ToolResult) (*schema.ToolResult, error) {

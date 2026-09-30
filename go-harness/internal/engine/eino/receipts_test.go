@@ -54,15 +54,6 @@ func runtimeWithReceiptTool(t *testing.T, underlying tool.BaseTool) (*hr.Service
 
 func runtimeWithReceiptInvocation(t *testing.T, underlying tool.BaseTool, args string) (*hr.Service, harness.Session, *sqlite.Store) {
 	t.Helper()
-	native, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = native.Close() })
-	store, err := hr.NewStore(context.Background(), native.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
 	info, err := underlying.Info(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -73,6 +64,20 @@ func runtimeWithReceiptInvocation(t *testing.T, underlying tool.BaseTool, args s
 		}
 		return textStream("done"), nil
 	}}
+	return runtimeWithReceiptModel(t, underlying, model)
+}
+
+func runtimeWithReceiptModel(t *testing.T, underlying tool.BaseTool, model *scriptedModel) (*hr.Service, harness.Session, *sqlite.Store) {
+	t.Helper()
+	native, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = native.Close() })
+	store, err := hr.NewStore(context.Background(), native.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
 	e := newTestEngine(t, Config{ChatModel: model, Tools: []tool.BaseTool{underlying}})
 	s := hr.NewService(store, e, "test")
 	x, err := s.NewSession(context.Background(), "owner", t.TempDir())
@@ -80,6 +85,82 @@ func runtimeWithReceiptInvocation(t *testing.T, underlying tool.BaseTool, args s
 		t.Fatal(err)
 	}
 	return s, x, native
+}
+
+type correctingReceiptTool struct {
+	first error
+	args  []string
+}
+
+type receiptResultError struct {
+	cause  error
+	result string
+}
+
+func (e *receiptResultError) Error() string      { return e.cause.Error() }
+func (e *receiptResultError) Unwrap() error      { return e.cause }
+func (e *receiptResultError) ToolResult() string { return e.result }
+
+func (*correctingReceiptTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
+	return (&recordingTool{}).Info(ctx)
+}
+
+func (t *correctingReceiptTool) InvokableRun(_ context.Context, args string, _ ...tool.Option) (string, error) {
+	t.args = append(t.args, args)
+	if len(t.args) == 1 {
+		return "invalid first attempt", &receiptResultError{cause: t.first, result: "invalid first attempt"}
+	}
+	return "corrected result", nil
+}
+
+func TestSafeToolFailureLetsModelCorrectAndContinueSameRun(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		first error
+		state harness.ReceiptState
+	}{
+		{"not_executed", harness.MarkToolNotExecuted(errors.New("bad argument")), harness.ReceiptNotExecuted},
+		{"no_effect", harness.MarkToolNoEffect(errors.New("read failed")), harness.ReceiptNoEffect},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			item := &correctingReceiptTool{first: test.first}
+			model := &scriptedModel{stream: func(_ context.Context, call int, input []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+				switch call {
+				case 0:
+					return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "bad-call", Type: "function", Function: schema.FunctionCall{Name: "read_workspace", Arguments: `{"value":"bad"}`}}}}}), nil
+				case 1:
+					seen := false
+					for _, message := range input {
+						if message.Role == schema.Tool && message.ToolCallID == "bad-call" && strings.Contains(message.Content, test.first.Error()) && strings.Contains(message.Content, "invalid first attempt") {
+							seen = true
+						}
+					}
+					if !seen {
+						t.Errorf("model did not receive the failed tool result: %+v", input)
+					}
+					return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "good-call", Type: "function", Function: schema.FunctionCall{Name: "read_workspace", Arguments: `{"value":"good"}`}}}}}), nil
+				default:
+					return textStream("done"), nil
+				}
+			}}
+			s, session, _ := runtimeWithReceiptModel(t, item, model)
+			result, err := s.Run(context.Background(), "owner", session.ID, []harness.Content{{Type: "text", Text: "run"}}, nil, approveReceiptTool)
+			if err != nil || result.StopReason != "end_turn" || model.calls != 3 || len(item.args) != 2 || item.args[0] != `{"value":"bad"}` || item.args[1] != `{"value":"good"}` {
+				t.Fatalf("result=%+v err=%v model_calls=%d tool_args=%v", result, err, model.calls, item.args)
+			}
+			receipts, err := s.ListToolReceipts(context.Background(), "owner", session.ID)
+			if err != nil || len(receipts) != 2 {
+				t.Fatalf("receipts=%+v err=%v", receipts, err)
+			}
+			states := map[string]harness.ReceiptState{}
+			for _, receipt := range receipts {
+				states[receipt.ToolCallID] = receipt.State
+			}
+			if states["bad-call"] != test.state || states["good-call"] != harness.ReceiptCompleted {
+				t.Fatalf("receipt states=%v", states)
+			}
+		})
+	}
 }
 
 type namedReceiptEffectTool struct {

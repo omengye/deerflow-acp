@@ -21,7 +21,7 @@ func inferTool[T, D any](name, description string, invoke utils.InvokeFunc[T, D]
 	wrapped := func(ctx context.Context, input T) (D, error) {
 		result, err := invoke(ctx, input)
 		switch name {
-		case "ls", "glob", "grep", "web_search", "web_fetch", "image_search":
+		case "ls", "read_file", "glob", "grep", "read_tool_output", "search_memory", "web_search", "web_fetch", "image_search":
 			err = harness.MarkToolNoEffect(err)
 		}
 		return result, err
