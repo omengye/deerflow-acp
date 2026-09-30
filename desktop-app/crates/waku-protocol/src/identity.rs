@@ -17,7 +17,7 @@ pub const DATA_DIRECTORY_NAME: &str = "DeerFlow Desktop";
 
 /// The package root, shared by the desktop, its daemon, and the ACP runtime.
 /// Set DEER_FLOW_PORTABLE_ROOT before launch to use another portable profile.
-/// Development has its own root under the checkout and never reads ~/.waku.
+/// Unpackaged development has its own root under the checkout and never reads ~/.waku.
 pub fn portable_root() -> PathBuf {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
@@ -25,18 +25,31 @@ pub fn portable_root() -> PathBuf {
             .parent()
             .and_then(Path::parent)
             .expect("protocol crate belongs to the desktop workspace");
+        let executable = std::env::current_exe().ok();
         resolve_portable_root(
             std::env::var_os("DEER_FLOW_PORTABLE_ROOT")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
                 .as_deref(),
-            std::env::current_exe().ok().as_deref(),
+            executable.as_deref(),
             &checkout.join("temp"),
             &std::env::current_dir().unwrap_or_else(|_| checkout.to_owned()),
-            cfg!(debug_assertions),
+            cfg!(debug_assertions) && !has_bundled_go_runtime(executable.as_deref()),
         )
     })
     .clone()
+}
+
+fn has_bundled_go_runtime(executable: Option<&Path>) -> bool {
+    let Some(directory) = executable.and_then(Path::parent) else {
+        return false;
+    };
+    let (config, daemon) = if cfg!(windows) {
+        ("deerflow-config-go.exe", "deerflow-acpd.exe")
+    } else {
+        ("deerflow-config-go", "deerflow-acpd")
+    };
+    directory.join(config).is_file() && directory.join(daemon).is_file()
 }
 
 pub fn desktop_data_directory() -> PathBuf {
@@ -147,5 +160,42 @@ mod tests {
             ),
             development_root
         );
+    }
+
+    #[test]
+    fn debug_go_package_uses_executable_directory() {
+        let package =
+            std::env::temp_dir().join(format!("deerflow-debug-package-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&package).unwrap();
+        let desktop = package.join(if cfg!(windows) {
+            "deerflow-desktop.exe"
+        } else {
+            "deerflow-desktop"
+        });
+        let config = package.join(if cfg!(windows) {
+            "deerflow-config-go.exe"
+        } else {
+            "deerflow-config-go"
+        });
+        let daemon = package.join(if cfg!(windows) {
+            "deerflow-acpd.exe"
+        } else {
+            "deerflow-acpd"
+        });
+        assert!(!has_bundled_go_runtime(Some(&desktop)));
+        std::fs::write(&config, b"fixture").unwrap();
+        std::fs::write(&daemon, b"fixture").unwrap();
+        assert!(has_bundled_go_runtime(Some(&desktop)));
+        assert_eq!(
+            resolve_portable_root(
+                None,
+                Some(&desktop),
+                Path::new("checkout/temp"),
+                Path::new("other"),
+                !has_bundled_go_runtime(Some(&desktop))
+            ),
+            package
+        );
+        std::fs::remove_dir_all(package).unwrap();
     }
 }

@@ -1,5 +1,5 @@
 //! DeerFlow configuration uses the same native controls and theme as the chat
-//! workspace. Python remains the sole authority for validation and persistence.
+//! workspace. The Go configuration service validates and persists the YAML.
 use super::*;
 use crate::ui::ActivationExt;
 use serde_json::{Value, json};
@@ -2369,7 +2369,7 @@ fn deletable_phase(phase: &Value) -> bool {
 }
 
 /// Runs entirely on a worker. Close only this desktop's matching drivers,
-/// wait for the Python coordinator to release ownership, and verify both
+/// wait for the ACP coordinator to release ownership, and verify both
 /// persistent stores before reporting success to the UI.
 fn delete_deerflow_history(
     native_id: &str,

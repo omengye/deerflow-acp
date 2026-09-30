@@ -1,4 +1,4 @@
-//! Host-side adapter for the existing DeerFlow configuration JSON service.
+//! Host-side adapter for the Go DeerFlow configuration JSON service.
 //! No YAML or credentials are interpreted by the GPUI client.
 
 use std::collections::HashSet;
@@ -29,16 +29,10 @@ struct Paths {
     config: PathBuf,
     client_mcp_config: PathBuf,
     resources: PathBuf,
-    python: PathBuf,
-    acp_backend: AcpBackend,
+    config_cli: PathBuf,
+    daemon: PathBuf,
     bridge: PathBuf,
     runtime: PathBuf,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum AcpBackend {
-    Python,
-    Go(PathBuf),
 }
 
 /// Waku-owned per-session stdio servers. The host's YAML allowlist remains
@@ -268,43 +262,7 @@ fn write_client_mcp_config(path: &Path, bytes: &[u8]) -> Result<()> {
     result.context("无法保存桌面 MCP 服务器配置")
 }
 
-fn select_acp_backend(
-    root: &Path,
-    user_data: &Path,
-    override_name: Option<&str>,
-) -> Result<AcpBackend> {
-    let go = root.join(if cfg!(windows) {
-        "deerflow-acpd.exe"
-    } else {
-        "deerflow-acpd"
-    });
-    match override_name {
-        Some("python") => return Ok(AcpBackend::Python),
-        Some("go") if go.is_file() => return Ok(AcpBackend::Go(go)),
-        Some("go") => bail!("找不到 DeerFlow Go ACP daemon：{}", go.display()),
-        Some(value) => bail!("DEER_FLOW_DESKTOP_ACP_BACKEND 只能是 go 或 python：{value}"),
-        None => {}
-    }
-    // Existing Python sessions have no automatic Go checkpoint migration.
-    // Keep their current backend when an updated package reuses user-data.
-    if go.is_file() && user_data.join("data/go-harness/harness.db").is_file() {
-        return Ok(AcpBackend::Go(go));
-    }
-    let old_data = user_data.join("data");
-    if old_data.join("acp-sessions.db").is_file() || old_data.join("acp-checkpoints.db").is_file() {
-        return Ok(AcpBackend::Python);
-    }
-    if go.is_file() {
-        Ok(AcpBackend::Go(go))
-    } else {
-        Ok(AcpBackend::Python)
-    }
-}
-
-fn mcp_bridge_arguments(backend: &AcpBackend, policy: &Value) -> Result<Vec<String>> {
-    if *backend == AcpBackend::Python {
-        return Ok(Vec::new());
-    }
+fn mcp_bridge_arguments(policy: &Value) -> Result<Vec<String>> {
     let enabled = policy["enabled"]
         .as_bool()
         .ok_or_else(|| anyhow!("DeerFlow MCP host policy is missing its enabled flag"))?;
@@ -335,20 +293,16 @@ fn mcp_bridge_arguments(backend: &AcpBackend, policy: &Value) -> Result<Vec<Stri
 impl Paths {
     fn discover() -> Result<Self> {
         let root = waku_protocol::identity::portable_root();
-        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("workspace layout");
-        let python = root.join("runtime/python.exe");
-        let python = if python.is_file() {
-            python
+        let config_cli = root.join(if cfg!(windows) {
+            "deerflow-config-go.exe"
         } else {
-            source.join(if cfg!(windows) {
-                ".venv/Scripts/python.exe"
-            } else {
-                ".venv/bin/python"
-            })
-        };
+            "deerflow-config-go"
+        });
+        let daemon = root.join(if cfg!(windows) {
+            "deerflow-acpd.exe"
+        } else {
+            "deerflow-acpd"
+        });
         let bridge = waku_protocol::identity::bundled_acp_binary().unwrap_or_else(|| {
             root.join(if cfg!(windows) {
                 "deerflow-acp.exe"
@@ -357,17 +311,7 @@ impl Paths {
             })
         });
         let user_data = root.join("user-data");
-        let acp_backend = select_acp_backend(
-            &root,
-            &user_data,
-            std::env::var("DEER_FLOW_DESKTOP_ACP_BACKEND")
-                .ok()
-                .as_deref(),
-        )?;
-        let runtime = user_data.join(match &acp_backend {
-            AcpBackend::Python => "runtime/acp",
-            AcpBackend::Go(_) => "runtime/acp-go",
-        });
+        let runtime = user_data.join("runtime/acp-go");
         Ok(Self {
             config: user_data.join("config/config.yaml"),
             client_mcp_config: user_data.join("config/client-mcp-servers.json"),
@@ -375,16 +319,16 @@ impl Paths {
             runtime,
             root,
             user_data,
-            python,
-            acp_backend,
+            config_cli,
+            daemon,
             bridge,
         })
     }
 
     fn bootstrap(&self) -> Result<()> {
         let _guard = BOOTSTRAP.get_or_init(|| Mutex::new(())).lock();
-        if !self.python.is_file() {
-            bail!("找不到 DeerFlow Python 运行时：{}", self.python.display());
+        if !self.config_cli.is_file() {
+            bail!("找不到 DeerFlow Go 配置服务：{}", self.config_cli.display());
         }
         let template = self.resources.join("default-config.yaml");
         if !template.is_file() {
@@ -407,52 +351,31 @@ impl Paths {
     }
 
     fn environment(&self) -> Vec<(String, String)> {
-        let mut values: Vec<(String, String)> = [
+        let data_dir = self.user_data.join("data/go-harness");
+        [
             ("DEER_FLOW_PORTABLE_ROOT", &self.root),
             ("DEER_FLOW_CONFIG_PATH", &self.config),
             ("DEER_FLOW_ACP_RUNTIME_DIR", &self.runtime),
+            ("DEERFLOW_GO_DATA_DIR", &data_dir),
         ]
         .into_iter()
         .map(|(key, value)| (key.into(), value.to_string_lossy().into_owned()))
-        .collect();
-        match &self.acp_backend {
-            AcpBackend::Python => values.push((
-                "DEER_FLOW_ACP_PYTHON".into(),
-                self.python.to_string_lossy().into_owned(),
-            )),
-            AcpBackend::Go(_) => values.push((
-                "DEERFLOW_GO_DATA_DIR".into(),
-                self.user_data
-                    .join("data/go-harness")
-                    .to_string_lossy()
-                    .into_owned(),
-            )),
-        }
-        values
+        .collect()
     }
 
     fn backend_arguments(&self) -> Vec<String> {
-        match &self.acp_backend {
-            AcpBackend::Python => vec![
-                "--python".into(),
-                self.python.to_string_lossy().into_owned(),
-            ],
-            AcpBackend::Go(path) => vec!["--daemon".into(), path.to_string_lossy().into_owned()],
-        }
+        vec![
+            "--daemon".into(),
+            self.daemon.to_string_lossy().into_owned(),
+        ]
     }
 
     fn go_mcp_arguments(&self) -> Result<Vec<String>> {
-        if self.acp_backend == AcpBackend::Python {
-            return Ok(Vec::new());
-        }
         let policy = self.config_command("bridge-policy", &Value::Null)?;
-        mcp_bridge_arguments(&self.acp_backend, &policy)
+        mcp_bridge_arguments(&policy)
     }
 
     fn client_mcp_servers(&self) -> Result<Vec<McpServer>> {
-        if self.acp_backend == AcpBackend::Python {
-            return Ok(vec![]);
-        }
         let (servers, _) = read_client_mcp_config(&self.client_mcp_config)?;
         if servers.is_empty() {
             return Ok(vec![]);
@@ -499,7 +422,7 @@ impl Paths {
         }
         let mut servers = parse_client_mcp_config(&input["client_mcp_servers"])?;
         restore_client_mcp_secrets(&mut servers, &previous)?;
-        if self.acp_backend != AcpBackend::Python && !servers.is_empty() {
+        if !servers.is_empty() {
             allowed_client_mcp_servers(
                 servers.clone(),
                 &self.config_command("bridge-policy", &Value::Null)?,
@@ -510,14 +433,14 @@ impl Paths {
         if serialized.len() as u64 > MAX_CLIENT_MCP_CONFIG {
             bail!("桌面 MCP 服务器配置超过大小限制");
         }
-        // Keep MCP environment values out of the Python configuration service.
-        // It owns the main YAML document, while Waku owns this separate file.
-        let mut python_input = input.clone();
-        if let Some(object) = python_input.as_object_mut() {
+        // Keep MCP environment values out of the Go YAML configuration service.
+        // Waku owns this separate file and sends the values only on ACP session setup.
+        let mut config_input = input.clone();
+        if let Some(object) = config_input.as_object_mut() {
             object.remove("client_mcp_servers");
             object.remove("client_mcp_servers_revision");
         }
-        let document = self.config_command(operation, &python_input)?;
+        let document = self.config_command(operation, &config_input)?;
         if operation == "validate" {
             return Ok(document);
         }
@@ -527,18 +450,16 @@ impl Paths {
     }
 
     fn config_command(&self, operation: &str, input: &Value) -> Result<Value> {
-        let mut command = hidden_command(&self.python);
+        let mut command = hidden_command(&self.config_cli);
         command
-            .args(["-m", "deerflow.config_tool", "--config"])
+            .arg("--config")
             .arg(&self.config)
             .arg("--user-data")
             .arg(&self.user_data)
             .arg("--resources")
             .arg(&self.resources)
             .arg(operation)
-            .envs(self.environment())
-            .env("PYTHONUTF8", "1")
-            .env("PYTHONIOENCODING", "utf-8");
+            .envs(self.environment());
         decode_envelope(&run(command, Some(input), Duration::from_secs(100))?)
     }
 
@@ -712,10 +633,7 @@ impl DeerFlowService {
         value["applying"] = json!(self.state.applying.load(Ordering::Acquire));
         value["applied_generation"] = json!(self.state.applied_generation.load(Ordering::Acquire));
         value["apply_error"] = json!(*self.state.apply_error.lock());
-        value["acp_backend"] = json!(match &paths.acp_backend {
-            AcpBackend::Python => "python",
-            AcpBackend::Go(_) => "go",
-        });
+        value["acp_backend"] = json!("go");
         value["config_path"] = json!(paths.config);
         value["user_data"] = json!(paths.user_data);
         value
@@ -1027,88 +945,73 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("deerflow-mcp-policy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
-        let daemon = root.join("deerflow-acpd");
         let executable = root.join(if cfg!(windows) { "mcp.exe" } else { "mcp" });
         std::fs::write(&executable, b"fixture").unwrap();
-        let go = AcpBackend::Go(daemon);
         let enabled = json!({"enabled":true,"allowed_commands":[executable.to_string_lossy()]});
         assert_eq!(
-            mcp_bridge_arguments(&go, &enabled).unwrap(),
+            mcp_bridge_arguments(&enabled).unwrap(),
             vec!["--mcp-allow-command", executable.to_str().unwrap()]
         );
-        assert!(mcp_bridge_arguments(&go, &json!({"enabled":true,"allowed_commands":[]})).is_err());
+        assert!(mcp_bridge_arguments(&json!({"enabled":true,"allowed_commands":[]})).is_err());
         assert!(
-            mcp_bridge_arguments(
-                &go,
-                &json!({"enabled":true,"allowed_commands":["relative-command"]})
-            )
-            .is_err()
+            mcp_bridge_arguments(&json!({"enabled":true,"allowed_commands":["relative-command"]}))
+                .is_err()
         );
         assert!(
             mcp_bridge_arguments(
-                &go,
                 &json!({"enabled":true,"allowed_commands":[root.join("missing")]})
             )
             .is_err()
         );
         assert!(
-            mcp_bridge_arguments(
-                &go,
-                &json!({"enabled":false,"allowed_commands":[executable]})
-            )
-            .unwrap()
-            .is_empty()
-        );
-        assert!(
-            mcp_bridge_arguments(&AcpBackend::Python, &enabled)
+            mcp_bridge_arguments(&json!({"enabled":false,"allowed_commands":[executable]}))
                 .unwrap()
                 .is_empty()
         );
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn new_desktop_uses_go_and_existing_python_sessions_keep_python() {
-        let root =
-            std::env::temp_dir().join(format!("deerflow-acp-backend-{}", uuid::Uuid::new_v4()));
-        let user_data = root.join("user-data");
-        std::fs::create_dir_all(&user_data).unwrap();
+    fn go_only_paths_use_the_bundled_config_cli_and_daemon() {
+        let root = std::env::temp_dir().join(format!("deerflow-go-paths-{}", uuid::Uuid::new_v4()));
+        let paths = Paths {
+            config_cli: root.join(if cfg!(windows) {
+                "deerflow-config-go.exe"
+            } else {
+                "deerflow-config-go"
+            }),
+            daemon: root.join(if cfg!(windows) {
+                "deerflow-acpd.exe"
+            } else {
+                "deerflow-acpd"
+            }),
+            bridge: root.join(if cfg!(windows) {
+                "deerflow-acp.exe"
+            } else {
+                "deerflow-acp"
+            }),
+            config: root.join("user-data/config/config.yaml"),
+            client_mcp_config: root.join("user-data/config/client-mcp-servers.json"),
+            user_data: root.join("user-data"),
+            resources: root.join("resources"),
+            runtime: root.join("user-data/runtime/acp-go"),
+            root,
+        };
         assert_eq!(
-            select_acp_backend(&root, &user_data, None).unwrap(),
-            AcpBackend::Python
+            paths.backend_arguments(),
+            vec!["--daemon", paths.daemon.to_str().unwrap()]
         );
-        assert!(select_acp_backend(&root, &user_data, Some("go")).is_err());
-        let daemon = root.join(if cfg!(windows) {
-            "deerflow-acpd.exe"
-        } else {
-            "deerflow-acpd"
-        });
-        std::fs::write(&daemon, b"test binary").unwrap();
-        assert_eq!(
-            select_acp_backend(&root, &user_data, None).unwrap(),
-            AcpBackend::Go(daemon.clone())
+        assert!(
+            paths
+                .environment()
+                .iter()
+                .any(|(key, value)| key == "DEERFLOW_GO_DATA_DIR" && value.ends_with("go-harness"))
         );
-        std::fs::create_dir_all(user_data.join("data")).unwrap();
-        std::fs::write(user_data.join("data/acp-sessions.db"), b"legacy").unwrap();
-        assert_eq!(
-            select_acp_backend(&root, &user_data, None).unwrap(),
-            AcpBackend::Python
+        assert!(
+            !paths
+                .environment()
+                .iter()
+                .any(|(key, _)| key.contains("PYTHON"))
         );
-        assert_eq!(
-            select_acp_backend(&root, &user_data, Some("go")).unwrap(),
-            AcpBackend::Go(daemon.clone())
-        );
-        assert_eq!(
-            select_acp_backend(&root, &user_data, Some("python")).unwrap(),
-            AcpBackend::Python
-        );
-        std::fs::create_dir_all(user_data.join("data/go-harness")).unwrap();
-        std::fs::write(user_data.join("data/go-harness/harness.db"), b"go state").unwrap();
-        assert_eq!(
-            select_acp_backend(&root, &user_data, None).unwrap(),
-            AcpBackend::Go(daemon)
-        );
-        assert!(select_acp_backend(&root, &user_data, Some("unknown")).is_err());
-        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn invalid_save_never_applies() {

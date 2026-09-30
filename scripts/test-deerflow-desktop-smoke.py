@@ -24,6 +24,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -414,7 +415,7 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-def isolated_environment(root, backend):
+def isolated_environment(root, backend, go_only=False):
     # Build an allowlist, rather than inheriting provider credentials or PYTHONPATH.
     keep = {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "NUMBER_OF_PROCESSORS",
             "PROCESSOR_ARCHITECTURE", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA", "OS"}
@@ -423,21 +424,24 @@ def isolated_environment(root, backend):
     for name in ("home", "temp", "roaming", "local", "cache", "config"):
         (profile / name).mkdir(parents=True, exist_ok=True)
     env.update({
-        "PATH": os.pathsep.join([str(root / "runtime"), str(root), str(Path(env.get("SYSTEMROOT", "C:/Windows")) / "System32")]),
+        "PATH": os.pathsep.join(([str(root)] if go_only else [str(root / "runtime"), str(root)])
+                                + [str(Path(env.get("SYSTEMROOT", "C:/Windows")) / "System32")]),
         "HOME": str(profile / "home"), "USERPROFILE": str(profile / "home"),
         "APPDATA": str(profile / "roaming"), "LOCALAPPDATA": str(profile / "local"),
         "XDG_CONFIG_HOME": str(profile / "config"), "XDG_CACHE_HOME": str(profile / "cache"),
         "TEMP": str(profile / "temp"), "TMP": str(profile / "temp"),
         "DEER_FLOW_PORTABLE_ROOT": str(root), "DEER_FLOW_CONFIG_PATH": str(root / "user-data/config/config.yaml"),
         "DEER_FLOW_ACP_RUNTIME_DIR": str(root / "user-data/runtime/acp"),
-        "DEER_FLOW_ACP_PYTHON": str(root / "runtime/python.exe"),
         "DEER_FLOW_DESKTOP_ACP_BACKEND": backend,
-        "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONNOUSERSITE": "1", "WAKU_APP_EXECUTABLE": str(root / "deerflow-desktop.exe"),
+        "WAKU_APP_EXECUTABLE": str(root / "deerflow-desktop.exe"),
         "LANGCHAIN_TRACING_V2": "false", "LANGSMITH_TRACING": "false", "NO_PROXY": "127.0.0.1,localhost",
     })
     if backend == "go":
         env["DEERFLOW_GO_DATA_DIR"] = str(root / "user-data/data/go-harness")
+    if not go_only:
+        env.update({"DEER_FLOW_ACP_PYTHON": str(root / "runtime/python.exe"),
+                    "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1",
+                    "PYTHONNOUSERSITE": "1"})
     return env
 
 
@@ -485,8 +489,13 @@ def main():
     root, logs = run / "package", run / "logs"
     require(below(root, cache), "Smoke output escaped repository build cache")
     require(not below(root, package), "Smoke output must not be inside the supplied package")
-    for item in ("runtime/python.exe", "resources/default-config.yaml", "waku-daemon.exe", "deerflow-acp.exe", "deerflow-desktop.exe"):
+    go_only = args.backend == "go" and (package / "deerflow-config-go.exe").is_file()
+    required = ["resources/default-config.yaml", "waku-daemon.exe", "deerflow-acp.exe", "deerflow-desktop.exe"]
+    required.append("deerflow-config-go.exe" if go_only else "runtime/python.exe")
+    for item in required:
         require((package / item).is_file(), f"Incomplete package: {item}")
+    if go_only:
+        require(not (package / "runtime").exists(), "Go-only package unexpectedly includes a Python runtime")
     if args.backend == "go":
         require((package / "deerflow-acpd.exe").is_file(), "Incomplete package: deerflow-acpd.exe")
     root.mkdir(parents=True)
@@ -506,7 +515,7 @@ def main():
     error = None
     try:
         # No user-data, root config.yaml, .env, or files outside these immutable trees.
-        for directory in ("runtime", "resources"):
+        for directory in (("resources",) if go_only else ("runtime", "resources")):
             for current, dirs, files in os.walk(package / directory, followlinks=False):
                 for name in dirs + files:
                     source = Path(current) / name
@@ -515,13 +524,15 @@ def main():
         binaries = ["waku-daemon.exe", "deerflow-acp.exe", "deerflow-desktop.exe"]
         if args.backend == "go":
             binaries.append("deerflow-acpd.exe")
+        if go_only:
+            binaries.append("deerflow-config-go.exe")
         for name in binaries:
             shutil.copy2(package / name, root / name)
         log("Copied immutable package allowlist")
-        env = isolated_environment(root, args.backend)
+        env = isolated_environment(root, args.backend, go_only)
         config = root / "user-data/config/config.yaml"
         runtime = root / ("user-data/runtime/acp-go" if args.backend == "go" else "user-data/runtime/acp")
-        interpreter = root / "runtime/python.exe"
+        interpreter = Path(sys.executable) if go_only else root / "runtime/python.exe"
         backend_args = ["--daemon", root / "deerflow-acpd.exe"] if args.backend == "go" else ["--python", interpreter]
         bridge_args = [root / "deerflow-acp.exe", "--config", config, *backend_args, "--runtime-dir", runtime]
         token = secrets.token_hex(24)

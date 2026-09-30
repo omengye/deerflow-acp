@@ -20,21 +20,22 @@ DeerFlow publishing endpoints.
 
 Run `deerflow-desktop.exe` from an extracted Windows package. `waku-daemon.exe`
 remains the internal companion executable; its name is not a separate product.
-The Python settings runtime, `deerflow-acp.exe` Bridge and `deerflow-acpd.exe`
-Go daemon sit beside the desktop executable. New installations use Go for ACP.
-Existing Python ACP session databases continue on Python until migrated.
-`DEER_FLOW_DESKTOP_ACP_BACKEND=python` selects the old runtime explicitly;
-`go` selects the bundled Go daemon. The two backends have separate data and
-endpoint directories, so rollback does not overwrite either history.
+`deerflow-config-go.exe` handles Settings, `deerflow-acp.exe` is the ACP Bridge,
+and `deerflow-acpd.exe` runs the Go harness. All sit beside the desktop
+executable. The desktop uses the Go daemon for ACP and does not bundle or launch
+the DeerFlow Python environment. Existing Python ACP session databases are not
+migrated automatically; keep an earlier package to access that history.
 
 All desktop state lives in `user-data/desktop`, including `app.db`, `app.json`,
 `state.json`, daemon `settings.json`, blobs, model-cache, projectless workspaces,
 worktrees and the optional WebView2 profile. DeerFlow configuration and execution
 state use the adjacent `user-data/config`, `data`, `runtime`, `logs` and `skills`
 folders. `DEER_FLOW_PORTABLE_ROOT` overrides the complete package root when set
-before launch. That directory must contain runtime, resources and executables;
-a data-only profile directory is not supported. Debug builds default to `desktop-app/temp`, so they do not read or
-write the existing Waku or ACP installation's preferences and history.
+before launch. That directory must contain resources and executables; a
+data-only profile directory is not supported. Debug builds use the executable
+directory when it contains the bundled Go config CLI and daemon. Unpackaged
+Debug builds default to `desktop-app/temp`, so they do not read or write the
+existing Waku or ACP installation's preferences and history.
 
 The product/OS application identifiers are `DeerFlow Desktop` and
 `app.deerflow.desktop` (with separate Debug identities). Internal crate names
@@ -45,31 +46,28 @@ are retained to keep the upstream source structure recognizable.
 From the repository root run:
 
 ```powershell
-./scripts/build-deerflow-desktop.ps1
+./scripts/build-deerflow-desktop-go.ps1 -Configuration Debug -CreateZip
 ```
 
-The script builds the native desktop, internal daemon, ACP Bridge and Go ACP daemon, then copies
-a clean embedded runtime from `dist/portable/DeerFlow` when available (or builds
-one in a fresh staging directory). It never copies the source package's
-`user-data`, and it refuses to replace an existing output directory. Each build
-uses a new output folder by default. `-PortableRuntimeDirectory` selects another
-runtime source; `-RebuildRuntime` forces a fresh locked Python runtime build.
-`-DesktopTargetDirectory` selects Cargo output (default
-`.build-cache/desktop-build` beneath the repository, or `CARGO_TARGET_DIR` when
-set). `-SkipBuild` packages binaries already present there. Templates and bundled
-skills always come from the current repository; the existing runtime contributes
-Python/dependencies and its Python license only. Python remains in the package
-for Settings and ACP rollback.
+The script builds the native desktop, internal daemon, ACP Bridge, Go ACP daemon,
+Go configuration CLI and direct stdio agent. It copies the default template and
+bundled Skills, but no Python runtime, dependencies or existing `user-data`.
+It refuses to replace an output directory. `-DesktopTargetDirectory` selects
+Cargo output (default `desktop-app/target`); `-SkipBuild` packages binaries
+already present there. `-CreateZip` makes the binary ZIP and matching source ZIP.
+Some bundled Skills contain Python scripts; running those specific scripts
+requires a separately installed Python interpreter.
 
 After extracting a new package, run
 `python scripts/test-deerflow-desktop-smoke.py --package PATH --backend go`
-to exercise the default Go path. Use `--backend python` to check the rollback
-path. The smoke script copies the package into an isolated build-cache directory.
+to exercise the Go package. Python runs this test on the build host; it is not
+needed to launch the packaged desktop. The smoke script copies the package into
+an isolated build-cache directory.
 
 The desktop-derived code and its changes are GPL-3.0-only. DeerFlow's separate
 source tree retains its existing license. Binary distribution must include the
 GPL notice and make the complete corresponding desktop source and build scripts
-available under GPL-3.0-only. The script generates a companion source ZIP containing the desktop changes,
-DeerFlow sources and build scripts; distribute it alongside the matching binary
+available under GPL-3.0-only. The `-CreateZip` option generates a companion
+source ZIP from the build commit; distribute it alongside the matching binary
 ZIP. The binary ZIP also includes license notices. Build outputs
 must not be presented as official Waku releases.

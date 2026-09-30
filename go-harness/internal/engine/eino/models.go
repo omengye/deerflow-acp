@@ -9,7 +9,20 @@ import (
 	"github.com/cloudwego/eino-ext/components/model/claude"
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 )
+
+// ProbeModel uses the same provider constructors as normal Go harness runs.
+// Callers must sanitize provider errors because HTTP clients can include
+// request headers and credentials in their error text.
+func ProbeModel(ctx context.Context, provider, name, baseURL, apiKey string) error {
+	chat, err := newModel(ctx, Config{Provider: provider, Model: name, BaseURL: baseURL, APIKey: apiKey}, name)
+	if err != nil {
+		return err
+	}
+	_, err = chat.Generate(ctx, []*schema.Message{schema.UserMessage("Reply OK.")})
+	return err
+}
 
 func newModel(ctx context.Context, cfg Config, name string) (model.ToolCallingChatModel, error) {
 	if strings.TrimSpace(name) == "" {
