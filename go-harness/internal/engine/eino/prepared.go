@@ -99,7 +99,17 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	chatModel := e.model
 	if e.config.ChatModel == nil && req.Session.Model != "" && req.Session.Model != e.config.Model {
 		var err error
-		chatModel, err = newModel(ctx, e.config, req.Session.Model)
+		selected := e.config
+		modelID := req.Session.Model
+		if e.config.ModelRoutes != nil {
+			route, ok := e.config.ModelRoutes[req.Session.Model]
+			if !ok {
+				return p, fmt.Errorf("%w: session model is not configured", harness.ErrInvalidInput)
+			}
+			selected.Provider, selected.BaseURL, selected.APIKey = route.Provider, route.BaseURL, route.APIKey
+			modelID = route.Model
+		}
+		chatModel, err = newModel(ctx, selected, modelID)
 		if err != nil {
 			return p, err
 		}

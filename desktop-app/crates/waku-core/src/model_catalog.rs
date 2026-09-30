@@ -153,6 +153,8 @@ pub fn discover_catalog(
     let models = if discovered.is_empty() {
         // A failed or empty probe keeps the last successful discovery over
         // the hardcoded catalog, so one bad CLI run can't shrink the picker.
+        // DeerFlow's available models depend on the active daemon config;
+        // a cache from an older config can name a model this daemon cannot run.
         cached_models(provider).unwrap_or_else(|| fallback_models(provider))
     } else {
         let models = deduplicate(discovered);
@@ -175,6 +177,9 @@ fn model_cache_path(provider: ProviderKind) -> PathBuf {
 /// has cached one or the file no longer parses. Reads the filesystem, so call
 /// it from the discovery thread, never from render.
 pub fn cached_models(provider: ProviderKind) -> Option<Vec<ProviderModel>> {
+    if provider == ProviderKind::DeerFlow {
+        return None;
+    }
     read_models_file(&model_cache_path(provider))
 }
 

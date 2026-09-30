@@ -1037,6 +1037,11 @@ impl Waku {
         self.deerflow_select_section(Section::Tools, cx);
     }
 
+    pub(super) fn open_deerflow_models_settings(&mut self, cx: &mut Context<Self>) {
+        self.open_settings_page(SettingsPage::DeerFlow, cx);
+        self.deerflow_select_section(Section::Models, cx);
+    }
+
     fn deerflow_select_section(&mut self, section: Section, cx: &mut Context<Self>) {
         if self.deerflow_settings.busy() {
             return;
@@ -3471,6 +3476,15 @@ impl Waku {
             return;
         }
         self.deerflow_settings.model_refresh_queued = false;
+        // The restarted Go daemon may expose a different model set. Do not
+        // keep rendering choices from the daemon that was just replaced.
+        if let Some(probe) = self
+            .probes
+            .iter_mut()
+            .find(|probe| probe.provider == ProviderKind::DeerFlow)
+        {
+            probe.models.clear();
+        }
         self.refresh_provider_model_discovery(ProviderKind::DeerFlow);
         self.refresh_composer_sources(cx);
     }

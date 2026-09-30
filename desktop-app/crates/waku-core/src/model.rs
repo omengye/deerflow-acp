@@ -39,6 +39,7 @@ fn apply_cached_models(
     cached_models: Option<Vec<ProviderModel>>,
 ) -> ProviderProbe {
     if probe.provider.supports_model_discovery()
+        && probe.provider != ProviderKind::DeerFlow
         && let Some(models) = cached_models
     {
         probe.models = models;
@@ -91,5 +92,21 @@ mod tests {
 
         assert_eq!(probe.models.len(), 1);
         assert_eq!(probe.models[0].id, "cached-model");
+    }
+
+    #[test]
+    fn deerflow_ignores_a_catalog_from_a_previous_daemon_config() {
+        let probe = ProviderProbe {
+            provider: ProviderKind::DeerFlow,
+            installed: true,
+            path: Some("deerflow-acp".into()),
+            models: Vec::new(),
+            agent_presets: Vec::new(),
+        };
+        let cached = vec![ProviderModel::new("gpt-4.1-mini", "OpenAI").default()];
+
+        let probe = apply_cached_models(probe, Some(cached));
+
+        assert!(probe.models.is_empty());
     }
 }

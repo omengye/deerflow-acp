@@ -48,9 +48,10 @@ type Config struct {
 	// additional selectable models; unknown sizes do not produce ACP occupancy.
 	ContextWindow  int
 	ContextWindows map[string]int
-	// Models allow session selection within the configured provider. Model is
-	// always included. Provider credentials never become session configuration.
+	// Models are the public session choices. ModelRoutes maps non-default choice
+	// IDs to host-owned backends; credentials never become session configuration.
 	Models           []harness.ConfigValue
+	ModelRoutes      map[string]harness.ModelRoute
 	DisableSubagents bool
 	// ToolPolicy bounds the tool surface for every run, including native Eino
 	// task and write_todos. Session configuration cannot enlarge this boundary.
@@ -180,6 +181,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		return nil, fmt.Errorf("%w: memory tool mode requires retrieval_enabled=true", harness.ErrInvalidInput)
 	}
 	cfg.Media.VisionModels = slices.Clone(cfg.Media.VisionModels)
+	cfg.ModelRoutes = maps.Clone(cfg.ModelRoutes)
 	cfg.ACPAgents = maps.Clone(cfg.ACPAgents)
 	for name, agent := range cfg.ACPAgents {
 		agent.Args = slices.Clone(agent.Args)
@@ -328,7 +330,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			out.Tools = append(out.Tools, tools...)
 			return out, err
 		}
-		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, ToolPolicy: cfg.ToolPolicy, PermissionMode: cfg.PermissionMode, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, ModelImageImporter: assetStore, ToolOutputStore: assetStore, Compaction: cfg.Compaction, ContextWindows: contextWindows})
+		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, ModelRoutes: cfg.ModelRoutes, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, ToolPolicy: cfg.ToolPolicy, PermissionMode: cfg.PermissionMode, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, ModelImageImporter: assetStore, ToolOutputStore: assetStore, Compaction: cfg.Compaction, ContextWindows: contextWindows})
 		if err != nil {
 			return nil, err
 		}

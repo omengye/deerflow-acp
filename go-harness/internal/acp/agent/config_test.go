@@ -41,6 +41,43 @@ func (c *client) configure(t *testing.T, sid, key, value string) map[string]stri
 	return values
 }
 
+func TestNewSessionAdvertisesModelChoicesAndCurrentValue(t *testing.T) {
+	f := newFixture(t, engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	}))
+	f.service.Model = "default-model"
+	f.service.Settings.Models = []harness.ConfigValue{
+		{Value: "default-model", Name: "Default Model"},
+		{Value: "alternate-model", Name: "Alternate Model"},
+	}
+	c := connect(t, f.service)
+	c.initialize(t)
+	id := c.request(t, "session/new", map[string]any{"cwd": f.cwd, "mcpServers": []any{}})
+	var response struct {
+		SessionID     string                 `json:"sessionId"`
+		ConfigOptions []harness.ConfigOption `json:"configOptions"`
+	}
+	if err := json.Unmarshal(c.success(t, id), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.SessionID == "" {
+		t.Fatal("session/new omitted sessionId")
+	}
+	for _, option := range response.ConfigOptions {
+		if option.ID != "model" {
+			continue
+		}
+		if option.Category != "model" || option.Type != "select" || option.CurrentValue != "default-model" {
+			t.Fatalf("model option cannot be parsed by ACP model picker: %+v", option)
+		}
+		if len(option.Options) != 2 || option.Options[0].Value != "default-model" || option.Options[1].Value != "alternate-model" {
+			t.Fatalf("model choices missing from session/new: %+v", option.Options)
+		}
+		return
+	}
+	t.Fatal("session/new omitted the model config option")
+}
+
 func TestConfigurationMetadataPersistsAcrossRuntimeRestart(t *testing.T) {
 	observed := make(chan harness.Session, 2)
 	engine := engineFunc(func(_ context.Context, req harness.RunRequest, _ harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {

@@ -196,6 +196,32 @@ func TestModelReorderAndBackendChangeDoNotTransferSecrets(t *testing.T) {
 	}
 }
 
+func TestExistingPatchedOpenAIModelCanBeSaved(t *testing.T) {
+	options := setup(t)
+	run(t, options, "init", nil)
+	raw, err := readYAML(options.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := list(raw, "models")[0].(map[string]any)
+	first["use"] = "deerflow.models.patched_openai:PatchedChatOpenAI"
+	if err := writeYAMLAtomic(options.Config, raw); err != nil {
+		t.Fatal(err)
+	}
+	doc := run(t, options, "snapshot", nil)
+	if run(t, options, "validate", doc)["valid"] != true {
+		t.Fatal("existing patched OpenAI model could not be validated")
+	}
+	run(t, options, "save", doc)
+	saved, err := readYAML(options.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if str(list(saved, "models")[0].(map[string]any), "use", "") != "deerflow.models.patched_openai:PatchedChatOpenAI" {
+		t.Fatal("legacy patched OpenAI provider changed during save")
+	}
+}
+
 func TestChangedOriginalNameRequiresCredential(t *testing.T) {
 	options := setup(t)
 	doc := run(t, options, "snapshot", nil)

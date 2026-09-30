@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/localhost"
 )
 
@@ -426,6 +427,140 @@ func TestConfigDaemonPublishesBridgeIdentity(t *testing.T) {
 		t.Fatal(line)
 	}
 	p.wait(t, true)
+}
+
+func TestConfigDaemonAdvertisesAndRoutesDistinctModels(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process integration")
+	}
+	type hit struct {
+		backend string
+		authOK  bool
+	}
+	hits := make(chan hit, 2)
+	newBackend := func(name, key string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			_ = r.Body.Close()
+			hits <- hit{backend: name, authOK: r.Header.Get("Authorization") == "Bearer "+key}
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"route-ok\"},\"finish_reason\":null}]}\n\n")
+			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+	}
+	first := newBackend("first", "first-fixture-key")
+	second := newBackend("second", "second-fixture-key")
+	t.Cleanup(first.Close)
+	t.Cleanup(second.Close)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	config := fmt.Sprintf(`default_model: first
+models:
+  - name: first
+    use: deerflow.models.patched_openai:PatchedChatOpenAI
+    model: first-model
+    api_key: first-fixture-key
+    base_url: %s/v1
+  - name: second
+    use: deerflow.models.patched_openai:PatchedChatOpenAI
+    model: second-model
+    api_key: second-fixture-key
+    base_url: %s/v1
+`, first.URL, second.URL)
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dataDir, runtimeDir, workspace := t.TempDir(), t.TempDir(), t.TempDir()
+	p := &daemonProcess{done: make(chan struct{})}
+	p.cmd = exec.Command(os.Args[0], "-test.run=^TestDaemonProcessHelper$", "--", "--config", configPath, "--data-dir", dataDir, "--runtime-dir", runtimeDir)
+	p.cmd.Env = append(os.Environ(), "DEERFLOW_TEST_DAEMON_HELPER=1")
+	p.cmd.Stdout, p.cmd.Stderr = &p.stdout, &p.stderr
+	if err := p.cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { p.err = p.cmd.Wait(); close(p.done) }()
+	t.Cleanup(func() {
+		select {
+		case <-p.done:
+		default:
+			_ = p.cmd.Process.Kill()
+			<-p.done
+		}
+	})
+	ep := p.endpoint(t, runtimeDir)
+	client := acpClient(t, ep)
+	created := client.success(t, "session/new", map[string]any{"cwd": workspace, "mcpServers": []any{}})
+	if bytes.Contains(created, []byte("first-fixture-key")) || bytes.Contains(created, []byte("second-fixture-key")) {
+		t.Fatal("ACP session/new exposed a model credential")
+	}
+	var session struct {
+		ID            string                 `json:"sessionId"`
+		ConfigOptions []harness.ConfigOption `json:"configOptions"`
+	}
+	if err := json.Unmarshal(created, &session); err != nil || session.ID == "" {
+		t.Fatal("session/new did not return a session")
+	}
+	var models *harness.ConfigOption
+	for i := range session.ConfigOptions {
+		if session.ConfigOptions[i].ID == "model" {
+			models = &session.ConfigOptions[i]
+			break
+		}
+	}
+	if models == nil || models.Category != "model" || models.Type != "select" || models.CurrentValue != "first-model" || len(models.Options) != 2 || models.Options[1].Value != "deerflow-config:second" {
+		t.Fatal("ACP session/new omitted the distinct configured model route")
+	}
+	choice := "deerflow-config:second"
+	changed := client.success(t, "session/set_config_option", map[string]any{"sessionId": session.ID, "configId": "model", "value": choice})
+	if bytes.Contains(changed, []byte("first-fixture-key")) || bytes.Contains(changed, []byte("second-fixture-key")) {
+		t.Fatal("ACP model selection exposed a model credential")
+	}
+	var selection struct {
+		ConfigOptions []harness.ConfigOption `json:"configOptions"`
+	}
+	if err := json.Unmarshal(changed, &selection); err != nil {
+		t.Fatal(err)
+	}
+	selected := false
+	for _, option := range selection.ConfigOptions {
+		selected = selected || option.ID == "model" && option.CurrentValue == choice
+	}
+	if !selected {
+		t.Fatal("ACP did not confirm the selected model route")
+	}
+	client.success(t, "session/prompt", map[string]any{"sessionId": session.ID, "prompt": []any{map[string]string{"type": "text", "text": "Say hello."}}})
+	select {
+	case got := <-hits:
+		if got.backend != "second" || !got.authOK {
+			t.Fatal("selected model request used a different backend or credential")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("selected model route received no request")
+	}
+	if invalid := client.request(t, "session/set_config_option", map[string]any{"sessionId": session.ID, "configId": "model", "value": "unconfigured-model"}); len(invalid.Error) == 0 {
+		t.Fatal("ACP accepted an unconfigured model route")
+	}
+	conn, _, line := connectCommand(t, ep, "STOP")
+	_ = conn.Close()
+	if line != "OK" {
+		t.Fatal(line)
+	}
+	p.wait(t, true)
+	if err := filepath.WalkDir(dataDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || !entry.Type().IsRegular() {
+			return walkErr
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if bytes.Contains(body, []byte("first-fixture-key")) || bytes.Contains(body, []byte("second-fixture-key")) {
+			return errors.New("model credential persisted in daemon data")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Supply an existing native Bridge executable to exercise its actual endpoint,

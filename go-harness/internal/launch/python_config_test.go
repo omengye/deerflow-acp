@@ -2,6 +2,7 @@ package launch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ models:
 	if result.Path != path || len(result.Revision) != 64 || cfg.Provider != "openai" || cfg.Model != "real-model-id" || cfg.APIKey != "from-environment" || cfg.BaseURL != "https://example.test/v1" || cfg.DataDir != filepath.Join(filepath.Dir(path), "go-harness-state") || !cfg.DisableSubagents || connections != 7 || cfg.Budget.Timeout != 33*time.Second {
 		t.Fatalf("config=%+v connections=%d result=%+v", cfg, connections, result)
 	}
-	if len(cfg.Models) != 1 || cfg.Models[0].Name != "Selected model" || len(cfg.Media.VisionModels) != 1 || cfg.Media.VisionModels[0] != "real-model-id" || cfg.ContextWindows["real-model-id"] != 131072 {
+	if len(cfg.Models) != 2 || cfg.Models[0].Value != "deerflow-config:other" || cfg.Models[1].Name != "Selected model" || cfg.Models[1].Value != "real-model-id" || len(cfg.Media.VisionModels) != 1 || cfg.Media.VisionModels[0] != "real-model-id" || cfg.ContextWindows["real-model-id"] != 131072 || cfg.ModelRoutes["deerflow-config:other"].Model != "other-id" {
 		t.Fatalf("model capabilities: %+v %+v", cfg.Models, cfg.Media)
 	}
 	if cfg.Retention.Enabled || cfg.Retention.InactiveDays != 7 || cfg.Retention.ClosedDays != 0 || cfg.Retention.CheckInterval != 2*time.Minute {
@@ -76,6 +77,60 @@ models:
 	_, err = ApplyPythonConfig(path, &explicitWindow, &connections, map[string]bool{"model": true, "context-window": true})
 	if err != nil || explicitWindow.ContextWindow != 2048 || explicitWindow.ContextWindows["real-model-id"] != 0 {
 		t.Fatalf("explicit context window lost: %+v err=%v", explicitWindow, err)
+	}
+}
+
+func TestApplyPythonConfigPatchedOpenAIAndDistinctBackendRoutes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := `default_model: deepseek
+models:
+  - name: deepseek
+    display_name: DeepSeek
+    use: deerflow.models.patched_openai:PatchedChatOpenAI
+    model: deepseek-model
+    api_key: first-fixture-key
+    base_url: https://first.example/v1
+  - name: openrouter
+    display_name: OpenRouter
+    use: deerflow.models.patched_openai:PatchedChatOpenAI
+    model: routed-model
+    api_key: second-fixture-key
+    base_url: https://second.example/v1
+    supports_vision: true
+    context_window: 128000
+  - name: anthropic
+    use: langchain_anthropic:ChatAnthropic
+    model: claude-fixture
+    api_key: third-fixture-key
+`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var cfg deerflow.Config
+	connections := 0
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "openai" || cfg.Model != "deepseek-model" || len(cfg.Models) != 3 || cfg.Models[0].Value != "deepseek-model" {
+		t.Fatal("PatchedChatOpenAI default was not selected")
+	}
+	choice := "deerflow-config:openrouter"
+	route := cfg.ModelRoutes[choice]
+	if cfg.Models[1].Value != choice || route.Provider != "openai" || route.Model != "routed-model" || route.BaseURL != "https://second.example/v1" || route.APIKey != "second-fixture-key" || cfg.ContextWindows[choice] != 128000 || cfg.Media.VisionModels[0] != choice {
+		t.Fatal("different OpenAI-compatible endpoint was not routed by its own host configuration")
+	}
+	choice = "deerflow-config:anthropic"
+	if cfg.Models[2].Value != choice || cfg.ModelRoutes[choice].Provider != "claude" || cfg.ModelRoutes[choice].APIKey != "third-fixture-key" {
+		t.Fatal("different provider was not routed by its own host configuration")
+	}
+	public, err := json.Marshal(cfg.Models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"first-fixture-key", "second-fixture-key", "third-fixture-key", "https://first.example", "https://second.example"} {
+		if strings.Contains(string(public), secret) {
+			t.Fatal("ACP model choices exposed host backend configuration")
+		}
 	}
 }
 

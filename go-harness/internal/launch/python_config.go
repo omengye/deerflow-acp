@@ -97,7 +97,7 @@ type pythonRuntimeConfig struct {
 
 func pythonProvider(use string) (string, error) {
 	switch use {
-	case "langchain_openai:ChatOpenAI":
+	case "langchain_openai:ChatOpenAI", "deerflow.models.patched_openai:PatchedChatOpenAI":
 		return "openai", nil
 	case "langchain_anthropic:ChatAnthropic":
 		return "claude", nil
@@ -441,14 +441,56 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	if p := source.LocalACP.CleanupIntervalSeconds; p != nil && !explicit["session-cleanup-interval"] {
 		cfg.Retention.CheckInterval = time.Duration(*p * float64(time.Second))
 	}
+	// An unoverridden desktop config owns each listed model's route. The ACP
+	// choice is only an opaque, public ID; provider endpoints and credentials
+	// stay in this host-owned table and are never copied to session metadata.
+	configuredRoutes := !explicit["provider"] && !explicit["model"] && !explicit["base-url"] && !explicit["api-key"] && (cfg.APIKey == "" || cfg.APIKey == apiKey)
+	modelIDCount := make(map[string]int, len(source.Models))
+	usedChoices := map[string]bool{cfg.Model: true}
+	cfg.ModelRoutes = nil
+	if configuredRoutes {
+		cfg.ModelRoutes = make(map[string]harness.ModelRoute)
+		seenNames := make(map[string]bool, len(source.Models))
+		for _, option := range source.Models {
+			if option.Name == "" || seenNames[option.Name] {
+				return result, fmt.Errorf("configured model names must be nonempty and unique")
+			}
+			seenNames[option.Name] = true
+			if option.Model != "" {
+				modelIDCount[option.Model]++
+			}
+		}
+	}
 	for _, option := range source.Models {
-		if !sameBackend || option.Model == "" || option.Use != model.Use {
+		if option.Model == "" {
+			continue
+		}
+		optionProvider, providerErr := pythonProvider(option.Use)
+		if providerErr != nil {
 			continue
 		}
 		key, keyErr := pythonScalar(option.APIKey)
 		url, urlErr := pythonScalar(option.BaseURL)
-		if keyErr != nil || urlErr != nil || key != cfg.APIKey || url != baseURL {
+		if keyErr != nil || urlErr != nil {
 			continue
+		}
+		matchesDefaultBackend := sameBackend && optionProvider == cfg.Provider && key == cfg.APIKey && url == baseURL
+		if !configuredRoutes && !matchesDefaultBackend {
+			continue
+		}
+		choice := option.Model
+		if configuredRoutes && option.Name != selected {
+			if !matchesDefaultBackend || modelIDCount[option.Model] > 1 || usedChoices[choice] {
+				choice = "deerflow-config:" + option.Name
+			}
+			if usedChoices[choice] {
+				return result, fmt.Errorf("configured model choices must be unique")
+			}
+			usedChoices[choice] = true
+			cfg.ModelRoutes[choice] = harness.ModelRoute{Provider: optionProvider, Model: option.Model, BaseURL: url, APIKey: key}
+		}
+		if option.Name == selected {
+			choice = cfg.Model
 		}
 		if option.ContextWindow < 0 || option.ContextWindow > 1<<30 {
 			return result, fmt.Errorf("invalid context_window for model %q", option.Name)
@@ -457,15 +499,15 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 		if name == "" {
 			name = option.Name
 		}
-		cfg.Models = append(cfg.Models, harness.ConfigValue{Value: option.Model, Name: name})
-		if option.ContextWindow > 0 && !(explicit["context-window"] && option.Model == cfg.Model) {
+		cfg.Models = append(cfg.Models, harness.ConfigValue{Value: choice, Name: name})
+		if option.ContextWindow > 0 && !(explicit["context-window"] && choice == cfg.Model) {
 			if cfg.ContextWindows == nil {
 				cfg.ContextWindows = make(map[string]int)
 			}
-			cfg.ContextWindows[option.Model] = option.ContextWindow
+			cfg.ContextWindows[choice] = option.ContextWindow
 		}
 		if option.SupportsVision {
-			cfg.Media.VisionModels = append(cfg.Media.VisionModels, option.Model)
+			cfg.Media.VisionModels = append(cfg.Media.VisionModels, choice)
 		}
 	}
 	result.Path = abs

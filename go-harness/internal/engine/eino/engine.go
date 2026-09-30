@@ -24,6 +24,7 @@ import (
 // harness.Engine, so alpha API changes stay at this boundary.
 type Config struct {
 	Provider, APIKey, BaseURL, Model, Instruction string
+	ModelRoutes                                   map[string]harness.ModelRoute
 	ChatModel                                     model.ToolCallingChatModel
 	Tools                                         []tool.BaseTool
 	// ToolFactory opens resources owned by this run, such as a pinned os.Root.
@@ -124,6 +125,7 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 	config.Handlers = append([]adk.ChatModelAgentMiddleware(nil), config.Handlers...)
 	config.Media.VisionModels = append([]string(nil), config.Media.VisionModels...)
 	config.ContextWindows = maps.Clone(config.ContextWindows)
+	config.ModelRoutes = maps.Clone(config.ModelRoutes)
 	for name, size := range config.ContextWindows {
 		if name == "" || size <= 0 {
 			return nil, fmt.Errorf("%w: invalid context window for model %q", harness.ErrInvalidInput, name)

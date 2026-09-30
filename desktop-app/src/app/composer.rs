@@ -855,24 +855,23 @@ impl Waku {
         let picker_enabled = session.is_some_and(|session| session.can_choose_model(provider));
 
         if !picker_enabled {
+            let reason = if session.is_some() {
+                "当前任务结束后可切换模型"
+            } else {
+                "新建会话后可选择模型"
+            };
             return div()
-                .h(px(24.0))
-                .px(px(7.0))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .child(provider_mark(
-                    &theme,
-                    provider,
-                    10.5,
-                    provider_color(&theme, provider).opacity(0.9),
-                ))
+                .id("composer-provider-model-disabled-wrapper")
+                .tooltip(Tooltip::text(reason))
                 .child(
-                    div()
-                        .max_w(px(210.0))
-                        .truncate()
-                        .text_color(theme.text_secondary)
-                        .child(SharedString::from(selected_model_name)),
+                    MenuChip::new("composer-provider-model-disabled")
+                        .provider(
+                            &theme,
+                            provider,
+                            provider_color(&theme, provider).opacity(0.9),
+                        )
+                        .label(selected_model_name)
+                        .disabled(true),
                 )
                 .into_any_element();
         }
@@ -1006,7 +1005,7 @@ impl Waku {
         };
 
         popover(
-            trigger.caret(false).selected(handle.is_open()),
+            trigger.selected(handle.is_open()),
             &handle,
             MenuAlign::AboveLeft,
             move |popover, _window, _cx| {
@@ -1167,6 +1166,8 @@ impl Waku {
                             if pending_discoveries.contains(&provider)
                     ) {
                         tr!("models.loading")
+                    } else if selected_tab == ModelPickerTab::Provider(ProviderKind::DeerFlow) {
+                        "DeerFlow 尚未提供可切换的模型；请在模型设置中检查并应用配置。".into()
                     } else {
                         tr!("models.none_reported")
                     };
@@ -1372,6 +1373,41 @@ impl Waku {
                                     .relative()
                                     .child(rows)
                                     .child(scrollbar::vertical(&scroll, &scrollbar_state)),
+                            )
+                            .when(
+                                selected_tab == ModelPickerTab::Provider(ProviderKind::DeerFlow)
+                                    && !searching,
+                                |content| {
+                                    let settings_weak = weak.clone();
+                                    let settings_popover = popover.clone();
+                                    content.child(
+                                        div()
+                                            .id("model-picker-deerflow-settings")
+                                            .h(px(38.0))
+                                            .px(px(12.0))
+                                            .border_t_1()
+                                            .border_color(theme.border)
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(7.0))
+                                            .cursor_default()
+                                            .text_size(sp(12.5))
+                                            .text_color(theme.text_secondary)
+                                            .hover(|element| element.bg(theme.overlay))
+                                            .child(icon(
+                                                "icons/settings.svg",
+                                                12.0,
+                                                theme.text_tertiary,
+                                            ))
+                                            .child("在 DeerFlow 设置中管理模型")
+                                            .on_click(move |_, window, cx| {
+                                                settings_popover.close(window, cx);
+                                                let _ = settings_weak.update(cx, |this, cx| {
+                                                    this.open_deerflow_models_settings(cx);
+                                                });
+                                            }),
+                                    )
+                                },
                             ),
                     )
                     .into_any_element()

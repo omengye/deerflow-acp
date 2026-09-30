@@ -14,6 +14,15 @@ type ConfigValue struct {
 	Description string `json:"description,omitempty"`
 }
 
+// ModelRoute is host-only configuration for an allowed session model choice.
+// APIKey must never be included in ACP config options or persisted sessions.
+type ModelRoute struct {
+	Provider string
+	Model    string
+	BaseURL  string
+	APIKey   string
+}
+
 // ConfigOption is transport-independent metadata for a select control. Values
 // only become available when the runtime actually consumes them.
 type ConfigOption struct {

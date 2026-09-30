@@ -273,13 +273,14 @@ class ACP:
 
 class FakeOpenAI(http.server.ThreadingHTTPServer):
     daemon_threads = True
-    def __init__(self, log, request_log, backend):
+    def __init__(self, log, request_log, backend, expected_bearer=None):
         self._requests = []
         self._tool_plans = {}
         self._requests_lock = threading.Lock()
         self.log = log
         self.request_log = request_log
         self.backend = backend
+        self.expected_bearer = expected_bearer
         super().__init__(("127.0.0.1", 0), FakeHandler)
 
     def record_request(self, body):
@@ -381,10 +382,13 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
         if size > 8 * 1024 * 1024 or self.path not in ("/v1/chat/completions", "/chat/completions"):
             self.send_error(400)
             return
+        if self.server.expected_bearer is not None and self.headers.get("Authorization") != f"Bearer {self.server.expected_bearer}":
+            self.send_error(401)
+            return
         body = json.loads(self.rfile.read(size))
         self.server.record_request(body)
         self.server.log("Local fake OpenAI request", path=self.path, model=body.get("model"), stream=body.get("stream", False))
-        common = {"id": "chatcmpl-smoke", "created": int(time.time()), "model": "smoke-local"}
+        common = {"id": "chatcmpl-smoke", "created": int(time.time()), "model": body.get("model", "smoke-local")}
         extraction = self.server.backend == "go" and any(
             message.get("role") == "system" and "Extract only durable facts" in message_text(message)
             for message in body.get("messages", [])
@@ -481,12 +485,17 @@ def main():
     parser.add_argument("--client-mcp", action="store_true", help="Exercise host-authorized ACP client stdio MCP on Go")
     parser.add_argument("--legacy-empty-mcp-policy", action="store_true",
                         help="Exercise an existing Go config with client MCP enabled but no command allowlist")
+    parser.add_argument("--multi-model-routes", action="store_true",
+                        help="Exercise Go model selection across separate endpoints and credentials")
     args = parser.parse_args()
     require(os.name == "nt", "This smoke test targets the Windows portable package")
     require(not args.client_mcp or (args.backend == "go" and not args.no_chat),
             "Client MCP smoke needs Go and the local fake model")
     require(not args.legacy_empty_mcp_policy or (args.backend == "go" and not args.client_mcp),
             "Legacy empty MCP policy smoke needs Go without the client MCP fixture")
+    require(not args.multi_model_routes or (args.backend == "go" and not args.no_chat and
+                                           not args.client_mcp and not args.legacy_empty_mcp_policy),
+            "Multi-model route smoke needs Go chat without another optional fixture")
     package = args.package.resolve(strict=True)
     repo = Path(__file__).resolve().parents[1]
     cache = repo / ".build-cache" / "desktop-smoke"
@@ -515,7 +524,7 @@ def main():
                 stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
         print(json.dumps(entry, ensure_ascii=False), flush=True)
     print(f"Isolated smoke logs: {logs}", flush=True)
-    processes, waku, fake, env = [], None, None, None
+    processes, waku, fake, alt_fake, env = [], None, None, None, None
     bridge_args = []
     error = None
     try:
@@ -599,11 +608,23 @@ def main():
         if not args.no_chat:
             fake = FakeOpenAI(log, logs / "model-requests.jsonl", args.backend)
             threading.Thread(target=fake.serve_forever, daemon=True).start()
+            if args.multi_model_routes:
+                alt_fake = FakeOpenAI(log, logs / "alt-model-requests.jsonl", args.backend,
+                                      expected_bearer="smoke-alt-secret")
+                threading.Thread(target=alt_fake.serve_forever, daemon=True).start()
             document = copy.deepcopy(saved)
             document["models"] = [{"original_name": "", "name": "smoke-local", "display_name": "Local smoke model",
                 "use_path": "langchain_openai:ChatOpenAI", "model": "smoke-local", "api_key": "smoke-local-placeholder",
                 "clear_api_key": False, "base_url": f"http://127.0.0.1:{fake.server_port}/v1",
                 "supports_thinking": False, "supports_reasoning_effort": False, "supports_vision": False, "advanced": {}}]
+            if alt_fake:
+                document["models"].append({"original_name": "", "name": "smoke-alt",
+                    "display_name": "Alternate local model",
+                    "use_path": "deerflow.models.patched_openai:PatchedChatOpenAI", "model": "smoke-alt",
+                    "api_key": "smoke-alt-secret", "clear_api_key": False,
+                    "base_url": f"http://127.0.0.1:{alt_fake.server_port}/v1",
+                    "supports_thinking": False, "supports_reasoning_effort": False,
+                    "supports_vision": False, "advanced": {}})
             document["default_model"] = "smoke-local"
             document["runtime"]["model_name"] = "smoke-local"
             saved = waku.deerflow("save", document)
@@ -628,6 +649,32 @@ def main():
         workspace = root / "smoke-workspace"
         workspace.mkdir()
         acp = acp_client("acp-before-apply")
+        if alt_fake:
+            catalog = waku.rpc({"type": "probeProvider", "provider": "deerFlow",
+                                "binaryOverride": str(root / "deerflow-acp.exe"),
+                                "discoverModels": True, "probeVersion": False})
+            models = {item["name"]: item["id"] for item in catalog["probe"].get("models", [])}
+            require(models.get("Local smoke model") == "smoke-local" and
+                    models.get("Alternate local model", "").startswith("deerflow-config:"),
+                    f"Desktop catalog omitted configured model routes: {models}")
+            alternate_choice = models["Alternate local model"]
+            route_session, route_runtime = str(uuid.uuid4()), str(uuid.uuid4())
+            route_options = {"provider": "deerFlow", "binary": str(root / "deerflow-acp.exe"),
+                             "cwd": str(root / "smoke-workspace"), "mode": "ask", "model": alternate_choice,
+                             "reasoningEffort": "off", "serviceTier": None, "contextWindow": None,
+                             "agentPreset": None, "computerUseEnabled": False, "providerCursor": None}
+            started = waku.rpc({"type": "start", "options": route_options}, route_session, route_runtime)
+            require(started["type"] == "started", "Waku did not start the alternate model runtime")
+            waku.event(route_runtime, "connected")
+            waku.rpc({"type": "prompt", "prompt": "Reply from the alternate local model.",
+                      "turnId": str(uuid.uuid4()), "messageId": str(uuid.uuid4())},
+                     route_session, route_runtime)
+            finished = waku.event(route_runtime, "turnFinished")
+            require(finished.get("success") is True, f"Alternate model turn failed: {finished}")
+            require(any(request.get("model") == "smoke-alt" for request in alt_fake.requests_since(0)),
+                    "Selected alternate model did not reach its configured endpoint and credential")
+            waku.rpc({"type": "closeSession"}, route_session, route_runtime)
+            log("Waku selected an alternate configured model route", models=sorted(models))
         if args.client_mcp:
             effect = workspace / "client-mcp-effect.txt"
             secret = secrets.token_hex(24)
@@ -986,6 +1033,9 @@ def main():
         if fake:
             fake.shutdown()
             fake.server_close()
+        if alt_fake:
+            alt_fake.shutdown()
+            alt_fake.server_close()
         if report["cleanup_errors"]:
             report["ok"] = False
         (logs / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

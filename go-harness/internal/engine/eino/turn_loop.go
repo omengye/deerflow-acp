@@ -43,6 +43,7 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 	}
 	data, err := json.Marshal(struct {
 		Provider, BaseURL, Model, Instruction string
+		ModelRoutes                           map[string]harness.ModelRoute
 		MaxIterations                         int
 		Budget                                harness.BudgetLimits
 		DisableSubagent                       bool
@@ -52,7 +53,7 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 		Compaction                            harness.CompactionConfig
 		ToolPolicy                            *harness.ToolPolicy `json:",omitempty"`
 		PermissionMode                        harness.PermissionMode
-	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode})
+	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.ModelRoutes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode})
 	if err != nil {
 		return "", fmt.Errorf("encode execution contract: %w", err)
 	}

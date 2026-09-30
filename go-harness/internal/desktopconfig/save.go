@@ -196,7 +196,7 @@ func validatedModels(incoming, existing []any) ([]any, map[string]bool, error) {
 		if id == "" {
 			return nil, nil, fmt.Errorf("模型 %s 缺少模型 ID", name)
 		}
-		if use != "langchain_openai:ChatOpenAI" && use != "langchain_anthropic:ChatAnthropic" {
+		if use != "langchain_openai:ChatOpenAI" && use != "deerflow.models.patched_openai:PatchedChatOpenAI" && use != "langchain_anthropic:ChatAnthropic" {
 			return nil, nil, fmt.Errorf("模型 %s 的提供商不受 Go ACP 支持", name)
 		}
 		advanced, ok := model["advanced"].(map[string]any)
