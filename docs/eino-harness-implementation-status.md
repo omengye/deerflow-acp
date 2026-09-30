@@ -5,7 +5,7 @@
 ## 基线
 
 - 分支 `codex/eino-harness-acp-refactor`；Python/Bridge 参照 `92b56924989a91e0eae05be6e95a6304f1ee4cd4`。
-- 代码位于独立 `go-harness/` 模块，未切换现有 Python 或桌面默认入口。
+- 代码位于独立 `go-harness/` 模块；桌面新安装默认使用 Go ACP daemon，已有 Python 会话继续使用 Python 后端。
 - 工具链 `go1.26.8`；因 SQLite `modernc.org/sqlite v1.60.0` 要求 Go 1.26，模块最低版本相应提高。
 - Eino `v0.10.0-alpha.35`；openai `v0.1.13`、claude `v0.1.25`、ark `v0.1.71`；ACP 类型 `coder/acp-go-sdk v0.13.5`。
 - MCP 使用 `officialmcp v0.1.1` + 官方 MCP Go SDK `v1.6.1`，已接入执行入口并通过真实 stdio/HTTP/SSE fixture。
@@ -28,7 +28,7 @@
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层（含工具允许/拒绝列表、默认超时和宿主 prompt overlay）、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
 | 可选外部 ACP Agent | 显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次模型调用计入父预算，远端提供的终态 usage 可用于结算；未决 prompt 先落盘，超时后阻止重复派发，SDK/ACP 扩展可按终态/已复核回执确认解除 | 原 prompt 的通用断线原位恢复、远端真实模型用量硬约束、产物导入与真实编辑器中的对账互操作 |
-| 打包 / 默认切换 | 独立 Go ACP 便携包脚本与包内说明已写入；Windows Debug/Release 与 WSL Ubuntu Linux Debug 包实测 Bridge 自动启动 Go daemon；桌面新安装的 Go 默认入口与旧 Python 数据回退已接线，Go/Python endpoint 和数据目录分开 | 桌面新包完整构建与 UI 实测、真实编辑器、原生 Linux/远端 CI |
+| 打包 / 默认切换 | 独立 Go ACP 便携包脚本与包内说明已写入；Windows Debug/Release 与 WSL Ubuntu Linux Debug 包实测 Bridge 自动启动 Go daemon；桌面新安装的 Go 默认入口与旧 Python 数据回退已接线，Go/Python endpoint 和数据目录分开；完整 Windows Debug 桌面包的 Go/Python 双后端自动化 smoke 已通过 | 手工 UI 与真实模型实测、原生 Linux/远端 CI |
 
 ## 已确认的实施差异
 
@@ -408,4 +408,10 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 
 - 桌面包装脚本编译并放入 `deerflow-acpd.exe`，对应源代码加入源码包。桌面启动器在新安装且同目录有 Go daemon 时传 `--daemon`；检测到现有 Python ACP 会话数据库时沿用 `--python`，已有 Go 数据库优先继续使用 Go。`DEER_FLOW_DESKTOP_ACP_BACKEND=go|python` 可显式覆盖。Go 使用 `user-data/data/go-harness` 和 `user-data/runtime/acp-go`，Python 沿用原有目录，避免切换时误连旧进程或覆盖 checkpoint。桌面状态暴露 `acp_backend`。
 - 现有桌面 smoke 脚本显式固定 Python 后端，继续覆盖老产品路径。使用桌面默认 YAML 与编译后的 Go daemon、Rust Bridge 完成真实进程启动、`daemon.status` 管理响应及停止，配置修订返回正确。PowerShell 构建脚本语法和 smoke 脚本 Python 编译通过。
-- 桌面 Rust 核心包 `cargo test --locked -p waku-core deerflow_config::tests --lib` 首次编译及改动后复测均为 6/6 通过，真实 Bridge/Go daemon 的 `TestExistingRustBridge` 通过。完整桌面新包构建、真实 UI 与编辑器交互尚未验收。现有 Python 会话不自动迁移，Go 后端启动后只能读取独立 Go 会话。
+- 桌面 Rust 核心包 `cargo test --locked -p waku-core deerflow_config::tests --lib` 首次编译及改动后复测均为 6/6 通过，真实 Bridge/Go daemon 的 `TestExistingRustBridge` 通过。完整 Windows Debug 桌面包已构建，Go 后端自动化 smoke 结果见下一阶段；手工 UI 与真实模型交互仍待验收。现有 Python 会话不自动迁移，Go 后端启动后只能读取独立 Go 会话。
+
+## 第四十一阶段桌面 Go ACP 与 Waku 互操作
+
+- Waku 的 DeerFlow ACP 驱动兼容 Python 的 `tool_approval` 与 Go 的 `approval` 配置 ID，切换审批模式时使用服务端实际声明的 ID；接受 Go 声明的 `read_only` 并在桌面明确显示只读状态。当服务端提供配置项却未声明 `thinking_enabled` 时，不再向其发送该设置。对应 Rust 驱动单测覆盖 Go 配置 ID 和 thinking 能力检测。
+- 桌面 smoke 适配两端的实际语义：Go `session/close` 保留历史并继续出现在 `session/list`，Go 对已附着会话删除返回英文错误；Go 工具参数、审批选项 ID 和重复相同工具调用的授权缓存用例也按其协议路径检查。这些断言只调整测试预期，不改变 Go 服务端语义。
+- 最终 Windows Debug 桌面包 `dist/desktop/DeerFlow-Desktop-20260930-120003-054` 的 `--backend go` 与 `--backend python` 自动化 smoke 均通过，报告分别为 `ok: true`、`error: null`、`cleanup_errors: []`。真实打包进程覆盖配置保存与应用、daemon 启停、ACP initialize/new/list/load/close、Waku 聊天流、本地模型 fixture 的真实 `write_file`、单次/持久审批及 Ask 清除缓存、会话恢复和历史删除。Go 报告位于 `.build-cache/desktop-smoke/20260930-120404-7dd3e074/logs`，Python 报告位于 `.build-cache/desktop-smoke/20260930-120505-e92b22ba/logs`。结果使用本地模型 fixture 与 WebSocket 客户端；手工 UI、真实付费模型和远端 CI 尚未在本阶段完成。

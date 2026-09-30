@@ -262,12 +262,13 @@ class ACP:
 
 class FakeOpenAI(http.server.ThreadingHTTPServer):
     daemon_threads = True
-    def __init__(self, log, request_log):
+    def __init__(self, log, request_log, backend):
         self._requests = []
         self._tool_plans = {}
         self._requests_lock = threading.Lock()
         self.log = log
         self.request_log = request_log
+        self.backend = backend
         super().__init__(("127.0.0.1", 0), FakeHandler)
 
     def record_request(self, body):
@@ -290,11 +291,12 @@ class FakeOpenAI(http.server.ThreadingHTTPServer):
         require(Path(filename).name == filename and filename not in ("", ".", ".."),
                 "Synthetic writes must use a single workspace filename")
         marker = f"smoke-write-{uuid.uuid4().hex}"
+        arguments = {"path": filename, "content": content} if self.backend == "go" else {
+            "description": "Write the isolated desktop approval smoke fixture",
+            "path": f"/mnt/user-data/workspace/{filename}", "content": content,
+        }
         call = {"id": f"call_{uuid.uuid4().hex}", "type": "function", "function": {
-            "name": "write_file", "arguments": json.dumps({
-                "description": "Write the isolated desktop approval smoke fixture",
-                "path": f"/mnt/user-data/workspace/{filename}", "content": content,
-            })}}
+            "name": "write_file", "arguments": json.dumps(arguments)}}
         with self._requests_lock:
             self._tool_plans[marker] = call
         return marker
@@ -517,7 +519,7 @@ def main():
         require(waku.deerflow("snapshot")["config_revision"] == saved["config_revision"], "Invalid save changed the config")
         log("Invalid save-and-apply preserves config and stopped runtime")
         if not args.no_chat:
-            fake = FakeOpenAI(log, logs / "model-requests.jsonl")
+            fake = FakeOpenAI(log, logs / "model-requests.jsonl", args.backend)
             threading.Thread(target=fake.serve_forever, daemon=True).start()
             document = copy.deepcopy(saved)
             document["models"] = [{"original_name": "", "name": "smoke-local", "display_name": "Local smoke model",
@@ -552,12 +554,18 @@ def main():
         probe = acp.rpc("session/new", {"cwd": str(workspace), "mcpServers": []})["sessionId"]
         acp.rpc("session/close", {"sessionId": probe})
         listed = acp.rpc("session/list", {})["sessions"]
-        require(original in {item["sessionId"] for item in listed} and probe not in {item["sessionId"] for item in listed}, "Closing a probe corrupted the session catalog")
+        listed_ids = {item["sessionId"] for item in listed}
+        require(original in listed_ids, "Closing a probe corrupted the session catalog")
+        if args.backend == "go":
+            require(probe in listed_ids, "Go ACP close lost retained history")
+        else:
+            require(probe not in listed_ids, "Python ACP close left the probe in the active catalog")
         acp.rpc("session/load", {"sessionId": original, "cwd": str(workspace), "mcpServers": []})
         try:
             waku.deerflow("manage", {"operation": "session.delete", "session_id": original})
         except AssertionError as exc:
-            require("客户端" in str(exc), "Unexpected attached-session deletion error")
+            expected = "session is attached" if args.backend == "go" else "客户端"
+            require(expected in str(exc), "Unexpected attached-session deletion error")
         else:
             raise AssertionError("Management deleted an attached session")
         log("ACP initialize/new/list/load/close", original_session=original)
@@ -630,10 +638,16 @@ def main():
                     f"Backend did not acknowledge the requested approval mode: {response}")
             log("Approval change acknowledged", mode=mode)
 
-        def write_turn(runtime_id, name, decision=None, prior_history=False):
+        def write_turn(runtime_id, name, decision=None, prior_history=False, content=None, cached_reject=False):
             path = workspace / name
-            require(below(path, workspace) and not path.exists(), "Approval fixture must be new and isolated")
-            content = f"Isolated approval fixture {uuid.uuid4()}\n"
+            require(below(path, workspace), "Approval fixture escaped the workspace")
+            existed = path.exists()
+            if content is None:
+                require(not existed, "Approval fixture must be new and isolated")
+                content = f"Isolated approval fixture {uuid.uuid4()}\n"
+            else:
+                require(args.backend == "go" and (not existed or path.read_text(encoding="utf-8") == content),
+                        "Repeated Go approval fixture changed before the request")
             marker = fake.plan_write(name, content)
             request_start = fake.requests_seen
             permission_count = 0
@@ -643,7 +657,7 @@ def main():
                 require(decision is not None, "Full Access/cached approval unexpectedly requested permission")
                 require(permission_count == 1, "A single synthetic write requested permission repeatedly")
                 option = next((option for option in permission.get("options", [])
-                               if option["id"].endswith(":" + decision)), None)
+                               if option["id"] == decision or option["id"].endswith(":" + decision)), None)
                 require(option is not None, f"Missing permission choice {decision}: {permission}")
                 response = waku.rpc({"type": "respond", "requestId": permission["requestId"],
                                      "optionId": option["id"]}, approval_session, runtime_id)
@@ -668,14 +682,16 @@ def main():
                 require(any(message.get("role") == "assistant" and REPLY in message_text(message)
                             for message in turn_messages[:user_index]),
                         "Approval mode reconnect lost the previous assistant history")
-            denied = decision in ("reject_once", "reject_always")
+            denied = cached_reject or decision in ("reject_once", "reject_always")
             if denied:
-                require(not path.exists(), f"Rejected write changed the workspace: {path}")
+                require(path.exists() == existed and (not existed or path.read_text(encoding="utf-8") == content),
+                        f"Rejected write changed the workspace: {path}")
             else:
                 require(path.is_file() and path.read_text(encoding="utf-8") == content,
                         f"Allowed write did not produce the exact isolated fixture: {path}")
-            log("Tool approval enforced on real write_file", filename=name, decision=decision or "automatic",
+            log("Tool approval enforced on real write_file", filename=name, decision=decision or ("cached_reject" if cached_reject else "automatic"),
                 permission_count=permission_count, wrote=not denied, restored_history=prior_history)
+            return content
 
         if fake:
             old_runtime, cursor = start_chat()
@@ -684,13 +700,24 @@ def main():
             set_approval(approval_runtime, "ask")
             write_turn(approval_runtime, "ask-rejected.txt", "reject_once")
             write_turn(approval_runtime, "ask-allowed-once.txt", "allow_once")
-            write_turn(approval_runtime, "ask-allowed-always.txt", "allow_always")
-            write_turn(approval_runtime, "cached-allow.txt")
+            allowed_content = write_turn(approval_runtime, "ask-allowed-always.txt", "allow_always")
+            if args.backend == "go":
+                write_turn(approval_runtime, "ask-allowed-always.txt", content=allowed_content)
+            else:
+                write_turn(approval_runtime, "cached-allow.txt")
             set_approval(approval_runtime, "ask")
-            write_turn(approval_runtime, "ask-cleared-allow-cache.txt", "reject_once")
-            write_turn(approval_runtime, "ask-rejected-always.txt", "reject_always")
+            if args.backend == "go":
+                write_turn(approval_runtime, "ask-allowed-always.txt", "reject_once", content=allowed_content)
+            else:
+                write_turn(approval_runtime, "ask-cleared-allow-cache.txt", "reject_once")
+            rejected_content = write_turn(approval_runtime, "ask-rejected-always.txt", "reject_always")
+            if args.backend == "go":
+                write_turn(approval_runtime, "ask-rejected-always.txt", content=rejected_content, cached_reject=True)
             set_approval(approval_runtime, "ask")
-            write_turn(approval_runtime, "ask-cleared-reject-cache.txt", "allow_once")
+            if args.backend == "go":
+                write_turn(approval_runtime, "ask-rejected-always.txt", "allow_once", content=rejected_content)
+            else:
+                write_turn(approval_runtime, "ask-cleared-reject-cache.txt", "allow_once")
             log("Explicit Ask clears both allow-always and reject-always tool caches")
         changed = copy.deepcopy(saved)
         changed["models"][0]["display_name"] = "Applied smoke model"
@@ -801,8 +828,10 @@ def main():
                     if args.backend == "python":
                         stop_verified_python(root / "user-data/runtime/acp/endpoint.json", root / "runtime/python.exe",
                                              root / "user-data/config/config.yaml", log)
-                    else:
+                    elif (runtime / "endpoint.json").is_file():
                         report["cleanup_errors"].append(f"Go daemon stop returned {result.returncode}")
+                    else:
+                        log("Go daemon already stopped during Waku shutdown")
             except Exception as exc:
                 report["cleanup_errors"].append(f"ACP daemon: {exc}")
         if fake:

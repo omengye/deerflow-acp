@@ -609,6 +609,9 @@ async fn run_sdk_connection(
                 &suppress_session_updates,
             )
             .await?;
+            let approval_config_id = deerflow_approval_option(config_options.as_deref())
+                .map(|option| option.id.to_string())
+                .unwrap_or_else(|| "tool_approval".to_owned());
 
             let approval = if provider == ProviderKind::DeerFlow {
                 Some(initialize_deerflow_approval(
@@ -805,7 +808,7 @@ async fn run_sdk_connection(
                             continue;
                         }
                         if let Err(error) = request_deerflow_approval(
-                            &connection, &session_id, mode, &access, &events, reply.clone(),
+                            &connection, &session_id, &approval_config_id, mode, &access, &events, reply.clone(),
                         ) {
                             let _ = reply.send(Err(error.to_string()));
                         }
@@ -852,18 +855,25 @@ fn approval_error(message: impl Into<String>) -> agent_client_protocol::Error {
     )
 }
 
+fn deerflow_approval_option(
+    options: Option<&[SessionConfigOption]>,
+) -> Option<&SessionConfigOption> {
+    options
+        .unwrap_or_default()
+        .iter()
+        .find(|option| matches!(option.id.to_string().as_str(), "tool_approval" | "approval"))
+}
+
 fn deerflow_approval(
     options: Option<&[SessionConfigOption]>,
 ) -> agent_client_protocol::Result<String> {
-    let Some(option) = options
-        .unwrap_or_default()
-        .iter()
-        .find(|option| option.id.to_string() == "tool_approval")
-    else {
+    let Some(option) = deerflow_approval_option(options) else {
         return Ok("off".into());
     };
     match session_config_current_value(option) {
-        Some(mode @ ("ask" | "allow_always" | "reject_always")) => Ok(mode.to_owned()),
+        Some(mode @ ("ask" | "allow_always" | "reject_always" | "read_only")) => {
+            Ok(mode.to_owned())
+        }
         _ => Err(approval_error(
             "DeerFlow returned an invalid tool approval policy",
         )),
@@ -908,12 +918,16 @@ async fn initialize_deerflow_approval(
             ))
         };
     }
+    let config_id = deerflow_approval_option(options)
+        .expect("a configured approval policy has an option")
+        .id
+        .to_string();
     smol::future::or(
         async {
             let response = connection
                 .send_request(SetSessionConfigOptionRequest::new(
                     session_id.clone(),
-                    "tool_approval",
+                    config_id.clone(),
                     desired,
                 ))
                 .block_task()
@@ -936,6 +950,7 @@ async fn initialize_deerflow_approval(
 fn request_deerflow_approval(
     connection: &ConnectionTo<Agent>,
     session_id: &SessionId,
+    config_id: &str,
     desired: String,
     access: &Arc<Mutex<AcpAccessState>>,
     events: &DriverEventSender,
@@ -964,7 +979,7 @@ fn request_deerflow_approval(
     let sent = connection
         .send_request(SetSessionConfigOptionRequest::new(
             session_id.clone(),
-            "tool_approval",
+            config_id.to_owned(),
             desired.as_str(),
         ))
         .on_receiving_result(async move |result| {
@@ -1591,9 +1606,13 @@ async fn apply_deerflow_model(
             .await?;
         options = response.config_options;
     }
-    // Thinking can be changed while using the server's default model. It is
-    // an on/off switch, never a low/medium/high reasoning-effort ladder.
-    if let Some(thinking) = thinking.filter(|value| !value.is_empty()) {
+    // An agent with no advertised options may be an older DeerFlow server.
+    // When options are present, only send the switch if the agent exposes it.
+    let supports_thinking = options.is_empty()
+        || options
+            .iter()
+            .any(|option| option.id.to_string() == "thinking_enabled");
+    if let Some(thinking) = thinking.filter(|value| !value.is_empty() && supports_thinking) {
         let value = deerflow_thinking_value(&options, thinking)?;
         let response = connection
             .send_request(SetSessionConfigOptionRequest::new(
@@ -2743,9 +2762,10 @@ impl DriverControl for AcpDriver {
     }
 
     fn apply_options(&self, options: SessionOptions) -> bool {
-        // DeerFlow owns its policy through tool_approval. A stale client mode
-        // accompanying a model change must never overwrite it or force a
-        // restart that pretends the stale mode is authoritative.
+        // DeerFlow owns its policy through its advertised approval option.
+        // A stale client mode accompanying a model change must never
+        // overwrite it or force a restart that pretends the stale mode is
+        // authoritative.
         if self.provider != ProviderKind::DeerFlow
             && options.mode != self.access.lock().runtime_mode
         {
@@ -2920,17 +2940,22 @@ mod tests {
         assert_eq!(calls[0]["value"], "off");
     }
 
-    fn approval_options(mode: &str) -> Vec<SessionConfigOption> {
+    fn approval_options_with_id(config_id: &str, mode: &str) -> Vec<SessionConfigOption> {
         serde_json::from_value(json!([{
-            "id":"tool_approval", "name":"Tool approvals", "type":"select",
+            "id":config_id, "name":"Tool approvals", "type":"select",
             "currentValue":mode,
             "options":[
                 {"value":"ask", "name":"Ask"},
                 {"value":"allow_always", "name":"Allow"},
-                {"value":"reject_always", "name":"Reject"}
+                {"value":"reject_always", "name":"Reject"},
+                {"value":"read_only", "name":"Read only"}
             ]
         }]))
         .unwrap()
+    }
+
+    fn approval_options(mode: &str) -> Vec<SessionConfigOption> {
+        approval_options_with_id("tool_approval", mode)
     }
 
     #[test]
@@ -3101,6 +3126,56 @@ mod tests {
     }
 
     #[test]
+    fn deerflow_go_approval_uses_advertised_config_id() {
+        use agent_client_protocol::schema::v1::SetSessionConfigOptionResponse;
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let captured = calls.clone();
+        let agent = Agent.builder().on_receive_request(
+            async move |request: SetSessionConfigOptionRequest,
+                        responder: Responder<SetSessionConfigOptionResponse>,
+                        _connection| {
+                let value = serde_json::to_value(request)?;
+                captured.lock().push(value.clone());
+                responder.respond(SetSessionConfigOptionResponse::new(
+                    approval_options_with_id("approval", value["value"].as_str().unwrap()),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        smol::block_on(
+            Client
+                .builder()
+                .connect_with(agent, async move |connection| {
+                    let session = SessionId::new("go-session");
+                    assert_eq!(
+                        initialize_deerflow_approval(
+                            &connection,
+                            &session,
+                            Some(&approval_options_with_id("approval", "ask")),
+                            false,
+                            RuntimeMode::FullAccess,
+                        )
+                        .await?,
+                        "allow_always"
+                    );
+                    assert_eq!(
+                        deerflow_approval(Some(&approval_options_with_id(
+                            "approval",
+                            "read_only"
+                        )))?,
+                        "read_only"
+                    );
+                    Ok(())
+                }),
+        )
+        .unwrap();
+        let calls = calls.lock();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["configId"], "approval");
+        assert_eq!(calls[0]["value"], "allow_always");
+    }
+
+    #[test]
     fn deerflow_startup_requires_a_matching_backend_confirmation() {
         use agent_client_protocol::schema::v1::SetSessionConfigOptionResponse;
         for returned in ["ask", "unknown-policy", "__reject"] {
@@ -3146,7 +3221,9 @@ mod tests {
                         responder: Responder<SetSessionConfigOptionResponse>,
                         _connection| {
                 smol::Timer::after(Duration::from_millis(20)).await;
-                responder.respond(SetSessionConfigOptionResponse::new(approval_options("ask")))
+                responder.respond(SetSessionConfigOptionResponse::new(
+                    approval_options_with_id("approval", "ask"),
+                ))
             },
             agent_client_protocol::on_receive_request!(),
         );
@@ -3161,6 +3238,7 @@ mod tests {
                     request_deerflow_approval(
                         &connection,
                         &SessionId::new("s"),
+                        "approval",
                         "ask".into(),
                         &access,
                         &events,
@@ -3210,6 +3288,7 @@ mod tests {
                     request_deerflow_approval(
                         &connection,
                         &SessionId::new("s"),
+                        "tool_approval",
                         "ask".into(),
                         &access,
                         &events,
@@ -3263,6 +3342,40 @@ mod tests {
                 .to_string()
                 .contains("Unknown configured model")
         );
+        assert_eq!(*calls.lock(), ["model"]);
+    }
+
+    #[test]
+    fn deerflow_skips_thinking_when_agent_does_not_advertise_it() {
+        use agent_client_protocol::schema::v1::SetSessionConfigOptionResponse;
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let captured = calls.clone();
+        let agent = Agent.builder().on_receive_request(
+            async move |request: SetSessionConfigOptionRequest,
+                        responder: Responder<SetSessionConfigOptionResponse>,
+                        _connection| {
+                captured.lock().push(request.config_id.to_string());
+                responder.respond(SetSessionConfigOptionResponse::new(
+                    approval_options_with_id("approval", "ask"),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        smol::block_on(
+            Client
+                .builder()
+                .connect_with(agent, async move |connection| {
+                    apply_deerflow_model(
+                        &connection,
+                        &SessionId::new("s"),
+                        Some(&approval_options_with_id("approval", "ask")),
+                        Some("smoke-local"),
+                        Some("off"),
+                    )
+                    .await
+                }),
+        )
+        .unwrap();
         assert_eq!(*calls.lock(), ["model"]);
     }
 

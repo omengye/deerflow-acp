@@ -20,7 +20,7 @@ fn approval_value(mode: RuntimeMode) -> Option<&'static str> {
 fn approval_runtime_mode(value: &str) -> Option<RuntimeMode> {
     match value {
         "allow_always" | "off" => Some(RuntimeMode::FullAccess),
-        "ask" | "reject_always" => Some(RuntimeMode::Ask),
+        "ask" | "reject_always" | "read_only" => Some(RuntimeMode::Ask),
         _ => None,
     }
 }
@@ -174,12 +174,14 @@ impl Waku {
             || self.goal_runtime_starts.contains(&session_id);
         let disabled = confirmed == Some("off");
         let rejecting = confirmed == Some("reject_always");
+        let read_only = confirmed == Some("read_only");
         let label = if pending {
             "切换权限中…".to_owned()
         } else {
             let label = match confirmed {
                 Some("off") => "Full Access · 服务关闭审批",
                 Some("reject_always") => "拒绝受控操作",
+                Some("read_only") => "只读 · 仅允许本地查看",
                 Some("ask") => "Ask · 操作前确认",
                 Some("allow_always") => "Full Access",
                 _ if session.runtime_mode == RuntimeMode::Ask => "Ask · 操作前确认",
@@ -219,7 +221,7 @@ impl Waku {
                         MenuItem::new(label, move |_, cx| {
                             let _ = weak.update(cx, |this, cx| this.set_runtime_mode(mode, cx));
                         })
-                        .selected(!disabled && !rejecting && selected_mode == mode)
+                        .selected(!disabled && !rejecting && !read_only && selected_mode == mode)
                         .disabled(busy || pending || disabled),
                     );
                 }
