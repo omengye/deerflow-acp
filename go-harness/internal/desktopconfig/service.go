@@ -483,8 +483,15 @@ func bridgePolicy(data map[string]any) (map[string]any, error) {
 	if !enabled {
 		return map[string]any{"enabled": false, "allowed_commands": []string{}}, nil
 	}
-	items, ok := local["client_mcp_allowed_commands"].([]any)
-	if !ok || len(items) < 1 || len(items) > 32 {
+	raw := local["client_mcp_allowed_commands"]
+	items, ok := raw.([]any)
+	if raw == nil || (ok && len(items) == 0) {
+		// An enabled switch alone cannot authorize a client-provided executable.
+		// Existing configs may keep the switch on without having set an allowlist;
+		// treat that as an effectively disabled optional MCP feature.
+		return map[string]any{"enabled": false, "allowed_commands": []string{}}, nil
+	}
+	if !ok || len(items) > 32 {
 		return nil, errors.New("local_acp.client_mcp_allowed_commands must contain 1..32 absolute executables")
 	}
 	commands := make([]string, 0, len(items))

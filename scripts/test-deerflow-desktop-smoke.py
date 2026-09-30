@@ -19,6 +19,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import secrets
 import shutil
 import socket
@@ -478,10 +479,14 @@ def main():
     parser.add_argument("--no-chat", action="store_true", help="Skip the optional local fake-model conversation checks")
     parser.add_argument("--backend", choices=("python", "go"), default="python", help="ACP daemon selected by Desktop")
     parser.add_argument("--client-mcp", action="store_true", help="Exercise host-authorized ACP client stdio MCP on Go")
+    parser.add_argument("--legacy-empty-mcp-policy", action="store_true",
+                        help="Exercise an existing Go config with client MCP enabled but no command allowlist")
     args = parser.parse_args()
     require(os.name == "nt", "This smoke test targets the Windows portable package")
     require(not args.client_mcp or (args.backend == "go" and not args.no_chat),
             "Client MCP smoke needs Go and the local fake model")
+    require(not args.legacy_empty_mcp_policy or (args.backend == "go" and not args.client_mcp),
+            "Legacy empty MCP policy smoke needs Go without the client MCP fixture")
     package = args.package.resolve(strict=True)
     repo = Path(__file__).resolve().parents[1]
     cache = repo / ".build-cache" / "desktop-smoke"
@@ -543,6 +548,18 @@ def main():
         require(ready["pid"] == process.process.pid, "Readiness PID mismatch")
         waku = Waku(ready["address"], token, ready["protocolVersion"], log)
         snapshot = waku.deerflow("snapshot")
+        if args.legacy_empty_mcp_policy:
+            config_file = Path(snapshot["paths"]["config"])
+            raw = config_file.read_text(encoding="utf-8")
+            require("  accept_client_mcp_servers: false" in raw and
+                    "  client_mcp_allowed_commands: []" in raw,
+                    "Package default config has no disabled client MCP policy")
+            raw = raw.replace("  accept_client_mcp_servers: false",
+                              "  accept_client_mcp_servers: true", 1)
+            raw = re.sub(r"(?m)^[ \t]*client_mcp_allowed_commands: \[\][ \t]*\n?", "", raw, count=1)
+            config_file.write_text(raw, encoding="utf-8")
+            snapshot = waku.deerflow("snapshot")
+            log("Legacy enabled client MCP with empty allowlist loaded")
         if args.client_mcp:
             config_file = Path(snapshot["paths"]["config"])
             raw = config_file.read_text(encoding="utf-8")

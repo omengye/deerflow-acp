@@ -279,6 +279,21 @@ func TestBridgePolicyRequiresExistingAbsoluteCommand(t *testing.T) {
 	}
 	local := object(raw, "local_acp")
 	local["accept_client_mcp_servers"] = true
+	if err := writeYAMLAtomic(options.Config, raw); err != nil {
+		t.Fatal(err)
+	}
+	policy = run(t, options, "bridge-policy", nil)
+	if policy["enabled"] != false || len(policy["allowed_commands"].([]string)) != 0 {
+		t.Fatalf("missing allowlist should disable optional MCP: %v", policy)
+	}
+	local["client_mcp_allowed_commands"] = []any{}
+	if err := writeYAMLAtomic(options.Config, raw); err != nil {
+		t.Fatal(err)
+	}
+	policy = run(t, options, "bridge-policy", nil)
+	if policy["enabled"] != false || len(policy["allowed_commands"].([]string)) != 0 {
+		t.Fatalf("empty allowlist should disable optional MCP: %v", policy)
+	}
 	local["client_mcp_allowed_commands"] = []any{command}
 	if err := writeYAMLAtomic(options.Config, raw); err != nil {
 		t.Fatal(err)
@@ -293,6 +308,55 @@ func TestBridgePolicyRequiresExistingAbsoluteCommand(t *testing.T) {
 	}
 	if _, err := Run(options, "bridge-policy", nil); err == nil {
 		t.Fatal("relative MCP command accepted")
+	}
+	local["client_mcp_allowed_commands"] = "not-an-array"
+	if err := writeYAMLAtomic(options.Config, raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(options, "bridge-policy", nil); err == nil {
+		t.Fatal("malformed MCP allowlist accepted")
+	}
+}
+
+func TestSaveWithUnconfiguredClientMCPStillApplies(t *testing.T) {
+	for _, allowlist := range []struct {
+		name  string
+		value any
+	}{
+		{name: "missing"},
+		{name: "empty", value: []any{}},
+	} {
+		t.Run(allowlist.name, func(t *testing.T) {
+			options := setup(t)
+			run(t, options, "init", nil)
+			raw, err := readYAML(options.Config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			local := object(raw, "local_acp")
+			local["accept_client_mcp_servers"] = true
+			if allowlist.value != nil {
+				local["client_mcp_allowed_commands"] = allowlist.value
+			}
+			if err := writeYAMLAtomic(options.Config, raw); err != nil {
+				t.Fatal(err)
+			}
+			doc := run(t, options, "snapshot", nil)
+			if run(t, options, "validate", doc)["valid"] != true {
+				t.Fatal("validation failed")
+			}
+			saved := run(t, options, "save", doc)
+			if saved["backup"] == "" {
+				t.Fatal("save omitted backup")
+			}
+			policy := run(t, options, "bridge-policy", nil)
+			if policy["enabled"] != false || len(policy["allowed_commands"].([]string)) != 0 {
+				t.Fatalf("unconfigured client MCP gained authority: %v", policy)
+			}
+			if run(t, options, "validate", saved)["valid"] != true {
+				t.Fatal("saved document did not round-trip")
+			}
+		})
 	}
 }
 

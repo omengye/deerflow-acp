@@ -5,6 +5,9 @@ edition = "2024"
 description = "DeerFlow Desktop portable conversation workbench"
 license = "GPL-3.0-only"
 
+[features]
+dev-console = []
+
 [workspace]
 members = ["crates/waku-client", "crates/waku-core", "crates/waku-daemon", "crates/waku-protocol", "crates/waku-computer-use"]
 default-members = [

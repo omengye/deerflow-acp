@@ -40,6 +40,9 @@ existing Waku or ACP installation's preferences and history.
 The product/OS application identifiers are `DeerFlow Desktop` and
 `app.deerflow.desktop` (with separate Debug identities). Internal crate names
 are retained to keep the upstream source structure recognizable.
+Windows Debug and Release desktop builds use the GUI subsystem, so launching
+the desktop does not open a console window. Developers who need a console with
+`cargo run` can enable the `dev-console` Cargo feature.
 
 ## Build and distribution
 

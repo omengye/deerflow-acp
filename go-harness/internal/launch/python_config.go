@@ -270,9 +270,9 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	if p := source.LocalACP.CleanupIntervalSeconds; p != nil && (math.IsNaN(*p) || math.IsInf(*p, 0) || *p < 60 || *p > 86400) {
 		return result, fmt.Errorf("local_acp.session_cleanup_interval_seconds must be 60..86400")
 	}
-	if source.LocalACP.AcceptClientMCPServers && len(cfg.MCP.AllowedCommands) == 0 && !cfg.MCP.AllowHTTP && !cfg.MCP.AllowSSE {
-		return result, fmt.Errorf("local_acp.accept_client_mcp_servers requires explicit Go MCP allow flags")
-	}
+	// The CLI allow flags are the actual Go MCP authority. A retained Python
+	// configuration may set accept_client_mcp_servers without supplying any Go
+	// allow flags; the empty policy denies every client MCP transport safely.
 	selected := source.LocalACP.ModelName
 	if selected == "" {
 		selected = source.API.ModelName

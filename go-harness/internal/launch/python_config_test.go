@@ -79,18 +79,32 @@ models:
 	}
 }
 
-func TestApplyPythonConfigRejectsUnsupportedAuthority(t *testing.T) {
-	for _, extra := range []string{"  enable_bash: true\n", "  accept_client_mcp_servers: true\n"} {
-		path := filepath.Join(t.TempDir(), "config.yaml")
-		raw := "local_acp:\n" + extra + "models:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
-		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
-			t.Fatal(err)
-		}
-		var cfg deerflow.Config
-		connections := 0
-		if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err == nil || !strings.Contains(err.Error(), "requires") {
-			t.Fatalf("unsupported authority accepted: %v", err)
-		}
+func TestApplyPythonConfigRejectsUnsupportedHostBash(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := "local_acp:\n  enable_bash: true\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var cfg deerflow.Config
+	connections := 0
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err == nil || !strings.Contains(err.Error(), "requires") {
+		t.Fatalf("unsupported authority accepted: %v", err)
+	}
+}
+
+func TestApplyPythonConfigClientMCPWithoutGoAllowFlagsIsDenied(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := "local_acp:\n  accept_client_mcp_servers: true\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var cfg deerflow.Config
+	connections := 0
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.MCP.AllowedCommands) != 0 || cfg.MCP.AllowHTTP || cfg.MCP.AllowSSE {
+		t.Fatal("configuration switch granted Go MCP access without host allow flags")
 	}
 }
 
