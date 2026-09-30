@@ -13,6 +13,7 @@ var (
 	ErrInvalidInput      = errors.New("invalid input")
 	ErrNotFound          = errors.New("not found")
 	ErrBusy              = errors.New("session is busy")
+	ErrQueueTimeout      = errors.New("run queue timeout")
 	ErrNotAttached       = errors.New("session is not attached to this connection")
 	ErrAttachedElsewhere = errors.New("session is attached to another connection")
 	ErrPermissionDenied  = errors.New("permission denied")

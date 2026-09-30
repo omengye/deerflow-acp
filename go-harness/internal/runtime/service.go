@@ -39,12 +39,24 @@ type Service struct {
 	Media          harness.MediaConfig
 	Memory         *memory.Store
 	MemoryUserID   string
+	runQueue       *runQueue
 	mu             sync.Mutex
 	decisions      map[string]harness.PermissionDecision
 }
 
 func NewService(store *Store, engine harness.Engine, model string) *Service {
-	return &Service{Store: store, Engine: engine, Model: model, Coordinator: session.NewCoordinator(), decisions: make(map[string]harness.PermissionDecision)}
+	s, _ := NewServiceWithRunQueue(store, engine, model, RunQueueConfig{MaxActiveRuns: 2})
+	return s
+}
+
+// NewServiceWithRunQueue configures the process-wide foreground execution
+// limit before sessions can be attached. Each service owns its own queue.
+func NewServiceWithRunQueue(store *Store, engine harness.Engine, model string, cfg RunQueueConfig) (*Service, error) {
+	queue, err := newRunQueue(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Service{Store: store, Engine: engine, Model: model, Coordinator: session.NewCoordinator(), decisions: make(map[string]harness.PermissionDecision), runQueue: queue}, nil
 }
 
 func (s *Service) NewSession(ctx context.Context, owner, cwd string, servers ...harness.MCPServer) (harness.Session, error) {
@@ -202,6 +214,11 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 	if err = s.Store.requireReconciled(ctx, id); err != nil {
 		return harness.RunResult{}, err
 	}
+	releaseSlot, err := s.runQueue.acquire(ctx)
+	if err != nil {
+		return harness.RunResult{}, err
+	}
+	defer releaseSlot()
 	req := harness.RunRequest{Session: x, RunID: NewID(), InputID: NewID(), Input: input}
 	if s.Store.BudgetLedger != nil {
 		req.RootBudgetID = req.RunID

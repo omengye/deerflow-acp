@@ -547,6 +547,11 @@ func (s *Service) ResumeExecution(ctx context.Context, owner, sessionID string, 
 		defer release()
 		ctx.Value(reservationKey{}).(*reservation).used.Store(true)
 	}
+	releaseSlot, err := s.runQueue.acquire(ctx)
+	if err != nil {
+		return harness.RunResult{}, err
+	}
+	defer releaseSlot()
 	lease, bindings, err := s.prepareExecutionResume(ctx, owner, sessionID, request, approve)
 	if err != nil {
 		return s.waitingExecutionResult(ctx, owner, sessionID, request.RunID, err)

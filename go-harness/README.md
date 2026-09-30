@@ -93,6 +93,13 @@ zero disables an individual limit. Token usage is estimated until reported by
 the provider, so these limits cannot guarantee exact billing. Provider-internal
 transport retries are not counted as separate logical calls.
 
+Both executables allow two concurrent foreground runs across sessions by default.
+`--max-active-runs` changes this limit; `--queue-timeout` defaults to 10 minutes
+and `0` disables the queue deadline. Waiting for a slot does not consume the
+run's execution timeout or persist a new input. A queue timeout returns an ACP
+server-busy error, and cancellation removes the waiting run. Background child
+attempts have a separate `--background-workers` limit.
+
 Set `--context-window <tokens>` for the default model when its context size is
 known. ACP then reports `usage_update` from the last main-agent model call's
 reported input and output tokens. The SDK accepts `Config.ContextWindow` and

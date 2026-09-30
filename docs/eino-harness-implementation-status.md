@@ -415,3 +415,12 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - Waku 的 DeerFlow ACP 驱动兼容 Python 的 `tool_approval` 与 Go 的 `approval` 配置 ID，切换审批模式时使用服务端实际声明的 ID；接受 Go 声明的 `read_only` 并在桌面明确显示只读状态。当服务端提供配置项却未声明 `thinking_enabled` 时，不再向其发送该设置。对应 Rust 驱动单测覆盖 Go 配置 ID 和 thinking 能力检测。
 - 桌面 smoke 适配两端的实际语义：Go `session/close` 保留历史并继续出现在 `session/list`，Go 对已附着会话删除返回英文错误；Go 工具参数、审批选项 ID 和重复相同工具调用的授权缓存用例也按其协议路径检查。这些断言只调整测试预期，不改变 Go 服务端语义。
 - 最终 Windows Debug 桌面包 `dist/desktop/DeerFlow-Desktop-20260930-120003-054` 的 `--backend go` 与 `--backend python` 自动化 smoke 均通过，报告分别为 `ok: true`、`error: null`、`cleanup_errors: []`。真实打包进程覆盖配置保存与应用、daemon 启停、ACP initialize/new/list/load/close、Waku 聊天流、本地模型 fixture 的真实 `write_file`、单次/持久审批及 Ask 清除缓存、会话恢复和历史删除。Go 报告位于 `.build-cache/desktop-smoke/20260930-120404-7dd3e074/logs`，Python 报告位于 `.build-cache/desktop-smoke/20260930-120505-e92b22ba/logs`。结果使用本地模型 fixture 与 WebSocket 客户端；手工 UI、真实付费模型和远端 CI 尚未在本阶段完成。
+
+## 第四十二阶段桌面重要 Harness 能力与执行队列
+
+- Go 服务新增跨会话前台执行槽，SDK 缺省 2 槽；CLI `--max-active-runs` 与 `--queue-timeout` 可配置。排队在新输入持久化之前，不消耗运行超时；超时映射 ACP `ServerBusy`，取消后不会在槽位释放时迟发。普通 prompt、显式恢复和后台通知续跑共用槽位；后台子任务仍受独立 worker 限流。真实 Go ACP stdio 三会话进程测试覆盖 2 槽、第三会话超时、取消及重试。
+- Python YAML 的 `local_acp.max_active_runs`/`queue_timeout_seconds`、Skills 路径与启停状态、`memory.enabled` 和受支持的摘要压缩阈值已接到 Go 启动配置，显式 Go 标志继续优先。关闭记忆时，模型不注入旧事实、不暴露 `search_memory`、不调用提取；管理 API 保留历史事实，重新启用后可用。默认桌面仍未启用摘要压缩，只有明确配置受支持阈值才启用。
+- Windows 桌面只有同时打开 `local_acp.enable_bash` 与 `sandbox.allow_host_bash` 且使用本地 provider 时，才映射到 Go PowerShell 命令后端；默认关闭。显式 Go provider 必须具备脚本能力与 `--sandbox-allow-shell`。对应配置组合、真实 PowerShell 执行及桌面设置文案已验证；宿主命令并非隔离沙箱，仍按会话权限模式和工具策略执行。
+- 扩展 Skills 扫描器兼容 Windows CRLF；Go 注册表受限接受内置图表 Skill 的字符串 `compatibility` 映射。真实内置配置启动测试确认 Skills 非空且已安装。包内共有 22 个 public 目录，其中 `vercel-deploy-claimable` 的目录名与声明名不一致，按 Go 注册表规则跳过；其余 21 个已安装并启用。
+- Windows Go 全模块 `go test -mod=readonly -count=1 -p=2 -timeout=5m ./...`、新记忆/配置定向 race、执行队列定向 race、`go mod verify`、Python smoke 脚本编译与 `git diff --check` 已通过。首轮启用 Skills 的桌面 smoke 揭露 CRLF 扫描缺口，修复后从已验证 Debug 桌面包复制独立测试包并替换新 Go daemon，`--backend go` 完整 smoke 报告为 `ok: true`、`error: null`、`cleanup_errors: []`，日志位于 `.build-cache/desktop-smoke/20260930-131035-5cea1773/logs`。模型请求中 22 次包含 `skill` 工具，另有 12 次非流式记忆提取请求。测试包沿用先前的 Waku/Bridge Debug 二进制；更新后的桌面文案尚未重新打包。
+- 本阶段仍使用本地假模型和 WebSocket 客户端；手工 UI、真实模型、Release 重打包及远端 CI 未验收。外部 ACP 的通用断线原位恢复、远端硬预算和产物导入等限制继续存在。

@@ -2,9 +2,20 @@
 
 The stdio executable `deerflow-acp-go` and loopback daemon
 `deerflow-acpd-go` use the same runtime flags. Command execution is disabled
-unless the operator selects `--sandbox-provider=local|powershell|wsl2|docker`.
+by default. An operator can select
+`--sandbox-provider=local|powershell|wsl2|docker`.
 Setting an allowlist, resource limit, or `--sandbox-allow-shell` by itself does
-not enable the `execute` tool. `--sandbox-provider=disabled` disables it again.
+not enable the `execute` tool. `--sandbox-provider=disabled` leaves it off.
+
+The Windows desktop `--config` adapter also accepts the two existing settings
+`local_acp.enable_bash: true` and `sandbox.allow_host_bash: true`, only when
+`sandbox.use` is `deerflow.sandbox.local:LocalSandboxProvider`. Together they
+select the Go PowerShell script backend. Either switch alone leaves commands
+disabled or reports the missing host consent. An explicit Go sandbox provider
+remains authoritative; if `enable_bash` is set, it must support scripts and
+also have `--sandbox-allow-shell` (an explicit disabled provider therefore
+rejects that configuration). On other platforms, use explicit Go flags
+for a command provider.
 
 SDK users configure the equivalent fields on `deerflow.Config.Sandbox` and set
 both `Enabled: true` and the chosen `Provider`. The configuration belongs to

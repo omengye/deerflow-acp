@@ -1405,8 +1405,8 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
             for (path, label, hint) in [
                 (
                     "/runtime/enable_bash",
-                    "启用 Bash",
-                    "允许智能体调用命令工具",
+                    "启用命令工具",
+                    "允许智能体调用命令工具；Go 后端在 Windows 使用 PowerShell",
                 ),
                 (
                     "/sandbox/allow_host_bash",

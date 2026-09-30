@@ -1,14 +1,18 @@
 package launch
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/sandbox"
 )
 
 func TestApplyPythonConfigModelAndPortableSettings(t *testing.T) {
@@ -87,6 +91,129 @@ func TestApplyPythonConfigRejectsUnsupportedAuthority(t *testing.T) {
 		if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err == nil || !strings.Contains(err.Error(), "requires") {
 			t.Fatalf("unsupported authority accepted: %v", err)
 		}
+	}
+}
+
+func TestApplyPythonConfigDesktopHostCommandGates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	config := func(enable, host bool, provider string) {
+		t.Helper()
+		raw := fmt.Sprintf(`local_acp:
+  enable_bash: %t
+sandbox:
+  use: %s
+  allow_host_bash: %t
+models:
+  - name: one
+    use: langchain_openai:ChatOpenAI
+    model: one
+`, enable, provider, host)
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const local = "deerflow.sandbox.local:LocalSandboxProvider"
+	apply := func(cfg *deerflow.Config, explicit map[string]bool) error {
+		t.Helper()
+		connections := 16
+		_, err := ApplyPythonConfig(path, cfg, &connections, explicit)
+		return err
+	}
+	config(false, false, local)
+	var cfg deerflow.Config
+	if err := apply(&cfg, nil); err != nil || cfg.Sandbox.Enabled {
+		t.Fatalf("default unexpectedly enabled host commands: %+v err=%v", cfg.Sandbox, err)
+	}
+	config(false, true, local)
+	cfg = deerflow.Config{}
+	if err := apply(&cfg, nil); err != nil || cfg.Sandbox.Enabled {
+		t.Fatalf("host consent alone enabled command tool: %+v err=%v", cfg.Sandbox, err)
+	}
+	config(true, false, local)
+	cfg = deerflow.Config{}
+	if err := apply(&cfg, nil); err == nil || !strings.Contains(err.Error(), "sandbox.allow_host_bash") {
+		t.Fatalf("ACP switch without host consent: %+v err=%v", cfg.Sandbox, err)
+	}
+	config(true, true, "third.party:Provider")
+	cfg = deerflow.Config{}
+	if err := apply(&cfg, nil); err == nil || !strings.Contains(err.Error(), "sandbox.use") {
+		t.Fatalf("unrecognized local provider enabled commands: %+v err=%v", cfg.Sandbox, err)
+	}
+	config(true, true, local)
+	cfg = deerflow.Config{}
+	err := apply(&cfg, nil)
+	if runtime.GOOS == "windows" {
+		if err != nil || !cfg.Sandbox.Enabled || cfg.Sandbox.Provider != harness.SandboxPowerShell || !cfg.Sandbox.AllowShell || !cfg.PermissionMode.RequiresPermission("execute") {
+			t.Fatalf("two-switch Go desktop command mapping: %+v err=%v", cfg.Sandbox, err)
+		}
+	} else if err == nil || !strings.Contains(err.Error(), "requires Windows") {
+		t.Fatalf("non-Windows implicit host shell accepted: %+v err=%v", cfg.Sandbox, err)
+	}
+	cfg = deerflow.Config{Sandbox: harness.SandboxConfig{Enabled: true, Provider: harness.SandboxPowerShell, AllowShell: true, Shell: "operator-shell"}}
+	if err := apply(&cfg, map[string]bool{"sandbox-provider": true}); err != nil || cfg.Sandbox.Provider != harness.SandboxPowerShell || !cfg.Sandbox.AllowShell || cfg.Sandbox.Shell != "operator-shell" {
+		t.Fatalf("Python config overrode explicit Go script provider: %+v err=%v", cfg.Sandbox, err)
+	}
+	cfg = deerflow.Config{Sandbox: harness.SandboxConfig{Enabled: true, Provider: harness.SandboxLocal, AllowedExecutables: []string{"/operator/git"}}}
+	if err := apply(&cfg, map[string]bool{"sandbox-provider": true}); err == nil || !strings.Contains(err.Error(), "script-capable") {
+		t.Fatalf("argv-only provider accepted Bash setting: %+v err=%v", cfg.Sandbox, err)
+	}
+	cfg = deerflow.Config{Sandbox: harness.SandboxConfig{Provider: harness.SandboxDisabled}}
+	if err := apply(&cfg, map[string]bool{"sandbox-provider": true}); err == nil || !strings.Contains(err.Error(), "script-capable") || cfg.Sandbox.Enabled {
+		t.Fatalf("explicit Go disabled provider accepted Bash setting: %+v err=%v", cfg.Sandbox, err)
+	}
+	cfg = deerflow.Config{Sandbox: harness.SandboxConfig{Enabled: true, Provider: harness.SandboxPowerShell}}
+	if err := apply(&cfg, map[string]bool{"sandbox-provider": true}); err == nil || !strings.Contains(err.Error(), "sandbox-allow-shell") {
+		t.Fatalf("explicit Go provider without shell consent accepted Bash: %+v err=%v", cfg.Sandbox, err)
+	}
+	if runtime.GOOS == "windows" {
+		cfg = deerflow.Config{}
+		if err := apply(&cfg, map[string]bool{"sandbox-allow-shell": true}); err == nil || !strings.Contains(err.Error(), "sandbox-allow-shell=false") {
+			t.Fatalf("Python config overrode explicit shell denial: %+v err=%v", cfg.Sandbox, err)
+		}
+	}
+}
+
+func TestApplyPythonConfigDesktopHostCommandRuns(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("desktop's implicit PowerShell mapping is Windows-only")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := `local_acp:
+  enable_bash: true
+sandbox:
+  use: deerflow.sandbox.local:LocalSandboxProvider
+  allow_host_bash: true
+models:
+  - name: one
+    use: langchain_openai:ChatOpenAI
+    model: one
+`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var cfg deerflow.Config
+	connections := 16
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := sandbox.New(context.Background(), cfg.Sandbox, t.TempDir())
+	if err != nil {
+		t.Fatalf("mapped desktop command backend: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	started, err := backend.Start(ctx, harness.CommandRequest{Script: `[Console]::Write('desktop-shell-ready')`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished, err := backend.Wait(ctx, started.ID)
+	if err != nil || finished.Stdout.Text != "desktop-shell-ready" || finished.ExitCode == nil || *finished.ExitCode != 0 || !finished.TerminationConfirmed {
+		t.Fatalf("mapped desktop command result: %+v err=%v", finished, err)
 	}
 }
 
@@ -288,6 +415,8 @@ func TestApplyPythonConfigRejectsInvalidPortableBounds(t *testing.T) {
 	for _, local := range []string{
 		"run_timeout_seconds: 0", "run_timeout_seconds: -1", "run_timeout_seconds: .nan",
 		"max_active_connections: 0", "max_active_connections: 129",
+		"max_active_runs: 0", "max_active_runs: 129",
+		"queue_timeout_seconds: 0", "queue_timeout_seconds: 86401", "queue_timeout_seconds: .nan",
 		"prompt_overlay_file: missing.md",
 	} {
 		path := filepath.Join(t.TempDir(), "config.yaml")
@@ -300,5 +429,151 @@ func TestApplyPythonConfigRejectsInvalidPortableBounds(t *testing.T) {
 		if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err == nil {
 			t.Fatalf("accepted invalid Python setting %q", local)
 		}
+	}
+}
+
+func TestApplyPythonConfigDesktopHarnessFeatures(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	public := filepath.Join(root, "skills", "public", "research")
+	custom := filepath.Join(root, "skills", "custom", "writer")
+	for _, dir := range []string{configDir, public, custom, filepath.Join(root, "skills", "public", "alias")} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, name := range map[string]string{
+		filepath.Join(public, "SKILL.md"):                            "research",
+		filepath.Join(custom, "SKILL.md"):                            "writer",
+		filepath.Join(root, "skills", "public", "alias", "SKILL.md"): "different-name",
+	} {
+		content := "---\nname: " + name + "\ndescription: A test skill\n---\n\nInstructions.\n"
+		if name == "research" {
+			content = strings.ReplaceAll(content, "\n", "\r\n")
+		}
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "extensions.json"), []byte(`{"skills":{"writer":{"enabled":false},"research":{"enabled":true}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(configDir, "config.yaml")
+	raw := `api:
+  extensions_config_path: extensions.json
+local_acp:
+  max_active_runs: 3
+  queue_timeout_seconds: 2.5
+skills:
+  enabled: true
+  path: ../skills
+memory:
+  enabled: true
+summarization:
+  enabled: true
+  trigger:
+    - {type: messages, value: 80}
+    - {type: tokens, value: 30000}
+  keep: {type: messages, value: 20}
+models:
+  - name: one
+    use: langchain_openai:ChatOpenAI
+    model: one
+`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var cfg deerflow.Config
+	connections := 0
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxActiveRuns != 3 || cfg.QueueTimeout != 2500*time.Millisecond || cfg.MemoryEnabled == nil || !*cfg.MemoryEnabled || !cfg.MemoryExtraction || !cfg.Compaction.Enabled || cfg.Compaction.ContextMessages != 80 || cfg.Compaction.ContextTokens != 30000 || cfg.Compaction.KeepRecentMessages != 20 {
+		t.Fatalf("runtime features were not mapped: %+v", cfg)
+	}
+	if len(cfg.Skills.Sources) != 2 || len(cfg.Skills.Install) != 2 || !cfg.SkillSelection.IncludeGlobal {
+		t.Fatalf("Skills source/installation mapping: %+v selection=%+v", cfg.Skills, cfg.SkillSelection)
+	}
+	installed := make(map[string]bool)
+	for _, skill := range cfg.Skills.Install {
+		installed[skill.Directory] = skill.Enabled
+	}
+	if !installed["research"] || installed["writer"] || len(installed) != 2 {
+		t.Fatalf("Skills extension state or incompatible package handling: %+v", cfg.Skills.Install)
+	}
+	// An explicit Go profile remains authoritative over every mapped knob.
+	cfg.MaxActiveRuns = 5
+	cfg.QueueTimeout = 9 * time.Second
+	cfg.MemoryExtraction = false
+	cfg.Compaction = harness.CompactionConfig{Enabled: false, ContextMessages: 40, ContextTokens: 40000, KeepRecentMessages: 8}
+	cfg.Skills = harness.SkillsConfig{Sources: []harness.SkillSource{{ID: "host", Root: root, Scope: harness.SkillScopeGlobal}}}
+	cfg.SkillSelection = harness.SkillSelection{IncludeGlobal: false, Names: []string{}}
+	_, err := ApplyPythonConfig(path, &cfg, &connections, map[string]bool{
+		"max-active-runs": true, "queue-timeout": true, "memory-extraction": true,
+		"context-compaction": true, "compact-after-messages": true, "compact-after-tokens": true,
+		"compact-keep-messages": true, "skills-config": true,
+	})
+	if err != nil || cfg.MaxActiveRuns != 5 || cfg.QueueTimeout != 9*time.Second || cfg.MemoryExtraction || cfg.Compaction.Enabled || cfg.Compaction.ContextMessages != 40 || cfg.Compaction.ContextTokens != 40000 || cfg.Compaction.KeepRecentMessages != 8 || len(cfg.Skills.Sources) != 1 || cfg.Skills.Sources[0].ID != "host" || cfg.SkillSelection.IncludeGlobal {
+		t.Fatalf("explicit Go settings lost: config=%+v err=%v", cfg, err)
+	}
+}
+
+func TestApplyPythonConfigDisabledMemoryAndExplicitExtraction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("memory:\n  enabled: false\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var cfg deerflow.Config
+	connections := 0
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err != nil || cfg.MemoryEnabled == nil || *cfg.MemoryEnabled || cfg.MemoryExtraction {
+		t.Fatalf("disabled memory mapping: %+v err=%v", cfg, err)
+	}
+	cfg.MemoryExtraction = true
+	if _, err := ApplyPythonConfig(path, &cfg, &connections, map[string]bool{"memory-extraction": true}); err != nil || cfg.MemoryEnabled == nil || !*cfg.MemoryEnabled || !cfg.MemoryExtraction {
+		t.Fatalf("explicit Go extraction override: %+v err=%v", cfg, err)
+	}
+}
+
+func TestApplyPythonConfigRejectsUnsupportedSummarization(t *testing.T) {
+	for _, yamlBody := range []string{
+		"  enabled: true\n",
+		"  enabled: true\n  model_name: another\n  trigger: {type: messages, value: 80}\n",
+		"  enabled: true\n  trigger: {type: fraction, value: 0.8}\n",
+		"  enabled: true\n  trigger: {type: messages, value: 12}\n  keep: {type: messages, value: 20}\n",
+		"  enabled: true\n  trigger: {type: messages, value: 80}\n  keep: {type: tokens, value: 1000}\n",
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		raw := "summarization:\n" + yamlBody + "models:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var cfg deerflow.Config
+		connections := 0
+		if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err == nil || !strings.Contains(err.Error(), "summarization") {
+			t.Fatalf("unsupported summarization accepted: %q err=%v", yamlBody, err)
+		}
+	}
+}
+
+func TestApplyCurrentExampleSkillsStartGoHarness(t *testing.T) {
+	var cfg deerflow.Config
+	connections := 0
+	if _, err := ApplyPythonConfig(filepath.Join("..", "..", "..", "config.example.yaml"), &cfg, &connections, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Skills.Install) == 0 {
+		t.Fatal("bundled Skills were not discovered")
+	}
+	cfg.DataDir = t.TempDir()
+	cfg.APIKey = "fixture"
+	client, err := deerflow.Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("bundled Skills prevent Go startup: %v", err)
+	}
+	if listed, err := client.ListSkills(context.Background(), cfg.SkillSelection); err != nil || len(listed) == 0 {
+		t.Fatalf("bundled Skills were not installed: count=%d err=%v", len(listed), err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -2,13 +2,16 @@ package launch
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -41,12 +44,15 @@ type pythonRuntimeConfig struct {
 	DefaultModel string         `yaml:"default_model"`
 	Models       []pythonModel  `yaml:"models"`
 	API          struct {
-		ModelName          string   `yaml:"model_name"`
-		ChatRequestTimeout *float64 `yaml:"chat_request_timeout"`
+		ModelName            string   `yaml:"model_name"`
+		ChatRequestTimeout   *float64 `yaml:"chat_request_timeout"`
+		ExtensionsConfigPath string   `yaml:"extensions_config_path"`
 	} `yaml:"api"`
 	LocalACP struct {
 		ModelName              string    `yaml:"model_name"`
 		MaxActiveConnections   *int      `yaml:"max_active_connections"`
+		MaxActiveRuns          *int      `yaml:"max_active_runs"`
+		QueueTimeoutSeconds    *float64  `yaml:"queue_timeout_seconds"`
 		SubagentEnabled        *bool     `yaml:"subagent_enabled"`
 		PermissionMode         string    `yaml:"permission_mode"`
 		ToolAllowlist          *[]string `yaml:"tool_allowlist"`
@@ -62,6 +68,24 @@ type pythonRuntimeConfig struct {
 		ClosedRetentionDays    *int      `yaml:"closed_session_retention_days"`
 		CleanupIntervalSeconds *float64  `yaml:"session_cleanup_interval_seconds"`
 	} `yaml:"local_acp"`
+	Sandbox struct {
+		Use           string `yaml:"use"`
+		AllowHostBash bool   `yaml:"allow_host_bash"`
+	} `yaml:"sandbox"`
+	Skills struct {
+		Enabled        *bool  `yaml:"enabled"`
+		Path           string `yaml:"path"`
+		ExtensionsFile string `yaml:"extensions_file"`
+	} `yaml:"skills"`
+	Memory struct {
+		Enabled *bool `yaml:"enabled"`
+	} `yaml:"memory"`
+	Summarization struct {
+		Enabled   bool      `yaml:"enabled"`
+		ModelName string    `yaml:"model_name"`
+		Trigger   yaml.Node `yaml:"trigger"`
+		Keep      yaml.Node `yaml:"keep"`
+	} `yaml:"summarization"`
 }
 
 func pythonProvider(use string) (string, error) {
@@ -146,8 +170,35 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	if len(source.ACPAgents) > 0 && !explicit["acp-agents-config"] {
 		return result, fmt.Errorf("Python acp_agents require an explicit Go --acp-agents-config allowlist")
 	}
-	if source.LocalACP.EnableBash && (!explicit["sandbox-provider"] || !cfg.Sandbox.Enabled || !cfg.Sandbox.AllowShell) {
-		return result, fmt.Errorf("local_acp.enable_bash requires an explicit Go --sandbox-provider and shell policy")
+	if source.LocalACP.EnableBash {
+		if explicit["sandbox-provider"] {
+			// An operator-supplied provider remains authoritative. In particular,
+			// a disabled provider or argv-only local provider cannot fulfill the
+			// desktop's script-capable command setting.
+			if !cfg.Sandbox.Enabled || !cfg.Sandbox.AllowShell ||
+				(cfg.Sandbox.Provider != harness.SandboxPowerShell && cfg.Sandbox.Provider != harness.SandboxWSL2 && cfg.Sandbox.Provider != harness.SandboxDocker) {
+				return result, fmt.Errorf("local_acp.enable_bash requires an explicit Go script-capable --sandbox-provider and --sandbox-allow-shell")
+			}
+		} else {
+			if !source.Sandbox.AllowHostBash {
+				return result, fmt.Errorf("local_acp.enable_bash requires sandbox.allow_host_bash or an explicit Go --sandbox-provider")
+			}
+			if source.Sandbox.Use != "deerflow.sandbox.local:LocalSandboxProvider" {
+				return result, fmt.Errorf("Go desktop command mapping requires sandbox.use=deerflow.sandbox.local:LocalSandboxProvider")
+			}
+			if runtime.GOOS != "windows" {
+				return result, fmt.Errorf("automatic desktop command mapping requires Windows; select an explicit Go --sandbox-provider on this host")
+			}
+			if explicit["sandbox-allow-shell"] && !cfg.Sandbox.AllowShell {
+				return result, fmt.Errorf("local_acp.enable_bash conflicts with explicit Go --sandbox-allow-shell=false")
+			}
+			// The two desktop switches jointly authorize a host command tool.
+			// PowerShell is the Go local script provider on Windows. The
+			// configured session permission mode and tool policy still apply.
+			cfg.Sandbox.Enabled = true
+			cfg.Sandbox.Provider = harness.SandboxPowerShell
+			cfg.Sandbox.AllowShell = true
+		}
 	}
 	mode := harness.PermissionMode(source.LocalACP.PermissionMode)
 	if mode == "" {
@@ -192,6 +243,16 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	}
 	if p := source.LocalACP.MaxActiveConnections; p != nil && (*p < 1 || *p > 128) {
 		return result, fmt.Errorf("local_acp.max_active_connections must be 1..128")
+	}
+	if p := source.LocalACP.MaxActiveRuns; p != nil && (*p < 1 || *p > 128) {
+		return result, fmt.Errorf("local_acp.max_active_runs must be 1..128")
+	}
+	queueTimeout := 600.0
+	if source.LocalACP.QueueTimeoutSeconds != nil {
+		queueTimeout = *source.LocalACP.QueueTimeoutSeconds
+	}
+	if math.IsNaN(queueTimeout) || math.IsInf(queueTimeout, 0) || queueTimeout <= 0 || queueTimeout > 86400 {
+		return result, fmt.Errorf("local_acp.queue_timeout_seconds must be greater than 0 and at most 86400")
 	}
 	if p := source.LocalACP.InactiveRetentionDays; p != nil && (*p < 1 || *p > 3650) {
 		return result, fmt.Errorf("local_acp.inactive_session_retention_days must be 1..3650")
@@ -265,6 +326,15 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 			*maxConnections = *source.LocalACP.MaxActiveConnections
 		}
 	}
+	if !explicit["max-active-runs"] {
+		cfg.MaxActiveRuns = 2
+		if source.LocalACP.MaxActiveRuns != nil {
+			cfg.MaxActiveRuns = *source.LocalACP.MaxActiveRuns
+		}
+	}
+	if !explicit["queue-timeout"] {
+		cfg.QueueTimeout = time.Duration(queueTimeout * float64(time.Second))
+	}
 	if !explicit["disable-subagents"] {
 		cfg.DisableSubagents = source.LocalACP.SubagentEnabled == nil || !*source.LocalACP.SubagentEnabled
 	}
@@ -304,6 +374,23 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 			base += "\n"
 		}
 		cfg.Instruction = base + "<deployment_instructions>\n" + overlay + "\n</deployment_instructions>"
+	}
+	if source.Memory.Enabled != nil {
+		cfg.MemoryEnabled = source.Memory.Enabled
+		if !explicit["memory-extraction"] {
+			cfg.MemoryExtraction = *source.Memory.Enabled
+		} else if cfg.MemoryExtraction {
+			// An explicit Go extraction flag also opts the Go model back into
+			// access to its own memory store.
+			enabled := true
+			cfg.MemoryEnabled = &enabled
+		}
+	}
+	if err := applyPythonSummarization(source, cfg, explicit); err != nil {
+		return result, err
+	}
+	if err := applyPythonSkills(abs, source, cfg, explicit); err != nil {
+		return result, err
 	}
 	if p := source.LocalACP.SessionCleanupEnabled; p != nil && !explicit["session-cleanup-enabled"] {
 		cfg.Retention.Enabled = *p
@@ -347,4 +434,255 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	result.Path = abs
 	result.Revision = fmt.Sprintf("%x", sha256.Sum256(raw))
 	return result, nil
+}
+
+type pythonContextSize struct {
+	Type  string  `yaml:"type"`
+	Value float64 `yaml:"value"`
+}
+
+func decodePythonContextSizes(node yaml.Node) ([]pythonContextSize, error) {
+	if node.Kind == 0 || node.Tag == "!!null" {
+		return nil, nil
+	}
+	var values []pythonContextSize
+	if node.Kind == yaml.SequenceNode {
+		if err := node.Decode(&values); err != nil {
+			return nil, err
+		}
+	} else if node.Kind == yaml.MappingNode {
+		var value pythonContextSize
+		if err := node.Decode(&value); err != nil {
+			return nil, err
+		}
+		values = []pythonContextSize{value}
+	} else {
+		return nil, fmt.Errorf("context size must be an object or list")
+	}
+	return values, nil
+}
+
+func applyPythonSummarization(source pythonRuntimeConfig, cfg *deerflow.Config, explicit map[string]bool) error {
+	setting := source.Summarization
+	if !setting.Enabled {
+		if !explicit["context-compaction"] {
+			cfg.Compaction.Enabled = false
+		}
+		return nil
+	}
+	if strings.TrimSpace(setting.ModelName) != "" {
+		return fmt.Errorf("summarization.model_name requires an explicit Go compaction model adapter")
+	}
+	values, err := decodePythonContextSizes(setting.Trigger)
+	if err != nil {
+		return fmt.Errorf("summarization.trigger: %w", err)
+	}
+	if len(values) == 0 || len(values) > 8 {
+		return fmt.Errorf("summarization.trigger must contain 1..8 supported thresholds")
+	}
+	// Go's Eino middleware accepts both message and token thresholds. Use its
+	// supported maxima for an omitted dimension so a single Python trigger does
+	// not acquire an earlier, unrelated threshold.
+	messages, tokens := 10_000, 2_000_000
+	for _, value := range values {
+		if math.IsNaN(value.Value) || math.IsInf(value.Value, 0) || value.Value != math.Trunc(value.Value) {
+			return fmt.Errorf("summarization.trigger must use whole messages or tokens")
+		}
+		switch value.Type {
+		case "messages":
+			if value.Value < 1 || value.Value > 10_000 {
+				return fmt.Errorf("summarization.trigger messages must be 1..10000")
+			}
+			messages = min(messages, int(value.Value))
+		case "tokens":
+			if value.Value < 1 || value.Value > 2_000_000 {
+				return fmt.Errorf("summarization.trigger tokens must be 1..2000000")
+			}
+			tokens = min(tokens, int(value.Value))
+		default:
+			return fmt.Errorf("summarization.trigger %q is not supported by Go compaction", value.Type)
+		}
+	}
+	keep := 20
+	if setting.Keep.Kind != 0 && setting.Keep.Tag != "!!null" {
+		values, err = decodePythonContextSizes(setting.Keep)
+		if err != nil || len(values) != 1 || values[0].Type != "messages" || math.IsNaN(values[0].Value) || math.IsInf(values[0].Value, 0) || values[0].Value != math.Trunc(values[0].Value) || values[0].Value < 1 || values[0].Value > 1000 {
+			return fmt.Errorf("summarization.keep must be 1..1000 messages")
+		}
+		keep = int(values[0].Value)
+	}
+	if messages <= keep+1 {
+		return fmt.Errorf("summarization.trigger messages must exceed kept messages by at least two")
+	}
+	if !explicit["context-compaction"] {
+		cfg.Compaction.Enabled = true
+	}
+	if !explicit["compact-after-messages"] {
+		cfg.Compaction.ContextMessages = messages
+	}
+	if !explicit["compact-after-tokens"] {
+		cfg.Compaction.ContextTokens = tokens
+	}
+	if !explicit["compact-keep-messages"] {
+		cfg.Compaction.KeepRecentMessages = keep
+	}
+	return nil
+}
+
+func resolvePythonConfigPath(configPath, value string) string {
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(configPath), value))
+}
+
+func pythonSkillStates(configPath string, source pythonRuntimeConfig) (map[string]bool, error) {
+	name := source.API.ExtensionsConfigPath
+	if name == "" {
+		name = source.Skills.ExtensionsFile
+	}
+	if name == "" {
+		name = "./extensions_config.json"
+	}
+	file, err := os.Open(resolvePythonConfigPath(configPath, name))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open Skills extension settings: %w", err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, 1<<20+1))
+	if err != nil || len(data) > 1<<20 {
+		return nil, fmt.Errorf("Skills extension settings exceed 1 MiB or cannot be read")
+	}
+	var document struct {
+		Skills map[string]struct {
+			Enabled *bool `json:"enabled"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, fmt.Errorf("parse Skills extension settings: %w", err)
+	}
+	states := make(map[string]bool, len(document.Skills))
+	for name, state := range document.Skills {
+		if state.Enabled != nil {
+			states[name] = *state.Enabled
+		}
+	}
+	return states, nil
+}
+
+func pythonSkillName(path string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	// Allow for CRLF expansion of the registry's 16 KiB normalized header.
+	data, err := io.ReadAll(io.LimitReader(file, 32<<10+1))
+	if err != nil {
+		return ""
+	}
+	// Windows portable packages check out SKILL.md with CRLF. The registry
+	// accepts either form, so discovery must use the same normalized view.
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if !strings.HasPrefix(text, "---\n") {
+		return ""
+	}
+	ending := strings.Index(text[4:], "\n---\n")
+	if ending < 0 {
+		return ""
+	}
+	var metadata struct {
+		Name string `yaml:"name"`
+	}
+	if yaml.Unmarshal([]byte(text[4:4+ending]), &metadata) != nil {
+		return ""
+	}
+	return metadata.Name
+}
+
+func applyPythonSkills(configPath string, source pythonRuntimeConfig, cfg *deerflow.Config, explicit map[string]bool) error {
+	if explicit["skills-config"] {
+		return nil
+	}
+	if source.Skills.Enabled != nil && !*source.Skills.Enabled {
+		cfg.Skills = harness.SkillsConfig{}
+		cfg.SkillSelection = harness.SkillSelection{Names: []string{}}
+		return nil
+	}
+	if source.Skills.Path == "" {
+		if source.Skills.Enabled != nil && *source.Skills.Enabled {
+			return fmt.Errorf("skills.enabled requires an explicit skills.path for Go")
+		}
+		return nil
+	}
+	root := resolvePythonConfigPath(configPath, source.Skills.Path)
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("skills.path must name an existing ordinary directory")
+	}
+	states, err := pythonSkillStates(configPath, source)
+	if err != nil {
+		return err
+	}
+	config := harness.SkillsConfig{}
+	for _, category := range []string{"public", "custom"} {
+		categoryRoot := filepath.Join(root, category)
+		info, err = os.Lstat(categoryRoot)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("skills %s directory must be an ordinary directory", category)
+		}
+		id := "python-" + category
+		config.Sources = append(config.Sources, harness.SkillSource{ID: id, Root: categoryRoot, Scope: harness.SkillScopeGlobal})
+		entries := 0
+		err = filepath.WalkDir(categoryRoot, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			entries++
+			if entries > 4096 {
+				return fmt.Errorf("skills %s exceeds 4096 directory entries", category)
+			}
+			if entry.IsDir() || entry.Name() != "SKILL.md" || !entry.Type().IsRegular() {
+				return nil
+			}
+			dir := filepath.Dir(path)
+			name := pythonSkillName(path)
+			if name == "" || filepath.Base(dir) != name {
+				// Python can load packages whose directory differs from their name;
+				// Go's immutable Skills registry intentionally rejects them.
+				return nil
+			}
+			rel, err := filepath.Rel(categoryRoot, dir)
+			if err != nil {
+				return err
+			}
+			enabled, known := states[name]
+			if !known {
+				enabled = true
+			}
+			config.Install = append(config.Install, harness.SkillInstall{SourceID: id, Directory: filepath.ToSlash(rel), Enabled: enabled})
+			if len(config.Install) > 128 {
+				return fmt.Errorf("Skills configuration exceeds 128 installations")
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("inspect skills %s: %w", category, err)
+		}
+	}
+	sort.Slice(config.Install, func(i, j int) bool {
+		if config.Install[i].SourceID != config.Install[j].SourceID {
+			return config.Install[i].SourceID < config.Install[j].SourceID
+		}
+		return config.Install[i].Directory < config.Install[j].Directory
+	})
+	cfg.Skills = config
+	cfg.SkillSelection = harness.SkillSelection{IncludeGlobal: true}
+	return nil
 }

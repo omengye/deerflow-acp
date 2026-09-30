@@ -239,7 +239,32 @@ func parse(data []byte) (metadata, string, error) {
 				}
 				result.Metadata[k.Value] = v.Value
 			}
-		case "name", "description", "license", "compatibility":
+		case "compatibility":
+			if val.Kind == yaml.MappingNode {
+				if val.Anchor != "" || len(val.Content) == 0 || len(val.Content) > 16 {
+					return result, "", invalid("compatibility mapping must contain 1..8 plain string entries")
+				}
+				parts := make([]string, 0, len(val.Content)/2)
+				keys := make(map[string]bool)
+				for j := 0; j < len(val.Content); j += 2 {
+					k, v := val.Content[j], val.Content[j+1]
+					if !yamlString(k, 64) || !yamlString(v, 256) || keys[k.Value] {
+						return result, "", invalid("compatibility entries must be unique plain strings")
+					}
+					keys[k.Value] = true
+					parts = append(parts, k.Value+": "+v.Value)
+				}
+				result.Compatibility = strings.Join(parts, ", ")
+				if len(result.Compatibility) > 1024 {
+					return result, "", invalid("compatibility exceeds 1024 bytes")
+				}
+				continue
+			}
+			if !yamlString(val, 1024) {
+				return result, "", invalid("frontmatter values must be bounded plain strings")
+			}
+			result.Compatibility = val.Value
+		case "name", "description", "license":
 			if !yamlString(val, 1024) {
 				return result, "", invalid("frontmatter values must be bounded plain strings")
 			}
@@ -250,8 +275,6 @@ func parse(data []byte) (metadata, string, error) {
 				result.Description = strings.TrimSpace(val.Value)
 			case "license":
 				result.License = val.Value
-			case "compatibility":
-				result.Compatibility = val.Value
 			}
 		default:
 			return result, "", invalid("unknown frontmatter field")

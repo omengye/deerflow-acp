@@ -109,6 +109,8 @@ func mapError(err error) error {
 		return receiptRecoveryError(true)
 	case errors.Is(err, harness.ErrBusy):
 		return rpcError(protocol.ServerBusy, "Session is busy")
+	case errors.Is(err, harness.ErrQueueTimeout):
+		return rpcError(protocol.ServerBusy, "Run queue timeout")
 	case errors.Is(err, harness.ErrAttachedElsewhere):
 		return rpcError(protocol.ServerBusy, "Session is attached to another connection")
 	case errors.Is(err, harness.ErrNotAttached):

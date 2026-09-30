@@ -284,11 +284,16 @@ func TestFrontmatterValidation(t *testing.T) {
 	if _, _, err := parse([]byte(valid)); err != nil {
 		t.Fatal(err)
 	}
+	compatible := "---\r\nname: chart\r\ndescription: Draw charts\r\ncompatibility:\r\n  nodejs: '>=18.0.0'\r\n---\r\nInstructions\r\n"
+	if meta, _, err := parse([]byte(compatible)); err != nil || meta.Compatibility != "nodejs: >=18.0.0" {
+		t.Fatalf("CRLF compatibility mapping: %+v err=%v", meta, err)
+	}
 	for _, input := range []string{
 		"No frontmatter", "---\nname: a\ndescription: a\n---\n", "---\nname: a\nname: b\ndescription: c\n---\nbody",
 		"---\nname: bad_name\ndescription: c\n---\nbody", "---\nname: a\ndescription: 12\n---\nbody",
 		"---\nname: a\ndescription: c\nmodel: preferred\n---\nbody", "---\nname: a\ndescription: c\ncontext: fork\n---\nbody",
 		"---\nname: a\ndescription: c\nallowed-tools: null\n---\nbody", "---\nname: a\ndescription: c\nunknown: yes\n---\nbody",
+		"---\nname: a\ndescription: c\ncompatibility: {nodejs: 18}\n---\nbody", "---\nname: a\ndescription: c\ncompatibility: {nodejs: one, nodejs: two}\n---\nbody",
 		"---\nname: a\ndescription: &desc c\nlicense: *desc\n---\nbody", "---\nname: a\ndescription: c\nmetadata: {a: 1}\n---\nbody",
 		strings.Replace(valid, "Instructions", "a\x00b", 1),
 	} {

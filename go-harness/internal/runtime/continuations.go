@@ -386,10 +386,15 @@ func (s *Service) ProcessBackgroundNotification(ctx context.Context, owner, sess
 	if err := s.Coordinator.Authorize(sessionID, owner); err != nil {
 		return result, err
 	}
+	releaseSlot, err := s.runQueue.acquire(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer releaseSlot()
 	var req harness.RunRequest
 	var lease ExecutionLease
 	var existing string
-	err := withExecutionTransaction(ctx, s.Store, func(tx *sql.Tx) error {
+	err = withExecutionTransaction(ctx, s.Store, func(tx *sql.Tx) error {
 		var err error
 		req, lease, existing, err = s.beginContinuationTx(ctx, tx, owner, sessionID, notificationID)
 		return err

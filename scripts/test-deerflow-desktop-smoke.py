@@ -350,9 +350,13 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
         self.server.record_request(body)
         self.server.log("Local fake OpenAI request", path=self.path, model=body.get("model"), stream=body.get("stream", False))
         common = {"id": "chatcmpl-smoke", "created": int(time.time()), "model": "smoke-local"}
+        extraction = self.server.backend == "go" and any(
+            message.get("role") == "system" and "Extract only durable facts" in message_text(message)
+            for message in body.get("messages", [])
+        )
         tool_call = self.server.planned_tool_call(body)
         finish_reason = "tool_calls" if tool_call else "stop"
-        message = {"role": "assistant", "content": None if tool_call else REPLY}
+        message = {"role": "assistant", "content": None if tool_call else ('{"facts":[]}' if extraction else REPLY)}
         if tool_call:
             message["tool_calls"] = [tool_call]
         if body.get("stream"):
@@ -498,9 +502,9 @@ def main():
         document = copy.deepcopy(snapshot)
         for model in document["models"]:
             model.update(api_key="", clear_api_key=True, base_url="http://127.0.0.1:9/v1")
-        document["memory"]["enabled"] = False
+        document["memory"]["enabled"] = args.backend == "go"
         document["skill_evolution"]["enabled"] = False
-        document["skills_enabled"] = False
+        document["skills_enabled"] = args.backend == "go"
         document["subagents"]["enabled"] = False
         document["runtime"]["subagent_enabled"] = False
         require(waku.deerflow("validate", document).get("valid") is True, "No-key config validation failed")
@@ -592,15 +596,23 @@ def main():
             # Match this turn's unique user marker, so an unrelated background
             # request cannot satisfy the restored conversation assertion.
             turn_messages = None
+            turn_request = None
             current_user_index = None
             for request in fake.requests_since(request_start):
                 messages = request.get("messages", [])
                 indices = [index for index, message in enumerate(messages)
                            if message.get("role") == "user" and prompt_marker in message_text(message)]
                 if indices:
-                    turn_messages, current_user_index = messages, indices[-1]
+                    turn_request, turn_messages, current_user_index = request, messages, indices[-1]
                     break
             require(turn_messages is not None, "The local model did not receive this turn's user message")
+            if args.backend == "go":
+                require(any(tool.get("function", {}).get("name") == "skill" for tool in turn_request.get("tools", [])),
+                        "Go desktop did not expose its bundled Skills to the model")
+                require(any(not request.get("stream") and any(
+                    message.get("role") == "system" and "Extract only durable facts" in message_text(message)
+                    for message in request.get("messages", [])) for request in fake.requests_since(request_start)),
+                    "Go desktop did not run the configured memory extraction")
             if cursor:
                 require(any(message.get("role") == "assistant" and REPLY in message_text(message)
                             for message in turn_messages[:current_user_index]),

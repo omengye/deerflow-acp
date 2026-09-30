@@ -39,6 +39,11 @@ type Config struct {
 	Model         string
 	Instruction   string
 	MaxIterations int
+	// MaxActiveRuns bounds concurrent foreground executions across sessions.
+	// Zero uses two slots. QueueTimeout is separate from the execution timeout;
+	// zero disables the queue deadline.
+	MaxActiveRuns int
+	QueueTimeout  time.Duration
 	// ContextWindow applies to Model. ContextWindows can specify sizes for
 	// additional selectable models; unknown sizes do not produce ACP occupancy.
 	ContextWindow  int
@@ -72,6 +77,10 @@ type Config struct {
 	// MemoryUserID enables workspace-bound user memory for an explicitly known
 	// host identity. Empty leaves only session/workspace memory available.
 	MemoryUserID string
+	// MemoryEnabled controls model access to stored facts. Nil preserves the
+	// SDK default (enabled). False keeps facts available to operator management
+	// while disabling prompt injection, search_memory and extraction.
+	MemoryEnabled *bool
 	// MemoryExtraction enables a bounded post-turn model call that proposes
 	// descriptive facts for terminal promotion. Disabled by default.
 	MemoryExtraction bool
@@ -105,6 +114,12 @@ type Client struct {
 }
 
 func Open(ctx context.Context, cfg Config) (client *Client, err error) {
+	if cfg.MaxActiveRuns == 0 {
+		cfg.MaxActiveRuns = 2
+	}
+	if cfg.MaxActiveRuns < 1 || cfg.MaxActiveRuns > 128 || cfg.QueueTimeout < 0 || cfg.QueueTimeout > 24*time.Hour {
+		return nil, fmt.Errorf("%w: invalid run queue limits", harness.ErrInvalidInput)
+	}
 	if err := cfg.PermissionMode.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", harness.ErrInvalidInput, err)
 	}
@@ -258,7 +273,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	for _, install := range cfg.Skills.Install {
 		record, installErr := registry.Install(ctx, install.SourceID, install.Directory)
 		if installErr != nil {
-			return nil, fmt.Errorf("install configured skill: %w", installErr)
+			return nil, fmt.Errorf("install configured skill %s/%s: %w", install.SourceID, install.Directory, installErr)
 		}
 		if err = registry.SetEnabled(ctx, install.SourceID, record.Ref.Name, install.Enabled); err != nil {
 			return nil, fmt.Errorf("configure installed skill: %w", err)
@@ -279,7 +294,12 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	}
 	engine := cfg.Engine
 	if engine == nil {
-		baseExtensions := extensionFactory(cfg, manager, registry, assetStore, memoryStore)
+		modelMemory := memoryStore
+		if cfg.MemoryEnabled != nil && !*cfg.MemoryEnabled {
+			modelMemory = nil
+			cfg.MemoryExtraction = false
+		}
+		baseExtensions := extensionFactory(cfg, manager, registry, assetStore, modelMemory)
 		extensions := func(ctx context.Context, req harness.RunRequest, pinned json.RawMessage) (einoengine.RunExtensions, error) {
 			out, err := baseExtensions(ctx, req, pinned)
 			if err != nil {
@@ -294,7 +314,10 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			return nil, err
 		}
 	}
-	service := hr.NewService(business, engine, cfg.Model)
+	service, err := hr.NewServiceWithRunQueue(business, engine, cfg.Model, hr.RunQueueConfig{MaxActiveRuns: cfg.MaxActiveRuns, QueueTimeout: cfg.QueueTimeout})
+	if err != nil {
+		return nil, err
+	}
 	service.PermissionMode = cfg.PermissionMode
 	if len(cfg.ACPAgents) > 0 {
 		service.ExternalPromptPending = func(ctx context.Context, owner, sessionID, agent string) (harness.ExternalPromptState, error) {
