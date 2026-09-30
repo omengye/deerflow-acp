@@ -1116,7 +1116,7 @@ impl Waku {
         }
         let name = format!("{prefix}-{number}");
         let value = if models {
-            json!({"original_name":"", "name":name, "display_name":"", "description":"", "use_path":"langchain_openai:ChatOpenAI", "model":"", "base_url":"", "api_key":"", "api_key_configured":false, "clear_api_key":false, "supports_thinking":false, "supports_reasoning_effort":false, "supports_vision":false, "advanced":{}})
+            json!({"original_name":"", "name":name, "display_name":"", "description":"", "use_path":"openai", "model":"", "base_url":"", "api_key":"", "api_key_configured":false, "clear_api_key":false, "supports_thinking":false, "supports_reasoning_effort":false, "supports_vision":false, "advanced":{}})
         } else {
             json!({"original_name":"", "name":name, "display_name":"", "description":"", "model":null, "tool_groups":[], "skills":null, "memory_enabled":true, "soul":""})
         };
@@ -1195,7 +1195,7 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                     "API Key",
                     "留空保留已保存的密钥；也可填写 $环境变量名",
                 ),
-                ("use_path", "模型适配器", "例如 langchain_openai:ChatOpenAI"),
+                ("use_path", "模型提供商", "openai 或 claude"),
             ] {
                 add(format!("{root}/{key}"), label, hint, Kind::Text);
             }
@@ -2214,7 +2214,7 @@ impl Waku {
             Section::Tools => {
                 body = body.child(df_group(theme).child(df_label(
                     "本地工具执行环境",
-                    "便携版固定使用 LocalSandboxProvider；命令与主机工具访问由以下权限控制。",
+                    "便携版使用 Go 本地执行器；命令与主机工具访问由以下权限控制。",
                     theme,
                 )));
             }
@@ -2367,7 +2367,7 @@ mod tests {
     }
 }
 
-const LOCAL_SANDBOX: &str = "deerflow.sandbox.local:LocalSandboxProvider";
+const LOCAL_SANDBOX: &str = "local";
 
 fn deletable_phase(phase: &Value) -> bool {
     phase.is_null() || phase.as_str() == Some("idle")
@@ -3069,7 +3069,7 @@ impl Waku {
 fn portable_issue(document: &Value) -> Option<String> {
     if document["sandbox"]["use"].as_str() != Some(LOCAL_SANDBOX) {
         return Some(
-            "此配置使用其他沙箱提供者。便携桌面仅支持 LocalSandboxProvider，请确认转换后再保存。"
+            "此配置使用其他执行器。便携桌面仅支持 Go 本地执行器，请确认转换后再保存。"
                 .into(),
         );
     }

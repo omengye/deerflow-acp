@@ -40,6 +40,10 @@ type searchInput struct {
 // WorkspaceFactory pins one directory handle for the entire run. The engine
 // must call cleanup after all model and tool work has terminated.
 func WorkspaceFactory(ctx context.Context, req harness.RunRequest) ([]tool.BaseTool, func() error, error) {
+	return ConfiguredWorkspaceFactory(ctx, req, nil)
+}
+
+func ConfiguredWorkspaceFactory(ctx context.Context, req harness.RunRequest, configured []harness.BuiltinToolConfig) ([]tool.BaseTool, func() error, error) {
 	cwd, err := session.NormalizeWorkspace(req.Session.CWD)
 	if err != nil {
 		return nil, nil, err
@@ -68,6 +72,9 @@ func WorkspaceFactory(ctx context.Context, req harness.RunRequest) ([]tool.BaseT
 		return nil, nil, fmt.Errorf("workspace directory changed while opening")
 	}
 	result, err := workspaceTools(ctx, req, root)
+	if err == nil && len(configured) > 0 {
+		result, err = migratedWorkspaceTools(ctx, req, root, result, configured)
+	}
 	if err != nil {
 		_ = root.Close()
 		return nil, nil, err

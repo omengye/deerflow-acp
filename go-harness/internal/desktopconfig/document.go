@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/omengye/deerflow-acp/go-harness/harness"
+
 	"go.yaml.in/yaml/v3"
 )
 
@@ -102,7 +104,11 @@ func (s service) snapshot() (map[string]any, error) {
 	memory["advanced"] = redact(withoutKeys(memoryRaw, append([]string{"backend_config"}, keys(memoryDefaults)...)...), "")
 	memory["backend_advanced"] = redact(withoutKeys(backend, memoryBackendFields...), "")
 	sandboxRaw := readObject(data, "sandbox")
-	sandbox := map[string]any{"use": str(sandboxRaw, "use", "deerflow.sandbox.local:LocalSandboxProvider"), "allow_host_bash": boolValue(sandboxRaw, "allow_host_bash", false), "allow_host_tools": boolValue(sandboxRaw, "allow_host_tools", false), "advanced": redact(withoutKeys(sandboxRaw, "use", "allow_host_bash", "allow_host_tools"), "")}
+	sandboxProvider := str(sandboxRaw, "provider", str(sandboxRaw, "use", "local"))
+	if sandboxProvider == "deerflow.sandbox.local:LocalSandboxProvider" {
+		sandboxProvider = "local"
+	}
+	sandbox := map[string]any{"use": sandboxProvider, "allow_host_bash": boolValue(sandboxRaw, "allow_host_bash", false), "allow_host_tools": boolValue(sandboxRaw, "allow_host_tools", false), "advanced": redact(withoutKeys(sandboxRaw, "provider", "use", "allow_host_bash", "allow_host_tools"), "")}
 	subagentsRaw := readObject(data, "subagents")
 	subagents := redact(subagentsRaw, "").(map[string]any)
 	if _, ok := subagents["enabled"]; !ok {
@@ -154,7 +160,7 @@ func (s service) snapshot() (map[string]any, error) {
 }
 
 func modelDocument(raw map[string]any) map[string]any {
-	known := []string{"name", "display_name", "description", "use", "model", "api_key", "base_url", "supports_thinking", "supports_reasoning_effort", "supports_vision"}
+	known := []string{"name", "display_name", "description", "provider", "use", "model", "api_key", "base_url", "supports_thinking", "supports_reasoning_effort", "supports_vision"}
 	key := str(raw, "api_key", "")
 	reference := ""
 	if envReference.MatchString(strings.TrimSpace(key)) {
@@ -163,12 +169,20 @@ func modelDocument(raw map[string]any) map[string]any {
 	return map[string]any{
 		"original_name": str(raw, "name", ""), "name": str(raw, "name", ""),
 		"display_name": str(raw, "display_name", ""), "description": str(raw, "description", ""),
-		"use_path": str(raw, "use", ""), "model": str(raw, "model", ""),
+		"use_path": nativeProvider(raw), "model": str(raw, "model", ""),
 		"api_key": reference, "api_key_configured": key != "", "api_key_literal": key != "" && reference == "", "clear_api_key": false,
 		"base_url": str(raw, "base_url", ""), "supports_thinking": boolValue(raw, "supports_thinking", false),
 		"supports_reasoning_effort": boolValue(raw, "supports_reasoning_effort", false),
 		"supports_vision":           boolValue(raw, "supports_vision", false), "advanced": redact(withoutKeys(raw, known...), ""),
 	}
+}
+
+func nativeProvider(raw map[string]any) string {
+	value := str(raw, "provider", str(raw, "use", ""))
+	if normalized, err := harness.NativeModelProvider(value); err == nil {
+		return normalized
+	}
+	return value
 }
 
 func withoutKeys(raw map[string]any, excludes ...string) map[string]any {

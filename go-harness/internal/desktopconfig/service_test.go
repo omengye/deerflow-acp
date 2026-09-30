@@ -217,8 +217,8 @@ func TestExistingPatchedOpenAIModelCanBeSaved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if str(list(saved, "models")[0].(map[string]any), "use", "") != "deerflow.models.patched_openai:PatchedChatOpenAI" {
-		t.Fatal("legacy patched OpenAI provider changed during save")
+	if str(list(saved, "models")[0].(map[string]any), "provider", "") != "openai" || str(list(saved, "models")[0].(map[string]any), "use", "") != "" {
+		t.Fatal("legacy provider was not normalized to a native Go provider")
 	}
 }
 

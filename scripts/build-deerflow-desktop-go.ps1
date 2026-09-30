@@ -85,6 +85,7 @@ $packageResources = Join-Path $outputRoot "resources"
 New-Item -ItemType Directory -Path $packageResources | Out-Null
 foreach ($name in $binaries.Keys) { Copy-Item -LiteralPath $binaries[$name] -Destination (Join-Path $outputRoot $name) }
 Copy-Item -LiteralPath $desktopDefault -Destination (Join-Path $packageResources "default-config.yaml")
+Copy-Item -LiteralPath (Join-Path $repoRoot "docs\go-native-tools.md") -Destination (Join-Path $packageResources "go-native-tools.md")
 
 function Copy-BundledSkills([string]$Source, [string]$Destination) {
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
@@ -119,6 +120,10 @@ Go harness state: user-data/data/go-harness
 Go daemon endpoint: user-data/runtime/acp-go
 
 The first launch creates user-data. Set a model and API key in DeerFlow Settings.
+Models use provider=openai/claude; sandbox uses provider=local. Native tools are
+selected by name without Python class paths. See resources/go-native-tools.md.
+Optional host_opencli calls an installed OpenCLI/Node.js; browser commands need
+the user's OpenCLI browser bridge. It does not require Python.
 The optional stdio MCP executable allowlist is in local_acp of config.yaml.
 Some bundled Skills contain Python scripts. Those particular scripts require a
 separately installed Python interpreter; the Desktop and Go harness do not.

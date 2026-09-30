@@ -9,6 +9,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"go.yaml.in/yaml/v3"
 )
 
 type agentWrite struct {
@@ -196,7 +199,8 @@ func validatedModels(incoming, existing []any) ([]any, map[string]bool, error) {
 		if id == "" {
 			return nil, nil, fmt.Errorf("模型 %s 缺少模型 ID", name)
 		}
-		if use != "langchain_openai:ChatOpenAI" && use != "deerflow.models.patched_openai:PatchedChatOpenAI" && use != "langchain_anthropic:ChatAnthropic" {
+		provider, providerErr := harness.NativeModelProvider(use)
+		if providerErr != nil {
 			return nil, nil, fmt.Errorf("模型 %s 的提供商不受 Go ACP 支持", name)
 		}
 		advanced, ok := model["advanced"].(map[string]any)
@@ -213,7 +217,7 @@ func validatedModels(incoming, existing []any) ([]any, map[string]bool, error) {
 		old := previous[original]
 		baseURL := strings.TrimSpace(str(model, "base_url", ""))
 		// A redacted credential is reusable only for the same named provider and endpoint.
-		sameBackend := old != nil && str(old, "use", "") == use && str(old, "base_url", "") == baseURL
+		sameBackend := old != nil && nativeProvider(old) == provider && str(old, "base_url", "") == baseURL
 		var previousAdvanced any
 		if sameBackend {
 			previousAdvanced = old
@@ -223,7 +227,8 @@ func validatedModels(incoming, existing []any) ([]any, map[string]bool, error) {
 			return nil, nil, fmt.Errorf("模型 %s 的隐藏凭据已变化，请重新输入", name)
 		}
 		raw["name"] = name
-		raw["use"] = use
+		delete(raw, "use")
+		raw["provider"] = provider
 		raw["model"] = id
 		for _, key := range []string{"supports_thinking", "supports_reasoning_effort", "supports_vision"} {
 			raw[key] = boolValue(model, key, false)
@@ -334,7 +339,7 @@ func validatedMemory(document, previous map[string]any, models map[string]bool, 
 }
 
 func validatedSandbox(document, previous, runtime map[string]any) (map[string]any, error) {
-	if str(document, "use", "") != "deerflow.sandbox.local:LocalSandboxProvider" {
+	if str(document, "use", "") != "local" && str(document, "use", "") != "deerflow.sandbox.local:LocalSandboxProvider" {
 		return nil, errors.New("桌面 Go ACP 仅支持本地沙箱")
 	}
 	advanced, ok := document["advanced"].(map[string]any)
@@ -342,7 +347,8 @@ func validatedSandbox(document, previous, runtime map[string]any) (map[string]an
 		return nil, errors.New("sandbox.advanced 必须是对象")
 	}
 	raw := cloneMap(advanced)
-	raw["use"] = str(document, "use", "")
+	delete(raw, "use")
+	raw["provider"] = "local"
 	raw["allow_host_bash"] = boolValue(document, "allow_host_bash", false)
 	raw["allow_host_tools"] = boolValue(document, "allow_host_tools", false)
 	raw, _ = restore(raw, previous).(map[string]any)
@@ -381,6 +387,20 @@ func validatedNamedList(incoming, previous []any, tool bool) ([]any, error) {
 		restored, _ := restore(value, prior).(map[string]any)
 		if hasRedacted(restored) {
 			return nil, fmt.Errorf("%s 的隐藏值已变化，请重新输入", name)
+		}
+		if tool {
+			encoded, err := yaml.Marshal(restored)
+			if err != nil {
+				return nil, fmt.Errorf("%s 的工具配置无效", name)
+			}
+			var setting harness.BuiltinToolConfig
+			if err := yaml.Unmarshal(encoded, &setting); err != nil {
+				return nil, fmt.Errorf("%s 的工具参数类型无效", name)
+			}
+			if err := setting.Validate(); err != nil {
+				return nil, err
+			}
+			delete(restored, "use")
 		}
 		output = append(output, restored)
 	}

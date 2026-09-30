@@ -35,8 +35,6 @@ local_acp:
   # Host-owned stdio MCP executable allowlist used only when the switch above is true.
   # Entries must be absolute paths to installed executables.
   client_mcp_allowed_commands: []
-  # Waku's session MCP list is edited in desktop Settings > DeerFlow > Tools
-  # and stored separately in user-data/config/client-mcp-servers.json.
   session_cleanup_enabled: false
   inactive_session_retention_days: 30
   session_cleanup_interval_seconds: 3600
@@ -49,7 +47,7 @@ local_acp:
 models:
   - name: openai
     display_name: OpenAI
-    use: langchain_openai:ChatOpenAI
+    provider: openai
     model: gpt-4.1-mini
     api_key: ${OPENAI_API_KEY:-not-configured}
     base_url: https://api.openai.com/v1
@@ -72,7 +70,7 @@ subagents:
   custom_agents: {}
 
 sandbox:
-  use: deerflow.sandbox.local:LocalSandboxProvider
+  provider: local
   allow_host_bash: false
   allow_host_tools: false
 
@@ -138,31 +136,46 @@ memory:
     retrieval_index_path: memory-fts5.sqlite3
 
 tool_groups:
+  - name: web
   - name: file:read
   - name: file:write
+  - name: host:opencli
   - name: bash
 
 tools:
+  - name: web_search
+    group: web
+    api_key: ${BRAVE_API_KEY:-}
+    max_results: 5
+  - name: web_fetch
+    group: web
+    timeout: 10
+  - name: image_search
+    group: web
+    max_results: 5
   - name: ls
     group: file:read
-    use: deerflow.sandbox.tools:ls_tool
   - name: read_file
     group: file:read
-    use: deerflow.sandbox.tools:read_file_tool
   - name: glob
     group: file:read
-    use: deerflow.sandbox.tools:glob_tool
     max_results: 200
   - name: grep
     group: file:read
-    use: deerflow.sandbox.tools:grep_tool
     max_results: 100
   - name: write_file
     group: file:write
-    use: deerflow.sandbox.tools:write_file_tool
   - name: str_replace
     group: file:write
-    use: deerflow.sandbox.tools:str_replace_tool
+  - name: move_path
+    group: file:write
+  - name: delete_path
+    group: file:write
+  # This tool also requires sandbox.allow_host_tools=true and an installed CLI.
+  - name: host_opencli
+    group: host:opencli
+    executable: opencli
+    timeout: 120
+    allowed_sites: [web, twitter, xiaohongshu, xiaoyuzhou, weixin, douyin, bilibili]
   - name: bash
     group: bash
-    use: deerflow.sandbox.tools:bash_tool

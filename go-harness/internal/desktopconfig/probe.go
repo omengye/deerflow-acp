@@ -25,7 +25,7 @@ func (s service) testModel(request map[string]any) (map[string]any, error) {
 	}
 	model := models[0].(map[string]any)
 	provider := "openai"
-	if str(model, "use", "") == "langchain_anthropic:ChatAnthropic" {
+	if nativeProvider(model) == "claude" {
 		provider = "claude"
 	}
 	apiKey, err := resolveSecret(str(model, "api_key", ""))

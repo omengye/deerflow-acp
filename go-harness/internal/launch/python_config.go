@@ -32,6 +32,7 @@ type pythonModel struct {
 	Name           string `yaml:"name"`
 	DisplayName    string `yaml:"display_name"`
 	Use            string `yaml:"use"`
+	Provider       string `yaml:"provider"`
 	Model          string `yaml:"model"`
 	APIKey         string `yaml:"api_key"`
 	BaseURL        string `yaml:"base_url"`
@@ -40,9 +41,10 @@ type pythonModel struct {
 }
 
 type pythonRuntimeConfig struct {
-	ACPAgents    map[string]any `yaml:"acp_agents"`
-	DefaultModel string         `yaml:"default_model"`
-	Models       []pythonModel  `yaml:"models"`
+	ACPAgents    map[string]any              `yaml:"acp_agents"`
+	DefaultModel string                      `yaml:"default_model"`
+	Models       []pythonModel               `yaml:"models"`
+	Tools        []harness.BuiltinToolConfig `yaml:"tools"`
 	API          struct {
 		ModelName            string   `yaml:"model_name"`
 		ChatRequestTimeout   *float64 `yaml:"chat_request_timeout"`
@@ -70,8 +72,10 @@ type pythonRuntimeConfig struct {
 		CleanupIntervalSeconds *float64  `yaml:"session_cleanup_interval_seconds"`
 	} `yaml:"local_acp"`
 	Sandbox struct {
-		Use           string `yaml:"use"`
-		AllowHostBash bool   `yaml:"allow_host_bash"`
+		Use            string `yaml:"use"`
+		Provider       string `yaml:"provider"`
+		AllowHostBash  bool   `yaml:"allow_host_bash"`
+		AllowHostTools bool   `yaml:"allow_host_tools"`
 	} `yaml:"sandbox"`
 	Skills struct {
 		Enabled        *bool  `yaml:"enabled"`
@@ -96,14 +100,14 @@ type pythonRuntimeConfig struct {
 }
 
 func pythonProvider(use string) (string, error) {
-	switch use {
-	case "langchain_openai:ChatOpenAI", "deerflow.models.patched_openai:PatchedChatOpenAI":
-		return "openai", nil
-	case "langchain_anthropic:ChatAnthropic":
-		return "claude", nil
-	default:
-		return "", fmt.Errorf("unsupported Python model provider %q", use)
+	return harness.NativeModelProvider(use)
+}
+
+func (m pythonModel) provider() string {
+	if m.Provider != "" {
+		return m.Provider
 	}
+	return m.Use
 }
 
 func pythonScalar(value string) (string, error) {
@@ -190,7 +194,7 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 			if !source.Sandbox.AllowHostBash {
 				return result, fmt.Errorf("local_acp.enable_bash requires sandbox.allow_host_bash or an explicit Go --sandbox-provider")
 			}
-			if source.Sandbox.Use != "deerflow.sandbox.local:LocalSandboxProvider" {
+			if source.Sandbox.Provider != "local" && source.Sandbox.Use != "local" && source.Sandbox.Use != "deerflow.sandbox.local:LocalSandboxProvider" {
 				return result, fmt.Errorf("Go desktop command mapping requires sandbox.use=deerflow.sandbox.local:LocalSandboxProvider")
 			}
 			if runtime.GOOS != "windows" {
@@ -235,6 +239,9 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 		return result, fmt.Errorf("local_acp tool policy: %w", err)
 	}
 	cfg.ToolPolicy = policy
+	if err := applyBuiltinTools(abs, source, cfg); err != nil {
+		return result, err
+	}
 	if source.LocalACP.GoalAutoContinue {
 		return result, fmt.Errorf("local_acp.goal_auto_continue has no Go equivalent")
 	}
@@ -296,7 +303,7 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	if model == nil || model.Model == "" {
 		return result, fmt.Errorf("selected Python model %q is missing or has no model ID", selected)
 	}
-	provider, err := pythonProvider(model.Use)
+	provider, err := pythonProvider(model.provider())
 	if err != nil {
 		return result, err
 	}
@@ -465,7 +472,7 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 		if option.Model == "" {
 			continue
 		}
-		optionProvider, providerErr := pythonProvider(option.Use)
+		optionProvider, providerErr := pythonProvider(option.provider())
 		if providerErr != nil {
 			continue
 		}
@@ -513,6 +520,45 @@ func ApplyPythonConfig(path string, cfg *deerflow.Config, maxConnections *int, e
 	result.Path = abs
 	result.Revision = fmt.Sprintf("%x", sha256.Sum256(raw))
 	return result, nil
+}
+
+func applyBuiltinTools(configPath string, source pythonRuntimeConfig, cfg *deerflow.Config) error {
+	configured := make([]harness.BuiltinToolConfig, 0, len(source.Tools))
+	seen := map[string]bool{}
+	for _, setting := range source.Tools {
+		if err := setting.Validate(); err != nil {
+			return err
+		}
+		if seen[setting.Name] {
+			return fmt.Errorf("duplicate configured tool %s", setting.Name)
+		}
+		seen[setting.Name] = true
+		var err error
+		setting.APIKey, err = pythonScalar(setting.APIKey)
+		if err != nil {
+			return fmt.Errorf("%s.api_key: %w", setting.Name, err)
+		}
+		setting.HTTPSProxy, err = pythonScalar(setting.HTTPSProxy)
+		if err != nil {
+			return fmt.Errorf("%s.https_proxy: %w", setting.Name, err)
+		}
+		if setting.Executable != "" {
+			setting.Executable, err = pythonScalar(setting.Executable)
+			if err != nil {
+				return fmt.Errorf("%s.executable: %w", setting.Name, err)
+			}
+			if strings.ContainsAny(setting.Executable, "/\\") && !filepath.IsAbs(setting.Executable) {
+				setting.Executable = resolvePythonConfigPath(configPath, setting.Executable)
+			}
+		}
+		if err := setting.Validate(); err != nil {
+			return err
+		}
+		configured = append(configured, setting)
+	}
+	cfg.BuiltinTools = configured
+	cfg.HostToolsAllowed = source.Sandbox.AllowHostTools
+	return nil
 }
 
 type pythonContextSize struct {

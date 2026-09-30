@@ -11,6 +11,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/cloudwego/eino/adk"
@@ -22,6 +23,7 @@ import (
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
+	"github.com/omengye/deerflow-acp/go-harness/internal/opencli"
 	"github.com/omengye/deerflow-acp/go-harness/internal/sandbox"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/tools"
@@ -34,6 +36,7 @@ type extensionState struct {
 	MCPGeneration     string             `json:"mcpGeneration,omitempty"`
 	SandboxPolicy     string             `json:"sandboxPolicy"`
 	ExternalACPPolicy string             `json:"externalACPPolicy,omitempty"`
+	BuiltinToolPolicy string             `json:"builtinToolPolicy,omitempty"`
 	ToolPolicy        string             `json:"toolPolicy,omitempty"`
 	MemoryPolicy      string             `json:"memoryPolicy,omitempty"`
 	ExtractionEnabled bool               `json:"extractionEnabled,omitempty"`
@@ -236,10 +239,38 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		memoryPolicy = fmt.Sprintf("%x", identity)
 	}
 	return func(ctx context.Context, req harness.RunRequest, pinned json.RawMessage) (out einoengine.RunExtensions, err error) {
+		defer func() {
+			if err != nil && out.Cleanup != nil {
+				err = errors.Join(err, out.Cleanup())
+				out.Cleanup = nil
+			}
+		}()
 		selection := selectionPolicy
 		selection.Workspace = req.Session.CWD
 		readOnly := req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
+		var opencliPlan opencli.Launcher
+		for _, setting := range cfg.BuiltinTools {
+			if setting.Name == "host_opencli" && cfg.HostToolsAllowed && cfg.ToolPolicy.Allows(setting.Name) {
+				opencliPlan, err = opencli.Resolve(setting.Executable)
+				if err != nil {
+					return out, err
+				}
+			}
+		}
 		state := extensionState{Version: 1, SandboxPolicy: policyHash, ExternalACPPolicy: acpPolicy, ToolPolicy: toolPolicy, MemoryPolicy: memoryPolicy, ExtractionEnabled: cfg.MemoryExtraction}
+		if len(cfg.BuiltinTools) > 0 {
+			secrets := []string{}
+			for _, setting := range cfg.BuiltinTools {
+				secrets = append(secrets, setting.APIKey, setting.HTTPSProxy)
+			}
+			encoded, _ := json.Marshal(struct {
+				Tools       []harness.BuiltinToolConfig
+				HostAllowed bool
+				Launcher    opencli.Launcher
+				Secrets     []string
+			}{cfg.BuiltinTools, cfg.HostToolsAllowed, opencliPlan, secrets})
+			state.BuiltinToolPolicy = fmt.Sprintf("%x", sha256.Sum256(encoded))
+		}
 		if !readOnly {
 			state.MCPGeneration, err = manager.Generation(ctx, req.Session.ID)
 			if err != nil {
@@ -255,7 +286,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 				return out, fmt.Errorf("%w: invalid extension checkpoint", harness.ErrInvalidInput)
 			}
 			var extra any
-			if dec.Decode(&extra) != io.EOF || previous.Version != state.Version || previous.MCPGeneration != state.MCPGeneration || previous.SandboxPolicy != state.SandboxPolicy || previous.ExternalACPPolicy != state.ExternalACPPolicy || previous.ToolPolicy != state.ToolPolicy || previous.ExtractionEnabled != state.ExtractionEnabled {
+			if dec.Decode(&extra) != io.EOF || previous.Version != state.Version || previous.MCPGeneration != state.MCPGeneration || previous.SandboxPolicy != state.SandboxPolicy || previous.ExternalACPPolicy != state.ExternalACPPolicy || previous.BuiltinToolPolicy != state.BuiltinToolPolicy || previous.ToolPolicy != state.ToolPolicy || previous.ExtractionEnabled != state.ExtractionEnabled {
 				return out, fmt.Errorf("%w: execution resources changed since checkpoint", harness.ErrInvalidInput)
 			}
 			if previous.MemoryPolicy != state.MemoryPolicy && (previous.MemoryPolicy != "" || len(previous.Memory) != 0) {
@@ -289,7 +320,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		if readOnly {
 			req.Session.Mode = "plan"
 		}
-		out.Tools, out.Cleanup, err = tools.WorkspaceFactory(ctx, req)
+		out.Tools, out.Cleanup, err = tools.ConfiguredWorkspaceFactory(ctx, req, cfg.BuiltinTools)
 		if err != nil {
 			return out, err
 		}
@@ -325,8 +356,42 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			}
 			out.Tools = append(out.Tools, view)
 		}
+		for _, setting := range cfg.BuiltinTools {
+			if !cfg.ToolPolicy.Allows(setting.Name) {
+				continue
+			}
+			if setting.Name == "web_search" || setting.Name == "web_fetch" || setting.Name == "image_search" {
+				web, closeWeb, webErr := tools.WebTools(setting)
+				if webErr != nil {
+					return out, webErr
+				}
+				previousCleanup := out.Cleanup
+				out.Cleanup = func() error { return errors.Join(closeWeb(), previousCleanup()) }
+				out.Tools = append(out.Tools, web)
+			}
+		}
 		if readOnly {
 			return out, nil
+		}
+		for _, setting := range cfg.BuiltinTools {
+			if setting.Name != "host_opencli" || !cfg.HostToolsAllowed || !cfg.ToolPolicy.Allows(setting.Name) {
+				continue
+			}
+			timeout := setting.Timeout
+			if timeout == 0 {
+				timeout = 120
+			}
+			backend, createErr := sandbox.New(ctx, harness.SandboxConfig{Enabled: true, Provider: harness.SandboxLocal, AllowedExecutables: []string{opencliPlan.Executable}, Environment: opencliPlan.Environment, Limits: harness.CommandLimits{Timeout: time.Duration(timeout) * time.Second, OutputBytes: 1_000_000, MaxConcurrent: 1, MaxRetained: 4}}, req.Session.CWD)
+			if createErr != nil {
+				return out, createErr
+			}
+			previousCleanup := out.Cleanup
+			out.Cleanup = func() error { return errors.Join(backend.Close(), previousCleanup()) }
+			invoke, toolErr := tools.OpenCLITool(backend, opencliPlan, opencli.AllowedSites(setting))
+			if toolErr != nil {
+				return out, toolErr
+			}
+			out.Tools = append(out.Tools, invoke)
 		}
 		if len(cfg.ACPAgents) > 0 {
 			invoke, err := acpclient.Tool(cfg.DataDir, req.Session, cfg.ACPAgents)
@@ -363,6 +428,18 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			return out, err
 		}
 		out.Tools = append(out.Tools, command)
+		if commandPolicy.AllowShell && cfg.ToolPolicy.Allows("bash") {
+			for _, setting := range cfg.BuiltinTools {
+				if setting.Name == "bash" {
+					bash, bashErr := tools.BashTool(commands, commandPolicy.Provider)
+					if bashErr != nil {
+						return out, bashErr
+					}
+					out.Tools = append(out.Tools, bash)
+					break
+				}
+			}
+		}
 		return out, nil
 	}
 }

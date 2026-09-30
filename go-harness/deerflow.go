@@ -56,6 +56,11 @@ type Config struct {
 	// ToolPolicy bounds the tool surface for every run, including native Eino
 	// task and write_todos. Session configuration cannot enlarge this boundary.
 	ToolPolicy harness.ToolPolicy
+	// BuiltinTools maps the portable tools list to native Go implementations.
+	// HostToolsAllowed separately opts into host_opencli. Nil preserves the SDK
+	// workspace tool surface and does not enable any network or host adapter.
+	BuiltinTools     []harness.BuiltinToolConfig
+	HostToolsAllowed bool
 	// PermissionMode follows local_acp.permission_mode when set. Empty keeps
 	// the original Go SDK behavior for existing embedders.
 	PermissionMode harness.PermissionMode
@@ -136,6 +141,18 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	}
 	if err := cfg.ToolPolicy.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", harness.ErrInvalidInput, err)
+	}
+	cfg.BuiltinTools = slices.Clone(cfg.BuiltinTools)
+	toolNames := map[string]bool{}
+	for i, config := range cfg.BuiltinTools {
+		if err := config.Validate(); err != nil {
+			return nil, fmt.Errorf("%w: %v", harness.ErrInvalidInput, err)
+		}
+		if toolNames[config.Name] {
+			return nil, fmt.Errorf("%w: duplicate configured tool %s", harness.ErrInvalidInput, config.Name)
+		}
+		toolNames[config.Name] = true
+		cfg.BuiltinTools[i].AllowedSites = slices.Clone(config.AllowedSites)
 	}
 	if !cfg.ToolPolicy.Allows("task") {
 		cfg.DisableSubagents = true

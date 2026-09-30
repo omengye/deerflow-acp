@@ -5,6 +5,10 @@ It is under active development. The complete V1 scope and acceptance gates are
 tracked in [the implementation plan](../docs/eino-harness-v1-implementation-plan.md)
 and [implementation status](../docs/eino-harness-implementation-status.md).
 
+The portable configuration now supports 13 migrated native Go tools and uses
+`models[].provider`, `sandbox.provider` and tool names without Python `use`
+class paths. See [native tool configuration and limits](../docs/go-native-tools.md).
+
 ## Build and start
 
 Go automatically selects the pinned `go1.26.8` toolchain. The module requires

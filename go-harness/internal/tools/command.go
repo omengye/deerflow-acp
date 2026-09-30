@@ -73,19 +73,29 @@ func (t *commandTool) InvokableRun(ctx context.Context, args string, _ ...tool.O
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	started, err := t.backend.Start(ctx, harness.CommandRequest{Executable: in.Executable, Args: in.Args, Script: in.Script, Timeout: time.Duration(in.TimeoutSeconds) * time.Second})
-	if err != nil {
-		return "", err
+	result, runErr := executeCommand(ctx, t.backend, harness.CommandRequest{Executable: in.Executable, Args: in.Args, Script: in.Script, Timeout: time.Duration(in.TimeoutSeconds) * time.Second})
+	data, marshalErr := json.Marshal(result)
+	output := string(data)
+	if err := errors.Join(runErr, marshalErr); err != nil {
+		return output, &commandResultError{cause: err, result: output}
 	}
-	result, waitErr := t.backend.Wait(ctx, started.ID)
+	return output, nil
+}
+
+// All foreground adapters share cancellation, process joining and receipts.
+func executeCommand(ctx context.Context, backend harness.CommandBackend, request harness.CommandRequest) (harness.CommandSnapshot, error) {
+	started, err := backend.Start(ctx, request)
+	if err != nil {
+		return harness.CommandSnapshot{}, err
+	}
+	result, waitErr := backend.Wait(ctx, started.ID)
 	if waitErr != nil {
 		// Cancellation of Wait only stops waiting. Join cancellation of the owned
 		// command before returning and before the runtime releases its run lease.
 		var cancelErr error
-		result, cancelErr = t.backend.Cancel(context.WithoutCancel(ctx), started.ID)
+		result, cancelErr = backend.Cancel(context.WithoutCancel(ctx), started.ID)
 		waitErr = errors.Join(waitErr, cancelErr)
 	}
-	data, marshalErr := json.Marshal(result)
 	confirmed := result.TerminationConfirmed && result.State != harness.CommandUncertain
 	switch result.State {
 	case harness.CommandCompleted:
@@ -109,11 +119,7 @@ func (t *commandTool) InvokableRun(ctx context.Context, args string, _ ...tool.O
 		waitErr = errors.Join(waitErr, harness.ErrCommandUncertain)
 	}
 	if confirmed {
-		waitErr = errors.Join(waitErr, t.backend.Release(context.WithoutCancel(ctx), started.ID))
+		waitErr = errors.Join(waitErr, backend.Release(context.WithoutCancel(ctx), started.ID))
 	}
-	output := string(data)
-	if err := errors.Join(waitErr, marshalErr); err != nil {
-		return output, &commandResultError{cause: err, result: output}
-	}
-	return output, nil
+	return result, waitErr
 }
