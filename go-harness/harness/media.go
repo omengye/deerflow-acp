@@ -10,6 +10,7 @@ const (
 	AssetImage                    = "image"
 	AssetFile                     = "file"
 	AssetArtifact                 = "artifact"
+	AssetToolOutput               = "tool_output"
 )
 
 // AssetRef is durable metadata, never image bytes or a provider download URL.
@@ -26,6 +27,23 @@ type AssetRef struct {
 
 type AssetResolver interface {
 	Resolve(context.Context, string, AssetRef) ([]byte, error)
+}
+
+// ToolOutputChunk is one bounded, UTF-8 slice of a durable tool result.
+// Offsets are byte offsets and NextOffset can be used for the next read.
+type ToolOutputChunk struct {
+	Text       string `json:"text"`
+	Offset     int64  `json:"offset"`
+	NextOffset int64  `json:"nextOffset"`
+	TotalBytes int64  `json:"totalBytes"`
+	EOF        bool   `json:"eof"`
+}
+
+// ToolOutputStore retains full oversized text outside the model context.
+// Implementations must bind both operations to the current session/workspace.
+type ToolOutputStore interface {
+	StoreToolOutput(context.Context, Session, string) (AssetRef, error)
+	ReadToolOutput(context.Context, Session, string, int64, int) (ToolOutputChunk, error)
 }
 
 // ToolImageImporter stages inline tool images for the terminal tool receipt.

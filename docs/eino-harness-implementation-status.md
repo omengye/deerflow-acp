@@ -2,6 +2,8 @@
 
 本文件跟踪完整 V1，不能以当前已实现子集代替原方案的验收范围。
 
+当前实施优先级是可运行的 Go harness 与本地 ACP；Python 运行时兼容/回退、可选外部 ACP Agent 和远端 CI 可在后续阶段处理。
+
 ## 基线
 
 - 分支 `codex/eino-harness-acp-refactor`；Python/Bridge 参照 `92b56924989a91e0eae05be6e95a6304f1ee4cd4`。
@@ -20,11 +22,11 @@
 | 执行与工作区工具 | Eino TurnLoop/DeepAgent、前台委派、文件工具、plan/read_only、主/子共享预算；执行回执与命令工具已接线 | 长期会话循环、后台委派和更完整的工具集 |
 | 权限 / 恢复 | 前台与后台原生 durable HITL、审批/检查点/回执/预算联合恢复；SDK/ACP 查询、批准与取消已接入 | 真实编辑器与 MCP 重新绑定恢复 |
 | 领域事件 / 历史 | 持久事件、文本/工具/产物 updates、原生子 Agent 生命周期、主 Agent 计划与真实上下文用量投影、分页历史与 load 重放、有界异步 ACP 更新队列 | 真实编辑器流压验证 |
-| MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入 | 真实编辑器互操作、与后台任务生命周期组合 |
+| MCP | ACP client 配置、stdio/出站 HTTP/SSE、官方工具适配、会话代际替换、凭据隔离已接入；桌面 Go 启动现可从宿主 YAML 下发 stdio 命令允许列表 | 真实编辑器互操作、与后台任务生命周期组合 |
 | 会话配置 | 模型白名单、subagent、ask/allow_always/reject_always/read_only、版本与审批缓存撤销已持久化；Python `off`/`dangerous`/`all` 权限模式已映射到 Go | thinking/profile 仅在真实能力落地后开放；真实编辑器审批体验待验收 |
 | 图片 / 附件 / 产物 | 不可变资产快照、引用持久化、模型前临时加载、SDK/ACP 图片输入、view_image、产物登记、MCP 增强工具图片导入及模型生成图片的导入/ACP 回放已验证 | 模型生成音视频、远程图片 URL、可选对象存储发布及真实图片模型验收 |
 | 后台子任务 / 长命令 | 原生 Manager、有界 worker、隔离 child、真实 Eino/model/tool factory、后台审批 broker、SDK/ACP 与关机暂停/显式恢复、父会话通知输入已接线 | 跨 run 长命令；真实编辑器中的通知处理与恢复互操作 |
-| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入 | 真实模型策略校准 |
+| Skills / memory / 压缩 | Skills 不可变注册表与逐步加载，22 个内置 Skill 已装入；记忆 scoped facts/revision、FTS5、SDK/ACP 管理、Eino 固定快照注入、只读检索工具、显式启用的受控提取/终态提升与摘要压缩、Flush 屏障及旧 JSON 显式迁移已接入；大工具输出可保存会话私有快照并有界分段读取 | 真实模型策略校准、流式自定义工具大输出快照 |
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层（含工具允许/拒绝列表、默认超时和宿主 prompt overlay）、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
 | 可选外部 ACP Agent | 显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次模型调用计入父预算，远端提供的终态 usage 可用于结算；未决 prompt 先落盘，超时后阻止重复派发，SDK/ACP 扩展可按终态/已复核回执确认解除 | 原 prompt 的通用断线原位恢复、远端真实模型用量硬约束、产物导入与真实编辑器中的对账互操作 |
@@ -424,3 +426,11 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 扩展 Skills 扫描器兼容 Windows CRLF；Go 注册表受限接受内置图表 Skill 的字符串 `compatibility` 映射。真实内置配置启动测试确认 Skills 非空且已安装。包内共有 22 个 public 目录，其中 `vercel-deploy-claimable` 的目录名与声明名不一致，按 Go 注册表规则跳过；其余 21 个已安装并启用。
 - Windows Go 全模块 `go test -mod=readonly -count=1 -p=2 -timeout=5m ./...`、新记忆/配置定向 race、执行队列定向 race、`go mod verify`、Python smoke 脚本编译与 `git diff --check` 已通过。首轮启用 Skills 的桌面 smoke 揭露 CRLF 扫描缺口，修复后从已验证 Debug 桌面包复制独立测试包并替换新 Go daemon，`--backend go` 完整 smoke 报告为 `ok: true`、`error: null`、`cleanup_errors: []`，日志位于 `.build-cache/desktop-smoke/20260930-131035-5cea1773/logs`。模型请求中 22 次包含 `skill` 工具，另有 12 次非流式记忆提取请求。测试包沿用先前的 Waku/Bridge Debug 二进制；更新后的桌面文案尚未重新打包。
 - 本阶段仍使用本地假模型和 WebSocket 客户端；手工 UI、真实模型、Release 重打包及远端 CI 未验收。外部 ACP 的通用断线原位恢复、远端硬预算和产物导入等限制继续存在。
+
+## 第四十三阶段 Go harness 大输出与桌面客户端 MCP
+
+- 工具中间件先将超过模型内联额度的完整 UTF-8 结果保存为会话私有资产，再向 Eino 返回含不透明 ID 的有界预览。模型可用 `read_tool_output` 按偏移读取最多 4096 字节；存储层每次校验会话和工作区，重启后仍可读取，同一执行的内联工具文本总额限制为 16 KiB。摘要压缩在当前轮仍过大时只收起较早的只读工具文本，保留工具调用配对和最新结果。测试覆盖约 140 KiB 的真实 `read_file`、连续 20 次大结果与分段读取、跨会话拒绝、跨重启及只读策略。流式自定义工具尚未接入快照机制。
+- 将内置 `vercel-deploy-claimable` 目录改为与其 `name: vercel-deploy` 一致的 `vercel-deploy`，真实配置启动测试确认 22 个 public Skill 全部安装，桌面 smoke 的模型实际调用 `bootstrap` 并收到正文。
+- 桌面 Go 后端从宿主 YAML 的 `local_acp.accept_client_mcp_servers` 与 `client_mcp_allowed_commands` 读取 stdio 命令允许列表。配置服务在 validate/save 前验证 1–32 个存在的绝对路径；Waku 仅在 Go 后端启动时下发，Bridge 只转发给 Go daemon。ACP 客户端不能通过自己的会话配置增加宿主允许的可执行文件。默认关闭；这条桌面配置路径尚未开放 HTTP/SSE 客户端 MCP。
+- 更新后的 Windows Debug 桌面包 `dist/desktop/DeerFlow-Desktop-20260930-harness-mcp-debug` 经隔离 smoke 验证：Waku 启动 Go daemon，ACP 客户端传入真实 stdio MCP 进程，模型发现并调用工具，一次性审批后产生文件效果，凭据未进入模型请求或 ACP 更新，`session/close` 与空 MCP 配置重新加载后工具消失；随后 Skills、文件审批、应用重启、会话恢复、历史删除及 daemon 停止均通过。报告位于 `.build-cache/desktop-smoke/20260930-144028-1ae34731/logs/report.json`，`ok: true`、`cleanup_errors: []`。
+- Windows Go 全模块 `go test -mod=readonly -count=1 -p=2 -timeout=5m ./...` 最终重跑通过；assets/Eino/runtime 新增路径的定向 `-race` 通过，Linux amd64、CGO 关闭的全模块交叉构建通过。Bridge 13 项单测、Waku 配置 7 项单测和 Python 配置 21 项测试通过。Eino 当前使用 `v0.10.0-alpha.35`，核对 Go 模块版本列表时它仍是最新的 alpha 标签。本阶段以本地模型 fixture 验证 Go 产品链路；手工编辑器与真实模型未验收。

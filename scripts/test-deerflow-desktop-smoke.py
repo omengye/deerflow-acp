@@ -239,6 +239,8 @@ class ACP:
     def __init__(self, process):
         self.process = process
         self.sequence = 0
+        self.permission = None
+        self.updates = []
 
     def rpc(self, method, params):
         self.sequence += 1
@@ -247,8 +249,15 @@ class ACP:
         while True:
             message = self.process.receive()
             if "method" in message and "id" in message:
-                self.process.send({"jsonrpc": "2.0", "id": message["id"],
-                                   "error": {"code": -32601, "message": "Smoke client has no tools"}})
+                if message["method"] == "session/request_permission" and self.permission:
+                    choice = self.permission(message.get("params", {}))
+                    self.process.send({"jsonrpc": "2.0", "id": message["id"], "result": {
+                        "outcome": {"outcome": "selected", "optionId": choice}}})
+                else:
+                    self.process.send({"jsonrpc": "2.0", "id": message["id"],
+                                       "error": {"code": -32601, "message": "Smoke client has no tools"}})
+            elif message.get("method") == "session/update":
+                self.updates.append(message.get("params", {}))
             if message.get("id") == request and ("result" in message or "error" in message):
                 require("error" not in message, f"ACP {method} failed: {message.get('error')}")
                 return message["result"]
@@ -301,6 +310,24 @@ class FakeOpenAI(http.server.ThreadingHTTPServer):
             self._tool_plans[marker] = call
         return marker
 
+    def plan_skill(self, name):
+        require(self.backend == "go" and name, "Skill smoke is available only for Go")
+        marker = f"smoke-skill-{uuid.uuid4().hex}"
+        call = {"id": f"call_{uuid.uuid4().hex}", "type": "function", "function": {
+            "name": "skill", "arguments": json.dumps({"skill": name})}}
+        with self._requests_lock:
+            self._tool_plans[marker] = call
+        return marker, call["id"]
+
+    def plan_mcp_record(self, value):
+        require(self.backend == "go", "Client MCP smoke is available only for Go")
+        marker = f"smoke-mcp-{uuid.uuid4().hex}"
+        call = {"id": f"call_{uuid.uuid4().hex}", "type": "function", "function": {
+            "name": "__desktop_mcp_record__", "arguments": json.dumps({"value": value})}}
+        with self._requests_lock:
+            self._tool_plans[marker] = call
+        return marker, call["id"]
+
     def planned_tool_call(self, body):
         messages = body.get("messages", [])
         latest_user = next((index for index in range(len(messages) - 1, -1, -1)
@@ -313,15 +340,21 @@ class FakeOpenAI(http.server.ThreadingHTTPServer):
                          if marker in text), None)
         if call is None:
             return None
+        if call["function"]["name"] == "__desktop_mcp_record__":
+            remote = next((tool["function"]["name"] for tool in body.get("tools", [])
+                           if tool.get("function", {}).get("name", "").startswith("mcp_desktop_fixture_record")), None)
+            if remote is None:
+                return None
+            call["function"]["name"] = remote
         # The final assistant reply must follow the actual tool result, including
-        # a denied result. Never keep reissuing a denied write in another turn.
+        # a denied result. Never keep reissuing a tool in another turn.
         if any(message.get("role") == "tool" and message.get("tool_call_id") == call["id"]
                for message in messages[latest_user + 1:]):
             return None
         # Title/background requests can quote the same user marker without
         # offering tools. Keep those requests as ordinary synthetic replies;
         # the real turn's file/permission assertions still require tool use.
-        if not any(tool.get("function", {}).get("name") == "write_file"
+        if not any(tool.get("function", {}).get("name") == call["function"]["name"]
                    for tool in body.get("tools", [])):
             return None
         return call
@@ -440,8 +473,11 @@ def main():
     parser.add_argument("--package", required=True, type=Path, help="Fresh extracted Windows Desktop package")
     parser.add_argument("--no-chat", action="store_true", help="Skip the optional local fake-model conversation checks")
     parser.add_argument("--backend", choices=("python", "go"), default="python", help="ACP daemon selected by Desktop")
+    parser.add_argument("--client-mcp", action="store_true", help="Exercise host-authorized ACP client stdio MCP on Go")
     args = parser.parse_args()
     require(os.name == "nt", "This smoke test targets the Windows portable package")
+    require(not args.client_mcp or (args.backend == "go" and not args.no_chat),
+            "Client MCP smoke needs Go and the local fake model")
     package = args.package.resolve(strict=True)
     repo = Path(__file__).resolve().parents[1]
     cache = repo / ".build-cache" / "desktop-smoke"
@@ -496,6 +532,16 @@ def main():
         require(ready["pid"] == process.process.pid, "Readiness PID mismatch")
         waku = Waku(ready["address"], token, ready["protocolVersion"], log)
         snapshot = waku.deerflow("snapshot")
+        if args.client_mcp:
+            config_file = Path(snapshot["paths"]["config"])
+            raw = config_file.read_text(encoding="utf-8")
+            require("  accept_client_mcp_servers: false" in raw and "  client_mcp_allowed_commands: []" in raw,
+                    "Package default config has no host MCP policy fields")
+            raw = raw.replace("  accept_client_mcp_servers: false", "  accept_client_mcp_servers: true", 1)
+            raw = raw.replace("  client_mcp_allowed_commands: []",
+                              "  client_mcp_allowed_commands: [" + json.dumps(str(interpreter)) + "]", 1)
+            config_file.write_text(raw, encoding="utf-8")
+            snapshot = waku.deerflow("snapshot")
         require(below(Path(snapshot["paths"]["config"]), root), "Snapshot config escaped isolated package")
         require(snapshot["models"], "Default snapshot contains no model")
         require(waku.deerflow("status").get("acp_backend") == args.backend, "Desktop selected the wrong ACP backend")
@@ -554,6 +600,43 @@ def main():
         workspace = root / "smoke-workspace"
         workspace.mkdir()
         acp = acp_client("acp-before-apply")
+        if args.client_mcp:
+            effect = workspace / "client-mcp-effect.txt"
+            secret = secrets.token_hex(24)
+            marker, call_id = fake.plan_mcp_record("desktop client MCP effect")
+            approvals = 0
+            def approve_mcp(params):
+                nonlocal approvals
+                approvals += 1
+                require(not effect.exists(), "Client MCP caused an effect before approval")
+                require(secret not in json.dumps(params), "MCP credential leaked into ACP permission")
+                return "allow_once"
+            acp.permission = approve_mcp
+            request_start = fake.requests_seen
+            mcp_session = acp.rpc("session/new", {"cwd": str(workspace), "mcpServers": [{
+                "name": "desktop-fixture", "command": str(interpreter),
+                "args": [str(repo / "scripts/fixtures/mcp_stdio_smoke.py")],
+                "env": [{"name": "ACP_MCP_EFFECT", "value": str(effect)},
+                        {"name": "ACP_MCP_SECRET", "value": secret}],
+            }]})["sessionId"]
+            acp.rpc("session/prompt", {"sessionId": mcp_session, "prompt": [{"type": "text", "text": marker}]})
+            require(effect.is_file() and effect.read_text(encoding="utf-8") == "desktop client MCP effect" and approvals == 1,
+                    "ACP client MCP did not execute once after approval")
+            model_requests = fake.requests_since(request_start)
+            require(any(message.get("role") == "tool" and message.get("tool_call_id") == call_id
+                        for request in model_requests for message in request.get("messages", [])),
+                    "MCP result did not reach the model")
+            require(secret not in json.dumps(model_requests) and secret not in json.dumps(acp.updates),
+                    "MCP credential leaked into model context or ACP updates")
+            acp.rpc("session/close", {"sessionId": mcp_session})
+            acp.rpc("session/load", {"sessionId": mcp_session, "cwd": str(workspace), "mcpServers": []})
+            request_start = fake.requests_seen
+            acp.rpc("session/prompt", {"sessionId": mcp_session, "prompt": [{"type": "text", "text": "Reply after MCP release."}]})
+            require(all(not tool.get("function", {}).get("name", "").startswith("mcp_")
+                        for request in fake.requests_since(request_start) for tool in request.get("tools", [])),
+                    "Released MCP tool remained in model requests")
+            acp.rpc("session/close", {"sessionId": mcp_session})
+            log("Host-authorized ACP client MCP executed and released", approvals=approvals)
         original = acp.rpc("session/new", {"cwd": str(workspace), "mcpServers": []})["sessionId"]
         probe = acp.rpc("session/new", {"cwd": str(workspace), "mcpServers": []})["sessionId"]
         acp.rpc("session/close", {"sessionId": probe})
@@ -707,6 +790,32 @@ def main():
 
         if fake:
             old_runtime, cursor = start_chat()
+            if args.backend == "go":
+                marker, skill_call_id = fake.plan_skill("bootstrap")
+                request_start = fake.requests_seen
+                waku.rpc({"type": "prompt", "prompt": f"{marker}: Load the bootstrap skill, then report completion.",
+                          "turnId": str(uuid.uuid4()), "messageId": str(uuid.uuid4())}, session, old_runtime)
+                skill_events = []
+                skill_permissions = 0
+                def allow_skill(permission):
+                    nonlocal skill_permissions
+                    skill_permissions += 1
+                    option = next((item for item in permission.get("options", [])
+                                   if item.get("id") == "allow_once" or item.get("id", "").endswith(":allow_once")), None)
+                    require(option is not None, f"Missing one-time Skill permission: {permission}")
+                    response = waku.rpc({"type": "respond", "requestId": permission["requestId"],
+                                         "optionId": option["id"]}, session, old_runtime)
+                    require(response.get("type") == "ack", "Skill permission was not acknowledged")
+                finished = waku.event(old_runtime, "turnFinished", collect=skill_events,
+                                      on_permission=allow_skill)
+                require(finished.get("success") is True, f"Bundled Skill turn failed: {finished}")
+                require(skill_permissions == 1, f"Expected one Skill permission, got {skill_permissions}")
+                skill_result = next((message for request in fake.requests_since(request_start)
+                                     for message in request.get("messages", [])
+                                     if message.get("role") == "tool" and message.get("tool_call_id") == skill_call_id), None)
+                require(skill_result is not None and "Bootstrap Soul" in message_text(skill_result),
+                        "Go desktop did not return the bundled Skill body to the model")
+                log("Bundled Skill loaded through Waku and Go ACP", name="bootstrap")
             approval_runtime, approval_cursor = start_approval_session()
             write_turn(approval_runtime, "full-access.txt")
             set_approval(approval_runtime, "ask")

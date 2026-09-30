@@ -561,8 +561,8 @@ func TestApplyCurrentExampleSkillsStartGoHarness(t *testing.T) {
 	if _, err := ApplyPythonConfig(filepath.Join("..", "..", "..", "config.example.yaml"), &cfg, &connections, nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Skills.Install) == 0 {
-		t.Fatal("bundled Skills were not discovered")
+	if len(cfg.Skills.Install) != 22 {
+		t.Fatalf("expected all 22 bundled Skills, got %d", len(cfg.Skills.Install))
 	}
 	cfg.DataDir = t.TempDir()
 	cfg.APIKey = "fixture"
@@ -570,8 +570,18 @@ func TestApplyCurrentExampleSkillsStartGoHarness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bundled Skills prevent Go startup: %v", err)
 	}
-	if listed, err := client.ListSkills(context.Background(), cfg.SkillSelection); err != nil || len(listed) == 0 {
+	listed, err := client.ListSkills(context.Background(), cfg.SkillSelection)
+	if err != nil || len(listed) != 22 {
 		t.Fatalf("bundled Skills were not installed: count=%d err=%v", len(listed), err)
+	}
+	var vercel bool
+	for _, record := range listed {
+		if record.Ref.Name == "vercel-deploy" && record.Enabled {
+			vercel = true
+		}
+	}
+	if !vercel {
+		t.Fatal("bundled Vercel deployment Skill is missing or disabled")
 	}
 	if err := client.Close(); err != nil {
 		t.Fatal(err)

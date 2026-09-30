@@ -27,6 +27,12 @@ func TestDeploymentPermissionPrecedesSessionApprovalChoice(t *testing.T) {
 		}
 	}
 	readOnly := &Service{PermissionMode: harness.PermissionModeOff}
+	for _, session := range []harness.Session{{Mode: "plan"}, {ApprovalMode: harness.ApprovalReadOnly}} {
+		got, handled := readOnly.configuredPermission(session, harness.PermissionRequest{ToolName: "read_tool_output"})
+		if !handled || got != harness.AllowOnce {
+			t.Fatalf("read_tool_output was unavailable in %q/%q: %s %t", session.Mode, session.ApprovalMode, got, handled)
+		}
+	}
 	got, handled := readOnly.configuredPermission(harness.Session{ApprovalMode: harness.ApprovalReadOnly}, harness.PermissionRequest{ToolName: "write_file"})
 	if !handled || got != harness.RejectOnce {
 		t.Fatalf("deployment off bypassed Go read-only mode: %s %t", got, handled)

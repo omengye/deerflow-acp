@@ -62,6 +62,7 @@ struct Cli {
     config: Option<PathBuf>,
     python: Option<PathBuf>,
     daemon: Option<PathBuf>,
+    mcp_allow_commands: Vec<PathBuf>,
     runtime_dir: Option<PathBuf>,
     auto_start: bool,
     gateway_listen: String,
@@ -107,6 +108,7 @@ Options:\n  --config PATH       DeerFlow config.yaml used when starting the daem
 --protocol VERSION  ACP wire protocol for stdio proxy mode: v1 (default) or v2\n  \
 --python PATH       Python interpreter used to run -m deerflow.acp.daemon\n  \
 --daemon PATH       Explicit deerflow-acpd executable\n  --runtime-dir PATH  Override daemon endpoint directory\n  \
+--mcp-allow-command PATH  Host-authorized absolute MCP executable for Go daemon (repeatable)\n  \
 --no-auto-start      Fail instead of starting a missing daemon\n  --status             Check daemon status\n  \
 --start-daemon       Start the daemon without entering ACP proxy mode\n  --stop-daemon        Stop the daemon\n  \
 --manage             Send one JSON management request from stdin\n  \
@@ -120,12 +122,23 @@ Options:\n  --config PATH       DeerFlow config.yaml used when starting the daem
     );
 }
 
+fn push_mcp_allow_command(commands: &mut Vec<PathBuf>, command: PathBuf) -> Result<()> {
+    if !command.is_absolute() || !command.is_file() || commands.len() >= 32 {
+        return Err(
+            "--mcp-allow-command requires an existing absolute file; at most 32 are allowed".into(),
+        );
+    }
+    commands.push(command);
+    Ok(())
+}
+
 fn parse_cli() -> Result<Cli> {
     let mut mode = Mode::Proxy;
     let mut protocol = AcpProtocol::V1;
     let mut config = None;
     let mut python = None;
     let mut daemon = None;
+    let mut mcp_allow_commands = Vec::new();
     let mut runtime_dir = None;
     let mut auto_start = true;
     let mut gateway_listen = "127.0.0.1:8787".to_owned();
@@ -163,6 +176,12 @@ fn parse_cli() -> Result<Cli> {
                 daemon = Some(PathBuf::from(
                     args.next().ok_or("--daemon requires a path")?,
                 ));
+            }
+            "--mcp-allow-command" => {
+                push_mcp_allow_command(
+                    &mut mcp_allow_commands,
+                    PathBuf::from(args.next().ok_or("--mcp-allow-command requires a path")?),
+                )?;
             }
             "--runtime-dir" => {
                 runtime_dir = Some(PathBuf::from(
@@ -227,6 +246,7 @@ fn parse_cli() -> Result<Cli> {
         config,
         python,
         daemon,
+        mcp_allow_commands,
         runtime_dir,
         auto_start,
         gateway_listen,
@@ -544,6 +564,18 @@ fn find_layout_daemon(executable: Option<&Path>, config: Option<&Path>) -> Daemo
     }))
 }
 
+fn mcp_daemon_arguments(daemon: &DaemonCommand, allowed: &[PathBuf]) -> Result<Vec<OsString>> {
+    if !allowed.is_empty() && !daemon.prefix_args.is_empty() {
+        return Err("MCP command allowlist can only be passed to the Go daemon".into());
+    }
+    let mut arguments = Vec::with_capacity(allowed.len() * 2);
+    for command in allowed {
+        arguments.push(OsString::from("--mcp-allow-command"));
+        arguments.push(command.as_os_str().to_owned());
+    }
+    Ok(arguments)
+}
+
 fn spawn_daemon(cli: &Cli, runtime_dir: &Path) -> Result<()> {
     fs::create_dir_all(runtime_dir)?;
     let daemon = find_daemon(cli);
@@ -555,6 +587,7 @@ fn spawn_daemon(cli: &Cli, runtime_dir: &Path) -> Result<()> {
             command.current_dir(parent);
         }
     }
+    command.args(mcp_daemon_arguments(&daemon, &cli.mcp_allow_commands)?);
     command.arg("--runtime-dir").arg(runtime_dir);
     command
         .stdin(Stdio::null())
@@ -1012,6 +1045,38 @@ async fn main() {
 #[cfg(test)]
 mod process_tests {
     use super::*;
+
+    #[test]
+    fn host_mcp_allowlist_reaches_only_go_daemon() {
+        let command = PathBuf::from(if cfg!(windows) {
+            r"C:\MCP\server.exe"
+        } else {
+            "/opt/mcp/server"
+        });
+        let go = executable_daemon(PathBuf::from("deerflow-acpd"));
+        assert_eq!(
+            mcp_daemon_arguments(&go, &[command.clone()]).unwrap(),
+            vec![
+                OsString::from("--mcp-allow-command"),
+                command.into_os_string()
+            ]
+        );
+        let python = python_daemon(PathBuf::from("python"));
+        assert!(mcp_daemon_arguments(&python, &[PathBuf::from("/opt/mcp/server")]).is_err());
+        assert!(mcp_daemon_arguments(&python, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn host_mcp_allowlist_rejects_relative_and_missing_commands() {
+        let temporary = tempfile::tempdir().unwrap();
+        let allowed = temporary.path().join("server");
+        fs::write(&allowed, b"fixture").unwrap();
+        let mut commands = Vec::new();
+        assert!(push_mcp_allow_command(&mut commands, PathBuf::from("server")).is_err());
+        assert!(push_mcp_allow_command(&mut commands, temporary.path().join("missing")).is_err());
+        push_mcp_allow_command(&mut commands, allowed).unwrap();
+        assert_eq!(commands.len(), 1);
+    }
 
     #[test]
     fn current_process_is_not_reported_as_exited() {

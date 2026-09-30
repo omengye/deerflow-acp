@@ -67,6 +67,37 @@ fn select_acp_backend(
     }
 }
 
+fn mcp_bridge_arguments(backend: &AcpBackend, policy: &Value) -> Result<Vec<String>> {
+    if *backend == AcpBackend::Python {
+        return Ok(Vec::new());
+    }
+    let enabled = policy["enabled"]
+        .as_bool()
+        .ok_or_else(|| anyhow!("DeerFlow MCP host policy is missing its enabled flag"))?;
+    if !enabled {
+        return Ok(Vec::new());
+    }
+    let commands = policy["allowed_commands"]
+        .as_array()
+        .ok_or_else(|| anyhow!("DeerFlow MCP host policy has no command list"))?;
+    if commands.is_empty() || commands.len() > 32 {
+        bail!("DeerFlow MCP host policy requires 1..32 executable commands");
+    }
+    let mut arguments = Vec::with_capacity(commands.len() * 2);
+    for command in commands {
+        let path = command
+            .as_str()
+            .map(Path::new)
+            .ok_or_else(|| anyhow!("DeerFlow MCP host policy contains a non-path command"))?;
+        if !path.is_absolute() || !path.is_file() {
+            bail!("DeerFlow MCP host policy requires an existing absolute executable path");
+        }
+        arguments.push("--mcp-allow-command".to_owned());
+        arguments.push(path.to_string_lossy().into_owned());
+    }
+    Ok(arguments)
+}
+
 impl Paths {
     fn discover() -> Result<Self> {
         let root = waku_protocol::identity::portable_root();
@@ -175,6 +206,14 @@ impl Paths {
         }
     }
 
+    fn go_mcp_arguments(&self) -> Result<Vec<String>> {
+        if self.acp_backend == AcpBackend::Python {
+            return Ok(Vec::new());
+        }
+        let policy = self.config_command("bridge-policy", &Value::Null)?;
+        mcp_bridge_arguments(&self.acp_backend, &policy)
+    }
+
     fn config_command(&self, operation: &str, input: &Value) -> Result<Value> {
         let mut command = hidden_command(&self.python);
         command
@@ -195,12 +234,18 @@ impl Paths {
         if !self.bridge.is_file() {
             bail!("找不到 ACP Bridge：{}", self.bridge.display());
         }
+        let mcp_arguments = if mode == "--start-daemon" {
+            self.go_mcp_arguments()?
+        } else {
+            Vec::new()
+        };
         let mut command = hidden_command(&self.bridge);
         command
             .arg(mode)
             .arg("--config")
             .arg(&self.config)
             .args(self.backend_arguments())
+            .args(mcp_arguments)
             .arg("--runtime-dir")
             .arg(&self.runtime)
             .envs(self.environment());
@@ -244,6 +289,7 @@ pub fn launch_arguments() -> Result<Vec<String>> {
         paths.config.to_string_lossy().into_owned(),
     ];
     arguments.extend(paths.backend_arguments());
+    arguments.extend(paths.go_mcp_arguments()?);
     arguments.extend([
         "--runtime-dir".into(),
         paths.runtime.to_string_lossy().into_owned(),
@@ -579,6 +625,50 @@ fn run(mut command: Command, input: Option<&Value>, timeout: Duration) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn go_mcp_policy_passes_only_host_allowed_absolute_commands() {
+        let root =
+            std::env::temp_dir().join(format!("deerflow-mcp-policy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let daemon = root.join("deerflow-acpd");
+        let executable = root.join(if cfg!(windows) { "mcp.exe" } else { "mcp" });
+        std::fs::write(&executable, b"fixture").unwrap();
+        let go = AcpBackend::Go(daemon);
+        let enabled = json!({"enabled":true,"allowed_commands":[executable.to_string_lossy()]});
+        assert_eq!(
+            mcp_bridge_arguments(&go, &enabled).unwrap(),
+            vec!["--mcp-allow-command", executable.to_str().unwrap()]
+        );
+        assert!(mcp_bridge_arguments(&go, &json!({"enabled":true,"allowed_commands":[]})).is_err());
+        assert!(
+            mcp_bridge_arguments(
+                &go,
+                &json!({"enabled":true,"allowed_commands":["relative-command"]})
+            )
+            .is_err()
+        );
+        assert!(
+            mcp_bridge_arguments(
+                &go,
+                &json!({"enabled":true,"allowed_commands":[root.join("missing")]})
+            )
+            .is_err()
+        );
+        assert!(
+            mcp_bridge_arguments(
+                &go,
+                &json!({"enabled":false,"allowed_commands":[executable]})
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            mcp_bridge_arguments(&AcpBackend::Python, &enabled)
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn new_desktop_uses_go_and_existing_python_sessions_keep_python() {
         let root =

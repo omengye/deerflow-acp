@@ -32,6 +32,33 @@ func TestCompactionFinalizeKeepsActiveTurnAndToolPair(t *testing.T) {
 	}
 }
 
+func TestCompactionThinsOlderReadOnlyChunksWithinActiveTurn(t *testing.T) {
+	original := []*schema.Message{schema.SystemMessage("policy"), schema.UserMessage("old request"), schema.AssistantMessage("old answer", nil), schema.UserMessage("current task")}
+	chunk := strings.Repeat("read-only detail\n", 350)
+	for i := 0; i < 20; i++ {
+		id := string(rune('a' + i))
+		original = append(original, &schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: id, Type: "function", Function: schema.FunctionCall{Name: "read_tool_output", Arguments: `{"id":"snapshot","offset":0}`}}}}, &schema.Message{Role: schema.Tool, ToolName: "read_tool_output", ToolCallID: id, Content: chunk})
+	}
+	last := original[len(original)-1]
+	compact, err := finalizeCompaction(original, schema.AssistantMessage("Summarized the read-only findings.", nil), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thinned bool
+	for _, message := range compact {
+		if message.Role == schema.Tool && strings.Contains(message.Content, "conversation_summary") {
+			thinned = true
+		}
+	}
+	if !thinned || compact[len(compact)-1] != last || original[5].Content != chunk {
+		t.Fatal("active turn thinning changed original history or dropped the latest result")
+	}
+	unsafe := []*schema.Message{schema.SystemMessage("policy"), schema.UserMessage("old"), schema.AssistantMessage("old", nil), schema.UserMessage("current"), &schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "write", Type: "function", Function: schema.FunctionCall{Name: "write_file"}}}}, &schema.Message{Role: schema.Tool, ToolName: "write_file", ToolCallID: "write", Content: strings.Repeat("effect evidence", 6000)}}
+	if _, err := finalizeCompaction(unsafe, schema.AssistantMessage("summary", nil), 1); err == nil {
+		t.Fatal("large write result was discarded as read-only evidence")
+	}
+}
+
 func TestCompactionConfigRequiresRoomForRecentWindow(t *testing.T) {
 	for _, bad := range []harness.CompactionConfig{
 		{Enabled: true, ContextMessages: 5, KeepRecentMessages: 4},

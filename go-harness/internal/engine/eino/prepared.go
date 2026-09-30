@@ -15,6 +15,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	harnesstools "github.com/omengye/deerflow-acp/go-harness/internal/tools"
 )
 
 // PreparedAttempt is one fresh assembly of the same model/tool/media/budget
@@ -135,6 +136,13 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		}
 		tools = append(tools, more...)
 	}
+	if e.config.ToolOutputStore != nil {
+		readOutput, err := harnesstools.ReadToolOutputTool(e.config.ToolOutputStore, req.Session)
+		if err != nil {
+			return p, fmt.Errorf("tool output reader: %w", err)
+		}
+		tools = append(tools, readOutput)
+	}
 	protected := make(map[string]bool, len(tools))
 	seenTools := make(map[string]bool, len(tools))
 	contracts := make([]*schema.ToolInfo, 0, len(tools))
@@ -188,7 +196,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		publish: func(ctx context.Context, content harness.Content) error {
 			return sink.emit(ctx, harness.RunEvent{Kind: "image_delta", Content: []harness.Content{content}})
 		}}
-	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle, budget: b, images: e.config.ToolImageImporter}
+	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle, budget: b, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore}
 	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), extensions.Handlers...)
 	if extensions.ModelHandlerFactory != nil || extensions.PostRunFactory != nil {
 		privateMedia := *media

@@ -53,3 +53,23 @@ installations should keep their own binaries and data paths until migration
 validation is complete. Package builds are described in
 `scripts/build-go-acp-portable.ps1` and `scripts/build-go-acp-portable.sh` in the
 source tree.
+
+## Desktop ACP client MCP
+
+The Windows desktop Go backend accepts stdio MCP servers supplied by an ACP
+client only when the host config explicitly authorizes their executables. Edit
+`user-data/config/config.yaml` in the extracted desktop package:
+
+```yaml
+local_acp:
+  accept_client_mcp_servers: true
+  client_mcp_allowed_commands:
+    - 'C:/absolute/path/to/mcp-server.exe'
+```
+
+Use an existing absolute executable path for each entry. The desktop config
+service validates this list before saving or applying the config; the bridge
+passes it to the Go daemon at startup. An ACP client can choose arguments and
+per-session environment values for an authorized command but cannot add a new
+executable to the host list. The default is disabled. HTTP and SSE client MCP
+servers are outside this desktop configuration path.

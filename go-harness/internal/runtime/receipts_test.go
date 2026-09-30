@@ -206,12 +206,14 @@ func TestReceiptRecoveryDistinguishesUnexecutedAndUncertain(t *testing.T) {
 	appendReceiptEvent(t, s, req, "tool_execute", "started", "write_file")
 	appendReceiptEvent(t, s, req, "tool_start", "local-read", "read_file")
 	appendReceiptEvent(t, s, req, "tool_execute", "local-read", "read_file")
+	appendReceiptEvent(t, s, req, "tool_start", "snapshot-read", "read_tool_output")
+	appendReceiptEvent(t, s, req, "tool_execute", "snapshot-read", "read_tool_output")
 	appendReceiptEvent(t, s, req, "tool_start", "mcp-read", "mcp/files/read_file")
 	appendReceiptEvent(t, s, req, "tool_execute", "mcp-read", "mcp/files/read_file")
 	if err := s.Store.ReconcileInterrupted(ctx); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]harness.ReceiptState{"pending": harness.ReceiptNotExecuted, "started": harness.ReceiptUncertain, "local-read": harness.ReceiptNoEffect, "mcp-read": harness.ReceiptUncertain}
+	want := map[string]harness.ReceiptState{"pending": harness.ReceiptNotExecuted, "started": harness.ReceiptUncertain, "local-read": harness.ReceiptNoEffect, "snapshot-read": harness.ReceiptNoEffect, "mcp-read": harness.ReceiptUncertain}
 	receipts, err := s.ListToolReceipts(ctx, "owner", req.Session.ID)
 	if err != nil || len(receipts) != len(want) {
 		t.Fatalf("receipts=%+v %v", receipts, err)

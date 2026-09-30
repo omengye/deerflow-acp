@@ -42,6 +42,7 @@ type Config struct {
 	AssetResolver      harness.AssetResolver
 	ToolImageImporter  harness.ToolImageImporter
 	ModelImageImporter harness.ModelImageImporter
+	ToolOutputStore    harness.ToolOutputStore
 	Compaction         harness.CompactionConfig
 	// ContextWindows contains configured model context sizes. A missing size
 	// suppresses ACP context occupancy rather than guessing from run budgets.

@@ -108,12 +108,31 @@ func finalizeCompaction(original []*schema.Message, summary *schema.Message, kee
 			return nil, errors.New("context compaction found a nil recent message")
 		}
 	}
-	recent, err := json.Marshal(original[start:])
+	recentMessages := append([]*schema.Message(nil), original[start:]...)
+	recent, err := json.Marshal(recentMessages)
 	if err != nil {
 		return nil, err
 	}
 	if len(recent) > maxRetainedBytes {
-		return nil, errors.New("context limit: active conversation exceeds the safe recent window")
+		// The summary has already captured these read-only observations. Keep
+		// their call/result pairs but replace old text chunks with a pointer to
+		// the summary; the latest result stays available verbatim to the model.
+		for i := 1; i < len(recentMessages)-2 && len(recent) > maxRetainedBytes; i++ {
+			m := recentMessages[i]
+			if m == nil || m.Role != schema.Tool || !safeCompactionReadTool(m.ToolName) || m.Content == "" || len(m.MultiContent) > 0 || len(m.UserInputMultiContent) > 0 || len(m.AssistantGenMultiContent) > 0 {
+				continue
+			}
+			copyMessage := *m
+			copyMessage.Content = compactReadToolText(m.Content)
+			recentMessages[i] = &copyMessage
+			recent, err = json.Marshal(recentMessages)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if len(recent) > maxRetainedBytes {
+			return nil, errors.New("context limit: active conversation exceeds the safe recent window")
+		}
 	}
 	skills := preserveSkillEvidence(original[systemEnd:start])
 	result := make([]*schema.Message, 0, systemEnd+len(original)-start+2)
@@ -122,8 +141,28 @@ func finalizeCompaction(original []*schema.Message, summary *schema.Message, kee
 	if skills != "" {
 		result = append(result, schema.UserMessage(skills))
 	}
-	result = append(result, original[start:]...)
+	result = append(result, recentMessages...)
 	return result, nil
+}
+
+func safeCompactionReadTool(name string) bool {
+	switch name {
+	case "read_file", "read_tool_output", "list_directory", "search_files":
+		return true
+	default:
+		return false
+	}
+}
+
+func compactReadToolText(content string) string {
+	const note = " [Earlier preview summarized in conversation_summary; re-read the snapshot if exact text is needed.]"
+	if strings.HasPrefix(content, "[Tool output:") {
+		line, _, _ := strings.Cut(content, "\n")
+		if len(line) <= 256 {
+			return line + note
+		}
+	}
+	return "[Earlier read-only tool result summarized in conversation_summary; repeat its read call if exact text is needed.]"
 }
 
 func preserveSkillEvidence(messages []*schema.Message) string {

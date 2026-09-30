@@ -27,7 +27,10 @@ type toolMiddleware struct {
 	io          *runIO
 	budget      *runBudget
 	images      harness.ToolImageImporter
+	outputs     harness.ToolOutputStore
 	grants      sync.Map // *adk.ToolContext -> durablebudget.Reservation
+	outputMu    sync.Mutex
+	outputBytes int
 }
 
 func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args string) error {
@@ -313,6 +316,12 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 		if output == "" && errors.As(err, &evidence) {
 			output = evidence.ToolResult()
 		}
+		modelOutput := output
+		if err == nil && tc.Name != "read_tool_output" {
+			var snapshotErr error
+			modelOutput, snapshotErr = m.modelToolOutput(ctx, output)
+			err = errors.Join(err, snapshotErr)
+		}
 		if emitErr := m.finish(ctx, tc, []harness.Content{{Type: "text", Text: output}}, err); emitErr != nil {
 			return "", errors.Join(err, emitErr)
 		}
@@ -325,7 +334,7 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 				return "", commitErr
 			}
 		}
-		return output, err
+		return modelOutput, err
 	}, nil
 }
 
@@ -412,10 +421,17 @@ func (m *toolMiddleware) WrapEnhancedInvokableToolCall(_ context.Context, next a
 		var mediaErr error
 		output, mediaErr = normalizeToolImages(ctx, output, m.sink.request, tc.CallID, m.images)
 		err = errors.Join(err, mediaErr)
-		if emitErr := m.finish(ctx, tc, enhancedContent(output), err); emitErr != nil {
+		fullContent := enhancedContent(output)
+		modelOutput := output
+		if err == nil {
+			var snapshotErr error
+			modelOutput, snapshotErr = m.modelEnhancedToolOutput(ctx, output)
+			err = errors.Join(err, snapshotErr)
+		}
+		if emitErr := m.finish(ctx, tc, fullContent, err); emitErr != nil {
 			return nil, errors.Join(err, emitErr)
 		}
-		return output, err
+		return modelOutput, err
 	}, nil
 }
 

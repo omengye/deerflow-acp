@@ -656,6 +656,44 @@ def snapshot(config_path: Path, user_data: Path) -> dict[str, Any]:
     }
 
 
+def bridge_policy(config_path: Path) -> dict[str, Any]:
+    """Return only the host-owned executable allowlist needed by the Go bridge."""
+    return _bridge_policy_from_data(_load_yaml(config_path))
+
+
+def _bridge_policy_from_data(data: dict[str, Any]) -> dict[str, Any]:
+    local = data.get("local_acp") or {}
+    if not isinstance(local, dict):
+        raise ValueError("local_acp must be a mapping")
+    enabled = local.get("accept_client_mcp_servers", False)
+    if type(enabled) is not bool:
+        raise ValueError("local_acp.accept_client_mcp_servers must be a boolean")
+    if not enabled:
+        return {"enabled": False, "allowed_commands": []}
+    commands = local.get("client_mcp_allowed_commands", [])
+    if not isinstance(commands, list) or not 1 <= len(commands) <= 32:
+        raise ValueError("local_acp.client_mcp_allowed_commands must contain 1..32 absolute executables")
+    allowed: list[str] = []
+    seen: set[str] = set()
+    for command in commands:
+        if not isinstance(command, str) or not command or "\x00" in command:
+            raise ValueError("local_acp.client_mcp_allowed_commands entries must be executable paths")
+        path = Path(command)
+        if not path.is_absolute():
+            raise ValueError("local_acp.client_mcp_allowed_commands entries must be absolute")
+        try:
+            real = path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(f"MCP executable does not exist: {path}") from exc
+        if not real.is_file():
+            raise ValueError(f"MCP executable is not a regular file: {path}")
+        key = os.path.normcase(str(real))
+        if key not in seen:
+            seen.add(key)
+            allowed.append(str(real))
+    return {"enabled": True, "allowed_commands": allowed}
+
+
 def _validated_models(incoming: list[dict[str, Any]], existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
     existing_by_name = {str(item.get("name")): item for item in existing if isinstance(item, dict)}
     output: list[dict[str, Any]] = []
@@ -942,6 +980,7 @@ def _save_locked(config_path: Path, user_data: Path, document: SaveDocument, *, 
 
     # Validate the complete selected sections before any file is replaced.
     RuntimeDocument.model_validate(local)
+    _bridge_policy_from_data(candidate)
     for model in models:
         ModelConfig.model_validate(model)
 
@@ -1012,7 +1051,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--user-data", required=True, type=Path)
     parser.add_argument("--resources", required=True, type=Path)
-    parser.add_argument("command", choices=("init", "snapshot", "save", "validate", "inspect", "restore", "test-model"))
+    parser.add_argument("command", choices=("init", "snapshot", "bridge-policy", "save", "validate", "inspect", "restore", "test-model"))
     return parser
 
 
@@ -1027,6 +1066,8 @@ def main() -> None:
             payload: dict[str, Any] = {"initialized": True, "paths": {"config": str(config_path), "user_data": str(user_data)}}
         elif args.command == "snapshot":
             payload = snapshot(config_path, user_data)
+        elif args.command == "bridge-policy":
+            payload = bridge_policy(config_path)
         elif args.command in {"save", "validate"}:
             raw = json.load(sys.stdin)
             payload = save(config_path, user_data, SaveDocument.model_validate(raw), validate_only=args.command == "validate")

@@ -31,6 +31,66 @@ def _layout(tmp_path: Path) -> tuple[Path, Path, Path]:
     return config_path, user_data, resources
 
 
+def test_bridge_policy_keeps_host_owned_mcp_allowlist_through_settings_save(tmp_path: Path) -> None:
+    config_path, user_data, _ = _layout(tmp_path)
+    server = tmp_path / "mcp-server"
+    server.write_text("fixture", encoding="utf-8")
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["local_acp"]["accept_client_mcp_servers"] = True
+    raw["local_acp"]["client_mcp_allowed_commands"] = [str(server), str(server)]
+    config_tool._atomic_write_yaml(config_path, raw)
+
+    policy = config_tool.bridge_policy(config_path)
+    assert policy == {"enabled": True, "allowed_commands": [str(server.resolve())]}
+    document = config_tool.snapshot(config_path, user_data)
+    save_document = config_tool.SaveDocument.model_validate(document)
+    assert config_tool.save(
+        config_path, user_data, save_document, validate_only=True
+    ) == {"valid": True}
+    config_tool.save(config_path, user_data, save_document)
+    persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert persisted["local_acp"]["client_mcp_allowed_commands"] == [str(server), str(server)]
+    assert config_tool.bridge_policy(config_path) == policy
+
+    for commands in ([], ["relative-server"], [str(tmp_path / "missing")]):
+        persisted["local_acp"]["client_mcp_allowed_commands"] = commands
+        config_tool._atomic_write_yaml(config_path, persisted)
+        with pytest.raises(ValueError, match="client_mcp_allowed_commands|MCP executable"):
+            config_tool.bridge_policy(config_path)
+    persisted["local_acp"]["accept_client_mcp_servers"] = False
+    config_tool._atomic_write_yaml(config_path, persisted)
+    assert config_tool.bridge_policy(config_path) == {"enabled": False, "allowed_commands": []}
+    disabled_document = config_tool.SaveDocument.model_validate(
+        config_tool.snapshot(config_path, user_data)
+    )
+    assert config_tool.save(
+        config_path, user_data, disabled_document, validate_only=True
+    ) == {"valid": True}
+    config_tool.save(config_path, user_data, disabled_document)
+    assert config_tool.bridge_policy(config_path) == {"enabled": False, "allowed_commands": []}
+
+
+@pytest.mark.parametrize("commands", [[], ["relative-server"], ["missing-server"]])
+def test_enabled_client_mcp_allowlist_rejects_invalid_settings_save(
+    tmp_path: Path, commands: list[str]
+) -> None:
+    config_path, user_data, _ = _layout(tmp_path)
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["local_acp"]["accept_client_mcp_servers"] = True
+    raw["local_acp"]["client_mcp_allowed_commands"] = [
+        str(tmp_path / command) if command == "missing-server" else command
+        for command in commands
+    ]
+    config_tool._atomic_write_yaml(config_path, raw)
+    original = config_path.read_bytes()
+    document = config_tool.SaveDocument.model_validate(config_tool.snapshot(config_path, user_data))
+
+    for validate_only in (True, False):
+        with pytest.raises(ValueError, match="client_mcp_allowed_commands|MCP executable"):
+            config_tool.save(config_path, user_data, document, validate_only=validate_only)
+        assert config_path.read_bytes() == original
+
+
 def test_layout_snapshot_and_save_preserve_secrets_and_mcp(tmp_path: Path) -> None:
     config_path, user_data, _ = _layout(tmp_path)
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))

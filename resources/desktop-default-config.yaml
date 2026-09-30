@@ -32,6 +32,9 @@ local_acp:
   tool_allowlist: null
   tool_denylist: []
   accept_client_mcp_servers: false
+  # Host-owned stdio MCP executable allowlist used only when the switch above is true.
+  # Entries must be absolute paths to installed executables.
+  client_mcp_allowed_commands: []
   session_cleanup_enabled: false
   inactive_session_retention_days: 30
   session_cleanup_interval_seconds: 3600

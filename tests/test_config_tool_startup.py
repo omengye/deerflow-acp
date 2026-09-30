@@ -31,7 +31,7 @@ def no_network(event, args):
 
 # Save/validate also check the configured memory manager. Only first-open
 # metadata reads must remain independent of the execution dependencies.
-if sys.argv[-1] in {'init', 'snapshot'}:
+if sys.argv[-1] in {'init', 'snapshot', 'bridge-policy'}:
     sys.meta_path.insert(0, NoRuntimeImports())
 sys.addaudithook(no_network)
 sys.argv[0] = 'deerflow.config_tool'
@@ -64,6 +64,7 @@ def test_settings_reads_do_not_load_agent_runtime(tmp_path: Path) -> None:
 
     assert command("init")["initialized"]
     snapshot = command("snapshot")
+    assert command("bridge-policy") == {"enabled": False, "allowed_commands": []}
     assert snapshot["skills"][0]["name"] == "sample"
     assert {agent["name"] for agent in snapshot["subagents"]["builtin_agents"]} == {"bash", "general-purpose"}
     snapshot["models"][0]["display_name"] = "Saved offline"
