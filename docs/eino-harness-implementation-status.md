@@ -28,7 +28,7 @@
 | Docker / Windows shell | 默认禁用；可选 local/PowerShell/WSL2/Docker 命令后端；进程树、输出、环境与资源限制已接入 | Docker 真实运行验收，跨 run 后台命令生命周期 |
 | daemon / Bridge / draft v2 | Go daemon 的 DFACP/1、认证 endpoint、STATUS/STOP、MANAGE 状态/排空/恢复/会话清单/会话删除/记忆读取与删除、Python `--config` 有界兼容层（含工具允许/拒绝列表、默认超时和宿主 prompt overlay）、自动 retention、多窗口及 Rust Bridge 二进制互操作已验证；Rust v2 门面与真实 Go daemon 的主要生命周期、权限、回放互操作已验证 | draft v2 完整规范对照、真实编辑器、完整配置映射 |
 | 可选外部 ACP Agent | 显式白名单、独立 workspace、stdio new/load/prompt、进度、连接存续时的反向权限、取消和进程树回收；外层工具与一次模型调用计入父预算，远端提供的终态 usage 可用于结算；未决 prompt 先落盘，超时后阻止重复派发，SDK/ACP 扩展可按终态/已复核回执确认解除 | 原 prompt 的通用断线原位恢复、远端真实模型用量硬约束、产物导入与真实编辑器中的对账互操作 |
-| 打包 / 默认切换 | 独立 Go ACP 便携包脚本与包内说明已写入；Windows Debug/Release 与 WSL Ubuntu Linux Debug 包实测 Bridge 自动启动 Go daemon，并完成 status/stop；默认入口未切换 | 原生 Linux/远端 CI、真实编辑器、回退和默认切换演练 |
+| 打包 / 默认切换 | 独立 Go ACP 便携包脚本与包内说明已写入；Windows Debug/Release 与 WSL Ubuntu Linux Debug 包实测 Bridge 自动启动 Go daemon；桌面新安装的 Go 默认入口与旧 Python 数据回退已接线，Go/Python endpoint 和数据目录分开 | 桌面新包完整构建与 UI 实测、真实编辑器、原生 Linux/远端 CI |
 
 ## 已确认的实施差异
 
@@ -403,3 +403,9 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - `local_acp.prompt_overlay` 和相对配置文件目录解析的 `prompt_overlay_file` 会进入 Go 主 Agent 宿主指令，文件内容优先。该指令在引擎执行契约和后台宿主摘要内，配置变化不能沿用旧执行检查点。`goal_auto_continue: true` 仍明确拒绝，因为 Go 尚无等价的目标评估及隐藏续跑机制。
 - 可选外部 ACP Agent 的终态 `session/prompt.usage` 现经过非负值及总量校验，写入父预算并发出用量事件；远端没有提供 usage 时仍用估算。远端调用失败按未完成的预算预留额度保守结算。ACP 没有强制远端实际模型调用数或 token 上限的通用机制，自报 usage 也不能作为硬约束证据。
 - Windows 全 Go 模块 `go test -mod=readonly -p=2 -count=1 -timeout=5m ./...`、ACP client/Eino/launch 的 `-race` 全包检查通过；配置和外部 ACP 子进程定向测试涵盖缺省、覆盖、无效边界、overlay 优先级和终态用量。本批仍未运行真实编辑器、Docker、远端 CI 或默认入口切换演练。
+
+## 第四十阶段桌面入口接入
+
+- 桌面包装脚本编译并放入 `deerflow-acpd.exe`，对应源代码加入源码包。桌面启动器在新安装且同目录有 Go daemon 时传 `--daemon`；检测到现有 Python ACP 会话数据库时沿用 `--python`，已有 Go 数据库优先继续使用 Go。`DEER_FLOW_DESKTOP_ACP_BACKEND=go|python` 可显式覆盖。Go 使用 `user-data/data/go-harness` 和 `user-data/runtime/acp-go`，Python 沿用原有目录，避免切换时误连旧进程或覆盖 checkpoint。桌面状态暴露 `acp_backend`。
+- 现有桌面 smoke 脚本显式固定 Python 后端，继续覆盖老产品路径。使用桌面默认 YAML 与编译后的 Go daemon、Rust Bridge 完成真实进程启动、`daemon.status` 管理响应及停止，配置修订返回正确。PowerShell 构建脚本语法和 smoke 脚本 Python 编译通过。
+- 桌面 Rust 核心包 `cargo test --locked -p waku-core deerflow_config::tests --lib` 首次编译及改动后复测均为 6/6 通过，真实 Bridge/Go daemon 的 `TestExistingRustBridge` 通过。完整桌面新包构建、真实 UI 与编辑器交互尚未验收。现有 Python 会话不自动迁移，Go 后端启动后只能读取独立 Go 会话。

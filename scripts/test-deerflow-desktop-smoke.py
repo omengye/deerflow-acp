@@ -392,6 +392,7 @@ def isolated_environment(root):
         "DEER_FLOW_PORTABLE_ROOT": str(root), "DEER_FLOW_CONFIG_PATH": str(root / "user-data/config/config.yaml"),
         "DEER_FLOW_ACP_RUNTIME_DIR": str(root / "user-data/runtime/acp"),
         "DEER_FLOW_ACP_PYTHON": str(root / "runtime/python.exe"),
+        "DEER_FLOW_DESKTOP_ACP_BACKEND": "python",
         "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONNOUSERSITE": "1", "WAKU_APP_EXECUTABLE": str(root / "deerflow-desktop.exe"),
         "LANGCHAIN_TRACING_V2": "false", "LANGSMITH_TRACING": "false", "NO_PROXY": "127.0.0.1,localhost",

@@ -72,6 +72,16 @@ foreach ($binary in @("waku.exe", "waku-daemon.exe")) {
 }
 $bridgeBinary = Join-Path $repoRoot "bridge\target\$profile\deerflow-acp.exe"
 if (-not (Test-Path -LiteralPath $bridgeBinary -PathType Leaf)) { throw "Missing bridge: $bridgeBinary" }
+$goDaemonBinary = Join-Path $repoRoot ".build-cache\go-acp-desktop\$profile\deerflow-acpd.exe"
+if (-not $SkipBuild) {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $goDaemonBinary) -Force | Out-Null
+    Push-Location (Join-Path $repoRoot "go-harness")
+    try {
+        & go build -trimpath -p=2 -o $goDaemonBinary ./cmd/deerflow-acpd-go
+        if ($LASTEXITCODE -ne 0) { throw "DeerFlow Go ACP daemon build failed" }
+    } finally { Pop-Location }
+}
+if (-not (Test-Path -LiteralPath $goDaemonBinary -PathType Leaf)) { throw "Missing Go ACP daemon: $goDaemonBinary" }
 
 $runtimeSource = (Resolve-BuildPath $repoRoot $PortableRuntimeDirectory)
 if ($RebuildRuntime -or -not (Test-Path -LiteralPath (Join-Path $runtimeSource "runtime\python.exe"))) {
@@ -122,6 +132,7 @@ function Copy-BundledSkills([string]$Source, [string]$Destination) {
 }
 Copy-BundledSkills (Join-Path $repoRoot "skills") (Join-Path $packageResources "skills")
 Copy-Item -LiteralPath $bridgeBinary -Destination (Join-Path $outputRoot "deerflow-acp.exe")
+Copy-Item -LiteralPath $goDaemonBinary -Destination (Join-Path $outputRoot "deerflow-acpd.exe")
 Copy-Item -LiteralPath (Join-Path $binaryRoot "waku.exe") -Destination (Join-Path $outputRoot "deerflow-desktop.exe")
 Copy-Item -LiteralPath (Join-Path $binaryRoot "waku-daemon.exe") -Destination $outputRoot
 Copy-Item -LiteralPath $desktopDefault -Destination (Join-Path $outputRoot "resources\default-config.yaml") -Force
@@ -160,7 +171,14 @@ ACP runtime using the same native theme as the conversation workbench.
 Desktop history and preferences: user-data/desktop
 DeerFlow config: user-data/config/config.yaml
 DeerFlow execution/checkpoints: user-data/data
-DeerFlow daemon state: user-data/runtime/acp
+Python daemon endpoint: user-data/runtime/acp
+Go daemon endpoint: user-data/runtime/acp-go
+Go harness state: user-data/data/go-harness
+
+Fresh packages use the Go ACP daemon. Existing Python ACP session databases
+continue using Python until migrated. Set DEER_FLOW_DESKTOP_ACP_BACKEND=python
+before launch to force the Python runtime; set it to go to force the Go runtime.
+Keep the Python runtime in this package for Settings and rollback.
 
 The first launch creates user-data. To update, close Desktop and copy your
 user-data directory into a newly extracted package. Do not replace or delete it.
@@ -184,7 +202,7 @@ if (-not $SkipZip) {
     # trees have no .git, so they fall back to the same explicit source roots.
     $sourceZip = "$outputRoot-source.zip"
     if (Test-Path -LiteralPath $sourceZip) { throw "Source archive already exists: $sourceZip" }
-    $sourceRoots = @("desktop-app", "bridge", "desktop", "deerflow", "app", "packages", "resources", "skills", "scripts", "tests", "docs")
+    $sourceRoots = @("desktop-app", "bridge", "go-harness", "desktop", "deerflow", "app", "packages", "resources", "skills", "scripts", "tests", "docs")
     $sourceFiles = @("pyproject.toml", "uv.lock", "LICENSE", "PORTABLE_README.md", "README.md")
     $excluded = @(".git", ".claude", ".codex", "target", "temp", "node_modules", "__pycache__", ".venv", "venv", "user-data", ".build-cache", ".waku-cache", ".pytest_cache", ".ruff_cache", "dist", "build", "logs", "backups", "outputs")
     $sourcePaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
