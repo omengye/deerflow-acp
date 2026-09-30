@@ -43,7 +43,7 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 	}
 	data, err := json.Marshal(struct {
 		Provider, BaseURL, Model, Instruction string
-		ModelRoutes                           map[string]harness.ModelRoute
+		ModelRoutes                           map[string]harness.ModelRoute `json:",omitempty"`
 		MaxIterations                         int
 		Budget                                harness.BudgetLimits
 		DisableSubagent                       bool
