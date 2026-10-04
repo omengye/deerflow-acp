@@ -37,7 +37,7 @@ func run(args []string, output io.Writer) error {
 	flags.StringVar(&dataDir, "data-dir", "", "Go harness state directory")
 	flags.StringVar(&workspace, "workspace", "", "existing Go session workspace")
 	flags.StringVar(&sessionID, "session-id", "", "existing Go session ID used for ownership and scope")
-	flags.StringVar(&scopeName, "scope", "", "explicit destination: session, workspace, or user")
+	flags.StringVar(&scopeName, "scope", "", "explicit destination: session, workspace, user, or global")
 	flags.StringVar(&userID, "user-id", "", "explicit Go host user identity for user scope")
 	flags.BoolVar(&apply, "apply", false, "atomically write accepted facts; otherwise preview only")
 	if err := flags.Parse(args); err != nil {
@@ -66,8 +66,8 @@ func run(args []string, output io.Writer) error {
 		return errors.New("--apply requires --data-dir, --workspace, --session-id, and --scope")
 	}
 	kind := harness.MemoryScope(scopeName)
-	if kind != harness.MemorySession && kind != harness.MemoryWorkspace && kind != harness.MemoryUser {
-		return errors.New("--scope must be session, workspace, or user")
+	if kind != harness.MemorySession && kind != harness.MemoryWorkspace && kind != harness.MemoryUser && kind != harness.MemoryGlobal {
+		return errors.New("--scope must be session, workspace, user, or global")
 	}
 	if kind == harness.MemoryUser && userID == "" || kind != harness.MemoryUser && userID != "" {
 		return errors.New("--user-id is required only for user scope")

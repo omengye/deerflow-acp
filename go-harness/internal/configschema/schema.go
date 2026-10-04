@@ -81,6 +81,7 @@ func Describe() Schema {
 		{Path: "/memory/mode", Type: "string", Default: "middleware", Enum: []string{"middleware", "tool"}},
 		{Path: "/memory/injection_enabled", Type: "boolean", Default: true},
 		{Path: "/memory/retrieval_enabled", Type: "boolean", Default: true},
+		{Path: "/memory/include_global", Type: "boolean", Default: true},
 	}
 	fields = append(fields, modelAgentFields()...)
 	fields = append(fields, toolFields()...)
@@ -392,11 +393,10 @@ func NormalizeToolNames(values []string) []string {
 	return names
 }
 
-// ValidateMemoryPolicy also applies after explicit launch overrides. A dormant
-// legacy global scope may be retained, but cannot grant global memory access.
-func ValidateMemoryPolicy(scope, mode string, enabled, retrieval bool) error {
-	if enabled && scope == "global" {
-		return fmt.Errorf("local_acp.memory_scope=global is not supported by the Go memory store")
+// ValidateMemoryPolicy also applies after explicit launch overrides.
+func ValidateMemoryPolicy(scope, mode string, enabled, retrieval, includeGlobal bool) error {
+	if enabled && scope == "global" && !includeGlobal {
+		return fmt.Errorf("local_acp.memory_scope=global requires memory.include_global=true")
 	}
 	if enabled && mode == "tool" && !retrieval {
 		return fmt.Errorf("memory.mode=tool requires memory.retrieval_enabled=true")

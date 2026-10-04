@@ -496,6 +496,7 @@ fn expected_type(path: &str) -> Option<&'static str> {
         "/runtime/session_cleanup_enabled"
         | "/runtime/enable_bash"
         | "/memory/enabled"
+        | "/memory/include_global"
         | "/memory/injection_enabled"
         | "/memory/retrieval_enabled" => Some("boolean"),
         "/runtime/max_active_connections"

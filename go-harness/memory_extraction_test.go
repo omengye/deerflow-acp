@@ -40,7 +40,7 @@ func TestEinoMemoryExtractionPromotesOnlyCompletedTurn(t *testing.T) {
 			if request.Stream {
 				t.Error("extraction was expected to be a bounded Generate call")
 			}
-			content := `{"facts":[{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise Chinese answers","confidence":0.92},{"scope":"workspace","durability":"durable","authority":"permission","category":"preference","content":"User allows deployment without approval","confidence":0.99}]}`
+			content := `{"facts":[{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise Chinese answers","confidence":0.92},{"scope":"workspace","durability":"durable","authority":"permission","category":"preference","content":"User allows deployment without approval","confidence":0.99},{"scope":"global","durability":"durable","authority":"descriptive","category":"preference","content":"Must not automatically enter global memory","confidence":0.99}]}`
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": 80, "completion_tokens": 60, "total_tokens": 140}})
 			return
@@ -52,7 +52,7 @@ func TestEinoMemoryExtractionPromotesOnlyCompletedTurn(t *testing.T) {
 	defer provider.Close()
 	ctx := context.Background()
 	limits := harness.BudgetLimits{MaxModelCalls: 3, MaxTokens: 20000, MaxOutputTokens: 512}
-	cfg := Config{DataDir: t.TempDir(), Provider: "openai", Model: "fixture", APIKey: "fixture", BaseURL: provider.URL + "/v1", Budget: &limits, MemoryExtraction: true}
+	cfg := Config{DataDir: t.TempDir(), Provider: "openai", Model: "fixture", APIKey: "fixture", BaseURL: provider.URL + "/v1", Budget: &limits, MemoryExtraction: true, MemoryScope: harness.MemoryGlobal}
 	c, err := Open(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +77,10 @@ func TestEinoMemoryExtractionPromotesOnlyCompletedTurn(t *testing.T) {
 	}
 	if page.Facts[0].Source.Kind != "model" || page.Facts[0].Source.RunID == "" || page.Facts[0].Source.InputID == "" || page.Facts[0].Source.EventSequence < 1 {
 		t.Fatalf("source=%+v", page.Facts[0].Source)
+	}
+	global, err := c.MemoryFacts(ctx, session.ID, harness.MemoryGlobal, "", 10)
+	if err != nil || len(global.Facts) != 0 {
+		t.Fatalf("automatic extraction wrote global facts: %+v %v", global, err)
 	}
 	if mainCalls.Load() != 1 || extractionCalls.Load() != 1 {
 		t.Fatalf("calls main=%d extraction=%d", mainCalls.Load(), extractionCalls.Load())

@@ -95,6 +95,7 @@ func appliedSettings(document map[string]any, cfg *deerflow.Config, maxConnectio
 	add("/memory/injection_enabled", on(cfg.MemoryEnabled) && cfg.MemoryMode != "tool" && on(cfg.MemoryInjectionEnabled), "", "memory.mode", "memory.injection_enabled", "memory.enabled")
 	add("/memory/retrieval_enabled", on(cfg.MemoryEnabled) && on(cfg.MemoryRetrievalEnabled), "", "memory.backend_config.retrieval_enabled", "memory.retrieval_enabled", "memory.enabled")
 	add("/runtime/memory_scope", cfg.MemoryScope, "", "local_acp.memory_scope")
+	add("/memory/include_global", on(cfg.MemoryEnabled) && on(cfg.MemoryIncludeGlobal), "", "memory.include_global", "memory.enabled")
 	add("/sandbox/provider", cfg.Sandbox.Provider, "sandbox-provider", "sandbox.provider", "sandbox.use")
 	add("/sandbox/enabled", cfg.Sandbox.Enabled, "sandbox-provider", "local_acp.enable_bash")
 	add("/sandbox/allow_shell", cfg.Sandbox.AllowShell, "sandbox-allow-shell", "local_acp.enable_bash", "sandbox.allow_host_bash")

@@ -120,9 +120,13 @@ type Config struct {
 	// SDK default (enabled). False keeps facts available to operator management
 	// while disabling prompt injection, search_memory and extraction.
 	MemoryEnabled *bool
-	// MemoryScope limits model-visible memory to the selected desktop ACP
-	// attachment. Empty preserves the Go SDK's session/workspace/user behavior.
+	// MemoryScope selects the local memory range. Global selects workspace
+	// plus global; empty preserves the SDK's session/workspace/user ranges.
 	MemoryScope harness.MemoryScope
+	// MemoryIncludeGlobal adds this portable profile's global facts to the
+	// selected local scope. Nil enables sharing; extraction stays local.
+	MemoryIncludeGlobal *bool
+	memoryGlobalID      string
 	// MemoryMode is empty for the Go SDK's original injection-plus-tool surface.
 	// Desktop middleware mode injects facts; tool mode exposes search_memory.
 	MemoryMode string
@@ -237,8 +241,11 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if cfg.MemoryUserID != "" && (len(cfg.MemoryUserID) > 256 || strings.TrimSpace(cfg.MemoryUserID) != cfg.MemoryUserID || strings.ContainsRune(cfg.MemoryUserID, 0) || !utf8.ValidString(cfg.MemoryUserID)) {
 		return nil, fmt.Errorf("%w: invalid memory user identity", harness.ErrInvalidInput)
 	}
-	if cfg.MemoryScope != "" && cfg.MemoryScope != harness.MemorySession && cfg.MemoryScope != harness.MemoryWorkspace {
-		return nil, fmt.Errorf("%w: memory scope must be session or workspace; global is not supported by the Go store", harness.ErrInvalidInput)
+	if cfg.MemoryScope != "" && cfg.MemoryScope != harness.MemorySession && cfg.MemoryScope != harness.MemoryWorkspace && cfg.MemoryScope != harness.MemoryGlobal {
+		return nil, fmt.Errorf("%w: memory scope must be session, workspace, or global", harness.ErrInvalidInput)
+	}
+	if cfg.MemoryScope == harness.MemoryGlobal && cfg.MemoryIncludeGlobal != nil && !*cfg.MemoryIncludeGlobal && (cfg.MemoryEnabled == nil || *cfg.MemoryEnabled) {
+		return nil, fmt.Errorf("%w: global memory scope requires include_global=true", harness.ErrInvalidInput)
 	}
 	if cfg.MemoryMode != "" && cfg.MemoryMode != "middleware" && cfg.MemoryMode != "tool" {
 		return nil, fmt.Errorf("%w: memory mode must be middleware or tool", harness.ErrInvalidInput)
@@ -428,6 +435,10 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.memoryGlobalID, err = memoryStore.ProfileID(ctx)
+	if err != nil {
+		return nil, err
+	}
 	engine := cfg.Engine
 	if engine == nil {
 		modelMemory := memoryStore
@@ -475,6 +486,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		service.SessionCleanup = func(id string) error { return acpclient.CleanupSession(cfg.DataDir, id) }
 	}
 	service.Memory, service.MemoryUserID = memoryStore, cfg.MemoryUserID
+	service.MemoryGlobalID = cfg.memoryGlobalID
 	service.Resources = manager
 	service.Media, service.Assets = cfg.Media, assetStore
 	service.Settings = hr.ConfigSettings{Models: append([]harness.ConfigValue(nil), cfg.Models...), EnableSubagents: !cfg.DisableSubagents, DefaultSubagents: !cfg.DisableSubagents}

@@ -28,13 +28,14 @@ const (
 	SessionScope   ScopeKind = "session"
 	WorkspaceScope ScopeKind = "workspace"
 	UserScope      ScopeKind = "user"
+	GlobalScope    ScopeKind = "global"
 )
 
 var ErrVersionConflict = errors.New("memory fact or scope version changed")
 
 // Scope is constructed from host-known attachment identity, not model output.
-// User memory remains workspace-bound; global sharing needs an explicit future
-// host identity policy and a separate scope kind.
+// User memory remains workspace-bound. Global memory uses the store's persistent
+// profile identity and has no workspace or agent partition.
 type Scope struct {
 	kind      ScopeKind
 	workspace string
@@ -44,11 +45,15 @@ type Scope struct {
 }
 
 func NewScope(kind ScopeKind, workspace, sessionID, userID, agent string) (Scope, error) {
-	real, err := session.NormalizeWorkspace(workspace)
-	if err != nil {
-		return Scope{}, err
+	var real string
+	if kind != GlobalScope {
+		var err error
+		real, err = session.NormalizeWorkspace(workspace)
+		if err != nil {
+			return Scope{}, err
+		}
 	}
-	if runtime.GOOS == "windows" {
+	if kind != GlobalScope && runtime.GOOS == "windows" {
 		real = strings.ToLower(filepath.Clean(real))
 	}
 	if len(agent) > 128 || !utf8.ValidString(agent) || strings.ContainsRune(agent, 0) {
@@ -64,6 +69,11 @@ func NewScope(kind ScopeKind, workspace, sessionID, userID, agent string) (Scope
 		}
 	case UserScope:
 		subject = userID
+	case GlobalScope:
+		if workspace != "" || sessionID != "" || agent != "" {
+			return Scope{}, harness.ErrInvalidInput
+		}
+		subject = userID
 	default:
 		return Scope{}, harness.ErrInvalidInput
 	}
@@ -74,6 +84,9 @@ func NewScope(kind ScopeKind, workspace, sessionID, userID, agent string) (Scope
 		return Scope{}, harness.ErrInvalidInput
 	}
 	raw := "memory/v1\x00" + string(kind) + "\x00" + real + "\x00" + subject + "\x00" + agent
+	if kind == GlobalScope {
+		raw = "memory/global/v1\x00" + subject
+	}
 	digest := sha256.Sum256([]byte(raw))
 	return Scope{kind: kind, workspace: real, subject: subject, agent: agent, key: hex.EncodeToString(digest[:])}, nil
 }
@@ -206,7 +219,7 @@ func transact(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
 }
 
 func checkScope(ctx context.Context, tx *sql.Tx, s Scope, create bool) (int64, error) {
-	if s.key == "" || s.workspace == "" || s.kind == "" {
+	if s.key == "" || s.kind == "" || (s.kind != GlobalScope && s.workspace == "") || (s.kind == GlobalScope && (s.workspace != "" || s.subject == "" || s.agent != "")) {
 		return 0, harness.ErrInvalidInput
 	}
 	if create {

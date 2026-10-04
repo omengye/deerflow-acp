@@ -19,6 +19,7 @@ const (
 	MemorySession   MemoryScope = "session"
 	MemoryWorkspace MemoryScope = "workspace"
 	MemoryUser      MemoryScope = "user"
+	MemoryGlobal    MemoryScope = "global"
 )
 
 // MemoryCandidate is a descriptive fact entered by the attached operator.

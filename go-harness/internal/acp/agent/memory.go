@@ -18,15 +18,23 @@ const (
 	deleteMemoryMethod  = "_deerflow/memory/delete"
 	clearMemoryMethod   = "_deerflow/memory/clear"
 	flushMemoryMethod   = "_deerflow/memory/flush"
+	promoteMemoryMethod = "_deerflow/memory/promote"
 	memoryConflictCode  = -32016
 )
 
-func memoryCapabilities(user bool) map[string]any {
+func memoryCapabilities(user, global bool) map[string]any {
 	scopes := []string{"session", "workspace"}
 	if user {
 		scopes = append(scopes, "user")
 	}
-	return map[string]any{"version": 1, "scopes": scopes, "listMethod": listMemoryMethod, "searchMethod": searchMemoryMethod, "getMethod": getMemoryMethod, "createMethod": createMemoryMethod, "replaceMethod": replaceMemoryMethod, "deleteMethod": deleteMemoryMethod, "clearMethod": clearMemoryMethod, "flushMethod": flushMemoryMethod}
+	if global {
+		scopes = append(scopes, "global")
+	}
+	result := map[string]any{"version": 1, "scopes": scopes, "listMethod": listMemoryMethod, "searchMethod": searchMemoryMethod, "getMethod": getMemoryMethod, "createMethod": createMemoryMethod, "replaceMethod": replaceMemoryMethod, "deleteMethod": deleteMemoryMethod, "clearMethod": clearMemoryMethod, "flushMethod": flushMemoryMethod}
+	if global {
+		result["promoteMethod"] = promoteMemoryMethod
+	}
+	return result
 }
 
 type memoryRequest struct {
@@ -41,7 +49,7 @@ type memoryRequest struct {
 	Fact                  harness.MemoryCandidate `json:"fact"`
 }
 
-func decodeMemoryRequest(method string, raw json.RawMessage, userEnabled bool) (memoryRequest, error) {
+func decodeMemoryRequest(method string, raw json.RawMessage, userEnabled, globalEnabled bool) (memoryRequest, error) {
 	var req memoryRequest
 	invalid := rpcError(protocol.InvalidParams, "Invalid memory parameters")
 	if len(raw) > 20*1024 || rejectDuplicateKeys(raw) != nil {
@@ -61,7 +69,7 @@ func decodeMemoryRequest(method string, raw json.RawMessage, userEnabled bool) (
 		keys = append(keys, "fact")
 	case replaceMemoryMethod:
 		keys = append(keys, "factId", "expectedRevision", "fact")
-	case deleteMemoryMethod:
+	case deleteMemoryMethod, promoteMemoryMethod:
 		keys = append(keys, "factId", "expectedRevision")
 	case clearMemoryMethod:
 		keys = append(keys, "expectedScopeRevision")
@@ -76,7 +84,10 @@ func decodeMemoryRequest(method string, raw json.RawMessage, userEnabled bool) (
 		if _, ok := fields["scope"]; !ok {
 			return req, invalid
 		}
-		if req.Scope != harness.MemorySession && req.Scope != harness.MemoryWorkspace && !(userEnabled && req.Scope == harness.MemoryUser) {
+		if req.Scope != harness.MemorySession && req.Scope != harness.MemoryWorkspace && !(userEnabled && req.Scope == harness.MemoryUser) && !(globalEnabled && req.Scope == harness.MemoryGlobal) {
+			return req, invalid
+		}
+		if method == promoteMemoryMethod && (!globalEnabled || req.Scope == harness.MemoryGlobal) {
 			return req, invalid
 		}
 	}
@@ -98,7 +109,7 @@ func decodeMemoryRequest(method string, raw json.RawMessage, userEnabled bool) (
 		if req.Limit == 0 {
 			req.Limit = 20
 		}
-	case getMemoryMethod, replaceMemoryMethod, deleteMemoryMethod:
+	case getMemoryMethod, replaceMemoryMethod, deleteMemoryMethod, promoteMemoryMethod:
 		if !validID(req.FactID, 256) {
 			return req, invalid
 		}
@@ -108,7 +119,7 @@ func decodeMemoryRequest(method string, raw json.RawMessage, userEnabled bool) (
 			return req, invalid
 		}
 	}
-	if method == replaceMemoryMethod || method == deleteMemoryMethod {
+	if method == replaceMemoryMethod || method == deleteMemoryMethod || method == promoteMemoryMethod {
 		if _, ok := fields["expectedRevision"]; !ok || req.ExpectedRevision < 1 {
 			return req, invalid
 		}
@@ -125,7 +136,7 @@ func (a *Agent) memoryRequest(ctx context.Context, method string, raw json.RawMe
 	if a.service.Memory == nil {
 		return nil, rpcError(protocol.MethodNotFound, "Memory is not available")
 	}
-	req, err := decodeMemoryRequest(method, raw, a.service.MemoryUserID != "")
+	req, err := decodeMemoryRequest(method, raw, a.service.MemoryUserID != "", a.service.MemoryGlobalID != "")
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +152,8 @@ func (a *Agent) memoryRequest(ctx context.Context, method string, raw json.RawMe
 		result, err = a.service.MemoryFact(ctx, a.owner, req.SessionID, req.Scope, req.FactID)
 	case createMemoryMethod:
 		result, err = a.service.CreateMemoryFact(ctx, a.owner, req.SessionID, req.Scope, req.Fact)
+	case promoteMemoryMethod:
+		result, err = a.service.PromoteMemoryFact(ctx, a.owner, req.SessionID, req.Scope, req.FactID, req.ExpectedRevision)
 	case replaceMemoryMethod:
 		result, err = a.service.ReplaceMemoryFact(ctx, a.owner, req.SessionID, req.Scope, req.FactID, req.ExpectedRevision, req.Fact)
 	case deleteMemoryMethod:

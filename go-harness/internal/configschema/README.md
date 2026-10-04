@@ -79,8 +79,11 @@ reject fractions, durations use 0.001–86400 seconds, and prompt length counts
 Unicode characters. Root tool names share native trimming/deduplication; role
 tool lists use the existing stricter exact-name/duplicate checks. Cross-field
 memory validation also runs after explicit launch
-overrides: global scope is permitted only while memory is disabled, and enabled
-tool mode requires retrieval. The UI offers workspace/session only.
+overrides: enabled global scope requires `memory.include_global=true`, and
+enabled tool mode requires retrieval. The UI offers workspace/session/global.
+`memory.include_global` defaults to true and appends the portable profile's
+global facts to the selected local range. Automatic extraction remains local;
+global scope selects workspace extraction and global plus workspace reads.
 
 The snapshot no longer fabricates Python storage classes, old memory paths,
 unsupported extraction parameters, global thinking/plan defaults, custom main

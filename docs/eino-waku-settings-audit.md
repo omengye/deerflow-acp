@@ -142,7 +142,7 @@ OpenCLI 使用 Go 宿主工具及现有启动/超时/错误回执链路。前台
 | `/runtime/thinking_enabled`、`plan_mode` | 启动器不读取旧全局默认值 | 输入及 snapshot/defaults 已移除；单会话/角色的实际能力沿独立契约提供 |
 | `/runtime/max_active_connections`、`max_active_runs` | daemon 连接及运行准入限制 | 保留 |
 | `/runtime/run_timeout_seconds`、`queue_timeout_seconds` | Go 运行/排队超时 | 保留；浮点秒范围和 UI 提示与启动校验统一 |
-| `/runtime/memory_scope` | `MemoryScope` 只接受 workspace/session | 保留这两个值，移除 global 枚举；旧 global 配置导入时明确报告 |
+| `/runtime/memory_scope`、`/memory/include_global` | 2026-10-04 接通 session/workspace/global；全局身份由用户数据库固定 | 保留三个值及共享读取开关；global 读取全局＋项目，自动提取仍写入项目，参见全局记忆实施记录 |
 | `/runtime/session_cleanup_enabled`、`inactive_session_retention_days`、`closed_session_retention_days`、`session_cleanup_interval_seconds` | `cfg.Retention` | 保留；等待审批、后台任务、回执等保护条件仍由 runtime 执行 |
 | `/runtime/goal_auto_continue`、`goal_max_continuations`、`goal_max_no_progress_continuations` | 旧目标续跑；开启时 Go 明确拒绝 | 移除；不能直接映射到语义不同的子任务通知自动续跑 |
 | `/runtime/prompt_overlay` | Go 附加指令，参与运行资源契约 | 保留长度限制和重启应用反馈 |

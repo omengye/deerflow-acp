@@ -11,6 +11,51 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
 )
 
+func TestACPGlobalMemoryPromotionAuthorityAndSharing(t *testing.T) {
+	f := newFixture(t, nil)
+	store, err := memory.New(context.Background(), f.db.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.Memory = store
+	f.service.MemoryGlobalID, err = store.ProfileID(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := connect(t, f.service)
+	init := c.success(t, c.request(t, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}}))
+	if !bytes.Contains(init, []byte(`"promoteMethod":"_deerflow/memory/promote"`)) || !bytes.Contains(init, []byte(`"global"`)) {
+		t.Fatalf("global capabilities: %s", init)
+	}
+	a, b := c.newSession(t, f.cwd), c.newSession(t, t.TempDir())
+	var local, global harness.MemoryFact
+	raw := c.success(t, c.request(t, "_deerflow/memory/create", map[string]any{"sessionId": a, "scope": "workspace", "fact": map[string]any{"content": "Use Chinese", "category": "preference", "confidence": .9}}))
+	if err := json.Unmarshal(raw, &local); err != nil {
+		t.Fatal(err)
+	}
+	params := map[string]any{"sessionId": a, "scope": "workspace", "factId": local.ID, "expectedRevision": local.Revision + 1}
+	if msg := c.response(t, c.request(t, "_deerflow/memory/promote", params)); msg.Error == nil || msg.Error.Code != -32016 {
+		t.Fatalf("stale promotion: %+v", msg)
+	}
+	params["expectedRevision"] = local.Revision
+	stranger := connect(t, f.service)
+	stranger.initialize(t)
+	if msg := stranger.response(t, stranger.request(t, "_deerflow/memory/promote", params)); msg.Error == nil || msg.Error.Code != protocol.InvalidParams {
+		t.Fatalf("foreign owner promotion: %+v", msg)
+	}
+	if err := json.Unmarshal(c.success(t, c.request(t, "_deerflow/memory/promote", params)), &global); err != nil || global.Scope != harness.MemoryGlobal {
+		t.Fatalf("promotion: %+v %v", global, err)
+	}
+	c.success(t, c.request(t, "_deerflow/memory/get", map[string]any{"sessionId": b, "scope": "global", "factId": global.ID}))
+	c.success(t, c.request(t, "_deerflow/memory/get", map[string]any{"sessionId": a, "scope": "workspace", "factId": local.ID}))
+	if msg := c.response(t, c.request(t, "_deerflow/memory/list", map[string]any{"sessionId": b, "scope": "global", "profileId": "forged"})); msg.Error == nil || msg.Error.Code != protocol.InvalidParams {
+		t.Fatalf("client identity override: %+v", msg)
+	}
+	if msg := stranger.response(t, stranger.request(t, "_deerflow/memory/get", map[string]any{"sessionId": b, "scope": "global", "factId": global.ID})); msg.Error == nil || msg.Error.Code != protocol.InvalidParams {
+		t.Fatalf("foreign owner global read: %+v", msg)
+	}
+}
+
 func TestACPMemoryManagementScopeOwnerAndVersions(t *testing.T) {
 	f := newFixture(t, nil)
 	store, err := memory.New(context.Background(), f.db.DB())

@@ -635,7 +635,7 @@ models:
 func TestApplyConfigRejectsUnsupportedMemoryPolicy(t *testing.T) {
 	const model = "models:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
 	for _, tc := range []struct{ name, body, message string }{
-		{"global", "local_acp:\n  memory_scope: global\n", "memory_scope=global"},
+		{"global without sharing", "local_acp:\n  memory_scope: global\nmemory:\n  include_global: false\n", "memory_scope=global"},
 		{"invalid scope", "local_acp:\n  memory_scope: unknown\n", "local_acp.memory_scope:"},
 		{"invalid mode", "memory:\n  mode: unknown\n", "memory.mode:"},
 		{"tool without retrieval", "memory:\n  mode: tool\n  backend_config:\n    retrieval_enabled: false\n", "requires memory.retrieval_enabled=true"},
@@ -654,7 +654,7 @@ func TestApplyConfigRejectsUnsupportedMemoryPolicy(t *testing.T) {
 	}
 }
 
-func TestApplyConfigIgnoresGlobalScopeWhenMemoryDisabled(t *testing.T) {
+func TestApplyConfigPreservesGlobalScopeWhenMemoryDisabled(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	raw := "local_acp:\n  memory_scope: global\nmemory:\n  enabled: false\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
@@ -662,7 +662,7 @@ func TestApplyConfigIgnoresGlobalScopeWhenMemoryDisabled(t *testing.T) {
 	}
 	var cfg deerflow.Config
 	connections := 0
-	if _, err := ApplyConfig(path, &cfg, &connections, nil); err != nil || cfg.MemoryScope != "" || cfg.MemoryEnabled == nil || *cfg.MemoryEnabled {
+	if _, err := ApplyConfig(path, &cfg, &connections, nil); err != nil || cfg.MemoryScope != harness.MemoryGlobal || cfg.MemoryEnabled == nil || *cfg.MemoryEnabled {
 		t.Fatalf("disabled global memory policy: %+v err=%v", cfg, err)
 	}
 }

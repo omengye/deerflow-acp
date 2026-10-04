@@ -324,7 +324,7 @@ func validatedMemory(document, previous, runtime map[string]any) (map[string]any
 	if err := configschema.ValidateDraft("memory", document); err != nil {
 		return nil, err
 	}
-	if err := configschema.ValidateMemoryPolicy(str(runtime, "memory_scope", ""), str(document, "mode", ""), boolValue(document, "enabled", true), boolValue(document, "retrieval_enabled", true)); err != nil {
+	if err := configschema.ValidateMemoryPolicy(str(runtime, "memory_scope", ""), str(document, "mode", ""), boolValue(document, "enabled", true), boolValue(document, "retrieval_enabled", true), boolValue(document, "include_global", true)); err != nil {
 		return nil, err
 	}
 	// Keep original unknown data until explicit migration. It is neither exposed

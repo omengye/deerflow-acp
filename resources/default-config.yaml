@@ -57,6 +57,7 @@ skills:
 
 memory:
   enabled: true
+  include_global: true
   mode: middleware
   injection_enabled: true
   retrieval_enabled: true

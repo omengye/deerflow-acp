@@ -13,7 +13,6 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
 	"github.com/omengye/deerflow-acp/go-harness/internal/localhost"
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
-	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
@@ -39,15 +38,21 @@ func (c *Client) managementMemoryScopes(x harness.Session) ([]managementScope, e
 	if c.service.MemoryUserID != "" {
 		options = append(options, harness.MemoryUser)
 	}
+	if c.service.MemoryGlobalID != "" {
+		options = append(options, harness.MemoryGlobal)
+	}
 	result := make([]managementScope, 0, len(options))
 	for _, kind := range options {
 		var sessionID, userID string
+		workspace := x.CWD
 		if kind == harness.MemorySession {
 			sessionID = x.ID
 		} else if kind == harness.MemoryUser {
 			userID = c.service.MemoryUserID
+		} else if kind == harness.MemoryGlobal {
+			workspace, userID = "", c.service.MemoryGlobalID
 		}
-		scope, err := memory.NewScope(memory.ScopeKind(kind), x.CWD, sessionID, userID, "")
+		scope, err := memory.NewScope(memory.ScopeKind(kind), workspace, sessionID, userID, "")
 		if err != nil {
 			return nil, err
 		}
@@ -91,75 +96,6 @@ func (c *Client) managementMemorySnapshot(ctx context.Context, x harness.Session
 		}
 	}
 	return map[string]any{"workspace": x.CWD, "scope": strings.Join(labels, "/"), "memory": map[string]any{"facts": facts}, "truncated": truncated}, nil
-}
-
-func (c *Client) managementMemory(ctx context.Context, request localhost.ManagementRequest) (any, error) {
-	want := 2
-	if request.Operation == "memory.delete" {
-		want = 3
-	}
-	if len(request.Fields) != want {
-		return nil, managementInvalid("unexpected memory management fields")
-	}
-	sessionID, err := managementID(request.Fields, "session_id")
-	if err != nil {
-		return nil, err
-	}
-	x, err := c.service.Store.ManagementSession(ctx, sessionID)
-	if errors.Is(err, harness.ErrNotFound) {
-		return nil, managementInvalid("session does not exist")
-	}
-	if err != nil {
-		return nil, err
-	}
-	scopes, err := c.managementMemoryScopes(x)
-	if err != nil {
-		return nil, err
-	}
-	if request.Operation == "memory.get" {
-		return c.managementMemorySnapshot(ctx, x, scopes)
-	}
-	factID, err := managementID(request.Fields, "fact_id")
-	if err != nil {
-		return nil, err
-	}
-	var found *managementScope
-	var revision int64
-	for i := range scopes {
-		fact, getErr := c.service.Memory.Get(ctx, scopes[i].scope, factID)
-		if getErr == nil {
-			found, revision = &scopes[i], fact.Revision
-			break
-		}
-		if !errors.Is(getErr, harness.ErrNotFound) {
-			return nil, getErr
-		}
-	}
-	if found == nil {
-		return nil, managementInvalid("fact does not exist in this session's scopes")
-	}
-	prior := c.service.Coordinator.Activity().Draining
-	priorBackground := false
-	c.service.Coordinator.SetDraining(true)
-	backgroundOperations := 0
-	if c.background != nil {
-		priorBackground = c.background.service.Activity().Draining
-		backgroundOperations = c.background.service.SetDraining(true).ActiveOperations
-	}
-	defer func() {
-		if c.background != nil {
-			c.background.service.SetDraining(priorBackground)
-		}
-		c.service.Coordinator.SetDraining(prior)
-	}()
-	if c.service.Coordinator.Activity().ActiveOperations+backgroundOperations != 0 {
-		return nil, &localhost.ManagementError{Code: "busy", Message: "wait for active operations before deleting memory"}
-	}
-	err = c.service.Memory.Delete(ctx, found.scope, factID, revision, memory.Source{ID: hr.NewID(), Kind: "operator", ActorID: "local-management", PolicyVersion: "local-management-v1"})
-	if err != nil {
-		return nil, err
-	}
-	return c.managementMemorySnapshot(ctx, x, scopes)
 }
 
 func managementStatus(activity session.Activity, tasks background.Activity, connections int) map[string]any {
@@ -295,7 +231,7 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 			sessions = append(sessions, entry)
 		}
 		return map[string]any{"sessions": sessions, "truncated": truncated}, nil
-	case "memory.get", "memory.delete":
+	case "memory.get", "memory.delete", "memory.promote":
 		return c.managementMemory(ctx, request)
 	case "session.delete":
 		if len(request.Fields) != 2 {

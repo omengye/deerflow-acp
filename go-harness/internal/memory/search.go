@@ -132,7 +132,7 @@ func (s *Store) searchIndexed(ctx context.Context, scope Scope, terms []string, 
 	return facts, true, nil
 }
 
-func (s *Store) searchLexical(ctx context.Context, scope Scope, terms []string, limit int) ([]Fact, int64, error) {
+func (s *Store) searchLexical(ctx context.Context, scope Scope, terms []string, limit int, includePreferences bool) ([]Fact, int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, 0, err
@@ -176,6 +176,9 @@ func (s *Store) searchLexical(ctx context.Context, scope Scope, terms []string, 
 		content := strings.ToLower(fact.Content)
 		category := strings.ToLower(fact.Category)
 		var hits float64
+		if includePreferences && (category == "preference" || category == "profile") {
+			hits = .5
+		}
 		for _, term := range terms {
 			if strings.Contains(content, term) {
 				hits += 1
@@ -218,7 +221,7 @@ func (s *Store) Search(ctx context.Context, scope Scope, query string, limit int
 			}
 		}
 	}
-	facts, _, err := s.searchLexical(ctx, scope, terms, limit)
+	facts, _, err := s.searchLexical(ctx, scope, terms, limit, false)
 	return facts, err
 }
 
@@ -229,5 +232,5 @@ func (s *Store) SnapshotSearch(ctx context.Context, scope Scope, query string, l
 	if !utf8.ValidString(query) || len(query) > 1024 || limit < 1 || limit > 100 {
 		return nil, 0, harness.ErrInvalidInput
 	}
-	return s.searchLexical(ctx, scope, searchTerms(query), limit)
+	return s.searchLexical(ctx, scope, searchTerms(query), limit, scope.kind == GlobalScope)
 }

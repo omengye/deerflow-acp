@@ -52,6 +52,7 @@ type Service struct {
 	Media          harness.MediaConfig
 	Memory         *memory.Store
 	MemoryUserID   string
+	MemoryGlobalID string
 	runQueue       *runQueue
 	mu             sync.Mutex
 	decisions      map[string]harness.PermissionDecision

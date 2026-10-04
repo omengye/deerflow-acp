@@ -443,3 +443,10 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - Waku 的 DeerFlow 设置新增 `client_mcp_servers` stdio 列表，保存于独立 `user-data/config/client-mcp-servers.json`。新建、加载及恢复 ACP 会话都发送该列表；宿主 YAML 的开关和可执行文件允许列表仍由 Go daemon 最终校验。设置快照对 env 值脱敏，只有同名服务器的 command 和 args 未变时才恢复旧密钥；修改目标后须重填。网络型会话 MCP 未开放。Waku 的配置服务仍使用原 Python `config_tool`，独立 Go ACP 便携包则不依赖 Python。
 - 新增 Go 测试覆盖跨会话隔离、关闭注入/检索、session 提取和配置拒绝；`go test -mod=readonly -count=1 -p=2 -timeout=5m ./...` 全模块通过。Waku Core 的 4 项 MCP 定向测试与 `cargo check -p waku` 通过，包含 ACP new/load/resume 下发、允许列表、脱敏、网络类型拒绝及 Windows 二次保存。`git diff --check` 通过。
 - 重建不含 Python runtime 的 Windows Debug 包 `dist/go-acp/windows-x64-20260930-memory-policy`，三份二进制齐全；包内 Bridge 的 Go daemon 启动、状态查询和停止均通过。按当前收敛目标，手工 UI、Docker 实机、远端 CI 和真实模型验收由后续人工操作处理，本阶段不作为完成门槛。
+
+## 第四十五阶段全局记忆（2026-10-04）
+
+- 新增独立 global 范围，使用 harness.db 固定 profile 身份，跨项目、会话、模型共享。旧 user/session/workspace key 保留。第四十四阶段关于 global 不支持的结论已被本阶段替代。
+- 默认读取全局＋项目，include_global 可关闭共享读取；自动提取保持本地。global 兼容值读取全局＋项目、提取写项目。全局偏好有界注入，显式检索保持关键词匹配。
+- 接通 SDK、ACP 和本地管理的全局 CRUD 及按审查版本“提升为全局”；事务内 CAS、查重，原事实保留，来源追溯到源版本。桌面三个范围切换、提升确认及版本化删除均通过现有后台请求执行。
+- 实施语义与边界见 docs/eino-global-memory.md。配置契约与模板明确 include_global:true。只做受影响定向验证，不扩大至全量/race/模型矩阵或视觉自动化。

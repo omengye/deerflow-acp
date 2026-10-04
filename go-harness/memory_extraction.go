@@ -35,7 +35,7 @@ func memoryPostRunFactory(store *memory.Store, req harness.RunRequest, userID st
 	switch selectedScope {
 	case harness.MemorySession:
 		allowed, scopePrompt = []memory.ScopeKind{memory.SessionScope}, "session"
-	case harness.MemoryWorkspace:
+	case harness.MemoryWorkspace, harness.MemoryGlobal:
 		allowed, scopePrompt = []memory.ScopeKind{memory.WorkspaceScope}, "workspace"
 	default:
 		if userID != "" {

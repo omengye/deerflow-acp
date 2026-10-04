@@ -93,3 +93,12 @@ func (c *Client) ClearMemory(ctx context.Context, sessionID string, kind harness
 	defer done()
 	return c.service.ClearMemory(ctx, c.owner, sessionID, kind, expectedScopeRevision)
 }
+
+func (c *Client) PromoteMemoryFact(ctx context.Context, sessionID string, kind harness.MemoryScope, id string, expectedRevision int64) (harness.MemoryFact, error) {
+	done, err := c.operation()
+	if err != nil {
+		return harness.MemoryFact{}, err
+	}
+	defer done()
+	return c.service.PromoteMemoryFact(ctx, c.owner, sessionID, kind, id, expectedRevision)
+}

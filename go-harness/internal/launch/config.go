@@ -98,6 +98,7 @@ type runtimeDocument struct {
 		Mode             string `yaml:"mode"`
 		InjectionEnabled *bool  `yaml:"injection_enabled"`
 		RetrievalEnabled *bool  `yaml:"retrieval_enabled"`
+		IncludeGlobal    *bool  `yaml:"include_global"`
 		BackendConfig    struct {
 			RetrievalEnabled *bool `yaml:"retrieval_enabled"`
 		} `yaml:"backend_config"`
@@ -399,10 +400,8 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	}
 	if source.LocalACP.MemoryScope != "" {
 		switch source.LocalACP.MemoryScope {
-		case string(harness.MemorySession), string(harness.MemoryWorkspace):
+		case string(harness.MemorySession), string(harness.MemoryWorkspace), string(harness.MemoryGlobal):
 			cfg.MemoryScope = harness.MemoryScope(source.LocalACP.MemoryScope)
-		case "global":
-			// Retained only while disabled; validate after explicit overrides.
 		default:
 			return result, fmt.Errorf("local_acp.memory_scope must be global, workspace, or session")
 		}
@@ -419,10 +418,13 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	if source.Memory.RetrievalEnabled != nil {
 		cfg.MemoryRetrievalEnabled = source.Memory.RetrievalEnabled
 	}
+	if source.Memory.IncludeGlobal != nil {
+		cfg.MemoryIncludeGlobal = source.Memory.IncludeGlobal
+	}
 	if source.Memory.BackendConfig.RetrievalEnabled != nil {
 		cfg.MemoryRetrievalEnabled = source.Memory.BackendConfig.RetrievalEnabled
 	}
-	if err := configschema.ValidateMemoryPolicy(source.LocalACP.MemoryScope, cfg.MemoryMode, cfg.MemoryEnabled == nil || *cfg.MemoryEnabled, cfg.MemoryRetrievalEnabled == nil || *cfg.MemoryRetrievalEnabled); err != nil {
+	if err := configschema.ValidateMemoryPolicy(source.LocalACP.MemoryScope, cfg.MemoryMode, cfg.MemoryEnabled == nil || *cfg.MemoryEnabled, cfg.MemoryRetrievalEnabled == nil || *cfg.MemoryRetrievalEnabled, cfg.MemoryIncludeGlobal == nil || *cfg.MemoryIncludeGlobal); err != nil {
 		return result, err
 	}
 	if err := applyConfiguredSummarization(source, cfg, explicit); err != nil {

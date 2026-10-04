@@ -14,6 +14,7 @@ mod feedback;
 mod generation;
 mod legacy;
 mod mcp_editor;
+mod memory_management;
 mod missing;
 pub(super) mod presentation;
 mod roles;
@@ -252,6 +253,7 @@ pub(super) struct DeerFlowSettings {
     sessions: Vec<Value>,
     session_page: usize,
     memory_page: usize,
+    memory_scope: String,
     selected_session: Option<String>,
     memory_data: Value,
     proposals: Vec<Value>,
@@ -342,6 +344,7 @@ impl DeerFlowSettings {
             sessions: Vec::new(),
             session_page: 0,
             memory_page: 0,
+            memory_scope: "workspace".into(),
             selected_session: None,
             memory_data: Value::Null,
             proposals: Vec::new(),
@@ -1655,14 +1658,24 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
             add(
                 "/runtime/memory_scope".into(),
                 "记忆作用域",
-                "按工作区或单个会话隔离",
-                Kind::Choice(&[("workspace", "工作区"), ("session", "单个会话")]),
+                "自动提取写入此本地范围；读取时可附加全局记忆",
+                Kind::Choice(&[
+                    ("workspace", "项目"),
+                    ("session", "单个会话"),
+                    ("global", "全局与项目"),
+                ]),
             );
             for (key, label, hint, kind) in [
                 (
                     "enabled",
                     "启用长期记忆",
                     "使用 Go Harness 的本地记忆存储",
+                    Kind::Bool,
+                ),
+                (
+                    "include_global",
+                    "读取全局记忆",
+                    "跨项目、会话和模型共享；自动提取仍写入本地范围",
                     Kind::Bool,
                 ),
                 (
@@ -3129,11 +3142,14 @@ impl Waku {
                     data["sessions"].as_array().cloned().unwrap_or_default();
                 self.deerflow_settings.session_page = 0;
             }
-            "memory.get" | "memory.delete" => {
+            "memory.get" | "memory.delete" | "memory.promote" => {
                 self.deerflow_settings.memory_data = data;
                 self.deerflow_settings.memory_page = 0;
                 if operation == "memory.delete" {
                     self.deerflow_settings.notice = Some("所选记忆事实已删除。".into());
+                } else if operation == "memory.promote" {
+                    self.deerflow_settings.notice =
+                        Some("已复制到全局记忆，原事实保留。切换到全局可查看。".into());
                 }
             }
             "proposal.list" | "proposal.history" => {
@@ -3200,18 +3216,42 @@ impl Waku {
         }
     }
 
+    fn deerflow_load_memory(&mut self, cx: &mut Context<Self>) {
+        if self.deerflow_settings.busy() {
+            return;
+        }
+        self.deerflow_settings.memory_data = Value::Null;
+        self.deerflow_settings.memory_page = 0;
+        self.deerflow_settings.confirm_manage = None;
+        if let Some(request) = memory_management::get_request(
+            &self.deerflow_settings.memory_scope,
+            self.deerflow_settings.selected_session.as_deref(),
+        ) {
+            self.deerflow_request("manage", request, cx);
+        } else {
+            self.deerflow_settings.notice =
+                Some("请选择一个历史会话，以确定项目或会话范围。".into());
+            cx.notify();
+        }
+    }
+
     fn deerflow_select_memory(&mut self, session: String, cx: &mut Context<Self>) {
         if self.deerflow_settings.busy() {
             return;
         }
-        self.deerflow_settings.selected_session = Some(session.clone());
-        self.deerflow_settings.memory_data = Value::Null;
-        self.deerflow_settings.confirm_manage = None;
-        self.deerflow_request(
-            "manage",
-            json!({"operation":"memory.get","session_id":session}),
-            cx,
-        );
+        self.deerflow_settings.selected_session = Some(session);
+        if self.deerflow_settings.memory_scope == "global" {
+            self.deerflow_settings.memory_scope = "workspace".into();
+        }
+        self.deerflow_load_memory(cx);
+    }
+
+    fn deerflow_select_memory_scope(&mut self, scope: &str, cx: &mut Context<Self>) {
+        if self.deerflow_settings.busy() {
+            return;
+        }
+        self.deerflow_settings.memory_scope = scope.into();
+        self.deerflow_load_memory(cx);
     }
 
     fn render_deerflow_data(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -3221,35 +3261,46 @@ impl Waku {
         let mut group = df_group(theme)
             .child(df_label(
                 "会话与记忆数据",
-                "运行服务后，可查看会话对应的记忆作用域并管理历史数据。",
+                "全局记忆跨项目共享；项目和会话记忆通过下方历史会话定位。",
                 theme,
             ))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(6.0))
-                    .child(df_button(
-                        "df-sessions-load",
-                        "加载会话列表",
-                        unavailable,
-                        false,
-                        theme,
-                        cx,
-                        |this, _, cx| {
-                            this.deerflow_request("manage", json!({"operation":"session.list"}), cx)
-                        },
-                    ))
-                    .child(df_button(
-                        "df-memory-legacy",
-                        "查看旧版共享记忆",
-                        unavailable,
-                        false,
-                        theme,
-                        cx,
-                        |this, _, cx| this.deerflow_select_memory("__legacy__".into(), cx),
-                    )),
-            );
+            .child(div().flex().flex_wrap().gap(px(6.0)).child(df_button(
+                "df-sessions-load",
+                "加载会话列表",
+                unavailable,
+                false,
+                theme,
+                cx,
+                |this, _, cx| {
+                    this.deerflow_request("manage", json!({"operation":"session.list"}), cx)
+                },
+            )));
+        let mut scope_controls = div().flex().flex_wrap().gap(px(6.0));
+        for (scope, label) in [
+            ("global", "全局"),
+            ("workspace", "项目"),
+            ("session", "会话"),
+        ] {
+            scope_controls = scope_controls.child(df_button(
+                SharedString::from(format!("df-memory-scope-{scope}")),
+                label,
+                unavailable,
+                state.memory_scope == scope,
+                theme,
+                cx,
+                move |this, _, cx| this.deerflow_select_memory_scope(scope, cx),
+            ));
+        }
+        scope_controls = scope_controls.child(df_button(
+            "df-memory-refresh",
+            "刷新记忆",
+            unavailable,
+            false,
+            theme,
+            cx,
+            |this, _, cx| this.deerflow_load_memory(cx),
+        ));
+        group = group.child(scope_controls);
         let page_size = 12;
         let count = state.sessions.len();
         let offset = state.session_page * page_size;
@@ -3327,7 +3378,9 @@ impl Waku {
                 format!(
                     "{} · {}",
                     state.memory_data["workspace"].as_str().unwrap_or(""),
-                    state.memory_data["scope"].as_str().unwrap_or("")
+                    memory_management::scope_label(
+                        state.memory_data["scope"].as_str().unwrap_or("")
+                    )
                 ),
                 theme,
             ));
@@ -3338,16 +3391,71 @@ impl Waku {
                 }
                 for fact in facts.iter().skip(offset).take(page_size) {
                     let id = fact["id"].as_str().unwrap_or("").to_owned();
-                    let session_id = state.selected_session.clone().unwrap_or_default();
-                    group = group.child(div().flex().items_start().gap(px(16.0))
-                        .child(df_label(fact["content"].as_str().unwrap_or("").to_owned(), id.clone(), theme))
-                        .child(df_button(SharedString::from(format!("df-fact-delete-{id}")), "删除…", unavailable || state.status["active_operations"].as_u64().unwrap_or(0) > 0, false, theme, cx,
+                    let scope = fact["scope"].as_str().unwrap_or("");
+                    let revision = fact["revision"].as_i64().unwrap_or(0);
+                    let disabled =
+                        unavailable || state.status["active_operations"].as_u64().unwrap_or(0) > 0;
+                    let mut actions = div().flex().flex_wrap().gap(px(6.0));
+                    if let Some(request) = memory_management::mutation_request(
+                        "memory.delete",
+                        scope,
+                        state.selected_session.as_deref(),
+                        &id,
+                        revision,
+                    ) {
+                        let confirmation = if scope == "global" {
+                            format!(
+                                "删除全局记忆事实 {id}。所有项目后续读取都将不再使用此事实，已有项目副本保留。"
+                            )
+                        } else {
+                            format!("删除当前范围中的记忆事实 {id}。其他范围的事实保留。")
+                        };
+                        actions = actions.child(df_button(
+                            SharedString::from(format!("df-fact-delete-{id}")),
+                            "删除…",
+                            disabled,
+                            false,
+                            theme,
+                            cx,
+                            move |this, _, cx| {
+                                this.deerflow_settings.confirm_manage =
+                                    Some((confirmation.clone(), request.clone()));
+                                cx.notify();
+                            },
+                        ));
+                    }
+                    if let Some(request) = memory_management::mutation_request(
+                        "memory.promote",
+                        scope,
+                        state.selected_session.as_deref(),
+                        &id,
+                        revision,
+                    ) {
+                        actions = actions.child(df_button(
+                            SharedString::from(format!("df-fact-promote-{id}")), "提升为全局…", disabled, false, theme, cx,
                             move |this, _, cx| {
                                 this.deerflow_settings.confirm_manage = Some((
-                                    format!("删除当前作用域中的记忆事实 {id}。其他工作区的记忆不受影响。"),
-                                    json!({"operation":"memory.delete","session_id":session_id,"fact_id":id}),
-                                )); cx.notify();
-                            })));
+                                    "将这条记忆复制到全局，其他项目和模型将能读取。原事实保留，相同全局事实不会重复创建。".into(), request.clone(),
+                                ));
+                                cx.notify();
+                            },
+                        ));
+                    }
+                    group = group.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.0))
+                            .child(df_label(
+                                fact["content"].as_str().unwrap_or("").to_owned(),
+                                format!(
+                                    "{} · v{revision} · {id}",
+                                    memory_management::scope_label(scope)
+                                ),
+                                theme,
+                            ))
+                            .child(actions),
+                    );
                 }
                 if facts.len() > page_size {
                     group = group.child(

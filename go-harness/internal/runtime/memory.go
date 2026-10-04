@@ -70,16 +70,40 @@ func (s *Service) memoryScope(ctx context.Context, owner, sessionID string, kind
 			return nil, memory.Scope{}, nil, harness.ErrInvalidInput
 		}
 		subjectUser = s.MemoryUserID
+	case harness.MemoryGlobal:
+		if s.MemoryGlobalID == "" {
+			release()
+			return nil, memory.Scope{}, nil, harness.ErrInvalidInput
+		}
+		subjectUser = s.MemoryGlobalID
 	default:
 		release()
 		return nil, memory.Scope{}, nil, harness.ErrInvalidInput
 	}
-	scope, err := memory.NewScope(memory.ScopeKind(kind), session.CWD, subjectSession, subjectUser, "")
+	workspace := session.CWD
+	if kind == harness.MemoryGlobal {
+		workspace = ""
+	}
+	scope, err := memory.NewScope(memory.ScopeKind(kind), workspace, subjectSession, subjectUser, "")
 	if err != nil {
 		release()
 		return nil, memory.Scope{}, nil, err
 	}
 	return ctx, scope, release, nil
+}
+
+func (s *Service) PromoteMemoryFact(ctx context.Context, owner, sessionID string, kind harness.MemoryScope, id string, expectedRevision int64) (harness.MemoryFact, error) {
+	ctx, origin, done, err := s.memoryScope(ctx, owner, sessionID, kind)
+	if err != nil {
+		return harness.MemoryFact{}, err
+	}
+	defer done()
+	global, err := memory.NewScope(memory.GlobalScope, "", "", s.MemoryGlobalID, "")
+	if err != nil {
+		return harness.MemoryFact{}, err
+	}
+	fact, err := s.Memory.Promote(ctx, origin, global, id, expectedRevision, memory.Source{ID: NewID(), Kind: "operator", ActorID: owner})
+	return memoryFact(fact, harness.MemoryGlobal), memoryConflict(err)
 }
 
 func memoryFact(f memory.Fact, kind harness.MemoryScope) harness.MemoryFact {
