@@ -1,6 +1,4 @@
 @echo off
-REM Stop DeerFlow API service on Windows
-cd /d "%~dp0"
-
+REM Stop the selected Eino Go ACP daemon through authenticated IPC.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop.ps1" %*
 exit /b %ERRORLEVEL%

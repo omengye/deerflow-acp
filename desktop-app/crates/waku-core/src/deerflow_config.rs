@@ -352,11 +352,13 @@ impl Paths {
 
     fn environment(&self) -> Vec<(String, String)> {
         let data_dir = self.user_data.join("data/go-harness");
+        let log_dir = self.user_data.join("logs");
         [
             ("DEER_FLOW_PORTABLE_ROOT", &self.root),
             ("DEER_FLOW_CONFIG_PATH", &self.config),
             ("DEER_FLOW_ACP_RUNTIME_DIR", &self.runtime),
             ("DEERFLOW_GO_DATA_DIR", &data_dir),
+            ("DEERFLOW_GO_LOG_DIR", &log_dir),
         ]
         .into_iter()
         .map(|(key, value)| (key.into(), value.to_string_lossy().into_owned()))
@@ -493,6 +495,13 @@ impl Paths {
         decode_envelope(&self.bridge_command("--manage", Some(input))?)
     }
 
+    fn manage_envelope(&self, input: &Value) -> Result<Value> {
+        let output = self.bridge_command("--manage", Some(input))?;
+        let envelope: Value =
+            serde_json::from_str(output.trim()).context("DeerFlow 返回了无效 JSON")?;
+        validate_management_envelope(envelope)
+    }
+
     fn live_status(&self) -> Value {
         match self.manage(&json!({"operation":"daemon.status"})) {
             Ok(mut value) => {
@@ -573,7 +582,11 @@ impl DeerFlowService {
         match operation {
             "snapshot" => paths.config_snapshot(),
             "validate" => paths.save_config_document(operation, &input),
-            "test-model" => paths.config_command(operation, &input),
+            "test-model"
+            | "legacy-agent-preview"
+            | "legacy-history-import"
+            | "legacy-history-list"
+            | "legacy-history-get" => paths.config_command(operation, &input),
             "save" | "save-and-apply" => {
                 let _guard = self.state.mutation.lock();
                 if self.state.applying.load(Ordering::Acquire) {
@@ -589,6 +602,7 @@ impl DeerFlowService {
                 }
             }
             "manage" => paths.manage(&input),
+            "manage-envelope" => paths.manage_envelope(&input),
             "status" => Ok(self.status(&paths)),
             "apply" => {
                 let _guard = self.state.mutation.lock();
@@ -636,6 +650,7 @@ impl DeerFlowService {
         value["acp_backend"] = json!("go");
         value["config_path"] = json!(paths.config);
         value["user_data"] = json!(paths.user_data);
+        value["diagnostics_directory"] = json!(paths.user_data.join("logs"));
         value
     }
 
@@ -753,7 +768,12 @@ fn ensure_operation(operation: &str) -> Result<()> {
             | "save-and-apply"
             | "validate"
             | "test-model"
+            | "legacy-agent-preview"
+            | "legacy-history-import"
+            | "legacy-history-list"
+            | "legacy-history-get"
             | "manage"
+            | "manage-envelope"
             | "status"
             | "start"
             | "stop"
@@ -778,6 +798,20 @@ fn decode_envelope(output: &str) -> Result<Value> {
         .get("data")
         .cloned()
         .ok_or_else(|| anyhow!("DeerFlow 响应缺少数据"))
+}
+
+// Preserve structured MANAGE errors for clients that must distinguish stale
+// state from a transport failure with an unknown mutation outcome.
+fn validate_management_envelope(envelope: Value) -> Result<Value> {
+    match envelope["ok"].as_bool() {
+        Some(true) if envelope.get("data").is_some() => Ok(envelope),
+        Some(false)
+            if envelope["code"].as_str().is_some() && envelope["error"].as_str().is_some() =>
+        {
+            Ok(envelope)
+        }
+        _ => bail!("DeerFlow 管理响应格式无效"),
+    }
 }
 
 fn hidden_command(program: &Path) -> Command {
@@ -1074,5 +1108,28 @@ mod tests {
             assert!(ensure_operation(operation).is_err());
         }
         assert!(ensure_operation("validate").is_ok());
+        assert!(ensure_operation("manage-envelope").is_ok());
+    }
+
+    #[test]
+    fn management_envelopes_preserve_conflicts_for_client_recovery() {
+        let conflict = json!({"ok":false,"code":"conflict","error":"Skill state changed"});
+        assert_eq!(
+            validate_management_envelope(conflict.clone()).unwrap(),
+            conflict
+        );
+        let success = json!({"ok":true,"data":{"catalog_version":3,"skills":[]}});
+        assert_eq!(
+            validate_management_envelope(success.clone()).unwrap(),
+            success
+        );
+        for invalid in [
+            json!(null),
+            json!({"ok":true}),
+            json!({"ok":false,"error":"missing code"}),
+            json!({"ok":"false","code":"conflict","error":"wrong type"}),
+        ] {
+            assert!(validate_management_envelope(invalid).is_err());
+        }
     }
 }

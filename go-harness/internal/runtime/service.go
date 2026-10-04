@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
+	"github.com/omengye/deerflow-acp/go-harness/internal/background"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
@@ -22,16 +24,27 @@ type Service struct {
 	Coordinator *session.Coordinator
 	Engine      harness.Engine
 	Background  harness.BackgroundController
+	// Installed by the durable native host. Called with a live root-session
+	// admission fence to create a private, background-owned continuation.
+	BackgroundContinuation func(context.Context, string, string, string) (harness.BackgroundTask, error)
 	// Set by the host at construction; public requests cannot supply policy.
-	ContinuationHostPolicy string
-	PermissionMode         harness.PermissionMode
+	ContinuationHostPolicy   string
+	ContinuationHostPolicies map[int]string
+	PermissionMode           harness.PermissionMode
 	// Optional host callbacks for the external ACP prompt reconciliation
 	// extension. They receive the connection owner for the usual session fence.
-	ExternalPromptPending     func(context.Context, string, string, string) (harness.ExternalPromptState, error)
-	ExternalPromptAcknowledge func(context.Context, string, string, string, string) error
-	Model                     string
-	Settings                  ConfigSettings
-	Resources                 SessionResources
+	ExternalPromptPending          func(context.Context, string, string, string) (harness.ExternalPromptState, error)
+	ExternalPromptAcknowledge      func(context.Context, string, string, string, string) error
+	Model                          string
+	Settings                       ConfigSettings
+	Resources                      SessionResources
+	BeforeResourceRelease          func(context.Context, string, string) error
+	CheckContinuationResources     func(context.Context, *sql.Tx, background.Binding, BackgroundExecutionSpec) error
+	ContinuationResourceGeneration func(context.Context, *sql.Tx, background.Binding, BackgroundExecutionSpec) (string, error)
+	// Acquires live tool schemas before continuation quota/attempt admission.
+	// Exactly one of notification ID or existing run ID is provided. Cleanup
+	// belongs to the caller after all of this foreground invocation has joined.
+	PrepareContinuationResources func(context.Context, string, string, string, string) (context.Context, func(), error)
 	// SessionCleanup runs after a successful durable session purge while the
 	// coordinator still holds its deletion fence.
 	SessionCleanup func(string) error
@@ -42,6 +55,7 @@ type Service struct {
 	runQueue       *runQueue
 	mu             sync.Mutex
 	decisions      map[string]harness.PermissionDecision
+	sessionUpdates map[string]*sessionUpdatesSubscription
 }
 
 func NewService(store *Store, engine harness.Engine, model string) *Service {
@@ -414,10 +428,21 @@ func (s *Service) SetMode(ctx context.Context, owner, id, mode string) error {
 	return nil
 }
 func (s *Service) Disconnect(ctx context.Context, owner string) error {
+	s.stopSessionUpdates(owner, "")
 	s.clearDecisions(owner, "")
-	var cleanup func(context.Context, string) error
-	if s.Resources != nil {
-		cleanup = func(ctx context.Context, id string) error { return s.Resources.Release(ctx, owner, id) }
+	cleanup := func(ctx context.Context, id string) error {
+		if err := joinSessionUpdates(ctx, s.stopSessionUpdates(owner, id)); err != nil {
+			return err
+		}
+		if s.Resources != nil {
+			if s.BeforeResourceRelease != nil {
+				if err := s.BeforeResourceRelease(ctx, owner, id); err != nil {
+					return err
+				}
+			}
+			return s.Resources.Release(ctx, owner, id)
+		}
+		return nil
 	}
 	err := s.Coordinator.DisconnectWithCleanup(ctx, owner, cleanup)
 	if s.Resources != nil {

@@ -520,6 +520,7 @@ fn fitted_panel_widths(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RightPanelSurface {
+    DeerFlowTasks,
     Browser(Uuid),
     Terminal(Uuid),
     BackgroundWork {
@@ -1283,6 +1284,7 @@ pub struct Waku {
     /// Runtime-only by design: providers reconcile their authoritative state
     /// when the resident transport reconnects.
     background_work: HashMap<Uuid, BackgroundWorkRegistry>,
+    deerflow_tasks: HashMap<Uuid, deerflow_tasks::TaskBrowser>,
     last_background_work_tick: Instant,
     /// Accepted submissions still creating their workspace/checkpoint, or an
     /// edited past message still rewinding its workspace and provider. The
@@ -1622,6 +1624,7 @@ mod components;
 mod composer;
 mod deerflow_approval;
 mod deerflow_settings;
+mod deerflow_tasks;
 mod drafts;
 mod file_search;
 mod goal_dialog;
@@ -2625,6 +2628,32 @@ impl Waku {
                 })
                 .detach();
             }
+            for (index, input) in deerflow_settings.generation_inputs.iter().enumerate() {
+                cx.subscribe(input, move |this: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
+                        this.deerflow_generation_edited(index, cx);
+                    }
+                })
+                .detach();
+            }
+            cx.subscribe(
+                &deerflow_settings.feedback_input,
+                |this: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
+                        this.deerflow_feedback_edited(cx);
+                    }
+                },
+            )
+            .detach();
+            cx.subscribe(
+                &deerflow_settings.missing_input,
+                |this: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
+                        this.deerflow_missing_edited(cx);
+                    }
+                },
+            )
+            .detach();
 
             // Like T3 Code's adapter subscriptions feeding its ingestion
             // worker, provider threads push an edge into this bounded wake
@@ -2862,6 +2891,7 @@ impl Waku {
                 runtime_attach_pending: HashSet::new(),
                 runtime_attach_misses: HashMap::new(),
                 background_work: HashMap::new(),
+                deerflow_tasks: HashMap::new(),
                 last_background_work_tick: Instant::now(),
                 submission_preparations: HashSet::new(),
                 escape_stop_confirmation: EscapeStopConfirmation::default(),

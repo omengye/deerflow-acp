@@ -1,46 +1,50 @@
-name: CI
+name: Desktop contracts
 
 on:
   pull_request:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: desktop-contracts-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
-    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ["3.12"]
-
+    name: Waku and build contracts on Windows
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_BUILD_JOBS: '2'
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
         with:
-          # Keep CI on the uv version used to validate this lock and startup flow.
-          version: "0.9.18"
-          enable-cache: true
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: uv sync --frozen --group dev
-
-      - name: Check Python imports and syntax
-        run: uvx ruff==0.16.1 check --select F --output-format github .
-
-      - name: Run test suite
-        run: uv run --no-sync pytest -q
+          arch: x64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.96.0'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+          cache-dependency-path: go-harness/go.sum
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop-app -> target
+      - name: Check Waku desktop and daemon
+        working-directory: desktop-app
+        run: cargo check --locked -p waku --bin waku -p waku-daemon --bin waku-daemon -p waku-core
+      - name: Test Waku DeerFlow contracts
+        working-directory: desktop-app
+        run: cargo test --locked -p waku -p waku-core --lib deerflow
+      - name: Test source archive identity guard
+        run: ./scripts/test-desktop-source-identity.ps1
+      - name: Validate build entry points
+        run: ./scripts/test-go-build-entrypoints.ps1

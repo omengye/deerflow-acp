@@ -11,6 +11,16 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+. (Join-Path $PSScriptRoot "desktop-source-identity.ps1")
+. (Join-Path $PSScriptRoot "go-package-inputs.ps1")
+Assert-GoRepositorySources -RepositoryRoot $repoRoot
+Assert-GoBundledSkills -Source (Join-Path $repoRoot 'skills')
+if ($CreateZip -and $SkipBuild) {
+    throw '-CreateZip cannot use -SkipBuild: existing binaries have no verified source identity. Rebuild without -SkipBuild, or omit -CreateZip for a development package.'
+}
+# Fail before Cargo/Go or output creation when a corresponding source ZIP
+# would omit local changes. Keep this fixed commit throughout the build.
+$sourceIdentity = Get-DesktopSourceIdentity -RepositoryRoot $repoRoot -RequireClean:$CreateZip
 $desktopRoot = Join-Path $repoRoot "desktop-app"
 $distRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "dist\desktop"))
 function Resolve-BuildPath([string]$Base, [string]$Value) {
@@ -34,6 +44,8 @@ $goBinaryRoot = Join-Path $repoRoot ".build-cache\go-acp-desktop\$profile"
 $goDaemonBinary = Join-Path $goBinaryRoot "deerflow-acpd.exe"
 $goConfigBinary = Join-Path $goBinaryRoot "deerflow-config-go.exe"
 $goStdioBinary = Join-Path $goBinaryRoot "deerflow-acp-go.exe"
+$goSkillBinary = Join-Path $goBinaryRoot "deerflow-skill-go.exe"
+$goWSLHelper = Join-Path $goBinaryRoot "deerflow-wsl-helper-linux-amd64"
 $cargoArguments = @("build", "--locked")
 if ($Configuration -eq "Release") { $cargoArguments += "--release" }
 $bridgeCargoArguments = $cargoArguments + @("--config", (Join-Path $PSScriptRoot "cargo-windows-static-crt.toml"))
@@ -58,6 +70,9 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { throw "Go desktop config build failed" }
         & go build -trimpath -p=2 -o $goStdioBinary ./cmd/deerflow-acp-go
         if ($LASTEXITCODE -ne 0) { throw "Go direct stdio agent build failed" }
+        & go build -trimpath -p=2 -o $goSkillBinary ./cmd/deerflow-skill-go
+        if ($LASTEXITCODE -ne 0) { throw "Go skill authoring tool build failed" }
+        & (Join-Path $PSScriptRoot "build-wsl-helper.ps1") -OutputDirectory $goBinaryRoot
     } finally { Pop-Location }
 }
 
@@ -68,6 +83,10 @@ $binaries = @{
     "deerflow-acpd.exe" = $goDaemonBinary
     "deerflow-config-go.exe" = $goConfigBinary
     "deerflow-acp-go.exe" = $goStdioBinary
+    "deerflow-skill-go.exe" = $goSkillBinary
+    "deerflow-wsl-helper-linux-amd64" = $goWSLHelper
+    "deerflow-wsl-helper-linux-amd64.sha256" = "$goWSLHelper.sha256"
+    "deerflow-wsl-helper-linux-amd64.json" = "$goWSLHelper.json"
 }
 foreach ($name in $binaries.Keys) {
     $source = $binaries[$name]
@@ -75,11 +94,20 @@ foreach ($name in $binaries.Keys) {
         throw "Missing or empty build output: $source"
     }
 }
+$helperExpectedDigest = [IO.File]::ReadAllText("$goWSLHelper.sha256").Trim()
+if ($helperExpectedDigest -cnotmatch '^[a-f0-9]{64}$' -or $helperExpectedDigest -cne (Get-FileHash -LiteralPath $goWSLHelper -Algorithm SHA256).Hash.ToLowerInvariant()) {
+    throw "Go WSL helper checksum mismatch; rebuild the helper before packaging"
+}
+$helperManifest = Get-Content -LiteralPath "$goWSLHelper.json" -Raw | ConvertFrom-Json
+if ($helperManifest.sha256 -cne $helperExpectedDigest -or $helperManifest.platform -cne "linux/amd64" -or $helperManifest.protocol -cne "deerflow-wsl-v1") {
+    throw "Go WSL helper manifest mismatch; rebuild the helper before packaging"
+}
 $desktopDefault = Join-Path $repoRoot "resources\desktop-default-config.yaml"
 if (-not (Test-Path -LiteralPath $desktopDefault -PathType Leaf)) { throw "Missing desktop default config" }
 
 # Create output only after all builds succeed. Never copy data or credentials
 # from an older portable installation.
+if ($CreateZip) { Assert-DesktopSourceIdentity -Expected $sourceIdentity }
 New-Item -ItemType Directory -Path $outputRoot | Out-Null
 $packageResources = Join-Path $outputRoot "resources"
 New-Item -ItemType Directory -Path $packageResources | Out-Null
@@ -93,15 +121,6 @@ function Copy-BundledSkills([string]$Source, [string]$Destination) {
         if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
         if ($entry.PSIsContainer) {
             if ($entry.Name -notin @(".git", ".venv", "node_modules", "__pycache__", ".cache", "user-data", "logs")) {
-                # Keep the portable package usable without Python: a Skill
-                # whose implementation includes Python scripts is omitted as
-                # a unit so its instructions never point at missing scripts.
-                if (Test-Path -LiteralPath (Join-Path $entry.FullName "SKILL.md")) {
-                    $pythonScript = Get-ChildItem -LiteralPath $entry.FullName -Recurse -File -Force |
-                        Where-Object { $_.Extension -in @(".py", ".pyw") } |
-                        Select-Object -First 1
-                    if ($pythonScript) { continue }
-                }
                 Copy-BundledSkills $entry.FullName (Join-Path $Destination $entry.Name)
             }
         } elseif ($entry.Name -notmatch '^\.env($|\.(?!example$))' -and $entry.Extension -notin @(".pyc", ".pyo", ".key", ".pfx", ".p12", ".log", ".db", ".sqlite")) {
@@ -134,15 +153,23 @@ selected by name without Python class paths. See resources/go-native-tools.md.
 Optional host_opencli calls an installed OpenCLI/Node.js; browser commands need
 the user's OpenCLI browser bridge. It does not require Python.
 The optional stdio MCP executable allowlist is in local_acp of config.yaml.
-Skills that require Python scripts are excluded from this portable package.
+WSL command execution uses the bundled, SHA-256 verified Go Linux helper.
+Select a WSL2 distribution explicitly; no guest interpreter is required.
+Bundled skill inputs are checked before building; Python scripts and execution
+commands cause an explicit build failure. Native skill authoring is available
+through deerflow-skill-go.exe.
 To update, close Desktop and copy user-data into a new package. Do not replace
 or delete it. A previous Python session database cannot be opened by Go.
 
 This Waku-derived desktop is GPL-3.0-only. See FORK.md and resources/licenses.
 When distributing the binary ZIP, include the matching source ZIP beside it.
+BUILD_SOURCE.json records whether source identity is exact or a development
+snapshot. Source ZIP identity checks do not certify Python source removal or
+the separate clean-environment release acceptance.
 '@ | Set-Content -LiteralPath (Join-Path $outputRoot "README.txt") -Encoding utf8
-$commit = (& git -C $repoRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -eq 0) { Set-Content -LiteralPath (Join-Path $outputRoot "BUILD_COMMIT.txt") -Value $commit -Encoding ascii }
+$sourceAfterBuild = Get-DesktopSourceIdentity -RepositoryRoot $repoRoot
+$sourceRecord = Get-DesktopBuildSourceRecord -Before $sourceIdentity -After $sourceAfterBuild -SkipBuild:$SkipBuild -CreateZip:$CreateZip
+Set-Content -LiteralPath (Join-Path $outputRoot "BUILD_COMMIT.txt") -Value $sourceRecord.build_commit_label -Encoding ascii
 
 # A Go-only package must not accidentally acquire an older Python runtime.
 foreach ($forbidden in @("runtime", "python.exe", "pythonw.exe", ".venv", "site-packages")) {
@@ -152,14 +179,22 @@ $forbiddenEntries = Get-ChildItem -LiteralPath $outputRoot -Recurse -Force | Whe
     $_.Name -match '^(python(?:w)?(?:[0-9.]+)?\.exe|pyvenv\.cfg|site-packages|conda-meta|\.venv)$' -or $_.Extension -in @('.py', '.pyw', '.pyc', '.pyo')
 }
 if ($forbiddenEntries) { throw "Unexpected Python runtime component in package: $($forbiddenEntries[0].FullName)" }
+$sourceRecord['python_source_dependency_inputs'] = 'checked_absent'
+$sourceRecord['python_runtime_in_package'] = 'checked_absent'
+$sourceRecord | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $outputRoot "BUILD_SOURCE.json") -Encoding utf8
 if ($CreateZip) {
     $zipPath = "$outputRoot-windows-x64.zip"
     if (Test-Path -LiteralPath $zipPath) { throw "ZIP already exists: $zipPath" }
-    Compress-Archive -LiteralPath $outputRoot -DestinationPath $zipPath -CompressionLevel Optimal
     $sourceZip = "$outputRoot-source.zip"
-    if (Test-Path -LiteralPath $sourceZip) { throw "Source ZIP already exists: $sourceZip" }
-    & git -C $repoRoot archive --format=zip --output=$sourceZip HEAD
-    if ($LASTEXITCODE -ne 0) { throw "Corresponding source ZIP build failed" }
+    Export-DesktopSourceArchive -Identity $sourceIdentity -Destination $sourceZip
+    try {
+        Compress-Archive -LiteralPath $outputRoot -DestinationPath $zipPath -CompressionLevel Optimal
+        Assert-DesktopSourceIdentity -Expected $sourceIdentity
+    } catch {
+        if (Test-Path -LiteralPath $zipPath -PathType Leaf) { Remove-Item -LiteralPath $zipPath -Force }
+        if (Test-Path -LiteralPath $sourceZip -PathType Leaf) { Remove-Item -LiteralPath $sourceZip -Force }
+        throw
+    }
     Write-Host "Go-only Desktop ZIP: $zipPath"
     Write-Host "Corresponding source ZIP: $sourceZip"
 }

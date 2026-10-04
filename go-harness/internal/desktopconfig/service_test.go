@@ -8,7 +8,8 @@ import (
 	"testing"
 )
 
-const fixture = `api:
+const fixture = `config_version: eino-harness-v1
+api:
   deerflow_home: ../data/deerflow
   extensions_config_path: ./extensions_config.json
 local_acp:
@@ -43,7 +44,8 @@ skills:
   path: ../skills
   extensions_file: ./extensions_config.json
 subagents:
-  enabled: true
+  enabled: false
+  max_concurrent: 2
   agents: {}
   custom_agents: {}
 skill_evolution:
@@ -241,7 +243,6 @@ func TestNestedSecretsAreRedactedAndRestored(t *testing.T) {
 		t.Fatal(err)
 	}
 	object(readObject(raw, "memory"), "backend_config")["access_token"] = "memory-private-token"
-	object(raw, "subagents")["custom_agents"] = map[string]any{"writer": map[string]any{"model": "inherit", "api_key": "subagent-private-key"}}
 	object(raw, "skill_evolution")["access_token"] = "evolution-private-token"
 	if err := writeYAMLAtomic(options.Config, raw); err != nil {
 		t.Fatal(err)
@@ -273,9 +274,6 @@ func TestNestedSecretsAreRedactedAndRestored(t *testing.T) {
 	}
 	if str(readObject(readObject(saved, "memory"), "backend_config"), "access_token", "") != "memory-private-token" {
 		t.Fatal("memory secret changed")
-	}
-	if str(readObject(readObject(readObject(saved, "subagents"), "custom_agents"), "writer"), "api_key", "") != "subagent-private-key" {
-		t.Fatal("subagent secret changed")
 	}
 	if str(readObject(saved, "skill_evolution"), "access_token", "") != "evolution-private-token" {
 		t.Fatal("evolution secret changed")

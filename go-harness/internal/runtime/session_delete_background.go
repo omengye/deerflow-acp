@@ -47,18 +47,24 @@ func prepareBackgroundGraphTx(ctx context.Context, tx *sql.Tx, parent string, ta
 	if isChild {
 		return nil, nil, harness.ErrInvalidInput
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT task_id,child_session_id,origin_run_id,origin_tool_call_id,intent_hash,payload,blocked_reason FROM harness_background_bindings WHERE parent_session_id=? ORDER BY task_id`, parent)
+	// Walk the actual bindings rather than trusting the optional tree index.
+	// UNION bounds traversal even if damaged state contains a cycle; the
+	// immutable root/parent checks below then reject that state.
+	const sessions = `WITH RECURSIVE graph_sessions(id) AS (
+ SELECT ? UNION SELECT b.child_session_id FROM harness_background_bindings b JOIN graph_sessions g ON b.parent_session_id=g.id
+ )`
+	rows, err := tx.QueryContext(ctx, sessions+` SELECT task_id,parent_session_id,child_session_id,origin_run_id,origin_tool_call_id,intent_hash,payload,blocked_reason FROM harness_background_bindings WHERE parent_session_id IN (SELECT id FROM graph_sessions) ORDER BY task_id`, parent)
 	if err != nil {
 		return nil, nil, err
 	}
 	type taskBinding struct {
-		id, child, origin, call, intent, blocked string
-		payload                                  []byte
+		id, parent, child, origin, call, intent, blocked string
+		payload                                          []byte
 	}
 	var bindings []taskBinding
 	for rows.Next() {
 		var b taskBinding
-		if err = rows.Scan(&b.id, &b.child, &b.origin, &b.call, &b.intent, &b.payload, &b.blocked); err != nil {
+		if err = rows.Scan(&b.id, &b.parent, &b.child, &b.origin, &b.call, &b.intent, &b.payload, &b.blocked); err != nil {
 			break
 		}
 		bindings = append(bindings, b)
@@ -73,13 +79,13 @@ func prepareBackgroundGraphTx(ctx context.Context, tx *sql.Tx, parent string, ta
 	if tables["harness_background_inbox"] {
 		// A stale inbox row with no bound task cannot be removed safely by task ID.
 		var orphan bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_background_inbox i WHERE i.parent_session_id=? AND NOT EXISTS(SELECT 1 FROM harness_background_bindings b WHERE b.task_id=i.task_id AND b.parent_session_id=?))`, parent, parent).Scan(&orphan); err != nil || orphan {
+		if err = tx.QueryRowContext(ctx, sessions+` SELECT EXISTS(SELECT 1 FROM harness_background_inbox i WHERE i.parent_session_id IN (SELECT id FROM graph_sessions) AND NOT EXISTS(SELECT 1 FROM harness_background_bindings b WHERE b.task_id=i.task_id AND b.parent_session_id=i.parent_session_id))`, parent).Scan(&orphan); err != nil || orphan {
 			return nil, nil, graphBlocked(err)
 		}
 	}
 	if tables["harness_background_specs"] && tables["budget_members"] && tables["budget_roots"] {
 		var orphan bool
-		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_background_specs s JOIN budget_members m ON m.id=s.task_id JOIN budget_roots root ON root.id=m.root_id WHERE root.session_id=? AND NOT EXISTS(SELECT 1 FROM harness_background_bindings b WHERE b.task_id=s.task_id AND b.parent_session_id=?))`, parent, parent).Scan(&orphan)
+		err = tx.QueryRowContext(ctx, sessions+` SELECT EXISTS(SELECT 1 FROM harness_background_specs s JOIN budget_members m ON m.id=s.task_id JOIN budget_roots root ON root.id=m.root_id WHERE root.session_id=? AND NOT EXISTS(SELECT 1 FROM harness_background_bindings b WHERE b.task_id=s.task_id AND b.parent_session_id IN (SELECT id FROM graph_sessions)))`, parent, parent).Scan(&orphan)
 		if err != nil || orphan {
 			return nil, nil, graphBlocked(err)
 		}
@@ -92,15 +98,48 @@ func prepareBackgroundGraphTx(ctx context.Context, tx *sql.Tx, parent string, ta
 			return nil, nil, fmt.Errorf("%w: background graph lacks %s", harness.ErrBusy, name)
 		}
 	}
-	seenChildren := make(map[string]bool)
+	seenChildren := make(map[string]string)
+	bindingsByID := make(map[string]background.Binding, len(bindings))
+	for _, b := range bindings {
+		var binding background.Binding
+		if json.Unmarshal(b.payload, &binding) != nil || binding.TaskID != b.id || binding.ParentSessionID != b.parent || binding.RootSession() != parent {
+			return nil, nil, harness.ErrBusy
+		}
+		bindingsByID[b.id] = binding
+	}
 	var children, tasks []string
 	for _, b := range bindings {
 		if b.id == "" || b.child == "" || b.child == parent || b.blocked != "" {
 			return nil, nil, harness.ErrBusy
 		}
 		var binding background.Binding
-		if json.Unmarshal(b.payload, &binding) != nil || binding.TaskID != b.id || binding.ParentSessionID != parent || binding.ChildSessionID != b.child || binding.OriginRunID != b.origin || binding.OriginToolCallID != b.call || binding.IntentHash != b.intent {
+		if json.Unmarshal(b.payload, &binding) != nil || binding.TaskID != b.id || binding.ParentSessionID != b.parent || binding.ChildSessionID != b.child || binding.OriginRunID != b.origin || binding.OriginToolCallID != b.call || binding.IntentHash != b.intent {
 			return nil, nil, harness.ErrBusy
+		}
+		if binding.ParentTaskID == "" {
+			validDepth := binding.TaskDepth() == 1
+			if binding.ParentInvocationID != "" {
+				validDepth = binding.TaskDepth() > 1 && binding.TaskDepth() <= 3
+			}
+			if b.parent != parent || !validDepth {
+				return nil, nil, harness.ErrBusy
+			}
+		} else {
+			ancestor, ok := bindingsByID[binding.ParentTaskID]
+			validDepth := binding.TaskDepth() == ancestor.TaskDepth()+1
+			if binding.ParentInvocationID != "" {
+				validDepth = binding.TaskDepth() > ancestor.TaskDepth()
+			}
+			if !ok || ancestor.ChildSessionID != b.parent || ancestor.RootBudgetID != binding.RootBudgetID || ancestor.Workspace != binding.Workspace || !validDepth || binding.TaskDepth() > 3 {
+				return nil, nil, harness.ErrBusy
+			}
+		}
+		if tables["harness_background_tree"] {
+			var root, parentTask string
+			var depth int
+			if err = tx.QueryRowContext(ctx, `SELECT root_session_id,parent_task_id,depth FROM harness_background_tree WHERE task_id=?`, b.id).Scan(&root, &parentTask, &depth); err != nil || root != binding.RootSession() || parentTask != binding.ParentTaskID || depth != binding.TaskDepth() {
+				return nil, nil, graphBlocked(err)
+			}
 		}
 		var status string
 		var version, lease int64
@@ -110,7 +149,7 @@ func prepareBackgroundGraphTx(ctx context.Context, tx *sql.Tx, parent string, ta
 			return nil, nil, graphBlocked(err)
 		}
 		var snapshot bt.Task
-		if json.Unmarshal(payload, &snapshot) != nil || snapshot.Spec.ID != b.id || snapshot.Spec.SessionID != parent || snapshot.Version != version || string(snapshot.Status) != status || snapshot.DoneAt == nil || lease != 0 || !terminalBackgroundStatus(status) {
+		if json.Unmarshal(payload, &snapshot) != nil || snapshot.Spec.ID != b.id || snapshot.Spec.SessionID != b.parent || snapshot.Version != version || string(snapshot.Status) != status || snapshot.DoneAt == nil || lease != 0 || !terminalBackgroundStatus(status) {
 			return nil, nil, harness.ErrBusy
 		}
 		var specChild, contract string
@@ -120,12 +159,37 @@ func prepareBackgroundGraphTx(ctx context.Context, tx *sql.Tx, parent string, ta
 		}
 		var savedBinding background.Binding
 		var spec BackgroundExecutionSpec
-		if json.Unmarshal(specBinding, &savedBinding) != nil || savedBinding != binding || json.Unmarshal(specData, &spec) != nil || spec.Parent.ID != parent {
+		if json.Unmarshal(specBinding, &savedBinding) != nil || savedBinding != binding || json.Unmarshal(specData, &spec) != nil || spec.Parent.ID != b.parent {
 			return nil, nil, harness.ErrBusy
 		}
-		calculated, contractErr := spec.Contract()
+		calculated, contractErr := validateBackgroundSpec(binding, spec)
 		if contractErr != nil || calculated != contract {
 			return nil, nil, harness.ErrBusy
+		}
+		if spec.Continuation != nil {
+			if !tables["harness_background_continuation_sources"] || !tables["harness_background_continuation_links"] {
+				return nil, nil, harness.ErrBusy
+			}
+			if _, err = readBackgroundContinuationRecordTx(ctx, tx, binding, spec); err != nil {
+				return nil, nil, graphBlocked(err)
+			}
+		} else {
+			for _, table := range []string{"harness_background_continuation_sources", "harness_background_continuation_links"} {
+				if !tables[table] {
+					continue
+				}
+				var unexpected bool
+				if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+table+` WHERE task_id=?)`, b.id).Scan(&unexpected); err != nil || unexpected {
+					return nil, nil, graphBlocked(err)
+				}
+			}
+		}
+		if spec.Version >= 5 && spec.ParentInvocationID != "" {
+			// Foreground roles contribute to depth but have no background
+			// task row. Validate the full immutable role chain before purge.
+			if _, err := (&BackgroundExecutionStore{}).ParentRoleTx(ctx, tx, binding, spec); err != nil {
+				return nil, nil, graphBlocked(err)
+			}
 		}
 		var runSession, runStatus, budgetSession, budgetBlocked string
 		err = tx.QueryRowContext(ctx, `SELECT r.session_id,r.status,root.session_id,root.blocked_reason FROM harness_runs r JOIN budget_members m ON m.id=r.id JOIN budget_roots root ON root.id=m.root_id WHERE r.id=?`, b.id).Scan(&runSession, &runStatus, &budgetSession, &budgetBlocked)
@@ -156,19 +220,17 @@ func prepareBackgroundGraphTx(ctx context.Context, tx *sql.Tx, parent string, ta
 				return nil, nil, graphBlocked(err)
 			}
 		}
-		if !seenChildren[b.child] {
-			seenChildren[b.child] = true
+		if prior, exists := seenChildren[b.child]; exists && prior != b.parent {
+			return nil, nil, harness.ErrBusy
+		} else if !exists {
+			seenChildren[b.child] = b.parent
 			children = append(children, b.child)
 		}
 		tasks = append(tasks, b.id)
 	}
 	for _, child := range children {
 		var shared bool
-		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_background_specs s LEFT JOIN harness_background_bindings b ON b.task_id=s.task_id WHERE s.child_session_id=? AND (b.parent_session_id IS NULL OR b.parent_session_id<>?))`, child, parent).Scan(&shared)
-		if err != nil || shared {
-			return nil, nil, graphBlocked(err)
-		}
-		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_background_bindings WHERE parent_session_id=?)`, child).Scan(&shared)
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_background_specs s LEFT JOIN harness_background_bindings b ON b.task_id=s.task_id WHERE s.child_session_id=? AND (b.parent_session_id IS NULL OR b.parent_session_id<>?))`, child, seenChildren[child]).Scan(&shared)
 		if err != nil || shared {
 			return nil, nil, graphBlocked(err)
 		}
@@ -207,23 +269,40 @@ func terminalBackgroundRun(taskStatus, runStatus string) bool {
 
 func purgeBackgroundGraphTx(ctx context.Context, tx *sql.Tx, tasks []string, tables map[string]bool) error {
 	steps := []struct{ table, query string }{
+		{"harness_background_continuation_sources", `DELETE FROM harness_background_continuation_sources WHERE task_id=?`},
 		{"harness_background_policy_grants", `DELETE FROM harness_background_policy_grants WHERE grant_id IN (SELECT id FROM harness_background_permission_grants WHERE task_id=?)`},
 		{"harness_background_permission_grants", `DELETE FROM harness_background_permission_grants WHERE task_id=?`},
 		{"harness_background_permission_intents", `DELETE FROM harness_background_permission_intents WHERE task_id=?`},
 		{"harness_background_permission_manifests", `DELETE FROM harness_background_permission_manifests WHERE task_id=?`},
 		{"harness_background_interrupt_stages", `DELETE FROM harness_background_interrupt_stages WHERE task_id=?`},
 		{"harness_background_drain_manifests", `DELETE FROM harness_background_drain_manifests WHERE task_id=?`},
+		{"harness_background_wait_stages", `DELETE FROM harness_background_wait_stages WHERE task_id=?`},
+		{"harness_background_delivery_stages", `DELETE FROM harness_background_delivery_stages WHERE task_id=?`},
+		{"harness_background_wait_manifests", `DELETE FROM harness_background_wait_manifests WHERE task_id=?`},
 		{"harness_background_engine_contracts", `DELETE FROM harness_background_engine_contracts WHERE task_id=?`},
 		{"harness_background_execution_failures", `DELETE FROM harness_background_execution_failures WHERE task_id=?`},
 		{"harness_background_inbox", `DELETE FROM harness_background_inbox WHERE task_id=?`},
+		{"harness_notification_work", `DELETE FROM harness_notification_work WHERE task_id=?`},
+		{"harness_task_deliveries", `DELETE FROM harness_task_deliveries WHERE task_id=?`},
 		{"eino_task_notifications", `DELETE FROM eino_task_notifications WHERE task_id=?`},
 		{"eino_notification_replays", `DELETE FROM eino_notification_replays WHERE task_id=?`},
 		{"eino_task_events", `DELETE FROM eino_task_events WHERE task_id=?`},
 		{"harness_background_child_leases", `DELETE FROM harness_background_child_leases WHERE task_id=?`},
 		{"harness_background_specs", `DELETE FROM harness_background_specs WHERE task_id=?`},
+		{"harness_background_stops", `DELETE FROM harness_background_stops WHERE task_id=?`},
+		{"harness_background_tree", `DELETE FROM harness_background_tree WHERE task_id=?`},
 		{"harness_background_bindings", `DELETE FROM harness_background_bindings WHERE task_id=?`},
 		{"eino_checkpoints", `DELETE FROM eino_checkpoints WHERE id=?||'/checkpoint'`},
 		{"eino_background_tasks", `DELETE FROM eino_background_tasks WHERE id=?`},
+	}
+	// Continuation links can point at an earlier task in the same graph.
+	// Remove every validated graph edge before any referenced binding.
+	if tables["harness_background_continuation_links"] {
+		for _, id := range tasks {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM harness_background_continuation_links WHERE task_id=? OR previous_task_id=?`, id, id); err != nil {
+				return err
+			}
+		}
 	}
 	for _, id := range tasks {
 		for _, step := range steps {

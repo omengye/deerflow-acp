@@ -134,6 +134,9 @@ func (l *Ledger) ResumeTool(ctx context.Context, scope Scope, request ToolReques
 		if _, e = tx.ExecContext(ctx, `INSERT INTO budget_reservations(id,root_id,member_id,session_id,attempt_id,fence,kind,digest,input_tokens,output_cap,held_tokens,state) VALUES(?,?,?,?,?,?,'tool',?,0,0,0,'reserved')`, grant.OperationID, scope.RootBudgetID, scope.MemberID, scope.SessionID, scope.AttemptID, scope.Fence, digest); e != nil {
 			return e
 		}
+		if e = l.recordUsageOwnerTx(ctx, tx, grant, pausedOperationID); e != nil {
+			return e
+		}
 		if _, e = tx.ExecContext(ctx, "INSERT INTO budget_tool_continuations(parent_id,child_id) VALUES(?,?)", pausedOperationID, request.OperationID); e != nil {
 			return e
 		}

@@ -3,11 +3,13 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	bt "github.com/cloudwego/eino/adk/backgroundtask"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/background"
 )
 
 func completedGraphFixture(t *testing.T) *backgroundHostFixture {
@@ -158,5 +160,129 @@ func TestGraphPersistenceFailureBlocksDeletion(t *testing.T) {
 	var count int
 	if err := f.native.DB().QueryRowContext(ctx, `SELECT count(*) FROM harness_background_execution_failures WHERE task_id=?`, f.binding.TaskID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("failure evidence missing: %d %v", count, err)
+	}
+}
+
+// Assemble a persisted three-level graph through the runtime/ledger seams.
+// Enabling delegation in these fixture sessions represents the future role
+// factory; it does not assert that model-visible nested tools are wired yet.
+func nestedGraphFixture(t *testing.T) (*backgroundHostFixture, []background.Binding) {
+	t.Helper()
+	f := newBackgroundHostFixture(t)
+	ctx := context.Background()
+	type saved struct {
+		binding background.Binding
+		spec    BackgroundExecutionSpec
+		scope   background.TaskScope
+	}
+	var stack []saved
+	root := f.binding.ParentSessionID
+	for depth := 1; depth <= 3; depth++ {
+		if err := f.create(); err != nil {
+			t.Fatal(err)
+		}
+		f.start(t)
+		if err := f.begin(f.scope); err != nil {
+			t.Fatal(err)
+		}
+		stack = append(stack, saved{f.binding, f.spec, f.scope})
+		if depth == 3 {
+			break
+		}
+		parent, _, err := f.host.Load(ctx, f.binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parent.Session.Subagents = true
+		parent.Session.ConfigVersion++
+		if err = f.store.SaveConfig(ctx, parent.Session); err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range []harness.RunEvent{
+			{Kind: "tool_start", Status: "pending", Arguments: []byte(`{"instruction":"child goal"}`)},
+			{Kind: "tool_execute", Status: "in_progress"},
+		} {
+			event.SessionID, event.RunID, event.ToolCallID, event.ToolName = parent.Session.ID, parent.RunID, "delegate", "background_agent"
+			if _, err = f.store.Append(ctx, event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f.spec.Parent = parent.Session
+		contract, err := f.spec.Contract()
+		if err != nil {
+			t.Fatal(err)
+		}
+		nextID := fmt.Sprintf("nested-%d", depth+1)
+		previous := f.binding
+		f.binding = background.Binding{TaskID: nextID, ChildSessionID: nextID + "/session", ParentSessionID: parent.Session.ID, RootSessionID: root, ParentTaskID: previous.TaskID, Depth: depth + 1, OriginRunID: parent.RunID, OriginToolCallID: "delegate", Workspace: parent.Session.CWD, ExecutionContract: contract, RootBudgetID: previous.RootBudgetID, AgentVersion: f.spec.AgentVersion, ConfigVersion: parent.Session.ConfigVersion}
+		f.scope = background.TaskScope{Binding: f.binding, Attempt: 1}
+	}
+	bindings := make([]background.Binding, len(stack))
+	for i := len(stack) - 1; i >= 0; i-- {
+		saved := stack[i]
+		bindings[i] = saved.binding
+		f.binding, f.spec, f.scope = saved.binding, saved.spec, saved.scope
+		if i < len(stack)-1 {
+			if _, err := f.store.Append(ctx, harness.RunEvent{SessionID: f.binding.ChildSessionID, RunID: f.binding.TaskID, Kind: "tool_end", ToolCallID: "delegate", ToolName: "background_agent", Status: "completed"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		task, err := f.tasks.Get(ctx, f.binding.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = f.tasks.Complete(ctx, &bt.CompleteTaskRequest{TaskID: task.Spec.ID, ExpectedVersion: task.Version}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.store.Append(ctx, harness.RunEvent{SessionID: root, RunID: f.binding.OriginRunID, Kind: "tool_end", ToolCallID: "delegate", ToolName: "background_agent", Status: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.native.DB().ExecContext(ctx, `DELETE FROM eino_task_notifications`); err != nil {
+		t.Fatal(err)
+	}
+	return f, bindings
+}
+
+func TestDeleteNestedBackgroundGraphChecksEveryDescendant(t *testing.T) {
+	f, bindings := nestedGraphFixture(t)
+	ctx := context.Background()
+	root, leaf := bindings[0].ParentSessionID, bindings[2]
+	if _, err := f.native.DB().Exec(`INSERT INTO harness_background_execution_failures(task_id,attempt,error,persistence_failure) VALUES(?,1,'unconfirmed descendant',1)`, leaf.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.store.purgeSession(ctx, root, false); !errors.Is(err, harness.ErrBusy) {
+		t.Fatalf("deleted uncertain descendant: %v", err)
+	}
+	if _, err := f.native.DB().Exec(`DELETE FROM harness_background_execution_failures WHERE task_id=?`, leaf.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.native.DB().Exec(`INSERT INTO harness_background_inbox(notification_id,parent_session_id,task_id,payload) VALUES('leaf-unread',?,?,x'7b7d')`, leaf.ParentSessionID, leaf.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.store.purgeSession(ctx, root, true); !errors.Is(err, harness.ErrBusy) {
+		t.Fatalf("automatic retention lost unread descendant: %v", err)
+	}
+	for _, b := range bindings {
+		if _, err := f.native.DB().Exec(`INSERT INTO harness_background_stops(task_id,reason,created_at) VALUES(?, 'fixture', 'fixture')`, b.TaskID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := NewBackgroundInteractionStore(ctx, f.store, &backgroundPermissionAuthority{owner: "owner", session: root}); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range bindings {
+		if _, err := f.native.DB().Exec(`INSERT INTO harness_background_delivery_stages(task_id,attempt,call_id,payload) VALUES(?,1,'old-attempt','{}')`, b.TaskID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if already, _, err := f.store.purgeSession(ctx, root, false); err != nil || already {
+		t.Fatalf("recursive explicit delete: %v %v", already, err)
+	}
+	for _, table := range []string{"harness_sessions", "harness_runs", "harness_background_bindings", "harness_background_tree", "harness_background_stops", "harness_background_specs", "harness_background_inbox", "harness_background_delivery_stages", "budget_roots", "budget_members", "eino_background_tasks"} {
+		var count int
+		if err := f.native.DB().QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("recursive delete retained %s: %d %v", table, count, err)
+		}
 	}
 }

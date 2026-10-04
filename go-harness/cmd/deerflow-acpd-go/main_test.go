@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
+	"github.com/omengye/deerflow-acp/go-harness/internal/launch"
 	"github.com/omengye/deerflow-acp/go-harness/internal/localhost"
 )
 
@@ -391,13 +393,13 @@ func TestConfigDaemonPublishesBridgeIdentity(t *testing.T) {
 		t.Skip("process integration")
 	}
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	raw := []byte("default_model: fixture\nlocal_acp:\n  max_active_connections: 2\nmodels:\n  - name: fixture\n    use: langchain_openai:ChatOpenAI\n    model: fixture-model\n    api_key: fixture-only-key\n    base_url: http://127.0.0.1:1/v1\n")
+	raw := []byte("config_version: eino-harness-v1\nsubagents:\n  enabled: false\n  max_concurrent: 3\ndefault_model: fixture\nlocal_acp:\n  max_active_connections: 2\nmodels:\n  - name: fixture\n    provider: openai\n    model: fixture-model\n    api_key: fixture-only-key\n    base_url: http://127.0.0.1:1/v1\n")
 	if err := os.WriteFile(configPath, raw, 0600); err != nil {
 		t.Fatal(err)
 	}
 	runtimeDir := t.TempDir()
 	p := &daemonProcess{done: make(chan struct{})}
-	p.cmd = exec.Command(os.Args[0], "-test.run=^TestDaemonProcessHelper$", "--", "--config", configPath, "--runtime-dir", runtimeDir)
+	p.cmd = exec.Command(os.Args[0], "-test.run=^TestDaemonProcessHelper$", "--", "--config", configPath, "--runtime-dir", runtimeDir, "--disable-subagents=false")
 	p.cmd.Env = append(os.Environ(), "DEERFLOW_TEST_DAEMON_HELPER=1")
 	p.cmd.Stdout, p.cmd.Stderr = &p.stdout, &p.stderr
 	if err := p.cmd.Start(); err != nil {
@@ -420,6 +422,39 @@ func TestConfigDaemonPublishesBridgeIdentity(t *testing.T) {
 	var revision string
 	if err := json.Unmarshal(status["config_revision"], &revision); err != nil || len(revision) != 64 {
 		t.Fatalf("config revision: %s %v", status["config_revision"], err)
+	}
+	wantSchema, err := json.Marshal(configschema.Describe())
+	if err != nil || !bytes.Equal(status["config_schema"], wantSchema) {
+		t.Fatalf("daemon does not advertise the configuration tool's field contract: %v", err)
+	}
+	collector := manageDaemon(t, ep, "skill.collector.status")
+	var collectorRunning bool
+	if err := json.Unmarshal(collector["running"], &collectorRunning); err != nil || !collectorRunning || !bytes.Equal(collector["jobs"], []byte("[]")) {
+		t.Fatalf("daemon collector lifecycle/query unavailable: %v", err)
+	}
+	signals := manageDaemon(t, ep, "skill.signals.list")
+	jobs := manageDaemon(t, ep, "skill.collector.jobs")
+	if !bytes.Equal(signals["signals"], []byte("[]")) || !bytes.Equal(jobs["jobs"], []byte("[]")) {
+		t.Fatal("fresh daemon manufactured skill evidence or omitted query contract")
+	}
+	var settings launch.AppliedSubagentSettings
+	if err := json.Unmarshal(status["subagent_settings"], &settings); err != nil || !settings.Enabled || settings.ConfiguredEnabled || settings.EnabledSource != "cli" || settings.MaxConcurrent != 3 || settings.ConcurrencySource != "yaml" {
+		t.Fatalf("applied settings: %+v %v", settings, err)
+	}
+	client := acpClient(t, ep)
+	client.success(t, "session/new", map[string]any{"cwd": t.TempDir(), "mcpServers": []any{}})
+	inventory := manageDaemon(t, ep, "session.list")
+	var sessions []map[string]any
+	if err := json.Unmarshal(inventory["sessions"], &sessions); err != nil || len(sessions) != 1 || sessions[0]["subagent_enabled"] != settings.Enabled {
+		t.Fatalf("reported host state differs from session: %v %v", sessions, err)
+	}
+	// Unapplied file edits cannot alter the current daemon's projection/revision.
+	if err := os.WriteFile(configPath, bytes.Replace(raw, []byte("max_concurrent: 3"), []byte("max_concurrent: 7"), 1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	next := manageDaemon(t, ep, "daemon.status")
+	if !bytes.Equal(next["subagent_settings"], status["subagent_settings"]) || !bytes.Equal(next["config_revision"], status["config_revision"]) {
+		t.Fatal("live status reported unapplied config")
 	}
 	conn, _, line := connectCommand(t, ep, "STOP")
 	_ = conn.Close()
@@ -591,7 +626,7 @@ func TestExistingRustBridge(t *testing.T) {
 	if out := invoke("--status", ""); !bytes.Contains(out, []byte(buildID)) {
 		t.Fatalf("Bridge status: %s", out)
 	}
-	if out := invoke("--manage", `{"operation":"proposal.list"}`); !bytes.Contains(out, []byte("unsupported_operation")) {
+	if out := invoke("--manage", `{"operation":"proposal.list"}`); !bytes.Contains(out, []byte(`"proposals":[]`)) || !bytes.Contains(out, []byte(`"ok":true`)) {
 		t.Fatalf("Bridge management: %s", out)
 	}
 	if out := invoke("--manage", `{"operation":"daemon.status"}`); !bytes.Contains(out, []byte(`"active_operations":0`)) || !bytes.Contains(out, []byte(`"draining":false`)) {

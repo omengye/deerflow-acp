@@ -47,5 +47,8 @@ func (t *readFileTool) InvokableRun(ctx context.Context, args string, _ ...tool.
 	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
 		return "", invalid("binary skill files cannot be rendered as text")
 	}
+	if err = t.snapshot.observeRead(ctx, in.Skill, in.Path, "support_read"); err != nil {
+		return "", err
+	}
 	return string(data), nil
 }

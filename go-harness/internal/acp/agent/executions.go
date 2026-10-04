@@ -15,13 +15,14 @@ const (
 	getExecutionMethod       = "_deerflow/executions/get"
 	resumeExecutionMethod    = "_deerflow/executions/resume"
 	cancelExecutionMethod    = "_deerflow/executions/cancel"
+	updatedExecutionMethod   = "_deerflow/executions/updated"
 	executionWaitingCode     = -32012
 	executionConflictCode    = -32013
 	executionUnresumableCode = -32014
 )
 
 func executionCapabilities() map[string]any {
-	return map[string]any{"version": 1, "getMethod": getExecutionMethod, "resumeMethod": resumeExecutionMethod, "cancelMethod": cancelExecutionMethod}
+	return map[string]any{"version": 1, "getMethod": getExecutionMethod, "resumeMethod": resumeExecutionMethod, "cancelMethod": cancelExecutionMethod, "updatedNotification": updatedExecutionMethod, "automaticTaskWaits": true, "lifecycleNotifications": true}
 }
 
 func executionRecoveryError(code int) error {
@@ -115,6 +116,9 @@ func (a *Agent) runResponse(run func(harness.EventHandler) (harness.RunResult, e
 	}
 	if result.Execution != nil {
 		metadata["execution"] = result.Execution
+	}
+	if result.Background != nil {
+		metadata["backgroundTask"] = result.Background
 	}
 	mu.Lock()
 	if hasUsage {

@@ -121,6 +121,7 @@ func TestSafeToolFailureLetsModelCorrectAndContinueSameRun(t *testing.T) {
 	}{
 		{"not_executed", harness.MarkToolNotExecuted(errors.New("bad argument")), harness.ReceiptNotExecuted},
 		{"no_effect", harness.MarkToolNoEffect(errors.New("read failed")), harness.ReceiptNoEffect},
+		{"confirmed_failure", harness.MarkToolExecutionFailed(errors.New("command exited with code 7")), harness.ReceiptFailed},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			item := &correctingReceiptTool{first: test.first}
@@ -185,6 +186,8 @@ func TestTypedToolFailureEvidenceSurvivesEinoWrappers(t *testing.T) {
 	}{
 		{"pre_execution", fmt.Errorf("adapter: %w", harness.MarkToolNotExecuted(cause)), harness.ReceiptNotExecuted},
 		{"native_read", fmt.Errorf("adapter: %w", harness.MarkToolNoEffect(cause)), harness.ReceiptNoEffect},
+		{"confirmed_failure", fmt.Errorf("adapter: %w", harness.MarkToolExecutionFailed(cause)), harness.ReceiptFailed},
+		{"cleanup_failure", errors.Join(harness.MarkToolExecutionFailed(cause), errors.New("cleanup failed")), harness.ReceiptUncertain},
 		{"unknown", cause, harness.ReceiptUncertain},
 		{"uncertainty_wins", errors.Join(harness.MarkToolNotExecuted(cause), harness.ErrCommandUncertain), harness.ReceiptUncertain},
 	} {

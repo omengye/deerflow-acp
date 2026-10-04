@@ -4,7 +4,7 @@ Starts and manages the detached DeerFlow ACP daemon.
 
 .DESCRIPTION
 This is a convenience entry point over acp-service.ps1. The default action is
-`start`. The native Bridge launches the Python daemon without a window, with
+`start`. The native Bridge launches the Eino Go daemon without a window, with
 null stdio and in a separate process group, so this script returns after the
 daemon is ready and the daemon keeps running after PowerShell closes.
 
@@ -25,29 +25,16 @@ param(
 
     [string]$ConfigPath = (Join-Path $PSScriptRoot "config.yaml"),
     [string]$BridgePath = (Join-Path $PSScriptRoot "bridge\target\release\deerflow-acp.exe"),
-    [string]$PythonPath,
-    [string]$RuntimeDir,
-    [string]$ServiceScriptPath = (Join-Path $PSScriptRoot "acp-service.ps1")
+    [string]$DaemonPath,
+    [string]$RuntimeDir = (Join-Path $PSScriptRoot "user-data\runtime\acp-go"),
+    [string]$PythonPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Resolve-ProjectPath {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
-
-    if ([System.IO.Path]::IsPathRooted($Path)) {
-        return [System.IO.Path]::GetFullPath($Path)
-    }
-    return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $Path))
-}
-
-$ServiceScriptPath = Resolve-ProjectPath $ServiceScriptPath
-if (-not (Test-Path -LiteralPath $ServiceScriptPath -PathType Leaf)) {
-    throw "ACP service control script was not found: $ServiceScriptPath"
+if ($PSBoundParameters.ContainsKey('PythonPath')) {
+    throw "PythonPath has been removed. Use -DaemonPath with the Eino Go deerflow-acpd executable."
 }
 
 $parameters = @{
@@ -55,11 +42,11 @@ $parameters = @{
     ConfigPath = $ConfigPath
     BridgePath = $BridgePath
 }
-if ($PythonPath) {
-    $parameters.PythonPath = $PythonPath
+if ($DaemonPath) {
+    $parameters.DaemonPath = $DaemonPath
 }
 if ($RuntimeDir) {
     $parameters.RuntimeDir = $RuntimeDir
 }
 
-& $ServiceScriptPath @parameters
+& (Join-Path $PSScriptRoot "acp-service.ps1") @parameters

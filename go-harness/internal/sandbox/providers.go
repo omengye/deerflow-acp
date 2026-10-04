@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -30,31 +29,7 @@ func (b *Backend) probe(ctx context.Context) error {
 			return fmt.Errorf("%w: configured Docker image is not present; pull it explicitly", harness.ErrSandboxUnavailable)
 		}
 	case harness.SandboxWSL2:
-		if strings.HasPrefix(b.cwd, `\\`) {
-			return fmt.Errorf("WSL2 backend does not support UNC workspaces")
-		}
-		probe := `import json,platform,os,signal;print(json.dumps({'kernel':platform.release(),'pidfd':hasattr(os,'pidfd_open') and hasattr(signal,'pidfd_send_signal')}))`
-		out, err := b.control(ctx, b.wslArgs("/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "python3", "-c", probe))
-		var status struct {
-			Kernel string `json:"kernel"`
-			Pidfd  bool   `json:"pidfd"`
-		}
-		if err != nil || json.Unmarshal([]byte(out), &status) != nil || !status.Pidfd || !strings.Contains(strings.ToLower(status.Kernel), "microsoft-standard") && !strings.Contains(strings.ToLower(status.Kernel), "wsl2") {
-			return fmt.Errorf("%w: explicit WSL2 distro with Python 3.9+, pidfd support and Linux /proc is required", harness.ErrSandboxUnavailable)
-		}
-		out, err = b.control(ctx, b.wslArgs("wslpath", "-a", "-u", b.cwd))
-		if err != nil {
-			return fmt.Errorf("%w: wslpath could not translate workspace", harness.ErrSandboxUnavailable)
-		}
-		guest := strings.TrimSpace(out)
-		if !strings.HasPrefix(guest, "/") || strings.ContainsAny(guest, "\r\n\x00") {
-			return fmt.Errorf("%w: wslpath returned an invalid absolute path", harness.ErrSandboxUnavailable)
-		}
-		out, err = b.control(ctx, b.wslArgs("/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "python3", "-c", `import os,sys; p=sys.argv[1]; assert os.path.isdir(p); print(os.path.realpath(p))`, guest))
-		if err != nil || strings.TrimSpace(out) == "" {
-			return fmt.Errorf("%w: translated WSL workspace is not accessible", harness.ErrSandboxUnavailable)
-		}
-		b.guestCWD = strings.TrimSpace(out)
+		return b.probeWSL(ctx)
 	}
 	return nil
 }
@@ -75,7 +50,7 @@ func (b *Backend) control(parent context.Context, argv []string) (string, error)
 
 func (b *Backend) run(ctx context.Context, t *task, r harness.CommandRequest) execution {
 	if err := b.checkWorkspace(); err != nil {
-		return execution{confirmed: true, state: harness.CommandFailed, err: err}
+		return execution{confirmed: true, notExecuted: true, state: harness.CommandFailed, err: err}
 	}
 	switch b.cfg.Provider {
 	case harness.SandboxDocker:
@@ -194,51 +169,6 @@ func (b *Backend) wslArgs(args ...string) []string {
 		result = append(result, "--user", b.cfg.WSL.User)
 	}
 	return append(append(result, "--exec"), args...)
-}
-func (b *Backend) runWSL(ctx context.Context, t *task, r harness.CommandRequest) execution {
-	argv, _ := json.Marshal(remoteCommand(b.cfg, r))
-	env := map[string]string{"PATH": "/usr/bin:/bin"}
-	for k, v := range b.cfg.Environment {
-		env[k] = v
-	}
-	environmentJSON, _ := json.Marshal(env)
-	marker := "__DEERFLOW_GO_COMMAND_" + t.snapshot.ID + "__"
-	args := b.wslArgs("/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "python3", "-u", "-c", linuxSupervisor, b.guestCWD, strconv.FormatFloat(r.Timeout.Seconds(), 'f', 3, 64), marker, string(argv), string(environmentJSON))
-	spec := b.processSpec(t, args, true)
-	spec.env = environment(nil)
-	result := runProcess(ctx, spec, t.stdout, t.stderr)
-	if t.view().PID == 0 {
-		return result
-	}
-	return applyWSLReceipt(result, t.stderr, marker)
-}
-
-func applyWSLReceipt(result execution, stderr *capture, marker string) execution {
-	tail := stderr.tailText()
-	at := strings.LastIndex(tail, marker)
-	var receipt struct {
-		State     harness.CommandState `json:"state"`
-		ExitCode  *int                 `json:"exitCode"`
-		Confirmed bool                 `json:"confirmed"`
-	}
-	if at < 0 || json.Unmarshal([]byte(strings.TrimSpace(tail[at+len(marker):])), &receipt) != nil || !receipt.Confirmed || !contains([]string{"completed", "failed", "cancelled", "timed_out"}, string(receipt.State)) {
-		return execution{confirmed: false, state: harness.CommandUncertain, err: harness.ErrCommandUncertain}
-	}
-	stderr.stripSuffix(marker)
-	result.exitCode = receipt.ExitCode
-	if !result.confirmed {
-		return result
-	}
-	result.state = receipt.State
-	result.confirmed = receipt.Confirmed
-	result.err = nil
-	if receipt.State == harness.CommandCancelled {
-		result.err = context.Canceled
-	}
-	if receipt.State == harness.CommandTimedOut {
-		result.err = context.DeadlineExceeded
-	}
-	return result
 }
 
 // HostPath maps a provider absolute workspace path to the fixed client path.

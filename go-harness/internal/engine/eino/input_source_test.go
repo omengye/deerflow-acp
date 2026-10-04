@@ -82,7 +82,7 @@ func TestNotificationSourceNativeHistoryPermissionResumeAndExtensionPin(t *testi
 	binding := staged.Interrupts[0]
 	broker.decisions[binding.IntentID] = harness.AllowOnce
 	hooks.Targets = map[string]PermissionResume{binding.NativeInterruptID: {IntentID: binding.IntentID, IntentVersion: binding.IntentVersion, GrantID: "grant/" + binding.IntentID}}
-	for _, mutation := range []string{"missing", "sha", "data", "extension", "request", "history"} {
+	for _, mutation := range []string{"missing", "sha", "data", "extension", "roles", "request", "history"} {
 		t.Run(mutation, func(t *testing.T) {
 			badReq, badHooks := req, hooks
 			badHooks.InputSource = notificationSource()
@@ -96,6 +96,8 @@ func TestNotificationSourceNativeHistoryPermissionResumeAndExtensionPin(t *testi
 				badReq.Input = badHooks.InputSource.Input
 			case "extension":
 				badHooks.InputSource.PinnedExtension = json.RawMessage(`{"selected":"broader"}`)
+			case "roles":
+				badHooks.InputSource.RoleCatalog = json.RawMessage(`{"changed":"catalog"}`)
 			case "request":
 				badReq.Input = []harness.Content{{Type: "text", Text: "replacement prompt"}}
 			case "history":

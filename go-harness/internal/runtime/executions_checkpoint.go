@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 )
 
 // ExecutionInterruptBinding is emitted by the trusted engine adapter. Public
@@ -18,6 +19,7 @@ type ExecutionInterruptBinding struct {
 	IntentID          string `json:"intentId"`
 	IntentVersion     int64  `json:"intentVersion"`
 	NativeInterruptID string `json:"nativeInterruptId"`
+	RoleID            string `json:"roleId,omitempty"`
 }
 type ExecutionNativeHead struct {
 	Sequence int64  `json:"sequence"`
@@ -33,11 +35,13 @@ type ExecutionManifest struct {
 	NativeHead                                                        ExecutionNativeHead
 	SummaryHead                                                       ExecutionNativeHead
 	Interrupts                                                        []ExecutionInterruptBinding
+	TaskWaits                                                         []interaction.TaskWaitBinding `json:",omitempty"`
 }
 type ExecutionCheckpoint struct {
 	ID         string
 	Data       []byte
 	Interrupts []ExecutionInterruptBinding
+	TaskWaits  []interaction.TaskWaitBinding
 }
 
 func executionNativeHead(ctx context.Context, tx *sql.Tx, sessionID string) (ExecutionNativeHead, error) {
@@ -107,8 +111,8 @@ func executionReceiptFrontier(ctx context.Context, tx *sql.Tx, sessionID, runID 
 	return executionDigest(data), nil
 }
 func checkExecutionBindings(ctx context.Context, tx *sql.Tx, runID string, bindings []ExecutionInterruptBinding) error {
-	if len(bindings) == 0 || len(bindings) > 128 {
-		return executionInvalid("suspension requires 1 to 128 interrupt bindings")
+	if len(bindings) > 128 {
+		return executionInvalid("too many permission interrupt bindings")
 	}
 	seen, targets := map[string]bool{}, map[string]bool{}
 	for _, b := range bindings {
@@ -127,6 +131,17 @@ func checkExecutionBindings(ctx context.Context, tx *sql.Tx, runID string, bindi
 			return err
 		}
 		if version != b.IntentVersion || state != "pending" {
+			return harness.ErrExecutionConflict
+		}
+		var root string
+		if err = tx.QueryRowContext(ctx, `SELECT root_budget_id FROM harness_executions WHERE run_id=?`, runID).Scan(&root); err != nil {
+			return err
+		}
+		provenance, err := readIntentRole(ctx, tx, root, b.IntentID)
+		if err != nil {
+			return err
+		}
+		if provenance.RoleID != b.RoleID {
 			return harness.ErrExecutionConflict
 		}
 		var receiptState string
@@ -167,7 +182,20 @@ func (s *Store) SuspendExecutionTx(ctx context.Context, tx *sql.Tx, lease Execut
 	if err = checkExecutionBindings(ctx, tx, row.State.RunID, cp.Interrupts); err != nil {
 		return row.State, err
 	}
+	if err = checkExecutionInterruptSet(cp.Interrupts, cp.TaskWaits); err != nil {
+		return row.State, err
+	}
+	if _, err = checkExecutionTaskWaits(ctx, tx, row, cp.TaskWaits); err != nil {
+		return row.State, err
+	}
+	if err = checkExecutionWaitBytes(cp.Data, cp.TaskWaits); err != nil {
+		return row.State, err
+	}
 	m := ExecutionManifest{Version: 1, SessionID: row.State.SessionID, RunID: row.State.RunID, InputID: row.State.InputID, SourceKind: row.SourceKind, SourceSHA: row.SourceSHA, CheckpointID: cp.ID, CheckpointSHA: executionDigest(cp.Data), ConfigSHA: executionConfigDigest(row.Config), InputSHA: row.InputDigest, Interrupts: append([]ExecutionInterruptBinding(nil), cp.Interrupts...)}
+	if len(cp.TaskWaits) > 0 {
+		m.Version = 2
+		m.TaskWaits = append([]interaction.TaskWaitBinding(nil), cp.TaskWaits...)
+	}
 	m.NativeHead, err = executionNativeHead(ctx, tx, row.State.SessionID)
 	if err != nil {
 		return row.State, err
@@ -208,13 +236,19 @@ func (s *Store) SuspendExecutionTx(ctx context.Context, tx *sql.Tx, lease Execut
 		return row.State, err
 	}
 	row, err = readExecution(ctx, tx, row.State.SessionID, row.State.RunID)
-	row.State.Resumable = err == nil
+	if err == nil {
+		readiness := executionResumeReadiness(ctx, tx, row)
+		row.State.Resumable = readiness == nil
+		if readiness != nil && !errors.Is(readiness, harness.ErrExecutionWaitingInput) {
+			return row.State, readiness
+		}
+	}
 	return row.State, err
 }
 
 func validateExecutionManifest(ctx context.Context, tx *sql.Tx, row executionRow) error {
 	m := row.Manifest
-	if m == nil || m.Version != 1 || m.SessionID != row.State.SessionID || m.RunID != row.State.RunID || m.InputID != row.State.InputID || m.SourceKind != row.SourceKind || m.SourceSHA != row.SourceSHA || m.CheckpointID != "harness/turn/v1/"+row.State.RunID || m.ConfigSHA != executionConfigDigest(row.Config) || m.InputSHA != row.InputDigest {
+	if m == nil || (m.Version != 1 && m.Version != 2) || m.Version == 1 && len(m.TaskWaits) > 0 || m.SessionID != row.State.SessionID || m.RunID != row.State.RunID || m.InputID != row.State.InputID || m.SourceKind != row.SourceKind || m.SourceSHA != row.SourceSHA || m.CheckpointID != "harness/turn/v1/"+row.State.RunID || m.ConfigSHA != executionConfigDigest(row.Config) || m.InputSHA != row.InputDigest {
 		return fmt.Errorf("%w: missing or mismatched checkpoint manifest", harness.ErrExecutionUnresumable)
 	}
 	if err := validateExecutionConfig(ctx, tx, row); err != nil {
@@ -230,6 +264,18 @@ func validateExecutionManifest(ctx context.Context, tx *sql.Tx, row executionRow
 	}
 	if len(data) == 0 || executionDigest(data) != m.CheckpointSHA {
 		return fmt.Errorf("%w: checkpoint bytes changed", harness.ErrExecutionUnresumable)
+	}
+	if err = checkExecutionWaitBytes(data, m.TaskWaits); err != nil {
+		return err
+	}
+	if err = checkExecutionInterruptSet(m.Interrupts, m.TaskWaits); err != nil {
+		return err
+	}
+	if _, err = checkExecutionTaskWaits(ctx, tx, row, m.TaskWaits); err != nil {
+		if errors.Is(err, harness.ErrPermissionDenied) || errors.Is(err, harness.ErrNotFound) {
+			return fmt.Errorf("%w: waited task scope changed: %v", harness.ErrExecutionUnresumable, err)
+		}
+		return err
 	}
 	head, err := executionNativeHead(ctx, tx, row.State.SessionID)
 	if err != nil {
@@ -279,6 +325,12 @@ func (s *Store) ClaimExecutionResumeTx(ctx context.Context, tx *sql.Tx, sessionI
 		return lease, harness.ErrExecutionConflict
 	}
 	if err = validateExecutionManifest(ctx, tx, row); err != nil {
+		return lease, err
+	}
+	if err = executionResumeReadiness(ctx, tx, row); err != nil {
+		return lease, err
+	}
+	if err = claimAutomaticExecutionTx(ctx, tx, row); err != nil {
 		return lease, err
 	}
 	lease = ExecutionLease{OwnerID: owner, InputID: row.State.InputID, Scope: budget.Scope{RootBudgetID: row.RootBudgetID, MemberID: row.State.RunID, SessionID: sessionID, AttemptID: attemptID, Fence: row.State.Attempt + 1}}

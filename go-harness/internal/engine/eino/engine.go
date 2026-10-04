@@ -10,6 +10,7 @@ import (
 	"maps"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	einosession "github.com/cloudwego/eino/adk/session"
@@ -17,7 +18,9 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 )
 
 // Config is internal to the Eino adapter. Business and transport packages use
@@ -25,6 +28,7 @@ import (
 type Config struct {
 	Provider, APIKey, BaseURL, Model, Instruction string
 	ModelRoutes                                   map[string]harness.ModelRoute
+	Models                                        []harness.ConfigValue
 	ChatModel                                     model.ToolCallingChatModel
 	Tools                                         []tool.BaseTool
 	// ToolFactory opens resources owned by this run, such as a pinned os.Root.
@@ -51,6 +55,8 @@ type Config struct {
 	// Handlers extends native Eino middleware without introducing another loop.
 	Handlers        []adk.ChatModelAgentMiddleware
 	DisableSubAgent bool
+	Subagents       *harness.SubagentsConfig
+	Delegations     *agents.Controller
 	ToolPolicy      harness.ToolPolicy
 	PermissionMode  harness.PermissionMode
 }
@@ -58,6 +64,7 @@ type Config struct {
 type Engine struct {
 	config Config
 	model  model.ToolCallingChatModel
+	roles  *agents.Registry
 }
 
 // RunExtensions is constructed exactly once for a run. State must describe the
@@ -69,6 +76,16 @@ type RunExtensions struct {
 	// InstructionAppend is pinned by State and added to this run's native
 	// DeepAgent instruction. It contains only host-selected descriptive data.
 	InstructionAppend string
+	// SkillNames and SkillFactory narrow an immutable parent skill snapshot for
+	// a role. Returned handlers replace, rather than append to, parent handlers.
+	SkillNames   []string
+	SkillFactory func(context.Context, []string) ([]adk.ChatModelAgentMiddleware, []tool.BaseTool, error)
+	// ModelToolFactory reconstructs model-dependent host tools (for example
+	// view_image) from the same run resources. Role policy still filters them.
+	ModelToolFactory func(context.Context, string) ([]tool.BaseTool, error)
+	// RoleToolFactory creates capabilities for the actual role invocation. A
+	// child never receives a parent's closures for managing background tasks.
+	RoleToolFactory func(context.Context) ([]tool.BaseTool, error)
 	// ModelHandlerFactory builds middleware that makes its own model calls,
 	// such as summarization or memory extraction. The supplied model is tracked
 	// by the same I/O lifecycle and durable budget as the main agent. It must
@@ -126,6 +143,7 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 	config.Media.VisionModels = append([]string(nil), config.Media.VisionModels...)
 	config.ContextWindows = maps.Clone(config.ContextWindows)
 	config.ModelRoutes = maps.Clone(config.ModelRoutes)
+	config.Models = append([]harness.ConfigValue(nil), config.Models...)
 	for name, size := range config.ContextWindows {
 		if name == "" || size <= 0 {
 			return nil, fmt.Errorf("%w: invalid context window for model %q", harness.ErrInvalidInput, name)
@@ -139,7 +157,58 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 			return nil, err
 		}
 	}
-	return &Engine{config: config, model: chatModel}, nil
+	var roles *agents.Registry
+	// New runs always use host-owned role admission, including deployments that
+	// omit the optional YAML section. Archived checkpoints without a catalog
+	// still reconstruct their original native graph via WithRoleCatalog(nil).
+	if config.Subagents == nil {
+		config.Subagents = &harness.SubagentsConfig{}
+	}
+	if config.Subagents != nil {
+		data, err := json.Marshal(config.Subagents)
+		if err != nil {
+			return nil, err
+		}
+		var pinned harness.SubagentsConfig
+		if err = json.Unmarshal(data, &pinned); err != nil {
+			return nil, err
+		}
+		config.Subagents = &pinned
+		models := map[string]bool{config.Model: true}
+		for _, choice := range config.Models {
+			models[choice.Value] = true
+		}
+		for name := range config.ModelRoutes {
+			models[name] = true
+		}
+		roles, err = agents.New(pinned, models)
+		if err != nil {
+			return nil, err
+		}
+		providers := map[string]string{config.Model: config.Provider}
+		for _, choice := range config.Models {
+			providers[choice.Value] = config.Provider
+		}
+		if config.ChatModel != nil {
+			providers[config.Model] = "injected"
+		}
+		for name, route := range config.ModelRoutes {
+			providers[name] = route.Provider
+		}
+		if err = pinned.ValidateModelOptions(providers, config.Budget.MaxOutputTokens); err != nil {
+			return nil, err
+		}
+		if pinned.Enabled != nil && !*pinned.Enabled {
+			config.DisableSubAgent = true
+		}
+		if config.Delegations == nil {
+			config.Delegations, err = agents.NewController(nil)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return &Engine{config: config, model: chatModel, roles: roles}, nil
 }
 
 // CheckpointID identifies a run's native execution checkpoint. Ordinary next
@@ -167,6 +236,33 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	if err != nil {
 		return harness.RunResult{}, err
 	}
+	callerCtx := ctx
+	defer func() {
+		// A root admission gate may win the race with the cancellation monitor.
+		// Confirm the exact durable root stop after every cleanup defer, and
+		// normalize only a completely safe error chain.
+		if e.config.BudgetLedger == nil || !errors.Is(returnErr, harness.ErrTaskTreeStopped) {
+			return
+		}
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(callerCtx), 5*time.Second)
+		defer cancel()
+		stopped := e.config.BudgetLedger.TaskTreeRootStopped(cleanup, req.RootBudgetID)
+		if errors.Is(stopped, harness.ErrTaskTreeStopped) {
+			result.StopReason = "cancelled"
+			if recoverableRoleTimeout(withoutRoleStop(returnErr)) {
+				returnErr = nil
+			}
+		} else if stopped != nil {
+			returnErr = errors.Join(returnErr, stopped)
+		}
+	}()
+	defer func() {
+		// Run last, after resource, event, checkpoint and budget cleanup. Only
+		// the original private recipient can report an ordinary role failure.
+		if source != nil && executionHooks(callerCtx).InputSource.RoleContext != nil && callerCtx.Err() == nil && result.Limit == "" && result.StopReason != "cancelled" && recoverableRoleCause(returnErr) {
+			returnErr = &interaction.RoleContinuationFailure{Cause: returnErr}
+		}
+	}()
 	budget, err := e.newBudget(ctx, req)
 	if err != nil {
 		return harness.RunResult{}, err
@@ -217,8 +313,17 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		if err != nil {
 			return harness.RunResult{}, err
 		}
+		if hooks := executionHooks(ctx); hooks != nil {
+			pinned := *hooks
+			pinned.TaskWaitsEnabled = hooks.TaskWaitsEnabled && savedCheckpoint.TaskWaitsEnabled
+			ctx = WithExecutionHooks(ctx, pinned)
+		}
 		if !sameExecutionSource(source, savedCheckpoint.InputSource) {
 			return harness.RunResult{}, fmt.Errorf("%w: checkpoint input source changed", harness.ErrInvalidInput)
+		}
+		e, err = e.WithRoleCatalog(savedCheckpoint.Roles)
+		if err != nil {
+			return harness.RunResult{}, err
 		}
 		if budget.ledger != nil {
 			if savedCheckpoint.Ledger == nil {
@@ -247,9 +352,26 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 			defer cancel()
 		}
 	}
+	if savedCheckpoint == nil && source != nil {
+		var catalog *agents.Catalog
+		if raw := executionHooks(ctx).InputSource.RoleCatalog; len(raw) > 0 {
+			if err := json.Unmarshal(raw, &catalog); err != nil {
+				return harness.RunResult{}, err
+			}
+		}
+		e, err = e.WithRoleCatalog(catalog)
+		if err != nil {
+			return harness.RunResult{}, err
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return harness.RunResult{StopReason: "cancelled"}, nil
 	}
+	catalog, err := e.RoleCatalog()
+	if err != nil {
+		return harness.RunResult{}, err
+	}
+	ctx = context.WithValue(ctx, roleCatalogKey{}, pinnedRoleCatalog{catalog})
 	// The native cancel controller cancels models/tools while the Runner's outer
 	// context remains live long enough to commit cancellation and its checkpoint.
 	execCtx, closeExecution := context.WithCancel(context.WithoutCancel(ctx))
@@ -258,20 +380,38 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	// Assigned before starting the loop or any model/tool work.
 	stopLoop := func() {}
 	requestCancel := func() {
+		if sink.failure() != nil {
+			ioLifecycle.stop()
+			return
+		}
 		stopLoop()
 		// TurnLoop dispatches native cancellation asynchronously. Cancelling the
 		// provider first can turn this into an ordinary model error before Eino
 		// captures its checkpoint. The native loop stops first; closeAndWait
 		// below then cancels and joins any remaining provider/tool cleanup.
 	}
-	sink.cancel = requestCancel
+	// A failed event write invalidates this attempt's durability. Abort actual
+	// I/O and drain the graph as a failed attempt; requesting a new resumable
+	// native cancellation checkpoint here would race other child event writers
+	// and cannot produce a publishable checkpoint after this storage failure.
+	// emit invokes this callback under its lock, so it must not inspect sink.
+	sink.cancel = ioLifecycle.stop
 	var pinned json.RawMessage
 	if savedCheckpoint != nil {
 		pinned = savedCheckpoint.Extension
 	} else if source != nil {
 		pinned = executionHooks(ctx).InputSource.PinnedExtension
 	}
-	prepared, err := e.prepareAgent(ctx, req, "deerflow", pinned, budget, sink, ioLifecycle, permissions)
+	prepareCtx, prepareReq := ctx, req
+	var selectedRoles []*agents.Spec
+	if source != nil && executionHooks(ctx).InputSource.RoleContext != nil {
+		role := executionHooks(ctx).InputSource.RoleContext.Invocation
+		prepareReq.Session.Model = role.Spec.Model
+		prepareCtx = context.WithValue(prepareCtx, rolePlacementKey{}, RolePlacement{ParentID: role.ParentID, Depth: role.Depth})
+		prepareCtx = context.WithValue(prepareCtx, resumedRoleIdentityKey{}, role.ID)
+		selectedRoles = []*agents.Spec{&role.Spec}
+	}
+	prepared, err := e.prepareAgent(prepareCtx, prepareReq, "deerflow", pinned, budget, sink, ioLifecycle, permissions, selectedRoles...)
 	if prepared != nil {
 		defer func() { returnErr = errors.Join(returnErr, prepared.closeResources()) }()
 	}
@@ -284,23 +424,25 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	var lastRootAnswer string
 	var lastRootUsage *harness.Usage
 	var bindings []ExecutionInterruptBinding
+	var waits []interaction.TaskWaitBinding
 	captureInterrupt := func(contexts []*adk.InterruptCtx) error {
 		hooks := executionHooks(ctx)
 		if hooks == nil || hooks.Broker == nil || hooks.StageCheckpoint == nil {
 			return errors.New("execution interrupt requires trusted runtime hooks")
 		}
-		captured, err := collectInterruptBindings(contexts)
+		captured, capturedWaits, err := collectExecutionInterrupts(contexts, hooks.TaskWaitsEnabled)
 		if err != nil {
 			return err
 		}
-		if len(bindings) > 0 {
-			old, _ := json.Marshal(bindings)
-			fresh, _ := json.Marshal(captured)
+		if len(bindings) > 0 || len(waits) > 0 {
+			old, _ := json.Marshal([]any{bindings, waits})
+			fresh, _ := json.Marshal([]any{captured, capturedWaits})
 			if string(old) != string(fresh) {
 				return errors.New("native interruption targets changed during suspension")
 			}
 		}
 		bindings = captured
+		waits = capturedWaits
 		result.StopReason = "waiting_input"
 		return nil
 	}
@@ -380,7 +522,7 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 			exitErr, _ = removeErrorLeaves(exitErr, func(leaf error) bool { _, ok := leaf.(*adk.InterruptError); return ok })
 		}
 	}
-	checkpoints.setInterrupts(bindings)
+	checkpoints.setInterrupts(bindings, waits)
 	runErr = errors.Join(runErr, withoutNativeTermination(exitErr), exit.CheckpointErr, checkpoints.failure())
 	if runErr == nil && result.StopReason == "end_turn" && ctx.Err() == nil && lastRootAnswer != "" && prepared.postRun != nil {
 		runErr = errors.Join(runErr, prepared.postRun(ctx, lastRootAnswer, budget.canOptionalModelCall(ctx, 2048)))
@@ -591,7 +733,7 @@ func (s *eventSink) emit(ctx context.Context, event harness.RunEvent) error {
 	if s.err != nil {
 		return s.err
 	}
-	if event.Kind == "tool_end" && s.delegations[event.ToolCallID] && (event.ToolName == "task" || (event.ToolName == "" && s.active[event.ToolCallID] == "")) {
+	if event.Kind == "tool_end" && s.delegations[event.ToolCallID] && (event.ToolName == "task" || event.ToolName == "task_wait" || (event.ToolName == "" && s.active[event.ToolCallID] == "")) {
 		return nil
 	}
 	if event.Kind == "tool_start" {

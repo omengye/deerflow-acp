@@ -70,7 +70,11 @@ func (a *LedgerAdapter) BindTaskTx(ctx context.Context, tx *sql.Tx, b Binding) e
 	if rootID != b.RootBudgetID || sessionID != b.ParentSessionID || b.ChildSessionID == "" || b.ChildSessionID == b.ParentSessionID {
 		return budget.ErrScope
 	}
-	return a.ledger.BindMemberTx(ctx, tx, budget.MemberBinding{RootBudgetID: rootID, MemberID: b.TaskID, SessionID: b.ChildSessionID, OriginRunID: b.OriginRunID, ParentMemberID: b.OriginRunID, Kind: "task"})
+	kind := "task"
+	if b.ContinuationOf != "" {
+		kind = "background_continuation"
+	}
+	return a.ledger.BindMemberTx(ctx, tx, budget.MemberBinding{RootBudgetID: rootID, MemberID: b.TaskID, SessionID: b.ChildSessionID, OriginRunID: b.OriginRunID, ParentMemberID: b.OriginRunID, Kind: kind})
 }
 
 func (a *LedgerAdapter) checkTaskTx(ctx context.Context, tx *sql.Tx, scope TaskScope, allowStopping bool) error {
@@ -163,6 +167,15 @@ func (a *LedgerAdapter) CheckAttemptBudget(ctx context.Context, scope TaskScope)
 	defer tx.Rollback()
 	if readErr = a.checkTaskTx(ctx, tx, scope, true); readErr != nil {
 		return errors.Join(err, readErr)
+	}
+	// A subtree stop is durable before native control delivery. During that
+	// gap effects are correctly fenced even though CancelRequestedAt is nil.
+	// Only classify it after proving that this exact attempt still owns both
+	// leases, so the stop cannot hide actual lease loss or database failures.
+	if stopErr := checkTreeRunning(ctx, tx, scope.Binding.TaskID); errors.Is(stopErr, bt.ErrLeaseLost) {
+		return context.Canceled
+	} else if stopErr != nil {
+		return errors.Join(err, ledgerPersistence("inspect tree stop", stopErr))
 	}
 	task, _, readErr := a.store.Tasks().TaskLeaseTx(ctx, tx, scope.Binding.TaskID)
 	if readErr != nil {

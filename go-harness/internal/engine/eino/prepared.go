@@ -14,6 +14,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	harnesstools "github.com/omengye/deerflow-acp/go-harness/internal/tools"
 )
@@ -94,8 +95,13 @@ func (p *PreparedAttempt) BudgetFailure() error {
 	return nil
 }
 
-func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name string, pinned json.RawMessage, b *runBudget, sink *eventSink, ioLifecycle *runIO, permissions harness.PermissionHandler) (*PreparedAttempt, error) {
+func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name string, pinned json.RawMessage, b *runBudget, sink *eventSink, ioLifecycle *runIO, permissions harness.PermissionHandler, role ...*agents.Spec) (*PreparedAttempt, error) {
 	p := &PreparedAttempt{ctx: ctx, budget: b, io: ioLifecycle, sink: sink}
+	catalog, catalogErr := e.RoleCatalog()
+	if catalogErr != nil {
+		return p, catalogErr
+	}
+	ctx = context.WithValue(ctx, roleCatalogKey{}, pinnedRoleCatalog{catalog})
 	chatModel := e.model
 	if e.config.ChatModel == nil && req.Session.Model != "" && req.Session.Model != e.config.Model {
 		var err error
@@ -206,7 +212,51 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		publish: func(ctx context.Context, content harness.Content) error {
 			return sink.emit(ctx, harness.RunEvent{Kind: "image_delta", Content: []harness.Content{content}})
 		}}
-	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, io: ioLifecycle, budget: b, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore}
+	if len(role) > 0 && role[0] != nil {
+		spec := *role[0]
+		if err := spec.Validate(); err != nil {
+			return p, err
+		}
+		if spec.Model != selectedModel || e.roles == nil || e.config.DisableSubAgent {
+			return p, harness.ErrPermissionDenied
+		}
+		resources := &roleResources{req, tools, extensions, b, sink, ioLifecycle, permissions, media}
+		placement, placed := ctx.Value(rolePlacementKey{}).(RolePlacement)
+		if !placed {
+			placement.Depth = 1
+		}
+		invocationID := "background/" + req.RunID
+		if restored, ok := ctx.Value(resumedRoleIdentityKey{}).(string); ok {
+			if restored == "" {
+				return p, harness.ErrPermissionDenied
+			}
+			invocationID = restored
+		}
+		child := e.newRole(spec, agents.Parent{Model: selectedModel}, chatModel, placement.Depth, resources, invocationID)
+		child.parentID = placement.ParentID
+		child.agentName = name
+		p.Agent = child
+		// Bind role selection as well as its available host resources.
+		p.Contract = roleContract(p.Contract, spec.Version)
+		if placed {
+			raw, err := json.Marshal(placement)
+			if err != nil {
+				return p, err
+			}
+			p.Contract = roleContract(p.Contract, string(raw))
+		}
+		if restored, ok := ctx.Value(resumedRoleIdentityKey{}).(string); ok {
+			p.Contract = roleContract(p.Contract, restored)
+		}
+		return p, nil
+	}
+	durableWait := false
+	for _, t := range tools {
+		if wait, ok := t.(interface{ DurableTaskWait() bool }); ok && wait.DurableTaskWait() {
+			durableWait = true
+		}
+	}
+	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, durableTaskWait: durableWait, io: ioLifecycle, budget: b, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore}
 	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), extensions.Handlers...)
 	if extensions.ModelHandlerFactory != nil || extensions.PostRunFactory != nil {
 		privateMedia := *media
@@ -238,12 +288,21 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		handlers = append(handlers, compaction)
 	}
 	handlers = append(handlers, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media}, mw)
+	delegationEnabled := !e.config.DisableSubAgent && e.config.ToolPolicy.Allows("task") && !(req.Session.ConfigVersion > 0 && !req.Session.Subagents)
+	var children []adk.Agent
+	if e.roles != nil && delegationEnabled {
+		children, err = e.prepareRoleAgents(ctx, req, chatModel, tools, extensions, b, sink, ioLifecycle, permissions, media)
+		if err != nil {
+			return p, err
+		}
+	}
 	p.Agent, err = deep.New(ctx, &deep.Config{
 		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend,
 		ChatModel: chatModel, MaxIteration: e.config.MaxIterations,
 		ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}},
 		Handlers:    handlers, WithoutWriteTodos: !e.config.ToolPolicy.Allows("write_todos"),
-		WithoutGeneralSubAgent: e.config.DisableSubAgent || !e.config.ToolPolicy.Allows("task") || (req.Session.ConfigVersion > 0 && !req.Session.Subagents),
+		SubAgents:              children,
+		WithoutGeneralSubAgent: !delegationEnabled || e.roles != nil,
 	})
 	if err != nil {
 		return p, fmt.Errorf("create deep agent: %w", err)

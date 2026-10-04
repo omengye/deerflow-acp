@@ -21,9 +21,8 @@ jobs:
       run:
         shell: pwsh
     env:
-      # GPUI and the legacy runtime packager compile large Rust dependency trees.
+      # GPUI compiles a large Rust dependency tree.
       CARGO_BUILD_JOBS: "2"
-      UV_HTTP_TIMEOUT: "120"
 
     steps:
       - name: Check out repository and version tags
@@ -68,33 +67,36 @@ jobs:
           workspaces: |
             desktop-app -> ../.build-cache/desktop-build
             bridge -> target
-            desktop -> target
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
+      - name: Set up Go toolchain
+        uses: actions/setup-go@v5
         with:
-          version: "0.9.18"
-          python-version: "3.12"
-          enable-cache: true
+          go-version: '1.26.8'
+          cache-dependency-path: go-harness/go.sum
 
-      - name: Build desktop and embedded Python runtime
+      - name: Build Eino Go desktop and corresponding source
         timeout-minutes: 120
         run: |
-          .\scripts\build-deerflow-desktop.ps1 -Configuration Release `
-            -OutputDirectory 'dist\desktop\DeerFlow-Desktop' `
-            -DesktopTargetDirectory '.build-cache\desktop-build' -RebuildRuntime
+          ./scripts/build-deerflow-desktop-go.ps1 -Configuration Release `
+            -OutputDirectory 'dist/desktop/DeerFlow-Desktop-Go' `
+            -DesktopTargetDirectory '.build-cache/desktop-build' -CreateZip
 
-      - name: Test packaged runtime with local fake model
+      - name: Test packaged Waku and Go harness with local fake models
         id: smoke
         timeout-minutes: 30
         run: |
-          & .\dist\desktop\DeerFlow-Desktop\runtime\python.exe `
-            .\scripts\test-deerflow-desktop-smoke.py --package .\dist\desktop\DeerFlow-Desktop
-          if ($LASTEXITCODE -ne 0) { throw 'Desktop package smoke test failed' }
-
+          Push-Location go-harness
+          try {
+            go build -o ../.build-cache/deerflow-desktop-smoke.exe ./cmd/deerflow-desktop-smoke
+            if ($LASTEXITCODE -ne 0) { throw 'Go smoke build failed' }
+          } finally { Pop-Location }
+          & ./.build-cache/deerflow-desktop-smoke.exe --package ./dist/desktop/DeerFlow-Desktop-Go
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop protocol smoke failed' }
+          & ./.build-cache/deerflow-desktop-smoke.exe --package ./dist/desktop/DeerFlow-Desktop-Go --legacy-empty-mcp-policy
+          if ($LASTEXITCODE -ne 0) { throw 'Legacy MCP policy smoke failed' }
       - name: Calculate SHA-256 checksums
         run: |
-          foreach ($name in @('DeerFlow-Desktop-windows-x64.zip', 'DeerFlow-Desktop-source.zip')) {
+          foreach ($name in @('DeerFlow-Desktop-Go-windows-x64.zip', 'DeerFlow-Desktop-Go-source.zip')) {
             $archive = Join-Path 'dist\desktop' $name
             $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $name" | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii

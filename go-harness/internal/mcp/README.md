@@ -1,4 +1,4 @@
-# Session MCP resources
+# Client and host MCP resources
 
 `Manager` binds MCP connections to a runtime owner and session. The runtime must
 hold its idle session lifecycle lease while binding or changing configuration.
@@ -21,9 +21,84 @@ collision-resistant provider-compatible exposed names and fresh metadata copies.
   terminal signal. A failed process kill remains owned until the child exits.
 - A setup request ending after successful `Bind` does not end the session. Tool
   calls have their own timeout and follow the binding lifetime.
-- Connections are not automatically rebuilt and uncertain tool calls are never
-  replayed. The caller can explicitly change/release/rebind configuration after
-  dealing with the failed operation.
+- Client-owned connections are not automatically rebuilt. The caller can
+  explicitly change/release/rebind configuration after dealing with the failed
+  operation. Explicit host recipes have the separate lifecycle below. Neither
+  ownership mode replays uncertain tool calls.
+
+## Borrowed resources
+
+`Describe` returns a stable descriptor of normalized connection intent and the
+actual discovered tool schemas, plus an opaque connection generation. The
+descriptor contains digests and public server/tool names, never executable
+arguments, workspace paths, URLs, environment values or headers. An identical
+explicit reconnect retains the descriptor and receives a new generation.
+
+`Acquire` requires both the saved descriptor and the explicitly authorized
+current generation. It discovers tools once, fingerprints those exact adapters,
+and rechecks binding identity before returning a `Lease`. Changed configuration
+or schemas are incompatible; an old generation cannot authorize a replacement.
+The manager never persists raw connection recipes or grants durable task
+authority itself. The SDK owns independent versioned task resource grants.
+
+Leases expose enhanced Eino tools (including structured image results), `Check`,
+and a `Done` channel. Closing a lease cancels only that borrower; releasing or
+replacing the binding, or loss of its transport, invalidates its borrowers.
+Refusal before dispatch is marked as having no effect. After dispatch, transport
+failure keeps the existing uncertain-effect contract and never triggers replay.
+
+## Explicit host recipes and restart reconstruction
+
+`Config.HostMCPRecipes` / YAML `mcp.host_recipes` is a separate host registry.
+It defaults to empty. Each recipe has a unique ID, one absolute workspace and
+1–8 explicitly configured servers. Workspace selection is exact after path
+normalization; there is no ancestor or wildcard match. A recipe is shared by
+sessions for that workspace, with independent borrowed execution leases. Client
+detach does not stop these host transports; SDK `Close` joins them. A matching
+workspace cannot also supply client MCP servers in this first version.
+
+```yaml
+mcp:
+  host_recipes:
+    - id: project-docs
+      workspace: 'C:\Work\project'
+      restore_on_restart: true
+      servers:
+        - name: docs
+          transport: stdio
+          command: 'C:\Tools\docs-mcp.exe'
+          args: ['--stdio']
+          env:
+            DOCS_TOKEN: '$DOCS_MCP_TOKEN'
+```
+
+The executable must exist and be trusted; the example paths are placeholders.
+The host operator edits YAML and restarts. The launcher resolves `$VAR` or
+`${VAR}` references in env/header values and endpoint URLs. Unset references
+fail startup without echoing their contents. MCP recipes are not exposed as
+desktop editable values, applied settings, role definitions or model input.
+The shared schema only advertises the host YAML path and restart requirement.
+Unknown fields/type coercions are rejected. Raw credentials remain in trusted
+host config/process memory; saved execution input contains only recipe ID,
+session ID, origin generation and the existing configuration/schema digests.
+
+Only `restore_on_restart: true` authorizes automatic reconstruction. Before
+workers start, the SDK loads existing host resource grants, verifies the saved
+session workspace and complete configuration digest, reconnects from current
+host config, then checks the actual discovered schema using a lease. Only a
+successful match advances the independent grant generation/version by CAS.
+The execution snapshot, tool receipts, task status and native checkpoints are
+not rewritten. Suspended tasks retain their normal explicit resume flow;
+finished tasks are not rerun, and continuation and uncertainty fences remain.
+Missing, unavailable or changed recipes leave tasks waiting or incompatible so
+the desktop can open for inspection. Credential changes also change the digest.
+`restore_on_restart: false` (default) requires explicit task resource authority
+after reconnection. Arbitrary client MCP configurations never become recipes,
+and recipe executable/network authority does not enlarge client MCP policy.
+
+Live transport loss is not silently retried. Restore the service and restart
+the harness or use the normal explicit connection/authorization workflow.
+This facility does not restore remote server state or guarantee remote effects.
 
 ## Transports and trust
 
@@ -69,3 +144,14 @@ server, plus SDK HTTP/SSE fixtures. It covers discovery, invocation, environment
 isolation, cancellation, replacement rollback, stale tools, direct-process
 cleanup, owner retirement, unknown-result no replay, aggregate limits, and
 credential forwarding/echo rejection.
+
+The resource tests additionally cover stable identity versus reconnect authority,
+configuration/schema changes, independent borrowers, enhanced image retention,
+and a real process that writes an effect then exits without returning a result.
+
+`TestSDKHostMCPRecipesRestartReconstruction` is the focused SDK restart chain
+using real local MCP/OpenAI fixtures and SQLite. It passed in 11.040s, covering
+host/client authority isolation, detach lifetime, missing/changed/manual recipes,
+live schema drift, immutable resource refs, CAS grants, completed-effect no
+replay and retained uncertain receipts. It does not replace desktop or external
+MCP service acceptance.

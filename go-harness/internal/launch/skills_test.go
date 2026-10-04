@@ -9,6 +9,33 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
+func TestSkillsConfigurationManagedSourcesAndReviewGrants(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "skills.json")
+	document := map[string]any{
+		"sources":        []harness.SkillSource{{ID: "generated", Root: root, Scope: harness.SkillScopeWorkspace, Workspace: root}},
+		"managedSources": []string{"generated"}, "exportRoot": root,
+	}
+	data, _ := json.Marshal(document)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseRuntimeFlags(t, "--skills-config", path)
+	if err != nil || len(cfg.Skills.ManagedSources) != 1 || cfg.Skills.ManagedSources[0] != "generated" || cfg.Skills.ExportRoot != root || len(cfg.Skills.Install) != 0 {
+		t.Fatalf("managed source flags: %+v %v", cfg.Skills, err)
+	}
+	yamlPath := writeRoleConfig(t, roleModels+"skill_evolution:\n  enabled: true\n  mode: review\n  moderation_model_name: main\n  evaluation_model_name: research\n")
+	connections := 0
+	if _, err = ApplyConfig(yamlPath, &cfg, &connections, map[string]bool{"skills-config": true}); err != nil || len(cfg.SkillProposalSources) != 1 || cfg.SkillProposalSources[0] != "generated" || cfg.Skills.ExportRoot != root {
+		t.Fatalf("managed source review grant: %+v %v", cfg.SkillProposalSources, err)
+	}
+	// Disabling evolution revokes generation, not published managed skills.
+	yamlPath = writeRoleConfig(t, roleModels+"skill_evolution:\n  enabled: false\n")
+	if _, err = ApplyConfig(yamlPath, &cfg, &connections, map[string]bool{"skills-config": true}); err != nil || len(cfg.SkillProposalSources) != 0 || len(cfg.Skills.ManagedSources) != 1 {
+		t.Fatalf("evolution disable removed managed source: %+v %v", cfg.Skills, err)
+	}
+}
+
 func TestSkillsConfigurationHasExplicitSourceAndInstallSelection(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "skills.json")

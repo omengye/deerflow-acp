@@ -236,17 +236,25 @@ func newBackgroundHostFixture(t *testing.T) *backgroundHostFixture {
 	}
 	f.binding = background.Binding{TaskID: "task-child", ChildSessionID: "task-child/session", ParentSessionID: parent.ID, OriginRunID: origin.RunID, OriginToolCallID: "delegate", Workspace: parent.CWD, ExecutionContract: contract, RootBudgetID: origin.RunID, AgentVersion: f.spec.AgentVersion, ConfigVersion: parent.ConfigVersion}
 	f.scope = background.TaskScope{Binding: f.binding, Attempt: 1}
-	f.tasks = native.Tasks().WithHooks(sqlite.TaskHooks{
+	f.installTaskHooks()
+	return f
+}
+
+func (f *backgroundHostFixture) installTaskHooks() {
+	f.tasks = f.native.Tasks().WithHooks(sqlite.TaskHooks{
 		Create: func(ctx context.Context, tx *sql.Tx, _ *bt.Task) error {
 			data, _ := json.Marshal(f.binding)
 			b := f.binding
 			if _, err := tx.ExecContext(ctx, `INSERT INTO harness_background_bindings(task_id,parent_session_id,child_session_id,origin_run_id,origin_tool_call_id,intent_hash,payload) VALUES(?,?,?,?,?,?,?)`, b.TaskID, b.ParentSessionID, b.ChildSessionID, b.OriginRunID, b.OriginToolCallID, b.IntentHash, data); err != nil {
 				return err
 			}
-			if err := host.BindTx(ctx, tx, f.binding, f.spec); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO harness_background_tree(task_id,root_session_id,parent_task_id,depth) VALUES(?,?,?,?)`, b.TaskID, b.RootSession(), b.ParentTaskID, b.TaskDepth()); err != nil {
 				return err
 			}
-			return adapter.BindTaskTx(ctx, tx, f.binding)
+			if err := f.host.BindTx(ctx, tx, f.binding, f.spec); err != nil {
+				return err
+			}
+			return f.adapter.BindTaskTx(ctx, tx, f.binding)
 		},
 		Transition: func(ctx context.Context, tx *sql.Tx, before, after *bt.Task) error {
 			if before.Status == bt.StatusPending && after.Status == bt.StatusRunning {
@@ -254,17 +262,19 @@ func newBackgroundHostFixture(t *testing.T) *backgroundHostFixture {
 				return err
 			}
 			if before.Status != bt.StatusRunning || after.Status == bt.StatusRunning {
-				return host.TransitionTx(ctx, tx, background.TaskScope{Binding: f.binding, Attempt: before.Attempt}, before, after)
+				return f.host.TransitionTx(ctx, tx, background.TaskScope{Binding: f.binding, Attempt: before.Attempt}, before, after)
 			}
 			scope := background.TaskScope{Binding: f.binding, Attempt: before.Attempt}
-			if err := host.CommitAttemptTx(ctx, tx, scope, string(after.Status), adapter.CommitAttemptTx); err != nil {
+			if err := f.host.CommitAttemptTx(ctx, tx, scope, string(after.Status), f.adapter.CommitAttemptTx); err != nil {
+				return err
+			}
+			if err := settleRoleContextsTx(ctx, tx, background.BudgetScope(scope), after.Status == bt.StatusCompleted || after.Status == bt.StatusWaitingInput || after.Status == bt.StatusSuspended); err != nil {
 				return err
 			}
 			_, err := tx.ExecContext(ctx, `DELETE FROM harness_background_child_leases WHERE child_session_id=?`, f.binding.ChildSessionID)
 			return err
 		},
 	})
-	return f
 }
 
 func (f *backgroundHostFixture) create() error {

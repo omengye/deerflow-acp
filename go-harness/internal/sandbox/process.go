@@ -16,17 +16,19 @@ import (
 const cleanupTimeout = 6 * time.Second
 
 type execution struct {
-	exitCode  *int
-	confirmed bool
-	state     harness.CommandState
-	err       error
+	exitCode    *int
+	confirmed   bool
+	notExecuted bool
+	state       harness.CommandState
+	err         error
 }
 type processSpec struct {
-	argv, env   []string
-	cwd         string
-	limits      harness.CommandLimits
-	remoteInput bool
-	started     func(int)
+	argv, env    []string
+	cwd          string
+	limits       harness.CommandLimits
+	remoteInput  bool
+	initialInput []byte
+	started      func(int)
 }
 type processTree interface {
 	afterStart(*exec.Cmd) error
@@ -37,28 +39,33 @@ type processTree interface {
 // The command's process Wait and pipe drains have separate ownership. This
 // permits killing descendants that inherited output handles after the leader
 // exits, without deadlocking in exec.Cmd's implicit pipe-drain wait.
-func runProcess(ctx context.Context, spec processSpec, stdout, stderr *capture) execution {
+func runProcess(ctx context.Context, spec processSpec, stdout, stderr io.Writer) execution {
 	finish := func(err error, code *int, confirmed bool) execution {
 		return execution{exitCode: code, confirmed: confirmed, state: stateFor(err, code, confirmed), err: err}
 	}
+	beforeStart := func(err error) execution {
+		r := finish(err, nil, true)
+		r.notExecuted = true
+		return r
+	}
 	if err := ctx.Err(); err != nil {
-		return finish(err, nil, true)
+		return beforeStart(err)
 	}
 	if len(spec.argv) == 0 {
-		return finish(fmt.Errorf("empty command"), nil, true)
+		return beforeStart(fmt.Errorf("empty command"))
 	}
 	cmd := exec.Command(spec.argv[0], spec.argv[1:]...)
 	cmd.Dir = spec.cwd
 	cmd.Env = spec.env
 	outR, outW, err := os.Pipe()
 	if err != nil {
-		return finish(err, nil, true)
+		return beforeStart(err)
 	}
 	defer outR.Close()
 	defer outW.Close()
 	errR, errW, err := os.Pipe()
 	if err != nil {
-		return finish(err, nil, true)
+		return beforeStart(err)
 	}
 	defer errR.Close()
 	defer errW.Close()
@@ -67,17 +74,17 @@ func runProcess(ctx context.Context, spec processSpec, stdout, stderr *capture) 
 	if spec.remoteInput {
 		input, err = cmd.StdinPipe()
 		if err != nil {
-			return finish(err, nil, true)
+			return beforeStart(err)
 		}
 		defer input.Close()
 	}
 	tree, err := newProcessTree(cmd, spec.limits)
 	if err != nil {
-		return finish(err, nil, true)
+		return beforeStart(err)
 	}
 	defer tree.close()
 	if err = cmd.Start(); err != nil {
-		return finish(err, nil, true)
+		return beforeStart(err)
 	}
 	_ = outW.Close()
 	_ = errW.Close()
@@ -94,6 +101,28 @@ func runProcess(ctx context.Context, spec processSpec, stdout, stderr *capture) 
 	drains.Add(2)
 	go func() { defer drains.Done(); _, _ = io.Copy(stdout, outR) }()
 	go func() { defer drains.Done(); _, _ = io.Copy(stderr, errR) }()
+	inputDone := make(chan struct{})
+	inputStopped := make(chan struct{})
+	if input != nil {
+		// One writer owns both the initial request and cancellation. A stalled
+		// guest cannot block the process wait or interleave control with JSON.
+		go func() {
+			defer close(inputStopped)
+			if _, err := input.Write(spec.initialInput); err != nil {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				message := "cancelled\n"
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					message = "timed_out\n"
+				}
+				_, _ = io.WriteString(input, message)
+				_ = input.Close()
+			case <-inputDone:
+			}
+		}()
+	}
 	wait := make(chan error, 1)
 	go func() { wait <- cmd.Wait() }()
 	var waitErr, reason error
@@ -102,12 +131,6 @@ func runProcess(ctx context.Context, spec processSpec, stdout, stderr *capture) 
 	case <-ctx.Done():
 		reason = ctx.Err()
 		if input != nil {
-			message := "cancelled\n"
-			if errors.Is(reason, context.DeadlineExceeded) {
-				message = "timed_out\n"
-			}
-			_, _ = io.WriteString(input, message)
-			_ = input.Close()
 			select {
 			case waitErr = <-wait:
 				wait = nil
@@ -124,7 +147,9 @@ func runProcess(ctx context.Context, spec processSpec, stdout, stderr *capture) 
 	// whose shell has already exited. The Job/process group is command-owned.
 	cleanupErr := tree.terminate()
 	if input != nil {
+		close(inputDone)
 		_ = input.Close()
+		<-inputStopped
 	}
 	drained := make(chan struct{})
 	go func() { drains.Wait(); close(drained) }()

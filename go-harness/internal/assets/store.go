@@ -24,15 +24,16 @@ import (
 )
 
 type Store struct {
-	db        *sql.DB
-	root      *os.Root
-	path      string
-	lock      *flock.Flock
-	lifecycle sync.RWMutex
-	closed    bool
-	closing   atomic.Bool
-	mu        sync.Mutex
-	staged    map[string]*Prepared
+	db            *sql.DB
+	root          *os.Root
+	path          string
+	lock          *flock.Flock
+	lifecycle     sync.RWMutex
+	closed        bool
+	closing       atomic.Bool
+	mu            sync.Mutex
+	staged        map[string]*Prepared
+	artifactReads artifactReadCache
 }
 
 type record struct {
@@ -50,6 +51,7 @@ type Prepared struct {
 	records    []record
 	refs       []harness.AssetRef
 	toolImages bool
+	owner      *ArtifactOwner
 	once       sync.Once
 	finishErr  error
 }
@@ -93,6 +95,13 @@ CREATE TABLE IF NOT EXISTS harness_assets (id TEXT PRIMARY KEY,session_id TEXT N
 CREATE INDEX IF NOT EXISTS harness_assets_session ON harness_assets(session_id);
 CREATE TABLE IF NOT EXISTS harness_input_assets (input_id TEXT NOT NULL REFERENCES harness_inputs(id),asset_id TEXT NOT NULL REFERENCES harness_assets(id),PRIMARY KEY(input_id,asset_id));
 CREATE TABLE IF NOT EXISTS harness_artifacts (session_id TEXT NOT NULL REFERENCES harness_sessions(id),run_id TEXT NOT NULL REFERENCES harness_runs(id),tool_call_id TEXT NOT NULL,asset_id TEXT NOT NULL REFERENCES harness_assets(id),PRIMARY KEY(run_id,tool_call_id,asset_id));
+CREATE TABLE IF NOT EXISTS harness_artifact_owners (
+ asset_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT NOT NULL, tool_call_id TEXT NOT NULL,
+ root_id TEXT NOT NULL, root_session_id TEXT NOT NULL, node_id TEXT NOT NULL,
+ attempt_id TEXT NOT NULL, fence INTEGER NOT NULL, invocation_id TEXT NOT NULL, role_attempt_id TEXT NOT NULL,
+ FOREIGN KEY(run_id,tool_call_id,asset_id) REFERENCES harness_artifacts(run_id,tool_call_id,asset_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS harness_artifact_owners_node ON harness_artifact_owners(root_id,node_id,asset_id);
 `)
 	if err == nil {
 		err = s.CleanupOrphans(ctx)

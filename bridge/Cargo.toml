@@ -21,6 +21,9 @@ subtle = "2.6"
 tokio = { version = "1.52", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

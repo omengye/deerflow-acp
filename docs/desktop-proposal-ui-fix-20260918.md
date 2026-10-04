@@ -1,3 +1,5 @@
+> 历史记录：本文描述旧 Python 实现或当时的桌面设计，命令和能力声明不作为当前分支的使用说明。原文与源码参见[固定历史提交](https://github.com/omengye/deerflow-acp/tree/9c29fcaac991f2d9f1e7af68250b12f6b3ec07d9)。当前 Eino Go 入口与验收范围见[项目说明](../README.md)。
+
 # DeerFlow Desktop 技能提案审查界面修复
 
 2026-09-18 修复了技能自进化审查中长差异内容覆盖“批准并发布…”和“拒绝提案…”按钮的问题。设置页面继续使用 Waku 的 GPUI 主题与控件样式。

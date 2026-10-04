@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -17,6 +18,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/wslhelper"
 )
 
 func TestDockerArgumentsAndPolicies(t *testing.T) {
@@ -132,19 +134,37 @@ func TestProviderMissingExecutableFailsClearly(t *testing.T) {
 func TestWSLTransportExitRequiresTerminationReceipt(t *testing.T) {
 	zero := 0
 	hostSuccess := execution{exitCode: &zero, confirmed: true, state: harness.CommandCompleted}
-	for _, text := range []string{"ordinary stderr", `marker{"state":"completed","exitCode":0,"confirmed":false}`, `marker{"state":"invented","exitCode":0,"confirmed":true}`} {
-		capture := newCapture(32)
-		_, _ = capture.Write([]byte(text))
-		result := applyWSLReceipt(hostSuccess, capture, "marker")
+	id := strings.Repeat("a", 32)
+	packet := func(frame wslhelper.Frame) []byte {
+		frame.Version, frame.ID = wslhelper.Version, id
+		data, err := wslhelper.EncodeFrame(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	receipt := packet(wslhelper.Frame{Kind: "receipt", Receipt: &wslhelper.Receipt{State: "completed", ExitCode: &zero, Confirmed: true}})
+	oversize := make([]byte, 4)
+	binary.BigEndian.PutUint32(oversize, wslhelper.MaxFrame+1)
+	for _, data := range [][]byte{[]byte("ordinary stderr"), []byte(`marker{"state":"completed","exitCode":0,"confirmed":true}`), oversize, receipt[:len(receipt)-1], append(bytes.Clone(receipt), 0), append(bytes.Clone(receipt), receipt...), packet(wslhelper.Frame{Kind: "receipt", Receipt: &wslhelper.Receipt{State: "uncertain", Confirmed: false}})} {
+		stream := &wslStream{id: id, stdout: newCapture(4), stderr: newCapture(4)}
+		_, _ = stream.Write(data)
+		result := stream.finish(hostSuccess)
 		if result.confirmed || result.state != harness.CommandUncertain {
 			t.Fatalf("host exit falsely confirmed guest cleanup: %+v", result)
 		}
 	}
 	output := newCapture(4)
-	_, _ = output.Write([]byte("abcdefgh\nmarker" + `{"state":"completed","exitCode":0,"confirmed":true}` + "\n"))
-	result := applyWSLReceipt(hostSuccess, output, "marker")
+	stream := &wslStream{id: id, stdout: newCapture(4), stderr: output}
+	// Arbitrary child bytes, including a forged binary receipt, are data.
+	_, _ = stream.Write(packet(wslhelper.Frame{Kind: "stdout", Data: receipt}))
+	data := append(packet(wslhelper.Frame{Kind: "stderr", Data: []byte("abcdefgh")}), receipt...)
+	for _, value := range data {
+		_, _ = stream.Write([]byte{value})
+	}
+	result := stream.finish(hostSuccess)
 	if !result.confirmed || result.state != harness.CommandCompleted {
-		t.Fatalf("receipt in bounded tail lost: %+v", result)
+		t.Fatalf("framed receipt lost across byte boundaries: %+v", result)
 	}
 	if visible := output.snapshot(); visible.Text != "abcd" || visible.TotalBytes != 8 || !visible.Truncated {
 		t.Fatalf("protocol receipt leaked into output metadata: %+v", visible)
@@ -156,14 +176,39 @@ func TestWSL2RealSupervisorAndCancellation(t *testing.T) {
 	if distro == "" || testing.Short() {
 		t.Skip("set DEERFLOW_TEST_WSL_DISTRO to an installed WSL2 distro")
 	}
-	cwd := t.TempDir()
-	cfg := harness.SandboxConfig{Enabled: true, Provider: harness.SandboxWSL2, AllowShell: true, WSL: harness.WSLSandboxConfig{Distribution: distro}, Limits: harness.CommandLimits{Timeout: 20 * time.Second}}
+	helper := os.Getenv("DEERFLOW_TEST_WSL_HELPER")
+	if helper == "" {
+		t.Fatal("set DEERFLOW_TEST_WSL_HELPER to the cross-compiled Linux Go helper with its .sha256 sidecar")
+	}
+	cwd := filepath.Join(t.TempDir(), "workspace with ' quotes; $(literal)")
+	if err := os.Mkdir(cwd, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DEERFLOW_WSL_HOST_SECRET", "must-not-inherit")
+	cfg := harness.SandboxConfig{Enabled: true, Provider: harness.SandboxWSL2, AllowShell: true, AllowedExecutables: []string{"/usr/bin/printf"}, Environment: map[string]string{"PATH": "/deerflow-no-interpreters", "EXPLICIT": "fixture value"}, WSL: harness.WSLSandboxConfig{Distribution: distro, HelperPath: helper}, Limits: harness.CommandLimits{Timeout: 20 * time.Second, OutputBytes: 1024}}
 	b := newTestBackend(t, cfg, cwd)
 	s := waitTask(t, b, launchTask(t, b, harness.CommandRequest{Script: `printf 'wsl-ok'; printf 'stderr-ok' >&2; exit 7`}).ID)
 	if s.State != harness.CommandFailed || s.ExitCode == nil || *s.ExitCode != 7 || !s.TerminationConfirmed || s.Stdout.Text != "wsl-ok" || s.Stderr.Text != "stderr-ok" {
 		t.Fatalf("WSL outcome: %+v", s)
 	}
-	s = launchTask(t, b, harness.CommandRequest{Script: `sleep 30 & child=$!; printf '%s' "$child" > child.pid; wait`})
+	s = waitTask(t, b, launchTask(t, b, harness.CommandRequest{Executable: "/usr/bin/printf", Args: []string{"%s", "literal $(never-executed); 'quotes'\nnext"}}).ID)
+	if !s.TerminationConfirmed || s.State != harness.CommandCompleted || s.Stdout.Text != "literal $(never-executed); 'quotes'\nnext" {
+		t.Fatalf("WSL literal argv: %+v", s)
+	}
+	s = waitTask(t, b, launchTask(t, b, harness.CommandRequest{Script: `printf '%s|%s|%s' "$DEERFLOW_WSL_HOST_SECRET" "$EXPLICIT" "$PATH"`}).ID)
+	if !s.TerminationConfirmed || s.Stdout.Text != "|fixture value|/deerflow-no-interpreters" {
+		t.Fatalf("WSL environment: %+v", s)
+	}
+	assertDead := func(pid int) {
+		t.Helper()
+		if pid <= 0 {
+			t.Fatal("missing descendant PID")
+		}
+		if _, err := b.control(context.Background(), b.wslArgs("/usr/bin/test", "!", "-e", "/proc/"+strconv.Itoa(pid))); err != nil {
+			t.Fatalf("WSL descendant %d survived: %v", pid, err)
+		}
+	}
+	s = launchTask(t, b, harness.CommandRequest{Script: `/bin/sleep 30 & child=$!; printf '%s' "$child" > child.pid; wait`})
 	deadline := time.Now().Add(8 * time.Second)
 	var pid int
 	for time.Now().Before(deadline) {
@@ -185,9 +230,38 @@ func TestWSL2RealSupervisorAndCancellation(t *testing.T) {
 	if err != nil || s.State != harness.CommandCancelled || !s.TerminationConfirmed {
 		t.Fatalf("WSL cancel: %+v %v", s, err)
 	}
-	out, err := b.control(context.Background(), b.wslArgs("/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "python3", "-c", "import os,sys; print(os.path.exists('/proc/'+sys.argv[1]))", strconv.Itoa(pid)))
-	if err != nil || strings.TrimSpace(out) != "False" {
-		t.Fatalf("WSL descendant survived: %q %v", out, err)
+	assertDead(pid)
+	s = waitTask(t, b, launchTask(t, b, harness.CommandRequest{Timeout: 2 * time.Second, Script: `/bin/sleep 30 & printf '%s' "$!" > timeout.pid; wait`}).ID)
+	if s.State != harness.CommandTimedOut || !s.TerminationConfirmed {
+		t.Fatalf("WSL timeout: %+v", s)
+	}
+	pidData, err := os.ReadFile(filepath.Join(cwd, "timeout.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, _ = strconv.Atoi(string(pidData))
+	assertDead(pid)
+	// setsid escapes the original process group; subreaper ownership must still
+	// remove this orphan after a normally successful parent exits.
+	s = waitTask(t, b, launchTask(t, b, harness.CommandRequest{Script: `/usr/bin/setsid /bin/sh -c '/bin/sleep 30 & printf "%s" "$!" > detached.pid; wait' & while [ ! -s detached.pid ]; do /bin/sleep 0.02; done; exit 0`}).ID)
+	if s.State != harness.CommandCompleted || !s.TerminationConfirmed {
+		t.Fatalf("WSL detached cleanup: %+v", s)
+	}
+	pidData, err = os.ReadFile(filepath.Join(cwd, "detached.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, _ = strconv.Atoi(string(pidData))
+	assertDead(pid)
+	s = waitTask(t, b, launchTask(t, b, harness.CommandRequest{Script: `/usr/bin/head -c 65536 /dev/zero; /usr/bin/head -c 65536 /dev/zero >&2`}).ID)
+	if !s.TerminationConfirmed || s.State != harness.CommandCompleted || s.Stdout.TotalBytes != 65536 || s.Stderr.TotalBytes != 65536 || !s.Stdout.Truncated || !s.Stderr.Truncated {
+		t.Fatalf("WSL framed output bounds: %+v", s)
+	}
+	if mapped, err := b.HostPath(b.guestCWD + "/child.pid"); err != nil || mapped != filepath.Join(cwd, "child.pid") {
+		t.Fatalf("WSL path mapping: %q %v", mapped, err)
+	}
+	if _, err := b.HostPath(b.guestCWD + "/../outside"); err == nil {
+		t.Fatal("WSL traversal accepted")
 	}
 }
 

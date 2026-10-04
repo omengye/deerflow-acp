@@ -27,9 +27,30 @@ type Snapshot struct {
 	db      *sql.DB
 	entries map[string]snapshotEntry
 	names   []string
+	observe ReadObserver
 }
 
 var _ einoskill.Backend = (*Snapshot)(nil)
+
+// Subset restricts an already pinned snapshot without consulting the mutable
+// installation pointer. nil inherits all entries; an empty list grants none.
+func (s *Snapshot) Subset(names []string) (*Snapshot, error) {
+	chosen := make(map[string]snapshotEntry)
+	if names == nil {
+		for name, entry := range s.entries {
+			chosen[name] = entry
+		}
+	} else {
+		for _, name := range names {
+			entry, ok := s.entries[name]
+			if !ok {
+				return nil, fmt.Errorf("%w: skill %q is not in the parent snapshot", harness.ErrNotFound, name)
+			}
+			chosen[name] = entry
+		}
+	}
+	return newSnapshot(s.db, chosen).WithReadObserver(s.observe), nil
+}
 
 func (r *Registry) Snapshot(ctx context.Context, selection harness.SkillSelection) (*Snapshot, error) {
 	r.mu.RLock()
@@ -213,6 +234,9 @@ func (s *Snapshot) Get(ctx context.Context, name string) (einoskill.Skill, error
 	e := s.entries[name]
 	if fm.Name != name || fm.Description != e.meta.Description {
 		return einoskill.Skill{}, errors.New("skills metadata does not match immutable content")
+	}
+	if err = s.observeRead(ctx, name, "SKILL.md", "skill_load"); err != nil {
+		return einoskill.Skill{}, err
 	}
 	return einoskill.Skill{FrontMatter: einoskill.FrontMatter{Name: name, Description: fm.Description}, Content: body, BaseDirectory: "skill://" + e.ref.Version + "/" + name}, nil
 }

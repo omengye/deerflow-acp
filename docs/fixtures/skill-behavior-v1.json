@@ -1,0 +1,22 @@
+{
+  "version": "skill-behavior-v1",
+  "id": "copy-file-example",
+  "source_id": "managed-skills",
+  "name": "copy-file",
+  "cases": [
+    {
+      "id": "copy-input",
+      "kind": "targeted",
+      "prompt": "Read input.txt and copy its contents exactly to output.txt. Then reply done.",
+      "files": { "input.txt": "fixture content" },
+      "fixtures": [],
+      "assertions": [
+        { "id": "copied", "kind": "file_equals", "path": "output.txt", "expected": "fixture content" },
+        { "id": "read", "kind": "tool_calls", "tool": "read_file", "count": 1 },
+        { "id": "write", "kind": "tool_calls", "tool": "write_file", "count": 1 },
+        { "id": "answer", "kind": "output_equals", "expected": "done" }
+      ],
+      "repetitions": 2
+    }
+  ]
+}

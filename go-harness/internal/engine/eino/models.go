@@ -25,6 +25,12 @@ func ProbeModel(ctx context.Context, provider, name, baseURL, apiKey string) err
 }
 
 func newModel(ctx context.Context, cfg Config, name string) (model.ToolCallingChatModel, error) {
+	return newModelWithRetryPolicy(ctx, cfg, name, false)
+}
+
+// Maintenance workers own their bounded, persisted retries. Provider SDK
+// retries must not create extra requests under one admitted model call.
+func newModelWithRetryPolicy(ctx context.Context, cfg Config, name string, disableRetries bool) (model.ToolCallingChatModel, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, fmt.Errorf("model is required")
 	}
@@ -32,13 +38,18 @@ func newModel(ctx context.Context, cfg Config, name string) (model.ToolCallingCh
 	case "", "openai", "openai-compatible":
 		return openai.NewChatModel(ctx, &openai.ChatModelConfig{APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: name})
 	case "claude", "anthropic":
-		conf := &claude.Config{APIKey: cfg.APIKey, Model: name, MaxTokens: 8192}
+		conf := &claude.Config{APIKey: cfg.APIKey, Model: name, MaxTokens: 8192, DisableRetries: disableRetries}
 		if cfg.BaseURL != "" {
 			conf.BaseURL = &cfg.BaseURL
 		}
 		return claude.NewChatModel(ctx, conf)
 	case "ark":
-		return ark.NewChatModel(ctx, &ark.ChatModelConfig{APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: name})
+		conf := &ark.ChatModelConfig{APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: name}
+		if disableRetries {
+			zero := 0
+			conf.RetryTimes = &zero
+		}
+		return ark.NewChatModel(ctx, conf)
 	default:
 		return nil, fmt.Errorf("unsupported model provider %q", cfg.Provider)
 	}

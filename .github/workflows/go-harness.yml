@@ -6,6 +6,11 @@ on:
       - "go-harness/**"
       - "bridge/**"
       - "scripts/build-go-acp-portable.*"
+      - "scripts/build-wsl-helper.ps1"
+      - "acp-*.ps1"
+      - "start.*"
+      - "stop.*"
+      - "daemon.sh"
       - "docs/go-acp-portable.md"
       - ".github/workflows/go-harness.yml"
   push:
@@ -13,6 +18,11 @@ on:
       - "go-harness/**"
       - "bridge/**"
       - "scripts/build-go-acp-portable.*"
+      - "scripts/build-wsl-helper.ps1"
+      - "acp-*.ps1"
+      - "start.*"
+      - "stop.*"
+      - "daemon.sh"
       - "docs/go-acp-portable.md"
       - ".github/workflows/go-harness.yml"
   workflow_dispatch:
@@ -48,9 +58,12 @@ jobs:
       - name: Test Rust Bridge
         working-directory: bridge
         run: cargo test --locked
+      - name: Build Go daemon for Bridge startup verification
+        run: go build -o ../bridge/target/debug/deerflow-acpd${{ runner.os == 'Windows' && '.exe' || '' }} ./cmd/deerflow-acpd-go
       - name: Verify Go daemon through Rust Bridge
         env:
           DEERFLOW_TEST_BRIDGE: ${{ github.workspace }}/bridge/target/debug/deerflow-acp${{ runner.os == 'Windows' && '.exe' || '' }}
+          DEERFLOW_TEST_GO_DAEMON: ${{ github.workspace }}/bridge/target/debug/deerflow-acpd${{ runner.os == 'Windows' && '.exe' || '' }}
         run: go test -count=1 -run TestExistingRustBridge -timeout=5m ./cmd/deerflow-acpd-go
       - name: Assemble Windows Go ACP package
         if: runner.os == 'Windows'

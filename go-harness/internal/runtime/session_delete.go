@@ -86,19 +86,36 @@ func (s *Store) purgeSession(ctx context.Context, id string, automatic bool) (bo
 		{"memory_staged_facts", `DELETE FROM memory_staged_facts WHERE run_id IN (SELECT id FROM harness_runs WHERE session_id=?)`},
 		{"memory_extraction_audit", `DELETE FROM memory_extraction_audit WHERE run_id IN (SELECT id FROM harness_runs WHERE session_id=?)`},
 		{"memory_scopes", `DELETE FROM memory_scopes WHERE kind='session' AND subject=?`},
+		{"df_skill_collection_jobs", `DELETE FROM df_skill_collection_jobs WHERE session_id=?`},
+		{"df_skill_signals", `DELETE FROM df_skill_signals WHERE session_id=?`},
+		{"harness_skill_reads", `DELETE FROM harness_skill_reads WHERE session_id=?`},
+		{"harness_skill_outcomes", `DELETE FROM harness_skill_outcomes WHERE session_id=?`},
+		{"harness_artifact_owners", `DELETE FROM harness_artifact_owners WHERE session_id=?`},
 		{"harness_artifacts", `DELETE FROM harness_artifacts WHERE session_id=?`},
 		{"harness_input_assets", `DELETE FROM harness_input_assets WHERE input_id IN (SELECT i.id FROM harness_inputs i JOIN harness_runs r ON r.id=i.run_id WHERE r.session_id=?)`},
 		{"harness_assets", `DELETE FROM harness_assets WHERE session_id=?`},
+		{"harness_agent_attempts", `DELETE FROM harness_agent_attempts WHERE invocation_id IN (SELECT i.id FROM harness_agent_invocations i JOIN budget_roots r ON r.id=i.root_id WHERE r.session_id=?)`},
+		{"harness_task_tree_stops", `DELETE FROM harness_task_tree_stops WHERE root_id IN (SELECT id FROM budget_roots WHERE session_id=?)`},
+		{"harness_role_context_stages", `DELETE FROM harness_role_context_stages WHERE run_id IN (SELECT id FROM harness_runs WHERE session_id=?)`},
+		{"harness_role_contexts", `DELETE FROM harness_role_contexts WHERE session_id=?`},
+		{"harness_agent_invocations", `DELETE FROM harness_agent_invocations WHERE root_id IN (SELECT id FROM budget_roots WHERE session_id=?)`},
+		{"harness_agent_roots", `DELETE FROM harness_agent_roots WHERE root_id IN (SELECT id FROM budget_roots WHERE session_id=?)`},
 		{"budget_tool_continuations", `DELETE FROM budget_tool_continuations WHERE parent_id IN (SELECT v.id FROM budget_reservations v JOIN budget_roots r ON r.id=v.root_id WHERE r.session_id=?) OR child_id IN (SELECT v.id FROM budget_reservations v JOIN budget_roots r ON r.id=v.root_id WHERE r.session_id=?)`},
 		{"budget_reservations", `DELETE FROM budget_reservations WHERE root_id IN (SELECT id FROM budget_roots WHERE session_id=?)`},
 		{"budget_attempts", `DELETE FROM budget_attempts WHERE root_id IN (SELECT id FROM budget_roots WHERE session_id=?)`},
 		{"budget_members", `DELETE FROM budget_members WHERE root_id IN (SELECT id FROM budget_roots WHERE session_id=?)`},
 		{"budget_roots", `DELETE FROM budget_roots WHERE session_id=?`},
 		{"harness_execution_grants", `DELETE FROM harness_execution_grants WHERE run_id IN (SELECT id FROM harness_runs WHERE session_id=?)`},
+		{"harness_execution_wakeups", `DELETE FROM harness_execution_wakeups WHERE run_id IN (SELECT id FROM harness_runs WHERE session_id=?)`},
+		{"harness_automatic_continuations", `DELETE FROM harness_automatic_continuations WHERE session_id=?`},
+		{"harness_task_deliveries", `DELETE FROM harness_task_deliveries WHERE session_id=?`},
+		{"harness_notification_work", `DELETE FROM harness_notification_work WHERE session_id=?`},
+		{"harness_automatic_stops", `DELETE FROM harness_automatic_stops WHERE session_id=?`},
 		{"harness_execution_audits", `DELETE FROM harness_execution_audits WHERE run_id IN (SELECT id FROM harness_runs WHERE session_id=?)`},
 		{"harness_execution_intents", `DELETE FROM harness_execution_intents WHERE run_id IN (SELECT id FROM harness_runs WHERE session_id=?)`},
 		{"harness_execution_attempts", `DELETE FROM harness_execution_attempts WHERE run_id IN (SELECT id FROM harness_runs WHERE session_id=?)`},
 		{"harness_continuation_sources", `DELETE FROM harness_continuation_sources WHERE parent_session_id=?`},
+		{"harness_role_results", `DELETE FROM harness_role_results WHERE session_id=?`},
 		{"harness_executions", `DELETE FROM harness_executions WHERE session_id=?`},
 		{"harness_tool_reconciliations", `DELETE FROM harness_tool_reconciliations WHERE run_id IN (SELECT id FROM harness_runs WHERE session_id=?)`},
 		{"harness_tool_receipts", `DELETE FROM harness_tool_receipts WHERE session_id=?`},
@@ -222,7 +239,15 @@ func (s *Service) DeleteAttachedSession(ctx context.Context, owner, id string) (
 	defer func() { finish(restore) }()
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
+	if err = joinSessionUpdates(cleanup, s.stopSessionUpdates(owner, id)); err != nil {
+		return false, err
+	}
 	if s.Resources != nil {
+		if s.BeforeResourceRelease != nil {
+			if err = s.BeforeResourceRelease(cleanup, owner, id); err != nil {
+				return false, err
+			}
+		}
 		if err = s.Resources.Release(cleanup, owner, id); err != nil {
 			return false, err
 		}

@@ -47,6 +47,24 @@ func (s *Service) onCreate(ctx context.Context, tx *sql.Tx, task *bt.Task) error
 	if s.config.Budgets == nil {
 		return harness.ErrBackgroundUnavailable
 	}
+	if continuation, ok := ctx.Value(continuationSubmissionKey{}).(*continuationSubmission); ok {
+		if b.ContinuationOf == "" || b.InvocationID == "" || continuation.check == nil || continuation.actor.SessionID != b.RootSession() {
+			return harness.ErrPermissionDenied
+		}
+		if err := s.config.Authorizer.AuthorizeTaskAccess(ctx, continuation.actor); err != nil {
+			return err
+		}
+		if err := continuation.check(ctx, tx, b); err != nil {
+			return err
+		}
+	} else {
+		if b.ContinuationOf != "" || b.InvocationID != "" {
+			return harness.ErrPermissionDenied
+		}
+		if err := s.checkSubmissionTreeTx(ctx, tx, b); err != nil {
+			return err
+		}
+	}
 	// Child-session continuation is restricted to one immutable parent/workspace
 	// contract. Matching a public child ID alone confers no authority.
 	var previous []byte
@@ -56,7 +74,7 @@ func (s *Service) onCreate(ctx context.Context, tx *sql.Tx, task *bt.Task) error
 		if err = json.Unmarshal(previous, &old); err != nil {
 			return err
 		}
-		if old.ParentSessionID != b.ParentSessionID || old.Workspace != b.Workspace || old.ExecutionContract != b.ExecutionContract || old.AgentVersion != b.AgentVersion {
+		if old.ParentSessionID != b.ParentSessionID || old.Workspace != b.Workspace || old.ExecutionContract != b.ExecutionContract || old.AgentVersion != b.AgentVersion || old.RootSession() != b.RootSession() || old.ParentTaskID != b.ParentTaskID || old.TaskDepth() != b.TaskDepth() || old.ParentInvocationID != b.ParentInvocationID {
 			return harness.ErrPermissionDenied
 		}
 	} else {
@@ -77,6 +95,14 @@ func (s *Service) onCreate(ctx context.Context, tx *sql.Tx, task *bt.Task) error
 	if err != nil {
 		return err
 	}
+	if err = insertTreeTx(ctx, tx, b); err != nil {
+		return err
+	}
+	if b.ContinuationOf != "" {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO harness_background_continuation_links(task_id,previous_task_id) VALUES(?,?)`, b.TaskID, b.ContinuationOf); err != nil {
+			return err
+		}
+	}
 	return s.config.Budgets.BindTaskTx(ctx, tx, b)
 }
 
@@ -90,7 +116,18 @@ func (s *Service) onTransition(ctx context.Context, tx *sql.Tx, before, after *b
 	if err != nil {
 		return err
 	}
+	if after.Status == bt.StatusPending && (before.Status == bt.StatusWaitingInput || before.Status == bt.StatusSuspended) {
+		if err = checkTreeRunning(ctx, tx, b.TaskID); err != nil {
+			return err
+		}
+	}
 	if before.Status == bt.StatusPending && after.Status == bt.StatusRunning {
+		// A retry with native stop intent may need a cleanup-only attempt.
+		if after.CancelRequestedAt == nil {
+			if err = checkTreeRunning(ctx, tx, b.TaskID); err != nil {
+				return err
+			}
+		}
 		if blocked != "" {
 			return fmt.Errorf("%w: %s", harness.ErrBackgroundUncertain, blocked)
 		}
@@ -100,12 +137,21 @@ func (s *Service) onTransition(ctx context.Context, tx *sql.Tx, before, after *b
 		return s.hostTransitionTx(ctx, tx, TaskScope{Binding: b, Attempt: after.Attempt}, before, after)
 	}
 	if before.Status == bt.StatusWaitingInput && after.Status == bt.StatusPending {
-		resolution, ok := ctx.Value(resumeContextKey{}).(*resumeContext)
-		if !ok || resolution.binding.TaskID != b.TaskID || s.config.Approvals == nil {
-			return harness.ErrPermissionDenied
-		}
-		if err = s.config.Approvals.CommitResumeTx(ctx, tx, resolution.actor, b, resolution.grant); err != nil {
-			return err
+		if wakeup, ok := ctx.Value(wakeupContextKey{}).(Wakeup); ok {
+			if s.config.Waits == nil || wakeup.TaskID != b.TaskID || wakeup.Version != before.Version {
+				return harness.ErrPermissionDenied
+			}
+			if err = s.config.Waits.CommitWakeupTx(ctx, tx, b, wakeup); err != nil {
+				return err
+			}
+		} else {
+			resolution, ok := ctx.Value(resumeContextKey{}).(*resumeContext)
+			if !ok || resolution.binding.TaskID != b.TaskID || s.config.Approvals == nil {
+				return harness.ErrPermissionDenied
+			}
+			if err = s.config.Approvals.CommitResumeTx(ctx, tx, resolution.actor, b, resolution.grant); err != nil {
+				return err
+			}
 		}
 	}
 	if before.Status == bt.StatusRunning && after.Status == bt.StatusRunning {
@@ -312,6 +358,9 @@ func (e *managedExecutor) Execute(ctx context.Context, task *bt.Task, runtime bt
 	}
 	runtime, stopControls := observeRuntimeControls(ctx, runtime, v.attempt)
 	defer stopControls()
+	if release, ok := ctx.Value(resourceAdmissionKey{}).(func()); ok {
+		release()
+	}
 	return e.inner.Execute(ctx, task, runtime)
 }
 
@@ -336,6 +385,11 @@ type resumeContext struct {
 }
 
 func (s *Service) ResolveApproval(ctx context.Context, actor harness.TaskActor, id string, request harness.TaskApproval) (harness.BackgroundTask, error) {
+	// A child can delegate and manage its descendants, but cannot provide the
+	// human decision authorizing their effects.
+	if _, worker := ScopeFromContext(ctx); worker {
+		return harness.BackgroundTask{}, harness.ErrPermissionDenied
+	}
 	b, _, err := s.authorizedBinding(ctx, actor, id)
 	if err != nil {
 		return harness.BackgroundTask{}, err

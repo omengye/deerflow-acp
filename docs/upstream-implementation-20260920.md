@@ -1,3 +1,5 @@
+> 历史记录：本文描述旧 Python 实现或当时的桌面设计，命令和能力声明不作为当前分支的使用说明。原文与源码参见[固定历史提交](https://github.com/omengye/deerflow-acp/tree/9c29fcaac991f2d9f1e7af68250b12f6b3ec07d9)。当前 Eino Go 入口与验收范围见[项目说明](../README.md)。
+
 # 2026-09-20 独立适配更新
 
 本次以 [上游评估](upstream-review-20260920.md) 中确认适用的行为为依据，在当前 FastAPI / ACP harness 上独立实现。没有 merge 或 cherry-pick 字节 DeerFlow，未修改用户的 `config.yaml`，未构建或替换已发布的桌面便携包。

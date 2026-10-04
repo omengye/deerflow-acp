@@ -580,15 +580,23 @@ impl Waku {
     }
 
     pub(super) fn session_has_live_background_work(&self, session_id: Uuid) -> bool {
-        self.background_work
+        self.deerflow_tasks
             .get(&session_id)
-            .is_some_and(BackgroundWorkRegistry::has_live)
+            .is_some_and(deerflow_tasks::TaskBrowser::has_live)
+            || self
+                .background_work
+                .get(&session_id)
+                .is_some_and(BackgroundWorkRegistry::has_live)
     }
 
     pub(super) fn session_has_live_detached_work(&self, session_id: Uuid) -> bool {
-        self.background_work
+        self.deerflow_tasks
             .get(&session_id)
-            .is_some_and(BackgroundWorkRegistry::has_live_detached)
+            .is_some_and(deerflow_tasks::TaskBrowser::has_live_detached)
+            || self
+                .background_work
+                .get(&session_id)
+                .is_some_and(BackgroundWorkRegistry::has_live_detached)
     }
 
     pub(super) fn background_work_counts(&self, session_id: Uuid) -> (usize, usize) {
@@ -611,6 +619,7 @@ impl Waku {
     }
 
     pub(super) fn maybe_refresh_background_work(&mut self, cx: &mut Context<Self>) {
+        self.maybe_refresh_deerflow_tasks(cx);
         let mut output_changed = false;
         for registry in self.background_work.values_mut() {
             output_changed |= registry.refresh_output_cache();

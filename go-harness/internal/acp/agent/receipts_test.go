@@ -17,6 +17,55 @@ import (
 const receiptListMethod = "_deerflow/tool_receipts/list"
 const receiptReviewMethod = "_deerflow/tool_receipts/reconcile"
 
+func TestReceiptPagedRecoveryKeepsLaterUncertainCallsReachable(t *testing.T) {
+	f := newFixture(t, engineFunc(func(ctx context.Context, _ harness.RunRequest, emit harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
+		for _, id := range []string{"a", "b"} {
+			for _, event := range []harness.RunEvent{{Kind: "tool_start", ToolCallID: id, ToolName: "write_file", Status: "pending", Arguments: json.RawMessage(`{}`)}, {Kind: "tool_execute", ToolCallID: id, ToolName: "write_file", Status: "in_progress"}, {Kind: "tool_end", ToolCallID: id, ToolName: "write_file", Status: "failed"}} {
+				if err := emit(ctx, event); err != nil {
+					return harness.RunResult{}, err
+				}
+			}
+		}
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	}))
+	c := connect(t, f.service)
+	c.initialize(t)
+	sid := c.newSession(t, f.cwd)
+	id := c.request(t, "session/prompt", promptParams(sid, "fixture"))
+	for range 2 {
+		update(t, c.read(t), sid, "tool_call")
+		update(t, c.read(t), sid, "tool_call_update")
+		update(t, c.read(t), sid, "tool_call_update")
+	}
+	c.success(t, id)
+	var page struct {
+		Receipts   []harness.ToolReceipt `json:"receipts"`
+		NextCursor string                `json:"nextCursor"`
+		HasMore    bool                  `json:"hasMore"`
+	}
+	query := map[string]any{"sessionId": sid, "limit": 1, "uncertainOnly": true}
+	id = c.request(t, receiptListMethod, query)
+	if err := json.Unmarshal(c.success(t, id), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Receipts) != 1 || page.Receipts[0].ToolCallID != "a" || !page.HasMore || page.NextCursor == "" {
+		t.Fatalf("page=%+v", page)
+	}
+	query["cursor"] = page.NextCursor
+	id = c.request(t, receiptListMethod, query)
+	if err := json.Unmarshal(c.success(t, id), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Receipts) != 1 || page.Receipts[0].ToolCallID != "b" || page.HasMore {
+		t.Fatalf("later uncertain call hidden: %+v", page)
+	}
+	query["uncertainOnly"] = false
+	id = c.request(t, receiptListMethod, query)
+	if result := c.response(t, id); result.Error == nil {
+		t.Fatal("cursor accepted with a different filter")
+	}
+}
+
 func listWireReceipts(t *testing.T, c *client, sid string) []harness.ToolReceipt {
 	t.Helper()
 	id := c.request(t, receiptListMethod, map[string]any{"sessionId": sid})

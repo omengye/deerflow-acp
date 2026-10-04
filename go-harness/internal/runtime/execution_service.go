@@ -72,13 +72,14 @@ func withExecutionTransaction(ctx context.Context, store *Store, fn func(*sql.Tx
 }
 
 type executionAttempt struct {
-	service    *Service
-	lease      ExecutionLease
-	grants     map[string]PermissionGrant
-	requests   map[string]harness.PermissionRequest
-	mu         sync.Mutex
-	checkpoint *interaction.StagedExecutionCheckpoint
-	eventErr   error
+	service     *Service
+	lease       ExecutionLease
+	grants      map[string]PermissionGrant
+	requests    map[string]harness.PermissionRequest
+	mu          sync.Mutex
+	checkpoint  *interaction.StagedExecutionCheckpoint
+	eventErr    error
+	taskResults []interaction.TaskResultDelivery
 }
 
 func (a *executionAttempt) PreparePermission(ctx context.Context, p harness.PermissionRequest) (interaction.PermissionIntent, error) {
@@ -90,7 +91,8 @@ func (a *executionAttempt) PreparePermission(ctx context.Context, p harness.Perm
 		intent, err = a.service.Store.RecordPermissionIntentTx(persist, tx, a.lease, p)
 		return err
 	})
-	return interaction.PermissionIntent{ID: intent.ID, Version: intent.Version}, err
+	provenance, _ := interaction.PermissionProvenanceFromContext(ctx)
+	return interaction.PermissionIntent{ID: intent.ID, Version: intent.Version, RoleID: provenance.RoleID}, err
 }
 
 func (a *executionAttempt) ResolvePermission(ctx context.Context, p harness.PermissionRequest, intent interaction.PermissionIntent, grantID string) (harness.PermissionDecision, error) {
@@ -124,6 +126,7 @@ func (a *executionAttempt) stage(_ context.Context, cp interaction.StagedExecuti
 	}
 	cp.Data = append([]byte(nil), cp.Data...)
 	cp.Interrupts = append([]interaction.ExecutionInterruptBinding(nil), cp.Interrupts...)
+	cp.TaskWaits = append([]interaction.TaskWaitBinding(nil), cp.TaskWaits...)
 	a.checkpoint = &cp
 	return nil
 }
@@ -185,6 +188,9 @@ func (s *Service) runDurableNew(ctx context.Context, owner string, req harness.R
 }
 
 func (s *Service) driveExecution(ctx context.Context, req harness.RunRequest, lease ExecutionLease, bindings []ExecutionResumeBinding, emit harness.EventHandler, approve harness.PermissionHandler) (harness.RunResult, error) {
+	if err := s.notifyAutomaticExecutionStarted(ctx, lease); err != nil {
+		return s.finishExecutionAttempt(ctx, lease, harness.RunResult{}, err, nil)
+	}
 	for {
 		result, err := s.executeAttempt(ctx, req, lease, bindings, emit, approve)
 		if err != nil || result.Execution == nil || result.Execution.Status != harness.ExecutionWaitingInput || result.StopReason != "waiting_input" {
@@ -203,6 +209,7 @@ func (s *Service) driveExecution(ctx context.Context, req harness.RunRequest, le
 
 func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, lease ExecutionLease, bindings []ExecutionResumeBinding, emit harness.EventHandler, approve harness.PermissionHandler) (harness.RunResult, error) {
 	var inputSource *interaction.ExecutionInputSource
+	var waitTargets map[string]interaction.TaskWait
 	err := withExecutionTransaction(ctx, s.Store, func(tx *sql.Tx) error {
 		row, err := checkExecutionLease(ctx, tx, lease)
 		if err != nil {
@@ -212,6 +219,9 @@ func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, le
 			return err
 		}
 		inputSource, err = s.executionInputSourceTx(ctx, tx, row)
+		if err == nil && lease.Scope.Fence > 1 {
+			waitTargets, err = executionWaitTargets(ctx, tx, row)
+		}
 		return err
 	})
 	if err != nil {
@@ -219,6 +229,7 @@ func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, le
 	}
 	a := &executionAttempt{service: s, lease: lease, grants: make(map[string]PermissionGrant), requests: make(map[string]harness.PermissionRequest)}
 	targets := make(map[string]interaction.PermissionResume, len(bindings))
+	cancellations := make(map[string]interaction.RoleCancellationResume)
 	if len(bindings) > 0 {
 		err := withExecutionTransaction(ctx, s.Store, func(tx *sql.Tx) error {
 			requests, err := s.Store.PendingExecutionPermissionsTx(ctx, tx, lease)
@@ -234,6 +245,10 @@ func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, le
 				if !ok {
 					return harness.ErrExecutionConflict
 				}
+				if b.CancelledRoleID != "" {
+					cancellations[b.Interrupt.NativeInterruptID] = interaction.RoleCancellationResume{IntentID: b.Interrupt.IntentID, IntentVersion: b.Interrupt.IntentVersion, RoleID: b.CancelledRoleID}
+					continue
+				}
 				a.grants[p.ToolCallID], a.requests[p.ToolCallID] = b.Grant, p
 				targets[b.Interrupt.NativeInterruptID] = interaction.PermissionResume{IntentID: b.Grant.IntentID, IntentVersion: b.Grant.IntentVersion, GrantID: b.Grant.ID}
 			}
@@ -245,7 +260,7 @@ func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, le
 	}
 	runCtx := context.WithValue(ctx, taskActorKey{}, harness.TaskActor{OwnerID: lease.OwnerID, SessionID: req.Session.ID})
 	runCtx, stopHeartbeat := keepBudgetAlive(budget.WithScope(runCtx, lease.Scope), s.Store.BudgetLedger, lease.Scope)
-	runCtx = interaction.WithExecutionHooks(runCtx, interaction.ExecutionHooks{Broker: a, Targets: targets, StageCheckpoint: a.stage, InputSource: inputSource})
+	runCtx = interaction.WithExecutionHooks(runCtx, interaction.ExecutionHooks{Broker: a, Targets: targets, Cancellations: cancellations, StageCheckpoint: a.stage, InputSource: inputSource, TaskWaitsEnabled: true, WaitTargets: waitTargets})
 	var result harness.RunResult
 	var runErr error
 	// Native tools still use the checkpoint broker. This live handler serves
@@ -255,7 +270,7 @@ func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, le
 	livePermission := func(ctx context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
 		return s.executionPermission(ctx, lease.OwnerID, req.Session, p, approve)
 	}
-	if len(bindings) == 0 {
+	if lease.Scope.Fence == 1 {
 		result, runErr = s.Engine.Run(runCtx, req, a.publish(emit), livePermission)
 	} else {
 		result, runErr = s.executionEngine().Resume(runCtx, req, "harness/turn/v1/"+req.RunID, a.publish(emit), livePermission)
@@ -267,21 +282,22 @@ func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, le
 	// Retain callback failures even if an engine incorrectly discards one. The
 	// engine has joined here, so checkpoint/error fields are no longer changing.
 	runErr = errors.Join(runErr, a.eventErr)
-	return s.finishExecutionAttempt(ctx, lease, result, runErr, a.checkpoint)
+	return s.finishExecutionAttempt(ctx, lease, result, runErr, a.checkpoint, a.taskResults...)
 }
 
-func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLease, result harness.RunResult, runErr error, cp *interaction.StagedExecutionCheckpoint) (harness.RunResult, error) {
+func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLease, result harness.RunResult, runErr error, cp *interaction.StagedExecutionCheckpoint, deliveries ...interaction.TaskResultDelivery) (harness.RunResult, error) {
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	explicitCancel := ctx.Err() != nil && !disconnectedExecution(ctx)
+	roleFailure := !explicitCancel && !disconnectedExecution(ctx) && interaction.IsRoleContinuationFailure(runErr)
 	var state harness.ExecutionState
 	err := withExecutionTransaction(persist, s.Store, func(tx *sql.Tx) error {
 		var err error
 		outcome := budget.OutcomeCompleted
 		if runErr == nil && result.StopReason == "waiting_input" && cp != nil && !cp.Remove && !explicitCancel {
-			checkpoint := ExecutionCheckpoint{ID: cp.ID, Data: cp.Data}
+			checkpoint := ExecutionCheckpoint{ID: cp.ID, Data: cp.Data, TaskWaits: append([]interaction.TaskWaitBinding(nil), cp.TaskWaits...)}
 			for _, b := range cp.Interrupts {
-				checkpoint.Interrupts = append(checkpoint.Interrupts, ExecutionInterruptBinding{IntentID: b.IntentID, IntentVersion: b.IntentVersion, NativeInterruptID: b.NativeInterruptID})
+				checkpoint.Interrupts = append(checkpoint.Interrupts, ExecutionInterruptBinding{IntentID: b.IntentID, IntentVersion: b.IntentVersion, NativeInterruptID: b.NativeInterruptID, RoleID: b.RoleID})
 			}
 			state, err = s.Store.SuspendExecutionTx(persist, tx, lease, checkpoint)
 			outcome = budget.OutcomeWaitingInput
@@ -305,7 +321,7 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 			if runErr != nil {
 				detail = runErr.Error()
 			}
-			state, err = s.Store.EndExecutionAttemptTx(persist, tx, lease, kind, detail)
+			state, err = s.Store.endExecutionAttemptTx(persist, tx, lease, kind, detail, roleFailure)
 			if state.Status == harness.ExecutionWaitingInput {
 				outcome = budget.OutcomeWaitingInput
 			}
@@ -316,6 +332,17 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 		if err = s.Store.BudgetLedger.EndAttemptTx(persist, tx, lease.Scope, outcome); err != nil {
 			return err
 		}
+		if runErr == nil && (state.Status == harness.ExecutionCompleted || state.Status == harness.ExecutionWaitingInput) {
+			if err = commitTaskDeliveriesTx(persist, tx, lease, deliveries); err != nil {
+				return err
+			}
+		}
+		if err = settleRoleContextsTx(persist, tx, lease.Scope, runErr == nil && (state.Status == harness.ExecutionCompleted || state.Status == harness.ExecutionWaitingInput)); err != nil {
+			return err
+		}
+		if err = publishRoleResultTx(persist, tx, state, runErr == nil && result.StopReason == "end_turn"); err != nil {
+			return err
+		}
 		if s.Memory != nil {
 			publish := state.Status == harness.ExecutionCompleted && runErr == nil && result.StopReason == "end_turn"
 			if _, err = s.Memory.SettleStagingTx(persist, tx, lease.Scope.MemberID, lease.Scope.AttemptID, publish); err != nil {
@@ -323,6 +350,9 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 			}
 		}
 		if state.Status != harness.ExecutionWaitingInput {
+			if roleFailure && state.Status == harness.ExecutionFailed {
+				result.StopReason = "role_failed"
+			}
 			if result.StopReason == "" {
 				result.StopReason = "end_turn"
 			}
@@ -342,6 +372,9 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 		return result, errors.Join(runErr, &runPersistenceError{err: err})
 	}
 	result.Execution = &state
+	if roleFailure && state.Status == harness.ExecutionFailed {
+		return result, nil
+	}
 	return result, runErr
 }
 
@@ -368,6 +401,9 @@ func (s *Service) prepareExecutionResume(ctx context.Context, owner, sessionID s
 		if err = validateExecutionManifest(ctx, tx, row); err != nil {
 			return err
 		}
+		if err = executionResumeReadiness(ctx, tx, row); err != nil {
+			return err
+		}
 		if _, err = s.executionInputSourceTx(ctx, tx, row); err != nil {
 			return err
 		}
@@ -379,6 +415,14 @@ func (s *Service) prepareExecutionResume(ctx context.Context, owner, sessionID s
 			}
 			if state != "pending" || version != b.IntentVersion {
 				return harness.ErrExecutionConflict
+			}
+			if role, err := stoppedIntentRole(ctx, tx, row.RootBudgetID, b.IntentID); err != nil {
+				return err
+			} else if role != "" {
+				if role != b.RoleID {
+					return harness.ErrExecutionUnresumable
+				}
+				continue
 			}
 			answers = append(answers, executionAnswer{intent: p, version: version})
 		}
@@ -546,6 +590,14 @@ func (s *Service) ResumeExecution(ctx context.Context, owner, sessionID string, 
 		}
 		defer release()
 		ctx.Value(reservationKey{}).(*reservation).used.Store(true)
+	}
+	if s.PrepareContinuationResources != nil {
+		prepared, cleanup, err := s.PrepareContinuationResources(ctx, owner, sessionID, "", request.RunID)
+		if err != nil {
+			return harness.RunResult{}, err
+		}
+		defer cleanup()
+		ctx = prepared
 	}
 	releaseSlot, err := s.runQueue.acquire(ctx)
 	if err != nil {

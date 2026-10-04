@@ -53,19 +53,32 @@ From the repository root run:
 ```
 
 The script builds the native desktop, internal daemon, ACP Bridge, Go ACP daemon,
-Go configuration CLI and direct stdio agent. It copies the default template and
+Go configuration CLI, native skill authoring tool and direct stdio agent. It copies the default template and
 bundled Skills, but no Python runtime, dependencies or existing `user-data`.
 It refuses to replace an output directory. `-DesktopTargetDirectory` selects
 Cargo output (default `desktop-app/target`); `-SkipBuild` packages binaries
-already present there. `-CreateZip` makes the binary ZIP and matching source ZIP.
-Some bundled Skills contain Python scripts; running those specific scripts
-requires a separately installed Python interpreter.
+already present there for development. `-CreateZip` requires a clean checkout,
+pins its commit throughout the build and makes the binary ZIP and matching
+source ZIP. It cannot be combined with `-SkipBuild`. `BUILD_SOURCE.json` records
+source identity; development builds are explicitly labeled when dirty or
+reusing binaries. Identity checks do not certify all release acceptance gates.
+Bundled skill inputs containing Python scripts or execution commands fail the
+build before compilation; no skill is silently dropped to make a package pass.
 
-After extracting a new package, run
-`python scripts/test-deerflow-desktop-smoke.py --package PATH --backend go`
-to exercise the Go package. Python runs this test on the build host; it is not
-needed to launch the packaged desktop. The smoke script copies the package into
-an isolated build-cache directory.
+After extracting a new package, build the native smoke command with
+`go build -o ../.build-cache/deerflow-desktop-smoke.exe ./cmd/deerflow-desktop-smoke`
+from `go-harness`, then run
+`.build-cache/deerflow-desktop-smoke.exe --package PATH` from the repository root.
+The command copies immutable inputs into an isolated build-cache directory and
+exercises real Waku/ACP transports, local fake model routes, permissions, native
+MCP, skills, memory and restart/history behavior. It opens no desktop window.
+The `--legacy-empty-mcp-policy` variant checks compatibility with an enabled
+client MCP policy that has no executable allowlist. Neither test requires Python.
+Each run retains an independent copy and logs; allow at least the immutable
+package input size in free disk space per run (about 240 MB for the current
+Debug fixture, larger for a complete package). Use `--cache D:/path/to/smoke`
+to place these test artifacts on another drive. This command does not remove
+old test artifacts automatically or validate an OS with Python uninstalled.
 
 The desktop-derived code and its changes are GPL-3.0-only. DeerFlow's separate
 source tree retains its existing license. Binary distribution must include the

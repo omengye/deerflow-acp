@@ -76,7 +76,17 @@ Windows local/PowerShell providers additionally support
 Providers reject limits they cannot enforce.
 
 WSL configuration also exposes `--sandbox-wsl-executable` and
-`--sandbox-wsl-user`. Docker configuration exposes:
+`--sandbox-wsl-user`. Its standalone Go Linux helper needs no guest language
+runtime. By default, the host reads the sibling
+`deerflow-wsl-helper-linux-<architecture>` and its `.sha256` sidecar. Override
+these with `--sandbox-wsl-helper=<absolute-host-path>` and
+`--sandbox-wsl-helper-sha256=<sha256>` when using a separately built helper.
+Startup checks protocol version, checksum, architecture, WSL2 kernel, pidfd
+and subreaper support; every command rechecks helper identity. A missing or
+incompatible helper makes WSL unavailable. Build it on Windows with
+`scripts/build-wsl-helper.ps1 -OutputDirectory .build-cache/wsl-go-helper`.
+
+Docker configuration exposes:
 
 - `--sandbox-docker-executable`
 - `--sandbox-docker-network` (`none` by default; explicit `bridge` supported)

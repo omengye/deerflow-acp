@@ -70,6 +70,8 @@ func Run(options Options, operation string, input json.RawMessage) (any, error) 
 			return nil, err
 		}
 		return s.testModel(request)
+	case "legacy-agent-preview", "legacy-history-import", "legacy-history-list", "legacy-history-get":
+		return s.legacyImport(operation, input)
 	default:
 		return nil, fmt.Errorf("unsupported configuration operation %q", operation)
 	}
@@ -96,10 +98,6 @@ func (s service) init() error {
 		if err != nil {
 			return fmt.Errorf("read default config: %w", err)
 		}
-		api := object(data, "api")
-		api["data_dir"] = "../data"
-		api["deerflow_home"] = "../data/deerflow"
-		api["extensions_config_path"] = "./extensions_config.json"
 		skills := object(data, "skills")
 		skills["path"] = "../skills"
 		skills["extensions_file"] = "./extensions_config.json"
@@ -127,10 +125,10 @@ func (s service) init() error {
 	if err := copyInitialSkills(filepath.Join(s.resources, "skills"), paths.skills); err != nil {
 		return err
 	}
-	return os.MkdirAll(paths.agents, 0700)
+	return nil
 }
 
-type configPaths struct{ extensions, skills, agents, home string }
+type configPaths struct{ extensions, skills string }
 
 func (s service) paths(data map[string]any) configPaths {
 	api := readObject(data, "api")
@@ -149,8 +147,7 @@ func (s service) paths(data map[string]any) configPaths {
 	if extensions == "" {
 		extensions = str(skills, "extensions_file", "./extensions_config.json")
 	}
-	home := resolve(str(api, "deerflow_home", ""), "../data/deerflow")
-	return configPaths{extensions: resolve(extensions, "./extensions_config.json"), skills: resolve(str(skills, "path", ""), "../skills"), agents: filepath.Join(home, "agents"), home: home}
+	return configPaths{extensions: resolve(extensions, "./extensions_config.json"), skills: resolve(str(skills, "path", ""), "../skills")}
 }
 
 func copyInitialSkills(source, destination string) error {

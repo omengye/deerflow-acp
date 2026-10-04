@@ -1,3 +1,5 @@
+> 历史记录：本文描述旧 Python 实现或当时的桌面设计，命令和能力声明不作为当前分支的使用说明。原文与源码参见[固定历史提交](https://github.com/omengye/deerflow-acp/tree/9c29fcaac991f2d9f1e7af68250b12f6b3ec07d9)。当前 Eino Go 入口与验收范围见[项目说明](../README.md)。
+
 # DeerFlow Desktop 首次设置加载优化
 
 设置页读取配置时会启动 `python -m deerflow.config_tool`。此前只读取技能元数据和内置子 Agent 定义，也会经由包的 `__init__.py` 导入技能安装器、模型 SDK、LangChain/LangGraph 和子 Agent 执行器。首次创建配置需要先执行 `init`，再执行 `snapshot`，重复承担这部分进程启动成本。

@@ -1,3 +1,5 @@
+> 历史记录：本文描述旧 Python 实现或当时的桌面设计，命令和能力声明不作为当前分支的使用说明。原文与源码参见[固定历史提交](https://github.com/omengye/deerflow-acp/tree/9c29fcaac991f2d9f1e7af68250b12f6b3ec07d9)。当前 Eino Go 入口与验收范围见[项目说明](../README.md)。
+
 # 字节 DeerFlow 最近两天更新适配评估
 
 核查日期：2026-09-22。此次接续 [09-20 评估](D:/Tools/deerflow-api/docs/upstream-review-20260920.md)，只评估之后的新提交，不重复推荐 [上一批已经实施的能力](D:/Tools/deerflow-api/docs/upstream-implementation-20260920.md)。

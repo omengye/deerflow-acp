@@ -33,15 +33,7 @@ type skillPackage struct {
 }
 
 func validName(s string) bool {
-	if len(s) < 1 || len(s) > 64 || s[0] == '-' || s[len(s)-1] == '-' || strings.Contains(s, "--") {
-		return false
-	}
-	for _, c := range s {
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
-			return false
-		}
-	}
-	return true
+	return harness.ValidSkillName(s)
 }
 
 func validRelative(s string) bool {

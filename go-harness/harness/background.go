@@ -20,7 +20,8 @@ var (
 type TaskActor struct{ OwnerID, SessionID string }
 
 // BackgroundController exposes management of already accepted background work.
-// Every operation must authorize the actor's current parent-session attachment.
+// Every operation must authorize the actor's current root-session attachment.
+// The root owner can manage descendants across the complete task tree.
 // Submission is intentionally absent: a task requires a live originating tool
 // receipt and the host's immutable execution/budget binding.
 type BackgroundController interface {
@@ -36,27 +37,35 @@ type BackgroundController interface {
 
 // BackgroundTaskResumer optionally resumes a suspended task at its current
 // version. The host must authorize the actor and compare the persisted version
-// atomically; this operation cannot approve a waiting permission or supply
-// native checkpoint/resume data.
+// atomically. A waiting batch containing only durably stopped roles may also
+// resume for cancellation cleanup, with no approval grants. This operation
+// cannot approve any live permission or supply native checkpoint/resume data.
 type BackgroundTaskResumer interface {
 	ResumeBackgroundTask(context.Context, TaskActor, string, int64) (BackgroundTask, error)
 }
 
 // BackgroundTask is a transport-independent projection of Eino's task record.
 type BackgroundTask struct {
-	ID             string                 `json:"id"`
-	SessionID      string                 `json:"sessionId"`
-	ChildSessionID string                 `json:"childSessionId,omitempty"`
-	Description    string                 `json:"description"`
-	Status         string                 `json:"status"`
-	Version        int64                  `json:"version"`
-	Attempt        int64                  `json:"attempt"`
-	Result         []byte                 `json:"result,omitempty"`
-	Error          string                 `json:"error,omitempty"`
-	BlockedReason  string                 `json:"blockedReason,omitempty"`
-	CreatedAt      time.Time              `json:"createdAt"`
-	UpdatedAt      time.Time              `json:"updatedAt"`
-	Interaction    *BackgroundInteraction `json:"interaction,omitempty"`
+	ID                 string                 `json:"id"`
+	SessionID          string                 `json:"sessionId"`
+	ChildSessionID     string                 `json:"childSessionId,omitempty"`
+	RootSessionID      string                 `json:"rootSessionId,omitempty"`
+	ParentTaskID       string                 `json:"parentTaskId,omitempty"`
+	ParentInvocationID string                 `json:"parentInvocationId,omitempty"`
+	InvocationID       string                 `json:"invocationId,omitempty"`
+	ContinuationOf     string                 `json:"continuationOf,omitempty"`
+	Depth              int                    `json:"depth,omitempty"`
+	Description        string                 `json:"description"`
+	Status             string                 `json:"status"`
+	Version            int64                  `json:"version"`
+	Attempt            int64                  `json:"attempt"`
+	Result             []byte                 `json:"result,omitempty"`
+	Error              string                 `json:"error,omitempty"`
+	BlockedReason      string                 `json:"blockedReason,omitempty"`
+	CreatedAt          time.Time              `json:"createdAt"`
+	UpdatedAt          time.Time              `json:"updatedAt"`
+	Interaction        *BackgroundInteraction `json:"interaction,omitempty"`
+	Resources          *BackgroundResources   `json:"resources,omitempty"`
 }
 
 // BackgroundInteraction exposes descriptive permission intents. Native
@@ -67,17 +76,29 @@ type BackgroundInteraction struct {
 	WaitingInputs []ExecutionInteraction `json:"waitingInputs"`
 	Resumable     bool                   `json:"resumable"`
 	BlockedReason string                 `json:"blockedReason,omitempty"`
+	Kind          string                 `json:"kind,omitempty"`
+	WaitingTasks  []string               `json:"waitingTasks,omitempty"`
 }
 
 type BackgroundNotification struct {
-	Sequence    int64     `json:"sequence"`
-	ID          string    `json:"id"`
-	TaskID      string    `json:"taskId"`
-	SessionID   string    `json:"sessionId"`
-	Kind        string    `json:"kind"`
-	TaskVersion int64     `json:"taskVersion"`
-	Data        []byte    `json:"data,omitempty"`
-	CreatedAt   time.Time `json:"createdAt"`
+	Sequence    int64                 `json:"sequence"`
+	ID          string                `json:"id"`
+	TaskID      string                `json:"taskId"`
+	SessionID   string                `json:"sessionId"`
+	Kind        string                `json:"kind"`
+	TaskVersion int64                 `json:"taskVersion"`
+	Data        []byte                `json:"data,omitempty"`
+	CreatedAt   time.Time             `json:"createdAt"`
+	Delivery    *NotificationDelivery `json:"delivery,omitempty"`
+}
+
+type NotificationDelivery struct {
+	Status        string     `json:"status"`
+	Detail        string     `json:"detail,omitempty"`
+	Attempts      int        `json:"attempts"`
+	RetryAfter    *time.Time `json:"retryAfter,omitempty"`
+	RunID         string     `json:"runId,omitempty"`
+	RecipientRole string     `json:"recipientRole,omitempty"`
 }
 
 type TaskApproval struct {

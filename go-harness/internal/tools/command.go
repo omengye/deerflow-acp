@@ -106,6 +106,9 @@ func executeCommand(ctx context.Context, backend harness.CommandBackend, request
 		waitErr = errors.Join(waitErr, cancelErr)
 	}
 	confirmed := result.TerminationConfirmed && result.State != harness.CommandUncertain
+	preExecutionFailure := waitErr == nil && result.NotExecuted && result.State == harness.CommandFailed
+	terminalFailure := waitErr == nil && confirmed && ctx.Err() == nil &&
+		((result.State == harness.CommandFailed || result.State == harness.CommandCompleted) && result.ExitCode != nil && *result.ExitCode != 0 || result.State == harness.CommandTimedOut)
 	switch result.State {
 	case harness.CommandCompleted:
 		if result.ExitCode != nil && *result.ExitCode != 0 {
@@ -128,7 +131,13 @@ func executeCommand(ctx context.Context, backend harness.CommandBackend, request
 		waitErr = errors.Join(waitErr, harness.ErrCommandUncertain)
 	}
 	if confirmed {
-		waitErr = errors.Join(waitErr, backend.Release(context.WithoutCancel(ctx), started.ID))
+		releaseErr := backend.Release(context.WithoutCancel(ctx), started.ID)
+		waitErr = errors.Join(waitErr, releaseErr)
+		if preExecutionFailure && releaseErr == nil && ctx.Err() == nil {
+			waitErr = harness.MarkToolNotExecuted(waitErr)
+		} else if terminalFailure && releaseErr == nil && ctx.Err() == nil {
+			waitErr = harness.MarkToolExecutionFailed(waitErr)
+		}
 	}
 	return result, waitErr
 }

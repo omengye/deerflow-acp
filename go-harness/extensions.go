@@ -16,10 +16,12 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	einoskill "github.com/cloudwego/eino/adk/middlewares/skill"
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	acpclient "github.com/omengye/deerflow-acp/go-harness/internal/acp/client"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
+	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
@@ -31,16 +33,18 @@ import (
 
 // No credentials or mutable source text enter the persisted execution state.
 type extensionState struct {
-	Version           int                `json:"version"`
-	Skills            []harness.SkillRef `json:"skills"`
-	MCPGeneration     string             `json:"mcpGeneration,omitempty"`
-	SandboxPolicy     string             `json:"sandboxPolicy"`
-	ExternalACPPolicy string             `json:"externalACPPolicy,omitempty"`
-	BuiltinToolPolicy string             `json:"builtinToolPolicy,omitempty"`
-	ToolPolicy        string             `json:"toolPolicy,omitempty"`
-	MemoryPolicy      string             `json:"memoryPolicy,omitempty"`
-	ExtractionEnabled bool               `json:"extractionEnabled,omitempty"`
-	Memory            []memorySnapshot   `json:"memory,omitempty"`
+	Version              int                     `json:"version"`
+	Skills               []harness.SkillRef      `json:"skills"`
+	MCPGeneration        string                  `json:"mcpGeneration,omitempty"`
+	MCPResources         *harness.MCPResourceRef `json:"mcpResources,omitempty"`
+	SandboxPolicy        string                  `json:"sandboxPolicy"`
+	ExternalACPPolicy    string                  `json:"externalACPPolicy,omitempty"`
+	BuiltinToolPolicy    string                  `json:"builtinToolPolicy,omitempty"`
+	ToolPolicy           string                  `json:"toolPolicy,omitempty"`
+	MemoryPolicy         string                  `json:"memoryPolicy,omitempty"`
+	ExtractionEnabled    bool                    `json:"extractionEnabled,omitempty"`
+	SkillEvolutionPolicy string                  `json:"skillEvolutionPolicy,omitempty"`
+	Memory               []memorySnapshot        `json:"memory,omitempty"`
 }
 
 type memorySnapshot struct {
@@ -258,6 +262,27 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			}
 		}
 		state := extensionState{Version: 1, SandboxPolicy: policyHash, ExternalACPPolicy: acpPolicy, ToolPolicy: toolPolicy, MemoryPolicy: memoryPolicy, ExtractionEnabled: cfg.MemoryExtraction}
+		if len(cfg.SkillProposalSources) > 0 {
+			targets, sourceErr := registry.PublicationSources()
+			if sourceErr != nil {
+				return out, sourceErr
+			}
+			encoded, _ := json.Marshal([]any{cfg.SkillProposalSources, targets, "skill-manage-v1"})
+			builtin, sourceErr := registry.BuiltinSources()
+			if sourceErr != nil {
+				return out, sourceErr
+			}
+			var grantedBuiltin []string
+			for _, id := range builtin {
+				if slices.Contains(cfg.SkillProposalSources, id) {
+					grantedBuiltin = append(grantedBuiltin, id)
+				}
+			}
+			if len(grantedBuiltin) > 0 {
+				encoded, _ = json.Marshal([]any{cfg.SkillProposalSources, targets, "skill-manage-v2", grantedBuiltin})
+			}
+			state.SkillEvolutionPolicy = fmt.Sprintf("%x", sha256.Sum256(encoded))
+		}
 		if len(cfg.BuiltinTools) > 0 {
 			secrets := []string{}
 			for _, setting := range cfg.BuiltinTools {
@@ -271,11 +296,25 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			}{cfg.BuiltinTools, cfg.HostToolsAllowed, opencliPlan, secrets})
 			state.BuiltinToolPolicy = fmt.Sprintf("%x", sha256.Sum256(encoded))
 		}
+		var remoteLease *mcp.Lease
 		if !readOnly {
-			state.MCPGeneration, err = manager.Generation(ctx, req.Session.ID)
+			state.MCPResources, remoteLease, err = executionMCPResources(ctx, manager, req, pinned)
 			if err != nil {
 				return out, err
 			}
+		}
+		_, borrowedMCP := ctx.Value(executionMCPLeaseKey{}).(executionMCPLease)
+		if remoteLease != nil && !borrowedMCP {
+			defer func() {
+				prior := out.Cleanup
+				out.Cleanup = func() error {
+					var cleanupErr error
+					if prior != nil {
+						cleanupErr = prior()
+					}
+					return errors.Join(cleanupErr, remoteLease.Close())
+				}
+			}()
 		}
 		var snapshot *skills.Snapshot
 		if pinned != nil {
@@ -286,7 +325,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 				return out, fmt.Errorf("%w: invalid extension checkpoint", harness.ErrInvalidInput)
 			}
 			var extra any
-			if dec.Decode(&extra) != io.EOF || previous.Version != state.Version || previous.MCPGeneration != state.MCPGeneration || previous.SandboxPolicy != state.SandboxPolicy || previous.ExternalACPPolicy != state.ExternalACPPolicy || previous.BuiltinToolPolicy != state.BuiltinToolPolicy || previous.ToolPolicy != state.ToolPolicy || previous.ExtractionEnabled != state.ExtractionEnabled {
+			if dec.Decode(&extra) != io.EOF || previous.Version != state.Version || previous.MCPGeneration != state.MCPGeneration || !sameMCPRef(previous.MCPResources, state.MCPResources) || previous.SandboxPolicy != state.SandboxPolicy || previous.ExternalACPPolicy != state.ExternalACPPolicy || previous.BuiltinToolPolicy != state.BuiltinToolPolicy || previous.ToolPolicy != state.ToolPolicy || previous.ExtractionEnabled != state.ExtractionEnabled || previous.SkillEvolutionPolicy != state.SkillEvolutionPolicy {
 				return out, fmt.Errorf("%w: execution resources changed since checkpoint", harness.ErrInvalidInput)
 			}
 			if previous.MemoryPolicy != state.MemoryPolicy && (previous.MemoryPolicy != "" || len(previous.Memory) != 0) {
@@ -306,7 +345,26 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		if err != nil {
 			return out, err
 		}
+		snapshot = snapshot.WithReadObserver(skillReadObserver(req))
 		state.Skills = snapshot.Refs()
+		out.SkillNames = make([]string, 0, len(state.Skills))
+		for _, ref := range state.Skills {
+			out.SkillNames = append(out.SkillNames, ref.Name)
+		}
+		out.SkillFactory = func(ctx context.Context, names []string) ([]adk.ChatModelAgentMiddleware, []tool.BaseTool, error) {
+			child, err := snapshot.Subset(names)
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(child.Refs()) == 0 {
+				return nil, nil, nil
+			}
+			handler, err := einoskill.NewMiddleware(ctx, &einoskill.Config{Backend: child, BuildContent: child.BuildContent})
+			if err != nil {
+				return nil, nil, err
+			}
+			return []adk.ChatModelAgentMiddleware{handler}, []tool.BaseTool{child.ReadFileTool()}, nil
+		}
 		if injectMemory(cfg) {
 			out.InstructionAppend = memoryInstruction(state.Memory)
 		}
@@ -343,7 +401,19 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		if len(state.Skills) > 0 {
 			out.Tools = append(out.Tools, snapshot.ReadFileTool())
 		}
-		if assetStore != nil && cfg.Media.SupportsVision(req.Session.Model) {
+		if !readOnly && len(cfg.SkillProposalSources) > 0 && cfg.ToolPolicy.Allows("skill_manage") {
+			manage, toolErr := newSkillManageTool(ctx, cfg, registry, req, state.Skills)
+			if toolErr != nil {
+				return out, toolErr
+			}
+			if manage != nil {
+				out.Tools = append(out.Tools, manage)
+			}
+		}
+		out.ModelToolFactory = func(ctx context.Context, model string) ([]tool.BaseTool, error) {
+			if assetStore == nil || !cfg.Media.SupportsVision(model) {
+				return nil, nil
+			}
 			view, err := tools.ViewImageTool(func(ctx context.Context, callID, path string) (*schema.ToolResult, error) {
 				content, err := assetStore.StageImage(ctx, req.Session, req.RunID, callID, path)
 				if err != nil {
@@ -352,10 +422,15 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 				return einoengine.ProjectToolContent([]harness.Content{content})
 			})
 			if err != nil {
-				return out, err
+				return nil, err
 			}
-			out.Tools = append(out.Tools, view)
+			return []tool.BaseTool{view}, nil
 		}
+		modelTools, err := out.ModelToolFactory(ctx, req.Session.Model)
+		if err != nil {
+			return out, err
+		}
+		out.Tools = append(out.Tools, modelTools...)
 		for _, setting := range cfg.BuiltinTools {
 			if !cfg.ToolPolicy.Allows(setting.Name) {
 				continue
@@ -402,6 +477,13 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		}
 		if assetStore != nil {
 			present, err := tools.PresentFilesTool(func(ctx context.Context, callID string, paths []string) ([]harness.Content, error) {
+				if _, durable := budget.ScopeFromContext(ctx); durable {
+					root, invocation, attempt, err := einoengine.CurrentArtifactInvocation(ctx)
+					if err != nil {
+						return nil, err
+					}
+					return assetStore.StageAttributedArtifacts(ctx, req.Session, req.RunID, callID, paths, root, invocation, attempt)
+				}
 				return assetStore.StageArtifacts(ctx, req.Session, req.RunID, callID, paths)
 			})
 			if err != nil {
@@ -409,9 +491,9 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			}
 			out.Tools = append(out.Tools, present)
 		}
-		remote, err := manager.EnhancedTools(ctx, req.Session.ID)
-		if err != nil {
-			return out, err
+		var remote []tool.BaseTool
+		if remoteLease != nil {
+			remote = remoteLease.Tools
 		}
 		out.Tools = append(out.Tools, remote...)
 		if !commandPolicy.Enabled {

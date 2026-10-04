@@ -70,6 +70,11 @@ func TestCommandTerminalResultsAndUncertainRetention(t *testing.T) {
 			if (err != nil) != test.fail {
 				t.Fatalf("error=%v", err)
 			}
+			var failed *harness.ToolExecutionFailedError
+			wantFailed := test.name == "nonzero" || test.name == "inconsistent exit" || test.name == "timeout"
+			if errors.As(err, &failed) != wantFailed {
+				t.Fatalf("terminal failure certificate=%v want=%v: %v", failed, wantFailed, err)
+			}
 			if !test.release && !errors.Is(err, harness.ErrCommandUncertain) {
 				t.Fatalf("missing uncertain error: %v", err)
 			}
@@ -202,5 +207,47 @@ func TestCommandCleanupFailureRemainsVisible(t *testing.T) {
 	output, err := command.InvokableRun(context.Background(), `{"executable":"/allowed"}`)
 	if !errors.Is(err, failure) || !strings.Contains(output, "owned-command") {
 		t.Fatalf("output=%q error=%v", output, err)
+	}
+}
+
+func TestCommandFailedExitDoesNotHideCleanupFailure(t *testing.T) {
+	exit := 7
+	failure := errors.New("release failed")
+	backend := &commandBackendFixture{snapshot: harness.CommandSnapshot{ID: "owned-command", State: harness.CommandFailed, ExitCode: &exit, TerminationConfirmed: true}, releaseError: failure}
+	command, err := CommandTool(backend, harness.SandboxLocal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = command.InvokableRun(context.Background(), `{"executable":"/allowed"}`)
+	var failed *harness.ToolExecutionFailedError
+	if !errors.Is(err, failure) || errors.As(err, &failed) {
+		t.Fatalf("cleanup error incorrectly classified as command failure: %v", err)
+	}
+}
+
+func TestCommandSpawnCertificateDoesNotHideWaitOrCleanupFailure(t *testing.T) {
+	for _, kind := range []string{"spawn", "wait", "release", "unknown_nil_exit"} {
+		t.Run(kind, func(t *testing.T) {
+			backend := &commandBackendFixture{snapshot: harness.CommandSnapshot{ID: "owned-command", State: harness.CommandFailed, TerminationConfirmed: true, NotExecuted: kind != "unknown_nil_exit", Error: "spawn rejected"}}
+			failure := errors.New("transport or cleanup failed")
+			if kind == "wait" {
+				backend.wait = func(context.Context, string) (harness.CommandSnapshot, error) { return backend.snapshot, failure }
+			}
+			if kind == "release" {
+				backend.releaseError = failure
+			}
+			command, err := CommandTool(backend, harness.SandboxLocal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = command.InvokableRun(context.Background(), `{"executable":"/allowed"}`)
+			var rejected *harness.ToolNotExecutedError
+			if err == nil || errors.As(err, &rejected) != (kind == "spawn") {
+				t.Fatalf("unsafe pre-execution classification: %v", err)
+			}
+			if (kind == "wait" || kind == "release") && !errors.Is(err, failure) {
+				t.Fatalf("lost failure: %v", err)
+			}
+		})
 	}
 }

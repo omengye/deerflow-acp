@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	bt "github.com/cloudwego/eino/adk/backgroundtask"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	"github.com/omengye/deerflow-acp/go-harness/internal/background"
 )
 
@@ -20,13 +22,47 @@ import (
 // credentials. Parent stores the policy accepted by the submitting foreground
 // run; child identity is separately derived by the native task service.
 type BackgroundExecutionSpec struct {
-	Version         int               `json:"version"`
-	Parent          harness.Session   `json:"parent"`
-	AgentVersion    string            `json:"agentVersion"`
-	HostPolicy      string            `json:"hostPolicy"`
-	Input           []harness.Content `json:"input"`
-	Extension       json.RawMessage   `json:"extension"`
-	OriginArguments string            `json:"originArguments"`
+	Version            int               `json:"version"`
+	Parent             harness.Session   `json:"parent"`
+	AgentVersion       string            `json:"agentVersion"`
+	HostPolicy         string            `json:"hostPolicy"`
+	Input              []harness.Content `json:"input"`
+	Extension          json.RawMessage   `json:"extension"`
+	OriginArguments    string            `json:"originArguments"`
+	Role               *agents.Spec      `json:"role,omitempty"`
+	Roles              *agents.Catalog   `json:"roles,omitempty"`
+	Depth              int               `json:"depth,omitempty"`
+	ParentTaskID       string            `json:"parentTaskId,omitempty"`
+	ParentInvocationID string            `json:"parentInvocationId,omitempty"`
+	// Legacy tasks stay explicit-only; later settings cannot opt them in.
+	Automatic    *AutomaticContinuationPolicy `json:"automatic,omitempty"`
+	Continuation *BackgroundContinuationRef   `json:"continuation,omitempty"`
+}
+
+type BackgroundContinuationRef struct {
+	SourceSHA      string `json:"sourceSha"`
+	RoleID         string `json:"roleId"`
+	PreviousTaskID string `json:"previousTaskId"`
+}
+
+type AutomaticContinuationPolicy struct {
+	Version int  `json:"version"`
+	Enabled bool `json:"enabled"`
+	Limit   int  `json:"limit"`
+}
+
+func ContinuationPolicy(catalog *agents.Catalog) *AutomaticContinuationPolicy {
+	if catalog == nil {
+		return nil
+	}
+	p := &AutomaticContinuationPolicy{Version: 1, Limit: 10}
+	if catalog.Config.AutoContinue != nil {
+		p.Enabled = *catalog.Config.AutoContinue
+	}
+	if catalog.Config.MaxAutoContinuations != nil {
+		p.Limit = *catalog.Config.MaxAutoContinuations
+	}
+	return p
 }
 
 type BackgroundExecutionStore struct{ store *Store }
@@ -43,12 +79,63 @@ task_id TEXT PRIMARY KEY REFERENCES harness_background_specs(task_id), contract 
 	if err != nil {
 		return nil, err
 	}
+	if err = migrateBackgroundContinuations(ctx, store.db); err != nil {
+		return nil, err
+	}
 	return &BackgroundExecutionStore{store: store}, nil
 }
 
 func (s BackgroundExecutionSpec) Contract() (string, error) {
-	if s.Version != 1 || s.Parent.ID == "" || s.Parent.CWD == "" || s.Parent.ConfigVersion < 1 || s.AgentVersion == "" || s.HostPolicy == "" || len(s.Input) != 1 || !json.Valid(s.Extension) {
+	if (s.Version < 1 || s.Version > 6) || s.Parent.ID == "" || s.Parent.CWD == "" || s.Parent.ConfigVersion < 1 || s.AgentVersion == "" || s.HostPolicy == "" || len(s.Input) != 1 || !json.Valid(s.Extension) {
 		return "", fmt.Errorf("%w: incomplete background execution policy", harness.ErrInvalidInput)
+	}
+	if s.Version == 1 && s.Role != nil || s.Version >= 2 && s.Role == nil || s.Version < 3 && s.Roles != nil || s.Version >= 3 && s.Roles == nil {
+		return "", harness.ErrInvalidInput
+	}
+	if s.Roles != nil {
+		if err := s.Roles.Validate(); err != nil {
+			return "", err
+		}
+	}
+	if s.Version < 5 && s.ParentInvocationID != "" {
+		return "", harness.ErrInvalidInput
+	}
+	if (s.Version == 6) != (s.Continuation != nil) {
+		return "", harness.ErrInvalidInput
+	}
+	if c := s.Continuation; c != nil && (len(c.SourceSHA) != 64 || c.RoleID == "" || c.PreviousTaskID == "") {
+		return "", harness.ErrInvalidInput
+	}
+	if s.Automatic != nil {
+		want := ContinuationPolicy(s.Roles)
+		if s.Version < 5 || want == nil || *s.Automatic != *want {
+			return "", harness.ErrInvalidInput
+		}
+	}
+	if s.Version < 4 {
+		if s.Depth != 0 || s.ParentTaskID != "" {
+			return "", harness.ErrInvalidInput
+		}
+	} else {
+		maxDepth := 1
+		if s.Roles.Config.MaxDepth != nil {
+			maxDepth = *s.Roles.Config.MaxDepth
+		}
+		parentID := s.ParentTaskID
+		if s.Version >= 5 {
+			parentID = s.ParentInvocationID
+		}
+		if s.Depth < 1 || s.Depth > maxDepth || (s.Depth == 1) != (parentID == "") || s.Depth == 1 && s.ParentTaskID != "" {
+			return "", harness.ErrInvalidInput
+		}
+	}
+	if s.Role != nil {
+		if err := s.Role.Validate(); err != nil {
+			return "", err
+		}
+		if s.Role.Model == "" {
+			return "", harness.ErrInvalidInput
+		}
 	}
 	// The first host integration accepts explicit child instructions. Copying
 	// parent asset capabilities requires a separate child-owned asset import.
@@ -61,12 +148,25 @@ func (s BackgroundExecutionSpec) Contract() (string, error) {
 		Instruction    string `json:"instruction"`
 		Description    string `json:"description,omitempty"`
 		ChildSessionID string `json:"childSessionId,omitempty"`
+		Role           string `json:"role,omitempty"`
 	}
 	decoder := json.NewDecoder(bytes.NewBufferString(s.OriginArguments))
 	decoder.DisallowUnknownFields()
 	var trailing any
 	if decoder.Decode(&arguments) != nil || decoder.Decode(&trailing) != io.EOF || arguments.Instruction != s.Input[0].Text {
 		return "", fmt.Errorf("%w: background input differs from approved instruction", harness.ErrInvalidInput)
+	}
+	if s.Role == nil && arguments.Role != "" {
+		return "", harness.ErrInvalidInput
+	}
+	if s.Role != nil {
+		role := arguments.Role
+		if role == "" {
+			role = "general-purpose"
+		}
+		if role != s.Role.Name {
+			return "", harness.ErrTaskOriginConflict
+		}
 	}
 	encoded, err := json.Marshal(canonicalBackgroundSpec(s))
 	if err != nil {
@@ -98,6 +198,16 @@ func validateBackgroundSpec(binding background.Binding, spec BackgroundExecution
 		return "", err
 	}
 	if contract != binding.ExecutionContract || spec.Parent.ID != binding.ParentSessionID || spec.Parent.CWD != binding.Workspace || spec.Parent.ConfigVersion != binding.ConfigVersion || spec.AgentVersion != binding.AgentVersion || binding.TaskID == "" || binding.ChildSessionID == "" || binding.ChildSessionID == binding.ParentSessionID || binding.OriginRunID == "" || binding.OriginToolCallID == "" {
+		return "", harness.ErrTaskOriginConflict
+	}
+	if binding.ParentInvocationID != spec.ParentInvocationID || spec.Version >= 4 && (binding.TaskDepth() != spec.Depth || binding.ParentTaskID != spec.ParentTaskID) {
+		return "", harness.ErrTaskOriginConflict
+	}
+	if c := spec.Continuation; c != nil {
+		if binding.ContinuationOf != c.PreviousTaskID || binding.InvocationID != c.RoleID {
+			return "", harness.ErrTaskOriginConflict
+		}
+	} else if binding.ContinuationOf != "" || binding.InvocationID != "" {
 		return "", harness.ErrTaskOriginConflict
 	}
 	var arguments struct {
@@ -140,39 +250,52 @@ func (s *BackgroundExecutionStore) BindTx(ctx context.Context, tx *sql.Tx, bindi
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	var parentSession string
-	var originStatus string
-	if err = tx.QueryRowContext(ctx, `SELECT session_id,status FROM harness_runs WHERE id=?`, binding.OriginRunID).Scan(&parentSession, &originStatus); errors.Is(err, sql.ErrNoRows) {
-		return harness.ErrNotFound
-	} else if err != nil {
-		return err
-	}
-	if parentSession != binding.ParentSessionID || originStatus != "running" {
-		return harness.ErrTaskOriginConflict
-	}
-	var receiptData []byte
-	if err = tx.QueryRowContext(ctx, `SELECT receipt FROM harness_tool_receipts WHERE run_id=? AND tool_call_id=? AND session_id=? AND state='started'`, binding.OriginRunID, binding.OriginToolCallID, binding.ParentSessionID).Scan(&receiptData); errors.Is(err, sql.ErrNoRows) {
-		return harness.ErrReceiptConflict
-	} else if err != nil {
-		return err
-	}
-	var receipt harness.ToolReceipt
-	if json.Unmarshal(receiptData, &receipt) != nil || receipt.ToolName != "background_agent" || receipt.SessionID != binding.ParentSessionID || receipt.RunID != binding.OriginRunID || receipt.ToolCallID != binding.OriginToolCallID || receipt.ConfigVersion != binding.ConfigVersion || receipt.State != harness.ReceiptStarted || receipt.ArgumentsDigest != fmt.Sprintf("%x", sha256.Sum256([]byte(spec.OriginArguments))) {
-		return harness.ErrReceiptConflict
-	}
-	if err = s.CheckParentPolicyTx(ctx, tx, binding, spec); err != nil {
-		return err
+	if spec.Continuation != nil {
+		admission, ok := ctx.Value(backgroundContinuationAdmissionKey{}).(*BackgroundContinuation)
+		if !ok {
+			return harness.ErrPermissionDenied
+		}
+		if err = admission.CheckTx(ctx, tx, binding); err != nil {
+			return err
+		}
+	} else {
+		var parentSession string
+		var originStatus string
+		if err = tx.QueryRowContext(ctx, `SELECT session_id,status FROM harness_runs WHERE id=?`, binding.OriginRunID).Scan(&parentSession, &originStatus); errors.Is(err, sql.ErrNoRows) {
+			return harness.ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if parentSession != binding.ParentSessionID || originStatus != "running" {
+			return harness.ErrTaskOriginConflict
+		}
+		var receiptData []byte
+		if err = tx.QueryRowContext(ctx, `SELECT receipt FROM harness_tool_receipts WHERE run_id=? AND tool_call_id=? AND session_id=? AND state='started'`, binding.OriginRunID, binding.OriginToolCallID, binding.ParentSessionID).Scan(&receiptData); errors.Is(err, sql.ErrNoRows) {
+			return harness.ErrReceiptConflict
+		} else if err != nil {
+			return err
+		}
+		var receipt harness.ToolReceipt
+		if json.Unmarshal(receiptData, &receipt) != nil || receipt.ToolName != "background_agent" || receipt.SessionID != binding.ParentSessionID || receipt.RunID != binding.OriginRunID || receipt.ToolCallID != binding.OriginToolCallID || receipt.ConfigVersion != binding.ConfigVersion || receipt.State != harness.ReceiptStarted || receipt.ArgumentsDigest != fmt.Sprintf("%x", sha256.Sum256([]byte(spec.OriginArguments))) {
+			return harness.ErrReceiptConflict
+		}
+		if err = s.CheckParentPolicyTx(ctx, tx, binding, spec); err != nil {
+			return err
+		}
 	}
 
 	child := spec.Parent
-	child.ID, child.Subagents, child.Title = binding.ChildSessionID, false, ""
+	child.ID, child.Subagents, child.Title = binding.ChildSessionID, spec.AllowsDelegation(), ""
+	if spec.Role != nil {
+		child.Model = spec.Role.Model
+	}
 	child.CreatedAt, child.UpdatedAt = time.Now().UTC(), time.Now().UTC()
 	var childCWD, childModel, childMode, childApproval string
 	var childVersion int64
 	var childSubagents bool
 	err = tx.QueryRowContext(ctx, `SELECT s.cwd,s.model,s.mode,c.approval_mode,c.subagents,c.version FROM harness_sessions s JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, child.ID).Scan(&childCWD, &childModel, &childMode, &childApproval, &childSubagents, &childVersion)
 	if err == nil {
-		if childCWD != child.CWD || childModel != child.Model || childMode != child.Mode || childApproval != child.ApprovalMode || childSubagents || childVersion != child.ConfigVersion {
+		if childCWD != child.CWD || childModel != child.Model || childMode != child.Mode || childApproval != child.ApprovalMode || childSubagents != child.Subagents || childVersion != child.ConfigVersion {
 			return harness.ErrTaskOriginConflict
 		}
 		var count int
@@ -203,7 +326,11 @@ func (s *BackgroundExecutionStore) BindTx(ctx context.Context, tx *sql.Tx, bindi
 	if _, err = tx.ExecContext(ctx, `INSERT INTO harness_inputs VALUES(?,?,?)`, backgroundInputID(binding), binding.TaskID, input); err != nil {
 		return err
 	}
-	user, err := json.Marshal(harness.RunEvent{SessionID: child.ID, RunID: binding.TaskID, Kind: "user_message", Content: spec.Input})
+	eventKind := "user_message"
+	if spec.Continuation != nil {
+		eventKind = "continuation_started"
+	}
+	user, err := json.Marshal(harness.RunEvent{SessionID: child.ID, RunID: binding.TaskID, Kind: eventKind, Content: spec.Input})
 	if err != nil {
 		return err
 	}
@@ -231,7 +358,113 @@ func (s *BackgroundExecutionStore) CheckParentPolicyTx(ctx context.Context, tx *
 	if cwd != parent.CWD || model != parent.Model || mode != parent.Mode || approval != parent.ApprovalMode || version != parent.ConfigVersion || subagents != parent.Subagents || !subagents {
 		return harness.ErrPermissionDenied
 	}
+	if spec.Version >= 5 && spec.ParentInvocationID != "" {
+		if _, err := s.ParentRoleTx(ctx, tx, binding, spec); err != nil {
+			return err
+		}
+	}
+	if spec.Continuation != nil {
+		if _, err := readBackgroundContinuationSourceTx(ctx, tx, binding, spec); err != nil {
+			return err
+		}
+	}
+	if spec.ParentTaskID != "" {
+		parentBinding, parentSpec, err := s.parentSpecTx(ctx, tx, binding, spec)
+		if err != nil {
+			return err
+		}
+		return s.CheckParentPolicyTx(ctx, tx, parentBinding, parentSpec)
+	}
 	return nil
+}
+
+func (s BackgroundExecutionSpec) AllowsDelegation() bool {
+	if s.Version < 4 || s.Roles == nil || s.Role == nil || len(s.Role.DelegateTo) == 0 {
+		return false
+	}
+	maxDepth := 1
+	if s.Roles.Config.MaxDepth != nil {
+		maxDepth = *s.Roles.Config.MaxDepth
+	}
+	return s.Depth < maxDepth && (s.Role.Tools.Allows("task") || s.Role.Tools.Allows("background_agent"))
+}
+
+// ParentRoleTx reads the immutable parent's recipe inside task creation.
+// The caller resolves the selected child against it before binding the role.
+func (s *BackgroundExecutionStore) ParentRoleTx(ctx context.Context, tx *sql.Tx, binding background.Binding, spec BackgroundExecutionSpec) (*agents.Spec, error) {
+	if spec.Version >= 5 && spec.ParentInvocationID != "" {
+		parent, err := agents.ReadInvocation(ctx, tx, spec.ParentInvocationID, binding.RootBudgetID)
+		if err != nil {
+			return nil, err
+		}
+		if parent.Depth+1 != spec.Depth {
+			return nil, harness.ErrTaskOriginConflict
+		}
+		current, nearest := parent, ""
+		for {
+			if strings.HasPrefix(current.ID, "background/") && nearest == "" {
+				nearest = strings.TrimPrefix(current.ID, "background/")
+			}
+			if current.Depth == 1 {
+				if current.ParentID != "" {
+					return nil, harness.ErrTaskOriginConflict
+				}
+				break
+			}
+			if current.Depth < 1 || current.Depth > 3 || current.ParentID == "" {
+				return nil, harness.ErrTaskOriginConflict
+			}
+			ancestor, err := agents.ReadInvocation(ctx, tx, current.ParentID, binding.RootBudgetID)
+			if err != nil {
+				return nil, err
+			}
+			if ancestor.Depth+1 != current.Depth {
+				return nil, harness.ErrTaskOriginConflict
+			}
+			current = ancestor
+		}
+		if nearest != spec.ParentTaskID {
+			// A resumed role has a new physical host without a new logical
+			// invocation. Validate that host's bound role as the nearest owner.
+			host, hostSpec, err := s.parentSpecTx(ctx, tx, binding, spec)
+			if err != nil || hostSpec.Continuation == nil {
+				return nil, errors.Join(harness.ErrTaskOriginConflict, err)
+			}
+			owned, err := agents.IsDescendant(ctx, tx, binding.RootBudgetID, host.RoleID(), parent.ID)
+			if err != nil || !owned {
+				return nil, errors.Join(harness.ErrTaskOriginConflict, err)
+			}
+		}
+		return &parent.Spec, nil
+	}
+	if spec.ParentTaskID == "" {
+		return nil, nil
+	}
+	_, parent, err := s.parentSpecTx(ctx, tx, binding, spec)
+	return parent.Role, err
+}
+
+func (s *BackgroundExecutionStore) parentSpecTx(ctx context.Context, tx *sql.Tx, binding background.Binding, spec BackgroundExecutionSpec) (background.Binding, BackgroundExecutionSpec, error) {
+	var b background.Binding
+	var parent BackgroundExecutionSpec
+	var data, encoded []byte
+	if err := tx.QueryRowContext(ctx, `SELECT binding,payload FROM harness_background_specs WHERE task_id=?`, spec.ParentTaskID).Scan(&data, &encoded); err != nil {
+		return b, parent, err
+	}
+	if json.Unmarshal(data, &b) != nil || json.Unmarshal(encoded, &parent) != nil {
+		return b, parent, harness.ErrTaskOriginConflict
+	}
+	validDepth := parent.Depth+1 == spec.Depth
+	if spec.Version >= 5 {
+		validDepth = parent.Depth < spec.Depth && parent.Depth > 0
+	}
+	if spec.Version < 4 || parent.Version < 4 || b.TaskID != spec.ParentTaskID || binding.ParentTaskID != b.TaskID || b.ChildSessionID != binding.ParentSessionID || b.RootSession() != binding.RootSession() || b.RootBudgetID != binding.RootBudgetID || !validDepth || parent.Roles == nil || spec.Roles == nil || parent.Roles.Digest != spec.Roles.Digest || !parent.AllowsDelegation() {
+		return b, parent, harness.ErrTaskOriginConflict
+	}
+	if _, err := validateBackgroundSpec(b, parent); err != nil {
+		return b, parent, err
+	}
+	return b, parent, nil
 }
 
 func (s *BackgroundExecutionStore) Load(ctx context.Context, binding background.Binding) (harness.RunRequest, BackgroundExecutionSpec, error) {
@@ -267,7 +500,11 @@ func backgroundChildPolicy(ctx context.Context, q receiptQuery, binding backgrou
 	if err != nil {
 		return child, err
 	}
-	if child.CWD != spec.Parent.CWD || child.Model != spec.Parent.Model || child.Mode != spec.Parent.Mode || child.ApprovalMode != spec.Parent.ApprovalMode || child.ConfigVersion != spec.Parent.ConfigVersion || child.Subagents {
+	wantModel := spec.Parent.Model
+	if spec.Role != nil {
+		wantModel = spec.Role.Model
+	}
+	if child.CWD != spec.Parent.CWD || child.Model != wantModel || child.Mode != spec.Parent.Mode || child.ApprovalMode != spec.Parent.ApprovalMode || child.ConfigVersion != spec.Parent.ConfigVersion || child.Subagents != spec.AllowsDelegation() {
 		return child, harness.ErrTaskOriginConflict
 	}
 	return child, nil

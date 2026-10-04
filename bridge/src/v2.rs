@@ -1,6 +1,6 @@
 //! ACP v2 facade for the stable DeerFlow ACP v1 daemon.
 //!
-//! DeerFlow's Python agent remains the owner of sessions, persistence, tools,
+//! DeerFlow's Eino Go agent remains the owner of sessions, persistence, tools,
 //! and model execution.  This facade owns the version boundary: it exposes the
 //! draft ACP v2 lifecycle on stdio and translates application-owned events to
 //! the daemon's stable v1 connection.

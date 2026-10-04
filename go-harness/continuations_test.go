@@ -34,6 +34,14 @@ type continuationFixture struct {
 }
 
 func newContinuationFixture(t *testing.T, write bool, modelLimit ...int) *continuationFixture {
+	return newContinuationRoleFixture(t, write, nil, modelLimit...)
+}
+
+func newContinuationRoleFixture(t *testing.T, write bool, roles *harness.SubagentsConfig, modelLimit ...int) *continuationFixture {
+	return newContinuationScenarioFixture(t, write, roles, false, modelLimit...)
+}
+
+func newContinuationScenarioFixture(t *testing.T, write bool, roles *harness.SubagentsConfig, legacy bool, modelLimit ...int) *continuationFixture {
 	t.Helper()
 	f := &continuationFixture{}
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +60,12 @@ func newContinuationFixture(t *testing.T, write bool, modelLimit ...int) *contin
 		}
 		f.calls.Add(1)
 		lastUser, originalCount, delegateResults, hasWrite := "", 0, 0, false
+		hasRoleResult := false
+		var system strings.Builder
 		for _, msg := range req.Messages {
+			if msg.Role == "system" {
+				system.Write(msg.Content)
+			}
 			if msg.Role == "user" {
 				lastUser = string(msg.Content)
 				if strings.Contains(lastUser, "ORIGINAL_PARENT_PROMPT") {
@@ -65,6 +78,9 @@ func newContinuationFixture(t *testing.T, write bool, modelLimit ...int) *contin
 			if msg.Role == "tool" && msg.ToolCallID == "continuation-write" {
 				hasWrite = true
 			}
+			if msg.Role == "tool" && msg.ToolCallID == "continuation-role" {
+				hasRoleResult = true
+			}
 		}
 		name, id, args, content := "", "", "", ""
 		switch {
@@ -76,11 +92,18 @@ func newContinuationFixture(t *testing.T, write bool, modelLimit ...int) *contin
 			if !strings.Contains(lastUser, "CHILD_RESULT") {
 				t.Errorf("model did not receive readable child result: %s", lastUser)
 			}
-			if write && !hasWrite {
+			if roles != nil && !hasRoleResult {
+				name, id, args = "task", "continuation-role", `{"subagent_type":"reviewer","prompt":"ROLE_CONTINUATION_INPUT","description":"review the result"}`
+			} else if write && !hasWrite {
 				name, id, args = "write_file", "continuation-write", `{ "path": "continued.txt", "content": "one continuation effect" }`
 			} else {
 				content = "CONTINUATION_COMPLETE"
 			}
+		case strings.Contains(lastUser, "ROLE_CONTINUATION_INPUT"):
+			if !strings.Contains(system.String(), "ROLE_CATALOG_V1") || strings.Contains(system.String(), "ROLE_CATALOG_V2") {
+				t.Error("continuation child did not use original role catalog")
+			}
+			content = "ROLE_REVIEW_COMPLETE"
 		case strings.Contains(lastUser, "CHILD_INSTRUCTION"):
 			content = "CHILD_RESULT: observed durable child completion"
 		case strings.Contains(lastUser, "UNRELATED_NEW_PROMPT"):
@@ -120,10 +143,14 @@ func newContinuationFixture(t *testing.T, write bool, modelLimit ...int) *contin
 		limits.MaxModelCalls = modelLimit[0]
 	}
 	f.cfg = Config{DataDir: t.TempDir(), Provider: "openai", Model: "fixture", APIKey: "fixture", BaseURL: provider.URL + "/v1", BackgroundWorkers: 1, Budget: &limits}
+	f.cfg.Subagents = roles
 	var err error
 	f.c, err = Open(f.ctx, f.cfg)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if legacy {
+		useLegacyRoleGraph(t, f.c)
 	}
 	t.Cleanup(func() {
 		if f.c != nil {
@@ -194,6 +221,43 @@ func (f *continuationFixture) reopen(t *testing.T) {
 	}
 	if _, err = f.c.LoadSession(f.ctx, f.sess.ID, f.sess.CWD, false, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSDKNotificationContinuationPinsRolesAcrossConfigChange(t *testing.T) {
+	maxTasks := 2
+	roles := &harness.SubagentsConfig{MaxTasksPerRoot: &maxTasks, CustomAgents: map[string]harness.AgentConfig{"reviewer": {Description: "review", SystemPrompt: "ROLE_CATALOG_V1", Tools: []string{}}}}
+	f := newContinuationRoleFixture(t, false, roles)
+	newLimit := 1
+	f.cfg.Subagents = &harness.SubagentsConfig{MaxTasksPerRoot: &newLimit, CustomAgents: map[string]harness.AgentConfig{"reviewer": {Description: "new review", SystemPrompt: "ROLE_CATALOG_V2", Tools: []string{}}}}
+	f.reopen(t)
+	result, err := f.c.ProcessBackgroundNotification(f.ctx, f.sess.ID, f.note.ID, nil, nil)
+	if err != nil || result.Execution == nil || result.Execution.Status != harness.ExecutionCompleted {
+		t.Fatalf("continuation=%+v err=%v", result, err)
+	}
+	count := f.calls.Load()
+	f.reopen(t)
+	repeat, err := f.c.ProcessBackgroundNotification(f.ctx, f.sess.ID, f.note.ID, nil, nil)
+	if err != nil || repeat.Execution == nil || repeat.Execution.RunID != result.Execution.RunID || f.calls.Load() != count || f.models.Load() != 2 {
+		t.Fatalf("duplicate=%+v models=%d err=%v", repeat, f.models.Load(), err)
+	}
+	budget, err := f.c.budgets.Snapshot(f.ctx, f.parent.Execution.RunID)
+	if err != nil || budget.ModelCalls != 6 || budget.HeldTokens != 0 {
+		t.Fatalf("budget=%+v err=%v", budget, err)
+	}
+	var invocations int
+	if err = f.c.store.DB().QueryRowContext(f.ctx, `SELECT COUNT(*) FROM harness_agent_invocations`).Scan(&invocations); err != nil || invocations != 2 {
+		t.Fatalf("invocations=%d err=%v", invocations, err)
+	}
+}
+
+func TestSDKLegacyNotificationAfterEnablingConfiguredRoles(t *testing.T) {
+	f := newContinuationScenarioFixture(t, false, nil, true)
+	f.cfg.Subagents = &harness.SubagentsConfig{}
+	f.reopen(t)
+	result, err := f.c.ProcessBackgroundNotification(f.ctx, f.sess.ID, f.note.ID, nil, nil)
+	if err != nil || result.Execution == nil || result.Execution.Status != harness.ExecutionCompleted {
+		t.Fatalf("legacy continuation=%+v err=%v", result, err)
 	}
 }
 

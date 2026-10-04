@@ -4,6 +4,7 @@ import (
 	"flag"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,11 +52,11 @@ func TestSandboxProviderAndLimitFlags(t *testing.T) {
 }
 
 func TestRemoteSandboxFlags(t *testing.T) {
-	cfg, err := parseRuntimeFlags(t, "--sandbox-provider=wsl2", "--sandbox-wsl-executable=C:\\Windows\\System32\\wsl.exe", "--sandbox-wsl-distribution=Ubuntu-22.04", "--sandbox-wsl-user=worker", "--sandbox-allow-command=/usr/bin/python3")
+	cfg, err := parseRuntimeFlags(t, "--sandbox-provider=wsl2", "--sandbox-wsl-executable=C:\\Windows\\System32\\wsl.exe", "--sandbox-wsl-distribution=Ubuntu-22.04", "--sandbox-wsl-user=worker", "--sandbox-wsl-helper=C:\\runtime\\helper", "--sandbox-wsl-helper-sha256="+strings.Repeat("a", 64), "--sandbox-allow-command=/usr/bin/printf")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Sandbox.Enabled || cfg.Sandbox.Provider != harness.SandboxWSL2 || cfg.Sandbox.WSL.Distribution != "Ubuntu-22.04" || cfg.Sandbox.WSL.User != "worker" || cfg.Sandbox.WSL.Executable != `C:\Windows\System32\wsl.exe` || cfg.Sandbox.AllowedExecutables[0] != "/usr/bin/python3" {
+	if !cfg.Sandbox.Enabled || cfg.Sandbox.Provider != harness.SandboxWSL2 || cfg.Sandbox.WSL.Distribution != "Ubuntu-22.04" || cfg.Sandbox.WSL.User != "worker" || cfg.Sandbox.WSL.Executable != `C:\Windows\System32\wsl.exe` || cfg.Sandbox.WSL.HelperPath != `C:\runtime\helper` || cfg.Sandbox.WSL.HelperSHA256 != strings.Repeat("a", 64) || cfg.Sandbox.AllowedExecutables[0] != "/usr/bin/printf" {
 		t.Fatalf("wsl=%+v", cfg.Sandbox)
 	}
 	cfg, err = parseRuntimeFlags(t, "--sandbox-provider=docker", "--sandbox-docker-executable=C:\\docker.exe", "--sandbox-docker-image=busybox:1", "--sandbox-docker-allow-image=busybox:1", "--sandbox-docker-allow-image=alpine:3", "--sandbox-docker-network=bridge", "--sandbox-docker-cpus=0.5", "--sandbox-docker-memory-bytes=67108864", "--sandbox-docker-pids=12", "--sandbox-docker-user=1001:1001", "--sandbox-docker-workspace-read-only")

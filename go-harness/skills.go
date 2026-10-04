@@ -47,3 +47,45 @@ func (c *Client) ListSkills(ctx context.Context, selection harness.SkillSelectio
 	defer done()
 	return c.skills.List(ctx, selection)
 }
+
+// RefreshSkillImports records source differences for managed imports without
+// replacing their publication pointers. Open also does this once at startup.
+func (c *Client) RefreshSkillImports(ctx context.Context) error {
+	done, err := c.operation()
+	if err != nil {
+		return err
+	}
+	defer done()
+	return c.skills.ObserveImports(ctx)
+}
+
+// ListSkillImportObservations includes managed tombstones. It returns the last
+// saved check, not a live filesystem watch or authorization to import changes.
+func (c *Client) ListSkillImportObservations(ctx context.Context, selection harness.SkillSelection) ([]harness.SkillImportObservation, error) {
+	done, err := c.operation()
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	return c.skills.ListImportObservations(ctx, selection)
+}
+
+// RefreshSkillExports explicitly retries failed exports and checks existing
+// views. Work is asynchronous; query ListSkillExports for each current head.
+func (c *Client) RefreshSkillExports(ctx context.Context) error {
+	done, err := c.operation()
+	if err != nil {
+		return err
+	}
+	defer done()
+	return c.skills.ReconcileExports(ctx, true)
+}
+
+func (c *Client) ListSkillExports(ctx context.Context, selection harness.SkillSelection) ([]harness.SkillExportState, error) {
+	done, err := c.operation()
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	return c.skills.ListExports(ctx, selection)
+}

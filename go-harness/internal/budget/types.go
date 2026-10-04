@@ -24,6 +24,9 @@ type Config struct {
 	// CheckEffectTx checks external task/lease fencing in the SAME transaction
 	// used for admission and dispatch. It must never open another DB transaction.
 	CheckEffectTx func(context.Context, *sql.Tx, Scope) error
+	// UsageOwnerTx attributes a new operation inside the same admission tx.
+	// It never changes authorization, reservation counts or token settlement.
+	UsageOwnerTx func(context.Context, *sql.Tx, Scope) (UsageOwner, error)
 	// Optional lease check that permits cancellation cleanup. Heartbeats do not
 	// call CheckEffectTx, because cleanup may no longer admit new effects.
 	CheckHeartbeatTx func(context.Context, *sql.Tx, Scope) error

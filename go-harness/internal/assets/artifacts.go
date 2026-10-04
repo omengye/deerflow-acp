@@ -22,6 +22,10 @@ func artifactKey(runID, callID string) string { return runID + "\x00" + callID }
 // StageArtifacts returns stable references but does not register/publish them.
 // Runtime's successful tool_end commits them with its receipt and audit event.
 func (s *Store) StageArtifacts(ctx context.Context, x harness.Session, runID, callID string, paths []string) (contents []harness.Content, returnErr error) {
+	return s.stageArtifacts(ctx, x, runID, callID, paths, nil)
+}
+
+func (s *Store) stageArtifacts(ctx context.Context, x harness.Session, runID, callID string, paths []string, owner *ArtifactOwner) (contents []harness.Content, returnErr error) {
 	if runID == "" || callID == "" || len(paths) == 0 || len(paths) > 32 {
 		return nil, invalid("present_files requires a tool call and 1 to 32 output paths")
 	}
@@ -37,6 +41,7 @@ func (s *Store) StageArtifacts(ctx context.Context, x harness.Session, runID, ca
 	if err != nil {
 		return nil, err
 	}
+	p.owner = owner
 	defer func() {
 		if returnErr != nil {
 			returnErr = errors.Join(returnErr, p.Finish(false))
@@ -184,6 +189,14 @@ func (p *Prepared) AttachModelImage(ctx context.Context, tx *sql.Tx) error {
 }
 
 func (p *Prepared) AttachArtifacts(ctx context.Context, tx *sql.Tx, runID, callID string) error {
+	if p.owner != nil {
+		if p.owner.Scope.MemberID != runID || p.owner.Scope.SessionID != p.session.ID || p.owner.ToolCallID != callID {
+			return harness.ErrReceiptConflict
+		}
+		if err := CheckArtifactOwner(ctx, tx, *p.owner, true); err != nil {
+			return err
+		}
+	}
 	if err := p.attachRecords(ctx, tx); err != nil {
 		return err
 	}
@@ -193,6 +206,12 @@ func (p *Prepared) AttachArtifacts(ctx context.Context, tx *sql.Tx, runID, callI
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO harness_artifacts(session_id,run_id,tool_call_id,asset_id) VALUES(?,?,?,?)`, p.session.ID, runID, callID, ref.ID); err != nil {
 			return err
+		}
+		if p.owner != nil {
+			o := p.owner
+			if _, err := tx.ExecContext(ctx, `INSERT INTO harness_artifact_owners(asset_id,session_id,run_id,tool_call_id,root_id,root_session_id,node_id,attempt_id,fence,invocation_id,role_attempt_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, ref.ID, p.session.ID, runID, callID, o.Scope.RootBudgetID, o.RootSessionID, o.NodeID(), o.Scope.AttemptID, o.Scope.Fence, o.InvocationID, o.RoleAttemptID); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -67,6 +67,9 @@ CREATE INDEX IF NOT EXISTS budget_reservation_root ON budget_reservations(root_i
 	if err = migrateToolContinuations(db); err != nil {
 		return nil, persist("migrate tool continuations", err)
 	}
+	if err = migrateUsageAttribution(db); err != nil {
+		return nil, persist("migrate usage attribution", err)
+	}
 	return l, nil
 }
 
@@ -76,7 +79,7 @@ func persist(op string, err error) error {
 	}
 	var p *PersistenceError
 	var limit *LimitError
-	if errors.As(err, &p) || errors.As(err, &limit) || errors.Is(err, ErrScope) || errors.Is(err, ErrConflict) || errors.Is(err, ErrUnknown) || errors.Is(err, ErrClock) {
+	if errors.As(err, &p) || errors.As(err, &limit) || errors.Is(err, harness.ErrTaskTreeStopped) || errors.Is(err, ErrScope) || errors.Is(err, ErrConflict) || errors.Is(err, ErrUnknown) || errors.Is(err, ErrClock) {
 		return err
 	}
 	return &PersistenceError{Operation: op, Err: err}
@@ -619,6 +622,9 @@ func (l *Ledger) reserve(ctx context.Context, s Scope, kind, id, digest string, 
 		}
 		grant = Reservation{OperationID: id, Scope: s, Kind: kind, State: "reserved", InputTokens: input, MaxOutputTokens: output, HeldTokens: input + int64(output)}
 		if _, e = tx.ExecContext(ctx, `INSERT INTO budget_reservations(id,root_id,member_id,session_id,attempt_id,fence,kind,digest,input_tokens,output_cap,held_tokens,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,'reserved')`, id, s.RootBudgetID, s.MemberID, s.SessionID, s.AttemptID, s.Fence, kind, digest, input, output, grant.HeldTokens); e != nil {
+			return e
+		}
+		if e = l.recordUsageOwnerTx(ctx, tx, grant, ""); e != nil {
 			return e
 		}
 		return saveRoot(ctx, tx, r)

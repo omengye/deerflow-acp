@@ -70,3 +70,9 @@ data/acp-checkpoints.db-wal
 data/acp-sessions.db
 data/acp-sessions.db-shm
 data/acp-sessions.db-wal
+
+# Portable runtime state and legacy local scheduler data are never source.
+/user-data/
+data/scheduled_tasks.db
+data/scheduled_tasks.db-shm
+data/scheduled_tasks.db-wal

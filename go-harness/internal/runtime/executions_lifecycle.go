@@ -15,6 +15,10 @@ import (
 // joined. Ledger EndAttemptTx must be in this transaction as well. Failed retry
 // spending remains in that ledger even when the original checkpoint is kept.
 func (s *Store) EndExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease ExecutionLease, kind harness.ExecutionStopKind, detail string) (harness.ExecutionState, error) {
+	return s.endExecutionAttemptTx(ctx, tx, lease, kind, detail, false)
+}
+
+func (s *Store) endExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease ExecutionLease, kind harness.ExecutionStopKind, detail string, roleFailure bool) (harness.ExecutionState, error) {
 	row, err := checkExecutionLease(ctx, tx, lease)
 	if err != nil {
 		return row.State, err
@@ -33,7 +37,29 @@ func (s *Store) EndExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease Exe
 		status = harness.ExecutionCompleted
 	case harness.ExecutionStopCancelled:
 		status = harness.ExecutionCancelled
+		if err = stopAutomaticRootTx(ctx, tx, row); err != nil {
+			return row.State, err
+		}
 	case harness.ExecutionStopFailed, harness.ExecutionStopDisconnected:
+		if roleFailure && kind == harness.ExecutionStopFailed {
+			source, err := loadContinuationSource(ctx, tx, row)
+			if err != nil {
+				return row.State, err
+			}
+			if source == nil || source.ParentRole == nil {
+				return row.State, harness.ErrExecutionConflict
+			}
+			var unsafe bool
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND (state IN ('started','uncertain') OR (run_id=? AND state='pending')))`, row.State.SessionID, row.State.RunID).Scan(&unsafe); err != nil {
+				return row.State, err
+			}
+			if !unsafe {
+				// The private failure is terminal and inspectable; its parent
+				// receives only a summary. No old checkpoint is replayed.
+				status = harness.ExecutionFailed
+				break
+			}
+		}
 		validation := validateExecutionManifest(ctx, tx, row)
 		if validation == nil {
 			status = harness.ExecutionWaitingInput
@@ -54,7 +80,7 @@ func (s *Store) EndExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease Exe
 			return row.State, err
 		}
 	}
-	if status == harness.ExecutionCompleted || status == harness.ExecutionCancelled {
+	if status == harness.ExecutionCompleted || status == harness.ExecutionCancelled || status == harness.ExecutionFailed {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM eino_checkpoints WHERE id=?`, "harness/turn/v1/"+row.State.RunID); err != nil {
 			return row.State, err
 		}
@@ -100,6 +126,9 @@ func (s *Store) CancelExecutionTx(ctx context.Context, tx *sql.Tx, sessionID, ow
 	}
 	if row.State.Status != harness.ExecutionWaitingInput && row.State.Status != harness.ExecutionNeedsReconciliation {
 		return row.State, harness.ErrExecutionConflict
+	}
+	if err = stopAutomaticRootTx(ctx, tx, row); err != nil {
+		return row.State, err
 	}
 	if err = settleOpenReceipts(ctx, tx, row.State.RunID, "waiting execution explicitly cancelled"); err != nil {
 		return row.State, err
@@ -198,6 +227,11 @@ func (s *Store) RecoverExecutionsTx(ctx context.Context, tx *sql.Tx) ([]Executio
 			}
 		}
 		if err = revokeExecutionGrants(ctx, tx, lease.Scope.AttemptID); err != nil {
+			return nil, err
+		}
+		// Uncommitted callbacks from the interrupted process are not part of
+		// the restored checkpoint. Keep already published revisions intact.
+		if err = settleRoleContextsTx(ctx, tx, lease.Scope, false); err != nil {
 			return nil, err
 		}
 		if row.State.Status != status || attemptStatus == "running" {

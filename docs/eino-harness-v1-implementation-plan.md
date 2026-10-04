@@ -1,6 +1,12 @@
 # Go + Eino Harness 与 ACP 重构实施方案
 
-修订日期：2026-09-30。状态：Go harness 与本地 ACP 里程碑实施中；进度、依赖落地差异与验证记录见 [实施状态](eino-harness-implementation-status.md)。下文保留原完整 V1 目标和发布要求，当前里程碑的后置事项以实施状态为准。
+修订日期：2026-10-02。状态：本文保留最初 V1 迁移设计；进度、依赖落地差异与验证记录见 [实施状态](eino-harness-implementation-status.md)。当前子代理、技能自进化、设置清理及分支收敛范围以本节链接的后续方案为准。
+
+2026-10-01 后续方案：[子代理、技能自进化与分支收敛](eino-subagents-skill-evolution-plan.md)，定义自定义角色、统一并发、有限嵌套、自动结果投递、技能生成/评测/发布/回滚、Waku DeerFlow 设置页无效设置清理，以及旧 Python 运行时代码删除的实施与验收范围，状态为实施中；进展见 [实施记录](eino-subagents-skill-evolution-status.md)。
+
+当前分支定位已确定为 Eino Go harness 单运行时项目。早期双后端和 Python 回退安排取消；Python 历史实现从 Git 历史查阅，必要旧数据由独立 Go 工具导入。
+
+2026-10-02 补充：清理同时覆盖 Go 源码中内嵌的 Python 脚本及解释器调用。现有 WSL 沙箱的 Python 探测与进程监督改为 Go Linux 辅助程序，纳入无 Python 环境的构建、执行、取消和清理验收；具体范围见后续方案第 7 节。
 
 **第一版交付可嵌入的 Go harness，以及能够被编辑器和其他 ACP client 启动的本地 ACP Agent。** 保留长任务、工具、子 Agent、沙箱、Skills、MCP、记忆、上下文压缩、权限与恢复能力。对外入口采用 Go SDK、ACP stdio 和本地 daemon IPC；HTTP API、ACP HTTP gateway、SSE 服务及远程传输接口后置。模型请求和 MCP 的出站 HTTP 传输仍属于正常工具能力。
 
@@ -12,14 +18,14 @@
 | 基线 | 当前仓库 main 已提交版本 `92b56924989a91e0eae05be6e95a6304f1ee4cd4` |
 | 隔离工作区 | `C:\Users\ym200\.codex\worktrees\eino-harness-acp\deerflow-api` |
 | 新代码位置 | 同仓库 `go-harness/`，独立 `go.mod` |
-| 迁移方法 | 先增加 Go 实现并做协议对照，再切换 ACP 启动命令；Python 作为回归参照与回退入口 |
+| 迁移方法 | 提取旧行为回归依据并补齐 Go 实现，随后删除 Python 运行时及相关入口；Eino Go 为唯一运行时，旧实现保留在 Git 历史 |
 | 提交粒度 | 方案、协议基线、存储、执行核心、ACP、工具与扩展、故障验证分别提交 |
 
 原工作目录存在尚未提交的 ACP 启动优化及其他修改，没有自动复制到新工作区。阶段 0 建立迁移清单，检查这些变动是否已提交或需要有选择地纳入；不能通过覆盖原目录或批量暂存把无关改动带入重构提交。
 
-Python `deerflow/acp/`、现有测试和 `bridge/` 是当前产品协议基线；字节官方 harness 用于补齐能力设计。第一版先实现新会话在 Go 端的完整闭环，旧 LangGraph 执行快照不直接导入 Go。
+Python `deerflow/acp/`、当时已有测试和 `bridge/` 是最初协议对照基线；字节官方 harness 用于补齐能力设计。旧 Python 代码删除前记录固定提交与脱敏 fixtures；现有 Go 运行时与保留的 Rust Bridge 成为后续实现基线，旧 LangGraph 执行快照不直接导入 Go。
 
-新旧实现使用不同的数据目录、数据库与 daemon endpoint。只有完成迁移验收后才切换默认启动目标，避免 Python 和 Go 进程同时写同一套状态。
+早期迁移已将 Go 数据目录、数据库与 daemon endpoint 独立。本轮继续保护已有 Go 状态及用户旧数据，完成配置导入和验证后清除 Python 启动、探测及回退；默认启动与发布恢复都使用 Go。
 
 ## 2. 版本与技术选择
 
@@ -86,7 +92,7 @@ Rust v2 facade 当前没有完整 mode/config handler；其 prompt 立即 ACK，
 
 默认内部委派深度为 1，权限和预算继承父运行。外部 ACP 委派也受同一总预算和取消链控制；不能通过调用外部 Agent 绕过本地 ACP 默认策略。
 
-HTTP 服务、SSE、跨主机 worker、PostgreSQL、任意工具步 time travel、旧 Python 插件原样加载、多云沙箱全覆盖、完整 TUI、自动技能进化后置。现有 skill proposal 私有管理接口如需保留，独立列兼容工作包；它不属于标准 ACP。
+HTTP 服务、SSE、跨主机 worker、PostgreSQL、任意工具步 time travel、多云沙箱全覆盖和完整 TUI 不在当前范围。旧 Python 插件加载随运行时删除；自动技能进化与 skill proposal 私有管理接口已纳入后续方案，后者不属于标准 ACP。
 
 ## 5. 架构与代码组织
 
@@ -166,7 +172,7 @@ go-harness/
 
 第一版采用一个 daemon 管理多连接、多 session，SQLite 单写者所有权与进程锁保护数据库。每个 session 同时只附着一个控制连接，每 session 最多一个 active prompt。连接数量上限与模型执行槽位分开，排队时间不计入执行超时。
 
-兼容现有 Rust Bridge 的 `DFACP/1` loopback token handshake、endpoint 发现、STATUS/STOP/ACP 命令和启动参数。这个通道是本机 IPC，不是对外网络 API。MANAGE 单列为本地产品控制协议，不能混入 ACP method namespace；首版只迁移运行所需的诊断/配置操作，skill evolution proposal 操作按后置范围明确报告不支持。
+保留 Rust Bridge 的 `DFACP/1` loopback token handshake、endpoint 发现和 STATUS/STOP/ACP 命令；启动参数收敛为 Go，删除 Python 解释器选择与回退。这个通道是本机 IPC，不是对外网络 API。MANAGE 单列为本地产品控制协议，不能混入 ACP method namespace；初期仅迁移诊断/配置操作，skill evolution proposal 操作按后续方案补齐。
 
 Go stdio 进程退出和 daemon 客户端断开遵循不同进程生命周期，但会话隔离语义一致：断开只取消/保存该连接关联的前台运行，停止待批工具，释放临时 client MCP 和 attachment，不影响其他窗口。默认暂停与该连接绑定的子任务；只有显式配置为可脱离前台的任务才继续运行，且不能在无人连接时自动获得新的授权。结果存入任务记录，待重新附着或下一次 prompt 呈现。
 
@@ -207,7 +213,7 @@ Docker provider 作为 V1 的隔离执行选项，实现 Eino Backend/Shell adap
 | 2，1.5–2 周 | DeepAgent、工具和事件映射、工作区、图片/附件、权限、预算 | 编辑器中工具进度/计划/产物可见；拒绝/取消正确；路径和配置隔离 |
 | 3，1.5–2 周 | 子 Agent/后台命令、Skills、MCP、记忆、压缩、Docker provider | 并发和父子取消；压缩不丢任务上下文；MCP/记忆不串 session；隔离执行完成产物 |
 | 4，1–1.5 周 | Go daemon、Bridge IPC、draft v2 兼容、可选外部 ACP client | 两窗口隔离、热启动、STATUS/STOP；v1/v2 生命周期分别通过；外部委派权限不升级 |
-| 5，1–1.5 周 | 崩溃对账、重连、清理、负载、便携打包和切换演练 | Windows/Linux 真实 stdio 与 daemon；未决副作用可解释；可切回 Python 启动入口 |
+| 5，1–1.5 周 | 崩溃对账、重连、清理、负载、便携打包和恢复演练 | Windows/Linux 真实 stdio 与 daemon；未决副作用可解释；可恢复已验证 Go 发行版与匹配的数据备份 |
 
 按 2 名熟悉 Go/Agent 的工程师和测试支持，粗估约 **7–10 周**；阶段 0 后校准。删除 HTTP 工作包不会使协议重构变成简单包装，ACP 的反向请求、连接归属和已有 Bridge 兼容仍需要专门投入。
 
@@ -224,7 +230,7 @@ Docker provider 作为 V1 的隔离执行选项，实现 Eino Backend/Shell adap
 9. daemon 单实例、错误 token、容量满仍可控制、启动/退出不泄漏 stdio handle、状态文件不被误删。
 10. 重启后审批和后台任务恢复、工具结果不明的对账、会话清理不删除活跃任务或仍需保留的产物。
 
-现有 Python 测试转换成协议/行为 fixtures，不按内部 LangGraph 调用结构逐行复制；旧行为与最新规范冲突时单列迁移差异。引入官方 acp-tck 验证 stable v1，并补它未完整覆盖的 MCP/fs/terminal 和真实编辑器互操作。复用 Eino 的 session/backgroundtask/tool recovery conformance，增加 SQLite 事务/锁、Go race、实际子进程与 Bridge 集成测试。
+必要的旧 Python 测试转换成协议/行为 fixtures 和 Go/Rust 测试后删除，测试与构建不依赖 Python；旧行为与最新规范冲突时单列迁移差异。引入官方 acp-tck 验证 stable v1，并补它未完整覆盖的 MCP/fs/terminal 和真实编辑器互操作。复用 Eino 的 session/backgroundtask/tool recovery conformance，增加 SQLite 事务/锁、Go race、实际子进程与 Bridge 集成测试。
 
 ## 10. 参考与协议基线
 

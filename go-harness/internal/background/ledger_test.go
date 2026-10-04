@@ -197,7 +197,9 @@ func TestNativeHeartbeatAndBudgetClockCommitTogetherThroughCleanup(t *testing.T)
 	if err != nil {
 		t.Fatalf("quota exhaustion rolled back heartbeat: %v", err)
 	}
-	if _, err = s.Cancel(ctx, actor("parent"), task.ID, "stop"); err != nil {
+	// User cancellation comes from the root attachment, outside the worker's
+	// private attempt context. The worker cannot borrow that attachment.
+	if _, err = s.Cancel(context.Background(), actor("parent"), task.ID, "stop"); err != nil {
 		t.Fatal(err)
 	}
 	current, err := s.tasks.Get(ctx, task.ID)

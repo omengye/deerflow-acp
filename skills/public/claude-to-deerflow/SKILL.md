@@ -1,217 +1,59 @@
 ---
 name: claude-to-deerflow
-description: "Interact with DeerFlow AI agent platform via its HTTP API. Use this skill when the user wants to send messages or questions to DeerFlow for research/analysis, start a DeerFlow conversation thread, check DeerFlow status or health, list available models/skills/agents in DeerFlow, manage DeerFlow memory, upload files to DeerFlow threads, or delegate complex research tasks to DeerFlow. Also use when the user mentions deerflow, deer flow, or wants to run a deep research task that DeerFlow can handle."
+description: Use when connecting an ACP-capable client to the Eino-based DeerFlow runtime, delegating an authorized task through that client, or diagnosing a DeerFlow ACP connection and session.
 ---
 
-# DeerFlow Skill
+# Connect to DeerFlow through ACP
 
-Communicate with a running DeerFlow instance via its HTTP API. DeerFlow is an AI agent platform
-built on LangGraph that orchestrates sub-agents for research, code execution, web browsing, and more.
+This branch runs DeerFlow on the Eino Go harness. Use an existing ACP-capable client or configured connector to send tasks. Keep the historical skill name for installed references.
 
-## Architecture
+## Choose the connection
 
-DeerFlow exposes two API surfaces behind an Nginx reverse proxy:
+Read the client's installed agent command and the actual package path before changing configuration. Use its supported configuration format; there is no universal editor JSON schema.
 
-| Service        | Direct Port | Via Proxy                        | Purpose                          |
-|----------------|-------------|----------------------------------|----------------------------------|
-| Gateway API    | 8001        | `$DEERFLOW_GATEWAY_URL`          | REST endpoints (models, skills, memory, uploads) |
-| LangGraph API  | 2024        | `$DEERFLOW_LANGGRAPH_URL`        | Agent threads, runs, streaming   |
+- Packaged Waku uses `deerflow-acp.exe`, a stdio Bridge, with the sibling `deerflow-acpd.exe` Go daemon. Its desktop settings supply model and runtime configuration.
+- An external ACP client can use the same Bridge and an explicitly chosen runtime directory. The sibling daemon is discovered automatically. On Linux omit `.exe`.
+- For a direct standalone process, use `deerflow-acp-go.exe`. It serves stable ACP v1 over stdin/stdout and does not accept a desktop `--config` argument.
 
-## Environment Variables
+The Bridge defaults to stable ACP v1. Select its draft v2 option only when the actual client requires it. Keep protocol stdout free of shell banners and progress messages; read process diagnostics from stderr.
 
-All URLs are configurable via environment variables. **Read these env vars before making any request.**
+## Configure a standalone client
 
-| Variable                | Default                                  | Description                        |
-|-------------------------|------------------------------------------|------------------------------------|
-| `DEERFLOW_URL`          | `http://localhost:2026`                  | Unified proxy base URL             |
-| `DEERFLOW_GATEWAY_URL`  | `${DEERFLOW_URL}`                        | Gateway API base (models, skills, memory, uploads) |
-| `DEERFLOW_LANGGRAPH_URL`| `${DEERFLOW_URL}/api/langgraph`          | LangGraph API base (threads, runs) |
+Use absolute executable and private data paths. Configure the child environment with `DEERFLOW_MODEL`, `DEERFLOW_MODEL_PROVIDER` (`openai`, `claude`, or `ark`), and the credential supplied by the user's existing secure configuration. The common credential variable is `DEERFLOW_MODEL_API_KEY`. `DEERFLOW_MODEL_BASE_URL` is optional. Use `DEERFLOW_GO_DATA_DIR` for the state directory. Do not print credentials or store them in this skill.
 
-When making curl calls, always resolve the URL like this:
+A direct-process client command can be represented as these separate arguments:
 
-```bash
-# Resolve base URLs from env (do this FIRST before any API call)
-DEERFLOW_URL="${DEERFLOW_URL:-http://localhost:2026}"
-DEERFLOW_GATEWAY_URL="${DEERFLOW_GATEWAY_URL:-$DEERFLOW_URL}"
-DEERFLOW_LANGGRAPH_URL="${DEERFLOW_LANGGRAPH_URL:-$DEERFLOW_URL/api/langgraph}"
+```text
+command: ABSOLUTE_PACKAGE_PATH/deerflow-acp-go.exe
+args: --data-dir ABSOLUTE_PRIVATE_STATE_PATH --provider openai --model CONFIGURED_MODEL_ID
 ```
 
-## Available Operations
+A Bridge client command can be represented as:
 
-### 1. Health Check
-
-Verify DeerFlow is running:
-
-```bash
-curl -s "$DEERFLOW_GATEWAY_URL/health"
+```text
+command: ABSOLUTE_PACKAGE_PATH/deerflow-acp.exe
+args: --runtime-dir ABSOLUTE_PRIVATE_RUNTIME_PATH
 ```
 
-### 2. Send a Message (Streaming)
+Use the same runtime directory for the Bridge's `--status`, `--start-daemon`, and `--stop-daemon` operations. Stopping a shared daemon interrupts its connected sessions; diagnose through status before taking an action with that effect. Keep the desktop's existing process ownership and paths when diagnosing Waku.
 
-This is the primary operation. It creates a thread and streams the agent's response.
+## Run an authorized task
 
-**Step 1: Create a thread**
+1. Have the ACP client perform `initialize` and inspect the negotiated capabilities.
+2. Create a session with `session/new`, using the user's actual workspace as `cwd`. Pass only host-authorized client MCP server configurations. Preserve the returned `sessionId`.
+3. Send the requested text through `session/prompt`. Process `session/update` events for text, plans, tools and usage; answer permission requests through the client's normal controls.
+4. Report the final prompt result and inspect the requested artifacts. A successful connection alone does not prove the delegated task succeeded.
+5. For a follow-up, reuse the session. After reconnecting, use negotiated session load/resume support and the same workspace. Do not treat replayed history as a new execution.
+6. To cancel, send the `session/cancel` notification through the client and wait for the resulting status. Do not automatically repeat writes after a connection failure.
 
-```bash
-curl -s -X POST "$DEERFLOW_LANGGRAPH_URL/threads" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
+Use model/configuration choices returned by the active session. Skill review, memory management and host settings belong to the capabilities actually exposed by the connected client; their availability must be checked. This skill does not grant access to a daemon's authenticated management methods.
 
-Response: `{"thread_id": "<uuid>", ...}`
+## Diagnose failures
 
-**Step 2: Stream a run**
+- A missing binary or invalid model is a startup/configuration problem. Check the actual package files, configured child environment and stderr without exposing secrets.
+- A daemon status response and an ACP initialization response are different checks. Verify both when the client uses the Bridge.
+- A normal tool error should be reported to the agent as a tool result. Follow the session's actual stop reason before deciding that the session itself failed.
+- For `reconciliation_required`, inspect the supplied receipt-list method, verify the external outcome, and explicitly reconcile through an authorized client. Do not fabricate success or bypass the requirement by creating a fresh session and replaying the action.
+- If the current environment has no ACP client or connector, prepare the command/environment configuration and report that interactive execution remains unverified. Do not invent a health endpoint or emulate a full client with an ad hoc shell pipeline.
 
-```bash
-curl -s -N -X POST "$DEERFLOW_LANGGRAPH_URL/threads/<thread_id>/runs/stream" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "assistant_id": "lead_agent",
-    "input": {
-      "messages": [
-        {
-          "type": "human",
-          "content": [{"type": "text", "text": "YOUR MESSAGE HERE"}]
-        }
-      ]
-    },
-    "stream_mode": ["values", "messages-tuple"],
-    "stream_subgraphs": true,
-    "config": {
-      "recursion_limit": 1000
-    },
-    "context": {
-      "thinking_enabled": true,
-      "is_plan_mode": true,
-      "subagent_enabled": true,
-      "thread_id": "<thread_id>"
-    }
-  }'
-```
-
-The response is an SSE stream. Each event has the format:
-```
-event: <event_type>
-data: <json_data>
-```
-
-Key event types:
-- `metadata` — run metadata including `run_id`
-- `values` — full state snapshot with `messages` array
-- `messages-tuple` — incremental message updates (AI text chunks, tool calls, tool results)
-- `end` — stream is complete
-
-**Context modes** (set via `context`):
-- Flash mode: `thinking_enabled: false, is_plan_mode: false, subagent_enabled: false`
-- Standard mode: `thinking_enabled: true, is_plan_mode: false, subagent_enabled: false`
-- Pro mode: `thinking_enabled: true, is_plan_mode: true, subagent_enabled: false`
-- Ultra mode: `thinking_enabled: true, is_plan_mode: true, subagent_enabled: true`
-
-### 3. Continue a Conversation
-
-To send follow-up messages, reuse the same `thread_id` from step 2 and POST another run
-with the new message.
-
-### 4. List Models
-
-```bash
-curl -s "$DEERFLOW_GATEWAY_URL/api/models"
-```
-
-Returns: `{"models": [{"name": "...", "provider": "...", ...}, ...]}`
-
-### 5. List Skills
-
-```bash
-curl -s "$DEERFLOW_GATEWAY_URL/api/skills"
-```
-
-Returns: `{"skills": [{"name": "...", "enabled": true, ...}, ...]}`
-
-### 6. Enable/Disable a Skill
-
-```bash
-curl -s -X PUT "$DEERFLOW_GATEWAY_URL/api/skills/<skill_name>" \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": true}'
-```
-
-### 7. List Agents
-
-```bash
-curl -s "$DEERFLOW_GATEWAY_URL/api/agents"
-```
-
-Returns: `{"agents": [{"name": "...", ...}, ...]}`
-
-### 8. Get Memory
-
-```bash
-curl -s "$DEERFLOW_GATEWAY_URL/api/memory"
-```
-
-Returns user context, facts, and conversation history summaries.
-
-### 9. Upload Files to a Thread
-
-```bash
-curl -s -X POST "$DEERFLOW_GATEWAY_URL/api/threads/<thread_id>/uploads" \
-  -F "files=@/path/to/file.pdf"
-```
-
-Supports PDF, PPTX, XLSX, DOCX — automatically converts to Markdown.
-
-### 10. List Uploaded Files
-
-```bash
-curl -s "$DEERFLOW_GATEWAY_URL/api/threads/<thread_id>/uploads/list"
-```
-
-### 11. Get Thread History
-
-```bash
-curl -s "$DEERFLOW_LANGGRAPH_URL/threads/<thread_id>/history"
-```
-
-### 12. List Threads
-
-```bash
-curl -s -X POST "$DEERFLOW_LANGGRAPH_URL/threads/search" \
-  -H "Content-Type: application/json" \
-  -d '{"limit": 20, "sort_by": "updated_at", "sort_order": "desc"}'
-```
-
-## Usage Script
-
-For sending messages and collecting the full response, use the helper script:
-
-```bash
-bash /path/to/skills/claude-to-deerflow/scripts/chat.sh "Your question here"
-```
-
-See `scripts/chat.sh` for the implementation. The script:
-1. Checks health
-2. Creates a thread
-3. Streams the run and collects the final AI response
-4. Prints the result
-
-## Parsing SSE Output
-
-The stream returns SSE events. To extract the final AI response from a `values` event:
-- Look for the last `event: values` block
-- Parse its `data` JSON
-- The `messages` array contains all messages; the last one with `type: "ai"` is the response
-- The `content` field of that message is the AI's text reply
-
-## Error Handling
-
-- If health check fails, DeerFlow is not running. Inform the user they need to start it.
-- If the stream returns an error event, extract and display the error message.
-- Common issues: port not open, services still starting up, config errors.
-
-## Tips
-
-- For quick questions, use flash mode (fastest, no planning).
-- For research tasks, use pro or ultra mode (enables planning and sub-agents).
-- You can upload files first, then reference them in your message.
-- Thread IDs persist — you can return to a conversation later.
+Completion evidence should identify the command, negotiated protocol, session/workspace, final status and inspected outputs. Include no credentials or private prompt contents beyond what the user requested.

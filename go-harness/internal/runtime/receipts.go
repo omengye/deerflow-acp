@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,6 +127,12 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores 
 			}
 			receipt.Result, receipt.ResultTruncated = boundedReceiptResult(append(receipt.Result, e.Content...), receipt.ResultTruncated)
 		case "tool_end":
+			if e.Status == "failed" && e.Receipt != nil {
+				switch e.Receipt.FailureCode {
+				case "network", "permission", "quota", "cancelled", "uncertain", "unknown":
+					receipt.FailureCode = e.Receipt.FailureCode
+				}
+			}
 			if artifacts != nil && e.Status == "completed" {
 				if err = artifacts.ValidateToolContent(e.Content); err != nil {
 					return e, err
@@ -156,9 +163,9 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores 
 			case e.Status == "failed" && receipt.State == harness.ReceiptStarted:
 				receipt.State = failedStartedState(receipt.ToolName)
 				// This state is supplied only by the trusted engine after a native
-				// tool returns typed evidence of pre-execution rejection or a
-				// completed read-only operation. Recovery has no such evidence.
-				if e.Receipt != nil && (e.Receipt.State == harness.ReceiptNotExecuted || e.Receipt.State == harness.ReceiptNoEffect) {
+				// tool returns typed evidence of a terminal result, pre-execution
+				// rejection, or a read-only operation. Recovery has no such evidence.
+				if e.Receipt != nil && (e.Receipt.State == harness.ReceiptNotExecuted || e.Receipt.State == harness.ReceiptNoEffect || e.Receipt.State == harness.ReceiptFailed) {
 					receipt.State = e.Receipt.State
 				}
 				receipt.Error = eventError(e)
@@ -351,6 +358,72 @@ func (s *Service) ListToolReceipts(ctx context.Context, owner, sessionID string)
 	}
 	defer release()
 	return s.Store.ListToolReceipts(ctx, sessionID)
+}
+
+// ToolReceiptPage bounds desktop memory without hiding later uncertain calls.
+// The cursor is a session/filter-bound key, never an execution capability.
+type ReceiptPage struct {
+	Receipts    []harness.ToolReceipt `json:"receipts"`
+	NextCursor  string                `json:"nextCursor"`
+	HasMore     bool                  `json:"hasMore"`
+	Consistency string                `json:"consistency"`
+}
+
+func (s *Service) ToolReceiptPage(ctx context.Context, owner, sessionID string, limit int, cursor string, uncertainOnly bool) (ReceiptPage, error) {
+	page := ReceiptPage{Receipts: make([]harness.ToolReceipt, 0), Consistency: "live_keyset"}
+	if limit < 1 || limit > 20 || len(cursor) > 8192 {
+		return page, harness.ErrInvalidInput
+	}
+	key := struct {
+		Session, Run, Call string
+		Uncertain          bool
+	}{Session: sessionID, Uncertain: uncertainOnly}
+	if cursor != "" {
+		data, err := base64.RawURLEncoding.DecodeString(cursor)
+		if err != nil || json.Unmarshal(data, &key) != nil || key.Session != sessionID || key.Uncertain != uncertainOnly || key.Run == "" || key.Call == "" || len(key.Run) > 256 || len(key.Call) > 1024 {
+			return page, harness.ErrInvalidInput
+		}
+	}
+	ctx, release, err := s.Coordinator.Begin(ctx, sessionID, owner)
+	if err != nil {
+		return page, err
+	}
+	defer release()
+	query := `SELECT receipt FROM harness_tool_receipts WHERE session_id=? AND (run_id,tool_call_id)>(?,?)`
+	if uncertainOnly {
+		query += ` AND state='uncertain'`
+	}
+	query += ` ORDER BY run_id,tool_call_id LIMIT ?`
+	rows, err := s.Store.db.QueryContext(ctx, query, sessionID, key.Run, key.Call, limit+1)
+	if err != nil {
+		return page, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var data []byte
+		var receipt harness.ToolReceipt
+		if err := rows.Scan(&data); err != nil {
+			return page, err
+		}
+		if err := json.Unmarshal(data, &receipt); err != nil {
+			return page, err
+		}
+		if len(page.Receipts) == limit {
+			page.HasMore = true
+			break
+		}
+		page.Receipts = append(page.Receipts, receipt)
+	}
+	if err := rows.Err(); err != nil {
+		return page, err
+	}
+	if page.HasMore {
+		last := page.Receipts[len(page.Receipts)-1]
+		key.Run, key.Call = last.RunID, last.ToolCallID
+		data, _ := json.Marshal(key)
+		page.NextCursor = base64.RawURLEncoding.EncodeToString(data)
+	}
+	return page, nil
 }
 
 func (s *Service) ReconcileToolReceipt(ctx context.Context, owner, sessionID string, review harness.ToolReconciliation) (harness.ToolReceipt, error) {

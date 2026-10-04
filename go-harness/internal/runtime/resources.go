@@ -28,12 +28,27 @@ func (s *Service) MCPCapabilities() (http, sse bool) {
 func (s *Service) releaseResourceOwner(owner string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if err := joinSessionUpdates(ctx, s.stopSessionUpdates(owner, "")); err != nil {
+		return err
+	}
+	if s.BeforeResourceRelease != nil {
+		if err := s.BeforeResourceRelease(ctx, owner, ""); err != nil {
+			return err
+		}
+	}
 	if err := s.Resources.ReleaseOwner(ctx, owner); err != nil {
 		return err
 	}
 	// A session close may have failed while owner-wide retirement subsequently
 	// succeeded. Retry only idempotent resource cleanup to release its lease.
-	return s.Coordinator.DisconnectWithCleanup(ctx, owner, func(ctx context.Context, id string) error { return s.Resources.Release(ctx, owner, id) })
+	return s.Coordinator.DisconnectWithCleanup(ctx, owner, func(ctx context.Context, id string) error {
+		if s.BeforeResourceRelease != nil {
+			if err := s.BeforeResourceRelease(ctx, owner, id); err != nil {
+				return err
+			}
+		}
+		return s.Resources.Release(ctx, owner, id)
+	})
 }
 
 func (s *Service) bindResources(ctx context.Context, owner string, x harness.Session, servers []harness.MCPServer) error {
@@ -43,13 +58,29 @@ func (s *Service) bindResources(ctx context.Context, owner string, x harness.Ses
 		}
 		return nil
 	}
+	// Rebinding is a new client authorization boundary even if a manager can
+	// reuse an equivalent transport. Background grants never renew implicitly.
+	if s.BeforeResourceRelease != nil {
+		if err := s.BeforeResourceRelease(ctx, owner, x.ID); err != nil {
+			return err
+		}
+	}
 	return s.Resources.Bind(ctx, owner, x.ID, x.CWD, servers)
 }
 
 func (s *Service) CloseSession(ctx context.Context, owner, id string) error {
+	s.stopSessionUpdates(owner, id)
 	return s.Coordinator.DetachWithCleanup(ctx, id, owner, func(cleanup context.Context) error {
+		if err := joinSessionUpdates(cleanup, s.stopSessionUpdates(owner, id)); err != nil {
+			return err
+		}
 		s.clearDecisions(owner, id)
 		if s.Resources != nil {
+			if s.BeforeResourceRelease != nil {
+				if err := s.BeforeResourceRelease(cleanup, owner, id); err != nil {
+					return err
+				}
+			}
 			if err := s.Resources.Release(cleanup, owner, id); err != nil {
 				return err
 			}
@@ -64,6 +95,11 @@ func (s *Service) abandonBinding(owner, id string, release func(), discardNew ..
 	cleanupResources := func(ctx context.Context) error {
 		s.clearDecisions(owner, id)
 		if s.Resources != nil {
+			if s.BeforeResourceRelease != nil {
+				if err := s.BeforeResourceRelease(ctx, owner, id); err != nil {
+					return err
+				}
+			}
 			if err := s.Resources.Release(ctx, owner, id); err != nil {
 				return err
 			}

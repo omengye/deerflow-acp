@@ -24,10 +24,7 @@ func (s service) testModel(request map[string]any) (map[string]any, error) {
 		return nil, err
 	}
 	model := models[0].(map[string]any)
-	provider := "openai"
-	if nativeProvider(model) == "claude" {
-		provider = "claude"
-	}
+	provider := nativeProvider(model)
 	apiKey, err := resolveSecret(str(model, "api_key", ""))
 	if err != nil {
 		return map[string]any{"ok": false, "error_type": "MissingCredential", "note": "请求失败，请检查凭据、地址、模型 ID 和网络；测试最长 30 秒"}, nil

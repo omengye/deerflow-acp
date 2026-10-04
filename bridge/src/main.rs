@@ -6,6 +6,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,6 +14,8 @@ use std::time::{Duration, Instant};
 mod gateway;
 mod remote;
 mod v2;
+#[cfg(windows)]
+mod windows_daemon;
 
 const HANDSHAKE_VERSION: &str = "DFACP/1";
 const ENDPOINT_FILENAME: &str = "endpoint.json";
@@ -60,7 +63,6 @@ struct Cli {
     mode: Mode,
     protocol: AcpProtocol,
     config: Option<PathBuf>,
-    python: Option<PathBuf>,
     daemon: Option<PathBuf>,
     mcp_allow_commands: Vec<PathBuf>,
     runtime_dir: Option<PathBuf>,
@@ -70,12 +72,6 @@ struct Cli {
     gateway_path: String,
     remote_url: Option<String>,
     token_env: String,
-}
-
-#[derive(Debug)]
-struct DaemonCommand {
-    program: PathBuf,
-    prefix_args: Vec<OsString>,
 }
 
 #[derive(Debug)]
@@ -97,8 +93,8 @@ impl Error for ConnectError {}
 fn print_help() {
     println!(
         "deerflow-acp - native stdio bridge for the local DeerFlow ACP daemon\n\n\
-Usage:\n  deerflow-acp [--config PATH] [--python PATH] [--daemon PATH] [--no-auto-start]\n  \
-deerflow-acp --protocol v2 [--config PATH] [--python PATH] [--daemon PATH]\n  \
+Usage:\n  deerflow-acp [--config PATH] [--daemon PATH] [--no-auto-start]\n  \
+deerflow-acp --protocol v2 [--config PATH] [--daemon PATH]\n  \
 deerflow-acp --status [--config PATH]\n  deerflow-acp --start-daemon [--config PATH]\n  \
 deerflow-acp --stop-daemon [--config PATH]\n  \
 deerflow-acp --manage [--config PATH]\n  \
@@ -106,8 +102,7 @@ deerflow-acp --gateway --workspace PATH [--listen ADDR] [--config PATH]\n  \
 deerflow-acp --remote URL [--token-env NAME]\n\n\
 Options:\n  --config PATH       DeerFlow config.yaml used when starting the daemon\n  \
 --protocol VERSION  ACP wire protocol for stdio proxy mode: v1 (default) or v2\n  \
---python PATH       Python interpreter used to run -m deerflow.acp.daemon\n  \
---daemon PATH       Explicit deerflow-acpd executable\n  --runtime-dir PATH  Override daemon endpoint directory\n  \
+--daemon PATH       Eino Go deerflow-acpd executable (default: sibling file)\n  --runtime-dir PATH  Override daemon endpoint directory\n  \
 --mcp-allow-command PATH  Host-authorized absolute MCP executable for Go daemon (repeatable)\n  \
 --no-auto-start      Fail instead of starting a missing daemon\n  --status             Check daemon status\n  \
 --start-daemon       Start the daemon without entering ACP proxy mode\n  --stop-daemon        Stop the daemon\n  \
@@ -133,10 +128,13 @@ fn push_mcp_allow_command(commands: &mut Vec<PathBuf>, command: PathBuf) -> Resu
 }
 
 fn parse_cli() -> Result<Cli> {
+    parse_args(env::args_os().skip(1))
+}
+
+fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Cli> {
     let mut mode = Mode::Proxy;
     let mut protocol = AcpProtocol::V1;
     let mut config = None;
-    let mut python = None;
     let mut daemon = None;
     let mut mcp_allow_commands = Vec::new();
     let mut runtime_dir = None;
@@ -146,7 +144,6 @@ fn parse_cli() -> Result<Cli> {
     let mut gateway_path = "/acp".to_owned();
     let mut remote_url = None;
     let mut token_env = "DEER_FLOW_ACP_GATEWAY_TOKEN".to_owned();
-    let mut args = env::args_os().skip(1);
     while let Some(raw) = args.next() {
         let value = raw.to_string_lossy();
         match value.as_ref() {
@@ -167,10 +164,8 @@ fn parse_cli() -> Result<Cli> {
                     args.next().ok_or("--config requires a path")?,
                 ));
             }
-            "--python" => {
-                python = Some(PathBuf::from(
-                    args.next().ok_or("--python requires a path")?,
-                ));
+            value if value == "--python" || value.starts_with("--python=") => {
+                return Err("--python has been removed; use the Eino Go daemon with --daemon PATH or install deerflow-acpd beside the Bridge".into());
             }
             "--daemon" => {
                 daemon = Some(PathBuf::from(
@@ -244,7 +239,6 @@ fn parse_cli() -> Result<Cli> {
         mode,
         protocol,
         config,
-        python,
         daemon,
         mcp_allow_commands,
         runtime_dir,
@@ -272,13 +266,7 @@ fn portable_root() -> Option<PathBuf> {
 
 fn portable_root_for(executable: &Path) -> Option<PathBuf> {
     let root = executable.parent()?;
-    let bundled_python = if cfg!(windows) {
-        root.join("runtime").join("python.exe")
-    } else {
-        root.join("runtime").join("bin").join("python3")
-    };
-    let portable_marker = bundled_python.is_file()
-        || root.join("resources").join("default-config.yaml").is_file()
+    let portable_marker = root.join("resources").join("default-config.yaml").is_file()
         || root
             .join("user-data")
             .join("config")
@@ -458,206 +446,89 @@ fn endpoint_is_live(endpoint: &Endpoint) -> bool {
     status(endpoint).is_ok()
 }
 
-fn python_daemon(path: PathBuf) -> DaemonCommand {
-    DaemonCommand {
-        program: path,
-        prefix_args: vec![OsString::from("-m"), OsString::from("deerflow.acp.daemon")],
-    }
+fn find_daemon(cli: &Cli) -> Result<PathBuf> {
+    let configured = env::var_os("DEER_FLOW_ACP_DAEMON").map(PathBuf::from);
+    let executable = env::current_exe()?;
+    resolve_daemon(cli.daemon.as_deref(), configured.as_deref(), &executable)
 }
 
-fn executable_daemon(path: PathBuf) -> DaemonCommand {
-    DaemonCommand {
-        program: path,
-        prefix_args: Vec::new(),
-    }
-}
-
-fn find_daemon(cli: &Cli) -> DaemonCommand {
-    if let Some(path) = &cli.python {
-        return python_daemon(path.clone());
-    }
-    if let Some(path) = &cli.daemon {
-        return executable_daemon(path.clone());
-    }
-    if let Some(path) = env::var_os("DEER_FLOW_ACP_PYTHON") {
-        return python_daemon(PathBuf::from(path));
-    }
-    if let Some(path) = env::var_os("DEER_FLOW_ACP_DAEMON") {
-        return executable_daemon(PathBuf::from(path));
-    }
-    let executable = env::current_exe().ok();
-    find_layout_daemon(executable.as_deref(), cli.config.as_deref())
-}
-
-fn find_layout_daemon(executable: Option<&Path>, config: Option<&Path>) -> DaemonCommand {
-    if let Some(parent) = executable.and_then(Path::parent) {
-        let bundled_python = if cfg!(windows) {
-            parent.join("runtime").join("python.exe")
-        } else {
-            parent.join("runtime").join("bin").join("python3")
-        };
-        if bundled_python.is_file() {
-            return python_daemon(bundled_python);
-        }
-        // A portable Go package places its daemon next to the Bridge. Prefer
-        // that explicit package layout to an unrelated .venv in a parent
-        // directory where the archive happened to be extracted.
-        let sibling = parent.join(if cfg!(windows) {
-            "deerflow-acpd.exe"
-        } else {
-            "deerflow-acpd"
-        });
-        if sibling.is_file() {
-            return executable_daemon(sibling);
-        }
-    }
-    if let Some(root) = config.and_then(Path::parent) {
-        let python = if cfg!(windows) {
-            root.join(".venv").join("Scripts").join("python.exe")
-        } else {
-            root.join(".venv").join("bin").join("python3")
-        };
-        if python.is_file() {
-            return python_daemon(python);
-        }
-    }
-    // Development layouts: a pip-installed entry-point wrapper sits directly
-    // next to its interpreter (.venv\Scripts), and cargo build outputs live
-    // under bridge\target\<profile> with the repo root a few levels up.
-    if let Some(parent) = executable.and_then(Path::parent) {
-        let sibling_python = if cfg!(windows) {
-            parent.join("python.exe")
-        } else {
-            parent.join("python3")
-        };
-        if sibling_python.is_file() {
-            return python_daemon(sibling_python);
-        }
-        let python_name = if cfg!(windows) {
-            Path::new("Scripts").join("python.exe")
-        } else {
-            Path::new("bin").join("python3")
-        };
-        let mut dir = parent.to_path_buf();
-        for _ in 0..4 {
-            let runtime_python = if cfg!(windows) {
-                dir.join("runtime").join("python.exe")
-            } else {
-                dir.join("runtime").join("bin").join("python3")
-            };
-            if runtime_python.is_file() {
-                return python_daemon(runtime_python);
-            }
-            let venv_python = dir.join(".venv").join(&python_name);
-            if venv_python.is_file() {
-                return python_daemon(venv_python);
-            }
-            if !dir.pop() {
-                break;
-            }
-        }
-    }
-    executable_daemon(PathBuf::from(if cfg!(windows) {
-        "deerflow-acpd.exe"
+fn resolve_daemon(
+    requested: Option<&Path>,
+    configured: Option<&Path>,
+    executable: &Path,
+) -> Result<PathBuf> {
+    // Resolve explicit paths before spawn changes cwd to the config directory.
+    // Only the installed sibling is discovered automatically. Searching PATH
+    // can pick up obsolete entry-point wrappers from another installation.
+    let path = if let Some(path) = requested.or(configured) {
+        absolute_path(path)?
     } else {
-        "deerflow-acpd"
-    }))
+        executable
+            .parent()
+            .ok_or("cannot locate the Bridge directory; supply --daemon PATH")?
+            .join(if cfg!(windows) {
+                "deerflow-acpd.exe"
+            } else {
+                "deerflow-acpd"
+            })
+    };
+    if !path.is_file() {
+        return Err(format!(
+            "Eino Go daemon executable is missing: {}; install deerflow-acpd beside the Bridge or supply --daemon PATH (DEER_FLOW_ACP_DAEMON also accepts a file path)",
+            path.display()
+        )
+        .into());
+    }
+    Ok(path)
 }
 
-fn mcp_daemon_arguments(daemon: &DaemonCommand, allowed: &[PathBuf]) -> Result<Vec<OsString>> {
-    if !allowed.is_empty() && !daemon.prefix_args.is_empty() {
-        return Err("MCP command allowlist can only be passed to the Go daemon".into());
-    }
+fn mcp_daemon_arguments(allowed: &[PathBuf]) -> Vec<OsString> {
     let mut arguments = Vec::with_capacity(allowed.len() * 2);
     for command in allowed {
         arguments.push(OsString::from("--mcp-allow-command"));
         arguments.push(command.as_os_str().to_owned());
     }
-    Ok(arguments)
+    arguments
 }
 
 fn spawn_daemon(cli: &Cli, runtime_dir: &Path) -> Result<()> {
+    let daemon = find_daemon(cli)?;
     fs::create_dir_all(runtime_dir)?;
-    let daemon = find_daemon(cli);
-    let mut command = Command::new(&daemon.program);
-    command.args(&daemon.prefix_args);
+    let mut args = Vec::new();
+    let mut cwd = None;
     if let Some(config) = &cli.config {
-        command.arg("--config").arg(config);
-        if let Some(parent) = config.parent() {
-            command.current_dir(parent);
-        }
+        args.push(OsString::from("--config"));
+        args.push(config.as_os_str().to_owned());
+        cwd = config.parent();
     }
-    command.args(mcp_daemon_arguments(&daemon, &cli.mcp_allow_commands)?);
-    command.arg("--runtime-dir").arg(runtime_dir);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    configure_detached_process(&mut command);
-    spawn_detached(&mut command)
-        .map_err(|error| format!("failed to start {}: {error}", daemon.program.display()))?;
+    args.extend(mcp_daemon_arguments(&cli.mcp_allow_commands));
+    args.push(OsString::from("--runtime-dir"));
+    args.push(runtime_dir.as_os_str().to_owned());
+    spawn_detached(&daemon, &args, cwd).map_err(|error| {
+        format!(
+            "failed to start Eino Go daemon {}: {error}",
+            daemon.display()
+        )
+    })?;
     Ok(())
 }
 
 #[cfg(windows)]
-fn configure_detached_process(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+fn spawn_detached(program: &Path, args: &[OsString], cwd: Option<&Path>) -> io::Result<()> {
+    windows_daemon::spawn(program, args, cwd)
 }
 
 #[cfg(not(windows))]
-fn configure_detached_process(_command: &mut Command) {}
-
-#[cfg(windows)]
-fn spawn_detached(command: &mut Command) -> io::Result<()> {
-    use std::ffi::c_void;
-
-    const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
-    const STD_INPUT_HANDLE: u32 = -10_i32 as u32;
-    const STD_OUTPUT_HANDLE: u32 = -11_i32 as u32;
-    const STD_ERROR_HANDLE: u32 = -12_i32 as u32;
-    const INVALID_HANDLE_VALUE: *mut c_void = -1_isize as *mut c_void;
-
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn GetStdHandle(n_std_handle: u32) -> *mut c_void;
-        fn GetHandleInformation(object: *mut c_void, flags: *mut u32) -> i32;
-        fn SetHandleInformation(object: *mut c_void, mask: u32, flags: u32) -> i32;
+fn spawn_detached(program: &Path, args: &[OsString], cwd: Option<&Path>) -> io::Result<()> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
     }
-
-    // Windows process creation can otherwise copy the bridge's captured stdio pipe
-    // handles into the persistent daemon, even though the daemon's own stdio is NUL.
-    // Zed (and subprocess-based callers) would then wait for those pipes forever.
-    let mut restore = Vec::new();
-    for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-        let handle = unsafe { GetStdHandle(id) };
-        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
-            continue;
-        }
-        let mut flags = 0_u32;
-        if unsafe { GetHandleInformation(handle, &mut flags) } == 0
-            || flags & HANDLE_FLAG_INHERIT == 0
-        {
-            continue;
-        }
-        if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } != 0 {
-            restore.push((handle, flags & HANDLE_FLAG_INHERIT));
-        }
-    }
-
-    let result = command.spawn().map(|_child| ());
-    for (handle, flags) in restore {
-        unsafe {
-            SetHandleInformation(handle, HANDLE_FLAG_INHERIT, flags);
-        }
-    }
-    result
-}
-
-#[cfg(not(windows))]
-fn spawn_detached(command: &mut Command) -> io::Result<()> {
     command.spawn().map(|_child| ())
 }
 
@@ -1047,23 +918,20 @@ mod process_tests {
     use super::*;
 
     #[test]
-    fn host_mcp_allowlist_reaches_only_go_daemon() {
+    fn host_mcp_allowlist_preserves_literal_paths() {
         let command = PathBuf::from(if cfg!(windows) {
             r"C:\MCP\server.exe"
         } else {
             "/opt/mcp/server"
         });
-        let go = executable_daemon(PathBuf::from("deerflow-acpd"));
         assert_eq!(
-            mcp_daemon_arguments(&go, &[command.clone()]).unwrap(),
+            mcp_daemon_arguments(&[command.clone()]),
             vec![
                 OsString::from("--mcp-allow-command"),
                 command.into_os_string()
             ]
         );
-        let python = python_daemon(PathBuf::from("python"));
-        assert!(mcp_daemon_arguments(&python, &[PathBuf::from("/opt/mcp/server")]).is_err());
-        assert!(mcp_daemon_arguments(&python, &[]).unwrap().is_empty());
+        assert!(mcp_daemon_arguments(&[]).is_empty());
     }
 
     #[test]
@@ -1100,7 +968,7 @@ mod process_tests {
     }
 
     #[test]
-    fn packaged_go_daemon_precedes_parent_python_venv() {
+    fn packaged_go_daemon_ignores_legacy_layouts_and_refuses_missing_sibling() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
         let bundle = root.join("bundle");
@@ -1123,10 +991,7 @@ mod process_tests {
             "deerflow-acpd"
         });
         fs::write(&sibling, b"go daemon").unwrap();
-        let config = root.join("config.yaml");
-        let selected = find_layout_daemon(Some(&bridge), Some(&config));
-        assert_eq!(selected.program, sibling);
-        assert!(selected.prefix_args.is_empty());
+        assert_eq!(resolve_daemon(None, None, &bridge).unwrap(), sibling);
 
         let bundled_python = if cfg!(windows) {
             bundle.join("runtime").join("python.exe")
@@ -1135,8 +1000,49 @@ mod process_tests {
         };
         fs::create_dir_all(bundled_python.parent().unwrap()).unwrap();
         fs::write(&bundled_python, b"python").unwrap();
-        let selected = find_layout_daemon(Some(&bridge), Some(&config));
-        assert_eq!(selected.program, bundled_python);
+        assert_eq!(resolve_daemon(None, None, &bridge).unwrap(), sibling);
+        assert_eq!(portable_root_for(&bridge), None);
+        fs::remove_file(&sibling).unwrap();
+        let error = resolve_daemon(None, None, &bridge).unwrap_err().to_string();
+        assert!(error.contains("Eino Go daemon executable is missing"));
+        assert!(error.contains(&sibling.display().to_string()));
+    }
+
+    #[test]
+    fn explicit_daemon_precedence_does_not_fall_back_after_missing_override() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let cli = root.join("cli-daemon");
+        let configured = root.join("env-daemon");
+        fs::write(&cli, b"fixture").unwrap();
+        fs::write(&configured, b"fixture").unwrap();
+        let bridge = root.join("deerflow-acp");
+        assert_eq!(
+            resolve_daemon(Some(&cli), Some(&configured), &bridge).unwrap(),
+            cli
+        );
+        assert_eq!(
+            resolve_daemon(None, Some(&configured), &bridge).unwrap(),
+            configured
+        );
+        fs::remove_file(&cli).unwrap();
+        assert!(resolve_daemon(Some(&cli), Some(&configured), &bridge).is_err());
+        assert!(resolve_daemon(None, Some(root), &bridge).is_err());
+    }
+
+    #[test]
+    fn removed_python_flag_gives_migration_error() {
+        for args in [
+            vec!["--python", "old-runtime"],
+            vec!["--python=old-runtime"],
+            vec!["--python"],
+        ] {
+            let error = parse_args(args.into_iter().map(OsString::from))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("--python has been removed"));
+            assert!(error.contains("--daemon PATH"));
+        }
     }
 
     #[test]

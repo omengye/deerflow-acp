@@ -8,6 +8,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 )
 
 // ObserveAgent projects assistant text/reasoning into this attempt's event sink
@@ -29,11 +30,16 @@ func (p *PreparedAttempt) ObserveAgentWithNativeCancel(inner adk.ResumableAgent,
 	return &preparedObserver{ResumableAgent: inner, attempt: p, onInterrupt: onInterrupt, nativeCancelRequested: cancelRequested}
 }
 
+func (p *PreparedAttempt) ObserveAgentWithTaskWaits(inner adk.ResumableAgent, onInterrupt func(context.Context, []ExecutionInterruptBinding) error, onWait func(context.Context, []interaction.TaskWaitBinding) error, cancelRequested func() bool) adk.ResumableAgent {
+	return &preparedObserver{ResumableAgent: inner, attempt: p, onInterrupt: onInterrupt, onWait: onWait, nativeCancelRequested: cancelRequested}
+}
+
 type preparedObserver struct {
 	adk.ResumableAgent
 	attempt               *PreparedAttempt
 	onInterrupt           func(context.Context, []ExecutionInterruptBinding) error
 	nativeCancelRequested func() bool
+	onWait                func(context.Context, []interaction.TaskWaitBinding) error
 }
 
 func (a *preparedObserver) Run(ctx context.Context, input *adk.AgentInput, options ...adk.AgentRunOption) *adk.AsyncIterator[*adk.AgentEvent] {
@@ -103,7 +109,28 @@ func (a *preparedObserver) observe(parent context.Context, begin func(context.Co
 				sawEventError = true
 			}
 			if event.Action != nil && event.Action.Interrupted != nil {
-				bindings, observeErr := a.interruptBindings(event.Action.Interrupted.InterruptContexts)
+				contexts := event.Action.Interrupted.InterruptContexts
+				var waits []interaction.TaskWaitBinding
+				var remaining []*adk.InterruptCtx
+				for _, item := range contexts {
+					if item != nil && item.IsRootCause {
+						if wait, ok := item.Info.(*interaction.TaskWaitInterrupt); ok && wait != nil && a.onWait != nil {
+							waits = append(waits, interaction.TaskWaitBinding{Wait: wait.Wait, NativeInterruptID: item.ID})
+							continue
+						}
+					}
+					if item != nil && item.IsRootCause {
+						remaining = append(remaining, item)
+					}
+				}
+				var bindings []ExecutionInterruptBinding
+				var observeErr error
+				if len(waits) == 0 || len(remaining) > 0 {
+					bindings, observeErr = a.interruptBindings(remaining)
+				}
+				if observeErr == nil && len(waits) > 0 {
+					observeErr = a.onWait(ctx, waits)
+				}
 				if observeErr == nil && len(bindings) > 0 && a.onInterrupt != nil {
 					observeErr = a.onInterrupt(ctx, bindings)
 				}

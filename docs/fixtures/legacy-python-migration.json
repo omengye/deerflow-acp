@@ -1,0 +1,189 @@
+{
+  "fixture_version": 1,
+  "provenance": {
+    "synthetic": true,
+    "baseline_commit": "9c29fcaac991f2d9f1e7af68250b12f6b3ec07d9",
+    "purpose": "Historical input shapes only; no user data and no executable scripts."
+  },
+  "evolution": {
+    "state.json": {
+      "schema_version": 1,
+      "catalog_version": 2,
+      "active_revisions": {
+        "sample-skill": 2
+      },
+      "observations": {
+        "sample-fingerprint": {
+          "count": 1,
+          "first_seen": "2026-01-01T00:00:00+00:00",
+          "last_seen": "2026-01-01T00:00:00+00:00",
+          "last_signal_at": null,
+          "summary": "Synthetic repeated task",
+          "occurrences": [
+            "2026-01-01T00:00:00+00:00"
+          ]
+        }
+      },
+      "probations": {
+        "sample-skill": {
+          "revision": 2,
+          "previous_revision": 1,
+          "remaining_uses": 3,
+          "consecutive_failures": 0,
+          "auto_published": false,
+          "status": "probation",
+          "started_at": "2026-01-01T00:00:00+00:00",
+          "last_observed_at": null,
+          "last_failure": null
+        }
+      },
+      "last_updated_at": "2026-01-01T00:00:00+00:00"
+    },
+    "proposals/p_sample/proposal.json": {
+      "id": "p_sample",
+      "status": "pending_review",
+      "action": "patch",
+      "skill_name": "sample-skill",
+      "file_path": "SKILL.md",
+      "reason": "Synthetic example",
+      "trigger": {
+        "type": "agent_request",
+        "thread_id": "synthetic-thread",
+        "summary": "Improve sample clarity"
+      },
+      "author": "agent",
+      "origin": "manual_agent",
+      "base_revision": 1,
+      "base_sha256": null,
+      "candidate_sha256": null,
+      "risk": "low",
+      "changed_files": [
+        "SKILL.md"
+      ],
+      "scans": [],
+      "evaluation": {},
+      "created_at": "2026-01-01T00:00:00+00:00",
+      "updated_at": "2026-01-01T00:00:00+00:00",
+      "reviewed_at": null,
+      "review_note": null,
+      "published_revision": null,
+      "error": null,
+      "archived_at": null,
+      "archived_by": null
+    },
+    "proposals/p_sample/candidate/sample-skill/SKILL.md": "---\nname: sample-skill\ndescription: Synthetic migration fixture\n---\nSummarize the supplied example in one sentence.\n",
+    "proposals/p_sample/diff.patch": "Synthetic placeholder; not an applicable patch.",
+    "revisions/sample-skill/2/manifest.json": {
+      "skill_name": "sample-skill",
+      "version": 2,
+      "created_at": "2026-01-01T00:00:00+00:00",
+      "actor": "synthetic-reviewer",
+      "action": "patch",
+      "previous_revision": 1,
+      "source_proposal_id": "p_earlier",
+      "sha256": null,
+      "deleted": false,
+      "note": "Synthetic history",
+      "rollback_of": null
+    },
+    "revisions/sample-skill/2/snapshot/SKILL.md": "---\nname: sample-skill\ndescription: Synthetic historical version\n---\nSummarize the supplied example.\n",
+    "signals/s_sample.json": {
+      "id": "s_sample",
+      "status": "pending",
+      "fingerprint": "sample-fingerprint",
+      "trigger_types": [
+        "repeated_task"
+      ],
+      "thread_id": "synthetic-thread",
+      "run_id": "synthetic-run",
+      "user_summary": "Synthetic input",
+      "assistant_summary": "Synthetic result",
+      "tool_names": [
+        "read_file"
+      ],
+      "tool_count": 1,
+      "tool_error_count": 0,
+      "recovered_error_count": 0,
+      "unresolved_error_count": 0,
+      "tool_errors": [],
+      "recurrence_count": 1,
+      "skills_used": [
+        {
+          "name": "sample-skill",
+          "scope": "custom",
+          "source": "current_turn"
+        }
+      ],
+      "proposal_id": null,
+      "created_at": "2026-01-01T00:00:00+00:00",
+      "updated_at": "2026-01-01T00:00:00+00:00",
+      "error": null
+    },
+    "audit.jsonl": [
+      {
+        "ts": "2026-01-01T00:00:00+00:00",
+        "actor": "synthetic-reviewer",
+        "action": "proposal.create",
+        "details": {
+          "proposal_id": "p_sample"
+        }
+      }
+    ]
+  },
+  "agent": {
+    "relative_directory": "agents/sample-agent",
+    "config": {
+      "name": "sample-agent",
+      "display_name": "Sample Agent",
+      "description": "Synthetic fixture",
+      "model": "fixture-model",
+      "tool_groups": [
+        "file:read"
+      ],
+      "mcp_servers": [],
+      "skills": null,
+      "memory_enabled": false
+    },
+    "soul": "Synthetic persona text; import as data only."
+  },
+  "memory": {
+    "version": "1.0",
+    "lastUpdated": "2026-01-01T00:00:00Z",
+    "user": {
+      "workContext": {
+        "summary": "",
+        "updatedAt": ""
+      },
+      "personalContext": {
+        "summary": "",
+        "updatedAt": ""
+      },
+      "topOfMind": {
+        "summary": "",
+        "updatedAt": ""
+      }
+    },
+    "history": {
+      "recentMonths": {
+        "summary": "",
+        "updatedAt": ""
+      },
+      "earlierContext": {
+        "summary": "",
+        "updatedAt": ""
+      },
+      "longTermBackground": {
+        "summary": "",
+        "updatedAt": ""
+      }
+    },
+    "facts": [
+      {
+        "id": "synthetic-fact",
+        "content": "This sample project uses Go.",
+        "category": "project",
+        "confidence": 0.9
+      }
+    ]
+  }
+}

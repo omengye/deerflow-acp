@@ -21,22 +21,55 @@ import (
 
 type toolMiddleware struct {
 	adk.BaseChatModelAgentMiddleware
-	sink        *eventSink
-	permissions harness.PermissionHandler
-	protected   map[string]bool
-	io          *runIO
-	budget      *runBudget
-	images      harness.ToolImageImporter
-	outputs     harness.ToolOutputStore
-	grants      sync.Map // *adk.ToolContext -> durablebudget.Reservation
-	outputMu    sync.Mutex
-	outputBytes int
+	sink            *eventSink
+	permissions     harness.PermissionHandler
+	protected       map[string]bool
+	policy          *harness.ToolPolicy
+	permissionMode  harness.PermissionMode
+	readOnly        bool
+	durableTaskWait bool
+	io              *runIO
+	budget          *runBudget
+	images          harness.ToolImageImporter
+	outputs         harness.ToolOutputStore
+	grants          sync.Map // *adk.ToolContext -> durablebudget.Reservation
+	executing       sync.Map // *adk.ToolContext -> started effect, until terminal receipt
+	permits         sync.Map // *adk.ToolContext -> release after terminal receipt and cleanup
+	outputMu        sync.Mutex
+	outputBytes     int
+}
+
+// Run after tool-providing middleware so a role's allowlist also governs
+// dynamically injected tools, not just ToolsNodeConfig.
+func (m *toolMiddleware) BeforeAgent(ctx context.Context, input *adk.ChatModelAgentContext[*schema.Message]) (context.Context, *adk.ChatModelAgentContext[*schema.Message], error) {
+	if m.policy == nil {
+		return ctx, input, nil
+	}
+	copy := *input
+	copy.Tools = make([]tool.BaseTool, 0, len(input.Tools))
+	for _, t := range input.Tools {
+		info, err := t.Info(ctx)
+		if err != nil {
+			return ctx, nil, err
+		}
+		if info == nil || info.Name == "" {
+			return ctx, nil, harness.ErrInvalidInput
+		}
+		if !m.policy.Allows(info.Name) {
+			continue
+		}
+		copy.Tools = append(copy.Tools, t)
+	}
+	return ctx, &copy, nil
 }
 
 func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args string) error {
 	arguments := json.RawMessage(args)
 	if !json.Valid(arguments) {
 		return errors.New("tool arguments are not valid JSON")
+	}
+	if m.policy != nil && !m.policy.Allows(tc.Name) {
+		return harness.MarkToolNotExecuted(harness.ErrPermissionDenied)
 	}
 	if m.nativeDelegation(tc) {
 		// Eino's task endpoint is a resumable orchestration boundary. Its child
@@ -47,7 +80,7 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 		// interrupt here would be mistaken for its own child interrupt, so the
 		// boundary uses the live session broker; child effects remain durable.
 		was, _, _ := tool.GetInterruptState[any](ctx)
-		if m.protected[tc.Name] && !was {
+		if tc.Name == "task" && m.requiresPermission(tc.Name) && !was {
 			// Persist a terminal receipt for the orchestration boundary before
 			// entering the child. The child may suspend; an open parent receipt
 			// would otherwise be classified as an uncertain external effect.
@@ -57,7 +90,7 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 			decision := harness.RejectOnce
 			var err error
 			if m.permissions != nil {
-				decision, err = m.permissions(ctx, m.requestFor(tc, arguments))
+				decision, err = m.askPermission(ctx, m.requestFor(tc, arguments))
 			}
 			if err != nil || (decision != harness.AllowOnce && decision != harness.AllowAlways) {
 				failure := harness.ErrPermissionDenied
@@ -66,7 +99,7 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 				} else if decision == harness.PermissionCancelled {
 					failure = context.Canceled
 				}
-				if endErr := m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "tool_end", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "failed", Content: []harness.Content{{Type: "text", Text: failure.Error()}}, Receipt: &harness.ToolReceipt{Error: failure.Error()}}); endErr != nil {
+				if endErr := m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "tool_end", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "failed", Content: []harness.Content{{Type: "text", Text: failure.Error()}}, Receipt: &harness.ToolReceipt{Error: failure.Error(), FailureCode: toolFailureCode(failure)}}); endErr != nil {
 					return errors.Join(failure, endErr)
 				}
 				return failure
@@ -88,10 +121,13 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 		if was {
 			kind = "subagent_resumed"
 		}
+		if tc.Name == "task_wait" {
+			kind = "background_wait_start"
+		}
 		return m.sink.emit(ctx, harness.RunEvent{Kind: kind, ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress"})
 	}
 	hooks := executionHooks(ctx)
-	governed := m.protected[tc.Name] && hooks != nil && hooks.Broker != nil
+	governed := m.requiresPermission(tc.Name) && hooks != nil && hooks.Broker != nil
 	wasInterrupted, _, _ := tool.GetInterruptState[permissionState](ctx)
 	if governed && wasInterrupted {
 		// The first attempt already persisted this pending logical call. Resume
@@ -107,19 +143,21 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 			return err
 		}
 	}
-	if m.protected[tc.Name] {
+	if m.requiresPermission(tc.Name) {
 		var decision harness.PermissionDecision
 		var err error
 		if governed {
 			if hooks.StageCheckpoint == nil {
 				return errors.New("durable permission broker requires checkpoint staging")
 			}
+			endApproval := beginRoleActivity(ctx, "approval")
 			decision, err = m.governedPermission(ctx, tc, args, hooks)
+			endApproval()
 		} else {
 			if m.permissions == nil {
 				return harness.ErrPermissionDenied
 			}
-			decision, err = m.permissions(ctx, m.requestFor(tc, arguments))
+			decision, err = m.askPermission(ctx, m.requestFor(tc, arguments))
 		}
 		if err != nil {
 			return err
@@ -135,6 +173,16 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Approval may wait on a human. Only admitted effect I/O owns a role slot;
+	// holding it around the permission callback can deadlock sibling roles.
+	release, err := beginRoleWork(ctx)
+	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return harness.MarkToolNotExecuted(ctx.Err())
+		}
+		return err
+	}
+	m.permits.Store(tc, release)
 	if value, ok := m.grants.Load(tc); ok {
 		first, err := m.budget.ledger.MarkDispatched(ctx, value.(durablebudget.Reservation))
 		if err != nil {
@@ -144,10 +192,18 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 			return durablebudget.ErrConflict
 		}
 	}
-	return m.sink.emit(ctx, harness.RunEvent{Kind: "tool_execute", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress"})
+	if err := m.sink.emit(ctx, harness.RunEvent{Kind: "tool_execute", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress"}); err != nil {
+		return err
+	}
+	m.executing.Store(tc, beginRoleActivity(ctx, "tool"))
+	return nil
 }
 
 func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, content []harness.Content, err error) error {
+	if done, started := m.executing.LoadAndDelete(tc); started {
+		done.(func())()
+		m.io.recordUnconfirmedEffect(err)
+	}
 	if m.nativeDelegation(tc) {
 		m.sink.mu.Lock()
 		started := m.sink.delegations[tc.CallID]
@@ -162,6 +218,12 @@ func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, conten
 		} else if err != nil {
 			status = "failed"
 			content = []harness.Content{{Type: "text", Text: err.Error()}}
+		}
+		if tc.Name == "task_wait" {
+			kind = "background_wait_end"
+			if isPermissionInterrupt(err) {
+				kind = "background_wait_suspended"
+			}
 		}
 		return m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: kind, ToolCallID: tc.CallID, ToolName: tc.Name, Status: status, Content: content})
 	}
@@ -179,14 +241,17 @@ func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, conten
 	if err != nil {
 		status = "failed"
 		content = append(content, harness.Content{Type: "text", Text: err.Error()})
-		receipt = &harness.ToolReceipt{Error: err.Error()}
+		receipt = &harness.ToolReceipt{Error: err.Error(), FailureCode: toolFailureCode(err)}
 		var notExecuted *harness.ToolNotExecutedError
 		var noEffect *harness.ToolNoEffectError
+		var executedFailure *harness.ToolExecutionFailedError
 		if !errors.Is(err, harness.ErrCommandUncertain) {
 			if errors.As(err, &notExecuted) {
 				receipt.State = harness.ReceiptNotExecuted
 			} else if errors.As(err, &noEffect) {
 				receipt.State = harness.ReceiptNoEffect
+			} else if errors.As(err, &executedFailure) && certifiedToolOutcome(err) {
+				receipt.State = harness.ReceiptFailed
 			}
 		}
 	}
@@ -196,22 +261,68 @@ func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, conten
 }
 
 func (m *toolMiddleware) nativeDelegation(tc *adk.ToolContext) bool {
-	return tc.Name == "task"
+	return tc.Name == "task" || m.durableTaskWait && tc.Name == "task_wait"
+}
+
+func (m *toolMiddleware) requiresPermission(name string) bool {
+	return m.protected[name] || (m.policy != nil && (m.readOnly || m.permissionMode.RequiresPermission(name)))
+}
+
+func (m *toolMiddleware) askPermission(ctx context.Context, request harness.PermissionRequest) (harness.PermissionDecision, error) {
+	done := beginRoleActivity(ctx, "approval")
+	defer done()
+	return m.permissions(ctx, request)
+}
+
+func (m *toolMiddleware) begin(ctx context.Context, tc *adk.ToolContext) (context.Context, func(), error) {
+	if m.nativeDelegation(tc) {
+		parent, _ := ctx.Value(roleWorkKey{}).(roleWork)
+		identity, err := json.Marshal([]string{m.sink.request.RunID, parent.id, tc.CallID})
+		if err != nil {
+			return nil, nil, err
+		}
+		ctx = context.WithValue(ctx, roleInvocationKey{}, fmt.Sprintf("%x", sha256.Sum256(identity)))
+		tracked, finish, err := m.io.begin(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		done := beginRoleActivity(ctx, "descendant_wait")
+		return tracked, func() { done(); finish() }, nil
+	}
+	tracked, finish, err := m.io.begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return tracked, func() {
+		if release, ok := m.permits.LoadAndDelete(tc); ok {
+			release.(func())()
+		}
+		finish()
+	}, nil
 }
 
 // A failed tool call may be returned to the model only when the tool supplied
-// trustworthy evidence that it did not execute or that it had no effect.
+// trustworthy evidence of a terminal outcome, rejection, or no effects.
 // Cancellation and uncertain command termination must still stop the run.
 func recoverableToolFailure(ctx context.Context, err error) bool {
 	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, harness.ErrCommandUncertain) || isPermissionInterrupt(err) {
 		return false
 	}
-	var notExecuted *harness.ToolNotExecutedError
-	var noEffect *harness.ToolNoEffectError
-	return errors.As(err, &notExecuted) || errors.As(err, &noEffect)
+	remaining, removed := removeErrorLeaves(err, func(leaf error) bool {
+		switch leaf.(type) {
+		case *harness.ToolNotExecutedError, *harness.ToolNoEffectError, *harness.ToolExecutionFailedError:
+			return true
+		}
+		return false
+	})
+	return removed && remaining == nil
 }
 
 func failedToolModelText(output string, err error) string {
+	var executedFailure *harness.ToolExecutionFailedError
+	if errors.As(err, &executedFailure) {
+		return "Tool failed: " + err.Error() + "\nThe tool execution has ended. Partial effects may have occurred; inspect the output and any affected state before retrying. Do not assume a rollback.\nTool output: " + output
+	}
 	if output == "" {
 		return "Tool failed: " + err.Error()
 	}
@@ -224,13 +335,13 @@ func failedEnhancedToolResult(output *schema.ToolResult, err error) *schema.Tool
 		*result = *output
 		result.Parts = append([]schema.ToolOutputPart(nil), output.Parts...)
 	}
-	result.Parts = append(result.Parts, schema.ToolOutputPart{Type: schema.ToolPartTypeText, Text: "Tool failed: " + err.Error()})
+	result.Parts = append(result.Parts, schema.ToolOutputPart{Type: schema.ToolPartTypeText, Text: failedToolModelText("", err)})
 	return result
 }
 
 func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.InvokableToolCallEndpoint, tc *adk.ToolContext) (adk.InvokableToolCallEndpoint, error) {
 	return func(ctx context.Context, args string, opts ...tool.Option) (string, error) {
-		ctx, finish, err := m.io.begin(ctx)
+		ctx, finish, err := m.begin(ctx, tc)
 		if err != nil {
 			return "", err
 		}
@@ -324,7 +435,7 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 					if !json.Valid(arguments) {
 						arguments = json.RawMessage(`{}`)
 					}
-					decision, err := m.permissions(ctx, harness.PermissionRequest{ID: m.sink.request.RunID + "/" + tc.CallID + "/external/" + call.ToolCallID, SessionID: m.sink.request.Session.ID, RunID: m.sink.request.RunID, ConfigVersion: m.sink.request.Session.ConfigVersion, ToolCallID: tc.CallID + "/" + call.ToolCallID, ToolName: "external_acp/" + invoked.Agent + "/" + call.Title, Arguments: arguments})
+					decision, err := m.askPermission(ctx, harness.PermissionRequest{ID: m.sink.request.RunID + "/" + tc.CallID + "/external/" + call.ToolCallID, SessionID: m.sink.request.Session.ID, RunID: m.sink.request.RunID, ConfigVersion: m.sink.request.Session.ConfigVersion, ToolCallID: tc.CallID + "/" + call.ToolCallID, ToolName: "external_acp/" + invoked.Agent + "/" + call.Title, Arguments: arguments})
 					if err != nil {
 						return "", err
 					}
@@ -336,6 +447,9 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 					return "", nil
 				},
 			})
+		}
+		if tc.Name == "skill_manage" {
+			ctx = context.WithValue(ctx, skillReviewRuntimeKey{}, &skillReviewRuntime{budget: m.budget, io: m.io, sink: m.sink})
 		}
 		output, toolErr := next(ctx, args, opts...)
 		var settleErr error
@@ -356,7 +470,7 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 		if output == "" && errors.As(err, &evidence) {
 			output = evidence.ToolResult()
 		}
-		recoverable := settleErr == nil && recoverableToolFailure(ctx, toolErr)
+		recoverable := settleErr == nil && m.recoverableFailure(ctx, tc, toolErr)
 		modelOutput := output
 		if recoverable {
 			modelOutput = failedToolModelText(output, toolErr)
@@ -379,6 +493,15 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 				return "", commitErr
 			}
 		}
+		if tc.Name == "skill_manage" {
+			// The candidate service can durably report a failed validation while
+			// its nested model admission/settlement had an infrastructure error.
+			// Keep the confirmed tool receipt, but stop before the next agent
+			// call instead of swallowing that error as an ordinary review result.
+			if nestedErr := m.io.failure(); nestedErr != nil {
+				return "", errors.Join(err, nestedErr)
+			}
+		}
 		if recoverable {
 			return modelOutput, nil
 		}
@@ -388,7 +511,7 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 
 func (m *toolMiddleware) WrapStreamableToolCall(_ context.Context, next adk.StreamableToolCallEndpoint, tc *adk.ToolContext) (adk.StreamableToolCallEndpoint, error) {
 	return func(ctx context.Context, args string, opts ...tool.Option) (*schema.StreamReader[string], error) {
-		ctx, finish, err := m.io.begin(ctx)
+		ctx, finish, err := m.begin(ctx, tc)
 		if err != nil {
 			return nil, err
 		}
@@ -412,7 +535,7 @@ func (m *toolMiddleware) WrapStreamableToolCall(_ context.Context, next adk.Stre
 		}
 		stream, err := next(ctx, args, opts...)
 		if err != nil {
-			recoverable := recoverableToolFailure(ctx, err)
+			recoverable := m.recoverableFailure(ctx, tc, err)
 			modelOutput := ""
 			if recoverable {
 				var snapshotErr error
@@ -465,7 +588,7 @@ func enhancedContent(output *schema.ToolResult) []harness.Content {
 
 func (m *toolMiddleware) WrapEnhancedInvokableToolCall(_ context.Context, next adk.EnhancedInvokableToolCallEndpoint, tc *adk.ToolContext) (adk.EnhancedInvokableToolCallEndpoint, error) {
 	return func(ctx context.Context, args *schema.ToolArgument, opts ...tool.Option) (*schema.ToolResult, error) {
-		ctx, finish, err := m.io.begin(ctx)
+		ctx, finish, err := m.begin(ctx, tc)
 		if err != nil {
 			return nil, err
 		}
@@ -480,12 +603,18 @@ func (m *toolMiddleware) WrapEnhancedInvokableToolCall(_ context.Context, next a
 			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
 		}
 		output, toolErr := next(ctx, args, opts...)
+		if output == nil && toolErr != nil {
+			var carrier interface{ EnhancedToolResult() *schema.ToolResult }
+			if errors.As(toolErr, &carrier) {
+				output = carrier.EnhancedToolResult()
+			}
+		}
 		var mediaErr error
 		output, mediaErr = normalizeToolImages(ctx, output, m.sink.request, tc.CallID, m.images)
 		err = errors.Join(toolErr, mediaErr)
 		fullContent := enhancedContent(output)
 		modelOutput := output
-		recoverable := mediaErr == nil && recoverableToolFailure(ctx, toolErr)
+		recoverable := mediaErr == nil && m.recoverableFailure(ctx, tc, toolErr)
 		if recoverable {
 			modelOutput = failedEnhancedToolResult(output, toolErr)
 		}
@@ -507,7 +636,7 @@ func (m *toolMiddleware) WrapEnhancedInvokableToolCall(_ context.Context, next a
 
 func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next adk.EnhancedStreamableToolCallEndpoint, tc *adk.ToolContext) (adk.EnhancedStreamableToolCallEndpoint, error) {
 	return func(ctx context.Context, args *schema.ToolArgument, opts ...tool.Option) (*schema.StreamReader[*schema.ToolResult], error) {
-		ctx, finish, err := m.io.begin(ctx)
+		ctx, finish, err := m.begin(ctx, tc)
 		if err != nil {
 			return nil, err
 		}
@@ -528,7 +657,7 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 		}
 		stream, err := next(ctx, args, opts...)
 		if err != nil {
-			recoverable := recoverableToolFailure(ctx, err)
+			recoverable := m.recoverableFailure(ctx, tc, err)
 			var modelOutput *schema.ToolResult
 			if recoverable {
 				var snapshotErr error

@@ -18,11 +18,12 @@ import (
 type backgroundInteractionAttemptKey struct{}
 
 type BackgroundInteractionAttempt struct {
-	store   *BackgroundInteractionStore
-	scope   background.TaskScope
-	fence   BackgroundInteractionFence
-	targets map[string]interaction.PermissionResume
-	mu      sync.Mutex
+	store         *BackgroundInteractionStore
+	scope         background.TaskScope
+	fence         BackgroundInteractionFence
+	targets       map[string]interaction.PermissionResume
+	cancellations map[string]interaction.RoleCancellationResume
+	mu            sync.Mutex
 }
 
 func (s *BackgroundInteractionStore) OpenAttempt(ctx context.Context, scope background.TaskScope, check BackgroundInteractionFence) (*BackgroundInteractionAttempt, error) {
@@ -40,6 +41,9 @@ func (s *BackgroundInteractionStore) OpenAttempt(ctx context.Context, scope back
 		}
 		if task.Status != bt.StatusRunning || task.Attempt != scope.Attempt {
 			return harness.ErrExecutionConflict
+		}
+		if waiting, err := s.validateReleasedWait(ctx, tx, scope.Binding, task, scope.Attempt, false); waiting || err != nil {
+			return err
 		}
 		if drained, err := s.validateReleasedDrain(ctx, tx, scope.Binding, task, scope.Attempt, false); drained || err != nil {
 			return err
@@ -60,11 +64,12 @@ func (s *BackgroundInteractionStore) OpenAttempt(ctx context.Context, scope back
 		if err = s.validateManifest(ctx, tx, m, task); err != nil {
 			return err
 		}
-		a.targets, err = s.grantTargetsTx(ctx, tx, m, scope.Attempt)
+		targets, err := s.grantTargetsTx(ctx, tx, m, scope.Attempt)
 		if err != nil {
 			return err
 		}
-		return verifyBackgroundResumeData(task.PendingResume, a.targets)
+		a.targets, a.cancellations = targets.Permissions, targets.Cancellations
+		return verifyBackgroundResumeData(task.PendingResume, targets)
 	})
 	return a, err
 }
@@ -82,7 +87,7 @@ func (a *BackgroundInteractionAttempt) Hooks() interaction.ExecutionHooks {
 	for id, p := range a.targets {
 		targets[id] = p
 	}
-	return interaction.ExecutionHooks{Broker: a, Targets: targets, StageCheckpoint: func(context.Context, interaction.StagedExecutionCheckpoint) error {
+	return interaction.ExecutionHooks{Broker: a, Targets: targets, Cancellations: a.cancellations, StageCheckpoint: func(context.Context, interaction.StagedExecutionCheckpoint) error {
 		return errors.New("native background executor owns checkpoint publication")
 	}}
 }
@@ -114,7 +119,8 @@ func (a *BackgroundInteractionAttempt) PreparePermission(ctx context.Context, p 
 				return harness.ErrExecutionConflict
 			}
 			result = interaction.PermissionIntent{ID: oldID, Version: version}
-			return nil
+			result.RoleID, err = recordBackgroundIntentRole(ctx, tx, a.scope.Binding, oldID)
+			return err
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -136,6 +142,9 @@ func (a *BackgroundInteractionAttempt) PreparePermission(ctx context.Context, p 
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO harness_background_permission_intents(id,task_id,tool_call_id,version,state,request,descriptor) VALUES(?,?,?,1,'pending',?,?)`, p.ID, p.RunID, p.ToolCallID, request, data)
 		result = interaction.PermissionIntent{ID: p.ID, Version: 1}
+		if err == nil {
+			result.RoleID, err = recordBackgroundIntentRole(ctx, tx, a.scope.Binding, p.ID)
+		}
 		return err
 	})
 	return result, err
@@ -161,6 +170,11 @@ func (a *BackgroundInteractionAttempt) validateGrantTx(ctx context.Context, tx *
 	}
 	if state != "pending" || version != intent.Version || old.ID != p.ID || old.SessionID != p.SessionID || old.RunID != p.RunID || old.ToolCallID != p.ToolCallID || old.ToolName != p.ToolName || old.ConfigVersion != p.ConfigVersion || executionDigest(old.Arguments) != executionDigest(p.Arguments) {
 		return "", harness.ErrExecutionConflict
+	}
+	if role, err := stoppedBackgroundIntentRole(ctx, tx, a.scope.Binding.RootBudgetID, intent.ID); err != nil {
+		return "", err
+	} else if role != "" {
+		return "", harness.ErrTaskTreeStopped
 	}
 	if p.SessionID != a.scope.Binding.ChildSessionID || p.RunID != a.scope.Binding.TaskID {
 		return "", harness.ErrExecutionConflict

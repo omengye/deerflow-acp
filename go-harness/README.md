@@ -2,8 +2,8 @@
 
 This module is the Go/Eino implementation on `codex/eino-harness-acp-refactor`.
 It is under active development. The complete V1 scope and acceptance gates are
-tracked in [the implementation plan](../docs/eino-harness-v1-implementation-plan.md)
-and [implementation status](../docs/eino-harness-implementation-status.md).
+tracked in [the implementation plan](../docs/eino-subagents-skill-evolution-plan.md)
+and [implementation status](../docs/eino-subagents-skill-evolution-status.md).
 
 The portable configuration now supports 13 migrated native Go tools and uses
 `models[].provider`, `sandbox.provider` and tool names without Python `use`
@@ -37,6 +37,22 @@ reserved for protocol messages; logs and startup errors go to stderr.
 Use a separate data directory from Python. Only one process may own it. Build
 `./cmd/deerflow-acpd-go` for shared multi-window access through the existing Rust
 Bridge. See [daemon setup and compatibility](internal/localhost/README.md).
+
+## Skill evolution
+
+Native skill proposals, review, explicit generation, observed-use feedback and
+missing-capability reports use the Go registry and authenticated local management
+channel. Optional repeated-correction discovery now selects current feedback
+from distinct settled root tasks and enqueues generation under the independent
+maintenance budget. It defaults off and requires explicit generation configuration.
+Successful candidates await manual publication approval. See the
+[discovery contract](internal/skills/evolution/discovery.md) and
+[management/configuration reference](internal/acp/skill-evolution.md).
+Optional [behavior evaluations](internal/skills/evolution/behavior.md) execute
+both versions through Eino with local fixture tools and Go assertions. Results
+and maintenance receipts are durable and queryable; manual submissions use a
+dedicated job when enabled. Trusted failure attribution, missing-report routing,
+repeated workflow discovery and automatic publication/rollback remain work.
 
 ## Current execution path
 
@@ -152,9 +168,9 @@ todo lists do not replace the lead agent's plan.
 allowlist leaves tools available unless denied; an empty non-nil allowlist
 disables all tools. It also controls Eino's native `task` and `write_todos` and
 the Skills `skill` tool. Session config cannot restore a host-denied tool, and
-execution checkpoints pin the effective policy. Bridge `--config` maps Python
-`local_acp.tool_allowlist` and `tool_denylist`; Python permission modes `off`
-and `all` are still rejected until their approval semantics are implemented.
+execution checkpoints pin the effective policy. Bridge `--config` maps
+`local_acp.tool_allowlist`, `tool_denylist` and the native permission modes
+`off`, `dangerous` and `all` through the same Go configuration contract.
 The default Eino backend also exposes durable `background_agent`, `task_status`,
 `task_wait` and `task_cancel` tools. Isolated child agents inherit the workspace,
 policy and existing budget; only explicit text instructions are copied. Both
@@ -206,6 +222,14 @@ types live in `harness/` and do not expose Eino or ACP SDK types. An embedder ca
 provide `Config.Engine` to supply its own execution backend. Call `Close` after
 all work; it cancels attached runs, waits for cleanup and releases the database
 ownership lock.
+
+Operator skill evidence is available through `SubmitSkillFeedback` for actual
+observed reads and `SubmitMissingSkillReport` for a capability missing from a
+real task, including a task with no skill reads. Matching Get/List methods
+provide current records and bounded histories. These SDK operations share the
+authenticated local management service, preserve task outcomes and do not run
+generation or publish skills. See the
+[skill evidence management contract](internal/acp/skill-evolution.md).
 
 ## Verify
 

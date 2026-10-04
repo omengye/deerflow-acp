@@ -1842,6 +1842,7 @@ fn handle_driver_command(
         Command::Cancel => driver.cancel(),
         Command::CancelComputerUse => driver.cancel_computer_use(),
         Command::RefreshBackgroundWork => driver.refresh_background_work(),
+        Command::DeerFlowTasks { command } => driver.deerflow_tasks(command),
         Command::StopBackgroundWork { key, control_id } => {
             driver.stop_background_work(
                 serde_json::from_value(key).context("invalid background-work key")?,
@@ -2001,6 +2002,7 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
         ),
         DriverEvent::RichActivity(activity) => ("richActivity", serde_json::to_value(activity)?),
         DriverEvent::BackgroundWork(work) => ("backgroundWork", serde_json::to_value(work)?),
+        DriverEvent::DeerFlowTasks(event) => ("deerflowTasks", serde_json::to_value(event)?),
         DriverEvent::Permission {
             request_id,
             title,
@@ -2095,6 +2097,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
         }
         "richActivity" => DriverEvent::RichActivity(serde_json::from_value(payload)?),
         "backgroundWork" => DriverEvent::BackgroundWork(serde_json::from_value(payload)?),
+        "deerflowTasks" => DriverEvent::DeerFlowTasks(serde_json::from_value(payload)?),
         "permission" => {
             let permission: PermissionWire = serde_json::from_value(payload)?;
             DriverEvent::Permission {

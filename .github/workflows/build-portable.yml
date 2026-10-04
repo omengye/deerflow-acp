@@ -33,21 +33,27 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            bridge -> bridge/target
-            desktop -> desktop/target
+            bridge -> target
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
+      - name: Set up Go toolchain
+        uses: actions/setup-go@v5
         with:
-          version: "0.9.18"
-          enable-cache: true
-          python-version: "3.12"
+          go-version: '1.26.8'
+          cache-dependency-path: go-harness/go.sum
 
-      - name: Build DeerFlow Portable Package
+      - name: Build Eino Go ACP package
         shell: pwsh
         run: |
-          .\scripts\build-deerflow-portable.ps1 -Configuration Release
+          ./scripts/build-go-acp-portable.ps1 -Configuration Release `
+            -OutputDirectory 'dist/portable/DeerFlow-Go-windows-x64' -CreateZip
 
+      - name: Verify packaged Bridge and Go daemon
+        shell: pwsh
+        working-directory: go-harness
+        env:
+          DEERFLOW_TEST_BRIDGE: ${{ github.workspace }}/dist/portable/DeerFlow-Go-windows-x64/deerflow-acp.exe
+          DEERFLOW_TEST_GO_DAEMON: ${{ github.workspace }}/dist/portable/DeerFlow-Go-windows-x64/deerflow-acpd.exe
+        run: go test -count=1 -run TestExistingRustBridge -timeout=5m ./cmd/deerflow-acpd-go
       - name: Calculate SHA-256 Checksums
         shell: pwsh
         run: |

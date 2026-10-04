@@ -1858,6 +1858,7 @@ impl ActivityKind {
 
 #[derive(Clone, Debug)]
 pub enum DriverEvent {
+    DeerFlowTasks(crate::deerflow_tasks::Event),
     /// Client-only acknowledgement that every daemon event through this
     /// sequence has been incorporated into the local session projection.
     /// Providers never emit this and the daemon never serializes it.

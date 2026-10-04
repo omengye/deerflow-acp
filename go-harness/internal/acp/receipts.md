@@ -16,6 +16,31 @@ of parameter names/types, bounded result evidence, and any prior human review.
 Tool session updates carry the corresponding identity, state and version in
 `update._meta.deerflow.receipt`.
 
+Hosts advertising `pagination: "live_keyset"` also accept `limit` (1–20),
+optional `cursor`, and `uncertainOnly` (default false). The result includes
+`nextCursor`, `hasMore`, and `consistency: "live_keyset"`. A cursor binds the
+session and filter; changing either requires restarting from the first page.
+Pages replace the desktop's bounded window. `uncertainOnly: true` ensures that
+earlier successful calls cannot hide blocking receipts. The original unpaged
+request remains available for existing SDK/ACP clients.
+
+A `failed` receipt records a native command that ended with an unsuccessful
+result after the host confirmed termination and cleanup, or a normal MCP
+`IsError` response with bounded, credential-checked evidence. Its tool card remains
+failed, and the model receives the bounded output and error so it can inspect
+and correct the command. Partial effects may have occurred; this state asserts
+neither success nor rollback and never causes automatic replay. Cancellation,
+unconfirmed termination, lost transport, and persistence failures retain their
+existing stopping/reconciliation behavior. Old uncertain receipts are not
+silently reclassified by upgrading the executable.
+
+Command snapshots carry `notExecuted` only when the native operation failed
+before launching a process (including a rejected `cmd.Start`). A missing exit
+code alone is insufficient; wait/cleanup failures retain uncertain handling.
+Waku's “任务与工具核对” panel queries and reviews receipts on the owning ACP
+connection. Review requires a reviewer, actual verification notes and explicit
+`completed`/`no_effect` choice, followed by confirmation. It never replays a call.
+
 This private query returns harness receipt records, not standard ACP content
 blocks. Results from `view_image` or `present_files` may contain a stable
 `deerflow-asset:` URI and internal `asset` metadata (session, digest and size)

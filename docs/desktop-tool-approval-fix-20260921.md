@@ -1,3 +1,5 @@
+> 历史记录：本文描述旧 Python 实现或当时的桌面设计，命令和能力声明不作为当前分支的使用说明。原文与源码参见[固定历史提交](https://github.com/omengye/deerflow-acp/tree/9c29fcaac991f2d9f1e7af68250b12f6b3ec07d9)。当前 Eino Go 入口与验收范围见[项目说明](../README.md)。
+
 # DeerFlow Desktop 工具审批修复记录
 
 本轮将桌面的权限选择接入 DeerFlow 的真实会话审批策略，避免界面显示 Ask，但后端仍按自动批准执行工具。新安装、无历史偏好的会话默认使用 Full Access；用户选择过的模式继续保留。恢复已有会话时，以后端返回的 `tool_approval` 为准，旧桌面状态不会覆盖后端策略。

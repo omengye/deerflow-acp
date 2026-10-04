@@ -173,6 +173,7 @@ impl Waku {
             self.store_selected_right_panel_state();
         }
         self.state.selected_session = Some(session_id);
+        self.deerflow_sync_missing_session(cx);
         self.task_switcher.record_access(session_id);
         if let Some((
             project_id,

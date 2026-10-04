@@ -303,3 +303,91 @@ func TestSDKViewImageUsesCommittedSnapshotInReadOnlyMode(t *testing.T) {
 		t.Fatalf("view_image published artifact: %+v err=%v", artifacts, err)
 	}
 }
+
+func TestSDKTextParentCanDelegateImageInspectionToVisionRole(t *testing.T) {
+	data := imageFixture(t)
+	workspace := t.TempDir()
+	decoded, _ := base64.StdEncoding.DecodeString(data)
+	if err := os.WriteFile(filepath.Join(workspace, "picture.png"), decoded, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var parentCalls, childCalls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model string `json:"model"`
+			Tools []struct {
+				Function struct{ Name string } `json:"function"`
+			} `json:"tools"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Error(err)
+			http.Error(w, "fixture", 400)
+			return
+		}
+		name, id, args, content := "", "", "", ""
+		view := false
+		for _, item := range req.Tools {
+			if item.Function.Name == "view_image" {
+				view = true
+			}
+		}
+		if req.Model == "text-parent" {
+			if view || bytes.Contains(body, []byte("data:image/png;base64,")) {
+				t.Error("text parent received vision tool or image bytes")
+			}
+			if parentCalls.Add(1) == 1 {
+				name, id, args = "task", "delegate-vision", `{"subagent_type":"inspector","prompt":"Inspect picture.png","description":"inspect image"}`
+			} else {
+				content = "parent received image description"
+			}
+		} else if req.Model == "vision-child" {
+			if !view {
+				t.Error("vision child did not receive its model-specific tool")
+			}
+			if childCalls.Add(1) == 1 {
+				name, id, args = "view_image", "role-image", `{"path":"picture.png"}`
+			} else {
+				if !bytes.Contains(body, []byte("data:image/png;base64,"+data)) {
+					t.Error("vision child did not receive committed image bytes")
+				}
+				content = "image described"
+			}
+		} else {
+			t.Errorf("unexpected model %s", req.Model)
+		}
+		delta := map[string]any{"role": "assistant", "content": content}
+		finish := "stop"
+		if name != "" {
+			delta["tool_calls"] = []any{map[string]any{"index": 0, "id": id, "type": "function", "function": map[string]string{"name": name, "arguments": args}}}
+			finish = "tool_calls"
+		}
+		chunk, _ := json.Marshal(map[string]any{"id": "fixture", "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}})
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", chunk)
+	}))
+	defer provider.Close()
+	ctx := context.Background()
+	c, err := Open(ctx, Config{DataDir: t.TempDir(), Provider: "openai", Model: "text-parent", APIKey: "fixture", BaseURL: provider.URL + "/v1",
+		ModelRoutes: map[string]harness.ModelRoute{"vision-role": {Provider: "openai", Model: "vision-child", APIKey: "fixture", BaseURL: provider.URL + "/v1"}},
+		Media:       harness.MediaConfig{VisionModels: []string{"vision-role"}}, Subagents: &harness.SubagentsConfig{CustomAgents: map[string]harness.AgentConfig{"inspector": {Description: "inspect an image", SystemPrompt: "describe the image", Model: "vision-role", Tools: []string{"view_image"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	sess, err := c.NewSession(ctx, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := c.Run(ctx, sess.ID, []harness.Content{{Type: "text", Text: "delegate image inspection"}}, nil, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+		return harness.AllowOnce, nil
+	})
+	if err != nil || result.Execution == nil || result.Execution.Status != harness.ExecutionCompleted || parentCalls.Load() != 2 || childCalls.Load() != 2 {
+		t.Fatalf("result=%+v parent=%d child=%d err=%v", result, parentCalls.Load(), childCalls.Load(), err)
+	}
+	receipts, err := c.ListToolReceipts(ctx, sess.ID)
+	if err != nil || len(receipts) != 1 || receipts[0].State != harness.ReceiptCompleted {
+		t.Fatalf("receipts=%+v err=%v", receipts, err)
+	}
+	assertNoStoredBase64(t, c, data)
+}

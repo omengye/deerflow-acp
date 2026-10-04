@@ -10,7 +10,25 @@ import (
 
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"go.yaml.in/yaml/v3"
 )
+
+// InspectConfiguredSkills uses the launcher's actual source/import resolution
+// without opening a runtime/database or constructing models. Desktop saves use
+// it before any writes so managed and import sources have the same checks.
+func InspectConfiguredSkills(configPath string, document map[string]any) (harness.SkillsConfig, error) {
+	data, err := yaml.Marshal(document)
+	if err != nil {
+		return harness.SkillsConfig{}, fmt.Errorf("skills: cannot encode configuration")
+	}
+	var source runtimeDocument
+	if err := yaml.Unmarshal(data, &source); err != nil {
+		return harness.SkillsConfig{}, fmt.Errorf("skills: invalid configuration shape")
+	}
+	var cfg deerflow.Config
+	err = applyConfiguredSkills(configPath, source, &cfg, nil)
+	return cfg.Skills, err
+}
 
 func skillsFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
 	flags.Func("skills-config", "explicit Skills JSON file with sources, limits, install and includeGlobal/names selection; no implicit scanning", func(path string) error {
@@ -28,11 +46,14 @@ func skillsFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
 			return fmt.Errorf("skills configuration exceeds limit or could not be read")
 		}
 		var document struct {
-			Sources       []harness.SkillSource  `json:"sources"`
-			Limits        harness.SkillLimits    `json:"limits"`
-			Install       []harness.SkillInstall `json:"install"`
-			IncludeGlobal bool                   `json:"includeGlobal"`
-			Names         []string               `json:"names"`
+			Sources        []harness.SkillSource  `json:"sources"`
+			Limits         harness.SkillLimits    `json:"limits"`
+			Install        []harness.SkillInstall `json:"install"`
+			IncludeGlobal  bool                   `json:"includeGlobal"`
+			Names          []string               `json:"names"`
+			BuiltinSources []string               `json:"builtinSources"`
+			ManagedSources []string               `json:"managedSources"`
+			ExportRoot     string                 `json:"exportRoot"`
 		}
 		dec := json.NewDecoder(strings.NewReader(string(data)))
 		dec.DisallowUnknownFields()
@@ -49,7 +70,7 @@ func skillsFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
 		if len(document.Install) > 128 {
 			return fmt.Errorf("too many startup skill installations")
 		}
-		cfg.Skills = harness.SkillsConfig{Sources: document.Sources, Limits: document.Limits, Install: document.Install}
+		cfg.Skills = harness.SkillsConfig{Sources: document.Sources, Limits: document.Limits, Install: document.Install, BuiltinSources: document.BuiltinSources, ManagedSources: document.ManagedSources, ExportRoot: document.ExportRoot}
 		cfg.SkillSelection = harness.SkillSelection{IncludeGlobal: document.IncludeGlobal, Names: document.Names}
 		return nil
 	})

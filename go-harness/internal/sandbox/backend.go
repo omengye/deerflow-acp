@@ -16,17 +16,19 @@ import (
 )
 
 type Backend struct {
-	cfg       harness.SandboxConfig
-	cwd       string
-	identity  os.FileInfo
-	workspace *os.File
-	guestCWD  string
-	mu        sync.Mutex
-	tasks     map[string]*task
-	active    int
-	closed    bool
-	closeDone chan struct{}
-	closeErr  error
+	cfg         harness.SandboxConfig
+	cwd         string
+	identity    os.FileInfo
+	workspace   *os.File
+	guestCWD    string
+	guestHelper string
+	helper      *os.File
+	mu          sync.Mutex
+	tasks       map[string]*task
+	active      int
+	closed      bool
+	closeDone   chan struct{}
+	closeErr    error
 }
 
 type task struct {
@@ -238,6 +240,9 @@ func (b *Backend) Close() error {
 		}
 	}
 	errs = append(errs, b.workspace.Close())
+	if b.helper != nil {
+		errs = append(errs, b.helper.Close())
+	}
 	b.closeErr = errors.Join(errs...)
 	close(b.closeDone)
 	return b.closeErr
@@ -251,6 +256,7 @@ func (b *Backend) execute(ctx context.Context, t *task, request harness.CommandR
 	t.snapshot.FinishedAt = time.Now().UTC()
 	t.snapshot.ExitCode = result.exitCode
 	t.snapshot.TerminationConfirmed = result.confirmed
+	t.snapshot.NotExecuted = result.notExecuted
 	t.snapshot.State = result.state
 	if result.err != nil {
 		t.snapshot.Error = result.err.Error()

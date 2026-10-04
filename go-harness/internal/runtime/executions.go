@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS harness_execution_grants (
  intent_version INTEGER NOT NULL,decision TEXT NOT NULL,state TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(attempt_id,intent_id));
 CREATE TABLE IF NOT EXISTS harness_execution_audits (
  sequence INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT NOT NULL REFERENCES harness_executions(run_id),attempt_id TEXT NOT NULL,kind TEXT NOT NULL,data BLOB NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS harness_execution_wakeups (
+ run_id TEXT PRIMARY KEY REFERENCES harness_executions(run_id),checkpoint_sha TEXT NOT NULL,attempts INTEGER NOT NULL,next_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS harness_automatic_stops (
+ root_id TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES harness_sessions(id),reason TEXT NOT NULL,created_at TEXT NOT NULL);
 `)
 	return err
 }
@@ -262,12 +266,27 @@ func (s *Store) Execution(ctx context.Context, sessionID, runID string) (harness
 	}
 	if row.State.Status == harness.ExecutionWaitingInput {
 		if err = validateExecutionManifest(ctx, tx, row); err == nil {
-			row.State.Resumable = true
+			seen := map[string]bool{}
+			for _, wait := range row.Manifest.TaskWaits {
+				if !seen[wait.Wait.TaskID] {
+					row.State.WaitingTasks = append(row.State.WaitingTasks, wait.Wait.TaskID)
+					seen[wait.Wait.TaskID] = true
+				}
+			}
+			if err = executionResumeReadiness(ctx, tx, row); err == nil {
+				row.State.Resumable = true
+			} else if !errors.Is(err, harness.ErrExecutionWaitingInput) {
+				return row.State, err
+			}
 		} else if errors.Is(err, harness.ErrExecutionUnresumable) || errors.Is(err, harness.ErrReconciliationRequired) || errors.Is(err, harness.ErrExecutionConflict) {
 			row.State.BlockedReason = err.Error()
 		} else {
 			return row.State, err
 		}
+	}
+	row.State.Automatic, err = executionAutomaticState(ctx, tx, row)
+	if err != nil {
+		return row.State, err
 	}
 	return row.State, nil
 }

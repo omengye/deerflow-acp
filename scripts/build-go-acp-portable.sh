@@ -45,10 +45,11 @@ cp -- "$repo_root/bridge/target/$profile/deerflow-acp" "$output_root/deerflow-ac
   cd -- "$repo_root/go-harness"
   go build -trimpath -p=2 -o "$output_root/deerflow-acpd" ./cmd/deerflow-acpd-go
   go build -trimpath -p=2 -o "$output_root/deerflow-acp-go" ./cmd/deerflow-acp-go
+  go build -trimpath -p=2 -o "$output_root/deerflow-skill-go" ./cmd/deerflow-skill-go
 )
 cp -- "$repo_root/LICENSE" "$output_root/LICENSE.txt"
 cp -- "$repo_root/docs/go-acp-portable.md" "$output_root/README.md"
-for binary in deerflow-acp deerflow-acpd deerflow-acp-go; do
+for binary in deerflow-acp deerflow-acpd deerflow-acp-go deerflow-skill-go; do
   if [[ ! -s "$output_root/$binary" || ! -x "$output_root/$binary" ]]; then
     echo "Package binary is missing, empty, or not executable: $binary" >&2
     exit 1

@@ -32,6 +32,7 @@ use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
 
 use super::activity;
+mod deerflow_tasks;
 use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
@@ -45,6 +46,7 @@ use waku_protocol::model_catalog::{
 };
 
 enum CommandMessage {
+    DeerFlowTasks(waku_protocol::deerflow_tasks::Command),
     Prompt(String, Vec<crate::model::MessageAttachment>),
     Steer(String),
     Cancel,
@@ -476,13 +478,18 @@ async fn run_sdk_connection(
                 let events = events.clone();
                 let suppress_session_updates = suppress_session_updates.clone();
                 let stream_state = stream_state.clone();
+                let prompt_requests = prompt_requests.clone();
                 async move |notification: SessionNotification, _connection| {
                     if !suppress_session_updates.load(Ordering::Acquire) {
+                        let mut stream = stream_state.lock();
+                        if provider == ProviderKind::DeerFlow {
+                            return deerflow_tasks::receive_update(&mut stream,deerflow_tasks::EarlyUpdate::Session(notification),!prompt_requests.lock().is_empty(),&events);
+                        }
                         handle_session_update(
                             provider,
                             notification,
                             &events,
-                            &mut stream_state.lock(),
+                            &mut stream,
                         )?;
                     }
                     Ok(())
@@ -496,7 +503,12 @@ async fn run_sdk_connection(
                 let prompt_requests = prompt_requests.clone();
                 let grok_title_home = grok_title_home.clone();
                 let title_refresh = title_refresh.clone();
+                let stream_state = stream_state.clone();
                 async move |notification: UntypedMessage, _connection| {
+                    if provider == ProviderKind::DeerFlow && notification.method() == "_deerflow/executions/updated" {
+                        let mut stream = stream_state.lock();
+                        deerflow_tasks::receive_update(&mut stream,deerflow_tasks::EarlyUpdate::Lifecycle(notification.params().clone()),!prompt_requests.lock().is_empty(),&events)?;
+                    }
                     if notification.method() == "_x.ai/session/prompt_complete" {
                         if let Some(session_id) = finish_xai_prompt_complete(
                             notification.params(),
@@ -520,7 +532,11 @@ async fn run_sdk_connection(
             {
                 let events = events.clone();
                 let pending_permissions = pending_permissions.clone();
+                let stream_state = stream_state.clone();
                 async move |request: RequestPermissionRequest, responder, _connection| {
+                    if provider == ProviderKind::DeerFlow {
+                        return deerflow_tasks::receive_permission(&mut stream_state.lock(),request,responder,mode,&pending_permissions,&events);
+                    }
                     handle_permission_request(
                         request,
                         responder,
@@ -658,6 +674,11 @@ async fn run_sdk_connection(
                     native_session_id.clone(),
                 )),
             });
+            let task_connection = (provider == ProviderKind::DeerFlow).then(|| deerflow_tasks::TaskConnection::new(&initialize, &native_session_id, &events));
+            stream_state.lock().deerflow_tasks = task_connection.as_ref().map(deerflow_tasks::TaskConnection::notifications);
+            if provider == ProviderKind::DeerFlow {
+                deerflow_tasks::flush_early_updates(&mut stream_state.lock(), !prompt_requests.lock().is_empty(), &events)?;
+            }
             if let Some(approval) = approval {
                 access.lock().confirm(&approval);
                 let _ = events.send(DriverEvent::ToolApprovalChanged(approval));
@@ -683,6 +704,19 @@ async fn run_sdk_connection(
 
             while let Ok(command) = commands.recv().await {
                 match command {
+                    CommandMessage::DeerFlowTasks(command) => {
+                        if let Some(tasks) = &task_connection {
+                            if matches!(command.action, waku_protocol::deerflow_tasks::Action::ExecutionResume { .. }) {
+                                if !access.lock().ready {
+                                    deerflow_tasks::failed(&events, command, "approval_not_ready", "工具审批策略尚未确认，请等待设置同步后恢复。");
+                                } else {
+                                    tasks.resume_execution(&connection, command, &prompt_requests, &events, &stream_state);
+                                }
+                            } else {
+                                tasks.dispatch(&connection, command, &events);
+                            }
+                        }
+                    }
                     CommandMessage::Prompt(text, attachments) => {
                         if provider == ProviderKind::DeerFlow && !access.lock().ready {
                             let _ = events.send(DriverEvent::TurnStarted);
@@ -776,6 +810,7 @@ async fn run_sdk_connection(
                         let _ = connection
                             .send_notification(CancelNotification::new(session_id.clone()));
                         cancel_pending_permissions(&pending_permissions);
+                        stream_state.lock().deerflow_early.items.retain(|update| !matches!(update, deerflow_tasks::EarlyUpdate::Driver(DriverEvent::Permission { .. })));
                         cancel_pending_user_inputs(&pending_user_inputs);
                     }
                     CommandMessage::Respond {
@@ -1881,12 +1916,22 @@ fn send_prompt(
     let native_session_id = native_session_id.to_owned();
     let registered = sent.on_receiving_result(async move |result| {
         if settle_prompt_request(&callback_requests, &callback_request_id) {
+            if let Some(tasks) = &stream_state.lock().deerflow_tasks {
+                tasks.invalidate(&callback_events);
+            }
             // Only an empty turn pays for this lookup, so a healthy turn never
             // waits on Kimi's records.
             let native_failure = wire_offset
                 .filter(|_| !stream_state.lock().produced_content)
                 .and_then(|offset| crate::kimi_session::turn_failure(&native_session_id, offset));
             let success = finish_prompt(result, native_failure, &callback_events);
+            if provider == ProviderKind::DeerFlow {
+                deerflow_tasks::flush_early_updates(
+                    &mut stream_state.lock(),
+                    false,
+                    &callback_events,
+                )?;
+            }
             if provider == ProviderKind::Grok && success {
                 start_grok_title_refresh(
                     grok_title_home.as_deref(),
@@ -2094,7 +2139,11 @@ fn finish_prompt(
     let response = match result {
         Ok(response) => response,
         Err(error) => {
-            let _ = events.send(DriverEvent::Error(error.to_string()));
+            let mut message = error.to_string();
+            if message.contains("reconciliation_required") || message.contains("Uncertain tool effects require review") {
+                message.push_str("\n打开对话上方的「任务与工具核对」，读取待核对回执，核实实际结果后填写说明并提交核对；然后发送新消息继续。核对不会重新执行工具。");
+            }
+            let _ = events.send(DriverEvent::Error(message));
             let _ = events.send(DriverEvent::TurnFinished {
                 success: false,
                 summary: None,
@@ -2622,6 +2671,9 @@ fn fx_context_notice(text: &str) -> bool {
 
 #[derive(Default)]
 struct AcpStreamState {
+    deerflow_tasks: Option<deerflow_tasks::NotificationState>,
+    deerflow_early: deerflow_tasks::EarlyUpdates,
+    deerflow_buffering: bool,
     tools: HashMap<String, (ActivityKind, String)>,
     /// Whether the running turn has produced anything visible. A turn that
     /// ends having produced nothing is the shape a swallowed provider error
@@ -2732,6 +2784,21 @@ fn classify(kind: &str) -> ActivityKind {
 }
 
 impl DriverControl for AcpDriver {
+    fn deerflow_tasks(&self, command: waku_protocol::deerflow_tasks::Command) {
+        if self
+            .commands
+            .try_send(CommandMessage::DeerFlowTasks(command.clone()))
+            .is_err()
+        {
+            let _ = self.events.send(DriverEvent::DeerFlowTasks(
+                waku_protocol::deerflow_tasks::Event::Failed {
+                    command,
+                    code: "connection_closed".into(),
+                    message: "任务连接已断开，请重新连接后刷新。".into(),
+                },
+            ));
+        }
+    }
     fn prompt(&self, prompt: String) {
         self.enqueue_prompt(prompt, Vec::new());
     }

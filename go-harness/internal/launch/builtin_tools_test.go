@@ -46,7 +46,7 @@ tools:
 	}
 	var cfg deerflow.Config
 	connections := 0
-	if _, err := ApplyPythonConfig(path, &cfg, &connections, nil); err != nil {
+	if _, err := ApplyConfig(path, &cfg, &connections, nil); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Provider != "openai" || cfg.ModelRoutes["deerflow-config:alternate"].Provider != "claude" || !cfg.HostToolsAllowed || len(cfg.BuiltinTools) != 8 {

@@ -13,6 +13,7 @@ import (
 type PermissionIntent struct {
 	ID      string
 	Version int64
+	RoleID  string `json:",omitempty"`
 }
 type PermissionResume struct {
 	IntentID      string
@@ -25,6 +26,12 @@ type PermissionResume struct {
 type InteractionBroker interface {
 	PreparePermission(context.Context, harness.PermissionRequest) (PermissionIntent, error)
 	ResolvePermission(context.Context, harness.PermissionRequest, PermissionIntent, string) (harness.PermissionDecision, error)
+}
+
+// TaskWaitBroker checks the original root and role scope before a foreground
+// tool can publish a durable wait. It does not approve descendant effects.
+type TaskWaitBroker interface {
+	TaskWaitReady(context.Context, TaskWait) (bool, error)
 }
 
 // PolicyPermissionBroker optionally resolves a new intent from host-owned
@@ -40,12 +47,14 @@ type ExecutionInterruptBinding struct {
 	IntentID          string
 	IntentVersion     int64
 	NativeInterruptID string
+	RoleID            string `json:",omitempty"`
 }
 type StagedExecutionCheckpoint struct {
 	ID         string
 	Data       []byte
 	Remove     bool
 	Interrupts []ExecutionInterruptBinding
+	TaskWaits  []TaskWaitBinding
 }
 
 // ExecutionInputSource is reconstructed only by the runtime from its immutable
@@ -56,16 +65,26 @@ type ExecutionInputSource struct {
 	SHA             string
 	Input           []harness.Content
 	PinnedExtension json.RawMessage
+	RoleCatalog     json.RawMessage
+	RoleContext     *RoleContext
+	// Live, host-validated MCP authority for this reconstructed continuation.
+	// It is not part of the immutable input or supplied by the client/model.
+	ResourceGeneration string
 }
 
 // ExecutionHooks carries host-owned native addresses and server-issued grants.
 // StageCheckpoint is called only after all engine resources and I/O join; the
 // runtime must publish it atomically with the execution state and budget end.
 type ExecutionHooks struct {
-	Broker          InteractionBroker
-	Targets         map[string]PermissionResume
-	StageCheckpoint func(context.Context, StagedExecutionCheckpoint) error
-	InputSource     *ExecutionInputSource
+	Broker        InteractionBroker
+	Targets       map[string]PermissionResume
+	Cancellations map[string]RoleCancellationResume
+	// TaskWaitsEnabled is host-owned and pinned in the checkpoint so older
+	// executions retain their bounded task_wait tool contract on resume.
+	TaskWaitsEnabled bool
+	WaitTargets      map[string]TaskWait
+	StageCheckpoint  func(context.Context, StagedExecutionCheckpoint) error
+	InputSource      *ExecutionInputSource
 }
 type executionHooksKey struct{}
 
@@ -75,9 +94,26 @@ func WithExecutionHooks(ctx context.Context, hooks ExecutionHooks) context.Conte
 		cloned[id] = target
 	}
 	hooks.Targets = cloned
+	cancellations := make(map[string]RoleCancellationResume, len(hooks.Cancellations))
+	for id, target := range hooks.Cancellations {
+		cancellations[id] = target
+	}
+	hooks.Cancellations = cancellations
+	waits := make(map[string]TaskWait, len(hooks.WaitTargets))
+	for id, wait := range hooks.WaitTargets {
+		waits[id] = wait
+	}
+	hooks.WaitTargets = waits
 	if hooks.InputSource != nil {
 		source := *hooks.InputSource
 		source.PinnedExtension = append(json.RawMessage(nil), source.PinnedExtension...)
+		source.RoleCatalog = append(json.RawMessage(nil), source.RoleCatalog...)
+		if source.RoleContext != nil {
+			data, _ := json.Marshal(source.RoleContext)
+			var copied RoleContext
+			_ = json.Unmarshal(data, &copied)
+			source.RoleContext = &copied
+		}
 		source.Input = append([]harness.Content(nil), source.Input...)
 		for i := range source.Input {
 			if source.Input[i].Asset != nil {

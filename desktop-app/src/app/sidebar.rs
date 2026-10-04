@@ -2279,6 +2279,9 @@ impl Waku {
                 element.child(chip)
             })
             .child(self.render_background_work_summary(cx))
+            .when_some(self.render_deerflow_task_chip(cx), |element, chip| {
+                element.child(chip)
+            })
             .when(!self.right_panel_visible, |element| {
                 element
                     .when(self.fps_counter_visible, |element| {

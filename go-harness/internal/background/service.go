@@ -157,6 +157,9 @@ func (s *Service) beginSubmission() (func(), error) {
 }
 
 func (s *Service) Submit(ctx context.Context, actor harness.TaskActor, in Submission) (harness.BackgroundTask, error) {
+	if in.Binding.ContinuationOf != "" || in.Binding.InvocationID != "" {
+		return harness.BackgroundTask{}, harness.ErrPermissionDenied
+	}
 	if err := s.authorize(ctx, actor); err != nil {
 		return harness.BackgroundTask{}, err
 	}
@@ -167,6 +170,10 @@ func (s *Service) Submit(ctx context.Context, actor harness.TaskActor, in Submis
 	defer finish()
 	if s.config.Budgets == nil {
 		return harness.BackgroundTask{}, harness.ErrBackgroundUnavailable
+	}
+	in.Binding, err = s.bindSubmissionTree(ctx, nil, in.Binding)
+	if err != nil {
+		return harness.BackgroundTask{}, err
 	}
 	in, err = prepareSubmission(actor, in)
 	if err != nil {
@@ -207,6 +214,9 @@ func (s *Service) Submit(ctx context.Context, actor harness.TaskActor, in Submis
 // SubmitNativeSubagent uses Eino's public serializer; native payload bytes remain
 // opaque. RequestHash makes repeated origin identity independently verifiable.
 func (s *Service) SubmitNativeSubagent(ctx context.Context, actor harness.TaskActor, b Binding, input *adk.AgentInput, description string) (harness.BackgroundTask, error) {
+	if b.ContinuationOf != "" || b.InvocationID != "" {
+		return harness.BackgroundTask{}, harness.ErrPermissionDenied
+	}
 	if err := s.authorize(ctx, actor); err != nil {
 		return harness.BackgroundTask{}, err
 	}
@@ -224,6 +234,10 @@ func (s *Service) SubmitNativeSubagent(ctx context.Context, actor harness.TaskAc
 		return harness.BackgroundTask{}, harness.ErrPermissionDenied
 	}
 	b.ParentSessionID = actor.SessionID
+	b, err = s.bindSubmissionTree(ctx, nil, b)
+	if err != nil {
+		return harness.BackgroundTask{}, err
+	}
 	b.ExecutorKey = ds.ExecutorKey
 	b.TaskID = originTaskID(b)
 	if b.ChildSessionID == "" {

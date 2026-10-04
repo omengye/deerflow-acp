@@ -109,6 +109,9 @@ pub enum Command {
     Cancel,
     CancelComputerUse,
     RefreshBackgroundWork,
+    DeerFlowTasks {
+        command: crate::deerflow_tasks::Command,
+    },
     StopBackgroundWork {
         key: Value,
         control_id: String,

@@ -136,6 +136,8 @@ type RunResult struct {
 	// Execution describes a durable waiting/terminal state when execution
 	// recovery is enabled. It does not extend ACP's standard stopReason enum.
 	Execution *ExecutionState
+	// A notification can enqueue a new native task for its private parent.
+	Background *BackgroundTask
 }
 
 // Engine must stop model/tool execution when ctx is cancelled and finish cleanup

@@ -4,8 +4,42 @@ use super::*;
 use crate::ui::ActivationExt;
 use serde_json::{Value, json};
 
+mod auto_patch;
+mod behavior;
+mod behavior_inspector;
+mod discovery;
+mod effective;
+mod evolution;
+mod feedback;
+mod generation;
+mod legacy;
+mod missing;
+mod roles;
+mod settings_contract;
+mod skill_sources;
+mod skills;
+mod tools;
+use skills::SkillBrowser;
+
 const SINGLE_FIELDS: usize = 40;
 const FIELD_COUNT: usize = 56;
+
+// Local transcript IDs cannot identify native Go tasks. Only the provider
+// cursor establishes the session used for missing-capability discovery.
+fn missing_session_context(session: Option<&AgentSession>) -> Option<(Uuid, String, String)> {
+    let session = session.filter(|session| session.provider == ProviderKind::DeerFlow)?;
+    let Some(ProviderResumeCursor::DeerFlow { session_id }) = &session.provider_cursor else {
+        return None;
+    };
+    if session_id.is_empty() || session_id.len() > 256 || session_id.contains('\0') {
+        return None;
+    }
+    Some((
+        session.id,
+        session_id.clone(),
+        session.display_title().to_owned(),
+    ))
+}
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Section {
@@ -90,7 +124,7 @@ impl Section {
     const ALL: [(Self, &'static str); 7] = [
         (Self::Overview, "概览"),
         (Self::Models, "模型"),
-        (Self::Agents, "智能体"),
+        (Self::Agents, "子代理"),
         (Self::Memory, "长期记忆"),
         (Self::Skills, "技能"),
         (Self::Tools, "工具与权限"),
@@ -103,17 +137,34 @@ enum Kind {
     Optional,
     Integer,
     Number,
+    OptionalInteger,
+    OptionalNumber,
+    Names,
+    OptionalBool,
+    ModelReference,
+    ConfiguredModelReference,
+    OptionalChoice(&'static [(&'static str, &'static str)]),
     Multiline,
     Json,
     Bool,
+    TrueOnly,
     Choice(&'static [(&'static str, &'static str)]),
 }
 impl Kind {
     fn multiline(self) -> bool {
-        matches!(self, Self::Multiline | Self::Json)
+        matches!(self, Self::Multiline | Self::Json | Self::Names)
     }
     fn input(self) -> bool {
-        !matches!(self, Self::Bool | Self::Choice(_))
+        !matches!(
+            self,
+            Self::Bool
+                | Self::TrueOnly
+                | Self::OptionalBool
+                | Self::Choice(_)
+                | Self::OptionalChoice(_)
+                | Self::ModelReference
+                | Self::ConfiguredModelReference
+        )
     }
 }
 #[derive(Clone)]
@@ -143,15 +194,23 @@ impl Field {
 
 pub(super) struct DeerFlowSettings {
     pub(super) inputs: Vec<Entity<TextInput>>,
+    pub(super) generation_inputs: [Entity<TextInput>; 2],
+    pub(super) feedback_input: Entity<TextInput>,
+    pub(super) missing_input: Entity<TextInput>,
+    skills_session_id: Option<String>,
+    skills_local_session_id: Option<Uuid>,
+    skills_session_title: String,
     draft: Option<Value>,
     fields: Vec<Field>,
     input_text: Vec<String>,
     errors: HashMap<String, String>,
     section: Section,
     selected_model: usize,
+    selected_tool: usize,
+    selected_skill_source: usize,
     pending_model_names: HashMap<usize, String>,
-    pending_agent_names: HashMap<usize, String>,
-    selected_agent: usize,
+    roles: roles::RoleEditor,
+    legacy: legacy::LegacyBrowser,
     advanced: bool,
     dirty: bool,
     needs_apply: bool,
@@ -168,6 +227,7 @@ pub(super) struct DeerFlowSettings {
     model_refresh_queued: bool,
     model_refresh_retry_pending: bool,
     status: Value,
+    applied_values: Vec<effective::Row>,
     error: Option<String>,
     notice: Option<String>,
     confirm_reload: bool,
@@ -186,6 +246,8 @@ pub(super) struct DeerFlowSettings {
     revisions: Vec<Value>,
     proposal_diff: Entity<TextInput>,
     confirm_manage: Option<(String, Value)>,
+    skill_browser: SkillBrowser,
+    settings_contract: settings_contract::Capabilities,
 }
 impl DeerFlowSettings {
     pub(super) fn new(window: &mut Window, cx: &mut App) -> Self {
@@ -202,17 +264,31 @@ impl DeerFlowSettings {
             })
             .collect();
         let proposal_diff = cx.new(|cx| TextInput::new(window, cx).multi_line().read_only(true));
+        let feedback_input = cx.new(|cx| TextInput::new(window, cx).multi_line().read_only(true));
+        let missing_input = cx.new(|cx| TextInput::new(window, cx).multi_line().read_only(true));
+        let generation_inputs = [
+            cx.new(|cx| TextInput::new(window, cx).read_only(true)),
+            cx.new(|cx| TextInput::new(window, cx).multi_line().read_only(true)),
+        ];
         Self {
             inputs,
+            generation_inputs,
+            feedback_input,
+            missing_input,
+            skills_session_id: None,
+            skills_local_session_id: None,
+            skills_session_title: String::new(),
             draft: None,
             fields: Vec::new(),
             input_text: vec![String::new(); FIELD_COUNT],
             errors: HashMap::new(),
             section: Section::Overview,
             selected_model: 0,
+            selected_tool: 0,
+            selected_skill_source: 0,
             pending_model_names: HashMap::new(),
-            pending_agent_names: HashMap::new(),
-            selected_agent: 0,
+            roles: roles::RoleEditor::default(),
+            legacy: legacy::LegacyBrowser::default(),
             advanced: false,
             dirty: false,
             needs_apply: false,
@@ -229,6 +305,7 @@ impl DeerFlowSettings {
             model_refresh_queued: false,
             model_refresh_retry_pending: false,
             status: Value::Null,
+            applied_values: Vec::new(),
             error: None,
             notice: None,
             confirm_reload: false,
@@ -247,6 +324,8 @@ impl DeerFlowSettings {
             revisions: Vec::new(),
             proposal_diff,
             confirm_manage: None,
+            skill_browser: SkillBrowser::default(),
+            settings_contract: settings_contract::Capabilities::default(),
         }
     }
     fn busy(&self) -> bool {
@@ -258,6 +337,12 @@ impl DeerFlowSettings {
     }
     fn can_edit(&self) -> bool {
         self.draft.is_some() && !self.busy() && !self.applying()
+    }
+
+    fn can_edit_field(&self, path: &str) -> bool {
+        self.can_edit()
+            && self.settings_contract.allows(path)
+            && (path != roles::NAME_PATH || self.settings_contract.allows("/subagents/agents"))
     }
 
     pub(super) fn service_phase(&self) -> DeerFlowServicePhase {
@@ -290,6 +375,16 @@ impl DeerFlowSettings {
 
 fn field_text(value: &Value, kind: Kind) -> String {
     match kind {
+        Kind::Names => match value {
+            Value::Null => String::new(),
+            Value::Array(items) if items.is_empty() => "[]".into(),
+            Value::Array(items) if items.iter().all(Value::is_string) => items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => value.to_string(),
+        },
         Kind::Json => serde_json::to_string_pretty(value).unwrap_or_default(),
         _ => value.as_str().map(str::to_owned).unwrap_or_else(|| {
             if value.is_null() {
@@ -321,14 +416,50 @@ fn parse_field(text: &str, kind: Kind) -> Result<Value, String> {
             .map(Value::from)
             .ok_or_else(|| "请输入有效数字".into()),
         Kind::Json => serde_json::from_str(text).map_err(|e| format!("JSON 格式错误：{e}")),
+        Kind::OptionalInteger | Kind::OptionalNumber if text.trim().is_empty() => Ok(Value::Null),
+        Kind::OptionalInteger => parse_field(text, Kind::Integer),
+        Kind::OptionalNumber => parse_field(text, Kind::Number),
+        Kind::Names => {
+            let text = text.trim();
+            Ok(if text.is_empty() {
+                Value::Null
+            } else if text == "[]" {
+                json!([])
+            } else {
+                json!(
+                    text.lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .collect::<Vec<_>>()
+                )
+            })
+        }
         _ => Err("该字段不接受文本输入".into()),
     }
 }
+fn migration_acknowledged(document: &Value) -> bool {
+    let migration = &document["config_migration"];
+    migration["required"] != true
+        || (migration["source_revision"]
+            .as_str()
+            .is_some_and(|revision| !revision.is_empty())
+            && document["config_migration_ack"] == migration["source_revision"]
+            && document["config_revision"] == migration["source_revision"])
+}
+
 fn set_value(document: &mut Value, path: &str, value: Value) {
     if let Some((parent, key)) = path.rsplit_once('/') {
         if let Some(object) = document.pointer_mut(parent).and_then(Value::as_object_mut) {
             object.insert(key.to_owned(), value);
         }
+    }
+}
+fn set_edit_value(document: &mut Value, path: &str, value: Value) -> Result<(), String> {
+    if path.starts_with("/subagents/agents/") || path.starts_with("/subagents/custom_agents/") {
+        roles::set_field(document, path, value)
+    } else {
+        set_value(document, path, value);
+        Ok(())
     }
 }
 fn remap_model_references(document: &mut Value, names: &HashMap<String, String>) {
@@ -345,28 +476,15 @@ fn remap_model_references(document: &mut Value, names: &HashMap<String, String>)
     for path in [
         "/default_model",
         "/runtime/model_name",
-        "/memory/model_name",
-        "/skill_evolution/generation_model_name",
         "/skill_evolution/moderation_model_name",
         "/skill_evolution/evaluation_model_name",
+        "/skill_evolution/generation_model_name",
     ] {
         if let Some(value) = document.pointer_mut(path) {
             replace(value, names, false);
         }
     }
-    if let Some(agents) = document["agents"].as_array_mut() {
-        for agent in agents {
-            if let Some(model) = agent.get_mut("model") {
-                replace(model, names, false);
-            }
-        }
-    }
-    for path in [
-        "/subagents/agents",
-        "/subagents/custom_agents",
-        "/subagents/advanced/agents",
-        "/subagents/advanced/custom_agents",
-    ] {
+    for path in ["/subagents/agents", "/subagents/custom_agents"] {
         if let Some(agents) = document.pointer_mut(path).and_then(Value::as_object_mut) {
             for agent in agents.values_mut() {
                 if let Some(model) = agent.get_mut("model") {
@@ -426,6 +544,33 @@ fn document_with_model_names(
 }
 
 impl Waku {
+    pub(super) fn deerflow_sync_missing_session(&mut self, cx: &mut Context<Self>) {
+        let context = missing_session_context(self.selected_session());
+        let local = context.as_ref().map(|(local, _, _)| *local);
+        let native = context.as_ref().map(|(_, native, _)| native.clone());
+        let title = context.map(|(_, _, title)| title).unwrap_or_default();
+        let state = &mut self.deerflow_settings;
+        let changed = state.skills_local_session_id != local || state.skills_session_id != native;
+        state.skills_session_title = title;
+        if changed {
+            state.skill_browser.missing.set_session(native.as_deref());
+            // Local views may share a native session; switching views still
+            // revokes the form's previously observed action state.
+            state.skill_browser.missing.invalidate();
+            state.skills_local_session_id = local;
+            state.skills_session_id = native;
+            if state.confirm_manage.as_ref().is_some_and(|(_, request)| {
+                request["operation"]
+                    .as_str()
+                    .is_some_and(|op| op.starts_with("skill.missing."))
+            }) {
+                state.confirm_manage = None;
+            }
+            self.deerflow_freeze_inputs(cx);
+            cx.notify();
+        }
+    }
+
     pub(super) fn auto_start_deerflow(&mut self, cx: &mut Context<Self>) {
         // A remote Waku daemon is managed outside this desktop process.
         if self.daemon.is_remote() {
@@ -461,7 +606,7 @@ impl Waku {
                         // overwrite the newer startup state when it returns.
                         this.deerflow_settings.status_generation += 1;
                         this.deerflow_settings.status_pending = false;
-                        this.deerflow_settings.status = status;
+                        this.deerflow_settings.set_status(status);
                         this.deerflow_settings.error = None;
                         this.deerflow_settings.refresh_after_start = true;
                         this.deerflow_status(cx);
@@ -516,6 +661,7 @@ impl Waku {
     }
 
     pub(super) fn ensure_deerflow_settings(&mut self, cx: &mut Context<Self>) {
+        self.deerflow_sync_missing_session(cx);
         if self.deerflow_settings.draft.is_none() && !self.deerflow_settings.busy() {
             self.deerflow_request("snapshot", json!({}), cx);
         }
@@ -523,20 +669,79 @@ impl Waku {
     }
 
     fn deerflow_freeze_inputs(&mut self, cx: &mut Context<Self>) {
-        let read_only = !self.deerflow_settings.can_edit();
-        for input in &self.deerflow_settings.inputs {
+        let state = &mut self.deerflow_settings;
+        state.settings_contract = settings_contract::Capabilities::read(
+            state.draft.as_ref().unwrap_or(&Value::Null),
+            &state.status,
+        );
+        for (slot, input) in state.inputs.iter().enumerate() {
+            let read_only = state
+                .fields
+                .iter()
+                .find(|field| field.slot == Some(slot))
+                .is_none_or(|field| !state.can_edit_field(&field.path));
             input.update(cx, |input, cx| {
                 input.set_read_only(read_only);
                 cx.notify();
             });
         }
+        let read_only = !state.generation_editable();
+        for input in &state.generation_inputs {
+            input.update(cx, |input, cx| {
+                input.set_read_only(read_only);
+                cx.notify();
+            });
+        }
+        let read_only = !state.feedback_editable();
+        state.feedback_input.update(cx, |input, cx| {
+            input.set_read_only(read_only);
+            cx.notify();
+        });
+        let read_only = !state.missing_editable();
+        state.missing_input.update(cx, |input, cx| {
+            input.set_read_only(read_only);
+            cx.notify();
+        });
     }
 
     fn deerflow_request(&mut self, operation: &str, input: Value, cx: &mut Context<Self>) {
         if self.deerflow_settings.busy() {
             return;
         }
+        if operation == "manage"
+            && input["operation"]
+                .as_str()
+                .is_some_and(|op| op.starts_with("skill.missing."))
+        {
+            self.deerflow_sync_missing_session(cx);
+            // Only an exact unresolved mutation may still refer to the previous
+            // session; ordinary reads and newly composed writes use this session.
+            if input["session_id"].as_str() != self.deerflow_settings.skills_session_id.as_deref()
+                && !self
+                    .deerflow_settings
+                    .skill_browser
+                    .is_original_retry(&input)
+            {
+                self.deerflow_settings.error =
+                    Some("会话已变化，请刷新当前会话的任务后继续。草稿已保留。".into());
+                cx.notify();
+                return;
+            }
+        }
+        if operation == "manage"
+            && skills::is_skill_operation(&input)
+            && !self
+                .deerflow_settings
+                .skill_browser
+                .can_begin_at(&input, &self.deerflow_settings.status)
+        {
+            self.deerflow_settings.error =
+                Some("先核对或结束上一次技能操作的重试，再提交新的修改；原请求只能在原服务数据目录重试。".into());
+            cx.notify();
+            return;
+        }
         match operation {
+            "legacy-agent-preview" => self.deerflow_settings.legacy.clear_preview(),
             "start" => {
                 self.deerflow_settings.startup_completion_pending = true;
                 self.deerflow_settings.startup_error = None;
@@ -556,6 +761,8 @@ impl Waku {
             "apply" | "save-and-apply" | "start" | "stop" | "cancel-apply"
         ) {
             self.deerflow_settings.model_refresh_queued = false;
+            self.deerflow_settings.skill_browser.invalidate();
+            self.deerflow_settings.confirm_manage = None;
         }
         if matches!(operation, "apply" | "save-and-apply")
             && self.deerflow_settings.observed_applied_generation.is_none()
@@ -579,11 +786,24 @@ impl Waku {
         self.deerflow_settings.error = None;
         self.deerflow_settings.notice = None;
         self.deerflow_freeze_inputs(cx);
-        let management_operation = input["operation"].as_str().unwrap_or("").to_owned();
+        let management_request = input.clone();
+        let service_generation = self.deerflow_settings.status["applied_generation"].as_u64();
+        let service_identity = skills::service_identity(&self.deerflow_settings.status);
+        let structured_manage =
+            operation == "manage" && skills::is_skill_operation(&management_request);
+        if structured_manage {
+            self.deerflow_settings
+                .skill_browser
+                .begin_at(&management_request, &self.deerflow_settings.status);
+        }
         let operation = operation.to_owned();
         let daemon = self.daemon.client();
         cx.spawn(async move |this, cx| {
-            let request_operation = operation.clone();
+            let request_operation = if structured_manage {
+                "manage-envelope".to_owned()
+            } else {
+                operation.clone()
+            };
             let result: anyhow::Result<Value> = cx
                 .background_executor()
                 .spawn(async move {
@@ -605,6 +825,31 @@ impl Waku {
                     return;
                 }
                 this.deerflow_settings.pending = None;
+                if structured_manage
+                    && management_request["operation"]
+                        .as_str()
+                        .is_some_and(|op| op.starts_with("skill.missing."))
+                {
+                    this.deerflow_sync_missing_session(cx);
+                }
+                if structured_manage
+                    && (this.deerflow_settings.status["applied_generation"].as_u64()
+                        != service_generation
+                        || skills::service_identity(&this.deerflow_settings.status)
+                            != service_identity
+                        || this.deerflow_settings.status["running"].as_bool() == Some(false))
+                {
+                    this.deerflow_settings
+                        .skill_browser
+                        .transport_failed(&management_request);
+                    this.deerflow_service_error(
+                        "服务已变化，请刷新相关状态。已发送的修改可在原服务数据目录使用原请求核对。",
+                        cx,
+                    );
+                    this.deerflow_freeze_inputs(cx);
+                    cx.notify();
+                    return;
+                }
                 if matches!(
                     operation.as_str(),
                     "apply" | "save-and-apply" | "start" | "stop" | "cancel-apply"
@@ -623,6 +868,11 @@ impl Waku {
                     && this.deerflow_settings.edit_generation == edits;
                 match result {
                     Err(error) => {
+                        if structured_manage {
+                            this.deerflow_settings
+                                .skill_browser
+                                .transport_failed(&management_request);
+                        }
                         let message = if operation == "apply" && this.deerflow_settings.needs_apply
                         {
                             format!("配置已保存，但应用失败：{error}。可点击“重试应用”。")
@@ -639,6 +889,9 @@ impl Waku {
                         this.deerflow_service_error(&message, cx);
                     }
                     Ok(data) => match operation.as_str() {
+                        "legacy-agent-preview" | "legacy-history-import" | "legacy-history-list" | "legacy-history-get" => {
+                            this.deerflow_legacy_response(&operation, &management_request, data, edits, cx);
+                        }
                         "snapshot" | "save" | "save-and-apply" => {
                             let (document, application) = if operation == "save-and-apply" {
                                 (data["document"].clone(), Some(data["status"].clone()))
@@ -649,7 +902,13 @@ impl Waku {
                                 this.deerflow_settings.draft = Some(document);
                                 this.deerflow_settings.observe_saved_revision();
                                 this.deerflow_settings.pending_model_names.clear();
-                                this.deerflow_settings.pending_agent_names.clear();
+                                if operation != "snapshot" {
+                                    if let Some(name) = &this.deerflow_settings.roles.pending_name {
+                                        this.deerflow_settings.roles.selected.name =
+                                            name.trim().to_owned();
+                                    }
+                                }
+                                this.deerflow_settings.roles.pending_name = None;
                                 this.deerflow_settings.dirty = false;
                                 this.deerflow_settings.errors.clear();
                                 this.deerflow_settings.confirm_reload = false;
@@ -667,12 +926,18 @@ impl Waku {
                                 );
                             }
                             if let Some(status) = application {
-                                this.deerflow_settings.status = status;
+                                this.deerflow_settings.set_status(status);
                                 this.deerflow_status(cx);
                                 this.deerflow_poll_status(cx);
                             }
                         }
-                        "manage" => this.deerflow_managed(&management_operation, data, cx),
+                        "manage" => {
+                            if structured_manage {
+                                this.deerflow_skill_response(&management_request, data, cx);
+                            } else {
+                                this.deerflow_managed(&management_request, data, cx);
+                            }
+                        }
                         "validate" => this.deerflow_settings.notice = Some("配置校验通过。".into()),
                         "test-model" => {
                             if data["ok"].as_bool() == Some(true) {
@@ -688,7 +953,7 @@ impl Waku {
                             }
                         }
                         "apply" | "start" | "stop" | "cancel-apply" => {
-                            this.deerflow_settings.status = data;
+                            this.deerflow_settings.set_status(data);
                             if operation == "start" {
                                 this.deerflow_settings.refresh_after_start = true;
                             }
@@ -759,7 +1024,16 @@ impl Waku {
                             .observed_applied_generation
                             .is_some_and(|previous| applied_generation > previous);
                         let ready = model_refresh_ready(&status);
-                        this.deerflow_settings.status = status;
+                        if skills::service_identity(&status)
+                            != skills::service_identity(&this.deerflow_settings.status)
+                            || status["applied_generation"]
+                                != this.deerflow_settings.status["applied_generation"]
+                            || status["running"].as_bool() == Some(false)
+                        {
+                            this.deerflow_settings.skill_browser.invalidate();
+                            this.deerflow_settings.confirm_manage = None;
+                        }
+                        this.deerflow_settings.set_status(status);
                         this.deerflow_settings.observe_saved_revision();
                         if ready
                             && this.deerflow_settings.status["warmup"] != "warming"
@@ -894,11 +1168,25 @@ impl Waku {
         else {
             return;
         };
+        if !self.deerflow_settings.can_edit_field(&field.path) {
+            return;
+        }
         self.deerflow_settings.input_text[slot] = text.clone();
         self.deerflow_settings.dirty = true;
         self.deerflow_settings.edit_generation += 1;
         self.deerflow_settings.notice = None;
         self.deerflow_settings.confirm_reload = false;
+        if field.path == roles::NAME_PATH {
+            self.deerflow_settings.roles.pending_name = Some(text);
+            self.deerflow_settings.errors.remove(&field.path);
+            if let Some(document) = &self.deerflow_settings.draft {
+                if let Err(error) = self.deerflow_settings.roles.projected(document) {
+                    self.deerflow_settings.errors.insert(field.path, error);
+                }
+            }
+            cx.notify();
+            return;
+        }
         if let Some(index) = model_name_index(&field.path) {
             self.deerflow_settings
                 .pending_model_names
@@ -914,30 +1202,7 @@ impl Waku {
             cx.notify();
             return;
         }
-        if let Some(index) = agent_name_index(&field.path) {
-            self.deerflow_settings
-                .pending_agent_names
-                .insert(index, text);
-            self.deerflow_settings.errors.remove(&field.path);
-            if let Some(document) = &self.deerflow_settings.draft {
-                if let Err(error) =
-                    document_with_agent_names(document, &self.deerflow_settings.pending_agent_names)
-                {
-                    self.deerflow_settings.errors.insert(field.path, error);
-                }
-            }
-            cx.notify();
-            return;
-        }
-        let parsed = parse_field(&text, field.kind).and_then(|value| {
-            if field.path == "/sandbox/advanced" {
-                let options = value.as_object().ok_or_else(|| "本地执行环境高级参数必须为 JSON 对象".to_owned())?;
-                if options.keys().any(|key| !LOCAL_SANDBOX_OPTIONS.contains(&key.as_str())) {
-                    return Err("便携版仅支持 mounts、bash_output_max_chars、read_file_output_max_chars、ls_output_max_chars".into());
-                }
-            }
-            Ok(value)
-        });
+        let parsed = parse_field(&text, field.kind);
         match parsed {
             Ok(value) => {
                 self.deerflow_settings.errors.retain(|path, _| {
@@ -952,7 +1217,16 @@ impl Waku {
                             field.path.trim_end_matches("api_key").to_owned() + "clear_api_key";
                         set_value(document, &clear_path, json!(false));
                     }
-                    set_value(document, &field.path, value);
+                    if field.path.starts_with("/tools/") && !text.is_empty() {
+                        if let Some((root, key)) = field.path.rsplit_once('/') {
+                            if matches!(key, "api_key" | "https_proxy") {
+                                set_value(document, &format!("{root}/clear_{key}"), json!(false));
+                            }
+                        }
+                    }
+                    if let Err(error) = set_edit_value(document, &field.path, value) {
+                        self.deerflow_settings.errors.insert(field.path, error);
+                    }
                 }
             }
             Err(error) => {
@@ -963,12 +1237,16 @@ impl Waku {
     }
 
     fn deerflow_change(&mut self, path: &str, value: Value, cx: &mut Context<Self>) {
-        if !self.deerflow_settings.can_edit() {
+        if !self.deerflow_settings.can_edit_field(path) {
             return;
         }
         self.deerflow_settings.errors.remove(path);
         if let Some(document) = self.deerflow_settings.draft.as_mut() {
-            set_value(document, path, value);
+            if let Err(error) = set_edit_value(document, path, value) {
+                self.deerflow_settings.errors.insert(path.into(), error);
+                cx.notify();
+                return;
+            }
         }
         self.deerflow_settings.dirty = true;
         self.deerflow_settings.edit_generation += 1;
@@ -982,13 +1260,14 @@ impl Waku {
         let Some(doc) = state.draft.as_ref() else {
             return;
         };
+        state.roles.refresh(doc);
+        state.selected_skill_source = state.selected_skill_source.min(
+            doc["skill_sources"]["managed"]
+                .as_array()
+                .map_or(0, |items| items.len().saturating_sub(1)),
+        );
         state.selected_model = state.selected_model.min(
             doc["models"]
-                .as_array()
-                .map_or(0, |a| a.len().saturating_sub(1)),
-        );
-        state.selected_agent = state.selected_agent.min(
-            doc["agents"]
                 .as_array()
                 .map_or(0, |a| a.len().saturating_sub(1)),
         );
@@ -1011,16 +1290,20 @@ impl Waku {
                 continue;
             }
             field.slot = Some(slot);
-            let text = model_name_index(&field.path)
-                .and_then(|index| state.pending_model_names.get(&index))
-                .or_else(|| {
-                    agent_name_index(&field.path)
-                        .and_then(|index| state.pending_agent_names.get(&index))
-                })
-                .cloned()
-                .unwrap_or_else(|| {
-                    field_text(doc.pointer(&field.path).unwrap_or(&Value::Null), field.kind)
-                });
+            let text = if field.path == roles::NAME_PATH {
+                state
+                    .roles
+                    .pending_name
+                    .clone()
+                    .unwrap_or_else(|| state.roles.selected.name.clone())
+            } else {
+                model_name_index(&field.path)
+                    .and_then(|index| state.pending_model_names.get(&index))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        field_text(doc.pointer(&field.path).unwrap_or(&Value::Null), field.kind)
+                    })
+            };
             state.input_text[slot] = text.clone();
             state.inputs[slot].update(cx, |input, cx| {
                 input.set_masked(field.path.ends_with("/api_key"), cx);
@@ -1057,6 +1340,34 @@ impl Waku {
     }
 
     fn deerflow_save_or_validate(&mut self, operation: &str, cx: &mut Context<Self>) {
+        if operation != "validate"
+            && self
+                .deerflow_settings
+                .draft
+                .as_ref()
+                .is_some_and(|doc| !migration_acknowledged(doc))
+        {
+            self.deerflow_settings.error =
+                Some("先查看并确认上方的子代理配置迁移说明；原文件尚未修改。".into());
+            cx.notify();
+            return;
+        }
+        if self.deerflow_settings.roles.pending_name.is_some()
+            && !self.deerflow_settings.can_edit_field(roles::NAME_PATH)
+        {
+            self.deerflow_settings.error =
+                Some("角色名称或委派字段暂不可编辑；草稿已保留。".into());
+            cx.notify();
+            return;
+        }
+        if let Some(document) = &self.deerflow_settings.draft {
+            if !self.deerflow_settings.settings_contract.can_save(document) {
+                self.deerflow_settings.error =
+                    Some("部分字段定义尚未匹配，请更新配套服务后重新加载；草稿已保留。".into());
+                cx.notify();
+                return;
+            }
+        }
         if let Some(issue) = self
             .deerflow_settings
             .draft
@@ -1073,11 +1384,9 @@ impl Waku {
             return;
         }
         if let Some(document) = &self.deerflow_settings.draft {
-            match document_with_pending_names(
-                document,
-                &self.deerflow_settings.pending_model_names,
-                &self.deerflow_settings.pending_agent_names,
-            ) {
+            match document_with_model_names(document, &self.deerflow_settings.pending_model_names)
+                .and_then(|doc| self.deerflow_settings.roles.projected(&doc))
+            {
                 Ok(document) => {
                     let operation =
                         if operation == "save" && !self.deerflow_settings.exit_after_save {
@@ -1095,79 +1404,53 @@ impl Waku {
         }
     }
 
-    fn deerflow_add_item(&mut self, models: bool, cx: &mut Context<Self>) {
-        if !self.deerflow_settings.can_edit() || !self.deerflow_settings.errors.is_empty() {
+    fn deerflow_add_model(&mut self, cx: &mut Context<Self>) {
+        if !self.deerflow_settings.can_edit_field("/models")
+            || !self.deerflow_settings.errors.is_empty()
+        {
             return;
         }
         let Some(doc) = self.deerflow_settings.draft.as_mut() else {
             return;
         };
-        let key = if models { "models" } else { "agents" };
-        let Some(items) = doc[key].as_array_mut() else {
+        let Some(items) = doc["models"].as_array_mut() else {
             return;
         };
-        let prefix = if models { "model" } else { "agent" };
         let mut number = items.len() + 1;
         while items
             .iter()
-            .any(|item| item["name"].as_str() == Some(&format!("{prefix}-{number}")))
+            .any(|item| item["name"].as_str() == Some(&format!("model-{number}")))
         {
             number += 1;
         }
-        let name = format!("{prefix}-{number}");
-        let value = if models {
-            json!({"original_name":"", "name":name, "display_name":"", "description":"", "use_path":"openai", "model":"", "base_url":"", "api_key":"", "api_key_configured":false, "clear_api_key":false, "supports_thinking":false, "supports_reasoning_effort":false, "supports_vision":false, "advanced":{}})
-        } else {
-            json!({"original_name":"", "name":name, "display_name":"", "description":"", "model":null, "tool_groups":[], "skills":null, "memory_enabled":true, "soul":""})
-        };
-        items.push(value);
-        let index = items.len() - 1;
-        if models {
-            self.deerflow_settings.selected_model = index;
-        } else {
-            self.deerflow_settings.selected_agent = index;
-        }
+        items.push(json!({"original_name":"", "name":format!("model-{number}"), "display_name":"", "description":"", "provider":"openai", "model":"", "base_url":"", "api_key":"", "api_key_configured":false, "api_key_literal":false, "clear_api_key":false, "supports_vision":false, "context_window":0}));
+        self.deerflow_settings.selected_model = items.len() - 1;
         self.deerflow_settings.dirty = true;
         self.deerflow_settings.edit_generation += 1;
         self.deerflow_rebind(cx);
         cx.notify();
     }
 
-    fn deerflow_remove_item(&mut self, models: bool, cx: &mut Context<Self>) {
-        if !self.deerflow_settings.can_edit() || !self.deerflow_settings.errors.is_empty() {
-            return;
-        }
-        if !self.deerflow_commit_names(cx) {
+    fn deerflow_remove_model(&mut self, cx: &mut Context<Self>) {
+        if !self.deerflow_settings.can_edit_field("/models")
+            || !self.deerflow_settings.errors.is_empty()
+            || !self.deerflow_commit_names(cx)
+        {
             return;
         }
         let state = &mut self.deerflow_settings;
         let Some(doc) = state.draft.as_mut() else {
             return;
         };
-        let key = if models { "models" } else { "agents" };
-        let index = if models {
-            state.selected_model
-        } else {
-            state.selected_agent
-        };
-        let Some(items) = doc[key].as_array_mut() else {
+        let Some(items) = doc["models"].as_array_mut() else {
             return;
         };
-        if index >= items.len() || (models && items.len() <= 1) {
+        if items.len() <= 1 || state.selected_model >= items.len() {
             return;
         }
-        let removed = items.remove(index);
-        let old = removed["name"].as_str().unwrap_or("");
-        if models {
-            let next = items
-                .first()
-                .and_then(|item| item["name"].as_str())
-                .unwrap_or("")
-                .to_owned();
-            rename_model_references(doc, old, &next);
-        } else if doc["runtime"]["agent_name"].as_str() == Some(old) {
-            doc["runtime"]["agent_name"] = Value::Null;
-        }
+        let removed = items.remove(state.selected_model);
+        let next = items[0]["name"].as_str().unwrap_or("").to_owned();
+        rename_model_references(doc, removed["name"].as_str().unwrap_or(""), &next);
         state.dirty = true;
         state.edit_generation += 1;
         self.deerflow_rebind(cx);
@@ -1195,7 +1478,6 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                     "API Key",
                     "留空保留已保存的密钥；也可填写 $环境变量名",
                 ),
-                ("use_path", "模型提供商", "openai 或 claude"),
             ] {
                 add(format!("{root}/{key}"), label, hint, Kind::Text);
             }
@@ -1205,169 +1487,118 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                 "仅在确实需要移除密钥时开启",
                 Kind::Bool,
             );
-            for (key, label) in [
-                ("supports_thinking", "支持思考"),
-                ("supports_reasoning_effort", "支持思考强度"),
-                ("supports_vision", "支持图片输入"),
-            ] {
-                add(
-                    format!("{root}/{key}"),
-                    label,
-                    "请按模型服务商的能力说明设置",
-                    Kind::Bool,
-                );
-            }
-            if state.advanced {
-                add(
-                    format!("{root}/advanced"),
-                    "模型高级参数",
-                    "JSON 对象，保留额外服务商参数",
-                    Kind::Json,
-                );
-            }
+            add(
+                format!("{root}/provider"),
+                "模型提供商",
+                "使用已接入的 Go 模型适配器",
+                Kind::Choice(&[
+                    ("openai", "OpenAI 兼容"),
+                    ("ark", "火山方舟 Ark"),
+                    ("claude", "Claude"),
+                ]),
+            );
+            add(
+                format!("{root}/supports_vision"),
+                "支持图片输入",
+                "请按服务商实际能力设置",
+                Kind::Bool,
+            );
+            add(
+                format!("{root}/context_window"),
+                "上下文窗口",
+                "Token 数；0 使用模型/宿主默认",
+                Kind::Integer,
+            );
         }
-        Section::Agents if doc["agents"].as_array().is_some_and(|a| !a.is_empty()) => {
-            let root = format!("/agents/{}", state.selected_agent);
+        Section::Agents => {
+            add(
+                "/subagents/enabled".into(),
+                "允许子代理",
+                "主机默认开关；显式 CLI 参数优先。主机实际关闭后，会话无法开启",
+                Kind::Bool,
+            );
+            add(
+                "/subagents/max_concurrent".into(),
+                "每根任务子代理并发数",
+                "1–64；前后台与各层共享",
+                Kind::Integer,
+            );
             for (key, label, hint, kind) in [
-                ("name", "智能体名称", "英文字母、数字和连字符", Kind::Text),
                 (
-                    "display_name",
-                    "显示名称",
-                    "可选的人类可读名称",
-                    Kind::Optional,
+                    "timeout_seconds",
+                    "默认角色超时（秒）",
+                    "留空使用 900；0.001–86400，仍受父任务剩余预算限制",
+                    Kind::OptionalNumber,
                 ),
-                ("description", "说明", "智能体用途", Kind::Text),
-                ("model", "模型配置名称", "留空继承默认模型", Kind::Optional),
                 (
-                    "memory_enabled",
-                    "读写长期记忆",
-                    "关闭后此智能体不读取或写入记忆",
+                    "max_turns",
+                    "默认角色轮次",
+                    "留空使用 50；1–10000，不能扩大父预算",
+                    Kind::OptionalInteger,
+                ),
+                (
+                    "max_depth",
+                    "委派层数",
+                    "留空使用 1；支持 1–3 层",
+                    Kind::OptionalInteger,
+                ),
+                (
+                    "background_workers",
+                    "后台执行槽数",
+                    "留空使用宿主默认；1–64",
+                    Kind::OptionalInteger,
+                ),
+                (
+                    "max_tasks_per_root",
+                    "每根任务子任务数上限",
+                    "留空继承宿主默认；1–10000",
+                    Kind::OptionalInteger,
+                ),
+                (
+                    "auto_continue",
+                    "自动处理子任务结果",
+                    "有当前授权连接且父会话空闲时继续；不能自动批准工具",
                     Kind::Bool,
                 ),
-                ("soul", "角色与行为指令", "保存到 SOUL.md", Kind::Multiline),
+                (
+                    "max_auto_continuations",
+                    "最多自动续跑次数",
+                    "留空使用 10；0–1000，0 表示不创建自动新运行",
+                    Kind::OptionalInteger,
+                ),
             ] {
-                add(format!("{root}/{key}"), label, hint, kind);
+                add(format!("/subagents/{key}"), label, hint, kind);
             }
-            if state.advanced {
-                add(
-                    format!("{root}/tool_groups"),
-                    "工具组",
-                    "JSON 字符串数组",
-                    Kind::Json,
-                );
-                add(
-                    format!("{root}/skills"),
-                    "可用技能",
-                    "null 继承全部已启用技能；[] 禁用技能",
-                    Kind::Json,
-                );
-                add(
-                    "/subagents".into(),
-                    "子智能体配置",
-                    "JSON 对象，包含内置子智能体及并发配置",
-                    Kind::Json,
-                );
-            }
+            fields.extend(state.roles.fields(doc));
         }
         Section::Memory => {
             for (key, label, hint, kind) in [
                 (
                     "enabled",
                     "启用长期记忆",
-                    "使用便携目录中的本地 DeerMem",
+                    "使用 Go Harness 的本地记忆存储",
                     Kind::Bool,
                 ),
                 (
                     "injection_enabled",
                     "自动注入记忆",
-                    "在会话上下文中使用相关事实",
+                    "在会话上下文中使用已有记忆",
                     Kind::Bool,
                 ),
                 (
                     "retrieval_enabled",
                     "检索记忆",
-                    "按相关度检索已有记忆",
+                    "按相关度检索；关闭后仍可注入有界的已有记忆",
                     Kind::Bool,
                 ),
                 (
                     "mode",
                     "记忆接入方式",
-                    "",
+                    "工具模式要求启用检索",
                     Kind::Choice(&[("middleware", "自动中间件"), ("tool", "工具调用")]),
-                ),
-                (
-                    "model_name",
-                    "记忆处理模型",
-                    "留空继承默认模型",
-                    Kind::Optional,
-                ),
-                ("max_facts", "最多事实数", "10–500", Kind::Integer),
-                (
-                    "max_injection_tokens",
-                    "记忆注入 Token 上限",
-                    "100–8000",
-                    Kind::Integer,
-                ),
-                ("retrieval_top_k", "检索结果数", "1–100", Kind::Integer),
-                (
-                    "fact_confidence_threshold",
-                    "事实置信度阈值",
-                    "0–1",
-                    Kind::Number,
-                ),
-                (
-                    "fact_dedup_enabled",
-                    "事实去重",
-                    "合并高度相似的事实",
-                    Kind::Bool,
-                ),
-                (
-                    "debounce_seconds",
-                    "写入防抖时间（秒）",
-                    "1–300",
-                    Kind::Integer,
-                ),
-                ("storage_path", "记忆文件", "空白使用默认路径", Kind::Text),
-                (
-                    "retrieval_index_path",
-                    "检索索引",
-                    "空白使用默认路径",
-                    Kind::Text,
                 ),
             ] {
                 add(format!("/memory/{key}"), label, hint, kind);
-            }
-            if state.advanced {
-                add(
-                    "/memory/shutdown_flush_timeout_seconds".into(),
-                    "关闭时等待记忆写入（秒）",
-                    "0.1–300",
-                    Kind::Number,
-                );
-                add(
-                    "/memory/fact_dedup_similarity_threshold".into(),
-                    "去重相似度阈值",
-                    "0.5–1",
-                    Kind::Number,
-                );
-                add(
-                    "/memory/storage_class".into(),
-                    "记忆存储实现",
-                    "本地记忆存储类路径",
-                    Kind::Text,
-                );
-                add(
-                    "/memory/advanced".into(),
-                    "记忆高级参数",
-                    "JSON 对象",
-                    Kind::Json,
-                );
-                add(
-                    "/memory/backend_advanced".into(),
-                    "本地存储高级参数",
-                    "JSON 对象",
-                    Kind::Json,
-                );
             }
         }
         Section::Skills => {
@@ -1377,24 +1608,11 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                 "控制 DeerFlow 是否加载技能",
                 Kind::Bool,
             );
-            if let Some(skills) = doc["skills"].as_array() {
-                for (index, skill) in skills.iter().enumerate() {
-                    add(
-                        format!("/skills/{index}/enabled"),
-                        skill["name"].as_str().unwrap_or("技能"),
-                        skill["description"].as_str().unwrap_or(""),
-                        Kind::Bool,
-                    );
-                }
-            }
-            if state.advanced {
-                add(
-                    "/skill_evolution".into(),
-                    "技能自进化配置",
-                    "JSON 对象，保留审核与自动修订规则",
-                    Kind::Json,
-                );
-            }
+            fields.extend(evolution::fields());
+            fields.extend(skill_sources::fields(
+                state.draft.as_ref().unwrap_or(&Value::Null),
+                state.selected_skill_source,
+            ));
         }
         Section::Tools => {
             add(
@@ -1430,14 +1648,14 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
             add(
                 "/runtime/tool_allowlist".into(),
                 "工具允许列表",
-                "JSON 数组；null 表示不限制",
-                Kind::Json,
+                "每行一个名称；留空表示不限制，[] 表示不允许任何工具",
+                Kind::Names,
             );
             add(
                 "/runtime/tool_denylist".into(),
                 "工具拒绝列表",
-                "JSON 字符串数组",
-                Kind::Json,
+                "每行一个名称；留空或 [] 表示不额外拒绝",
+                Kind::Names,
             );
             add(
                 "/client_mcp_servers".into(),
@@ -1445,63 +1663,15 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                 "JSON 数组；仅支持 stdio。每项填写 name、绝对 command、args 数组及 env 名值数组；敏感值请放在 env。须先在宿主 config.yaml 启用 local_acp.accept_client_mcp_servers，并将命令加入 client_mcp_allowed_commands。环境变量值保存后会脱敏。",
                 Kind::Json,
             );
-            if state.advanced {
-                add(
-                    "/tools".into(),
-                    "工具定义",
-                    "JSON 数组，保留未知工具参数",
-                    Kind::Json,
-                );
-                add("/tool_groups".into(), "工具组定义", "JSON 数组", Kind::Json);
-                add(
-                    "/sandbox/advanced".into(),
-                    "执行环境高级参数",
-                    "JSON 对象；脱敏值由服务安全还原",
-                    Kind::Json,
-                );
-            }
+            fields.extend(tools::fields(doc, state.selected_tool));
         }
         Section::Runtime => {
-            let go_backend = state.status["acp_backend"] == "go";
             for (key, label, hint, kind) in [
                 (
                     "model_name",
                     "默认会话模型",
                     "留空继承全局默认模型",
                     Kind::Optional,
-                ),
-                (
-                    "agent_name",
-                    "默认智能体",
-                    if go_backend {
-                        "Go ACP 当前仅运行默认智能体；此项暂不生效"
-                    } else {
-                        "留空使用默认智能体"
-                    },
-                    Kind::Optional,
-                ),
-                (
-                    "thinking_enabled",
-                    "默认开启思考",
-                    "新会话默认设置",
-                    Kind::Bool,
-                ),
-                ("plan_mode", "默认开启计划", "新会话默认设置", Kind::Bool),
-                (
-                    "subagent_enabled",
-                    "启用子智能体",
-                    if go_backend {
-                        "Go ACP 当前提供通用 task 委派；自定义子智能体配置尚未接入"
-                    } else {
-                        "允许委派独立工作"
-                    },
-                    Kind::Bool,
-                ),
-                (
-                    "max_concurrent_subagents",
-                    "子智能体并发数",
-                    "1–4",
-                    Kind::Integer,
                 ),
                 (
                     "max_active_connections",
@@ -1513,28 +1683,20 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                 (
                     "run_timeout_seconds",
                     "运行超时（秒）",
-                    "大于 0",
+                    "0.001–86400",
                     Kind::Number,
                 ),
                 (
                     "queue_timeout_seconds",
                     "排队超时（秒）",
-                    "1–86400",
+                    "0.001–86400",
                     Kind::Number,
                 ),
                 (
                     "memory_scope",
                     "记忆范围",
-                    if go_backend {
-                        "Go ACP 支持工作区和会话范围；全局范围暂不支持"
-                    } else {
-                        ""
-                    },
-                    Kind::Choice(&[
-                        ("workspace", "工作区"),
-                        ("session", "单个会话"),
-                        ("global", "全局"),
-                    ]),
+                    "工作区或单个会话；旧 global 值仅在记忆关闭时保留",
+                    Kind::Choice(&[("workspace", "工作区"), ("session", "单个会话")]),
                 ),
                 (
                     "session_cleanup_enabled",
@@ -1554,18 +1716,6 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                     "0–3650",
                     Kind::Integer,
                 ),
-                (
-                    "goal_auto_continue",
-                    "自动继续目标",
-                    "按配置的次数限制继续执行",
-                    Kind::Bool,
-                ),
-                (
-                    "goal_max_continuations",
-                    "最多自动继续次数",
-                    "0–8",
-                    Kind::Integer,
-                ),
             ] {
                 add(format!("/runtime/{key}"), label, hint, kind);
             }
@@ -1573,7 +1723,7 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                 add(
                     "/runtime/prompt_overlay".into(),
                     "附加系统指令",
-                    "在默认指令上追加",
+                    "在默认指令上追加，最多 65536 个字符",
                     Kind::Multiline,
                 );
                 add(
@@ -1582,26 +1732,9 @@ fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
                     "60–86400",
                     Kind::Number,
                 );
-                add(
-                    "/runtime/goal_max_no_progress_continuations".into(),
-                    "无进展时最多继续次数",
-                    "0–8",
-                    Kind::Integer,
-                );
             }
         }
         _ => {}
-    }
-    if state.section == Section::Agents
-        && state.advanced
-        && !fields.iter().any(|field| field.path == "/subagents")
-    {
-        fields.push(Field::new(
-            "/subagents",
-            "子智能体配置",
-            "JSON 对象，包含内置子智能体及并发配置",
-            Kind::Json,
-        ));
     }
     fields
 }
@@ -1816,9 +1949,68 @@ impl Waku {
                         .child("保存后自动应用配置；有任务运行时会等待任务结束。"),
                 ),
         );
+        if let Some(issue) = &state.settings_contract.issue {
+            body = body.child(df_group(theme).child(df_label(
+                "部分配置暂为只读",
+                issue.clone(),
+                theme,
+            )));
+        }
+        if let Some(doc) = state
+            .draft
+            .as_ref()
+            .filter(|doc| doc["config_migration"]["required"] == true)
+        {
+            let migration = &doc["config_migration"];
+            let confirmed = migration_acknowledged(doc);
+            let revision = migration["source_revision"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned();
+            let summary = format!(
+                "原 ACP 开关：{}，原角色开关：{}；合并后的启用值：{}，并发上限：{}。保存时备份原配置，写入 eino-harness-v1 并删除两个旧 ACP 字段。下方草稿可继续调整。",
+                migration["legacy_local_enabled"],
+                migration["legacy_role_enabled"],
+                migration["enabled"],
+                migration["max_concurrent"]
+            );
+            body = body.child(
+                df_group(theme)
+                    .child(df_label("子代理配置格式迁移", summary, theme))
+                    .child(df_label(
+                        "命令行优先级",
+                        migration["cli_note"]
+                            .as_str()
+                            .unwrap_or("请检查自定义启动参数。"),
+                        theme,
+                    ))
+                    .child(df_button(
+                        "df-config-migration-ack",
+                        if confirmed {
+                            "已确认，保存时执行迁移"
+                        } else {
+                            "确认转换及 CLI 优先级变化"
+                        },
+                        !state.can_edit_field("/config_migration_ack")
+                            || confirmed
+                            || revision.is_empty(),
+                        confirmed,
+                        theme,
+                        cx,
+                        move |this, _, cx| {
+                            this.deerflow_change("/config_migration_ack", json!(revision), cx)
+                        },
+                    )),
+            );
+        }
         if let Some(issue) = state.draft.as_ref().and_then(portable_issue) {
-            let mut migration = df_group(theme).child(df_label("已有配置需要确认迁移", issue, theme))
-                .child(df_label("原配置尚未修改", "转换会在草稿中固定本地执行环境和 DeerMem，并移除非本地沙箱参数；检查后再保存。", theme));
+            let mut migration = df_group(theme)
+                .child(df_label("已有配置需要确认迁移", issue, theme))
+                .child(df_label(
+                    "原配置尚未修改",
+                    "转换会在草稿中固定本地执行环境，并移除非本地沙箱参数；检查后再保存。",
+                    theme,
+                ));
             if state.confirm_portable {
                 migration = migration.child(
                     div()
@@ -1977,6 +2169,22 @@ impl Waku {
             return body.into_any_element();
         }
         let doc = state.draft.as_ref().unwrap();
+        let applied = state.applied_values.iter().filter(|row| {
+            row.section == state.section || state.section == Section::Overview && row.overview
+        });
+        let mut effective = df_group(theme).child(df_label(
+            "当前运行值",
+            "由已启动的服务报告。下方草稿需保存并应用后才会改变这些值；已有任务保留创建时的配置。",
+            theme,
+        ));
+        let mut has_effective = false;
+        for row in applied {
+            has_effective = true;
+            effective = effective.child(df_label(row.label.clone(), row.value.clone(), theme));
+        }
+        if has_effective {
+            body = body.child(effective);
+        }
         match state.section {
             Section::Overview => {
                 let mut group = df_group(theme)
@@ -2023,7 +2231,15 @@ impl Waku {
                     );
                 for (label, value) in [
                     (
-                        "默认模型",
+                        "服务诊断日志（启动后生成）",
+                        state.status["diagnostics_log"]["path"]
+                            .as_str()
+                            .or_else(|| state.status["diagnostics_directory"].as_str())
+                            .unwrap_or("尚未取得目录")
+                            .to_owned(),
+                    ),
+                    (
+                        "草稿默认模型",
                         doc["default_model"].as_str().unwrap_or("未配置").to_owned(),
                     ),
                     (
@@ -2031,8 +2247,11 @@ impl Waku {
                         doc["models"].as_array().map_or(0, Vec::len).to_string(),
                     ),
                     (
-                        "智能体",
-                        doc["agents"].as_array().map_or(0, Vec::len).to_string(),
+                        "子代理角色",
+                        doc["subagents"]["custom_agents"]
+                            .as_object()
+                            .map_or(2, |roles| 2 + roles.len())
+                            .to_string(),
                     ),
                     (
                         "活跃任务",
@@ -2058,7 +2277,7 @@ impl Waku {
                     theme,
                 ));
                 if let Some(map) = doc["paths"].as_object() {
-                    for key in ["user_data", "config", "skills", "agents", "memory"] {
+                    for key in ["user_data", "config", "skills"] {
                         if let Some(value) = map.get(key).and_then(Value::as_str) {
                             paths = paths.child(df_label(key, value.to_owned(), theme));
                         }
@@ -2066,19 +2285,14 @@ impl Waku {
                 }
                 body = body.child(paths);
             }
-            Section::Models | Section::Agents => {
-                let models = state.section == Section::Models;
-                let key = if models { "models" } else { "agents" };
+            Section::Models => {
+                let key = "models";
                 let items = doc[key].as_array().map(Vec::as_slice).unwrap_or(&[]);
-                let selected = if models {
-                    state.selected_model
-                } else {
-                    state.selected_agent
-                };
+                let selected = state.selected_model;
                 let mut picker = div().flex().flex_wrap().gap(px(6.0));
                 for (index, item) in items.iter().enumerate() {
                     let name = item["name"].as_str().unwrap_or("未命名");
-                    let label = if models && doc["default_model"].as_str() == Some(name) {
+                    let label = if doc["default_model"].as_str() == Some(name) {
                         format!("{name} · 默认")
                     } else {
                         name.to_owned()
@@ -2091,11 +2305,7 @@ impl Waku {
                         theme,
                         cx,
                         move |this, _, cx| {
-                            if models {
-                                this.deerflow_settings.selected_model = index;
-                            } else {
-                                this.deerflow_settings.selected_agent = index;
-                            }
+                            this.deerflow_settings.selected_model = index;
                             this.deerflow_rebind(cx);
                             cx.notify();
                         },
@@ -2107,33 +2317,29 @@ impl Waku {
                     .gap(px(6.0))
                     .child(df_button(
                         "df-add-item",
-                        if models {
-                            "添加模型"
-                        } else {
-                            "添加智能体"
-                        },
-                        !editable || invalid,
+                        "添加模型",
+                        !state.can_edit_field("/models") || invalid,
                         false,
                         theme,
                         cx,
-                        move |this, _, cx| this.deerflow_add_item(models, cx),
+                        move |this, _, cx| this.deerflow_add_model(cx),
                     ))
                     .child(df_button(
                         "df-remove-item",
                         "从草稿移除",
-                        !editable || invalid || items.is_empty() || (models && items.len() <= 1),
+                        !state.can_edit_field("/models") || invalid || items.len() <= 1,
                         false,
                         theme,
                         cx,
-                        move |this, _, cx| this.deerflow_remove_item(models, cx),
+                        move |this, _, cx| this.deerflow_remove_model(cx),
                     ));
-                if models && let Some(model) = items.get(selected) {
+                if let Some(model) = items.get(selected) {
                     let name = model["name"].as_str().unwrap_or("").to_owned();
                     actions = actions
                         .child(df_button(
                             "df-model-default",
                             "设为默认",
-                            !editable
+                            !state.can_edit_field("/default_model")
                                 || invalid
                                 || doc["default_model"].as_str() == Some(name.as_str()),
                             false,
@@ -2146,17 +2352,19 @@ impl Waku {
                         .child(df_button(
                             "df-model-test",
                             "测试连接",
-                            !editable || invalid,
+                            !state.can_edit_field("/models") || invalid,
                             false,
                             theme,
                             cx,
                             |this, _, cx| {
+                                if !this.deerflow_settings.can_edit_field("/models") {
+                                    return;
+                                }
                                 let index = this.deerflow_settings.selected_model;
                                 if let Some(document) = &this.deerflow_settings.draft {
-                                    match document_with_pending_names(
+                                    match document_with_model_names(
                                         document,
                                         &this.deerflow_settings.pending_model_names,
-                                        &this.deerflow_settings.pending_agent_names,
                                     ) {
                                         Ok(document) => this.deerflow_request(
                                             "test-model",
@@ -2172,9 +2380,7 @@ impl Waku {
                             },
                         ));
                 }
-                if (models && !state.pending_model_names.is_empty())
-                    || (!models && !state.pending_agent_names.is_empty())
-                {
+                if !state.pending_model_names.is_empty() {
                     actions = actions.child(df_button(
                         "df-model-name-commit",
                         "确认名称",
@@ -2192,16 +2398,27 @@ impl Waku {
                         div()
                             .text_size(sp(12.5))
                             .text_color(theme.text_tertiary)
-                            .child(if models {
-                                "名称在确认或保存时统一更新引用；密钥留空保留已有值。测试连接会发送一条简短的真实模型请求。"
-                            } else {
-                                "所有修改先保留在草稿中，保存后自动应用智能体配置。"
-                            }),
+                            .child("名称在确认或保存时统一更新引用；密钥留空保留已有值。更换 provider 或 API 地址会清除旧凭据及原 provider 扩展。测试连接会发送一条简短的真实模型请求。"),
                     ),
                 );
             }
+            Section::Agents => {
+                body = body
+                    .child(self.render_deerflow_roles(theme, cx))
+                    .child(self.render_deerflow_legacy_agent(theme, cx));
+            }
             Section::Skills => {
-                body = body.child(self.render_deerflow_proposals(theme, cx));
+                body = body
+                    .child(self.render_deerflow_skill_sources(theme, cx))
+                    .child(self.render_deerflow_evolution(theme, cx))
+                    .child(self.render_deerflow_skill_catalog(theme, cx))
+                    .child(self.render_deerflow_feedback(theme, cx))
+                    .child(self.render_deerflow_missing(theme, cx))
+                    .child(self.render_deerflow_discovery(theme, cx))
+                    .child(self.render_deerflow_generation(theme, cx))
+                    .child(self.render_deerflow_auto_patch(theme, cx))
+                    .child(self.render_deerflow_legacy_history(theme, cx))
+                    .child(self.render_deerflow_proposals(theme, cx));
             }
             Section::Memory => {
                 body = body.child(df_group(theme).child(df_label(
@@ -2212,11 +2429,7 @@ impl Waku {
                 body = body.child(self.render_deerflow_data(theme, cx));
             }
             Section::Tools => {
-                body = body.child(df_group(theme).child(df_label(
-                    "本地工具执行环境",
-                    "便携版使用 Go 本地执行器；命令与主机工具访问由以下权限控制。",
-                    theme,
-                )));
+                body = body.child(self.render_deerflow_tools(theme, cx));
             }
             _ => {}
         }
@@ -2227,7 +2440,7 @@ impl Waku {
             }
             body = body.child(group);
         }
-        if state.section != Section::Overview {
+        if matches!(state.section, Section::Runtime) {
             body = body.child(div().mt(px(15.0)).child(df_button(
                 "df-advanced",
                 if state.advanced {
@@ -2265,34 +2478,91 @@ impl Waku {
         let path = field.path.clone();
         let mut row = div().w_full().flex().gap(px(24.0));
         match field.kind {
-            Kind::Bool => {
+            Kind::Bool | Kind::TrueOnly => {
                 let checked = current.as_bool().unwrap_or(false);
                 row = row.items_center().child(label).child(toggle_switch(
                     SharedString::from(format!("df-toggle-{path}")),
                     checked,
-                    !state.can_edit(),
+                    !state.can_edit_field(&path)
+                        || (matches!(field.kind, Kind::TrueOnly) && checked),
                     theme,
                     cx,
                     move |this, _, cx| this.deerflow_change(&path, json!(!checked), cx),
                 ));
             }
-            Kind::Choice(choices) => {
+            Kind::Choice(choices) | Kind::OptionalChoice(choices) => {
                 let mut options = div().flex().flex_wrap().gap(px(4.0));
                 for (value, caption) in choices {
-                    let selected = current.as_str() == Some(*value);
+                    let optional = matches!(field.kind, Kind::OptionalChoice(_));
+                    let selected = current.as_str() == Some(*value)
+                        || (optional && value.is_empty() && current.is_null());
                     let path = path.clone();
                     let value = *value;
                     options = options.child(df_button(
                         SharedString::from(format!("df-choice-{path}-{value}")),
                         *caption,
-                        !state.can_edit(),
+                        !state.can_edit_field(&path),
                         selected,
                         theme,
                         cx,
-                        move |this, _, cx| this.deerflow_change(&path, json!(value), cx),
+                        move |this, _, cx| {
+                            this.deerflow_change(
+                                &path,
+                                if optional && value.is_empty() {
+                                    Value::Null
+                                } else {
+                                    json!(value)
+                                },
+                                cx,
+                            )
+                        },
                     ));
                 }
                 row = row.flex_col().gap(px(8.0)).child(label).child(options);
+            }
+            Kind::OptionalBool | Kind::ModelReference | Kind::ConfiguredModelReference => {
+                let options: Vec<(Value, String)> = if matches!(field.kind, Kind::OptionalBool) {
+                    vec![
+                        (Value::Null, "继承".into()),
+                        (json!(true), "开启".into()),
+                        (json!(false), "关闭".into()),
+                    ]
+                } else if matches!(field.kind, Kind::ConfiguredModelReference) {
+                    evolution::model_options(state.draft.as_ref().unwrap_or(&Value::Null))
+                } else {
+                    let mut options = vec![(Value::Null, "继承父模型".into())];
+                    if let Some(models) = state
+                        .draft
+                        .as_ref()
+                        .and_then(|doc| doc["models"].as_array())
+                    {
+                        options.extend(
+                            models
+                                .iter()
+                                .filter_map(|model| model["name"].as_str())
+                                .map(|name| (json!(name), name.to_owned())),
+                        );
+                    }
+                    options
+                };
+                let mut choices = div().flex().flex_wrap().gap(px(4.0));
+                for (index, (value, caption)) in options.into_iter().enumerate() {
+                    let selected = &value == current
+                        || (matches!(field.kind, Kind::ModelReference)
+                            && value.is_null()
+                            && matches!(current.as_str(), Some("" | "inherit")));
+                    let path = path.clone();
+                    choices = choices.child(df_button(
+                        SharedString::from(format!("df-option-{path}-{index}")),
+                        caption,
+                        !state.can_edit_field(&path),
+                        selected,
+                        theme,
+                        cx,
+                        move |this, _, cx| this.deerflow_change(&path, value.clone(), cx),
+                    ));
+                }
+                row = row.flex_col().gap(px(8.0)).child(label).child(choices);
             }
             kind => {
                 if let Some(slot) = field.slot {
@@ -2348,8 +2618,65 @@ impl Waku {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deerflow_missing_context_requires_a_native_cursor_and_keeps_local_identity() {
+        assert!(missing_session_context(None).is_none());
+        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::DeerFlow);
+        session.title = "Task with no skill reads".into();
+        assert!(missing_session_context(Some(&session)).is_none());
+        session.provider_cursor = Some(ProviderResumeCursor::DeerFlow {
+            session_id: "native-go-session".into(),
+        });
+        let (local, native, title) = missing_session_context(Some(&session)).unwrap();
+        assert_eq!(local, session.id);
+        assert_eq!(native, "native-go-session");
+        assert_eq!(title, session.title);
+        assert_ne!(native, local.to_string());
+        let mut other_view = session.clone();
+        other_view.id = Uuid::new_v4();
+        assert_ne!(
+            missing_session_context(Some(&session)),
+            missing_session_context(Some(&other_view))
+        );
+        session.provider = ProviderKind::Codex;
+        assert!(missing_session_context(Some(&session)).is_none());
+        session.provider = ProviderKind::DeerFlow;
+        session.provider_cursor = Some(ProviderResumeCursor::from_session_id(
+            ProviderKind::Codex,
+            "foreign".into(),
+        ));
+        assert!(missing_session_context(Some(&session)).is_none());
+        for invalid in [String::new(), "x".repeat(257), "native\0invalid".into()] {
+            session.provider_cursor = Some(ProviderResumeCursor::DeerFlow {
+                session_id: invalid,
+            });
+            assert!(missing_session_context(Some(&session)).is_none());
+        }
+    }
+    #[test]
+    fn deerflow_migration_confirmation_is_bound_to_the_reviewed_revision() {
+        let mut doc = json!({"config_revision":"original", "config_migration":{"required":true,"source_revision":"original"},"config_migration_ack":""});
+        assert!(!migration_acknowledged(&doc));
+        set_value(&mut doc, "/config_migration_ack", json!("original"));
+        assert!(migration_acknowledged(&doc));
+        doc["config_revision"] = json!("changed");
+        assert!(!migration_acknowledged(&doc));
+        doc["config_migration"]["source_revision"] = json!("changed");
+        assert!(!migration_acknowledged(&doc));
+        doc["config_migration"]["required"] = json!(false);
+        assert!(migration_acknowledged(&doc));
+    }
     #[test]
     fn parsing_keeps_null_inheritance_and_rejects_non_finite_numbers() {
+        assert_eq!(parse_field("", Kind::OptionalInteger).unwrap(), Value::Null);
+        assert_eq!(parse_field("0", Kind::OptionalInteger).unwrap(), json!(0));
+        assert_eq!(parse_field(" ", Kind::OptionalNumber).unwrap(), Value::Null);
+        assert_eq!(
+            parse_field("0.5", Kind::OptionalNumber).unwrap(),
+            json!(0.5)
+        );
+        assert!(parse_field("1.5", Kind::OptionalInteger).is_err());
         assert_eq!(parse_field("  ", Kind::Optional).unwrap(), Value::Null);
         assert!(parse_field("NaN", Kind::Number).is_err());
         assert!(parse_field("1.5", Kind::Integer).is_err());
@@ -2357,13 +2684,15 @@ mod tests {
     }
     #[test]
     fn model_rename_updates_references_without_changing_remote_model_ids() {
-        let mut doc = json!({"default_model":"old","runtime":{"model_name":"old"},"memory":{"model_name":null},"agents":[{"model":"old"}],"models":[{"name":"old","model":"old"}]});
+        let mut doc = json!({"default_model":"old","runtime":{"model_name":"old"},"memory":{"model_name":null},"models":[{"name":"old","model":"old"}],"skill_evolution":{"generation_model_name":"old","moderation_model_name":"old","evaluation_model_name":"quality"}});
         rename_model_references(&mut doc, "old", "new");
         assert_eq!(doc["default_model"], "new");
         assert_eq!(doc["runtime"]["model_name"], "new");
-        assert_eq!(doc["agents"][0]["model"], "new");
         assert_eq!(doc["models"][0]["model"], "old");
         assert!(doc["memory"]["model_name"].is_null());
+        assert_eq!(doc["skill_evolution"]["generation_model_name"], "new");
+        assert_eq!(doc["skill_evolution"]["moderation_model_name"], "new");
+        assert_eq!(doc["skill_evolution"]["evaluation_model_name"], "quality");
     }
 }
 
@@ -2452,13 +2781,6 @@ fn delete_deerflow_history(
     }
     Ok(())
 }
-
-const LOCAL_SANDBOX_OPTIONS: &[&str] = &[
-    "mounts",
-    "bash_output_max_chars",
-    "read_file_output_max_chars",
-    "ls_output_max_chars",
-];
 
 #[cfg(test)]
 mod deletion_tests {
@@ -2604,11 +2926,8 @@ mod deletion_tests {
 
 fn normalize_portable_document(document: &mut Value) -> bool {
     let previous = document.clone();
-    document["sandbox"]["use"] = json!(LOCAL_SANDBOX);
-    if let Some(options) = document["sandbox"]["advanced"].as_object_mut() {
-        options.retain(|key, _| LOCAL_SANDBOX_OPTIONS.contains(&key.as_str()));
-    }
-    document["memory"]["manager_class"] = json!("deermem");
+    document["sandbox"]["provider"] = json!(LOCAL_SANDBOX);
+
     previous != *document
 }
 
@@ -2691,7 +3010,8 @@ impl Waku {
         cx.notify();
     }
 
-    fn deerflow_managed(&mut self, operation: &str, data: Value, cx: &mut Context<Self>) {
+    fn deerflow_managed(&mut self, request: &Value, data: Value, cx: &mut Context<Self>) {
+        let operation = request["operation"].as_str().unwrap_or("");
         self.deerflow_settings.confirm_manage = None;
         match operation {
             "session.list" => {
@@ -2707,21 +3027,56 @@ impl Waku {
                 }
             }
             "proposal.list" | "proposal.history" => {
-                self.deerflow_settings.proposals =
-                    data["proposals"].as_array().cloned().unwrap_or_default();
-                self.deerflow_settings.revisions =
-                    data["revisions"].as_array().cloned().unwrap_or_default();
+                match self
+                    .deerflow_settings
+                    .skill_browser
+                    .accept_review_page(request, &data)
+                {
+                    Ok(rows) => {
+                        self.deerflow_settings.proposal = None;
+                        if operation == "proposal.list" {
+                            self.deerflow_settings.proposals = rows;
+                        } else {
+                            self.deerflow_settings.revisions = rows;
+                        }
+                    }
+                    Err(error) => {
+                        self.deerflow_settings.skill_browser.review_stale = true;
+                        self.deerflow_service_error(&error.to_string(), cx);
+                    }
+                }
             }
             "proposal.get" => {
+                let behavior = match skills::validate_proposal(request, &data) {
+                    Ok(behavior) => behavior,
+                    Err(error) => {
+                        self.deerflow_settings.skill_browser.review_stale = true;
+                        self.deerflow_service_error(&error.to_string(), cx);
+                        return;
+                    }
+                };
                 let diff = data["diff"].as_str().unwrap_or("暂无差异").to_owned();
                 self.deerflow_settings
                     .proposal_diff
                     .update(cx, |input, cx| input.set_content(diff, cx));
+                self.deerflow_settings
+                    .skill_browser
+                    .behavior_inspector
+                    .bind(&data);
                 self.deerflow_settings.proposal = Some(data);
+                self.deerflow_settings.skill_browser.behavior = behavior;
+                self.deerflow_settings.skill_browser.review_stale = false;
             }
             "proposal.approve" | "proposal.reject" | "proposal.rollback" => {
+                self.deerflow_settings
+                    .skill_browser
+                    .complete_mutation(request);
                 self.deerflow_settings.proposal = None;
-                self.deerflow_request("manage", json!({"operation":"proposal.history"}), cx);
+                self.deerflow_request(
+                    "manage",
+                    json!({"operation":"proposal.history","limit":20}),
+                    cx,
+                );
                 self.deerflow_settings.notice = Some(
                     match operation {
                         "proposal.approve" => "提案已批准并发布。",
@@ -2946,7 +3301,7 @@ impl Waku {
                         |this, _, cx| {
                             this.deerflow_request(
                                 "manage",
-                                json!({"operation":"proposal.list","status":"pending_review"}),
+                                json!({"operation":"proposal.list","status":"pending_review","limit":20}),
                                 cx,
                             )
                         },
@@ -2961,16 +3316,22 @@ impl Waku {
                         |this, _, cx| {
                             this.deerflow_request(
                                 "manage",
-                                json!({"operation":"proposal.history"}),
+                                json!({"operation":"proposal.history","limit":20}),
                                 cx,
                             )
                         },
-                    )),
+                    ))
+                    .child(df_button("df-proposal-all", "全部提案", unavailable, false, theme, cx, |this, _, cx| {
+                        this.deerflow_request("manage", json!({"operation":"proposal.list","limit":20}), cx);
+                    })),
             );
         for proposal in &state.proposals {
             let id = proposal["id"].as_str().unwrap_or("").to_owned();
             let title = format!(
-                "{} · {} · {}",
+                "{} / {} · {} · {}",
+                proposal["target"]["source_id"]
+                    .as_str()
+                    .unwrap_or("未知来源"),
                 proposal["skill_name"].as_str().unwrap_or("技能"),
                 proposal["action"].as_str().unwrap_or(""),
                 proposal["status"].as_str().unwrap_or("")
@@ -2996,10 +3357,19 @@ impl Waku {
                 },
             ));
         }
+        group = group.child(self.render_skill_page_nav(
+            "proposals",
+            &state.skill_browser.proposal_nav,
+            unavailable || state.skill_browser.review_stale,
+            theme,
+            cx,
+        ));
         if let Some(proposal) = &state.proposal {
             let id = proposal["id"].as_str().unwrap_or("").to_owned();
             let approve_id = id.clone();
             let base = proposal["base_sha256"].clone();
+            let observed_state = proposal["state_version"].clone();
+            let reject_state = observed_state.clone();
             group = group
                 .child(df_label(
                     proposal["skill_name"].as_str().unwrap_or("提案").to_owned(),
@@ -3025,19 +3395,31 @@ impl Waku {
                         .line_height(sp(18.0))
                         .child(state.proposal_diff.clone()),
                 );
-            let disabled =
-                unavailable || state.dirty || proposal["status"].as_str() != Some("pending_review");
+            group = group.child(self.render_deerflow_skill_evaluation(proposal, theme));
+            group = group.child(self.render_deerflow_behavior_inspector(proposal, theme, cx));
+            let disabled = unavailable
+                || state.dirty
+                || state.skill_browser.review_stale
+                || state.skill_browser.mutations_pending()
+                || observed_state.as_u64().is_none_or(|v| v == 0);
+            let approve_disabled =
+                disabled || proposal["status"].as_str() != Some("pending_review");
+            let reject_disabled = disabled
+                || !matches!(
+                    proposal["status"].as_str(),
+                    Some("pending_review" | "validating")
+                );
             group = group.child(div().flex().flex_none().flex_wrap().gap(px(6.0))
-                .child(df_button("df-proposal-approve", "确认发布", disabled, false, theme, cx,
+                .child(df_button("df-proposal-approve", "确认发布", approve_disabled, false, theme, cx,
                     move |this, _, cx| {
                         this.deerflow_settings.confirm_manage = None;
-                        this.deerflow_request("manage", json!({"operation":"proposal.approve","proposal_id":approve_id,"expected_base_sha256":base}), cx);
+                        this.deerflow_request("manage", json!({"operation":"proposal.approve","proposal_id":approve_id,"expected_base_sha256":base,"expected_state_version":observed_state}), cx);
                         this.settings_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
                         cx.notify();
                     }))
-                .child(df_button("df-proposal-reject", "拒绝提案…", disabled, false, theme, cx,
+                .child(df_button("df-proposal-reject", "拒绝提案…", reject_disabled, false, theme, cx,
                     move |this, _, cx| {
-                        this.deerflow_settings.confirm_manage = Some((format!("拒绝提案 {id}。"), json!({"operation":"proposal.reject","proposal_id":id})));
+                        this.deerflow_settings.confirm_manage = Some((format!("拒绝提案 {id}。"), json!({"operation":"proposal.reject","proposal_id":id,"expected_state_version":reject_state})));
                         this.settings_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
                         cx.notify();
                     })));
@@ -3052,42 +3434,55 @@ impl Waku {
         for revision in &state.revisions {
             let name = revision["name"].as_str().unwrap_or("").to_owned();
             let version = revision["version"].as_u64().unwrap_or(0);
-            group = group.child(div().flex().items_center().gap(px(16.0))
-                .child(df_label(format!("{name} · 版本 {version}"), "历史技能修订", theme))
-                .child(df_button(SharedString::from(format!("df-revision-{name}-{version}")), "恢复此版本…", unavailable || state.dirty || version == 0, false, theme, cx,
-                    move |this, _, cx| {
-                        this.deerflow_settings.confirm_manage = Some((
-                            format!("将技能 {name} 恢复至版本 {version}。该操作会创建新的修订记录。"),
-                            json!({"operation":"proposal.rollback","name":name,"version":version}),
-                        )); cx.notify();
-                    })));
+            let source = revision["target"]["source_id"]
+                .as_str()
+                .unwrap_or("未知来源");
+            let identity = revision["target"]["source_identity"].as_str().unwrap_or("");
+            let revision = revision.clone();
+            group = group.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(16.0))
+                    .child(df_label(
+                        format!("{source} / {name} · 修订 {version}"),
+                        "历史技能修订；确认前重新读取当前发布状态",
+                        theme,
+                    ))
+                    .child(df_button(
+                        SharedString::from(format!("df-revision-{identity}-{name}-{version}")),
+                        "恢复此版本…",
+                        unavailable
+                            || state.dirty
+                            || state.skill_browser.mutations_pending()
+                            || version == 0,
+                        false,
+                        theme,
+                        cx,
+                        move |this, _, cx| {
+                            this.deerflow_prepare_skill_rollback(revision.clone(), cx);
+                        },
+                    )),
+            );
         }
+        group = group.child(self.render_skill_page_nav(
+            "history",
+            &state.skill_browser.history_nav,
+            unavailable || state.skill_browser.review_stale,
+            theme,
+            cx,
+        ));
         group.into_any_element()
     }
 }
 
 fn portable_issue(document: &Value) -> Option<String> {
-    if document["sandbox"]["use"].as_str() != Some(LOCAL_SANDBOX) {
+    if document["sandbox"]["provider"].as_str() != Some(LOCAL_SANDBOX) {
         return Some(
-            "此配置使用其他执行器。便携桌面仅支持 Go 本地执行器，请确认转换后再保存。"
-                .into(),
+            "此配置使用其他执行器。便携桌面仅支持 Go 本地执行器，请确认转换后再保存。".into(),
         );
     }
-    if document["memory"]["manager_class"].as_str() != Some("deermem") {
-        return Some(
-            "此配置使用其他记忆管理器。便携桌面仅支持本地 DeerMem，请确认转换后再保存。".into(),
-        );
-    }
-    if document["sandbox"]["advanced"]
-        .as_object()
-        .is_some_and(|options| {
-            options
-                .keys()
-                .any(|key| !LOCAL_SANDBOX_OPTIONS.contains(&key.as_str()))
-        })
-    {
-        return Some("已有沙箱配置包含非本地参数。确认转换前会完整保留原配置。".into());
-    }
+
     None
 }
 
@@ -3106,6 +3501,7 @@ fn redact_deerflow_message(message: &str, document: Option<&Value>) -> String {
                             "password",
                             "authorization",
                             "credential",
+                            "https_proxy",
                         ]
                         .iter()
                         .any(|part| key.contains(part));
@@ -3293,25 +3689,26 @@ mod integrity_tests {
     use super::*;
     #[test]
     fn unsupported_configuration_is_detected_without_mutation() {
-        let mut doc = json!({"sandbox":{"use":"docker:Provider","advanced":{"image":"example","mounts":[]}},"memory":{"manager_class":"remote"}});
+        let mut doc = json!({"sandbox":{"provider":"docker:Provider","allow_host_bash":false,"allow_host_tools":false},"tool_diagnostics":["sandbox.image：原数据保留"],"memory":{"manager_class":"remote"}});
         let original = doc.clone();
         assert!(portable_issue(&doc).is_some());
         assert_eq!(doc, original);
         assert!(normalize_portable_document(&mut doc));
         assert!(portable_issue(&doc).is_none());
-        assert!(doc["sandbox"]["advanced"].get("image").is_none());
-        assert_eq!(doc["sandbox"]["advanced"]["mounts"], json!([]));
+        assert_eq!(doc["sandbox"]["provider"], "local");
+        assert_eq!(doc["tool_diagnostics"], original["tool_diagnostics"]);
     }
     #[test]
     fn service_errors_hide_unsaved_and_nested_secrets() {
-        let doc = json!({"models":[{"api_key":"sk-test-private"}],"tools":[{"headers":{"authorization":"Bearer local-secret"}}],"client_mcp_servers":[{"name":"fixture","env":[{"name":"MCP_KEY","value":"mcp-private"}]}]});
+        let doc = json!({"models":[{"api_key":"sk-test-private"}],"tools":[{"https_proxy":"http://fixture:proxy-secret@localhost:11808","headers":{"authorization":"Bearer local-secret"}}],"client_mcp_servers":[{"name":"fixture","env":[{"name":"MCP_KEY","value":"mcp-private"}]}]});
         let text = redact_deerflow_message(
-            "request sk-test-private failed: Bearer local-secret mcp-private",
+            "request sk-test-private failed: Bearer local-secret mcp-private http://fixture:proxy-secret@localhost:11808",
             Some(&doc),
         );
         assert!(!text.contains("sk-test-private"));
         assert!(!text.contains("local-secret"));
         assert!(!text.contains("mcp-private"));
+        assert!(!text.contains("proxy-secret"));
         assert!(text.contains("[REDACTED]"));
     }
     #[test]
@@ -3418,22 +3815,39 @@ mod integrity_tests {
 impl Waku {
     fn deerflow_commit_names(&mut self, cx: &mut Context<Self>) -> bool {
         if self.deerflow_settings.pending_model_names.is_empty()
-            && self.deerflow_settings.pending_agent_names.is_empty()
+            && self.deerflow_settings.roles.pending_name.is_none()
         {
             return true;
+        }
+        if !self.deerflow_settings.can_edit()
+            || (self.deerflow_settings.roles.pending_name.is_some()
+                && !self.deerflow_settings.can_edit_field(roles::NAME_PATH))
+            || self
+                .deerflow_settings
+                .pending_model_names
+                .keys()
+                .any(|index| {
+                    !self
+                        .deerflow_settings
+                        .can_edit_field(&format!("/models/{index}/name"))
+                })
+        {
+            self.deerflow_settings.error = Some("名称或引用字段暂不可编辑；草稿已保留。".into());
+            cx.notify();
+            return false;
         }
         let Some(document) = &self.deerflow_settings.draft else {
             return false;
         };
-        match document_with_pending_names(
-            document,
-            &self.deerflow_settings.pending_model_names,
-            &self.deerflow_settings.pending_agent_names,
-        ) {
+        match document_with_model_names(document, &self.deerflow_settings.pending_model_names)
+            .and_then(|doc| self.deerflow_settings.roles.projected(&doc))
+        {
             Ok(document) => {
                 self.deerflow_settings.draft = Some(document);
                 self.deerflow_settings.pending_model_names.clear();
-                self.deerflow_settings.pending_agent_names.clear();
+                if let Some(name) = self.deerflow_settings.roles.pending_name.take() {
+                    self.deerflow_settings.roles.selected.name = name.trim().to_owned();
+                }
                 self.deerflow_rebind(cx);
                 cx.notify();
                 true
@@ -3494,7 +3908,7 @@ impl Waku {
 mod model_name_tests {
     use super::*;
     fn document() -> Value {
-        json!({"models":[{"name":"gpt","original_name":"gpt","model":"remote-a"},{"name":"gpt4","original_name":"gpt4","model":"remote-b"}],"default_model":"gpt","runtime":{"model_name":"gpt4"},"memory":{"model_name":"gpt"},"agents":[{"model":"gpt4"}],"subagents":{"agents":{"general":{"model":"gpt4"}},"custom_agents":{"writer":{"model":"gpt4"},"reader":{"model":"inherit"}},"advanced":{"agents":{"general":{"model":"gpt4"}}}}})
+        json!({"models":[{"name":"gpt","original_name":"gpt","model":"remote-a"},{"name":"gpt4","original_name":"gpt4","model":"remote-b"}],"default_model":"gpt","runtime":{"model_name":"gpt4"},"memory":{"model_name":"gpt"},"subagents":{"agents":{"general":{"model":"gpt4"}},"custom_agents":{"writer":{"model":"gpt4"},"reader":{"model":"inherit"}}}})
     }
     #[test]
     fn temporary_name_collision_cannot_steal_another_models_references() {
@@ -3527,7 +3941,7 @@ mod model_name_tests {
         assert_eq!(swapped["runtime"]["model_name"], "gpt");
     }
     #[test]
-    fn renaming_and_deleting_cover_builtin_custom_and_source_subagents() {
+    fn renaming_and_deleting_cover_builtin_and_custom_subagents() {
         let mut saved =
             document_with_model_names(&document(), &HashMap::from([(1, "gpt5".into())])).unwrap();
         assert_eq!(saved["subagents"]["agents"]["general"]["model"], "gpt5");
@@ -3535,10 +3949,7 @@ mod model_name_tests {
             saved["subagents"]["custom_agents"]["writer"]["model"],
             "gpt5"
         );
-        assert_eq!(
-            saved["subagents"]["advanced"]["agents"]["general"]["model"],
-            "gpt5"
-        );
+
         rename_model_references(&mut saved, "gpt5", "gpt");
         assert_eq!(saved["subagents"]["agents"]["general"]["model"], "gpt");
         assert_eq!(
@@ -3549,92 +3960,6 @@ mod model_name_tests {
             saved["subagents"]["custom_agents"]["reader"]["model"],
             "inherit"
         );
-    }
-}
-
-fn agent_name_index(path: &str) -> Option<usize> {
-    let pieces: Vec<_> = path.split('/').collect();
-    if pieces.len() == 4 && pieces[1] == "agents" && pieces[3] == "name" {
-        pieces[2].parse().ok()
-    } else {
-        None
-    }
-}
-fn document_with_agent_names(
-    document: &Value,
-    pending: &HashMap<usize, String>,
-) -> Result<Value, String> {
-    if pending.is_empty() {
-        return Ok(document.clone());
-    }
-    let agents = document["agents"].as_array().ok_or("智能体列表格式错误")?;
-    if pending.keys().any(|index| *index >= agents.len()) {
-        return Err("智能体列表已变化，请重新加载。".into());
-    }
-    let mut unique = HashSet::new();
-    let mut names = Vec::new();
-    let mut remap = HashMap::new();
-    for (index, agent) in agents.iter().enumerate() {
-        let old = agent["name"].as_str().unwrap_or("");
-        let new = pending
-            .get(&index)
-            .map(String::as_str)
-            .unwrap_or(old)
-            .trim();
-        if new.is_empty()
-            || !new
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        {
-            return Err("智能体名称仅支持英文字母、数字和连字符，且不能为空。".into());
-        }
-        if !unique.insert(new.to_owned()) {
-            return Err(format!("智能体名称“{new}”重复，请使用唯一名称。"));
-        }
-        names.push(new.to_owned());
-        if old != new {
-            remap.insert(old.to_owned(), new.to_owned());
-        }
-    }
-    let mut result = document.clone();
-    for (index, name) in names.into_iter().enumerate() {
-        result["agents"][index]["name"] = json!(name);
-    }
-    if let Some(current) = document
-        .pointer("/runtime/agent_name")
-        .and_then(Value::as_str)
-    {
-        if let Some(next) = remap.get(current) {
-            set_value(&mut result, "/runtime/agent_name", json!(next));
-        }
-    }
-    Ok(result)
-}
-fn document_with_pending_names(
-    document: &Value,
-    models: &HashMap<usize, String>,
-    agents: &HashMap<usize, String>,
-) -> Result<Value, String> {
-    document_with_agent_names(&document_with_model_names(document, models)?, agents)
-}
-
-#[cfg(test)]
-mod agent_name_tests {
-    use super::*;
-    #[test]
-    fn temporary_agent_collision_does_not_steal_default_profile() {
-        let original = json!({"runtime":{"agent_name":"writer"},"agents":[{"name":"writer","original_name":"writer"},{"name":"writer2","original_name":"writer2"}]});
-        assert!(
-            document_with_agent_names(&original, &HashMap::from([(1, "writer".into())])).is_err()
-        );
-        let renamed =
-            document_with_agent_names(&original, &HashMap::from([(1, "writer3".into())])).unwrap();
-        assert_eq!(renamed["runtime"]["agent_name"], "writer");
-        assert_eq!(renamed["agents"][1]["name"], "writer3");
-        assert_eq!(renamed["agents"][1]["original_name"], "writer2");
-        let default_renamed =
-            document_with_agent_names(&original, &HashMap::from([(0, "author".into())])).unwrap();
-        assert_eq!(default_renamed["runtime"]["agent_name"], "author");
     }
 }
 
@@ -3700,9 +4025,9 @@ impl Waku {
         let top = path.split('/').nth(1).unwrap_or("");
         let section = match top {
             "models" | "default_model" => Section::Models,
-            "agents" | "subagents" => Section::Agents,
+            "subagents" => Section::Agents,
             "memory" => Section::Memory,
-            "skills" | "skills_enabled" | "skill_evolution" => Section::Skills,
+            "skills" | "skills_enabled" | "skill_evolution" | "skill_sources" => Section::Skills,
             "sandbox" | "tools" | "tool_groups" => Section::Tools,
             "runtime"
                 if [
@@ -3728,9 +4053,6 @@ impl Waku {
         if let Some(index) = index {
             if top == "models" {
                 self.deerflow_settings.selected_model = index;
-            }
-            if top == "agents" {
-                self.deerflow_settings.selected_agent = index;
             }
         }
         self.deerflow_rebind(cx);

@@ -1,28 +1,13 @@
-# Workflow Patterns
+# Evaluation workflow
 
-## Sequential Workflows
+Use one task that exposes the current weakness, a normal task, and a nearby request that should not trigger this skill. Prefer artifacts that can be inspected without contacting a live service.
 
-For complex tasks, break operations into clear, sequential steps. It is often helpful to give Claude an overview of the process towards the beginning of SKILL.md:
+1. Save the input fixtures and expected observable outcomes before editing. Record the baseline skill content version, or mark the baseline as no skill.
+2. Run baseline and candidate with the same available tools, task input and permission scope. If the host exposes subagents, delegate independent cases within its reported concurrency limits. Otherwise execute them serially. Never invent a successful test run.
+3. Examine the resulting artifacts against each expectation. Check content and facts, not just headings or the presence of a phrase. Treat tool/network failures, cancellation and denied permissions separately from skill quality.
+4. Save case results and artifact references. Record time, tokens and model identity only when the runtime provides them. Omit unavailable metrics.
+5. Present the changed instructions and observed differences to the user. Revise only in response to demonstrated failures or requested changes. Re-run affected cases before proposing the revision.
 
-```markdown
-Filling a PDF form involves these steps:
+Use fixture tools for external writes. A skill draft is not permission to send messages, deploy code, spend provider budget or replay historical external operations. Candidate scripts require an explicitly supported isolation mechanism; if unavailable, leave behavior unverified.
 
-1. Analyze the form (run analyze_form.py)
-2. Create field mapping (edit fields.json)
-3. Validate mapping (run validate_fields.py)
-4. Fill the form (run fill_form.py)
-5. Verify output (run verify_output.py)
-```
-
-## Conditional Workflows
-
-For tasks with branching logic, guide Claude through decision points:
-
-```markdown
-1. Determine the modification type:
-   **Creating new content?** → Follow "Creation workflow" below
-   **Editing existing content?** → Follow "Editing workflow" below
-
-2. Creation workflow: [steps]
-3. Editing workflow: [steps]
-```
+The local validation command checks package structure. The native candidate service supplies its own safety and quality reports. Neither automatically imports manually written evaluation JSON as trusted approval evidence.

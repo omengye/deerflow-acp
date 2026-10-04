@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"errors"
 	"time"
 )
@@ -46,11 +47,14 @@ type ExecutionState struct {
 	Attempt       int64                  `json:"attempt"`
 	AttemptID     string                 `json:"attemptId"`
 	WaitingInputs []ExecutionInteraction `json:"waitingInputs,omitempty"`
-	EventCursor   int64                  `json:"eventCursor"`
-	Resumable     bool                   `json:"resumable"`
-	BlockedReason string                 `json:"blockedReason,omitempty"`
-	CreatedAt     time.Time              `json:"createdAt"`
-	UpdatedAt     time.Time              `json:"updatedAt"`
+	// WaitingTasks describes dependencies and confers no approval authority.
+	WaitingTasks  []string            `json:"waitingTasks,omitempty"`
+	Automatic     *ExecutionAutomatic `json:"automatic,omitempty"`
+	EventCursor   int64               `json:"eventCursor"`
+	Resumable     bool                `json:"resumable"`
+	BlockedReason string              `json:"blockedReason,omitempty"`
+	CreatedAt     time.Time           `json:"createdAt"`
+	UpdatedAt     time.Time           `json:"updatedAt"`
 }
 
 // ResumeExecutionRequest identifies an existing logical run. Resume never
@@ -58,6 +62,28 @@ type ExecutionState struct {
 type ResumeExecutionRequest struct {
 	RunID           string `json:"runId"`
 	ExpectedVersion int64  `json:"expectedVersion"`
+}
+
+type ExecutionAutomatic struct {
+	Attempts   int        `json:"attempts"`
+	Status     string     `json:"status"`
+	RetryAfter *time.Time `json:"retryAfter,omitempty"`
+	Detail     string     `json:"detail,omitempty"`
+}
+
+// SessionUpdates owns callbacks for automatic work after a prompt has returned.
+// Their lifetime is the explicit ServeSessionUpdates call, not a previous Run.
+// Nil Permission leaves new tool approvals waiting. Result runs after all I/O
+// and final persistence join. A Result callback error stops the subscription;
+// an Events callback error stops the attempt under the usual effect checks.
+type SessionUpdates struct {
+	// Started runs after a real automatic execution claim commits and before
+	// any model/tool output. One drive can contain multiple permission attempts.
+	// Returning an error prevents that drive from starting engine work.
+	Started    func(context.Context, ExecutionState) error
+	Events     EventHandler
+	Permission PermissionHandler
+	Result     func(context.Context, RunResult, error) error
 }
 
 type CancelExecutionRequest struct {

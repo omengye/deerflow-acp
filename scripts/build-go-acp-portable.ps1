@@ -36,6 +36,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Go daemon build failed" }
     & go build -trimpath -p=2 -o (Join-Path $outputRoot "deerflow-acp-go.exe") ./cmd/deerflow-acp-go
     if ($LASTEXITCODE -ne 0) { throw "Go stdio agent build failed" }
+    & go build -trimpath -p=2 -o (Join-Path $outputRoot "deerflow-skill-go.exe") ./cmd/deerflow-skill-go
+    if ($LASTEXITCODE -ne 0) { throw "Go skill authoring tool build failed" }
+    & (Join-Path $PSScriptRoot "build-wsl-helper.ps1") -OutputDirectory $outputRoot
 }
 finally {
     Pop-Location
@@ -43,7 +46,7 @@ finally {
 
 Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $outputRoot "LICENSE.txt")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\go-acp-portable.md") -Destination (Join-Path $outputRoot "README.md")
-foreach ($binary in @("deerflow-acp.exe", "deerflow-acpd.exe", "deerflow-acp-go.exe")) {
+foreach ($binary in @("deerflow-acp.exe", "deerflow-acpd.exe", "deerflow-acp-go.exe", "deerflow-skill-go.exe", "deerflow-wsl-helper-linux-amd64")) {
     if ((Get-Item -LiteralPath (Join-Path $outputRoot $binary)).Length -eq 0) {
         throw "Package binary is empty: $binary"
     }

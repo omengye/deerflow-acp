@@ -1,116 +1,76 @@
 #!/usr/bin/env bash
-# Run DeerFlow API as a simple background daemon with automatic restart.
+# Manage the Eino Go ACP daemon; no dependency installation or HTTP service.
 set -euo pipefail
-cd "$(dirname "$0")"
-
-PID_FILE="${PID_FILE:-data/deerflow-api.daemon.pid}"
-STOP_FILE="${STOP_FILE:-data/deerflow-api.daemon.stop}"
-LOG_FILE="${LOG_FILE:-deerflow-api.log}"
-RESTART_DELAY="${RESTART_DELAY:-5}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd -- "$script_dir"
 
 usage() {
-    printf 'Usage: %s {start|stop|restart|status|logs}\n' "$0"
+    printf 'Usage: %s {start|stop|restart|status} [--config PATH] [--bridge PATH] [--daemon PATH] [--runtime-dir PATH]\n' "$0"
 }
+action="${1:-status}"
+if [ "$#" -gt 0 ]; then shift; fi
+case "$action" in
+    start|stop|restart|status) ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+esac
 
-is_daemon_running() {
-    if [ ! -f "$PID_FILE" ]; then
-        return 1
-    fi
-
-    local pid
-    pid="$(cat "$PID_FILE")"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
-}
-
-start_daemon() {
-    mkdir -p "$(dirname "$PID_FILE")" "$(dirname "$STOP_FILE")"
-
-    if is_daemon_running; then
-        printf 'ℹ️  DeerFlow API daemon already running (pid %s).\n' "$(cat "$PID_FILE")"
-        return 0
-    fi
-
-    rm -f "$STOP_FILE"
-    (
-        while [ ! -f "$STOP_FILE" ]; do
-            if ./start.sh; then
-                exit_code=0
-            else
-                exit_code=$?
+config="${DEER_FLOW_CONFIG_PATH:-$script_dir/config.yaml}"
+bridge="${DEER_FLOW_ACP_BRIDGE:-$script_dir/bridge/target/release/deerflow-acp}"
+runtime_dir="${DEER_FLOW_ACP_RUNTIME_DIR:-$script_dir/user-data/runtime/acp-go}"
+daemon=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --config|--bridge|--daemon|--runtime-dir)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                printf '%s requires a path\n' "$1" >&2
+                exit 2
             fi
-
-            if [ -f "$STOP_FILE" ]; then
-                break
-            fi
-
-            printf '[%s] DeerFlow API exited with code %s; restarting in %ss.\n' \
-                "$(date '+%Y-%m-%d %H:%M:%S')" "$exit_code" "$RESTART_DELAY"
-            sleep "$RESTART_DELAY"
-        done
-    ) >> "$LOG_FILE" 2>&1 &
-
-    printf '%s\n' "$!" > "$PID_FILE"
-    printf '✅ DeerFlow API daemon started (pid %s, log %s).\n' "$(cat "$PID_FILE")" "$LOG_FILE"
-}
+            case "$1" in
+                --config) config="$2" ;;
+                --bridge) bridge="$2" ;;
+                --daemon) daemon="$2" ;;
+                --runtime-dir) runtime_dir="$2" ;;
+            esac
+            shift 2
+            ;;
+        --python|--python=*)
+            printf '%s\n' '--python has been removed; use --daemon PATH with the Eino Go executable.' >&2
+            exit 2
+            ;;
+        *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+# Resolve the selected Bridge as a path, never a name searched through PATH.
+case "$bridge" in /*) ;; *) bridge="$script_dir/$bridge" ;; esac
+if [ ! -x "$bridge" ] || [ ! -f "$bridge" ]; then
+    printf 'Native ACP Bridge is missing or not executable: %s\n' "$bridge" >&2
+    exit 1
+fi
+if [ ! -f "$config" ]; then
+    printf 'DeerFlow config is missing: %s\n' "$config" >&2
+    exit 1
+fi
+args=(--config "$config" --runtime-dir "$runtime_dir")
+if [ -n "$daemon" ]; then args+=(--daemon "$daemon"); fi
 
 stop_daemon() {
-    mkdir -p "$(dirname "$STOP_FILE")"
-    touch "$STOP_FILE"
-
-    if [ -x ./stop.sh ]; then
-        ./stop.sh || true
-    fi
-
-    if is_daemon_running; then
-        local pid
-        pid="$(cat "$PID_FILE")"
-        for _ in 1 2 3 4 5; do
-            if ! kill -0 "$pid" 2>/dev/null; then
-                break
-            fi
-            sleep 1
-        done
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null || true
-        fi
-    fi
-
-    rm -f "$PID_FILE" "$STOP_FILE"
-    printf '✅ DeerFlow API daemon stopped.\n'
-}
-
-status_daemon() {
-    if is_daemon_running; then
-        printf '✅ DeerFlow API daemon is running (pid %s).\n' "$(cat "$PID_FILE")"
+    local output code
+    if output="$("$bridge" "${args[@]}" --stop-daemon 2>&1)"; then
+        printf '%s\n' "$output"
     else
-        printf 'ℹ️  DeerFlow API daemon is not running.\n'
-        return 1
+        code="$?"
+        if [[ "$output" == *"DeerFlow ACP daemon is not running"* ]]; then
+            printf '%s\n' 'DeerFlow ACP daemon is already stopped.'
+        else
+            printf '%s\n' "$output" >&2
+            return "$code"
+        fi
     fi
 }
-
-case "${1:-}" in
-    start)
-        start_daemon
-        ;;
-    stop)
-        stop_daemon
-        ;;
-    restart)
-        stop_daemon
-        start_daemon
-        ;;
-    status)
-        status_daemon
-        ;;
-    logs)
-        if [ -f "$LOG_FILE" ]; then
-            less +F "$LOG_FILE"
-        else
-            printf 'ℹ️  Log file does not exist yet: %s\n' "$LOG_FILE"
-        fi
-        ;;
-    *)
-        usage
-        exit 2
-        ;;
+case "$action" in
+    start) exec "$bridge" "${args[@]}" --start-daemon ;;
+    status) exec "$bridge" "${args[@]}" --status ;;
+    stop) stop_daemon ;;
+    restart) stop_daemon; exec "$bridge" "${args[@]}" --start-daemon ;;
 esac

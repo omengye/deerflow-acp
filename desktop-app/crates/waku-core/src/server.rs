@@ -784,6 +784,7 @@ fn command_targets_runtime(command: &Command) -> bool {
             | Command::Cancel
             | Command::CancelComputerUse
             | Command::RefreshBackgroundWork
+            | Command::DeerFlowTasks { .. }
             | Command::StopBackgroundWork { .. }
             | Command::Respond { .. }
             | Command::RespondUserInput { .. }

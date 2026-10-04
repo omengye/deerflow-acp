@@ -7,8 +7,7 @@ import (
 func TestNativeDesktopConfigSaveKeepsSecretsAndRemovesPythonUses(t *testing.T) {
 	options := setup(t)
 	doc := run(t, options, "snapshot", nil)
-	doc["tool_groups"] = []any{map[string]any{"name": "web"}, map[string]any{"name": "host:opencli"}}
-	doc["tools"] = []any{map[string]any{"name": "web_search", "group": "web", "api_key": "fixture-tool-secret", "https_proxy": "http://127.0.0.1:11808", "max_results": 5}, map[string]any{"name": "host_opencli", "group": "host:opencli", "executable": "opencli"}}
+	doc["tools"] = []any{map[string]any{"name": "web_search", "api_key": "fixture-tool-secret", "https_proxy": "http://127.0.0.1:11808", "max_results": 5}, map[string]any{"name": "host_opencli", "executable": "opencli"}}
 	run(t, options, "save", doc)
 	saved, err := readYAML(options.Config)
 	if err != nil {

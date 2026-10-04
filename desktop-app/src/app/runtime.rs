@@ -1095,6 +1095,7 @@ impl Waku {
             self.runtime_attach_misses.remove(session_id);
             self.runtimes.remove(session_id);
             self.background_work.remove(session_id);
+            self.deerflow_tasks.remove(session_id);
             self.remove_right_panel_session_state(*session_id);
             self.task_switcher.remove(*session_id);
         }
@@ -2592,9 +2593,12 @@ impl Waku {
             }
             self.mark_background_work_lost(session_id);
         } else if let Some(runtime) = self.runtimes.get_mut(&session_id) {
-            runtime
-                .pending_events
-                .retain(|event| matches!(event, DriverEvent::BackgroundWork(_)));
+            runtime.pending_events.retain(|event| {
+                matches!(
+                    event,
+                    DriverEvent::BackgroundWork(_) | DriverEvent::DeerFlowTasks(_)
+                )
+            });
             runtime.stream_remeasure_pending = false;
             runtime.stream_phase = None;
             runtime.pending_permission = None;
@@ -3538,9 +3542,12 @@ impl Waku {
         };
         self.invalidate_checkpoint_refs();
         if let Some(runtime) = self.runtimes.get_mut(&session_id) {
-            runtime
-                .pending_events
-                .retain(|event| matches!(event, DriverEvent::BackgroundWork(_)));
+            runtime.pending_events.retain(|event| {
+                matches!(
+                    event,
+                    DriverEvent::BackgroundWork(_) | DriverEvent::DeerFlowTasks(_)
+                )
+            });
             runtime.pending_steers.clear();
             runtime.stream_remeasure_pending = false;
             runtime.stream_phase = None;
@@ -3720,7 +3727,10 @@ impl Waku {
                 let Some(event) = event else {
                     break;
                 };
-                let background_event = matches!(event, DriverEvent::BackgroundWork(_));
+                let background_event = matches!(
+                    event,
+                    DriverEvent::BackgroundWork(_) | DriverEvent::DeerFlowTasks(_)
+                );
                 let background_output_delta = matches!(
                     event,
                     DriverEvent::BackgroundWork(BackgroundWorkEvent::OutputDelta { .. })

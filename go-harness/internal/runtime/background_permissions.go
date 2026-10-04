@@ -34,6 +34,12 @@ func NewBackgroundInteractionStore(ctx context.Context, store *Store, authorizer
 CREATE TABLE IF NOT EXISTS harness_background_permission_intents (
  id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES harness_background_specs(task_id),tool_call_id TEXT NOT NULL,version INTEGER NOT NULL,state TEXT NOT NULL,request BLOB NOT NULL,descriptor BLOB NOT NULL,
  UNIQUE(task_id,tool_call_id),FOREIGN KEY(task_id,tool_call_id) REFERENCES harness_tool_receipts(run_id,tool_call_id));
+CREATE TABLE IF NOT EXISTS harness_background_intent_roles (
+ intent_id TEXT PRIMARY KEY REFERENCES harness_background_permission_intents(id) ON DELETE CASCADE,
+ root_id TEXT NOT NULL,invocation_id TEXT NOT NULL,operation_id TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS harness_background_role_cancellations (
+ task_id TEXT NOT NULL,attempt INTEGER NOT NULL,intent_id TEXT NOT NULL REFERENCES harness_background_permission_intents(id) ON DELETE CASCADE,
+ intent_version INTEGER NOT NULL,role_id TEXT NOT NULL,task_version INTEGER NOT NULL,PRIMARY KEY(task_id,attempt,intent_id));
 CREATE TABLE IF NOT EXISTS harness_background_interrupt_stages (
  task_id TEXT NOT NULL REFERENCES harness_background_specs(task_id),attempt INTEGER NOT NULL,bindings BLOB NOT NULL,PRIMARY KEY(task_id,attempt));
 CREATE TABLE IF NOT EXISTS harness_background_permission_manifests (
@@ -45,6 +51,13 @@ CREATE TABLE IF NOT EXISTS harness_background_policy_grants (
  grant_id TEXT PRIMARY KEY REFERENCES harness_background_permission_grants(id),policy_sha TEXT NOT NULL,config_version INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS harness_background_drain_manifests (
  task_id TEXT PRIMARY KEY REFERENCES harness_background_specs(task_id),state TEXT NOT NULL,payload BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS harness_background_wait_stages (
+ task_id TEXT NOT NULL REFERENCES harness_background_specs(task_id),attempt INTEGER NOT NULL,bindings BLOB NOT NULL,PRIMARY KEY(task_id,attempt));
+CREATE TABLE IF NOT EXISTS harness_background_wait_manifests (
+ task_id TEXT PRIMARY KEY REFERENCES harness_background_specs(task_id),state TEXT NOT NULL,payload BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS harness_background_delivery_stages (
+ task_id TEXT NOT NULL REFERENCES harness_background_specs(task_id),attempt INTEGER NOT NULL,
+ call_id TEXT NOT NULL,payload BLOB NOT NULL,PRIMARY KEY(task_id,attempt,call_id));
 `)
 	if err != nil {
 		return nil, err
@@ -86,7 +99,7 @@ func readBackgroundNativeTask(ctx context.Context, tx *sql.Tx, id string) (*bt.T
 }
 
 func (s *BackgroundInteractionStore) authorize(ctx context.Context, actor harness.TaskActor, binding background.Binding) error {
-	if actor.SessionID != binding.ParentSessionID || actor.OwnerID == "" {
+	if actor.SessionID != binding.RootSession() || actor.OwnerID == "" {
 		return harness.ErrPermissionDenied
 	}
 	return s.authorizer.AuthorizeTaskAccess(ctx, actor)
@@ -113,12 +126,9 @@ func (s *BackgroundInteractionStore) bindingTx(ctx context.Context, tx *sql.Tx, 
 			return harness.RunRequest{}, err
 		}
 	}
-	child, err := readExecutionSession(ctx, tx, binding.ChildSessionID)
+	child, err := backgroundChildPolicy(ctx, tx, binding, spec)
 	if err != nil {
 		return harness.RunRequest{}, err
-	}
-	if child.CWD != spec.Parent.CWD || child.Model != spec.Parent.Model || child.Mode != spec.Parent.Mode || child.ApprovalMode != spec.Parent.ApprovalMode || child.ConfigVersion != spec.Parent.ConfigVersion || child.Subagents {
-		return harness.RunRequest{}, harness.ErrTaskOriginConflict
 	}
 	if err = tx.QueryRowContext(ctx, `SELECT content FROM harness_inputs WHERE id=? AND run_id=?`, backgroundInputID(binding), binding.TaskID).Scan(&input); err != nil {
 		return harness.RunRequest{}, err
@@ -187,6 +197,13 @@ func checkBackgroundBindingItems(ctx context.Context, tx *sql.Tx, binding backgr
 			return err
 		}
 		if version != b.IntentVersion || state != "pending" || p.SessionID != binding.ChildSessionID || p.RunID != binding.TaskID {
+			return harness.ErrExecutionConflict
+		}
+		provenance, err := readBackgroundIntentRole(ctx, tx, binding.RootBudgetID, b.IntentID)
+		if err != nil {
+			return err
+		}
+		if provenance.RoleID != b.RoleID {
 			return harness.ErrExecutionConflict
 		}
 		receipt, err := readReceipt(ctx, tx, p.SessionID, p.RunID, p.ToolCallID)
@@ -284,6 +301,10 @@ func (s *BackgroundInteractionStore) Interaction(ctx context.Context, actor harn
 		if task.Status != bt.StatusWaitingInput {
 			return nil
 		}
+		if wait, handled, err := s.taskWaitInteraction(ctx, tx, binding, task); handled || err != nil {
+			result = wait
+			return err
+		}
 		m, state, err := s.readManifest(ctx, tx, binding)
 		if err != nil {
 			return err
@@ -291,8 +312,18 @@ func (s *BackgroundInteractionStore) Interaction(ctx context.Context, actor harn
 		if state != "waiting" || m.TaskVersion != task.Version {
 			return harness.ErrExecutionConflict
 		}
-		result = &harness.BackgroundInteraction{ID: m.ID, TaskVersion: task.Version, WaitingInputs: []harness.ExecutionInteraction{}}
-		for _, b := range m.Interrupts {
+		visible, cancelled, err := backgroundActiveManifest(ctx, tx, m)
+		if err != nil {
+			return err
+		}
+		result = &harness.BackgroundInteraction{ID: visible.ID, TaskVersion: task.Version, WaitingInputs: []harness.ExecutionInteraction{}}
+		if len(cancelled) > 0 {
+			result.Kind = "permission"
+			if len(visible.Interrupts) == 0 {
+				result.Kind = "cancelled_roles"
+			}
+		}
+		for _, b := range visible.Interrupts {
 			var data []byte
 			if err = tx.QueryRowContext(ctx, `SELECT descriptor FROM harness_background_permission_intents WHERE id=? AND task_id=?`, b.IntentID, binding.TaskID).Scan(&data); err != nil {
 				return err

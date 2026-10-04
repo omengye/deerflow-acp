@@ -80,6 +80,10 @@ impl DriverHandle {
         self.inner.refresh_background_work();
     }
 
+    pub fn deerflow_tasks(&self, command: waku_protocol::deerflow_tasks::Command) {
+        self.inner.deerflow_tasks(command);
+    }
+
     pub fn stop_background_work(&self, key: BackgroundWorkKey, control_id: String) {
         self.inner.stop_background_work(key, control_id);
     }
@@ -147,6 +151,7 @@ pub trait DriverControl: Send + Sync {
     fn cancel(&self);
     fn cancel_computer_use(&self) {}
     fn refresh_background_work(&self) {}
+    fn deerflow_tasks(&self, _command: waku_protocol::deerflow_tasks::Command) {}
     fn stop_background_work(&self, _key: BackgroundWorkKey, _control_id: String) {}
     fn respond(&self, request_id: String, option_id: String);
     fn respond_user_input(&self, _request_id: String, _answers: Vec<UserInputAnswer>) {}

@@ -1,5 +1,8 @@
 module github.com/omengye/deerflow-acp/go-harness
 
+// Stream-local error fix for eino-ext/claude v0.1.25; see third_party/eino-claude/PATCH.md.
+replace github.com/cloudwego/eino-ext/components/model/claude => ./third_party/eino-claude
+
 go 1.26.0
 
 toolchain go1.26.8

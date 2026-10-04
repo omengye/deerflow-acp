@@ -1,10 +1,10 @@
 # Eino Harness / ACP 实施状态
 
-本文件保留原完整 V1 方案及历史验证记录。当前交付目标是可运行的 Go harness 与本地 ACP；下表的后续验收项不作为本轮完成门槛。
+本文件保留原完整 V1 方案及历史验证记录。2026-10-02 起本分支明确采用 Eino/Go 单运行时；Python 运行、兼容入口和双后端回退已从当前交付范围移除。最新功能、当前手测包及未完成验收以 [子代理与技能自进化实施记录](eino-subagents-skill-evolution-status.md) 为准。
 
-Python 运行时兼容/回退、可选外部 ACP Agent、手工 UI、Docker 实机、远端 CI 和真实模型验收均留待后续按需处理。
+以下基线、工作项表和按阶段记录描述当时状态，其中 Python 兼容/回退和双后端构建是已废止的历史行为，不构成当前实现或后续计划。手工 UI、Docker 实机、远端 CI 和真实模型验收保留在当前验收边界中。
 
-## 基线
+## 历史基线
 
 - 分支 `codex/eino-harness-acp-refactor`；Python/Bridge 参照 `92b56924989a91e0eae05be6e95a6304f1ee4cd4`。
 - 代码位于独立 `go-harness/` 模块；桌面新安装默认使用 Go ACP daemon，已有 Python 会话继续使用 Python 后端。
@@ -12,7 +12,7 @@ Python 运行时兼容/回退、可选外部 ACP Agent、手工 UI、Docker 实�
 - Eino `v0.10.0-alpha.35`；openai `v0.1.13`、claude `v0.1.25`、ark `v0.1.71`；ACP 类型 `coder/acp-go-sdk v0.13.5`。
 - MCP 使用 `officialmcp v0.1.1` + 官方 MCP Go SDK `v1.6.1`，已接入执行入口并通过真实 stdio/HTTP/SSE fixture。
 
-## 工作项
+## 历史工作项
 
 | 原方案范围 | 当前进度 | 剩余验收 |
 | --- | --- | --- |
@@ -66,7 +66,7 @@ go test -race -p=2 -timeout=5m ./internal/... ./
 
 历史查询现提供 SDK `HistoryPage` 与 ACP `_deerflow/history/list`，游标绑定会话并固定首次查询的事件上限。`session/load` 持有会话租约分页读取并完整重放，`session/resume` 仍不重放。验证覆盖分页间新增事件、全量重放、跨会话游标、其他连接访问、繁忙会话与大事件边界，runtime 与真实 ACP 管道限定测试通过 race。
 
-以下各阶段记录保留当时的实现状态，最新进度以本表及最后一节为准。
+以下各阶段记录保留当时的实现状态；最新进度以文首链接的单运行时实施记录为准。
 
 ## 第三阶段装配
 

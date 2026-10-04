@@ -15,14 +15,25 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/background"
 )
 
 func TestSDKNativeBackgroundChildApprovalAcrossRestart(t *testing.T) {
+	for _, configured := range []bool{false, true} {
+		t.Run(fmt.Sprintf("roles=%t", configured), func(t *testing.T) { testSDKBackgroundChildApprovalAcrossRestart(t, configured) })
+	}
+}
+
+func testSDKBackgroundChildApprovalAcrossRestart(t *testing.T, configured bool) {
 	for _, decision := range []harness.PermissionDecision{harness.AllowOnce, harness.RejectOnce, harness.PermissionCancelled, "inherited_allow_always"} {
 		t.Run(string(decision), func(t *testing.T) {
 			var parentCalls, childCalls atomic.Int32
 			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var request struct {
+					Model string `json:"model"`
+					Tools []struct {
+						Function struct{ Name string } `json:"function"`
+					} `json:"tools"`
 					Stream   bool `json:"stream"`
 					Messages []struct {
 						Role    string          `json:"role"`
@@ -45,6 +56,21 @@ func TestSDKNativeBackgroundChildApprovalAcrossRestart(t *testing.T) {
 				}
 				if isChild {
 					childCalls.Add(1)
+					if configured {
+						for _, msg := range request.Messages {
+							if msg.Role == "system" && strings.Contains(string(msg.Content), "NEW_ROLE_VERSION") {
+								t.Error("background restart used new role instructions")
+							}
+						}
+						if request.Model != "child-wire" || r.Header.Get("Authorization") != "Bearer child-fixture" {
+							t.Error("child did not use its role's model route")
+						}
+						for _, item := range request.Tools {
+							if item.Function.Name != "write_file" {
+								t.Errorf("role exposed extra tool: %s", item.Function.Name)
+							}
+						}
+					}
 				} else {
 					parentCalls.Add(1)
 				}
@@ -82,9 +108,17 @@ func TestSDKNativeBackgroundChildApprovalAcrossRestart(t *testing.T) {
 			defer cancel()
 			limits := harness.BudgetLimits{MaxModelCalls: 8, MaxToolCalls: 2, MaxTokens: 100000, MaxOutputTokens: 256}
 			cfg := Config{DataDir: t.TempDir(), Provider: "openai", Model: "fixture", APIKey: "fixture", BaseURL: provider.URL + "/v1", BackgroundWorkers: 1, Budget: &limits}
+			if configured {
+				one := 1
+				cfg.Subagents = &harness.SubagentsConfig{MaxConcurrent: &one, MaxTasksPerRoot: &one, Agents: map[string]harness.AgentConfig{"general-purpose": {Model: "child-route", Tools: []string{"write_file"}}}}
+				cfg.ModelRoutes = map[string]harness.ModelRoute{"child-route": {Provider: "openai", Model: "child-wire", BaseURL: provider.URL + "/v1", APIKey: "child-fixture"}}
+			}
 			c, err := Open(ctx, cfg)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if !configured {
+				useLegacyRoleGraph(t, c)
 			}
 			defer func() {
 				if c != nil {
@@ -120,6 +154,17 @@ func TestSDKNativeBackgroundChildApprovalAcrossRestart(t *testing.T) {
 				t.Fatalf("tasks=%+v err=%v", tasks, err)
 			}
 			task := tasks[0]
+			var bindingData []byte
+			var binding background.Binding
+			if err = c.store.DB().QueryRowContext(ctx, `SELECT payload FROM harness_background_bindings WHERE task_id=?`, task.ID).Scan(&bindingData); err != nil {
+				t.Fatal(err)
+			}
+			if err = json.Unmarshal(bindingData, &binding); err != nil {
+				t.Fatal(err)
+			}
+			if err = c.background.Validate(ctx, binding); err != nil {
+				t.Fatalf("saved role cannot be reconstructed: %v", err)
+			}
 			for task.Status == "pending" || task.Status == "running" {
 				task, err = c.WaitBackgroundTask(ctx, sess.ID, task.ID, task.Version)
 				if err != nil {
@@ -175,6 +220,12 @@ func TestSDKNativeBackgroundChildApprovalAcrossRestart(t *testing.T) {
 				if _, err := os.Stat(filepath.Join(workspace, "child.txt")); err != nil {
 					t.Fatalf("workspace file removed with graph: %v", err)
 				}
+				if configured {
+					var invocations int
+					if err := c.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM harness_agent_invocations`).Scan(&invocations); err != nil || invocations != 0 {
+						t.Fatalf("deleted session retained role records: %d %v", invocations, err)
+					}
+				}
 				return
 			}
 			if task.Status != "waiting_input" || task.Interaction == nil || !task.Interaction.Resumable || len(task.Interaction.WaitingInputs) != 1 {
@@ -201,6 +252,15 @@ func TestSDKNativeBackgroundChildApprovalAcrossRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			c = nil
+			if configured {
+				role := cfg.Subagents.Agents["general-purpose"]
+				role.SystemPrompt = "NEW_ROLE_VERSION"
+				cfg.Subagents.Agents["general-purpose"] = role
+			} else {
+				// Upgrade a saved v1 task into a host that now has a role catalog.
+				// Its original executor and approval contract must remain usable.
+				cfg.Subagents = &harness.SubagentsConfig{}
+			}
 			c, err = Open(ctx, cfg)
 			if err != nil {
 				t.Fatal(err)
@@ -251,6 +311,12 @@ func TestSDKNativeBackgroundChildApprovalAcrossRestart(t *testing.T) {
 			}
 			if decision != harness.PermissionCancelled && childCalls.Load() != 2 {
 				t.Fatalf("child repeated model=%d", childCalls.Load())
+			}
+			if configured {
+				var count int
+				if err := c.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM harness_agent_invocations WHERE root_id=?`, result.Execution.RunID).Scan(&count); err != nil || count != 1 {
+					t.Fatalf("background restart reset task identity: count=%d err=%v", count, err)
+				}
 			}
 			if _, err := c.ApproveBackgroundTask(ctx, sess.ID, task.ID, approval); err == nil {
 				t.Fatal("stale task approval executed twice")

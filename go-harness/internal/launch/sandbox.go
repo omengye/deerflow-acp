@@ -57,6 +57,8 @@ func sandboxFlags(flags *flag.FlagSet, cfg *harness.SandboxConfig) {
 	flags.StringVar(&cfg.WSL.Executable, "sandbox-wsl-executable", cfg.WSL.Executable, "absolute host wsl.exe path; empty discovers wsl.exe")
 	flags.StringVar(&cfg.WSL.Distribution, "sandbox-wsl-distribution", cfg.WSL.Distribution, "required explicit WSL2 distribution")
 	flags.StringVar(&cfg.WSL.User, "sandbox-wsl-user", cfg.WSL.User, "WSL2 user; empty uses the selected distribution's default")
+	flags.StringVar(&cfg.WSL.HelperPath, "sandbox-wsl-helper", cfg.WSL.HelperPath, "absolute host path to the matching Go Linux helper; empty uses the bundled sibling helper")
+	flags.StringVar(&cfg.WSL.HelperSHA256, "sandbox-wsl-helper-sha256", cfg.WSL.HelperSHA256, "expected Go WSL helper SHA-256; empty reads its .sha256 sidecar")
 	flags.StringVar(&cfg.Docker.Executable, "sandbox-docker-executable", cfg.Docker.Executable, "absolute host Docker CLI path; empty discovers docker")
 	flags.StringVar(&cfg.Docker.Image, "sandbox-docker-image", cfg.Docker.Image, "Docker image; must also appear in sandbox-docker-allow-image")
 	addListFlag(flags, "sandbox-docker-allow-image", "exact Docker image allowed by operator policy (repeatable)", &cfg.Docker.AllowedImages)

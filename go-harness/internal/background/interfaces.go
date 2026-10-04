@@ -22,6 +22,38 @@ type Binding struct {
 	Workspace, ExecutionContract, RootBudgetID, AgentVersion string
 	ConfigVersion                                            int64
 	ExecutorKey, IntentHash, RequestHash                     string
+	// Omitted for legacy root submissions so their intent hashes stay stable.
+	// Ancestry is derived from a live managed attempt or host role placement.
+	RootSessionID      string `json:",omitempty"`
+	ParentTaskID       string `json:",omitempty"`
+	Depth              int    `json:",omitempty"`
+	ParentInvocationID string `json:",omitempty"`
+	// Continuations use a new native task and session while retaining the
+	// durable logical role. Only host-authorized continuation admission may
+	// supply these fields; ordinary model submissions must leave them empty.
+	ContinuationOf string `json:",omitempty"`
+	InvocationID   string `json:",omitempty"`
+}
+
+func (b Binding) RoleID() string {
+	if b.InvocationID != "" {
+		return b.InvocationID
+	}
+	return "background/" + b.TaskID
+}
+
+func (b Binding) RootSession() string {
+	if b.RootSessionID != "" {
+		return b.RootSessionID
+	}
+	return b.ParentSessionID
+}
+
+func (b Binding) TaskDepth() int {
+	if b.Depth > 0 {
+		return b.Depth
+	}
+	return 1
 }
 
 type TaskScope struct {
@@ -47,6 +79,9 @@ type Attempt struct {
 	// ObserveControl runs before a native control request reaches the executor.
 	// It lets the rebuilt agent distinguish drain checkpoints from cancellation.
 	ObserveControl func(bt.ControlRequest)
+	// HostControls revokes only this attempt's resource lease. It must never
+	// carry model-supplied requests or replace durable cancellation intent.
+	HostControls <-chan bt.ControlRequest
 }
 
 // AttemptFactory is deployment-owned and process-wide. Implementations rebuild
@@ -54,6 +89,19 @@ type Attempt struct {
 type AttemptFactory interface {
 	Validate(context.Context, Binding) error // repeatable, no external effects
 	Open(context.Context, TaskScope) (*Attempt, error)
+}
+
+// ResourceReadiness pauses dispatch without claiming an attempt or consuming
+// budget. The host repeats the check in the pending -> running transaction.
+type ResourceReadiness interface {
+	CheckResources(context.Context, Binding) error
+}
+
+// ResourceAdmission serializes a native claim and attempt construction against
+// client resource retirement. Release must be idempotent: construction releases
+// it once controls are installed, while the worker also releases on all errors.
+type ResourceAdmission interface {
+	BeginResourceAttempt(context.Context, string) (context.Context, func(), func(), error)
 }
 
 // BudgetLedger is the transaction seam for a separately implemented durable
@@ -92,12 +140,32 @@ type ApprovalBroker interface {
 	CommitResumeTx(context.Context, *sql.Tx, harness.TaskActor, Binding, ResumeGrant) error
 }
 
+// Wakeup contains host-generated native targets for a saved descendant wait.
+// Public clients cannot supply it. Commit repeats readiness and checkpoint
+// validation in the native waiting_input -> pending transaction.
+type Wakeup struct {
+	TaskID  string
+	Version int64
+	Data    json.RawMessage
+}
+
+type WaitResumer interface {
+	// Valid wakeups can accompany per-task errors. Callers process them before
+	// reporting diagnostics so one damaged task cannot starve other sessions.
+	ReadyWakeups(context.Context) ([]Wakeup, error)
+	CommitWakeupTx(context.Context, *sql.Tx, Binding, Wakeup) error
+}
+
 type Config struct {
 	Store      *sqlite.Store
 	Authorizer Authorizer
 	Budgets    BudgetLedger
 	Approvals  ApprovalBroker
-	Attempts   AttemptFactory
+	Waits      WaitResumer
+	// RolePlacement returns a live host-owned role for mixed delegation. A
+	// nonnil transaction must be used without reentering the connection pool.
+	RolePlacement func(context.Context, *sql.Tx) (*RolePlacement, error)
+	Attempts      AttemptFactory
 	// AgentNames are stable versioned registrations for the native durable
 	// subagent executor. Nonempty names require Attempts.
 	AgentNames []string
@@ -115,6 +183,11 @@ type Config struct {
 	// only tx, not the DB pool or CheckEffectTx (execution has already joined).
 	// Returning an error rolls back native state, outbox, budget and projections.
 	OnTransitionTx func(context.Context, *sql.Tx, TaskScope, *bt.Task, *bt.Task) error
+}
+
+type RolePlacement struct {
+	ID, RootBudgetID string
+	Depth            int
 }
 
 type Submission struct {

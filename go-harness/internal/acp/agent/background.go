@@ -34,6 +34,9 @@ func backgroundCapabilities(controller harness.BackgroundController) map[string]
 	if _, ok := controller.(harness.BackgroundTaskResumer); ok {
 		capabilities["resumeMethod"] = resumeBackgroundTaskMethod
 	}
+	if _, ok := controller.(harness.BackgroundResourceAuthorizer); ok {
+		capabilities["resourceAuthorizeMethod"] = authorizeBackgroundResourcesMethod
+	}
 	if _, ok := controller.(harness.BackgroundPermissionReader); ok {
 		capabilities["permissionMethod"] = getBackgroundPermissionMethod
 	}
@@ -49,12 +52,24 @@ func backgroundError(err error) error {
 	}
 	code, kind, message := 0, "", ""
 	switch {
+	case errors.Is(err, harness.ErrReconciliationRequired):
+		return receiptRecoveryError(false)
+	case errors.Is(err, harness.ErrReceiptConflict):
+		return receiptRecoveryError(true)
+	case errors.Is(err, harness.ErrBackgroundUncertain), errors.Is(err, harness.ErrExecutionUnresumable):
+		code, kind, message = backgroundUncertainCode, "task_reconciliation_required", "Task execution cannot safely continue. Read the task and review its tool receipts."
+	case errors.Is(err, harness.ErrInvalidInput):
+		return rpcError(protocol.InvalidParams, "Invalid task parameters")
+	case errors.Is(err, harness.ErrResourcesWaiting):
+		code, kind, message = backgroundConflictCode, "task_resources_waiting", "Task is waiting for an attached and explicitly authorized MCP connection."
+	case errors.Is(err, harness.ErrResourcesIncompatible):
+		code, kind, message = backgroundConflictCode, "task_resources_incompatible", "Attached MCP resources do not match the saved task."
+	case errors.Is(err, harness.ErrTaskTreeStopped):
+		code, kind, message = backgroundConflictCode, "task_stopped", "This task or its ancestor has been stopped. Read its current state before continuing."
 	case errors.Is(err, harness.ErrBackgroundUnavailable), errors.Is(err, harness.ErrBackgroundClosed):
 		code, kind, message = backgroundUnavailableCode, "background_unavailable", "Background execution is unavailable."
 	case errors.Is(err, harness.ErrExecutionConflict), errors.Is(err, harness.ErrTaskOriginConflict):
 		code, kind, message = backgroundConflictCode, "task_conflict", "Task state changed. Read the current task and interaction before retrying."
-	case errors.Is(err, harness.ErrBackgroundUncertain), errors.Is(err, harness.ErrExecutionUnresumable):
-		code, kind, message = backgroundUncertainCode, "task_reconciliation_required", "Task execution cannot safely continue. Read the task and review its tool receipts."
 	case errors.Is(err, harness.ErrChildSessionBusy):
 		return rpcError(protocol.ServerBusy, "Child session has an active task")
 	case errors.Is(err, harness.ErrNotFound):

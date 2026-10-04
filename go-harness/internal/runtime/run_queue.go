@@ -23,6 +23,36 @@ type runQueue struct {
 	queued  atomic.Int64
 }
 
+type automaticSlotKey struct{}
+type automaticSlot struct {
+	queue *runQueue
+	used  atomic.Bool
+}
+
+// Automatic work never queues ahead of a received user operation. The caller
+// reserves a slot before a session and retains its release until cleanup joins.
+func (q *runQueue) tryAutomatic(ctx context.Context) (context.Context, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	if q.queued.Load() > 0 {
+		return nil, nil, harness.ErrBusy
+	}
+	select {
+	case q.slots <- struct{}{}:
+		if ctx.Err() != nil || q.queued.Load() > 0 {
+			<-q.slots
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
+			return nil, nil, harness.ErrBusy
+		}
+		return context.WithValue(ctx, automaticSlotKey{}, &automaticSlot{queue: q}), func() { <-q.slots }, nil
+	default:
+		return nil, nil, harness.ErrBusy
+	}
+}
+
 func newRunQueue(cfg RunQueueConfig) (*runQueue, error) {
 	if cfg.MaxActiveRuns < 1 || cfg.MaxActiveRuns > 128 {
 		return nil, fmt.Errorf("%w: max active runs must be 1..128", harness.ErrInvalidInput)
@@ -36,6 +66,12 @@ func newRunQueue(cfg RunQueueConfig) (*runQueue, error) {
 func (q *runQueue) acquire(ctx context.Context) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if slot, ok := ctx.Value(automaticSlotKey{}).(*automaticSlot); ok && slot.queue == q {
+		if !slot.used.CompareAndSwap(false, true) {
+			return nil, harness.ErrBusy
+		}
+		return func() {}, nil
 	}
 	wait := ctx
 	var cancel context.CancelFunc

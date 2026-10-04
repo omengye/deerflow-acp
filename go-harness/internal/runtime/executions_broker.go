@@ -96,6 +96,9 @@ func (s *Store) RecordPermissionIntentTx(ctx context.Context, tx *sql.Tx, lease 
 			return descriptor, harness.ErrExecutionConflict
 		}
 		err = json.Unmarshal(oldDescriptor, &descriptor)
+		if err == nil {
+			err = recordIntentRole(ctx, tx, row.RootBudgetID, descriptor.ID)
+		}
 		return descriptor, err
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -118,6 +121,9 @@ func (s *Store) RecordPermissionIntentTx(ctx context.Context, tx *sql.Tx, lease 
 	}
 	now := timestamp()
 	if _, err = tx.ExecContext(ctx, `INSERT INTO harness_execution_intents(id,run_id,tool_call_id,version,state,request,descriptor,created_at,updated_at) VALUES(?,?,?,1,'pending',?,?,?,?)`, p.ID, p.RunID, p.ToolCallID, request, data, now, now); err != nil {
+		return descriptor, err
+	}
+	if err = recordIntentRole(ctx, tx, row.RootBudgetID, p.ID); err != nil {
 		return descriptor, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE harness_executions SET status='suspending',version=version+1,updated_at=? WHERE run_id=?`, now, p.RunID); err != nil {
@@ -194,6 +200,11 @@ func (s *Store) RecordPermissionGrantTx(ctx context.Context, tx *sql.Tx, lease E
 	if state != "pending" || current != version {
 		return grant, harness.ErrExecutionConflict
 	}
+	if role, err := stoppedIntentRole(ctx, tx, row.RootBudgetID, intentID); err != nil {
+		return grant, err
+	} else if role != "" {
+		return grant, harness.ErrTaskTreeStopped
+	}
 	receipt, err := readReceipt(ctx, tx, p.SessionID, p.RunID, p.ToolCallID)
 	if err != nil {
 		return grant, err
@@ -230,6 +241,11 @@ func (s *Store) ValidatePermissionGrantTx(ctx context.Context, tx *sql.Tx, lease
 	}
 	if err = validateExecutionConfig(ctx, tx, row); err != nil {
 		return "", err
+	}
+	if role, err := stoppedIntentRole(ctx, tx, row.RootBudgetID, grant.IntentID); err != nil {
+		return "", err
+	} else if role != "" {
+		return "", harness.ErrTaskTreeStopped
 	}
 	saved, version, state, err := readExecutionIntent(ctx, tx, row.State.RunID, grant.IntentID)
 	if err != nil {
@@ -290,8 +306,9 @@ func revokeExecutionGrants(ctx context.Context, tx *sql.Tx, attemptID string) er
 // adapter after all current targets have answers. It never accepts native IDs
 // from the client. The adapter constructs Eino ResumeParams itself.
 type ExecutionResumeBinding struct {
-	Interrupt ExecutionInterruptBinding
-	Grant     PermissionGrant
+	Interrupt       ExecutionInterruptBinding
+	Grant           PermissionGrant
+	CancelledRoleID string
 }
 
 func (s *Store) ExecutionResumeBindingsTx(ctx context.Context, tx *sql.Tx, lease ExecutionLease) ([]ExecutionResumeBinding, error) {
@@ -307,6 +324,15 @@ func (s *Store) ExecutionResumeBindingsTx(ctx context.Context, tx *sql.Tx, lease
 	}
 	result := make([]ExecutionResumeBinding, 0, len(row.Manifest.Interrupts))
 	for _, binding := range row.Manifest.Interrupts {
+		if role, err := stoppedIntentRole(ctx, tx, row.RootBudgetID, binding.IntentID); err != nil {
+			return nil, err
+		} else if role != "" {
+			if role != binding.RoleID {
+				return nil, harness.ErrExecutionConflict
+			}
+			result = append(result, ExecutionResumeBinding{Interrupt: binding, CancelledRoleID: role})
+			continue
+		}
 		grant := PermissionGrant{IntentID: binding.IntentID, IntentVersion: binding.IntentVersion}
 		var state string
 		err = tx.QueryRowContext(ctx, `SELECT id,decision,state FROM harness_execution_grants WHERE attempt_id=? AND intent_id=? AND intent_version=?`, lease.Scope.AttemptID, binding.IntentID, binding.IntentVersion).Scan(&grant.ID, &grant.Decision, &state)

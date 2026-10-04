@@ -280,6 +280,29 @@ impl DriverControl for RemoteDriverControl {
         self.notify(waku_client::Command::RefreshBackgroundWork);
     }
 
+    fn deerflow_tasks(&self, command: waku_protocol::deerflow_tasks::Command) {
+        // Task management errors stay on the task surface, never fail a chat turn.
+        let client = self.client.lock().clone();
+        if client
+            .notify(
+                self.session_id,
+                self.runtime_id,
+                waku_client::Command::DeerFlowTasks {
+                    command: command.clone(),
+                },
+            )
+            .is_err()
+        {
+            let _ = self.events.send(DriverEvent::DeerFlowTasks(
+                waku_protocol::deerflow_tasks::Event::Failed {
+                    command,
+                    code: "connection_closed".into(),
+                    message: "任务连接已断开，请重新连接后刷新。".into(),
+                },
+            ));
+        }
+    }
+
     fn stop_background_work(&self, key: BackgroundWorkKey, control_id: String) {
         match serde_json::to_value(key) {
             Ok(key) => self.notify(waku_client::Command::StopBackgroundWork { key, control_id }),

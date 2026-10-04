@@ -123,6 +123,134 @@ Pending execution blocks new prompts and configuration/mode changes. Background
 child sessions are hidden from the ordinary session list and rejected by
 foreground load/admission/run APIs; their native task lease controls execution.
 
+## Foreground task dependencies
+
+Root model `task_wait` and foreground role waits now use native stateful
+interrupts. Manifest version 2 stores typed dependency bindings alongside the
+opaque checkpoint digest and existing history/receipt frontiers. These bindings
+are also present in the hashed engine envelope. Root, session, role ancestry,
+observed task version and native target identity are validated before publication
+and again inside resume claim. Explicit cancellation invalidates that claim.
+No pending effect receipt or permission grant is created for a task dependency.
+
+`ExecutionState.waitingTasks` lists task IDs without exposing native addresses.
+A pure dependency wait is resumable only after all targets are terminal and
+unblocked, with no started/uncertain child receipts. A mixed checkpoint can
+resume approved permission targets while unfinished dependencies interrupt
+again. Repeated premature resume calls neither create an attempt nor invoke
+the model. A resumed attempt rechecks readiness before returning task results.
+
+This preserves the original run/input, role catalog and budget through process
+restart; it does not create a continuation run. The foreground tool contract is
+pinned by `taskWaitsEnabled` in the engine envelope, so older checkpoints keep
+their bounded wait description and execution behavior. A prompt returns after
+publishing an unfinished wait and releases its execution resources. It may
+continue immediately if dependencies are already ready. An attached ACP
+connection starts a session update subscription; SDK callers explicitly run
+`Client.ServeSessionUpdates` with long-lived callbacks. The subscription resumes
+ready pure task waits under the existing run/input and root budget. It also
+dispatches eligible terminal inbox notifications as new continuation runs.
+
+## Automatic task-wait recovery
+
+Saved waiting manifests are the durable work source. A subscription considers
+only resumable task dependencies without pending permission intents. It takes
+an available foreground slot without joining the user queue, then reserves the
+session and rechecks the original manifest, dependency readiness, owner, budget,
+and execution version before claiming. Existing user admissions take priority.
+An idle subscription holds no execution slot or budget attempt.
+
+Callbacks belong to this subscription, never a returned `Run`. Fresh permissions
+encountered after recovery use its live permission callback. With no callback,
+ask-policy tools remain waiting; stored permissions are never implicitly replayed.
+The result callback runs after run cleanup and persistence, and must honor its
+context. Do not synchronously close the client/session from inside callbacks.
+
+`harness_execution_wakeups` charges each automatic claim against the exact
+checkpoint digest in the same transaction as execution CAS and budget admission.
+Failed retry charges survive restart. There are at most three automatic claims
+of the same checkpoint, with 1-second then 5-second backoff. The public
+`automatic` projection describes retries, blocking or a root stop; explicit
+resume remains available after retry exhaustion. A failure before claim ends
+the subscription instead of creating an uncharged retry loop.
+
+`Client.Cancel` and ACP `session/cancel` also close an idle durable wait and
+commit `harness_automatic_stops`. Active cancellation commits the stop after I/O
+joins. A cancelled execution cannot be revived by ready descendants. Closing a
+session, disconnecting or stopping the subscription preserves a valid wait for
+an authorized replacement connection; cleanup joins subscription callbacks
+before releasing session resources. Session deletion purges both new tables.
+
+This mechanism resumes an already accepted run. The following notification
+scheduler creates new runs using the separate configured root allowance.
+
+## Automatic notification continuations
+
+`subagents.auto_continue` is opt-in (default false); `max_auto_continuations`
+defaults to 10, with zero disabling new automatic runs. New v5 task specs pin
+the effective policy in an optional `automatic` field bound by the execution
+contract. Older specs without it remain explicit-only. A changed host catalog
+does not opt old tasks in or refill a root's allowance. Ordinary host/session
+policy, resource compatibility and root-budget checks still apply.
+
+The live owner subscription scans terminal inbox notifications independently of
+UI read flags and outbox acknowledgement. It records delivery decisions in
+`harness_notification_work`; user admission and saved foreground executions
+take priority. A candidate is revalidated after taking a free execution slot
+and reserving the session. `harness_automatic_continuations` charges the root
+allowance together with the immutable source, new run/input, execution, budget
+attempt and initial continuation event. Restart and failed transaction cannot
+reset or partially spend it. A one-second root backoff separates new runs.
+
+Failed admissions use a persistent three-attempt retry bound and 1/5-second
+backoff; unreconciled effects, changed source/policy and exhausted budget are
+reported as blocked. A committed source is never readmitted, including after
+model failure or disconnect. Pending tools use the subscription's live approval
+handler; absent handlers preserve ask-policy waits. Explicit notification
+processing remains available after the automatic allowance is spent and still
+uses the original budget and idempotent source.
+
+Managed foreground and background `task_wait`, `task_status`, and `task_cancel` stage terminal
+result delivery through the trusted broker. Successful checkpoint/terminal
+commit writes `harness_task_deliveries` in the same transaction. The scheduler
+recognizes only delivery to the original parent role, so a root reading a
+descendant cannot steal its private parent's notification. Public task queries
+and UI acknowledgement do not mark a result delivered to a model.
+
+Background observations are fenced and saved per native task attempt in
+`harness_background_delivery_stages`. Successful native completion, permission
+wait, task wait or drain checkpoint commits delivery with saved progress;
+failure/cancellation without a checkpoint discards the stage. Existing inbox
+items are projected as consumed in that transaction, and later notifications
+derive the same projection from the saved delivery. Already admitted
+continuations retain their run association. This preserves the private parent
+identity even when an ancestor queries the same task result.
+
+New-run dispatch also restores v5 private parents owned by the root foreground
+session. Public Eino `AfterAgent` middleware stages role-local messages through
+the trusted broker; completion/checkpoint transactions publish revisions in
+`harness_role_contexts`. Failure discards staging. Startup recovery discards
+uncommitted foreground stages while retaining committed revisions. A private
+continuation pins the original role identity, conversation, catalog and root
+budget. It runs without a root native SessionStore; resume uses its own native
+checkpoint. New tool calls still need fresh approval.
+
+Continuation source v1 remains supported; v2 identifies a direct private parent
+and v3 identifies a derived `role_result`. Private completion atomically commits
+its context and a result notification for its immediate ancestor. Only its final
+summary is propagated; successful results pin the committed context revision and
+digest. Ancestors restore their own contexts, and every automatic hop spends the
+same root allowance. A certified ordinary role failure is terminal `failed` with
+stop reason `role_failed` and a generic ancestor summary, after verifying no open
+or uncertain tool receipts. Joined storage/callback errors, cancellation and
+unconfirmed effects are not converted to ordinary results.
+
+Missing parent conversations and background-owned recipients retain
+`waiting_parent`. Invalid snapshots/results are classified as `blocked`, while
+database failures still surface. Background-owned notification dispatch and MCP
+reconstruction remain P2 work. Native in-place task waits already preserve that
+routing through their saved graph.
+
 ## Verification
 
 `executions_test.go` covers stable logical identity, grant dispatch once, exact

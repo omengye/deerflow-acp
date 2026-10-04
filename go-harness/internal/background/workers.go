@@ -38,6 +38,12 @@ func (s *Service) scan(ctx context.Context) {
 	ticker := time.NewTicker(s.config.PollInterval)
 	defer ticker.Stop()
 	for {
+		if err := s.applyStops(ctx, ""); err != nil && !errors.Is(err, context.Canceled) {
+			s.report(err)
+		}
+		if err := s.wakeWaiting(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			s.report(err)
+		}
 		if err := s.dispatch(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			s.report(err)
 		}
@@ -53,6 +59,36 @@ func (s *Service) scan(ctx context.Context) {
 	}
 }
 
+type wakeupContextKey struct{}
+
+func (s *Service) wakeWaiting(ctx context.Context) error {
+	if s.config.Waits == nil {
+		return nil
+	}
+	wakeups, err := s.config.Waits.ReadyWakeups(ctx)
+	var failures []error
+	if err != nil {
+		failures = append(failures, err)
+	}
+	for _, wakeup := range wakeups {
+		s.mu.Lock()
+		stopped := s.closed || s.draining
+		s.mu.Unlock()
+		if stopped {
+			break
+		}
+		if wakeup.TaskID == "" || wakeup.Version < 1 || len(wakeup.Data) == 0 {
+			failures = append(failures, harness.ErrInvalidInput)
+			continue
+		}
+		_, err := s.manager.Resume(context.WithValue(ctx, wakeupContextKey{}, wakeup), &bt.ResumeRequest{TaskID: wakeup.TaskID, ExpectedVersion: wakeup.Version, Data: wakeup.Data})
+		if err != nil && !errors.Is(err, bt.ErrVersionConflict) && !errors.Is(err, bt.ErrIllegalTransition) && !errors.Is(err, bt.ErrAlreadyTerminal) {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
 func (s *Service) dispatch(ctx context.Context) error {
 	keys := s.registry.Keys()
 	if len(keys) == 0 {
@@ -65,13 +101,21 @@ func (s *Service) dispatch(ctx context.Context) error {
 			return err
 		}
 		for _, task := range page.Tasks {
-			_, blocked, bindingErr := loadBinding(ctx, s.store.DB(), task.Spec.ID)
+			binding, blocked, bindingErr := loadBinding(ctx, s.store.DB(), task.Spec.ID)
 			if errors.Is(bindingErr, harness.ErrNotFound) {
 				continue
 			} else if bindingErr != nil {
 				return bindingErr
 			} else if blocked != "" {
 				continue
+			}
+			if readiness, ok := s.config.Attempts.(ResourceReadiness); ok {
+				if err := readiness.CheckResources(ctx, binding); err != nil {
+					if errors.Is(err, harness.ErrResourcesWaiting) || errors.Is(err, harness.ErrResourcesIncompatible) {
+						continue
+					}
+					return err
+				}
 			}
 			s.mu.Lock()
 			if s.closed || s.draining {
@@ -118,7 +162,7 @@ func (s *Service) worker(ctx context.Context) {
 		s.mu.Unlock()
 		var err error
 		if !closed {
-			err = s.manager.Execute(ctx, id)
+			err = s.executeAdmitted(ctx, id)
 		}
 		s.mu.Lock()
 		if !closed {
@@ -146,11 +190,26 @@ func (s *Service) worker(ctx context.Context) {
 			}
 		}
 		s.mu.Unlock()
-		if err != nil && !errors.Is(err, harness.ErrChildSessionBusy) && !errors.Is(err, bt.ErrVersionConflict) && !errors.Is(err, bt.ErrIllegalTransition) {
+		if err != nil && !errors.Is(err, harness.ErrResourcesWaiting) && !errors.Is(err, harness.ErrResourcesIncompatible) && !errors.Is(err, harness.ErrChildSessionBusy) && !errors.Is(err, bt.ErrVersionConflict) && !errors.Is(err, bt.ErrIllegalTransition) {
 			s.report(err)
 		}
 		s.wake()
 	}
+}
+
+type resourceAdmissionKey struct{}
+
+func (s *Service) executeAdmitted(ctx context.Context, id string) error {
+	if admission, ok := s.config.Attempts.(ResourceAdmission); ok {
+		admitted, release, finish, err := admission.BeginResourceAttempt(ctx, id)
+		if err != nil {
+			return err
+		}
+		defer release()
+		defer finish()
+		ctx = context.WithValue(admitted, resourceAdmissionKey{}, release)
+	}
+	return s.manager.Execute(ctx, id)
 }
 
 // DrainAndClose returns nil only after the dispatcher, native executions and

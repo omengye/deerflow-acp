@@ -21,7 +21,7 @@ const (
 )
 
 func receiptCapabilities() map[string]any {
-	return map[string]any{"version": 1, "listMethod": listReceiptsMethod, "reconcileMethod": reconcileReceiptMethod}
+	return map[string]any{"version": 1, "listMethod": listReceiptsMethod, "reconcileMethod": reconcileReceiptMethod, "pagination": "live_keyset"}
 }
 
 func receiptRecoveryError(conflict bool) error {
@@ -42,6 +42,8 @@ func (a *Agent) receiptRequest(ctx context.Context, method string, raw json.RawM
 	keys := []string{"sessionId"}
 	if method == reconcileReceiptMethod {
 		keys = append(keys, "review")
+	} else {
+		keys = append(keys, "limit", "cursor", "uncertainOnly")
 	}
 	fields, err := strictObject(raw, keys...)
 	if err != nil {
@@ -52,6 +54,24 @@ func (a *Agent) receiptRequest(ctx context.Context, method string, raw json.RawM
 		return invalid()
 	}
 	if method == listReceiptsMethod {
+		if _, paged := fields["limit"]; paged {
+			var limit int
+			var cursor string
+			var uncertainOnly bool
+			if json.Unmarshal(fields["limit"], &limit) != nil || limit < 1 || limit > 20 {
+				return invalid()
+			}
+			if v, ok := fields["cursor"]; ok && (json.Unmarshal(v, &cursor) != nil || len(cursor) > 8192) {
+				return invalid()
+			}
+			if v, ok := fields["uncertainOnly"]; ok && json.Unmarshal(v, &uncertainOnly) != nil {
+				return invalid()
+			}
+			return a.service.ToolReceiptPage(ctx, a.owner, sessionID, limit, cursor, uncertainOnly)
+		}
+		if len(fields) != 1 {
+			return invalid()
+		}
 		receipts, err := a.service.ListToolReceipts(ctx, a.owner, sessionID)
 		if err != nil {
 			return nil, err

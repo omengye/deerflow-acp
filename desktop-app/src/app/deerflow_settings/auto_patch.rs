@@ -1,0 +1,300 @@
+//! Read-only, bounded projections of automatic publication and observation.
+//! Host workers own publication, quality attribution and rollback decisions.
+use super::skills::{Head, PAGE_SIZE, PageNav, Target, digest};
+use super::*;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Options {
+    max_changed_lines: u64,
+    max_daily_publications: u64,
+    observation_hours: u64,
+    min_observations: u64,
+    rollback_failure_threshold: u64,
+}
+
+impl Options {
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            (1..=200).contains(&self.max_changed_lines)
+                && (1..=20).contains(&self.max_daily_publications)
+                && (1..=720).contains(&self.observation_hours)
+                && (1..=100).contains(&self.min_observations)
+                && (1..=100).contains(&self.rollback_failure_threshold),
+            "自动补丁观察参数无效"
+        );
+        Ok(())
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "最多修改 {} 行 · 每日发布 {} 次 · 观察 {} 小时 · 最少 {} 个有效样本 · 连续 {} 次质量失败回滚",
+            self.max_changed_lines,
+            self.max_daily_publications,
+            self.observation_hours,
+            self.min_observations,
+            self.rollback_failure_threshold
+        )
+    }
+}
+
+#[derive(Deserialize)]
+struct Status {
+    enabled: bool,
+    running: bool,
+    options: Option<Options>,
+    today: String,
+    published_today: u64,
+    observing: u64,
+    #[serde(default)]
+    last_error_code: String,
+}
+
+#[derive(Deserialize)]
+struct Observation {
+    proposal_id: String,
+    target: Target,
+    publication_revision: u64,
+    baseline_revision: u64,
+    head: Head,
+    options: Options,
+    status: String,
+    started_at: String,
+    deadline: String,
+    updated_at: String,
+    successes: u64,
+    failures: u64,
+    consecutive_failures: u64,
+    ignored: u64,
+    #[serde(default)]
+    rollback_revision: u64,
+    #[serde(default)]
+    reason: String,
+}
+
+#[derive(Default)]
+pub(super) struct AutoPatchBrowser {
+    status: Option<(String, String)>,
+    rows: Vec<(String, String)>,
+    loaded: bool,
+    nav: PageNav,
+}
+
+fn bounded(value: &str, max: usize) -> bool {
+    !value.is_empty() && value.len() <= max && !value.contains('\0')
+}
+
+impl AutoPatchBrowser {
+    pub(super) fn invalidate(&mut self) {
+        *self = Self::default();
+    }
+
+    pub(super) fn accept(&mut self, request: &Value, data: Value) -> anyhow::Result<()> {
+        match request["operation"].as_str() {
+            Some("skill.auto_patch.status") => {
+                let status: Status = serde_json::from_value(data)?;
+                anyhow::ensure!(
+                    chrono::NaiveDate::parse_from_str(&status.today, "%Y-%m-%d").is_ok()
+                        && status.published_today <= i64::MAX as u64
+                        && status.observing <= i64::MAX as u64
+                        && status.last_error_code.len() <= 128
+                        && (!status.enabled || status.options.is_some()),
+                    "自动补丁状态无效"
+                );
+                if let Some(options) = &status.options {
+                    options.validate()?;
+                }
+                self.status = Some((
+                    format!(
+                        "自动发布{} · 维护任务{}",
+                        if status.enabled {
+                            "已启用"
+                        } else {
+                            "未启用"
+                        },
+                        if status.running {
+                            "运行中"
+                        } else {
+                            "未运行"
+                        }
+                    ),
+                    format!(
+                        "UTC {} 已发布 {} 次 · 观察记录 {} 项\n{}{}{}",
+                        status.today,
+                        status.published_today,
+                        status.observing,
+                        status
+                            .options
+                            .as_ref()
+                            .map(Options::summary)
+                            .unwrap_or_else(|| "当前未配置自动补丁参数".into()),
+                        if !status.running && status.observing > 0 {
+                            "\n维护已暂停，历史观察记录保留；重新启用自动补丁后继续处理。"
+                        } else {
+                            ""
+                        },
+                        if status.last_error_code.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n最近错误：{}", status.last_error_code)
+                        }
+                    ),
+                ));
+            }
+            Some("skill.auto_patch.list") => {
+                #[derive(Deserialize)]
+                struct Page {
+                    observations: Vec<Observation>,
+                    #[serde(default)]
+                    next_cursor: String,
+                }
+                let page: Page = serde_json::from_value(data)?;
+                anyhow::ensure!(page.observations.len() <= PAGE_SIZE, "观察记录超出分页限制");
+                let mut rows = Vec::with_capacity(page.observations.len());
+                let mut seen = std::collections::HashSet::new();
+                for observation in page.observations {
+                    observation.options.validate()?;
+                    anyhow::ensure!(
+                        bounded(&observation.proposal_id, 128)
+                            && seen.insert(observation.proposal_id.clone())
+                            && bounded(&observation.target.source_id, 64)
+                            && bounded(&observation.target.name, 64)
+                            && digest(&observation.target.source_identity)
+                            && matches!(observation.target.scope.as_str(), "global" | "workspace")
+                            && if observation.target.scope == "workspace" {
+                                bounded(&observation.target.workspace, 32768)
+                            } else {
+                                observation.target.workspace.is_empty()
+                            },
+                        "观察记录的提案或来源无效"
+                    );
+                    anyhow::ensure!(
+                        observation.publication_revision > observation.baseline_revision
+                            && observation.baseline_revision > 0
+                            && observation.head.exists
+                            && observation.head.managed
+                            && digest(&observation.head.version)
+                            && observation.head.state_version > 0
+                            && [
+                                observation.publication_revision,
+                                observation.head.state_version,
+                                observation.rollback_revision,
+                                observation.successes,
+                                observation.failures,
+                                observation.ignored
+                            ]
+                            .iter()
+                            .all(|value| *value <= i64::MAX as u64)
+                            && observation.consecutive_failures <= observation.failures
+                            && observation.reason.len() <= 512
+                            && [
+                                &observation.started_at,
+                                &observation.deadline,
+                                &observation.updated_at
+                            ]
+                            .iter()
+                            .all(|time| chrono::DateTime::parse_from_rfc3339(time).is_ok()),
+                        "观察记录的版本、时间或计数无效"
+                    );
+                    let state = match observation.status.as_str() {
+                        "observing" => "观察中",
+                        "passed" => "观察通过",
+                        "insufficient_evidence" => "观察结束，证据不足",
+                        "rolled_back" => "已自动回滚",
+                        "superseded" => "已被后续版本取代",
+                        _ => anyhow::bail!("未知自动补丁观察状态"),
+                    };
+                    rows.push((
+                        format!("{} / {} · {state}", observation.target.source_id, observation.target.name),
+                        format!("提案 {} · 发布修订 {} · 基线修订 {}\n发布版本 {} · 状态版本 {}\n开始 {} · 截止 {} · 更新 {}\n有效成功 {} · 累计质量失败 {} · 当前连续失败 {} · 未计入 {}\n{}{}{}",
+                            observation.proposal_id, observation.publication_revision, observation.baseline_revision,
+                            observation.head.version, observation.head.state_version,
+                            observation.started_at, observation.deadline, observation.updated_at,
+                            observation.successes, observation.failures, observation.consecutive_failures, observation.ignored, observation.options.summary(),
+                            if observation.rollback_revision > 0 { format!("\n回滚修订 {}", observation.rollback_revision) } else { String::new() },
+                            if observation.reason.is_empty() { String::new() } else { format!("\n原因：{}", observation.reason) }),
+                    ));
+                }
+                self.nav.accept(request, &page.next_cursor, "cursor")?;
+                self.rows = rows;
+                self.loaded = true;
+            }
+            _ => anyhow::bail!("未知自动补丁查询"),
+        }
+        Ok(())
+    }
+}
+
+impl Waku {
+    pub(super) fn render_deerflow_auto_patch(
+        &self,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let state = &self.deerflow_settings;
+        let browser = &state.skill_browser.auto_patch;
+        let supported = [
+            "max_changed_lines",
+            "max_daily_publications",
+            "observation_hours",
+            "min_observations",
+            "rollback_failure_threshold",
+        ]
+        .iter()
+        .all(|field| {
+            state
+                .settings_contract
+                .allows(&format!("/skill_evolution/auto_patch/{field}"))
+        });
+        let unavailable =
+            !supported || state.busy() || state.applying() || state.status["running"] != true;
+        let mut group = df_group(theme).child(df_label("自动补丁发布与观察", "宿主自动执行审核、发布和回滚。观察只计算明确的技能质量判断，外部故障、取消和不确定副作用单独记录。", theme));
+        if !supported {
+            return group
+                .child(df_label(
+                    "当前服务未提供此能力",
+                    "更新配套 Go 服务并重新加载配置后，可查看自动补丁状态。",
+                    theme,
+                ))
+                .into_any_element();
+        }
+        let mut actions = div().flex().flex_wrap().gap(px(6.0));
+        for (suffix, label, operation) in [
+            ("status", "刷新自动补丁状态", "skill.auto_patch.status"),
+            ("list", "刷新发布观察记录", "skill.auto_patch.list"),
+        ] {
+            actions = actions.child(df_button(
+                SharedString::from(format!("df-auto-patch-{suffix}")),
+                label,
+                unavailable,
+                false,
+                theme,
+                cx,
+                move |this, _, cx| {
+                    let mut request = json!({"operation":operation});
+                    if suffix == "list" {
+                        request["limit"] = json!(PAGE_SIZE);
+                    }
+                    this.deerflow_request("manage", request, cx);
+                },
+            ));
+        }
+        group = group.child(actions);
+        if let Some((title, details)) = &browser.status {
+            group = group.child(df_label(title.clone(), details.clone(), theme));
+        }
+        if browser.loaded && browser.rows.is_empty() {
+            group = group.child(df_label(
+                "暂无自动发布记录",
+                "符合条件的补丁发布后将在此显示观察进度。",
+                theme,
+            ));
+        }
+        for (title, details) in &browser.rows {
+            group = group.child(df_label(title.clone(), details.clone(), theme));
+        }
+        group
+            .child(self.render_skill_page_nav("auto-patch", &browser.nav, unavailable, theme, cx))
+            .into_any_element()
+    }
+}

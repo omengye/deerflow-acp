@@ -77,6 +77,111 @@ func TestSkillsExplicitStartupProfileIsAppliedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestSkillsPublishedProfileSurvivesSDKReopenAndDeletion(t *testing.T) {
+	workspace, cfg := skillFixture(t)
+	ctx := context.Background()
+	cfg.Engine = engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
+		return harness.RunResult{}, nil
+	})
+	cfg.Skills.Install = []harness.SkillInstall{{SourceID: "project", Directory: "research", Enabled: true}}
+	cfg.Skills.BuiltinSources = []string{"project"}
+	c, err := Open(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if c != nil {
+			_ = c.Close()
+		}
+	}()
+	selection := harness.SkillSelection{Workspace: workspace}
+	original, err := c.skills.Snapshot(ctx, selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := c.skills.PrepareCandidate("research", map[string][]byte{"SKILL.md": []byte("---\nname: research\ndescription: Reviewed research\n---\nReviewed new instructions.\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.skills.WithPublication(ctx, "project", "research", func(tx *skills.PublicationTx) error {
+		head, err := tx.Current()
+		if err != nil {
+			return err
+		}
+		version, err := tx.Stage(candidate)
+		if err == nil {
+			_, err = tx.Publish(version, head, false)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := original.Refs()
+	if err = c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Remove just the temporary fixture file: a published install must be
+	// reconstructed from SQLite even when its old import no longer exists.
+	if err = os.Remove(filepath.Join(cfg.Skills.Sources[0].Root, "research", "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	c, err = Open(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := c.ListSkills(ctx, selection)
+	if err != nil || len(records) != 1 || records[0].Ref.Version != candidate.Version() || records[0].Enabled {
+		t.Fatalf("SDK restart overwrote release or enablement: %+v %v", records, err)
+	}
+	if !records[0].Builtin || !records[0].Managed || records[0].OverlayBase == nil || *records[0].OverlayBase != refs[0] {
+		t.Fatalf("SDK lost builtin overlay identity: %+v", records)
+	}
+	observations, err := c.ListSkillImportObservations(ctx, selection)
+	if err != nil || len(observations) != 1 || observations[0].Status != "missing" || observations[0].ImportedVersion != refs[0].Version {
+		t.Fatalf("SDK did not observe missing source at startup: %+v %v", observations, err)
+	}
+	restored, err := c.skills.Restore(ctx, selection, refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old, err := restored.ReadFile(ctx, "research", "guide.txt"); err != nil || string(old) != "PINNED_REFERENCE" {
+		t.Fatalf("old checkpoint lost support file: %q %v", old, err)
+	}
+	if err = c.DeleteSkill(ctx, "project", "research"); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Skills.Install = nil // Discovery no longer lists the missing package.
+	c, err = Open(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err = c.ListSkills(ctx, selection)
+	if err != nil || len(records) != 0 {
+		t.Fatalf("SDK restart resurrected deleted publication: %+v %v", records, err)
+	}
+	observations, err = c.ListSkillImportObservations(ctx, selection)
+	if err != nil || len(observations) != 1 || observations[0].Status != "missing" {
+		t.Fatalf("SDK lost tombstone source observation: %+v %v", observations, err)
+	}
+	if err = os.WriteFile(filepath.Join(cfg.Skills.Sources[0].Root, "research", "SKILL.md"), []byte("---\nname: research\ndescription: Changed upstream\n---\nReplacement source instructions.\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.RefreshSkillImports(ctx); err != nil {
+		t.Fatal(err)
+	}
+	observations, err = c.ListSkillImportObservations(ctx, selection)
+	if err != nil || len(observations) != 1 || observations[0].Status != "changed" {
+		t.Fatalf("SDK refresh: %+v %v", observations, err)
+	}
+	if head, err := c.GetSkillHead(ctx, "project", "research"); err != nil || head.Exists {
+		t.Fatalf("source refresh restored deleted publication: %+v %v", head, err)
+	}
+}
+
 func TestSDKSkillsUseNativeProgressiveLoadingAndPersistentInstall(t *testing.T) {
 	workspace, cfg := skillFixture(t)
 	var calls atomic.Int32
@@ -139,7 +244,7 @@ func TestSDKSkillsUseNativeProgressiveLoadingAndPersistentInstall(t *testing.T) 
 	if _, err = c.SetConfigOption(context.Background(), session.ID, "approval", harness.ApprovalReadOnly); err != nil {
 		t.Fatal(err)
 	}
-	_, err = c.Run(context.Background(), session.ID, []harness.Content{{Type: "text", Text: "Use research"}}, nil, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+	result, err := c.Run(context.Background(), session.ID, []harness.Content{{Type: "text", Text: "Use research"}}, nil, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
 		t.Error("read-only skill reference unexpectedly requested approval")
 		return harness.RejectOnce, nil
 	})
@@ -149,6 +254,20 @@ func TestSDKSkillsUseNativeProgressiveLoadingAndPersistentInstall(t *testing.T) 
 	if calls.Load() != 3 {
 		t.Fatalf("calls=%d", calls.Load())
 	}
+	assertEvidence := func(c *Client) {
+		t.Helper()
+		var loads, support, total, outcomes int
+		err := c.store.DB().QueryRow(`SELECT
+ (SELECT count(*) FROM harness_skill_reads WHERE kind='skill_load'),
+ (SELECT count(*) FROM harness_skill_reads WHERE kind='support_read'),
+ (SELECT count(*) FROM harness_skill_reads WHERE session_id=? AND run_id=? AND root_id=? AND role_id='' AND version=?),
+ (SELECT count(*) FROM harness_skill_outcomes WHERE run_id=? AND status='completed' AND effects_uncertain=0)`,
+			session.ID, result.Execution.RunID, result.Execution.RunID, record.Ref.Version, result.Execution.RunID).Scan(&loads, &support, &total, &outcomes)
+		if err != nil || loads != 1 || support != 1 || total != 2 || outcomes != 1 {
+			t.Fatalf("persistent SDK evidence loads=%d support=%d matching=%d outcomes=%d err=%v", loads, support, total, outcomes, err)
+		}
+	}
+	assertEvidence(c)
 	receipts, err := c.ListToolReceipts(context.Background(), session.ID)
 	if err != nil || len(receipts) != 2 {
 		t.Fatalf("receipts=%+v err=%v", receipts, err)
@@ -169,6 +288,11 @@ func TestSDKSkillsUseNativeProgressiveLoadingAndPersistentInstall(t *testing.T) 
 	records, err := c.ListSkills(context.Background(), harness.SkillSelection{Workspace: workspace})
 	if err != nil || len(records) != 1 || !records[0].Enabled || records[0].Ref != record.Ref {
 		t.Fatalf("reopened skills=%+v err=%v", records, err)
+	}
+	assertEvidence(c)
+	signal := waitSkillSignal(t, context.Background(), c, 2)
+	if signal.RootID != result.Execution.RunID || signal.CompletedRuns != 1 || signal.Version != record.Ref.Version || calls.Load() != 3 {
+		t.Fatalf("collector restart changed execution or invoked models: %+v calls=%d", signal, calls.Load())
 	}
 }
 

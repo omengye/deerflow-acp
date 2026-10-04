@@ -884,6 +884,7 @@ impl RightPanelSurface {
 
     fn label(&self) -> String {
         match self {
+            Self::DeerFlowTasks => "DeerFlow 任务树".into(),
             Self::Browser(_) => tr!("right_panel.browser"),
             Self::Terminal(_) => tr!("right_panel.terminal"),
             Self::BackgroundWork { key, title } => {
@@ -905,6 +906,7 @@ impl RightPanelSurface {
 
     fn icon_path(&self) -> &'static str {
         match self {
+            Self::DeerFlowTasks => "icons/bot.svg",
             Self::Browser(_) => "icons/globe.svg",
             Self::Terminal(_) => "icons/terminal.svg",
             Self::BackgroundWork { key, .. } => work_kind_icon(key.kind),
@@ -949,7 +951,7 @@ fn reusable_surface_index(
         RightPanelSurface::BackgroundWork { key, .. } => surfaces.iter().position(|surface| {
             matches!(surface, RightPanelSurface::BackgroundWork { key: candidate, .. } if candidate == key)
         }),
-        RightPanelSurface::Files | RightPanelSurface::Diff | RightPanelSurface::File(_) => {
+        RightPanelSurface::DeerFlowTasks | RightPanelSurface::Files | RightPanelSurface::Diff | RightPanelSurface::File(_) => {
             surfaces.iter().position(|surface| surface == requested)
         }
     }
@@ -1895,7 +1897,7 @@ impl Waku {
         self.right_panel_tabs_scroll_handle.scroll_to_item(index);
     }
 
-    fn active_right_panel_surface(&self) -> Option<&RightPanelSurface> {
+    pub(super) fn active_right_panel_surface(&self) -> Option<&RightPanelSurface> {
         self.right_panel_active_surface
             .and_then(|index| self.right_panel_surfaces.get(index))
     }
@@ -2163,6 +2165,7 @@ impl Waku {
             self.right_panel_pending_terminal_focus = None;
         }
         let body = match self.active_right_panel_surface().cloned() {
+            Some(RightPanelSurface::DeerFlowTasks) => self.render_deerflow_task_tree(cx),
             None => self.render_right_panel_chooser(cx).into_any_element(),
             Some(RightPanelSurface::BackgroundWork { key, .. }) => self
                 .render_background_work_surface(&key, cx)

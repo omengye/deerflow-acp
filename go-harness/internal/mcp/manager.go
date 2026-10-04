@@ -31,6 +31,7 @@ type Manager struct {
 	closeOnce sync.Once
 	closeDone chan struct{}
 	closeErr  error
+	host      *hostRegistry // configured once, before exposing this manager
 }
 
 type binding struct {
@@ -91,6 +92,11 @@ func (m *Manager) MCPCapabilities() (http, sse bool) { return m.policy.AllowHTTP
 // leaves the previous binding untouched until the candidate is ready. Runtime
 // callers must hold the session's idle lifecycle lease while reconfiguring.
 func (m *Manager) Bind(ctx context.Context, owner, id, cwd string, servers []harness.MCPServer) error {
+	if m.host != nil {
+		if handled, err := m.bindHost(ctx, owner, id, cwd, servers); handled || err != nil {
+			return err
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -199,6 +205,9 @@ func (m *Manager) Bind(ctx context.Context, owner, id, cwd string, servers []har
 }
 
 func (m *Manager) Tools(ctx context.Context, id string) ([]tool.BaseTool, error) {
+	if host, recipe := m.hostBinding(id); host != nil {
+		return host.Tools(ctx, recipe)
+	}
 	m.mu.Lock()
 	b := m.bindings[id]
 	pending := m.pending[id]
@@ -266,6 +275,9 @@ func (m *Manager) EnhancedTools(ctx context.Context, id string) ([]tool.BaseTool
 // an endpoint invalidates suspended execution even when its schema is equal.
 // An empty binding has no remote resources and needs no process-local identity.
 func (m *Manager) Generation(ctx context.Context, id string) (string, error) {
+	if host, recipe := m.hostBinding(id); host != nil {
+		return host.Generation(ctx, recipe)
+	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -331,6 +343,9 @@ func (m *Manager) startClose(b *binding) {
 }
 
 func (m *Manager) Release(ctx context.Context, owner, id string) error {
+	if host, _ := m.hostBinding(id); host != nil {
+		return ctx.Err() // host resources outlive a client attachment
+	}
 	m.mu.Lock()
 	var owned []*binding
 	for _, b := range []*binding{m.bindings[id], m.pending[id]} {
@@ -399,6 +414,9 @@ func (m *Manager) Close() error {
 		}
 		m.mu.Unlock()
 		go func() {
+			if m.host != nil {
+				m.closeErr = errors.Join(m.closeErr, m.host.manager.Close())
+			}
 			for _, b := range bindings {
 				m.startClose(b)
 			}

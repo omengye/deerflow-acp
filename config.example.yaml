@@ -1,716 +1,158 @@
-# DeerFlow config.yaml
-# ⚠️ 配置你的 API Key 后再启动服务
+# Eino Go harness configuration. Model keys are resolved from the environment.
+# Commands, OpenCLI, subagents and paid skill generation require explicit opt-in.
+config_version: eino-harness-v1
 
-config_version: 16
-log_level: info
-
-# API service settings. Prefer putting operational configuration here instead
-# of .env. Environment variables are still supported as compatibility fallbacks
-# when a field is omitted.
-api:
-  host: 127.0.0.1
-  port: 8000
-  checkpointer_type: sqlite
-  checkpointer_path: ./data/checkpoints.db
-  # full is backward-compatible. delta stores message writes compactly and
-  # requires langgraph-checkpoint-sqlite >=3.1; restart every worker when
-  # changing mode or snapshot_frequency.
-  checkpoint_channel_mode: full
-  checkpoint_delta:
-    snapshot_frequency: 10
-  # Immutable delta-history cache. Redis is useful when API workers share a
-  # checkpoint database; cache failures degrade to uncached reads.
-  checkpoint_cache:
-    type: memory
-    max_entries: 128
-    redis_url: null
-    ttl_seconds: 86400
-    key_prefix: ""
-  model_name: null
-  thinking_enabled: true
-  subagent_enabled: true
-  plan_mode: true
-  max_concurrent_subagents: 3
-  data_dir: ./data
-  deerflow_home: ./data/deerflow
-  deerflow_host_base_dir: null
-  # Path to extensions_config.json (MCP servers, skills, and custom
-  # middlewares). Defaults to ./extensions_config.json (or legacy
-  # mcp_config.json) if null. That JSON file's "middlewares" field takes a
-  # list of "module.path:ClassName" entries — AgentMiddleware subclasses with
-  # a no-argument constructor — appended to the lead agent's middleware chain
-  # after the built-in middlewares and before ClarificationMiddleware.
-  # Example: "middlewares": ["my_package.middlewares:MyAuditMiddleware"]
-  # MCP entries in that file accept "tool_name_prefix": true (default) and
-  # "session_init_timeout": 60. Set the latter to null only when an unbounded
-  # spawn/connect + initialize + tools/list phase is explicitly required.
-  # Set it false only when the server already exposes globally unique names.
-  extensions_config_path: null
-  cors_allow_origins:
-    - http://localhost:3000
-    - http://127.0.0.1:3000
-  cors_allow_credentials: false
-  # Set api_keys to enable Bearer-token auth, or set auth_enabled explicitly.
-  api_keys: []
-  auth_enabled: false
-  # Startup refuses a non-loopback bind while auth is disabled. This is an
-  # explicit escape hatch for an already-isolated trusted network only.
-  allow_insecure_remote: false
-  chat_request_timeout: 600
-  max_upload_size_mb: 25
-  max_uploads_per_request: 10
-  # Empty list = allow any extension. Example: [.pdf, .txt, .md]
-  allowed_upload_extensions: []
-  allow_memory_fallback: false
-  scheduler_enabled: true
-  scheduler_db_path: ./data/scheduled_tasks.db
-  scheduler_poll_interval_seconds: 5
-  scheduler_timezone: Asia/Shanghai
-  # Independent graph budget for unattended runs; defaults to recursion_limit.
-  scheduler_recursion_limit: 200
-  scheduler_max_concurrent_runs: 4
-  # Occurrences use at-least-once execution. Keep prompts and mutating tools
-  # idempotent because a transient failure can rerun the full prompt.
-  scheduler_max_attempts: 3
-  scheduler_retry_base_seconds: 15
-  scheduler_claim_lease_seconds: 120
-  scheduler_shutdown_grace_seconds: 10
-  scheduler_run_retention_days: 30
-  scheduler_max_runs_per_task: 1000
-  # Delete complete conversation state after the thread has had no mutating
-  # activity for this many days. Cleanup is indexed and runs in small batches.
-  thread_cleanup:
-    enabled: true
-    inactive_days: 30
-    run_daily_at: "03:00"
-    timezone: Asia/Shanghai
-    batch_size: 20
-    batch_interval_seconds: 1
-    max_deletions_per_run: 200
-    protect_scheduled_threads: true
-    quiet_period_minutes: 10
-    postpone_minutes: 10
-    stop_on_new_activity: true
-
-# Local ACP v1 agent. The preferred path is Zed stdio -> native Rust Bridge ->
-# loopback TCP -> one persistent deerflow-acpd process. The Bridge auto-starts
-# the daemon, and the daemon accepts one active ACP client at a time. The direct
-# `uv run deerflow-acp` stdio entry point remains available as a cold fallback.
-# Neither mode requires the HTTP API service to be running.
-# session/new.cwd is the real host-backed workspace for file tools. Client
-# filesystem/terminal callbacks and additional directories are not used.
-# The persistent daemon warms the agent graph before publishing its endpoint.
-# Portable ACP supports LocalSandboxProvider only. Set
-# DEER_FLOW_ACP_DAEMON_WARMUP=0 only for diagnostics.
 local_acp:
-  # Queue and execution have independent deadlines (seconds).
-  queue_timeout_seconds: 600
-  checkpointer_path: ./data/acp-checkpoints.db
-  session_store_path: ./data/acp-sessions.db
-  # Idle local editor windows are cheap and do not consume a run slot.
+  model_name: null
   max_active_connections: 16
   max_active_runs: 2
+  queue_timeout_seconds: 600
   run_timeout_seconds: 600
-  session_page_size: 50
-  # null inherits api.model_name (and ultimately default_model). ACP clients
-  # that support stable configOptions can override this per session by choosing
-  # from the top-level models list; the selected model is persisted with the
-  # ACP session.
-  model_name: null
-  thinking_enabled: true
-  plan_mode: true
-  # Internal DeerFlow task subagents can share the parent workspace and inherit
-  # the local ACP tool/permission policy. External invoke_acp_agent remains off.
-  subagent_enabled: false
-  max_concurrent_subagents: 2
-  # off | dangerous | all. dangerous approves read/search/think locally and asks
-  # the ACP client before edit/delete/execute/fetch/unknown tool calls. When this
-  # is dangerous or all, DeerFlow also exposes the standard ACP session config
-  # option `tool_approval`: ask | allow_always | reject_always. This is a
-  # session-wide wildcard choice; deployment tool allow/deny rules still apply.
   permission_mode: dangerous
-  # Optional hard tool policy applied after global tools and client MCP tools are assembled.
-  # When task is omitted or denied, subagents are effectively disabled even if
-  # subagent_enabled is true.
+  memory_scope: workspace
+  enable_bash: false
   tool_allowlist: null
   tool_denylist: []
-  # global | workspace | session. workspace is the safer default for a local
-  # task agent because unrelated project directories do not share memories.
-  memory_scope: workspace
-  # Optional server-owned prompt addition. prompt_overlay_file is resolved relative
-  # to config.yaml; do not use ACP user messages as system instructions.
-  prompt_overlay: ""
-  # prompt_overlay_file: ./config/local-acp-overlay.md
-  resource_link_max_size_mb: 25
-  # The daemon periodically removes unattached sessions that have had no
-  # activity for this many days, including clients that never sent session/close.
+  accept_client_mcp_servers: false
+  client_mcp_allowed_commands: []
+  # Detached session retention for standalone ACP installations.
   session_cleanup_enabled: true
   inactive_session_retention_days: 30
-  session_cleanup_interval_seconds: 3600
-  # Explicitly closed sessions can use a separate retention window.
   closed_session_retention_days: 30
-  recursion_limit: 200
-  # `/goal <completion condition>` always stores and evaluates a thread goal.
-  # Automatic hidden continuation is opt-in for portable ACP. Each continuation
-  # remains inside the original ACP prompt timeout and permission policy.
-  goal_auto_continue: false
-  goal_max_continuations: 3
-  goal_max_no_progress_continuations: 2
-  agent_name: null
-  # session/new.cwd is mounted as /mnt/user-data/workspace for this local
-  # Agent. Portable ACP requires LocalSandboxProvider. The runtime omits bash
-  # by default. Trusted local clients may opt in; Bash then runs on the host
-  # and can access the network and any filesystem locations visible to the
-  # current user, so Local mode is not an operating-system isolation boundary.
-  enable_bash: false
-  # External ACP-agent and persistent scheduler tools remain unavailable.
-  # Trusted local clients only. When enabled, ACP stdio, SSE, and HTTP
-  # (Streamable HTTP) mcpServers are attached per session, kept in memory, and
-  # cleaned up when the client disconnects. Remote URLs and headers are supplied
-  # by the client. Enabling this adds external command, outbound connection, and
-  # tool surfaces and therefore opts out of the strict file-only boundary.
-  accept_client_mcp_servers: false
-  # Optional remote-artifact publishing. Only files explicitly passed to
-  # present_files are uploaded. Credentials are read from
-  # DEER_FLOW_ACP_ARTIFACT_ACCESS_KEY / DEER_FLOW_ACP_ARTIFACT_SECRET_KEY and
-  # are never exposed to the model.
-  artifacts:
-    enabled: false
-    endpoint_url: https://rustfs.example.com
-    # Trusted private-network alternative: http://192.168.1.190:9000
-    bucket: deerflow-acp
-    region: us-east-1
-    prefix: acp-artifacts
-    addressing_style: path
-    presigned_get_expires_seconds: 900
-    max_file_size_mb: 200
-    verify_ssl: true
-
-stream_bridge:
-  # memory: single-process development; redis: cross-process replay for SSE reconnects.
-  type: memory
-  queue_maxsize: 512
-  # Idle seconds between SSE/replay heartbeats (positive, maximum 86400).
-  heartbeat_interval_seconds: 15
-  # Redis Streams backend. Enable by setting type: redis.
-  redis_url: ${REDIS_URL:-redis://localhost:6379/0}
-  redis_key_prefix: deerflow:stream
-  redis_maxlen: 10000
-  redis_retention_seconds: 3600
-  # Keep buffering while an active run has no connected client.
-  reconnect_grace_seconds: 600
-  # Keep completed events available for Last-Event-ID replay.
-  completed_replay_seconds: 1800
-  # Keep run status long enough to return REPLAY_EXPIRED instead of starting a duplicate run.
-  run_metadata_retention_seconds: 3600
-
-token_usage:
-  enabled: false
+  session_cleanup_interval_seconds: 3600
 
 models:
-  # `supports_thinking` / `supports_reasoning_effort` are capability flags,
-  # not toggles -- they declare what the model can do, not whether thinking
-  # is currently on. They gate two things: (1) subagents.agents.*.thinking_enabled
-  # / reasoning_effort overrides below are rejected at admin-write time (and
-  # skipped/warned-and-degraded at run time) for models that don't declare
-  # support; (2) the actual on/off switch is `thinking_enabled` (top-level
-  # runtime setting, or a per-agent override under `subagents:`).
-  # `context_window` is a positive integer declaring the model's total context
-  # capacity (prompt + completion) in tokens. It powers the "% context used"
-  # indicator (ACP usage_update / API end event telemetry) and is distinct
-  # from `max_tokens`, the per-call output cap. Leave it unset when the
-  # provider limit is unknown; the percentage is then not reported.
-  # `request_admission` provides a process-wide FIFO RPM gate. Models that
-  # share one provider quota can use the same `group` value.
-  # Admission policies live for the lifetime of the process; restart every
-  # worker after enabling, disabling, regrouping, or changing a policy.
-  # `deerflow.models.vllm_provider:VllmChatModel` also accepts
-  # `cumulative_stream_usage: true` when its vLLM endpoint reports cumulative
-  # token snapshots on every streaming chunk.
   - name: qwen3.6-plus
     display_name: Qwen 3.6 Plus
-    use: langchain_openai:ChatOpenAI
+    provider: openai
     model: qwen3.6-plus
-    api_key: "YOUR_DASHSCOPE_API_KEY"
+    api_key: ${DASHSCOPE_API_KEY:-not-configured}
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    supports_thinking: true
+    supports_vision: false
     context_window: 262144
-    # request_admission:
-    #   requests_per_minute: 60
-    #   group: shared-provider-account
-    #   max_wait_seconds: 300
-    #   max_queue_size: 256
-  # OpenCode Go uses this conversation-stable header for provider routing and
-  # prompt-cache affinity. It is resolved per request from DeerFlow thread_id;
-  # never put a fixed x-opencode-session value in default_headers.
-  # - name: opencode-go-kimi
-  #   display_name: OpenCode Go Kimi
-  #   use: langchain_openai:ChatOpenAI
-  #   model: kimi-k3
-  #   api_key: $OPENCODE_GO_API_KEY
-  #   base_url: https://opencode.ai/zen/go/v1
-  #   default_headers:
-  #     User-Agent: deerflow-api/1.0
-  #   runtime_headers:
-  #     x-opencode-session: thread_id
-  # Tencent Copilot currently rejects non-stream chat requests. Add
-  # `streaming: true` to its ChatOpenAI-compatible model entry; direct
-  # background calls also retry once in stream mode on its explicit 400/11101.
-  # - name: tencent-copilot
-  #   use: langchain_openai:ChatOpenAI
-  #   model: YOUR_MODEL_ID
-  #   api_key: $TENCENT_COPILOT_API_KEY
-  #   base_url: https://copilot.tencent.com/v2
-  #   streaming: true
 
 default_model: qwen3.6-plus
 
-# Require a current read before modifying an existing file. Every successful
-# write invalidates the prior read mark.
-read_before_write:
-  enabled: true
-  elide_blocked_payloads: true
-  elide_min_chars: 2000
+subagents:
+  enabled: false
+  max_concurrent: 2
+  timeout_seconds: 900
+  max_turns: null
+  agents: {}
+  custom_agents: {}
 
 sandbox:
-  use: deerflow.sandbox.local:LocalSandboxProvider
+  provider: local
   allow_host_bash: false
-  # Positive finite command deadline, shared by Local, WSL and Docker AIO.
-  # WSL/AIO supervise each command using Python 3.9+ (python3) and /proc inside the execution environment.
-  # An unconfirmed transport failure is reported as unknown, never retried.
-  bash_command_timeout: 600
-  # Host-process tools such as host_opencli can reuse browser login state and
-  # credentials outside the sandbox. Keep disabled unless every prompt and
-  # fetched document is trusted.
   allow_host_tools: false
-  # Forward these variables when the image-generation skill runs inside the
-  # local sandbox and uses an OpenAI-compatible Images API:
-  # environment:
-  #   IMAGE_GENERATION_PROVIDER: $IMAGE_GENERATION_PROVIDER
-  #   IMAGE_GENERATION_API_KEY: $IMAGE_GENERATION_API_KEY
-  #   IMAGE_GENERATION_BASE_URL: $IMAGE_GENERATION_BASE_URL
-  #   IMAGE_GENERATION_MODEL: $IMAGE_GENERATION_MODEL
-  #   IMAGE_GENERATION_SIZE: $IMAGE_GENERATION_SIZE
 
-# WSL mode (Windows only): bash runs inside a WSL2 distro while file I/O
-# stays on the Windows filesystem. WSL is not an isolation boundary: Windows
-# drives and the distro filesystem remain reachable, so bash requires the same
-# explicit trusted-workflow opt-in as LocalSandboxProvider.
-# sandbox:
-#   use: deerflow.sandbox.local:LocalWslProvider   # short alias: 'wsl'
-#   allow_host_bash: false
-#   wsl_distro: Ubuntu-22.04          # omit to use the default distro
-#   wsl_user: null                    # omit to use the distro's default user
-#   wsl_shell: bash
-#   wsl_mount_prefix: /mnt
-#   bash_command_timeout: 600
-
-# Docker sandbox mode (Linux/macOS hosts with Docker available):
-# sandbox:
-#   use: deerflow.sandbox.aio:AioSandboxProvider   # short alias: 'aio' or 'docker'
-#   image: enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest
-#   replicas: 3
-#   container_prefix: deer-flow-sandbox
-#   # Opportunistic cleanup at the next acquire; running/uncertain commands are protected.
-#   idle_timeout: 600
-#   bash_command_timeout: 600
-#   # If all replicas are busy, acquisition reports capacity full instead of killing one.
-#   # User for sandbox commands. 'auto' (default, recommended) boots the
-#   # container as the image's root user so its init works, then runs tool
-#   # commands as the host UID:GID. The image's root init still leaves some
-#   # root-owned files in the thread directory; thread deletion cleans those
-#   # up via a short-lived root container, so the Docker CLI must stay available.
-#   container_user: auto
-#   security_opt:
-#     - seccomp:unconfined
-#   mounts:
-#     - host_path: /srv/shared/reference-data
-#       container_path: /mnt/reference-data
-#       read_only: true
-
-# ACP (Agent Client Protocol) agents.
-# When one or more agents are configured here, DeerFlow exposes the
-# built-in `invoke_acp_agent` tool. The tool launches the configured ACP
-# subprocess, creates an ACP session, sends a prompt, and returns the
-# agent's final streamed text.
-#
-# Notes:
-# - The configured command must speak ACP. The plain `codex` or `claude`
-#   CLI is not enough unless wrapped by an ACP adapter.
-# - ACP agents run in an isolated per-thread workspace. Their output files
-#   are visible to DeerFlow at /mnt/acp-workspace/.
-# - Keep `auto_approve_permissions: false` unless you explicitly trust the
-#   adapter and the commands it may request.
-# - The agent subprocess only inherits a trimmed environment (on Linux:
-#   HOME, LOGNAME, PATH, SHELL, TERM, USER) — NOT this server's
-#   ANTHROPIC_*/CLAUDE_CODE_* variables. Pass credentials explicitly via
-#   `env:` below using `$VAR_NAME`, and make sure that variable is set in
-#   the environment that runs the DeerFlow API process itself.
-# - Install adapter CLIs separately, for example:
-#     npm install -g @zed-industries/codex-acp
-#     npm install -g @agentclientprotocol/claude-agent-acp
-#
-# acp_agents:
-#   codex:
-#     command: codex-acp
-#     args: []
-#     env:
-#       OPENAI_API_KEY: $OPENAI_API_KEY
-#     description: "Codex coding agent via ACP"
-#     model: null
-#     auto_approve_permissions: false
-#     timeout_seconds: 600
-#     # Required before ACP resource links are automatically downloaded.
-#     artifact_allowed_hosts:
-#       - rustfs.example.com
-#     # HTTP remains disabled unless this is explicitly true.
-#     artifact_allow_insecure_http: false
-#     artifact_max_file_size_mb: 200
-#     artifact_download_timeout_seconds: 120
-#   remote_deerflow:
-#     # The native bridge remains an ACP stdio agent to this Python process and
-#     # converts the connection to the official ACP HTTP + SSE transport.
-#     command: deerflow-acp
-#     args:
-#       - --remote
-#       - https://local-acp.example.com/acp
-#     env:
-#       DEER_FLOW_ACP_GATEWAY_TOKEN: $DEER_FLOW_ACP_GATEWAY_TOKEN
-#     description: "Remote DeerFlow through the authenticated ACP gateway"
-#     auto_approve_permissions: false
-#     timeout_seconds: 900
-#     artifact_allowed_hosts:
-#       - rustfs.example.com
-#     # Trusted LAN RustFS alternative:
-#     # artifact_allowed_hosts:
-#     #   - 192.168.1.190:9000
-#     # artifact_allow_insecure_http: true
-#   claude_code:
-#     command: claude-agent-acp
-#     args: []
-#     env:
-#       # Either an Anthropic API key...
-#       ANTHROPIC_API_KEY: $ANTHROPIC_API_KEY
-#       # ...or a Claude Code subscription OAuth token (use one or the other).
-#       # CLAUDE_CODE_OAUTH_TOKEN: $CLAUDE_CODE_OAUTH_TOKEN
-#     description: "Claude Code coding agent via ACP"
-#     model: null
-#     auto_approve_permissions: false
-#     timeout_seconds: 600
+# Host-owned connections are configured separately from client MCP permissions.
+# Empty by default. Recipes and credentials stay in this host file; restart to apply.
+mcp:
+  host_recipes: []
 
 skills:
   enabled: true
   path: ./skills
-  container_path: /mnt/skills
-  # off keeps the full skill descriptions; auto switches to intent discovery
-  # once this Agent can see at least discovery_threshold enabled skills.
-  discovery_mode: "off"
-  discovery_threshold: 20
+  extensions_file: ./extensions_config.json
 
-# Optional model-input redaction. Original history and user-facing source
-# artifacts remain unchanged. Memory extraction is not covered by this option.
-pii_redaction:
-  enabled: false
-  email: true
-  phone: true
-  bank_card: true
-  chinese_id: true
-  api_key: true
+memory:
+  enabled: true
+  mode: middleware
+  injection_enabled: true
+  retrieval_enabled: true
 
-# Agent-managed Skill improvement. Review mode discovers reusable improvements
-# automatically but always requires an admin to publish them. auto_patch mode
-# may publish only small, low-risk SKILL.md patches that pass both gates.
 skill_evolution:
+  # Manual candidates, optional operator generation, and user-approved publication.
+  # Select configured model names before enabling; disabled by default.
   enabled: false
   mode: review
-  # Relative to DEER_FLOW_HOME (repo-local .deer-flow by default).
-  storage_path: skill-evolution
-  generation_model_name: null
+  allow_builtin_overlays: false
   moderation_model_name: null
   evaluation_model_name: null
+  generation_model_name: null
   security_fail_closed: true
-  discovery:
+  validation:
+    # 0 uses the native defaults: 60 seconds, 131072 bytes, 1024 tokens.
+    timeout_seconds: 0
+    max_input_bytes: 0
+    max_output_tokens: 0
+  generation:
+    # Explicit requests and enabled discovery workers share this generation gate.
     enabled: false
-    min_tool_calls: 5
+    # 0 uses 60 seconds, 131072 bytes, 8192 output tokens.
+    timeout_seconds: 0
+    max_input_bytes: 0
+    max_output_tokens: 0
+  # Explicit native opt-in; legacy discovery.enabled does not enable this.
+  discovery:
+    operator_corrections_enabled: false
+    missing_reports_enabled: false
+    successful_workflows_enabled: false
+    # Set an authorized managed source before enabling either new-skill trigger.
+    new_skill_source_id: ""
     repeat_threshold: 2
     repeat_window_days: 30
     cooldown_hours: 24
     max_daily_proposals: 5
     max_pending_proposals: 20
-  candidate_limits:
-    max_files: 20
-    max_total_bytes: 524288
-    max_file_bytes: 131072
+  # Used only when mode=auto_patch and generation/behavior are enabled.
   auto_patch:
     max_changed_lines: 40
-    # Safety locks in this implementation; automatic publication is patch-only.
-    allow_create: false
-    allow_support_files: false
-    allow_scripts: false
-    allow_delete: false
-  monitoring:
-    probation_uses: 3
-    auto_rollback_consecutive_failures: 2
+    max_daily_publications: 2
+    observation_hours: 72
+    min_observations: 3
+    rollback_failure_threshold: 2
+  behavior:
+    enabled: false
+    suite_path: ""
+    timeout_seconds: 60
+    max_steps: 6
+    max_input_bytes: 131072
+    max_output_tokens: 1024
+  budget:
+    # Shared UTC-day maintenance quota for generation and both reviews.
+    # All values must be positive; restart does not reset existing charges.
+    max_daily_model_calls: 30
+    max_daily_tokens: 100000
+    max_job_seconds: 300
+    workers: 1
 
-memory:
-  enabled: true
-  manager_class: deermem
-  # middleware = automatic recall injection; tool = expose memory_search only.
-  # Both modes keep passive post-conversation writes enabled.
-  mode: middleware
-  injection_enabled: true
-  shutdown_flush_timeout_seconds: 30
-  backend_config:
-    storage_path: memory.json
-    storage_class: deerflow.agents.memory.storage.FileMemoryStorage
-    debounce_seconds: 30
-    model_name: null
-    max_facts: 100
-    fact_confidence_threshold: 0.7
-    # Optional deterministic same-category near-duplicate merge gate.
-    fact_dedup_enabled: false
-    fact_dedup_similarity_threshold: 0.7
-    max_injection_tokens: 2000
-    # Query-relevant fact retrieval backed by a rebuildable SQLite FTS5 index.
-    retrieval_enabled: true
-    retrieval_top_k: 12
-    retrieval_mmr_enabled: false
-    retrieval_mmr_lambda: 0.7
-    retrieval_index_path: memory-fts5.sqlite3
-
-# mem0 HTTP backend (there is intentionally no automatic DeerMem migration):
-# memory:
-#   enabled: true
-#   manager_class: mem0
-#   # Change to tool for model-directed recall through memory_search.
-#   mode: middleware
-#   injection_enabled: true
-#   shutdown_flush_timeout_seconds: 30
-#   backend_config:
-#     api_key_env: MEM0_API_KEY
-#     base_url: https://api.mem0.ai
-#     allow_insecure_http: false
-#     default_user_id: deerflow
-#     top_k: 8
-#     score_threshold: 0.1
-#     max_injection_chars: 12000
-#     timeout_seconds: 10
-#     startup_policy: fail_fast
-#     failure_policy:
-#       read: fail_open
-#       write: log_and_drop
-
-# Process-wide model-call shaping. The cap is shared by lead agents,
-# subagents, summarization, title generation, and memory extraction.
-llm_call:
-  max_concurrent_calls: 8
-  queue_timeout_seconds: 60
-  retry_max_attempts: 3
-  retry_base_delay_ms: 1000
-  retry_cap_delay_ms: 8000
-  # Burst/slope 429s receive only one retry using this longer base.
-  burst_retry_base_delay_ms: 5000
-
-subagents:
-  enabled: true
-  timeout_seconds: 900
-  agents:
-    general-purpose:
-      description: "A general-purpose sub-agent for delegated tasks"
-      model: qwen3.6-plus
-      max_turns: 25
-      # Per-agent generation overrides (all optional, all None/absent = inherit).
-      # thinking_enabled/reasoning_effort require the resolved model above to
-      # declare supports_thinking / supports_reasoning_effort: true respectively.
-      # thinking_enabled: true
-      # reasoning_effort: medium  # one of: low, medium, high, xhigh
-      # model_settings:
-      #   temperature: 0.3
-      #   max_tokens: 4096
-
-tool_groups:
-  - name: web
-  - name: file:read
-  - name: file:write
-  - name: bash
-  - name: object_storage
-  - name: host:opencli
-  - name: knowledge
-
-tool_search:
-  enabled: false
-
-tool_output:
-  enabled: true
-  externalize_min_chars: 12000
-  preview_head_chars: 2000
-  preview_tail_chars: 1000
-  # When a persisted output is JSON or JSON Lines, replace the head/tail
-  # preview above with a deterministic structural synopsis (top-level keys,
-  # value types, array lengths, a depth-limited sample of nested structure)
-  # instead of a raw character slice. Falls back to head/tail for anything
-  # that isn't JSON/JSONL, or if disabled.
-  structured_synopsis_enabled: true
-  structured_synopsis_max_chars: 4000
-  fallback_max_chars: 30000
-  fallback_head_chars: 8000
-  fallback_tail_chars: 3000
-  storage_subdir: ".tool-results"
-  # Keep this empty in production. Exempt tools may persist arbitrarily large
-  # results into every later checkpoint in the thread.
-  exempt_tools: []
-  # Remove redundant historical write_file payloads only from model requests;
-  # checkpoints and tool receipts retain the original arguments.
-  elide_superseded_writes: true
-  superseded_write_min_chars: 2000
-  keep_recent_writes: 1
-  # tool_overrides:
-  #   web_search: 8000
-  #   bash: 20000
-
-# Set https_proxy to null or "" on a web tool to disable proxying for that tool.
+# Groups are descriptive metadata; tool_allowlist/tool_denylist control access.
 tools:
   - name: web_search
     group: web
-    use: deerflow.community.brave_search.tools:web_search_tool
-    api_key: "YOUR_BRAVE_API_KEY"
+    api_key: ${BRAVE_API_KEY:-}
     max_results: 5
-    https_proxy: http://172.17.0.1:11055
   - name: web_fetch
     group: web
-    use: deerflow.community.scrapling.tools:web_fetch_tool
     timeout: 10
-    https_proxy: http://172.17.0.1:11055
   - name: image_search
     group: web
-    use: deerflow.community.image_search.tools:image_search_tool
     max_results: 5
-    https_proxy: http://172.17.0.1:11055
-  # RAGFlow retrieval is read-only. Omit `datasets` to search every dataset
-  # visible to the configured API key, or list stable IDs to restrict scope.
-  # Empty datasets are skipped and mixed embedding models are queried in
-  # separate bounded groups before their ranked results are interleaved.
-  # - name: knowledge_search
-  #   group: knowledge
-  #   use: deerflow.community.ragflow.tools:knowledge_search_tool
-  #   base_url: http://localhost:9380
-  #   api_key: $RAGFLOW_API_KEY
-  #   datasets:
-  #     - 0123456789abcdef0123456789abcdef
-  #   timeout: 30
-  #   page_size: 8
-  #   similarity_threshold: 0.2
-  #   vector_similarity_weight: 0.3
-  #   top_k: 256
-  #   max_chars_per_chunk: 800
-  #   max_total_chars: 8000
-  # Qiniu Kodo object storage tools. Install optional dependency first:
-  #   uv sync --extra qiniu
-  #
-  # Shared fields may be placed on any enabled qiniu_* tool entry. The tools
-  # also read QINIU_ACCESS_KEY, QINIU_SECRET_KEY, QINIU_BUCKET, QINIU_DOMAIN,
-  # QINIU_KEY_PREFIX, and QINIU_PRIVATE_BUCKET from the environment.
-  # - name: qiniu_upload_file
-  #   group: object_storage
-  #   use: deerflow.community.qiniu_kodo.tools:qiniu_upload_file_tool
-  #   access_key: $QINIU_ACCESS_KEY
-  #   secret_key: $QINIU_SECRET_KEY
-  #   bucket: your-bucket
-  #   domain: https://cdn.example.com
-  #   key_prefix: deerflow/{thread_id}/
-  #   private_bucket: false
-  #   upload_token_expires: 3600
-  # - name: qiniu_download_file
-  #   group: object_storage
-  #   use: deerflow.community.qiniu_kodo.tools:qiniu_download_file_tool
-  # - name: qiniu_list_objects
-  #   group: object_storage
-  #   use: deerflow.community.qiniu_kodo.tools:qiniu_list_objects_tool
-  # - name: qiniu_stat_object
-  #   group: object_storage
-  #   use: deerflow.community.qiniu_kodo.tools:qiniu_stat_object_tool
-  # - name: qiniu_delete_object
-  #   group: object_storage
-  #   use: deerflow.community.qiniu_kodo.tools:qiniu_delete_object_tool
-  # - name: qiniu_get_download_url
-  #   group: object_storage
-  #   use: deerflow.community.qiniu_kodo.tools:qiniu_get_download_url_tool
   - name: ls
     group: file:read
-    use: deerflow.sandbox.tools:ls_tool
   - name: read_file
     group: file:read
-    use: deerflow.sandbox.tools:read_file_tool
   - name: glob
     group: file:read
-    use: deerflow.sandbox.tools:glob_tool
     max_results: 200
   - name: grep
     group: file:read
-    use: deerflow.sandbox.tools:grep_tool
     max_results: 100
   - name: write_file
     group: file:write
-    use: deerflow.sandbox.tools:write_file_tool
   - name: str_replace
     group: file:write
-    use: deerflow.sandbox.tools:str_replace_tool
   - name: move_path
     group: file:write
-    use: deerflow.sandbox.tools:move_path_tool
   - name: delete_path
     group: file:write
-    use: deerflow.sandbox.tools:delete_path_tool
+  # This tool also requires sandbox.allow_host_tools=true and an installed CLI.
   - name: host_opencli
     group: host:opencli
-    use: deerflow.tools.host_opencli:host_opencli_tool
-    # Optional. Useful on Windows when OpenCLI is installed as a .cmd shim.
-    # executable: 'C:\Users\YOUR_USER\AppData\Local\Microsoft\WindowsApps\opencli.cmd'
+    executable: opencli
+    timeout: 120
+    allowed_sites: [web, twitter, xiaohongshu, xiaoyuzhou, weixin, douyin, bilibili]
   - name: bash
     group: bash
-    use: deerflow.sandbox.tools:bash_tool
-
-guardrails:
-  enabled: false
-  fail_closed: true
-  # Example denylist for irreversible MCP operations. When enabled, the
-  # schema expects the singular `provider` key (not `providers`).
-  provider:
-    use: deerflow.guardrails.builtin:AllowlistProvider
-    config:
-      denied_tools:
-        - openviking_forget
-
-title:
-  enabled: true
-  model_name: qwen3.6-plus
-
-summarization:
-  enabled: false
-  # model_name: null means "follow the current run's model" (falls back to
-  # models[0] only if the run's model can't be resolved). Set an explicit
-  # name here to always summarize with a specific model regardless of which
-  # model is answering the run.
-  # model_name: null
-  # trigger is required whenever enabled is true (the admin API rejects
-  # enabled=true with no trigger). Example:
-  # trigger:
-  #   - type: messages
-  #     value: 50
-  #   - type: fraction
-  #     value: 0.8
-
-tracing:
-  enabled: false
-  langsmith:
-    enabled: false
-    # You can set a literal value here or keep credentials in env via $LANGSMITH_API_KEY.
-    api_key: null
-    project: deer-flow
-    endpoint: https://api.smith.langchain.com
-  langfuse:
-    enabled: false
-    # You can set literal values here or keep credentials in env via placeholders.
-    public_key: null
-    secret_key: null
-    host: https://cloud.langfuse.com

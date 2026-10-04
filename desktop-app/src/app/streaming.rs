@@ -322,13 +322,18 @@ impl Waku {
                         session.status = SessionStatus::Working;
                     } else if matches!(
                         session.provider,
-                        ProviderKind::Codex | ProviderKind::Claude | ProviderKind::OpenCode2
+                        ProviderKind::Codex
+                            | ProviderKind::Claude
+                            | ProviderKind::OpenCode2
+                            | ProviderKind::DeerFlow
                     ) {
                         // Some providers start turns on their own: Codex goal
                         // continuation pursues an active goal whenever the
                         // thread is idle, and Claude Code re-enters the model
                         // once a backgrounded command, subagent or monitor
-                        // settles. Give the turn a transcript home — there is
+                        // settles. DeerFlow explicit execution recovery also
+                        // starts without submitting a new user prompt.
+                        // Give the turn a transcript home — there is
                         // no user message for it — so its work streams in
                         // instead of being dropped.
                         session.begin_provider_turn();
@@ -440,6 +445,7 @@ impl Waku {
                 // `accepts_turn_output` deliberately.
                 self.handle_background_work_event(session_id, event);
             }
+            DriverEvent::DeerFlowTasks(event) => self.handle_deerflow_task_event(session_id, event),
             DriverEvent::Permission {
                 request_id,
                 title,
@@ -761,6 +767,7 @@ impl Waku {
                 }
             }
             DriverEvent::ProcessExited => {
+                self.disconnect_deerflow_tasks(session_id);
                 self.pending_deerflow_approvals.remove(&session_id);
                 self.deerflow_approval_states.remove(&session_id);
                 self.mark_background_work_lost(session_id);

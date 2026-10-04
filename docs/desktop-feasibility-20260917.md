@@ -1,3 +1,5 @@
+> 历史记录：本文描述旧 Python 实现或当时的桌面设计，命令和能力声明不作为当前分支的使用说明。原文与源码参见[固定历史提交](https://github.com/omengye/deerflow-acp/tree/9c29fcaac991f2d9f1e7af68250b12f6b3ec07d9)。当前 Eino Go 入口与验收范围见[项目说明](../README.md)。
+
 # DeerFlow ACP Portable 增加 Desktop 的可行性分析
 
 日期：2026-09-17。范围：当前仓库与 `D:\Tools\waku` 的源码、构建脚本和文档静态分析；未改动产品实现，未启动服务或调用真实模型。

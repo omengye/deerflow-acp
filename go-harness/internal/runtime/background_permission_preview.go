@@ -34,13 +34,17 @@ func (s *BackgroundInteractionStore) Permission(ctx context.Context, actor harne
 		if err != nil {
 			return err
 		}
-		if state != "waiting" || m.ID != query.InteractionID || m.TaskVersion != query.TaskVersion || m.Attempt != task.Attempt {
+		visible, _, err := backgroundActiveManifest(ctx, tx, m)
+		if err != nil {
+			return err
+		}
+		if state != "waiting" || visible.ID != query.InteractionID || m.TaskVersion != query.TaskVersion || m.Attempt != task.Attempt {
 			return harness.ErrExecutionConflict
 		}
 		if err = s.validateManifest(ctx, tx, m, task); err != nil {
 			return err
 		}
-		for _, item := range m.Interrupts {
+		for _, item := range visible.Interrupts {
 			if item.IntentID != query.IntentID {
 				continue
 			}

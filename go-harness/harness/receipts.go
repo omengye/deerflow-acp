@@ -41,20 +41,41 @@ func MarkToolNoEffect(err error) error {
 	return &ToolNoEffectError{cause: err}
 }
 
+// ToolExecutionFailedError records a native operation's confirmed terminal
+// failure. It does not assert that nothing changed: a command may have applied
+// partial effects before exiting. Return its evidence to the model for review,
+// without replaying the operation or requiring reconciliation of a lost process.
+type ToolExecutionFailedError struct{ cause error }
+
+func (e *ToolExecutionFailedError) Error() string { return e.cause.Error() }
+func (e *ToolExecutionFailedError) Unwrap() error { return e.cause }
+
+// MarkToolExecutionFailed requires confirmed termination, successful cleanup,
+// and a trustworthy terminal result. Never wrap unknown transport/storage errors.
+func MarkToolExecutionFailed(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &ToolExecutionFailedError{cause: err}
+}
+
 type ReceiptState string
 
 const (
 	ReceiptPending     ReceiptState = "pending"
 	ReceiptStarted     ReceiptState = "started"
 	ReceiptCompleted   ReceiptState = "completed"
+	ReceiptFailed      ReceiptState = "failed"
 	ReceiptNotExecuted ReceiptState = "not_executed"
 	ReceiptUncertain   ReceiptState = "uncertain"
 	ReceiptNoEffect    ReceiptState = "no_effect"
 )
 
 // ToolReceipt records evidence about one attempt. A started operation that
-// fails is uncertain unless the native tool supplies evidence that it rejected
-// the call before execution, or it has a verified read-only contract.
+// fails is uncertain unless the native tool supplies a confirmed terminal
+// result, evidence of pre-execution rejection, or a verified read-only contract.
+// Failed receipts preserve errors and possible partial effects; they are not
+// successful receipts and never authorize automatic replay.
 // ArgumentsSummary contains parameter names/types, never argument values.
 type ToolReceipt struct {
 	SessionID        string         `json:"sessionId"`
@@ -69,6 +90,7 @@ type ToolReceipt struct {
 	Result           []Content      `json:"result,omitempty"`
 	ResultTruncated  bool           `json:"resultTruncated,omitempty"`
 	Error            string         `json:"error,omitempty"`
+	FailureCode      string         `json:"failureCode,omitempty"`
 	Version          int64          `json:"version"`
 	CreatedAt        time.Time      `json:"createdAt"`
 	UpdatedAt        time.Time      `json:"updatedAt"`

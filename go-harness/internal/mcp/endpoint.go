@@ -105,6 +105,13 @@ func (m *Manager) connect(ctx context.Context, b *binding, cwd string, cfg harne
 	if lifetime.Err() != nil {
 		return e, ErrClosed
 	}
+	go func() {
+		_ = e.client.Wait()
+		// A dead transport invalidates every borrower of this resource set.
+		// Reconnection is explicit and must receive a new generation.
+		e.cancel()
+		b.cancel()
+	}()
 	return e, nil
 }
 
@@ -272,10 +279,11 @@ func safeOperationError(ctx context.Context, err error, operation string) error 
 }
 
 func (e *endpoint) tools(ctx context.Context) ([]tool.BaseTool, error) {
+	errorAsError := false // A normal IsError response is terminal tool evidence.
 	result, err := official.GetTools(ctx, &official.Config{
 		Cli: &scopedClient{endpoint: e}, ServerName: e.name, ListToolsMode: official.ListToolsAllPages, MaxToolPages: e.policy.MaxToolPages,
 		MetadataMode: official.MetadataBasic, DescriptionPolicy: &official.DescriptionPolicy{MaxChars: 4096},
-		ResultPolicy:            &official.ResultPolicy{MaxChars: e.policy.MaxResultChars, IncludeStructuredContent: true},
+		ResultPolicy:            &official.ResultPolicy{MaxChars: e.policy.MaxResultChars, IncludeStructuredContent: true, ErrorAsError: &errorAsError},
 		ToolCallResultHandlerV2: captureToolImages,
 		ToolNameMapper: func(_ context.Context, in official.ToolNameMapperInput) (official.ToolNameMapperOutput, error) {
 			return official.ToolNameMapperOutput{ExposedName: toolName(in.ServerName, in.Tool.Name)}, nil
@@ -335,12 +343,27 @@ type guardTool struct {
 
 type toolImageCaptureKey struct{}
 
-type toolImageCapture struct{ images []*sdk.ImageContent }
+type toolImageCapture struct {
+	images []*sdk.ImageContent
+	failed bool
+}
+
+type toolResultError struct {
+	cause  error
+	result string
+}
+
+func (e *toolResultError) Error() string      { return e.cause.Error() }
+func (e *toolResultError) Unwrap() error      { return e.cause }
+func (e *toolResultError) ToolResult() string { return e.result }
 
 // The official adapter marshals MCP content into a JSON string. Strip image
 // data before that string is constructed; the enhanced Eino wrapper receives
 // the original image blocks through this per-call context instead.
 func captureToolImages(ctx context.Context, _ official.ToolCallInfo, result *sdk.CallToolResult) (*sdk.CallToolResult, error) {
+	if capture, ok := ctx.Value(toolImageCaptureKey{}).(*toolImageCapture); ok {
+		capture.failed = result.IsError
+	}
 	var images []*sdk.ImageContent
 	content := make([]sdk.Content, 0, len(result.Content))
 	var total int64
@@ -375,19 +398,32 @@ func captureToolImages(ctx context.Context, _ official.ToolCallInfo, result *sdk
 // through Eino's structured tool result interface.
 type enhancedGuardTool struct{ *guardTool }
 
+type enhancedResultError struct {
+	cause  error
+	result *schema.ToolResult
+}
+
+func (e *enhancedResultError) Error() string                          { return e.cause.Error() }
+func (e *enhancedResultError) Unwrap() error                          { return e.cause }
+func (e *enhancedResultError) EnhancedToolResult() *schema.ToolResult { return e.result }
+
 func (t *enhancedGuardTool) InvokableRun(ctx context.Context, args *schema.ToolArgument, opts ...tool.Option) (*schema.ToolResult, error) {
 	if args == nil {
-		return nil, fmt.Errorf("%w: missing MCP arguments", harness.ErrInvalidInput)
+		return nil, harness.MarkToolNotExecuted(fmt.Errorf("%w: missing MCP arguments", harness.ErrInvalidInput))
 	}
 	capture := &toolImageCapture{}
 	textResult, err := t.guardTool.InvokableRun(context.WithValue(ctx, toolImageCaptureKey{}, capture), args.Text, opts...)
-	if err != nil {
+	var terminal *harness.ToolExecutionFailedError
+	if err != nil && !errors.As(err, &terminal) {
 		return nil, err
 	}
 	result := &schema.ToolResult{Parts: []schema.ToolOutputPart{{Type: schema.ToolPartTypeText, Text: textResult}}}
 	for _, image := range capture.images {
 		data := base64.StdEncoding.EncodeToString(image.Data)
 		result.Parts = append(result.Parts, schema.ToolOutputPart{Type: schema.ToolPartTypeImage, Image: &schema.ToolOutputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &data, MIMEType: image.MIMEType}}})
+	}
+	if err != nil {
+		return result, &enhancedResultError{cause: err, result: result}
 	}
 	return result, nil
 }
@@ -398,6 +434,11 @@ func (t *guardTool) Info(context.Context) (*schema.ToolInfo, error) {
 	return &info, err
 }
 func (t *guardTool) InvokableRun(ctx context.Context, args string, opts ...tool.Option) (string, error) {
+	capture, ok := ctx.Value(toolImageCaptureKey{}).(*toolImageCapture)
+	if !ok {
+		capture = &toolImageCapture{}
+		ctx = context.WithValue(ctx, toolImageCaptureKey{}, capture)
+	}
 	op, done, err := t.endpoint.operation(ctx)
 	if err != nil {
 		return "", err
@@ -409,6 +450,9 @@ func (t *guardTool) InvokableRun(ctx context.Context, args string, opts ...tool.
 	}
 	if containsCredentials([]byte(result), t.endpoint.secrets) {
 		return "", errors.New("MCP result contains connection credentials")
+	}
+	if capture.failed {
+		return result, &toolResultError{cause: harness.MarkToolExecutionFailed(errors.New("MCP tool reported an application failure")), result: result}
 	}
 	return result, nil
 }

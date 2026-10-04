@@ -561,6 +561,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

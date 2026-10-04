@@ -303,7 +303,7 @@ Assemble all outputs into a single, structured **Analysis Framework Document**:
 
 # Phase 1→2 Handoff: Data Collection & Chart Generation
 
-After the analysis framework is generated, it is handed off to **other data collection skills** (e.g., deep-research, data-analysis, web search agents) to:
+After the analysis framework is generated, it is handed off to **other data collection skills** (e.g., deep-research and the available web search tools) to:
 
 1. Execute the **Search Keywords** from each chapter's data requirements
 2. Collect quantitative data, qualitative insights, and source URLs
@@ -315,7 +315,7 @@ After the analysis framework is generated, it is handed off to **other data coll
 
 > **This skill does NOT perform data collection.** It only produces the framework (Phase 1) and the final report (Phase 2).
 >
-> **Chart Generation**: If a visualization/charting skill is available (e.g., data-analysis, image-generation), chart generation can be deferred to the beginning of Phase 2 — see Step 2.3.
+> **Chart Generation**: If a visualization/charting skill is available (e.g., chart-visualization), chart generation can be deferred to the beginning of Phase 2 — see Step 2.3.
 
 ---
 
@@ -379,7 +379,7 @@ Before writing the report, generate all planned charts from the Analysis Framewo
 2. **Prepare Chart Data**: For each chart task, extract the corresponding data points from the **Data Summary**.
    > **CRITICAL**: Use ONLY the numbers provided in the Data Summary. Do NOT invent or "smooth" data to make charts look better. If data points are missing, the chart must reflect that reality (e.g., broken line or missing bar), or the chart type must be adjusted.
 
-3. **Delegate to Visualization Skill**: Invoke the available visualization/charting skill (e.g., `data-analysis`) for each chart task with:
+3. **Delegate to Visualization Skill**: Invoke the available visualization/charting skill (e.g., `chart-visualization`) for each chart task with:
    - Chart type and title
    - Structured data
    - Axis labels and formatting preferences
@@ -621,7 +621,7 @@ reasoning_locale = en
 
 - This skill operates in **two phases** of a multi-step agentic workflow:
   - **Phase 1** produces the analysis framework and data collection requirements
-  - **Data collection** is performed by other skills (deep-research, data-analysis, etc.)
+  - **Data collection** is performed by other skills (deep-research and configured research tools)
   - **Phase 2** receives the collected data and produces the final report
 - Dynamic titling: **Rewrite** topics from the Framework into professional, concise subject-based headers
 - The Conclusion section must contain **NO** detailed recommendations — those belong in the preceding body chapters

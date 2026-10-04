@@ -1,3 +1,5 @@
+> 历史记录：本文描述旧 Python 实现或当时的桌面设计，命令和能力声明不作为当前分支的使用说明。原文与源码参见[固定历史提交](https://github.com/omengye/deerflow-acp/tree/9c29fcaac991f2d9f1e7af68250b12f6b3ec07d9)。当前 Eino Go 入口与验收范围见[项目说明](../README.md)。
+
 # 沙箱能力专项适配评估
 
 核查日期：2026-09-22。接续 [最近两天上游评估](D:/Tools/deerflow-api/docs/upstream-review-20260922.md)，重点核对当前 WSL、Local 和 Docker AIO 的实际实现，另补查上周相关沙箱提交。上游快照仍为 `ef21855b8dc43f88fbe5eb40316058457531d27e`，没有把这次专项检查描述为新的正式版本发布。

@@ -26,6 +26,10 @@ func (h *backgroundHost) task(ctx context.Context, actor harness.TaskActor, id s
 		if err != nil {
 			return task, err
 		}
+		task.Resources, err = h.taskResources(ctx, actor, id)
+		if err != nil {
+			return task, err
+		}
 		if task.Status != "waiting_input" {
 			return task, nil
 		}
@@ -61,11 +65,9 @@ func (h *backgroundHost) BackgroundTasks(ctx context.Context, actor harness.Task
 		return nil, err
 	}
 	for i := range tasks {
-		if tasks[i].Status == "waiting_input" {
-			tasks[i], err = h.task(ctx, actor, tasks[i].ID)
-			if err != nil {
-				return nil, err
-			}
+		tasks[i], err = h.task(ctx, actor, tasks[i].ID)
+		if err != nil {
+			return nil, err
 		}
 	}
 	return tasks, nil
@@ -92,6 +94,22 @@ func (h *backgroundHost) CancelBackgroundTask(ctx context.Context, actor harness
 
 func (h *backgroundHost) ResumeBackgroundTask(ctx context.Context, actor harness.TaskActor, id string, version int64) (out harness.BackgroundTask, err error) {
 	defer func() { err = backgroundAPIError(err) }()
+	task, err := h.task(ctx, actor, id)
+	if err != nil {
+		return out, err
+	}
+	if task.Version != version {
+		return out, harness.ErrExecutionConflict
+	}
+	if task.Status == "waiting_input" && task.Interaction != nil && task.Interaction.Kind == "cancelled_roles" {
+		if !task.Interaction.Resumable || len(task.Interaction.WaitingInputs) != 0 {
+			return out, harness.ErrExecutionConflict
+		}
+		if task.Resources != nil && task.Resources.Status != "ready" {
+			return out, harness.ErrResourcesWaiting
+		}
+		return h.service.ResolveApproval(ctx, actor, id, harness.TaskApproval{ID: task.Interaction.ID, TaskVersion: version})
+	}
 	return h.service.ReleaseSuspensionVersion(ctx, actor, id, version)
 }
 
@@ -116,6 +134,16 @@ func (h *backgroundHost) AcknowledgeBackgroundNotification(ctx context.Context, 
 var _ harness.BackgroundController = (*backgroundHost)(nil)
 var _ harness.BackgroundTaskResumer = (*backgroundHost)(nil)
 
+func (h *backgroundHost) AuthorizeBackgroundResources(ctx context.Context, actor harness.TaskActor, id string, taskVersion, resourceVersion int64) (out harness.BackgroundTask, err error) {
+	defer func() { err = backgroundAPIError(err) }()
+	if err = h.authorizeResources(ctx, actor, id, taskVersion, resourceVersion); err != nil {
+		return out, err
+	}
+	return h.task(ctx, actor, id)
+}
+
+var _ harness.BackgroundResourceAuthorizer = (*backgroundHost)(nil)
+
 func (c *Client) backgroundOperation(sessionID string) (harness.TaskActor, func(), error) {
 	done, err := c.operation()
 	if err != nil {
@@ -135,6 +163,18 @@ func (c *Client) BackgroundTask(ctx context.Context, sessionID, taskID string) (
 	}
 	defer done()
 	return c.background.BackgroundTask(ctx, actor, taskID)
+}
+
+// AuthorizeBackgroundResources grants the inspected task access to an
+// explicitly reattached, compatible MCP connection. It does not resolve tool
+// approvals or uncertain effects, or release a suspended execution.
+func (c *Client) AuthorizeBackgroundResources(ctx context.Context, sessionID, taskID string, taskVersion, resourceVersion int64) (harness.BackgroundTask, error) {
+	actor, done, err := c.backgroundOperation(sessionID)
+	if err != nil {
+		return harness.BackgroundTask{}, err
+	}
+	defer done()
+	return c.background.AuthorizeBackgroundResources(ctx, actor, taskID, taskVersion, resourceVersion)
 }
 
 // BackgroundTasks lists tasks owned by an attached parent. after is the last

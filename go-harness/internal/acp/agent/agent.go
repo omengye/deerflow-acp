@@ -26,6 +26,9 @@ type Agent struct {
 	capabilities acp.ClientCapabilities
 	subagents    map[subagentKey]bool
 	contentIDs   map[contentKey]contentState
+	updatesCtx   context.Context
+	updates      map[string]*sessionUpdatePump
+	updatesWG    sync.WaitGroup
 }
 
 type subagentKey struct{ sessionID, runID, callID string }
@@ -39,7 +42,24 @@ func New(service *hr.Service, in io.ReadCloser, out io.WriteCloser) *Agent {
 }
 
 func (a *Agent) Serve(ctx context.Context) error {
+	updatesCtx, stopUpdates := context.WithCancel(ctx)
+	a.mu.Lock()
+	a.updatesCtx = updatesCtx
+	a.mu.Unlock()
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-a.peer.Done():
+		case <-updatesCtx.Done():
+		}
+		stopUpdates()
+	}()
 	err := a.peer.Serve(ctx)
+	stopUpdates()
+	<-watchDone
+	// Peer.Serve has joined request handlers, so no new pump can be added.
+	a.updatesWG.Wait()
 	cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return errors.Join(err, a.service.Disconnect(cleanup, a.owner))
@@ -107,6 +127,8 @@ func mapError(err error) error {
 		return receiptRecoveryError(false)
 	case errors.Is(err, harness.ErrReceiptConflict):
 		return receiptRecoveryError(true)
+	case errors.Is(err, harness.ErrTaskTreeStopped):
+		return &protocol.Error{Code: executionConflictCode, Message: "This execution has been stopped. Read its current state before continuing.", Data: map[string]any{"kind": "execution_stopped", "getMethod": getExecutionMethod, "automaticReplay": false}}
 	case errors.Is(err, harness.ErrBusy):
 		return rpcError(protocol.ServerBusy, "Session is busy")
 	case errors.Is(err, harness.ErrQueueTimeout):
@@ -155,7 +177,20 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["executions"] = executionCapabilities()
 		}
 		if a.service.Background != nil {
-			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["background"] = backgroundCapabilities(a.service.Background)
+			caps := backgroundCapabilities(a.service.Background)
+			if a.service.DurableExecutionsEnabled() {
+				caps["notifications"].(map[string]any)["automaticRootDelivery"] = true
+				caps["notifications"].(map[string]any)["automaticForegroundRoleDelivery"] = true
+				if a.service.BackgroundContinuation != nil {
+					caps["notifications"].(map[string]any)["automaticBackgroundRoleDelivery"] = true
+				}
+				caps["notifications"].(map[string]any)["roleResultNotifications"] = true
+				caps["notifications"].(map[string]any)["deliveryState"] = true
+			}
+			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["background"] = caps
+			if treeCaps := taskTreeCapabilities(a.service.Background); treeCaps != nil {
+				response["_meta"].(map[string]any)["deerflow"].(map[string]any)["taskTree"] = treeCaps
+			}
 		}
 		if a.service.ExternalPromptPending != nil && a.service.ExternalPromptAcknowledge != nil {
 			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["externalPrompts"] = externalPromptCapabilities()
@@ -166,6 +201,14 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		return nil, rpcError(protocol.InvalidRequest, "initialize must complete first")
 	}
 	switch method {
+	case taskTreeListMethod, taskTreeGetMethod, taskTreeCancelMethod:
+		return a.taskTreeRequest(ctx, method, raw)
+	case taskArtifactReadMethod:
+		return a.taskArtifactRequest(ctx, raw)
+	case taskArtifactListMethod:
+		return a.taskArtifactListRequest(ctx, raw)
+	case authorizeBackgroundResourcesMethod:
+		return a.authorizeBackgroundResources(ctx, raw)
 	case processBackgroundNotificationMethod:
 		return a.processBackgroundNotification(ctx, raw)
 	case getBackgroundPermissionMethod:
@@ -203,6 +246,7 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err != nil {
 			return nil, err
 		}
+		a.startSessionUpdates(x.ID)
 		return a.sessionResponse(x, true), nil
 	case "session/load", "session/resume":
 		var sessionID, cwd string
@@ -240,6 +284,7 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err != nil {
 			return nil, err
 		}
+		a.startSessionUpdates(x.ID)
 		return a.sessionResponse(x, false), nil
 	case "session/list":
 		var req acp.ListSessionsRequest
@@ -283,6 +328,7 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err := a.service.CloseSession(ctx, a.owner, string(req.SessionId)); err != nil {
 			return nil, err
 		}
+		a.stopSessionUpdates(string(req.SessionId))
 		a.clearSubagents(string(req.SessionId))
 		return map[string]any{}, nil
 	case "session/delete":
@@ -297,6 +343,7 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if _, err := a.service.DeleteAttachedSession(ctx, a.owner, id); err != nil {
 			return nil, err
 		}
+		a.stopSessionUpdates(id)
 		a.clearSubagents(id)
 		return map[string]any{}, nil
 	case "session/set_config_option":
@@ -348,7 +395,7 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err := decode(raw, &req); err != nil {
 			return nil, err
 		}
-		return nil, a.service.Coordinator.Cancel(string(req.SessionId), a.owner)
+		return nil, a.service.Cancel(ctx, a.owner, string(req.SessionId))
 	default:
 		return nil, rpcError(protocol.MethodNotFound, "Method not found")
 	}

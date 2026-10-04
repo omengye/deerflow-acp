@@ -10,6 +10,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/background"
+	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
 	"github.com/omengye/deerflow-acp/go-harness/internal/localhost"
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
@@ -163,6 +164,7 @@ func (c *Client) managementMemory(ctx context.Context, request localhost.Managem
 
 func managementStatus(activity session.Activity, tasks background.Activity, connections int) map[string]any {
 	return map[string]any{
+		"config_schema":     configschema.Describe(),
 		"draining":          activity.Draining,
 		"active_operations": activity.ActiveOperations + tasks.ActiveOperations,
 		"active_runs":       activity.ActiveOperations + tasks.ActiveRuns,
@@ -186,6 +188,39 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 		return nil, err
 	}
 	switch request.Operation {
+	case "skill.auto_patch.status", "skill.auto_patch.list":
+		data, err := c.managementAutoPatch(ctx, request)
+		return data, proposalManagementError(err)
+	case "skill.discovery.status", "skill.discovery.list":
+		data, err := c.managementDiscovery(ctx, request)
+		return data, proposalManagementError(err)
+	case "skill.missing.submit", "skill.missing.get", "skill.missing.list", "skill.missing.history", "skill.missing.targets":
+		data, err := c.managementMissing(ctx, request)
+		if errors.Is(err, harness.ErrPermissionDenied) {
+			return nil, &localhost.ManagementError{Code: "permission_denied", Message: "The requested run does not belong to this foreground session."}
+		}
+		if errors.Is(err, harness.ErrNotFound) {
+			return nil, &localhost.ManagementError{Code: "not_found", Message: "The requested task report context was not found."}
+		}
+		return data, proposalManagementError(err)
+	case "skill.feedback.get", "skill.feedback.list", "skill.feedback.submit":
+		data, err := c.managementFeedback(ctx, request)
+		return data, proposalManagementError(err)
+	case "skill.generation.status", "skill.generation.prepare", "skill.generation.list", "skill.generation.enqueue", "skill.generation.get", "skill.generation.cancel", "skill.generation.receipts":
+		data, err := c.managementGeneration(ctx, request)
+		return data, proposalManagementError(err)
+	case "skill.signals.list", "skill.signals.get", "skill.collector.status", "skill.collector.jobs", "skill.collector.retry":
+		data, err := c.managementSignals(ctx, request)
+		return data, proposalManagementError(err)
+	case "skill.list", "skill.get", "skill.set_enabled", "skill.imports.refresh", "skill.export.retry":
+		data, err := c.managementSkills(ctx, request)
+		return data, proposalManagementError(err)
+	case "proposal.behavior", "proposal.behavior.receipts":
+		data, err := c.managementBehavior(ctx, request)
+		return data, proposalManagementError(err)
+	case "proposal.list", "proposal.get", "proposal.approve", "proposal.reject", "proposal.history", "proposal.rollback":
+		data, err := c.managementProposals(ctx, request)
+		return data, proposalManagementError(err)
 	case "daemon.status", "daemon.drain", "daemon.resume":
 		if len(request.Fields) != 1 {
 			return nil, managementInvalid("daemon status accepts only operation")

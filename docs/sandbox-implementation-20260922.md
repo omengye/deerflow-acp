@@ -1,3 +1,5 @@
+> 历史记录：本文描述旧 Python 实现或当时的桌面设计，命令和能力声明不作为当前分支的使用说明。原文与源码参见[固定历史提交](https://github.com/omengye/deerflow-acp/tree/9c29fcaac991f2d9f1e7af68250b12f6b3ec07d9)。当前 Eino Go 入口与验收范围见[项目说明](../README.md)。
+
 # 沙箱适配实现记录（2026-09-22）
 
 依据 [沙箱专项评估](sandbox-upstream-review-20260922.md) 独立实现，保留本项目 Local、WSL 与 Docker CLI 架构，没有合并上游代码或增加新的云沙箱 provider。

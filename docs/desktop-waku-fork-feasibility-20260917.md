@@ -1,3 +1,5 @@
+> 历史记录：本文描述旧 Python 实现或当时的桌面设计，命令和能力声明不作为当前分支的使用说明。原文与源码参见[固定历史提交](https://github.com/omengye/deerflow-acp/tree/9c29fcaac991f2d9f1e7af68250b12f6b3ec07d9)。当前 Eino Go 入口与验收范围见[项目说明](../README.md)。
+
 # 直接使用 Waku 代码构建 DeerFlow Desktop
 
 日期：2026-09-17。基于本地 `D:\Tools\waku` 与当前 DeerFlow 仓库的静态源码分析；未构建、启动或联调产品。

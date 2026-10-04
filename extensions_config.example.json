@@ -1,24 +1,3 @@
 {
-  "mcpServers": {
-    "openviking": {
-      "enabled": false,
-      "type": "http",
-      "url": "http://127.0.0.1:1933/mcp",
-      "headers": {
-        "X-API-Key": "$OPENVIKING_API_KEY"
-      },
-      "description": "Official OpenViking tools for explicit memory and resource operations"
-    }
-  },
-  "skills": {},
-  "middlewares": [
-    "my_package.middlewares:NoArgsMiddleware",
-    {
-      "class": "my_package.middlewares:ConfiguredMiddleware",
-      "kwargs": {
-        "header": "X-Example",
-        "enabled": true
-      }
-    }
-  ]
+  "skills": {}
 }

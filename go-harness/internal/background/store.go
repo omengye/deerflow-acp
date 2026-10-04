@@ -15,7 +15,12 @@ import (
 )
 
 func (s *Service) migrate(ctx context.Context) error {
-	_, err := s.store.DB().ExecContext(ctx, `
+	tx, err := s.store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS harness_background_bindings (
  task_id TEXT PRIMARY KEY REFERENCES eino_background_tasks(id),
  parent_session_id TEXT NOT NULL, child_session_id TEXT NOT NULL,
@@ -37,7 +42,16 @@ CREATE TABLE IF NOT EXISTS harness_background_inbox (
  payload BLOB NOT NULL, handled INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS harness_background_inbox_parent ON harness_background_inbox(parent_session_id,handled,seq);`)
-	return err
+	if err != nil {
+		return err
+	}
+	if err = migrateTreeTx(ctx, tx); err != nil {
+		return err
+	}
+	if err = MigrateNotificationWork(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 type queryRow interface {
@@ -74,7 +88,7 @@ func prepareSubmission(actor harness.TaskActor, in Submission) (Submission, erro
 	if actor.OwnerID == "" || actor.SessionID == "" || b.ParentSessionID != actor.SessionID || b.OriginRunID == "" || b.OriginToolCallID == "" || b.Workspace == "" || b.ExecutionContract == "" || b.RootBudgetID == "" || b.ConfigVersion < 1 || in.Spec.ExecutorKey == "" {
 		return Submission{}, fmt.Errorf("%w: incomplete background submission", harness.ErrInvalidInput)
 	}
-	for _, value := range []string{b.ParentSessionID, b.OriginRunID, b.OriginToolCallID, b.ChildSessionID, b.AgentVersion, b.ExecutionContract, b.RootBudgetID} {
+	for _, value := range []string{b.ParentSessionID, b.OriginRunID, b.OriginToolCallID, b.ChildSessionID, b.AgentVersion, b.ExecutionContract, b.RootBudgetID, b.RootSessionID, b.ParentTaskID, b.ParentInvocationID, b.ContinuationOf, b.InvocationID} {
 		if len(value) > 4096 || strings.ContainsRune(value, 0) {
 			return Submission{}, harness.ErrInvalidInput
 		}
@@ -107,10 +121,32 @@ func prepareSubmission(actor harness.TaskActor, in Submission) (Submission, erro
 }
 
 func (s *Service) authorize(ctx context.Context, actor harness.TaskActor) error {
+	if _, ok := ScopeFromContext(ctx); ok {
+		worker, err := s.WorkerActor(ctx)
+		if err != nil {
+			return err
+		}
+		if worker != actor {
+			return harness.ErrPermissionDenied
+		}
+		return nil
+	}
 	if actor.OwnerID == "" || actor.SessionID == "" || s.config.Authorizer == nil {
 		return harness.ErrPermissionDenied
 	}
-	return s.config.Authorizer.AuthorizeTaskAccess(ctx, actor)
+	if err := s.config.Authorizer.AuthorizeTaskAccess(ctx, actor); err != nil {
+		return err
+	}
+	// A public attachment to a guessed private child ID cannot stand in for
+	// an active worker lease, even if the host accepts that attachment.
+	var child bool
+	if err := s.store.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_background_bindings WHERE child_session_id=?)`, actor.SessionID).Scan(&child); err != nil {
+		return err
+	}
+	if child {
+		return harness.ErrPermissionDenied
+	}
+	return nil
 }
 
 func (s *Service) authorizedBinding(ctx context.Context, actor harness.TaskActor, id string) (Binding, string, error) {
@@ -121,14 +157,18 @@ func (s *Service) authorizedBinding(ctx context.Context, actor harness.TaskActor
 	if err != nil {
 		return Binding{}, "", err
 	}
-	if b.ParentSessionID != actor.SessionID {
+	allowed, err := s.canAccessBinding(ctx, s.store.DB(), actor, b)
+	if err != nil {
+		return Binding{}, "", err
+	}
+	if !allowed {
 		return Binding{}, "", harness.ErrNotFound
 	}
 	return b, blocked, nil
 }
 
 func project(task *bt.Task, b Binding, blocked string) harness.BackgroundTask {
-	return harness.BackgroundTask{ID: task.Spec.ID, SessionID: b.ParentSessionID, ChildSessionID: b.ChildSessionID, Description: task.Spec.Description, Status: string(task.Status), Version: task.Version, Attempt: task.Attempt, Result: append([]byte(nil), task.ResultData...), Error: task.ResultError, BlockedReason: blocked, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}
+	return harness.BackgroundTask{ID: task.Spec.ID, SessionID: b.ParentSessionID, ChildSessionID: b.ChildSessionID, RootSessionID: b.RootSession(), ParentTaskID: b.ParentTaskID, ParentInvocationID: b.ParentInvocationID, InvocationID: b.InvocationID, ContinuationOf: b.ContinuationOf, Depth: b.TaskDepth(), Description: task.Spec.Description, Status: string(task.Status), Version: task.Version, Attempt: task.Attempt, Result: append([]byte(nil), task.ResultData...), Error: task.ResultError, BlockedReason: blocked, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}
 }
 
 func (s *Service) Get(ctx context.Context, actor harness.TaskActor, id string) (harness.BackgroundTask, error) {
@@ -154,7 +194,7 @@ func (s *Service) BindingForTask(ctx context.Context, actor harness.TaskActor, i
 	return binding, err
 }
 
-// List uses a task-ID keyset cursor scoped by the authenticated parent session.
+// List uses a task-ID keyset cursor over the root tree or worker's descendants.
 func (s *Service) List(ctx context.Context, actor harness.TaskActor, after string, limit int) ([]harness.BackgroundTask, error) {
 	if err := s.authorize(ctx, actor); err != nil {
 		return nil, err
@@ -162,7 +202,23 @@ func (s *Service) List(ctx context.Context, actor harness.TaskActor, after strin
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
-	rows, err := s.store.DB().QueryContext(ctx, "SELECT task_id FROM harness_background_bindings WHERE parent_session_id=? AND task_id>? ORDER BY task_id LIMIT ?", actor.SessionID, after, limit)
+	query := `SELECT task_id FROM harness_background_tree WHERE root_session_id=? AND task_id>? ORDER BY task_id LIMIT ?`
+	key := actor.SessionID
+	if scope, ok := ScopeFromContext(ctx); ok {
+		query = descendantCTE + ` SELECT task_id FROM descendants WHERE task_id<>? AND task_id>? ORDER BY task_id LIMIT ?`
+		key = scope.Binding.TaskID
+	}
+	args := []any{key, after, limit}
+	if _, ok := ScopeFromContext(ctx); ok {
+		args = []any{key, key, after, limit}
+	}
+	if scope, ok := ScopeFromContext(ctx); ok && scope.Binding.ContinuationOf != "" {
+		query = `WITH RECURSIVE roles(id) AS (SELECT ? UNION SELECT a.id FROM harness_agent_invocations a JOIN roles r ON a.parent_id=r.id WHERE a.root_id=?)
+ SELECT b.task_id FROM harness_background_bindings b JOIN harness_background_tree t ON t.task_id=b.task_id
+ WHERE t.root_session_id=? AND b.task_id>? AND COALESCE(NULLIF(json_extract(CAST(b.payload AS TEXT),'$.InvocationID'),''),'background/'||b.task_id) IN (SELECT id FROM roles WHERE id<>?) ORDER BY b.task_id LIMIT ?`
+		args = []any{scope.Binding.RoleID(), scope.Binding.RootBudgetID, scope.Binding.RootSession(), after, scope.Binding.RoleID(), limit}
+	}
+	rows, err := s.store.DB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -202,14 +258,7 @@ func (s *Service) Wait(ctx context.Context, actor harness.TaskActor, id string, 
 }
 
 func (s *Service) Cancel(ctx context.Context, actor harness.TaskActor, id, reason string) (harness.BackgroundTask, error) {
-	if _, _, err := s.authorizedBinding(ctx, actor, id); err != nil {
-		return harness.BackgroundTask{}, err
-	}
-	if _, err := s.manager.RequestCancel(ctx, id, bt.WithCancellationReason(reason)); err != nil {
-		return harness.BackgroundTask{}, err
-	}
-	s.wake()
-	return s.Get(ctx, actor, id)
+	return s.cancelSubtree(ctx, actor, id, reason)
 }
 
 func (s *Service) CheckEffect(ctx context.Context) error {
@@ -253,18 +302,24 @@ func (s *Service) checkChildTx(ctx context.Context, tx *sql.Tx, scope TaskScope,
 	if err := s.tasks.CheckAttemptTx(ctx, tx, scope.Binding.TaskID, scope.Attempt, allowStopping); err != nil {
 		return err
 	}
+	actual, blocked, err := loadBinding(ctx, tx, scope.Binding.TaskID)
+	if err != nil {
+		return err
+	}
+	if actual != scope.Binding {
+		return harness.ErrPermissionDenied
+	}
 	if !allowStopping {
-		_, blocked, err := loadBinding(ctx, tx, scope.Binding.TaskID)
-		if err != nil {
-			return err
-		}
 		if blocked != "" {
 			return harness.ErrBackgroundUncertain
+		}
+		if err := checkTreeRunning(ctx, tx, scope.Binding.TaskID); err != nil {
+			return err
 		}
 	}
 	var taskID string
 	var attempt int64
-	err := tx.QueryRowContext(ctx, "SELECT task_id,attempt FROM harness_background_child_leases WHERE child_session_id=?", scope.Binding.ChildSessionID).Scan(&taskID, &attempt)
+	err = tx.QueryRowContext(ctx, "SELECT task_id,attempt FROM harness_background_child_leases WHERE child_session_id=?", scope.Binding.ChildSessionID).Scan(&taskID, &attempt)
 	if err != nil {
 		return bt.ErrLeaseLost
 	}

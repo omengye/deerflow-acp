@@ -36,6 +36,11 @@ func newContinuationACPConnection(t *testing.T, f *continuationFixture, handler 
 	if err := c.peer.Call(f.ctx, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}}, &init); err != nil || !strings.Contains(string(init), `"processMethod":"_deerflow/notifications/process"`) {
 		t.Fatalf("real continuation capability=%s err=%v", init, err)
 	}
+	for _, capability := range []string{"automaticRootDelivery", "automaticForegroundRoleDelivery", "automaticBackgroundRoleDelivery", "roleResultNotifications", "deliveryState"} {
+		if !strings.Contains(string(init), `"`+capability+`":true`) {
+			t.Fatalf("missing notification capability %s: %s", capability, init)
+		}
+	}
 	if err := c.peer.Call(f.ctx, "session/load", map[string]any{"sessionId": f.sess.ID, "cwd": f.sess.CWD, "mcpServers": []any{}}, nil); err != nil {
 		t.Fatal(err)
 	}

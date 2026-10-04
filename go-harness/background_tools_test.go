@@ -193,12 +193,14 @@ func TestBackgroundToolsScopeAndInputFailuresNeverReachBackend(t *testing.T) {
 
 func TestBackgroundToolsAvailabilityMatchesResourcesAndPolicy(t *testing.T) {
 	withBackgroundToolsRun(t, func(ctx context.Context, req harness.RunRequest, runtime *hr.Service) {
-		for _, mode := range []string{"normal", "mcp", "plan", "readonly", "subagents_off"} {
+		for _, mode := range []string{"normal", "mcp", "mcp_resources", "plan", "readonly", "subagents_off"} {
 			changed := req
 			pinned := extensionState{Version: 1, SandboxPolicy: "disabled"}
 			switch mode {
 			case "mcp":
 				pinned.MCPGeneration = "parent-connection-generation"
+			case "mcp_resources":
+				pinned.MCPResources = &harness.MCPResourceRef{Version: 1, SessionID: req.Session.ID, OriginGeneration: "generation"}
 			case "plan":
 				changed.Session.Mode = "plan"
 			case "readonly":
@@ -212,7 +214,7 @@ func TestBackgroundToolsAvailabilityMatchesResourcesAndPolicy(t *testing.T) {
 				t.Fatal(err)
 			}
 			names := backgroundToolsByName(t, list)
-			if (names["background_agent"] != nil) != (mode == "normal") || names["task_status"] == nil || names["task_wait"] == nil || (names["task_cancel"] != nil) != (mode != "plan" && mode != "readonly") {
+			if (names["background_agent"] != nil) != (mode == "normal" || mode == "mcp_resources") || names["task_status"] == nil || names["task_wait"] == nil || (names["task_cancel"] != nil) != (mode != "plan" && mode != "readonly") {
 				t.Fatalf("mode=%s wrong tools: %+v", mode, names)
 			}
 		}

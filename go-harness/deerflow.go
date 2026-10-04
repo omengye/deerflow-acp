@@ -17,10 +17,12 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/gofrs/flock"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/acp/agent"
 	acpclient "github.com/omengye/deerflow-acp/go-harness/internal/acp/client"
+	agentregistry "github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
 	budgetledger "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
@@ -28,6 +30,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
+	"github.com/omengye/deerflow-acp/go-harness/internal/skills/evolution"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
 )
 
@@ -53,6 +56,9 @@ type Config struct {
 	Models           []harness.ConfigValue
 	ModelRoutes      map[string]harness.ModelRoute
 	DisableSubagents bool
+	// Subagents defines host-owned builtin overrides and custom roles. Runtime
+	// model references are resolved by the configuration loader before Open.
+	Subagents *harness.SubagentsConfig
 	// ToolPolicy bounds the tool surface for every run, including native Eino
 	// task and write_todos. Session configuration cannot enlarge this boundary.
 	ToolPolicy harness.ToolPolicy
@@ -71,12 +77,39 @@ type Config struct {
 	// Token accounting is estimated until the provider reports actual usage.
 	Budget *harness.BudgetLimits
 	MCP    harness.MCPPolicy
+	// HostMCPRecipes grants separate, exact-workspace host resource authority.
+	// Nil preserves client-owned MCP behavior and never reconstructs client data.
+	HostMCPRecipes []harness.HostMCPRecipe
 	// ACPAgents is an explicit allowlist for optional external stdio delegation.
 	// Empty disables the invoke_acp_agent tool.
 	ACPAgents map[string]harness.ACPAgentConfig
 	Sandbox   harness.SandboxConfig
 	Skills    harness.SkillsConfig
-	Media     harness.MediaConfig
+	// SkillValidator is a trusted, resource-bounded evaluator for operator
+	// proposals. Nil keeps history/review readable but new candidates fail
+	// validation. This dependency alone does not enable model skill tools.
+	SkillValidator harness.SkillValidator
+	// SkillGeneration enables an independently budgeted worker for explicit
+	// operator requests. Nil leaves generation disabled and history readable.
+	SkillGeneration *harness.SkillGenerationOptions
+	// SkillDiscovery explicitly opts into selection of repeated operator
+	// corrections. It requires SkillGeneration and shares its maintenance budget.
+	// Nil leaves automatic selection disabled, including after migration.
+	SkillDiscovery *harness.SkillDiscoveryOptions
+	// SkillAutoPatch enables bounded publication and durable regression monitoring.
+	SkillAutoPatch *harness.SkillAutoPatchOptions
+	// SkillBehavior evaluates host-defined fixtures using the independent
+	// maintenance worker. Both options and evaluator must be supplied together.
+	// It requires SkillGeneration; nil keeps behavioral execution disabled.
+	SkillBehavior          *harness.SkillBehaviorOptions
+	SkillBehaviorEvaluator harness.SkillBehaviorEvaluator
+	// SkillProposalSources explicitly grants model candidate submission to
+	// these configured sources, still intersected with the run's workspace,
+	// visible skill snapshot and role policy. Empty disables skill_manage.
+	// Model tools never receive approval or rollback authority.
+	SkillProposalSources []string
+	skillEvolution       *evolution.Service
+	Media                harness.MediaConfig
 	// SkillSelection is host policy. Workspace is derived from each session;
 	// global skills require IncludeGlobal. Sources are never installed implicitly.
 	SkillSelection harness.SkillSelection
@@ -114,6 +147,7 @@ type Client struct {
 	store      *sqlite.Store
 	mcp        *mcp.Manager
 	skills     *skills.Registry
+	evolution  *evolution.Service
 	assets     *assets.Store
 	budgets    *budgetledger.Ledger
 	background *backgroundHost
@@ -141,6 +175,21 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	}
 	if err := cfg.ToolPolicy.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", harness.ErrInvalidInput, err)
+	}
+	if cfg.Subagents != nil {
+		models := map[string]bool{cfg.Model: true}
+		for _, choice := range cfg.Models {
+			models[choice.Value] = true
+		}
+		for name := range cfg.ModelRoutes {
+			models[name] = true
+		}
+		if _, err := agentregistry.New(*cfg.Subagents, models); err != nil {
+			return nil, fmt.Errorf("%w: %v", harness.ErrInvalidInput, err)
+		}
+		if cfg.Subagents.Enabled != nil && !*cfg.Subagents.Enabled {
+			cfg.DisableSubagents = true
+		}
 	}
 	cfg.BuiltinTools = slices.Clone(cfg.BuiltinTools)
 	toolNames := map[string]bool{}
@@ -264,12 +313,15 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		limits = *cfg.Budget
 	}
 	var background *backgroundHost
-	ledger, err := budgetledger.New(store.DB(), budgetledger.Config{CheckEffectTx: func(ctx context.Context, tx *sql.Tx, scope budgetledger.Scope) error {
+	ledger, err := budgetledger.New(store.DB(), budgetledger.Config{UsageOwnerTx: einoengine.BudgetUsageOwnerTx, CheckEffectTx: func(ctx context.Context, tx *sql.Tx, scope budgetledger.Scope) error {
+		if err := einoengine.CheckTaskTreeEffectTx(ctx, tx, scope.RootBudgetID); err != nil {
+			return err
+		}
 		var kind string
 		if err := tx.QueryRowContext(ctx, "SELECT kind FROM budget_members WHERE id=?", scope.MemberID).Scan(&kind); err != nil {
 			return err
 		}
-		if kind == "task" {
+		if kind == "task" || kind == "background_continuation" {
 			if background == nil {
 				return harness.ErrBackgroundUnavailable
 			}
@@ -296,6 +348,9 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			_ = manager.Close()
 		}
 	}()
+	if err = manager.ConfigureHostRecipes(cfg.HostMCPRecipes); err != nil {
+		return nil, err
+	}
 	registry, err := skills.NewRegistry(ctx, cfg.Skills, store.DB())
 	if err != nil {
 		return nil, err
@@ -309,14 +364,57 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		return nil, fmt.Errorf("too many configured skill installations")
 	}
 	for _, install := range cfg.Skills.Install {
-		record, installErr := registry.Install(ctx, install.SourceID, install.Directory)
-		if installErr != nil {
-			return nil, fmt.Errorf("install configured skill %s/%s: %w", install.SourceID, install.Directory, installErr)
-		}
-		if err = registry.SetEnabled(ctx, install.SourceID, record.Ref.Name, install.Enabled); err != nil {
-			return nil, fmt.Errorf("configure installed skill: %w", err)
+		if err = registry.InstallConfigured(ctx, install.SourceID, install.Directory, install.Enabled); err != nil {
+			return nil, fmt.Errorf("install configured skill %s/%s: %w", install.SourceID, install.Directory, err)
 		}
 	}
+	if err = registry.ObserveImports(ctx); err != nil {
+		return nil, fmt.Errorf("observe managed skill imports: %w", err)
+	}
+	if err = registry.ReconcileExports(ctx, false); err != nil {
+		return nil, fmt.Errorf("restore managed skill exports: %w", err)
+	}
+	skillEvolution, err := evolution.New(ctx, registry, cfg.SkillValidator)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = skillEvolution.Close()
+		}
+	}()
+	if cfg.SkillGeneration != nil {
+		generator, buildErr := einoengine.NewSkillCandidateGenerator(ctx, cfg.SkillGeneration.Model)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		if err = skillEvolution.ConfigureGeneration(ctx, generator, cfg.SkillGeneration.Budget, cfg.SkillGeneration.Sources, cfg.SkillGeneration.AllowBuiltinOverlays); err != nil {
+			return nil, err
+		}
+	}
+	if (cfg.SkillBehavior == nil) != (cfg.SkillBehaviorEvaluator == nil) {
+		return nil, fmt.Errorf("%w: skill behavior requires both options and evaluator", harness.ErrInvalidInput)
+	}
+	if cfg.SkillBehavior != nil {
+		if err = skillEvolution.ConfigureBehavior(cfg.SkillBehaviorEvaluator, *cfg.SkillBehavior); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.SkillDiscovery != nil {
+		if err = skillEvolution.ConfigureDiscovery(*cfg.SkillDiscovery); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.SkillAutoPatch != nil {
+		if err = skillEvolution.ConfigureAutoPatch(*cfg.SkillAutoPatch); err != nil {
+			return nil, err
+		}
+	}
+	cfg.SkillProposalSources = slices.Clone(cfg.SkillProposalSources)
+	if err = validateSkillProposalSources(cfg, registry); err != nil {
+		return nil, err
+	}
+	cfg.skillEvolution = skillEvolution
 	assetStore, err := assets.NewStore(ctx, filepath.Join(cfg.DataDir, "assets"), store.DB())
 	if err != nil {
 		return nil, err
@@ -345,9 +443,17 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			}
 			tools, err := background.ToolsForRun(ctx, req, out.State)
 			out.Tools = append(out.Tools, tools...)
+			state := append(json.RawMessage(nil), out.State...)
+			out.RoleToolFactory = func(ctx context.Context) ([]tool.BaseTool, error) {
+				return background.RoleToolsForRun(ctx, req, state)
+			}
 			return out, err
 		}
-		engine, err = einoengine.New(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, ModelRoutes: cfg.ModelRoutes, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, ToolPolicy: cfg.ToolPolicy, PermissionMode: cfg.PermissionMode, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, ModelImageImporter: assetStore, ToolOutputStore: assetStore, Compaction: cfg.Compaction, ContextWindows: contextWindows})
+		delegations, admissionErr := agentregistry.NewController(store.DB())
+		if admissionErr != nil {
+			return nil, admissionErr
+		}
+		engine, err = einoengine.New(ctx, einoengine.Config{Delegations: delegations, Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, ModelRoutes: cfg.ModelRoutes, Models: cfg.Models, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, Subagents: cfg.Subagents, ToolPolicy: cfg.ToolPolicy, PermissionMode: cfg.PermissionMode, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, ModelImageImporter: assetStore, ToolOutputStore: assetStore, Compaction: cfg.Compaction, ContextWindows: contextWindows})
 		if err != nil {
 			return nil, err
 		}
@@ -378,11 +484,29 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			return nil, err
 		}
 		service.Background = background
+		if err = background.restoreHostResources(ctx); err != nil {
+			return nil, err
+		}
 		if err = background.service.StartWorkers(context.Background()); err != nil {
 			return nil, err
 		}
 	}
-	return &Client{service: service, store: store, mcp: manager, skills: registry, assets: assetStore, budgets: ledger, background: background, retention: cfg.Retention, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
+	if err = registry.StartExportWorker(); err != nil {
+		return nil, err
+	}
+	if err = skillEvolution.StartCollector(); err != nil {
+		return nil, err
+	}
+	if err = skillEvolution.StartGeneration(); err != nil {
+		return nil, err
+	}
+	if err = skillEvolution.StartDiscovery(); err != nil {
+		return nil, err
+	}
+	if err = skillEvolution.StartAutoPatch(); err != nil {
+		return nil, err
+	}
+	return &Client{service: service, store: store, mcp: manager, skills: registry, evolution: skillEvolution, assets: assetStore, budgets: ledger, background: background, retention: cfg.Retention, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
 }
 
 func (c *Client) operation() (func(), error) {
@@ -474,7 +598,30 @@ func (c *Client) Run(ctx context.Context, id string, input []harness.Content, em
 	defer done()
 	return c.service.Run(ctx, c.owner, id, input, emit, approve)
 }
-func (c *Client) Cancel(id string) error { return c.service.Coordinator.Cancel(id, c.owner) }
+func (c *Client) Cancel(id string) error {
+	done, err := c.operation()
+	if err != nil {
+		return err
+	}
+	defer done()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return c.service.Cancel(ctx, c.owner, id)
+}
+
+// ServeSessionUpdates resumes ready durable waits and processes terminal task
+// notifications whose saved automatic-continuation policy allows new runs.
+// It runs until ctx ends, the session closes, or this client closes. Run it in
+// a caller-owned goroutine. Handlers must honor cancellation and must not
+// synchronously close the client/session from inside a callback.
+func (c *Client) ServeSessionUpdates(ctx context.Context, id string, handlers harness.SessionUpdates) error {
+	done, err := c.operation()
+	if err != nil {
+		return err
+	}
+	defer done()
+	return c.service.ServeSessionUpdates(ctx, c.owner, id, handlers)
+}
 func (c *Client) CloseSession(ctx context.Context, id string) error {
 	done, err := c.operation()
 	if err != nil {
@@ -518,6 +665,9 @@ func (c *Client) Close() error {
 	}
 	disconnectErr := c.service.Disconnect(context.Background(), c.owner)
 	c.operations.Wait()
+	// Stop and join local evidence collection before any dependency is closed,
+	// including the error path where background resource draining fails.
+	collectorErr := c.evolution.Close()
 	if c.background != nil {
 		for {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -530,14 +680,14 @@ func (c *Client) Close() error {
 				continue
 			}
 			if drainErr != nil {
-				c.closeErr = errors.Join(disconnectErr, drainErr)
+				c.closeErr = errors.Join(disconnectErr, collectorErr, drainErr)
 				close(c.closeDone)
 				return c.closeErr
 			}
 			break
 		}
 	}
-	c.closeErr = errors.Join(disconnectErr, c.mcp.Close(), c.skills.Close(), c.assets.Close(), c.store.Close(), c.lock.Close())
+	c.closeErr = errors.Join(disconnectErr, collectorErr, c.mcp.Close(), c.skills.Close(), c.assets.Close(), c.store.Close(), c.lock.Close())
 	close(c.closeDone)
 	return c.closeErr
 }

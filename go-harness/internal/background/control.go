@@ -24,7 +24,8 @@ func observeRuntimeControls(ctx context.Context, runtime bt.ExecutionRuntime, at
 		return runtime, noop
 	}
 	input := runtime.Controls()
-	if input == nil {
+	host := attempt.HostControls
+	if input == nil && host == nil {
 		return runtime, noop
 	}
 	controls := make(chan bt.ControlRequest)
@@ -40,7 +41,27 @@ func observeRuntimeControls(ctx context.Context, runtime bt.ExecutionRuntime, at
 				return
 			case control, ok := <-input:
 				if !ok {
+					input = nil
+					if host == nil {
+						return
+					}
+					continue
+				}
+				attempt.ObserveControl(control)
+				select {
+				case controls <- control:
+				case <-ctx.Done():
 					return
+				case <-stop:
+					return
+				}
+			case control, ok := <-host:
+				if !ok {
+					host = nil
+					if input == nil {
+						return
+					}
+					continue
 				}
 				attempt.ObserveControl(control)
 				select {

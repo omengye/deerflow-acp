@@ -6,8 +6,9 @@ param(
 
     [string]$ConfigPath = (Join-Path $PSScriptRoot "config.yaml"),
     [string]$BridgePath = (Join-Path $PSScriptRoot "bridge\target\release\deerflow-acp.exe"),
-    [string]$PythonPath,
-    [string]$RuntimeDir
+    [string]$DaemonPath,
+    [string]$RuntimeDir = (Join-Path $PSScriptRoot "user-data\runtime\acp-go"),
+    [string]$PythonPath
 )
 
 Set-StrictMode -Version Latest
@@ -15,6 +16,10 @@ $ErrorActionPreference = "Stop"
 # Keep native stderr/exit codes capturable even when the caller enabled the
 # PowerShell 7 native-command error preference feature.
 $PSNativeCommandUseErrorActionPreference = $false
+
+if ($PSBoundParameters.ContainsKey('PythonPath')) {
+    throw "PythonPath has been removed. Use -DaemonPath with the Eino Go deerflow-acpd executable."
+}
 
 function Resolve-ProjectPath {
     param(
@@ -30,8 +35,8 @@ function Resolve-ProjectPath {
 
 $ConfigPath = Resolve-ProjectPath $ConfigPath
 $BridgePath = Resolve-ProjectPath $BridgePath
-if ($PythonPath) {
-    $PythonPath = Resolve-ProjectPath $PythonPath
+if ($DaemonPath) {
+    $DaemonPath = Resolve-ProjectPath $DaemonPath
 }
 if ($RuntimeDir) {
     $RuntimeDir = Resolve-ProjectPath $RuntimeDir
@@ -43,10 +48,6 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $BridgePath -PathType Leaf)) {
     throw "Native ACP bridge was not found: $BridgePath. Run: cargo build --release --manifest-path `"$PSScriptRoot\bridge\Cargo.toml`""
 }
-if ($PythonPath -and -not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
-    throw "Python interpreter was not found: $PythonPath"
-}
-
 function Invoke-AcpBridge {
     param(
         [Parameter(Mandatory = $true)]
@@ -57,9 +58,9 @@ function Invoke-AcpBridge {
     $commandArguments.Add($Mode)
     $commandArguments.Add("--config")
     $commandArguments.Add($ConfigPath)
-    if ($PythonPath) {
-        $commandArguments.Add("--python")
-        $commandArguments.Add($PythonPath)
+    if ($DaemonPath) {
+        $commandArguments.Add("--daemon")
+        $commandArguments.Add($DaemonPath)
     }
     if ($RuntimeDir) {
         $commandArguments.Add("--runtime-dir")
@@ -67,11 +68,17 @@ function Invoke-AcpBridge {
     }
 
     Push-Location $PSScriptRoot
+    $previousErrorActionPreference = $ErrorActionPreference
     try {
+        # Windows PowerShell 5.1 turns redirected native stderr into error
+        # records. Capture them and interpret the native exit code below so
+        # idempotent STOP can recognize an already stopped daemon.
+        $ErrorActionPreference = "Continue"
         $output = @(& $BridgePath @commandArguments 2>&1)
         $exitCode = $LASTEXITCODE
     }
     finally {
+        $ErrorActionPreference = $previousErrorActionPreference
         Pop-Location
     }
 

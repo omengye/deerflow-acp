@@ -40,6 +40,9 @@ func backgroundAnswers(request harness.TaskApproval, m backgroundPermissionManif
 		return nil, harness.ErrExecutionConflict
 	}
 	result := map[string]backgroundIntentAnswer{}
+	if len(m.Interrupts) == 0 && request.Decision != "" {
+		return nil, harness.ErrInvalidInput
+	}
 	if len(request.Evidence) > 0 {
 		if request.Decision != "" {
 			return nil, harness.ErrInvalidInput
@@ -100,7 +103,11 @@ func (s *BackgroundInteractionStore) waitingApprovalTx(ctx context.Context, tx *
 	if err = s.validateManifest(ctx, tx, m, task); err != nil {
 		return m, nil, err
 	}
-	answers, err := backgroundAnswers(request, m)
+	visible, _, err := backgroundActiveManifest(ctx, tx, m)
+	if err != nil {
+		return m, nil, err
+	}
+	answers, err := backgroundAnswers(request, visible)
 	return m, answers, err
 }
 
@@ -116,11 +123,15 @@ func (s *BackgroundInteractionStore) PrepareResume(ctx context.Context, actor ha
 		if err != nil {
 			return err
 		}
-		targets := make(map[string]interaction.PermissionResume, len(m.Interrupts))
-		for _, b := range m.Interrupts {
-			targets[b.NativeInterruptID] = interaction.PermissionResume{IntentID: b.IntentID, IntentVersion: b.IntentVersion, GrantID: NewID()}
+		visible, cancelled, err := backgroundActiveManifest(ctx, tx, m)
+		if err != nil {
+			return err
 		}
-		grant.Data, err = json.Marshal(targets)
+		targets := backgroundResumeTargets{Permissions: map[string]interaction.PermissionResume{}, Cancellations: cancelled}
+		for _, b := range visible.Interrupts {
+			targets.Permissions[b.NativeInterruptID] = interaction.PermissionResume{IntentID: b.IntentID, IntentVersion: b.IntentVersion, GrantID: NewID()}
+		}
+		grant.Data, err = targets.encoded()
 		grant.Approval = request
 		return err
 	})
@@ -135,7 +146,7 @@ func (s *BackgroundInteractionStore) CommitResumeTx(ctx context.Context, tx *sql
 	if err != nil {
 		return err
 	}
-	var targets map[string]interaction.PermissionResume
+	var targets map[string]json.RawMessage
 	if err = decodeStrictBackgroundJSON(grant.Data, &targets); err != nil {
 		return err
 	}
@@ -143,9 +154,23 @@ func (s *BackgroundInteractionStore) CommitResumeTx(ctx context.Context, tx *sql
 		return harness.ErrExecutionConflict
 	}
 	seen := map[string]bool{}
+	_, cancelled, err := backgroundActiveManifest(ctx, tx, m)
+	if err != nil {
+		return err
+	}
 	for _, b := range m.Interrupts {
-		resume, ok := targets[b.NativeInterruptID]
-		if !ok || resume.IntentID != b.IntentID || resume.IntentVersion != b.IntentVersion || resume.GrantID == "" || len(resume.GrantID) > 256 || seen[resume.GrantID] {
+		if stop, ok := cancelled[b.NativeInterruptID]; ok {
+			var decoded interaction.RoleCancellationResume
+			if decodeStrictBackgroundJSON(targets[b.NativeInterruptID], &decoded) != nil || decoded != stop {
+				return harness.ErrExecutionConflict
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO harness_background_role_cancellations(task_id,attempt,intent_id,intent_version,role_id,task_version) VALUES(?,?,?,?,?,?)`, binding.TaskID, m.Attempt+1, b.IntentID, b.IntentVersion, stop.RoleID, m.TaskVersion); err != nil {
+				return err
+			}
+			continue
+		}
+		var resume interaction.PermissionResume
+		if decodeStrictBackgroundJSON(targets[b.NativeInterruptID], &resume) != nil || resume.IntentID != b.IntentID || resume.IntentVersion != b.IntentVersion || resume.GrantID == "" || len(resume.GrantID) > 256 || seen[resume.GrantID] {
 			return harness.ErrExecutionConflict
 		}
 		seen[resume.GrantID] = true

@@ -19,6 +19,14 @@ import (
 
 const backgroundNotificationSource = "background_notification"
 
+func (s *Service) continuationPolicyMatches(spec BackgroundExecutionSpec) bool {
+	policy := s.ContinuationHostPolicy
+	if versioned := s.ContinuationHostPolicies[spec.Version]; versioned != "" {
+		policy = versioned
+	}
+	return policy != "" && policy == spec.HostPolicy
+}
+
 // A source is immutable after admission. Both the notification's historical
 // version and the task's version at admission are retained; neither is a grant.
 type continuationSource struct {
@@ -29,6 +37,8 @@ type continuationSource struct {
 	Spec                                                     BackgroundExecutionSpec
 	Notification                                             bt.Notification
 	Task                                                     harness.BackgroundTask
+	ParentRole                                               *savedRoleContext `json:"parentRole,omitempty"`
+	DerivedFrom                                              string            `json:"derivedFrom,omitempty"`
 }
 
 func migrateContinuations(ctx context.Context, db *sql.DB) error {
@@ -132,10 +142,36 @@ func readContinuationOrigin(ctx context.Context, tx *sql.Tx, sessionID, taskID s
 	if root != b.RootBudgetID || taskRoot != root || memberSession != sessionID || originSession != sessionID || taskSession != child {
 		return b, spec, "", "", continuationConflict("original budget binding changed")
 	}
+	var uncertain bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state IN ('started','uncertain'))`, child).Scan(&uncertain); err != nil {
+		return b, spec, "", "", err
+	}
+	if uncertain {
+		return b, spec, "", "", harness.ErrReconciliationRequired
+	}
 	return b, spec, originInputID, executionDigest(originInput), nil
 }
 
 func continuationInput(source continuationSource) ([]harness.Content, error) {
+	if source.DerivedFrom != "" {
+		var result roleResult
+		if json.Unmarshal(source.Notification.Data, &result) != nil || result.SourceRunID != source.DerivedFrom {
+			return nil, continuationConflict("derived role summary changed")
+		}
+		// Ancestors receive the role's final summary, not its private messages
+		// or the raw grandchild task result used to produce that summary.
+		data, err := json.Marshal(struct {
+			Kind        string `json:"kind"`
+			SourceRunID string `json:"sourceRunId"`
+			RoleID      string `json:"roleId"`
+			Succeeded   bool   `json:"succeeded"`
+			Result      string `json:"result"`
+		}{"role_result", result.SourceRunID, result.RoleID, result.Succeeded, result.Result})
+		if err != nil {
+			return nil, err
+		}
+		return []harness.Content{{Type: "text", Text: string(data)}}, nil
+	}
 	readable := func(data []byte) any {
 		if len(data) == 0 {
 			return nil
@@ -178,7 +214,7 @@ func loadContinuationSource(ctx context.Context, tx *sql.Tx, row executionRow) (
 		return nil, err
 	}
 	var source continuationSource
-	if row.SourceKind != backgroundNotificationSource || digest != row.SourceSHA || executionDigest(data) != digest || json.Unmarshal(data, &source) != nil || source.Version != 1 || source.RunID != row.State.RunID || source.InputID != inputID || inputID != row.State.InputID || source.SessionID != parent || parent != row.State.SessionID || source.NotificationID != notificationID || source.TaskID != taskID || source.OriginRunID != origin || source.OriginInputID != originInput || source.RootBudgetID != root || root != row.RootBudgetID {
+	if row.SourceKind != backgroundNotificationSource || digest != row.SourceSHA || executionDigest(data) != digest || json.Unmarshal(data, &source) != nil || source.Version < 1 || source.Version > 3 || source.RunID != row.State.RunID || source.InputID != inputID || inputID != row.State.InputID || source.SessionID != parent || parent != row.State.SessionID || source.NotificationID != notificationID || source.TaskID != taskID || source.OriginRunID != origin || source.OriginInputID != originInput || source.RootBudgetID != root || root != row.RootBudgetID {
 		return nil, continuationConflict("source identity or digest changed")
 	}
 	if source.Task.ID != taskID || source.Task.SessionID != parent || source.Task.ChildSessionID != source.Binding.ChildSessionID || source.Task.Version < source.Notification.Version || source.Notification.ID != notificationID || source.Notification.TaskID != taskID || source.Notification.SessionID != parent || source.OriginRunID != source.Binding.OriginRunID {
@@ -200,6 +236,9 @@ func loadContinuationSource(ctx context.Context, tx *sql.Tx, row executionRow) (
 	currentSpec, _ := json.Marshal(spec)
 	if b != source.Binding || !bytes.Equal(savedSpec, currentSpec) || originalInputID != originInput || originalInputSHA != source.OriginInputSHA {
 		return nil, continuationConflict("original task source changed")
+	}
+	if err = validateContinuationRoleTx(ctx, tx, source); err != nil {
+		return nil, err
 	}
 	n, err := readContinuationNotification(ctx, tx, parent, notificationID)
 	if err != nil {
@@ -226,14 +265,31 @@ func (s *Service) executionInputSourceTx(ctx context.Context, tx *sql.Tx, row ex
 	if err != nil || source == nil {
 		return nil, err
 	}
-	if s.ContinuationHostPolicy == "" || source.Spec.HostPolicy != s.ContinuationHostPolicy {
+	if !s.continuationPolicyMatches(source.Spec) {
 		return nil, continuationConflict("host policy changed")
 	}
 	input, err := continuationInput(*source)
 	if err != nil {
 		return nil, err
 	}
-	return &interaction.ExecutionInputSource{Kind: backgroundNotificationSource, SHA: row.SourceSHA, Input: input, PinnedExtension: append(json.RawMessage(nil), source.Spec.Extension...)}, nil
+	var catalog json.RawMessage
+	if source.Spec.Roles != nil {
+		catalog, err = json.Marshal(source.Spec.Roles)
+		if err != nil {
+			return nil, err
+		}
+	}
+	inputSource := &interaction.ExecutionInputSource{Kind: backgroundNotificationSource, SHA: row.SourceSHA, Input: input, PinnedExtension: append(json.RawMessage(nil), source.Spec.Extension...), RoleCatalog: catalog}
+	if s.ContinuationResourceGeneration != nil {
+		inputSource.ResourceGeneration, err = s.ContinuationResourceGeneration(ctx, tx, source.Binding, source.Spec)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if source.ParentRole != nil {
+		inputSource.RoleContext = &source.ParentRole.Context
+	}
+	return inputSource, nil
 }
 
 // beginContinuationTx never creates a root or reuses the original run/input.
@@ -265,13 +321,27 @@ func (s *Service) beginContinuationTx(ctx context.Context, tx *sql.Tx, owner, se
 		err = e
 		return
 	}
-	if s.ContinuationHostPolicy == "" || s.ContinuationHostPolicy != spec.HostPolicy {
+	if !s.continuationPolicyMatches(spec) {
 		err = continuationConflict("host policy changed")
+		return
+	}
+	if b.ParentTaskID != "" || b.RootSession() != sessionID {
+		err = continuationConflict("notification belongs to a saved parent role")
+		return
+	}
+	parentRole, derivedFrom, e := notificationParentRoleTx(ctx, tx, b, spec, n)
+	if e != nil {
+		err = e
 		return
 	}
 	if e = (&BackgroundExecutionStore{store: s.Store}).CheckParentPolicyTx(ctx, tx, b, spec); e != nil {
 		err = continuationConflict("parent configuration changed")
 		return
+	}
+	if s.CheckContinuationResources != nil {
+		if err = s.CheckContinuationResources(ctx, tx, b, spec); err != nil {
+			return
+		}
 	}
 	var occupied, uncertain bool
 	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_runs WHERE session_id=? AND status='running'),EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state='uncertain')`, sessionID, sessionID).Scan(&occupied, &uncertain)
@@ -298,6 +368,13 @@ func (s *Service) beginContinuationTx(ctx context.Context, tx *sql.Tx, owner, se
 		err = continuationConflict("native task identity changed")
 		return
 	}
+	if automatic, _ := ctx.Value(automaticNotificationKey{}).(bool); automatic && n.Kind != roleResultNotification && (!terminalBackgroundStatus(string(task.Status)) || task.Version != n.Version || string(task.Status) != string(n.Kind)) {
+		err = continuationConflict("terminal notification no longer matches the task")
+		return
+	}
+	if err = chargeAutomaticContinuationTx(ctx, tx, b, spec, n); err != nil {
+		return
+	}
 	parent, e := readExecutionSession(ctx, tx, sessionID)
 	if e != nil {
 		err = e
@@ -315,6 +392,12 @@ func (s *Service) beginContinuationTx(ctx context.Context, tx *sql.Tx, owner, se
 	req = harness.RunRequest{Session: parent, RunID: NewID(), InputID: NewID(), RootBudgetID: b.RootBudgetID}
 	source := continuationSource{Version: 1, RunID: req.RunID, InputID: req.InputID, SessionID: sessionID, NotificationID: notificationID, TaskID: b.TaskID, OriginRunID: b.OriginRunID, OriginInputID: originInputID, OriginInputSHA: originInputSHA, RootBudgetID: b.RootBudgetID, Binding: b, Spec: spec, Notification: n,
 		Task: harness.BackgroundTask{ID: b.TaskID, SessionID: sessionID, ChildSessionID: b.ChildSessionID, Description: task.Spec.Description, Status: string(task.Status), Version: task.Version, Attempt: task.Attempt, Result: append([]byte(nil), task.ResultData...), Error: task.ResultError, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt}}
+	if parentRole != nil {
+		source.Version, source.ParentRole = 2, parentRole
+	}
+	if derivedFrom != "" {
+		source.Version, source.DerivedFrom = 3, derivedFrom
+	}
 	req.Input, err = continuationInput(source)
 	if err != nil {
 		return
@@ -353,6 +436,13 @@ func (s *Service) beginContinuationTx(ctx context.Context, tx *sql.Tx, owner, se
 	if _, err = appendEventTx(ctx, tx, harness.RunEvent{SessionID: sessionID, RunID: req.RunID, Kind: "continuation_started", Content: req.Input}); err != nil {
 		return
 	}
+	recipient := ""
+	if parentRole != nil {
+		recipient = parentRole.Context.Invocation.ID
+	}
+	if err = setNotificationWorkTx(ctx, tx, sessionID, notificationID, b.TaskID, recipient, "admitted", "", req.RunID); err != nil {
+		return
+	}
 	_, err = tx.ExecContext(ctx, `UPDATE harness_sessions SET updated_at=? WHERE id=?`, now, sessionID)
 	return
 }
@@ -385,6 +475,29 @@ func (s *Service) ProcessBackgroundNotification(ctx context.Context, owner, sess
 	}
 	if err := s.Coordinator.Authorize(sessionID, owner); err != nil {
 		return result, err
+	}
+	if s.PrepareContinuationResources != nil {
+		prepared, cleanup, err := s.PrepareContinuationResources(ctx, owner, sessionID, notificationID, "")
+		if err != nil {
+			return result, err
+		}
+		defer cleanup()
+		ctx = prepared
+	}
+	if s.BackgroundContinuation != nil {
+		var private bool
+		err := s.Store.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_background_inbox i JOIN harness_background_tree t ON t.task_id=i.task_id WHERE i.notification_id=? AND t.root_session_id=? AND i.parent_session_id<>?)`, notificationID, sessionID, sessionID).Scan(&private)
+		if err != nil {
+			return result, err
+		}
+		if private {
+			task, err := s.BackgroundContinuation(ctx, owner, sessionID, notificationID)
+			result.StopReason = "end_turn"
+			if task.ID != "" {
+				result.Background = &task
+			}
+			return result, err
+		}
 	}
 	releaseSlot, err := s.runQueue.acquire(ctx)
 	if err != nil {

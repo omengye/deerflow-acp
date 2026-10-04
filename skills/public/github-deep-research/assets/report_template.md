@@ -30,7 +30,7 @@
 
 {EXECUTIVE_SUMMARY}
 
-**IMPORTANT**: Include inline citations using `[citation:Title](URL)` format after each claim. Example:
+**IMPORTANT**: Include inline citations using `[citation:Title](https://example.org/source)` format after each claim, replacing the example URL with the verified source. Example:
 "The project gained 10k stars in 3 months [citation:GitHub Stats](https://github.com/owner/repo)."
 
 ---
@@ -59,7 +59,7 @@
 
 ## Key Analysis
 
-**IMPORTANT**: Support each analysis point with inline citations `[citation:Title](URL)`.
+**IMPORTANT**: Support each analysis point with inline citations such as `[citation:Title](https://example.org/source)`, using the verified source URL.
 
 ### {ANALYSIS_SECTION_1_TITLE}
 

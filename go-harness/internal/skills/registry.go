@@ -27,13 +27,21 @@ type source struct {
 	config   harness.SkillSource
 	identity string
 	root     *os.Root
+	builtin  bool
+	managed  bool
 }
 type Registry struct {
-	mu      sync.RWMutex
-	db      *sql.DB
-	sources map[string]*source
-	limits  harness.SkillLimits
-	closed  bool
+	mu           sync.RWMutex
+	db           *sql.DB
+	sources      map[string]*source
+	limits       harness.SkillLimits
+	closed       bool
+	export       *exportTarget
+	exportMu     sync.Mutex
+	exportCancel context.CancelFunc
+	exportDone   chan struct{}
+	closeDone    chan struct{}
+	closeErr     error
 }
 
 // NewRegistry owns source directory handles, but never owns or closes db.
@@ -49,7 +57,7 @@ func NewRegistry(ctx context.Context, config harness.SkillsConfig, db *sql.DB) (
 	if len(config.Sources) > 32 {
 		return nil, invalid("too many configured sources")
 	}
-	r := &Registry{db: db, sources: make(map[string]*source), limits: limits}
+	r := &Registry{db: db, sources: make(map[string]*source), limits: limits, closeDone: make(chan struct{})}
 	for _, cfg := range config.Sources {
 		if !validName(cfg.ID) || r.sources[cfg.ID] != nil {
 			_ = r.Close()
@@ -61,6 +69,34 @@ func NewRegistry(ctx context.Context, config harness.SkillsConfig, db *sql.DB) (
 			return nil, err
 		}
 		r.sources[cfg.ID] = s
+	}
+	for _, id := range config.BuiltinSources {
+		s := r.sources[id]
+		if s == nil || s.builtin {
+			_ = r.Close()
+			return nil, invalid("builtin sources must be unique configured source IDs")
+		}
+		s.builtin = true
+	}
+	for _, id := range config.ManagedSources {
+		s := r.sources[id]
+		if s == nil || s.managed || s.builtin {
+			_ = r.Close()
+			return nil, invalid("managed sources must be unique configured non-builtin source IDs")
+		}
+		s.managed = true
+	}
+	if config.ExportRoot != "" {
+		var err error
+		r.export, err = openExportTarget(config.ExportRoot)
+		if err != nil {
+			_ = r.Close()
+			return nil, err
+		}
+	}
+	if len(config.ManagedSources) > 0 && r.export == nil {
+		_ = r.Close()
+		return nil, invalid("managed sources require an explicit export root")
 	}
 	if err = r.migrate(ctx); err != nil {
 		_ = r.Close()
@@ -172,15 +208,31 @@ func noSymlinkPath(p string) error {
 
 func (r *Registry) Close() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.closed {
-		return nil
+		r.mu.Unlock()
+		<-r.closeDone
+		return r.closeErr
 	}
 	r.closed = true
+	if r.exportCancel != nil {
+		r.exportCancel()
+	}
+	done := r.exportDone
+	r.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var err error
 	for _, s := range r.sources {
 		err = errors.Join(err, s.root.Close())
 	}
+	if r.export != nil {
+		err = errors.Join(err, r.export.root.Close())
+	}
+	r.closeErr = err
+	close(r.closeDone)
 	return err
 }
 
@@ -194,6 +246,14 @@ func (r *Registry) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS df_skill_versions(source_key TEXT NOT NULL,name TEXT NOT NULL,version TEXT NOT NULL,metadata TEXT NOT NULL,manifest TEXT NOT NULL,total_bytes INTEGER NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(source_key,name,version))`,
 		`CREATE TABLE IF NOT EXISTS df_skill_files(source_key TEXT NOT NULL,name TEXT NOT NULL,version TEXT NOT NULL,path TEXT NOT NULL,hash TEXT NOT NULL,size INTEGER NOT NULL,data BLOB NOT NULL,PRIMARY KEY(source_key,name,version,path))`,
 		`CREATE TABLE IF NOT EXISTS df_skill_installs(source_key TEXT NOT NULL,name TEXT NOT NULL,current_version TEXT NOT NULL,enabled INTEGER NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(source_key,name))`,
+		`CREATE TABLE IF NOT EXISTS df_skill_catalog(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL CHECK(revision>=0))`,
+		`INSERT OR IGNORE INTO df_skill_catalog VALUES(1,0)`,
+		`CREATE TABLE IF NOT EXISTS df_skill_control(source_key TEXT NOT NULL,name TEXT NOT NULL,state_version INTEGER NOT NULL CHECK(state_version>0),managed INTEGER NOT NULL,deleted INTEGER NOT NULL,last_import_version TEXT NOT NULL,import_directory TEXT NOT NULL,PRIMARY KEY(source_key,name))`,
+		`INSERT OR IGNORE INTO df_skill_control SELECT source_key,name,1,0,0,current_version,'' FROM df_skill_installs`,
+		`CREATE TABLE IF NOT EXISTS df_skill_overlays(source_key TEXT NOT NULL,name TEXT NOT NULL,base_version TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(source_key,name),FOREIGN KEY(source_key,name,base_version) REFERENCES df_skill_versions(source_key,name,version))`,
+		`CREATE TABLE IF NOT EXISTS df_skill_import_observations(source_key TEXT NOT NULL,name TEXT NOT NULL,import_version TEXT NOT NULL,import_directory TEXT NOT NULL,checked_at_ns INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(source_key,name))`,
+		`CREATE TABLE IF NOT EXISTS df_skill_exports(source_key TEXT NOT NULL,name TEXT NOT NULL,export_key TEXT NOT NULL,state_version INTEGER NOT NULL,head TEXT NOT NULL,status TEXT NOT NULL,view_directory TEXT NOT NULL,attempts INTEGER NOT NULL,error_code TEXT NOT NULL,updated_at TEXT NOT NULL,retry_after_ns INTEGER NOT NULL,PRIMARY KEY(source_key,name,export_key))`,
+		`CREATE TABLE IF NOT EXISTS df_skill_management_requests(source_key TEXT NOT NULL,name TEXT NOT NULL,request_key TEXT NOT NULL,operation TEXT NOT NULL,intent_hash TEXT NOT NULL,intent TEXT NOT NULL,applied_head TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(source_key,name,request_key))`,
 	} {
 		if _, err = tx.ExecContext(ctx, q); err != nil {
 			return fmt.Errorf("skills schema: %w", err)
@@ -206,6 +266,18 @@ func (r *Registry) migrate(ctx context.Context) error {
 // New installations are disabled; replacing an installation preserves its flag.
 // Old versions remain available for pinned checkpoints until explicit future GC.
 func (r *Registry) Install(ctx context.Context, sourceID, relativeDir string) (harness.SkillRecord, error) {
+	return r.install(ctx, sourceID, relativeDir, nil)
+}
+
+// InstallConfigured applies a startup import only while the installation is
+// externally managed. Published versions, enablement and tombstones survive
+// restart, including when the old source directory has disappeared.
+func (r *Registry) InstallConfigured(ctx context.Context, sourceID, relativeDir string, enabled bool) error {
+	_, err := r.install(ctx, sourceID, relativeDir, &enabled)
+	return err
+}
+
+func (r *Registry) install(ctx context.Context, sourceID, relativeDir string, startupEnabled *bool) (harness.SkillRecord, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.closed {
@@ -215,97 +287,88 @@ func (r *Registry) Install(ctx context.Context, sourceID, relativeDir string) (h
 	if s == nil {
 		return harness.SkillRecord{}, denied("source is not configured")
 	}
+	if s.managed {
+		return harness.SkillRecord{}, denied("managed sources accept reviewed publications, never filesystem imports")
+	}
+	if relativeDir != "." && !validRelative(relativeDir) {
+		return harness.SkillRecord{}, invalid("installation directory must be a safe relative path")
+	}
+	if startupEnabled != nil {
+		var managed bool
+		if err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_control WHERE source_key=? AND import_directory=? AND managed=1)`, s.identity, relativeDir).Scan(&managed); err != nil {
+			return harness.SkillRecord{}, err
+		}
+		if managed {
+			return harness.SkillRecord{}, nil
+		}
+	}
 	p, err := r.readPackage(ctx, s, relativeDir)
 	if err != nil {
 		return harness.SkillRecord{}, err
 	}
-	metadata, _ := json.Marshal(p.meta)
-	manifest, _ := json.Marshal(p.manifest)
-	version := digest(manifest)
-	now := time.Now().UTC()
-	tx, err := r.db.BeginTx(ctx, nil)
+	var head SkillHead
+	err = r.withPublication(ctx, s, p.meta.Name, func(tx *PublicationTx) error {
+		var err error
+		head, err = tx.Current()
+		if err != nil {
+			return err
+		}
+		if head.Managed {
+			if startupEnabled != nil {
+				return nil
+			}
+			return ErrManagedSkill
+		}
+		version, err := tx.stagePackage(p)
+		if err != nil {
+			return err
+		}
+		enabled := head.Enabled
+		if startupEnabled != nil {
+			enabled = *startupEnabled
+		}
+		if head.Version != version || head.Enabled != enabled {
+			head, err = tx.moveHead(head, version, enabled, false, version, relativeDir)
+			return err
+		}
+		// Record the first configured directory after upgrading a legacy DB.
+		_, err = tx.tx.ExecContext(ctx, `UPDATE df_skill_control SET last_import_version=?,import_directory=? WHERE source_key=? AND name=?`, version, relativeDir, s.identity, p.meta.Name)
+		return err
+	})
 	if err != nil {
 		return harness.SkillRecord{}, err
 	}
-	defer tx.Rollback()
-	var enabled int
-	var current string
-	err = tx.QueryRowContext(ctx, `SELECT current_version,enabled FROM df_skill_installs WHERE source_key=? AND name=?`, s.identity, p.meta.Name).Scan(&current, &enabled)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return harness.SkillRecord{}, err
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		var count int
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM df_skill_installs`).Scan(&count); err != nil {
-			return harness.SkillRecord{}, err
-		}
-		if count >= r.limits.MaxSkills {
-			return harness.SkillRecord{}, invalid("installed skill count limit exceeded")
-		}
-	}
-	var exists int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM df_skill_versions WHERE source_key=? AND name=? AND version=?`, s.identity, p.meta.Name, version).Scan(&exists); err != nil {
-		return harness.SkillRecord{}, err
-	}
-	if exists == 0 {
-		var count int
-		var total int64
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM df_skill_versions WHERE source_key=? AND name=?`, s.identity, p.meta.Name).Scan(&count); err != nil {
-			return harness.SkillRecord{}, err
-		}
-		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(total_bytes),0) FROM df_skill_versions`).Scan(&total); err != nil {
-			return harness.SkillRecord{}, err
-		}
-		if count >= r.limits.MaxVersionsPerSkill || p.bytes > r.limits.MaxTotalBytes-total {
-			return harness.SkillRecord{}, invalid("retained version or total byte limit exceeded")
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO df_skill_versions(source_key,name,version,metadata,manifest,total_bytes,created_at) VALUES(?,?,?,?,?,?,?)`, s.identity, p.meta.Name, version, string(metadata), string(manifest), p.bytes, now.Format(time.RFC3339Nano)); err != nil {
-			return harness.SkillRecord{}, err
-		}
-		for _, f := range p.manifest {
-			if _, err = tx.ExecContext(ctx, `INSERT INTO df_skill_files(source_key,name,version,path,hash,size,data) VALUES(?,?,?,?,?,?,?)`, s.identity, p.meta.Name, version, f.Path, f.Hash, f.Bytes, p.files[f.Path]); err != nil {
-				return harness.SkillRecord{}, err
-			}
-		}
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO df_skill_installs(source_key,name,current_version,enabled,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(source_key,name) DO UPDATE SET current_version=excluded.current_version,updated_at=excluded.updated_at`, s.identity, p.meta.Name, version, enabled, now.Format(time.RFC3339Nano)); err != nil {
-		return harness.SkillRecord{}, err
-	}
-	if err = tx.Commit(); err != nil {
-		return harness.SkillRecord{}, err
-	}
-	return harness.SkillRecord{Ref: harness.SkillRef{SourceID: sourceID, SourceIdentity: s.identity, Name: p.meta.Name, Version: version, Hash: version}, Description: p.meta.Description, Scope: s.config.Scope, Workspace: s.config.Workspace, Enabled: enabled != 0, FileCount: len(p.files), TotalBytes: p.bytes, InstalledAt: now, Findings: p.meta.Findings}, nil
+	return harness.SkillRecord{Ref: harness.SkillRef{SourceID: sourceID, SourceIdentity: s.identity, Name: p.meta.Name, Version: head.Version, Hash: head.Version}, Description: p.meta.Description, Scope: s.config.Scope, Workspace: s.config.Workspace, Enabled: head.Enabled, FileCount: len(p.files), TotalBytes: p.bytes, InstalledAt: time.Now().UTC(), Findings: p.meta.Findings, Builtin: s.builtin, Managed: head.Managed, StateVersion: head.StateVersion}, nil
 }
 
 func (r *Registry) SetEnabled(ctx context.Context, sourceID, name string, enabled bool) error {
-	return r.mutate(ctx, sourceID, name, `UPDATE df_skill_installs SET enabled=?,updated_at=? WHERE source_key=? AND name=?`, enabled, time.Now().UTC().Format(time.RFC3339Nano))
+	return r.WithPublication(ctx, sourceID, name, func(tx *PublicationTx) error {
+		h, err := tx.Current()
+		if err != nil {
+			return err
+		}
+		if !h.Exists {
+			return harness.ErrNotFound
+		}
+		if h.Enabled == enabled {
+			return nil
+		}
+		_, err = tx.moveHead(h, h.Version, enabled, h.Managed, "", "")
+		return err
+	})
 }
 func (r *Registry) Delete(ctx context.Context, sourceID, name string) error {
-	return r.mutate(ctx, sourceID, name, `DELETE FROM df_skill_installs WHERE source_key=? AND name=?`)
-}
-func (r *Registry) mutate(ctx context.Context, sourceID, name, q string, args ...any) error {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.closed {
-		return ErrClosed
-	}
-	s := r.sources[sourceID]
-	if s == nil {
-		return denied("source is not configured")
-	}
-	if !validName(name) {
-		return invalid("name is invalid")
-	}
-	args = append(args, s.identity, name)
-	res, err := r.db.ExecContext(ctx, q, args...)
-	if err != nil {
+	return r.WithPublication(ctx, sourceID, name, func(tx *PublicationTx) error {
+		h, err := tx.Current()
+		if err != nil {
+			return err
+		}
+		if !h.Exists {
+			return harness.ErrNotFound
+		}
+		_, err = tx.moveHead(h, "", false, h.Managed, "", "")
 		return err
-	}
-	n, err := res.RowsAffected()
-	if err == nil && n == 0 {
-		return harness.ErrNotFound
-	}
-	return err
+	})
 }
 
 func (r *Registry) selectedSources(selection harness.SkillSelection) ([]*source, error) {
@@ -346,7 +409,7 @@ func (r *Registry) List(ctx context.Context, selection harness.SkillSelection) (
 	}
 	var out []harness.SkillRecord
 	for _, s := range sources {
-		rows, err := r.db.QueryContext(ctx, `SELECT i.name,i.current_version,i.enabled,v.metadata,v.manifest,v.total_bytes,i.updated_at FROM df_skill_installs i JOIN df_skill_versions v ON v.source_key=i.source_key AND v.name=i.name AND v.version=i.current_version WHERE i.source_key=? ORDER BY i.name`, s.identity)
+		rows, err := r.db.QueryContext(ctx, `SELECT i.name,i.current_version,i.enabled,v.metadata,v.manifest,v.total_bytes,i.updated_at,c.managed,c.state_version,COALESCE(o.base_version,'') FROM df_skill_installs i JOIN df_skill_versions v ON v.source_key=i.source_key AND v.name=i.name AND v.version=i.current_version JOIN df_skill_control c ON c.source_key=i.source_key AND c.name=i.name LEFT JOIN df_skill_overlays o ON o.source_key=i.source_key AND o.name=i.name WHERE i.source_key=? ORDER BY i.name`, s.identity)
 		if err != nil {
 			return nil, err
 		}
@@ -354,7 +417,10 @@ func (r *Registry) List(ctx context.Context, selection harness.SkillSelection) (
 			var name, version, meta, manifest, updated string
 			var enabled int
 			var size int64
-			if err = rows.Scan(&name, &version, &enabled, &meta, &manifest, &size, &updated); err != nil {
+			var managed bool
+			var stateVersion int64
+			var overlayVersion string
+			if err = rows.Scan(&name, &version, &enabled, &meta, &manifest, &size, &updated, &managed, &stateVersion, &overlayVersion); err != nil {
 				break
 			}
 			if !selectedName(selection.Names, name) {
@@ -367,7 +433,15 @@ func (r *Registry) List(ctx context.Context, selection harness.SkillSelection) (
 				break
 			}
 			at, _ := time.Parse(time.RFC3339Nano, updated)
-			out = append(out, harness.SkillRecord{Ref: harness.SkillRef{SourceID: s.config.ID, SourceIdentity: s.identity, Name: name, Version: version, Hash: version}, Description: fm.Description, Scope: s.config.Scope, Workspace: s.config.Workspace, Enabled: enabled != 0, FileCount: len(files), TotalBytes: size, InstalledAt: at, Findings: fm.Findings})
+			var overlay *harness.SkillRef
+			if overlayVersion != "" {
+				if !validHash(overlayVersion) || !managed {
+					err = errors.New("skill overlay provenance is inconsistent")
+					break
+				}
+				overlay = &harness.SkillRef{SourceID: s.config.ID, SourceIdentity: s.identity, Name: name, Version: overlayVersion, Hash: overlayVersion}
+			}
+			out = append(out, harness.SkillRecord{Ref: harness.SkillRef{SourceID: s.config.ID, SourceIdentity: s.identity, Name: name, Version: version, Hash: version}, Description: fm.Description, Scope: s.config.Scope, Workspace: s.config.Workspace, Enabled: enabled != 0, FileCount: len(files), TotalBytes: size, InstalledAt: at, Findings: fm.Findings, Builtin: s.builtin || overlay != nil, Managed: managed, StateVersion: stateVersion, OverlayBase: overlay})
 		}
 		if err == nil {
 			err = rows.Err()

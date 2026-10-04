@@ -345,6 +345,7 @@ func TestStartedReceiptUsesOnlyExplicitTerminalEvidence(t *testing.T) {
 	}{
 		{"rejected", harness.ReceiptNotExecuted, harness.ReceiptNotExecuted},
 		{"native_read", harness.ReceiptNoEffect, harness.ReceiptNoEffect},
+		{"confirmed_failure", harness.ReceiptFailed, harness.ReceiptFailed},
 		{"unknown_failure", "", harness.ReceiptUncertain},
 		{"unsupported_claim", harness.ReceiptCompleted, harness.ReceiptUncertain},
 	} {

@@ -227,7 +227,7 @@ func TestWorkerRetainsJoinedAttemptAfterTerminalCommitFailure(t *testing.T) {
 }
 
 func TestBudgetMonitorDistinguishesDurableCancellationFromLeaseAndDatabaseFaults(t *testing.T) {
-	for _, mutation := range []string{"cancel", "no_cancel", "expired_lease", "lost_child", "changed_attempt", "database_fault"} {
+	for _, mutation := range []string{"cancel", "tree_stop", "tree_stop_lost_child", "tree_stop_database_fault", "no_cancel", "expired_lease", "lost_child", "changed_attempt", "database_fault"} {
 		t.Run(mutation, func(t *testing.T) {
 			s, _, adapter := realLedgerFixture(t, harness.BudgetLimits{}, nil, nil)
 			task := submitFixture(t, s, submission("parent", mutation))
@@ -235,7 +235,11 @@ func TestBudgetMonitorDistinguishesDurableCancellationFromLeaseAndDatabaseFaults
 			if err := adapter.BeforeAttempt(ctx, state.scope); err != nil {
 				t.Fatal(err)
 			}
-			if mutation != "no_cancel" {
+			if strings.HasPrefix(mutation, "tree_stop") {
+				if _, err := s.store.DB().Exec(`INSERT INTO harness_background_stops VALUES(?,'stop before native delivery','fixture')`, task.ID); err != nil {
+					t.Fatal(err)
+				}
+			} else if mutation != "no_cancel" {
 				if _, err := s.tasks.RequestCancel(ctx, &bt.RequestCancelRequest{TaskID: task.ID, ExpectedVersion: native.Version, Reason: "stop"}); err != nil {
 					t.Fatal(err)
 				}
@@ -244,11 +248,11 @@ func TestBudgetMonitorDistinguishesDurableCancellationFromLeaseAndDatabaseFaults
 			switch mutation {
 			case "expired_lease":
 				statement = `UPDATE eino_background_tasks SET lease_expires_at=1`
-			case "lost_child", "no_cancel":
+			case "lost_child", "no_cancel", "tree_stop_lost_child":
 				statement = `DELETE FROM harness_background_child_leases`
 			case "changed_attempt":
 				state.scope.Attempt++
-			case "database_fault":
+			case "database_fault", "tree_stop_database_fault":
 				statement = `ALTER TABLE budget_roots RENAME TO unavailable_budget_roots`
 			}
 			if statement != "" {
@@ -257,14 +261,14 @@ func TestBudgetMonitorDistinguishesDurableCancellationFromLeaseAndDatabaseFaults
 				}
 			}
 			err := adapter.CheckAttemptBudget(ctx, state.scope)
-			if mutation == "cancel" {
+			if mutation == "cancel" || mutation == "tree_stop" {
 				if err != context.Canceled {
 					t.Fatalf("durable cancellation became diagnostic: %v", err)
 				}
 			} else if err == nil || errors.Is(err, context.Canceled) {
 				t.Fatalf("real fence/database fault was suppressed: %v", err)
 			}
-			if mutation == "database_fault" {
+			if mutation == "database_fault" || mutation == "tree_stop_database_fault" {
 				var persistence *budget.PersistenceError
 				if !errors.As(err, &persistence) || !strings.Contains(err.Error(), "budget_roots") {
 					t.Fatalf("database error classification lost: %v", err)

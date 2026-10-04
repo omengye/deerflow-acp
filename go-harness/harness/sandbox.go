@@ -71,6 +71,8 @@ type WSLSandboxConfig struct {
 	Executable   string
 	Distribution string // required, never silently choose another distro
 	User         string
+	HelperPath   string `json:",omitempty"` // absolute host path; empty selects the sibling Linux Go helper
+	HelperSHA256 string `json:",omitempty"` // expected lowercase digest; empty reads the helper's .sha256 sidecar
 }
 
 type CommandRequest struct {
@@ -108,9 +110,12 @@ type CommandSnapshot struct {
 	Stderr               CommandOutput   `json:"stderr"`
 	ExitCode             *int            `json:"exitCode,omitempty"`
 	TerminationConfirmed bool            `json:"terminationConfirmed"`
-	StartedAt            time.Time       `json:"startedAt"`
-	FinishedAt           time.Time       `json:"finishedAt,omitempty"`
-	Error                string          `json:"error,omitempty"`
+	// NotExecuted is native evidence that the operation failed before starting
+	// a process. A missing exit code alone never grants this certificate.
+	NotExecuted bool      `json:"notExecuted,omitempty"`
+	StartedAt   time.Time `json:"startedAt"`
+	FinishedAt  time.Time `json:"finishedAt,omitempty"`
+	Error       string    `json:"error,omitempty"`
 	// All implementations in V1 are process-local. A durable record is
 	// evidence, not a restartable process handle or an instruction to retry.
 	ProcessLocal bool `json:"processLocal"`

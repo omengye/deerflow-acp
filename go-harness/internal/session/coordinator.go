@@ -258,6 +258,26 @@ func (c *Coordinator) Detach(ctx context.Context, id, owner string) error {
 	return c.DetachWithCleanup(ctx, id, owner, nil)
 }
 
+// CancelOrBegin signals an active operation, or reserves an idle session so
+// the runtime can cancel a saved wait and persist its stop fence. A later
+// user/automatic operation cannot enter before idle cancellation commits.
+// A nonnil release must be called after persistence; never wait for active I/O.
+func (c *Coordinator) CancelOrBegin(ctx context.Context, id, owner string) (context.Context, func(), error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := c.bindings[id]
+	if b == nil || b.owner != owner || c.retired[owner] || b.closing {
+		return nil, nil, harness.ErrNotAttached
+	}
+	if b.busy {
+		if b.cancel != nil {
+			b.cancel(ErrExplicitCancel)
+		}
+		return nil, nil, nil
+	}
+	return c.beginLocked(ctx, id, owner)
+}
+
 // DetachWithCleanup retains ownership until both the run and its resources are
 // closed. Caller cancellation stops waiting; it does not abandon cleanup. Failed
 // resource cleanup keeps the session closing and can be retried by its owner.

@@ -47,6 +47,18 @@ CREATE TABLE IF NOT EXISTS harness_tool_reconciliations (run_id TEXT NOT NULL, t
 	if err = migrateContinuations(ctx, db); err != nil {
 		return nil, err
 	}
+	if err = migrateAutomaticContinuations(ctx, db); err != nil {
+		return nil, err
+	}
+	if err = migrateRoleContexts(ctx, db); err != nil {
+		return nil, err
+	}
+	if err = migrateRoleResults(ctx, db); err != nil {
+		return nil, err
+	}
+	if err = migrateSkillEvidence(ctx, db); err != nil {
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 

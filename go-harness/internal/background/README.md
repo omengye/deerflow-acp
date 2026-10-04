@@ -39,21 +39,49 @@ policy is rejected. The host must derive origin, workspace, contract, version
 and root budget fields from its authenticated run, never model arguments.
 
 New child sessions use a deterministic service-generated ID. Continuation of an
-existing child requires the same parent, workspace, execution contract and
-agent version. Child sessions cannot equal the parent session. Query, wait,
-cancel, approval, release and inbox APIs authorize the current owner/session
-attachment and scope task IDs to that parent.
+existing child requires the same parent, workspace, execution contract, agent
+version and task ancestry. Child sessions cannot equal the parent session.
+
+## Task tree authority
+
+Bindings optionally record `RootSessionID`, `ParentTaskID`, `ParentInvocationID`
+and `Depth`; legacy
+root bindings omit them to preserve their original serialized hashes. The
+transactional `harness_background_tree` index backfills old tasks as depth 1.
+The current root attachment can query and manage the complete tree.
+
+`WorkerActor(ctx)` derives a private actor from a live managed attempt. A copied
+actor label grants no authority without that context, native lease, child lease
+and active local attempt. Workers can manage only their descendants. They
+cannot read/cancel ancestors or siblings, approve effects, borrow the root's
+attachment, or obtain authority by attaching to a private child session.
+Submission derives ancestry from that attempt, checks the shared workspace and
+root budget, and repeats the lease/stop checks inside the create transaction.
+The infrastructure bounds durable ancestry to three levels. For v5 mixed
+delegation, `Depth` counts both foreground and background roles, `ParentTaskID`
+is the nearest background ancestor, and `ParentInvocationID` is the immediate
+role parent. A root background task created by a foreground role can therefore
+have depth 2 or 3. The host's `RolePlacement` callback checks the live role lease
+both before submission and within the task-create transaction. Role counts and
+the native binding commit together; expired, superseded or finished parents
+cannot create new tasks.
+
+Notifications remain owned by the immediate parent invocation. Root tree
+visibility does not route grandchild results into root model input. Reusing a
+child session does not transfer old invocation notifications to the new worker.
 
 ## Transaction boundaries
 
 | Boundary | Atomic contents |
 | --- | --- |
-| Create | Native task, immutable business binding, root-budget member binding, native created outbox record |
+| Create | Native task, immutable business binding, validated tree edge, root-budget member binding, native created outbox record |
+| Subtree stop | Durable stop intent for every descendant, fenced against concurrent child creation and new effects |
 | Claim | Native pending-to-running CAS and attempt increment, child-session lease acquisition |
 | Native running update/heartbeat | Native version/lease change and root-budget active clock/lease renewal |
 | Child append | Native attempt/lease check, child lease check, session event append |
 | Safe pause/complete | Joined attempt, budget settlement gate, staged runner checkpoint changes, native task metadata/state, native outbox, child lease release |
 | Approval resume | Broker's durable one-time approval consumption, versioned native waiting-to-pending transition |
+| Descendant wait resume | Saved wait targets, descendant readiness and execution frontier validated with native waiting-to-pending CAS |
 | Notification intake | Parent inbox entry committed first; native outbox receipt acknowledged afterward |
 
 `TaskStore.WithHooks` produces an immutable decorated provider view; it does not
@@ -115,8 +143,13 @@ The inbox API does not concurrently append messages to an active parent Runner.
 Before acknowledging a model-input notification, the host must durably admit
 an idempotent parent input keyed by that notification ID.
 
-`Cancel` records intent; completion of cancellation is observed through task
-state after the executor and its injected cleanup return. `DrainAndClose`
+`Cancel` first records durable intent for the complete subtree, including
+descendants of an already completed parent. It then requests native cancellation
+for each nonterminal task; worker scans retry that delivery after failure or
+restart. An undelivered stop already fences new child creation, effects and
+permission/suspension resume. It does not release resources or erase uncertain
+effect evidence. Completion is observed through task state after every executor
+and its injected cleanup return. `DrainAndClose`
 requires a deadline, closes submissions, stops dispatch, requests native drain,
 and waits for worker cleanup. It never closes the shared SQLite store. After a
 deadline error, keep storage/resources alive and call it again to wait. A
@@ -134,14 +167,77 @@ native heartbeat while cleanup joins.
 ## Host integration and remaining scope
 
 The root SDK now wires the durable budget adapter, rebuilt model/tool attempt
-factory, durable HITL broker, SDK and ACP ownership checks. Parent notification
-input admission is still pending. None is replaced with an in-memory fallback.
+factory, durable HITL broker, SDK and ACP ownership checks. Explicit parent
+notification input admission and opt-in automatic root continuation scheduling
+are available, including private parents in foreground and native background
+hosts. New delegated submissions use the v5 host role factory, which supports
+foreground/background combinations using their current invocation identity,
+archived role catalog, configured depth and inherited policy. V1–v4 execution
+paths remain registered. Model-visible capabilities are recreated for each
+role and check durable role ancestry before querying or cancelling a task;
+neither a root attachment nor an enclosing worker grants access to a sibling.
 Native raw
 `task_output`/`task_stop` tools must not be exposed because they lack business
 owner checks. The host exposes `background_agent` with these gates, plus bounded
 status/wait/cancel tools. See [public task management](../acp/background.md).
 `ReleaseSuspensionVersion` checks the owner's observed version inside the native
 transition transaction; process startup leaves saved suspensions untouched.
+
+Roles executing inside a background attempt receive a durable `task_wait`: it saves a native
+interrupt and releases its worker and active role slot after cleanup joins.
+`Config.Waits` checks saved descendant targets and resumes only when all are
+terminal, unblocked and free of started/uncertain tool receipts. This resumes the
+saved native execution. Terminal notification dispatch separately creates new
+parent executions from durable inbox entries.
+Root model tools and roles executing inside a root foreground run also support
+durable waits. Their joined checkpoint is published through the foreground
+execution manifest, and `ResumeExecution` continues the same run/input and
+root budget when its dependencies are terminal and unblocked. A mixed
+permission/wait checkpoint can resume the permission batch first. Old foreground
+checkpoints retain their original bounded tool contract. ACP `/tasks/wait`
+remains a bounded query. Attached ACP sessions and explicit SDK
+`ServeSessionUpdates` subscriptions automatically resume ready foreground waits
+after the prompt returns. They use current-owner callbacks and preserve the
+original input, role catalog and budget. With the saved `auto_continue` policy,
+terminal inbox notifications for the root can create a unique new run under
+the same budget and persistent root continuation allowance. Results committed
+through a managed foreground or background task tool are not automatically
+delivered again to the same original parent role.
+
+The background broker saves observations in `harness_background_delivery_stages`
+under the exact task attempt and tool call. These become `harness_task_deliveries`
+only in the native completed/checkpoint transaction; failed attempts discard
+uncommitted observations. The same transaction updates existing inbox delivery
+state, while late outbox arrivals consult saved deliveries. Neither direction
+changes UI-read acknowledgement. Session deletion removes attempt stages along
+with the rest of the task tree. V5 private parents owned by the root foreground
+session can now resume from their committed role-local conversations; only final
+summaries are propagated through `role_result` notifications to immediate
+ancestors. All hops use the same root budget and automatic allowance.
+
+Native private-parent dispatch uses `deerflow-continuation-v6`. `SubmitContinuation`
+requires current root ownership and a transactional host source validator.
+Creation preserves the logical invocation and role quota while allocating a new
+task, child session and native lease/checkpoint/approval lifecycle. Source and
+automatic quota are committed with the task's budget binding. A continuation
+can manage the original logical role's descendants; it cannot gain sibling
+authority. Subsequent notifications select the latest committed role context.
+
+`harness_background_continuation_links` connects each new physical host to its
+previous host. Subtree stops follow both child edges and these links. Root
+automatic stops durably fence already-admitted automatic continuations; the
+native cancellation scanner joins effects before terminal settlement. Runtime
+source reads validate the link against the saved binding, and graph cleanup
+performs the same immutable identity check without requiring execution permission.
+
+The runtime broker binds native targets to the task, attempt, root budget,
+checkpoint, session/event/receipt frontier and immutable execution recipe.
+Commit rechecks those values inside the native resume transaction; claim and
+attempt open validate the released manifest again. Public clients cannot supply
+wakeup targets. Tree stop fences apply even to wakeups selected before cancel.
+One invalid manifest is reported without discarding other valid wakeups.
+Mixed permission/wait checkpoints resume approved permission targets first;
+unfinished waits suspend again. No wakeup grants permission to an external tool.
 
 This package does not make local shell processes recoverable. A future command
 executor must fail after lease expiry unless its backend can recover the exact

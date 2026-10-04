@@ -17,12 +17,14 @@ import (
 // immediate cancellation can finish its graph before a provider stream exits;
 // this tracker joins cooperative model/tool calls before releasing the run.
 type runIO struct {
-	mu     sync.Mutex
-	closed bool
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	err    error
+	mu        sync.Mutex
+	closed    bool
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	err       error
+	effectErr error
+	role      bool
 }
 
 func newRunIO(ctx context.Context) *runIO {
@@ -43,6 +45,19 @@ func (r *runIO) begin(ctx context.Context) (context.Context, func(), error) {
 	return workCtx, func() { once.Do(func() { stopHook(); cancel(); r.wg.Done() }) }, nil
 }
 
+func (r *runIO) beginEffect(ctx context.Context) (context.Context, func(), error) {
+	tracked, finish, err := r.begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	release, err := beginRoleWork(tracked)
+	if err != nil {
+		finish()
+		return nil, nil, err
+	}
+	return tracked, func() { release(); finish() }, nil
+}
+
 func (r *runIO) stop()         { r.mu.Lock(); r.closed = true; r.cancel(); r.mu.Unlock() }
 func (r *runIO) closeAndWait() { r.stop(); r.wg.Wait() }
 func (r *runIO) recordError(err error) {
@@ -54,12 +69,32 @@ func (r *runIO) recordError(err error) {
 	defer r.mu.Unlock()
 	r.err = errors.Join(r.err, err)
 }
-func (r *runIO) failure() error { r.mu.Lock(); defer r.mu.Unlock(); return r.err }
+func (r *runIO) failure() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return errors.Join(r.err, r.effectErr)
+}
+
+// Cancellation of a started tool is not evidence that the tool had no effect.
+// Keep this separately from native cancellation filtering, including late
+// results observed while joining the role after its iterator has ended.
+func (r *runIO) recordUnconfirmedEffect(err error) {
+	if !r.role || err == nil || certifiedToolOutcome(err) {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.effectErr = errors.Join(r.effectErr, &roleEffectFailure{cause: err})
+}
 
 // relayStream owns upstream reads through terminal EOF. A provider may send its
 // error before deferred HTTP/process cleanup runs, so merely reading one error
 // does not establish teardown. Providers must honor their cancelled context.
 func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk func(T) (T, error), onError func(error), observers ...func(T) error) *schema.StreamReader[T] {
+	return relayMappedStream(source, finish, onChunk, onError, nil, observers...)
+}
+
+func relayMappedStream[T any](source *schema.StreamReader[T], finish func(), onChunk func(T) (T, error), onError func(error), sourceError func(error) error, observers ...func(T) error) *schema.StreamReader[T] {
 	reader, writer := schema.Pipe[T](1)
 	go func() {
 		defer finish()
@@ -70,6 +105,9 @@ func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk f
 			chunk, err := source.Recv()
 			if errors.Is(err, io.EOF) {
 				return
+			}
+			if err != nil && sourceError != nil {
+				err = sourceError(err)
 			}
 			if err != nil && onError != nil {
 				onError(err)
@@ -120,27 +158,36 @@ func relayStream[T any](source *schema.StreamReader[T], finish func(), onChunk f
 
 type modelLifecycle struct {
 	adk.BaseChatModelAgentMiddleware
-	io     *runIO
-	budget *runBudget
-	sink   *eventSink
-	media  *mediaProjection
+	io       *runIO
+	budget   *runBudget
+	sink     *eventSink
+	media    *mediaProjection
+	settings harness.AgentModelSettings
+	tuning   *roleModelTuning
+	role     bool
 }
 
 func (m *modelLifecycle) WrapModel(_ context.Context, inner model.BaseModel[*schema.Message], _ *adk.ModelContext) (model.BaseModel[*schema.Message], error) {
-	return &trackedModel{inner: inner, io: m.io, budget: m.budget, sink: m.sink, media: m.media}, nil
+	return &trackedModel{inner: inner, io: m.io, budget: m.budget, sink: m.sink, media: m.media, settings: m.settings, tuning: m.tuning, role: m.role}, nil
 }
 
 type trackedModel struct {
-	inner  model.BaseModel[*schema.Message]
-	io     *runIO
-	budget *runBudget
-	sink   *eventSink
-	media  *mediaProjection
+	inner    model.BaseModel[*schema.Message]
+	io       *runIO
+	budget   *runBudget
+	sink     *eventSink
+	media    *mediaProjection
+	settings harness.AgentModelSettings
+	tuning   *roleModelTuning
+	role     bool
 }
 
 func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
-	ctx, finish, err := m.io.begin(ctx)
+	opts = roleModelOptions(m.settings, opts)
+	opts = m.tuning.beforeReservation(opts)
+	ctx, finish, err := m.io.beginEffect(ctx)
 	if err != nil {
+		m.recordAdmissionFailure(err)
 		return nil, err
 	}
 	defer finish()
@@ -152,13 +199,22 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 	}
 	reservation, opts, err := m.budget.reserveContext(ctx, input, opts)
 	if err != nil {
+		m.recordAdmissionFailure(err)
 		return nil, err
 	}
 	complete := false
 	defer func() { m.settle(ctx, reservation, complete && ctx.Err() == nil) }()
+	opts, err = m.providerOptions(reservation, opts)
+	if err != nil {
+		complete = true // No provider I/O: settle the admission with zero tokens.
+		return nil, err
+	}
+	endModel := beginRoleActivity(ctx, "model")
 	msg, err := m.inner.Generate(ctx, input, opts...)
+	endModel()
 	observeErr := reservation.observe(msg)
-	providerErr := err
+	providerErr := m.modelError(err)
+	err = nil
 	if m.media != nil {
 		msg, err = m.media.normalizeProviderOutput(ctx, msg, &modelImageLimit{})
 	} else if msg != nil {
@@ -174,8 +230,11 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 	return msg, nil
 }
 func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	ctx, finish, err := m.io.begin(ctx)
+	opts = roleModelOptions(m.settings, opts)
+	opts = m.tuning.beforeReservation(opts)
+	ctx, finish, err := m.io.beginEffect(ctx)
 	if err != nil {
+		m.recordAdmissionFailure(err)
 		return nil, err
 	}
 	if m.media != nil {
@@ -187,19 +246,29 @@ func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts
 	}
 	reservation, opts, err := m.budget.reserveContext(ctx, input, opts)
 	if err != nil {
+		m.recordAdmissionFailure(err)
 		finish()
 		return nil, err
 	}
+	opts, err = m.providerOptions(reservation, opts)
+	if err != nil {
+		m.settle(ctx, reservation, true)
+		finish()
+		return nil, err
+	}
+	endModel := beginRoleActivity(ctx, "model")
 	source, err := m.inner.Stream(ctx, input, opts...)
 	if err != nil {
+		endModel()
 		m.settle(ctx, reservation, false)
 		finish()
-		return nil, err
+		return nil, m.modelError(err)
 	}
 	if source == nil {
+		endModel()
 		m.settle(ctx, reservation, false)
 		finish()
-		return nil, errors.New("model returned nil stream")
+		return nil, m.modelError(errors.New("model returned nil stream"))
 	}
 	complete := true
 	limit := &modelImageLimit{}
@@ -209,7 +278,31 @@ func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts
 		}
 		return msg, validateProviderOutput(msg, "")
 	}
-	return relayStream(source, func() { m.settle(ctx, reservation, complete && ctx.Err() == nil); finish() }, project, func(err error) { complete = false; m.io.recordError(err) }, reservation.observe), nil
+	return relayMappedStream(source, func() { endModel(); m.settle(ctx, reservation, complete && ctx.Err() == nil); finish() }, project, func(err error) { complete = false; m.io.recordError(err) }, m.modelError, reservation.observe), nil
+}
+
+// Nested consumers such as skill review intentionally sanitize provider errors.
+// Admission/storage failures must also reach the owning run, even if that
+// consumer returns a structured failure and the next model call succeeds.
+func (m *trackedModel) recordAdmissionFailure(err error) {
+	remaining, _ := removeErrorLeaves(err, func(leaf error) bool {
+		_, quota := leaf.(*budgetError)
+		return quota || leaf == context.Canceled || leaf == context.DeadlineExceeded
+	})
+	m.io.recordError(remaining)
+}
+
+func (m *trackedModel) providerOptions(reservation *modelReservation, opts []model.Option) ([]model.Option, error) {
+	result, err := m.tuning.afterReservation(opts)
+	if err != nil {
+		// Reservation succeeded but no provider call has begun. Keep the model
+		// admission count and release every held token, recording zero usage.
+		reservation.known = true
+		m.budget.mu.Lock()
+		m.budget.fail("tokens")
+		m.budget.mu.Unlock()
+	}
+	return result, err
 }
 
 func (m *trackedModel) settle(ctx context.Context, r *modelReservation, complete bool) {

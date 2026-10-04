@@ -35,10 +35,24 @@ func keepBudgetAlive(ctx context.Context, ledger *budget.Ledger, scope budget.Sc
 		defer close(done)
 		ticker := time.NewTicker(ledger.HeartbeatInterval())
 		defer ticker.Stop()
+		stopTicker := time.NewTicker(250 * time.Millisecond)
+		defer stopTicker.Stop()
 		for {
 			select {
 			case <-stop:
 				return
+			case <-stopTicker.C:
+				if runCtx.Err() == nil {
+					probe, finish := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+					err := ledger.TaskTreeRootStopped(probe, scope.RootBudgetID)
+					finish()
+					if err != nil {
+						cancel(err)
+						if !errors.Is(err, harness.ErrTaskTreeStopped) {
+							heartbeatErr = errors.Join(heartbeatErr, err)
+						}
+					}
+				}
 			case <-ticker.C:
 				persistCtx, finish := context.WithTimeout(context.WithoutCancel(ctx), min(5*time.Second, ledger.HeartbeatInterval()))
 				err := ledger.Heartbeat(persistCtx, scope)

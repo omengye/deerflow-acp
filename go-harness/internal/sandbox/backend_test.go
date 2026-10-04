@@ -307,7 +307,16 @@ func TestPowerShellRealExecution(t *testing.T) {
 		t.Skip("PowerShell is not installed")
 	}
 	b := newTestBackend(t, harness.SandboxConfig{Enabled: true, Provider: harness.SandboxPowerShell, AllowShell: true}, t.TempDir())
-	s := waitTask(t, b, launchTask(t, b, harness.CommandRequest{Script: `[Console]::Write('中文 output'); [Console]::Error.Write('stderr'); exit 7`}).ID)
+	// PowerShell's cold CLR startup can exceed the helper's 15-second bound
+	// while the full Go suite compiles/runs other packages. This is only a
+	// successful-process/encoding fixture; production command limits and the
+	// separate timeout/termination tests remain unchanged.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	s, err := b.Wait(ctx, launchTask(t, b, harness.CommandRequest{Script: `[Console]::Write('中文 output'); [Console]::Error.Write('stderr'); exit 7`}).ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if s.Stdout.Text != "中文 output" || s.Stderr.Text != "stderr" || s.ExitCode == nil || *s.ExitCode != 7 || !s.TerminationConfirmed {
 		t.Fatalf("PowerShell outcome: %+v", s)
 	}

@@ -120,3 +120,31 @@ func TestObservedControlsOptionalObserverAndNilSource(t *testing.T) {
 	}
 	stop()
 }
+
+func TestObservedControlsHostDrainSurvivesManagerChannelClose(t *testing.T) {
+	runtime := &controlRuntimeFixture{controls: make(chan bt.ControlRequest)}
+	host := make(chan bt.ControlRequest, 1)
+	observed := make(chan bt.ControlRequest, 1)
+	wrapped, stop := observeRuntimeControls(context.Background(), runtime, &Attempt{HostControls: host, ObserveControl: func(c bt.ControlRequest) { observed <- c }})
+	defer stop()
+	close(runtime.controls)
+	want := bt.ControlRequest{Kind: bt.ControlDrain, Reason: "client resource retired"}
+	host <- want
+	select {
+	case got, ok := <-wrapped.Controls():
+		if !ok || got != want || <-observed != want {
+			t.Fatalf("lost resource control after manager channel closed: %+v %t", got, ok)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resource control was not forwarded")
+	}
+	close(host)
+	select {
+	case _, ok := <-wrapped.Controls():
+		if ok {
+			t.Fatal("closed sources yielded a control")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("closed sources did not join")
+	}
+}
