@@ -1,5 +1,6 @@
 use super::composer::next_picker_highlight;
 use super::*;
+use crate::ui::ActivationExt;
 
 const SETTINGS_CONTENT_MAX_WIDTH: f32 = 760.0;
 
@@ -19,12 +20,36 @@ const SETTINGS_SEARCH_CONTEXT: &str = "SettingsSidebar > TextInput";
 
 /// The sidebar's rows in display order, each with the keyword haystack the
 /// search field filters against.
-const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 8] = [
+const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 12] = [
     (
         SettingsPage::DeerFlow,
         "settings.deerflow",
         "icons/bot.svg",
         "settings.deerflow_keywords",
+    ),
+    (
+        SettingsPage::DeerFlowModels,
+        "settings.deerflow_models",
+        "icons/bot.svg",
+        "settings.deerflow_models_keywords",
+    ),
+    (
+        SettingsPage::DeerFlowTools,
+        "settings.deerflow_tools",
+        "icons/terminal.svg",
+        "settings.deerflow_tools_keywords",
+    ),
+    (
+        SettingsPage::DeerFlowAdvanced,
+        "settings.deerflow_advanced",
+        "icons/settings.svg",
+        "settings.deerflow_advanced_keywords",
+    ),
+    (
+        SettingsPage::DeerFlowSkillCenter,
+        "settings.deerflow_skill_center",
+        "icons/package.svg",
+        "settings.skills_keywords",
     ),
     (
         SettingsPage::General,
@@ -138,6 +163,8 @@ impl Waku {
                         "settings-tab-{}",
                         label.to_lowercase()
                     )))
+                    .tab_index(0)
+                    .focus_visible(|style| style.border_1().border_color(theme.accent))
                     .h(px(36.0))
                     .px(px(11.0))
                     .rounded(px(8.0))
@@ -166,19 +193,41 @@ impl Waku {
                         },
                     ))
                     .child(label)
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_activation(cx, move |this, _, cx| {
                         this.open_settings_page(page, cx);
-                    })),
+                    }),
+            );
+        }
+
+        for target in deerflow_settings::presentation::search(&query, &self.deerflow_settings) {
+            let key = target.key();
+            let selected = self.deerflow_settings.search_key.as_deref() == Some(key.as_str());
+            navigation = navigation.child(
+                div()
+                    .id(SharedString::from(format!("settings-search-{}", key)))
+                    .tab_index(0)
+                    .focus_visible(|style| style.border_1().border_color(theme.accent))
+                    .px(px(11.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .text_size(sp(12.5))
+                    .text_color(theme.text_secondary)
+                    .when(selected, |el| el.bg(theme.sidebar_item_background))
+                    .hover(|el| el.bg(theme.sidebar_item_background))
+                    .child(target.label.clone())
+                    .on_activation(cx, move |this, window, cx| {
+                        this.deerflow_find_setting(target.clone(), window, cx)
+                    }),
             );
         }
 
         div()
             .key_context(SETTINGS_SIDEBAR_CONTEXT)
-            .on_action(cx.listener(|this, _: &SelectNextEntry, _, cx| {
-                this.cycle_settings_page("down", cx);
+            .on_action(cx.listener(|this, _: &SelectNextEntry, window, cx| {
+                this.cycle_settings_page("down", window, cx);
             }))
-            .on_action(cx.listener(|this, _: &SelectPreviousEntry, _, cx| {
-                this.cycle_settings_page("up", cx);
+            .on_action(cx.listener(|this, _: &SelectPreviousEntry, window, cx| {
+                this.cycle_settings_page("up", window, cx);
             }))
             .w(px(DEFAULT_SIDEBAR_WIDTH))
             .h_full()
@@ -239,8 +288,19 @@ impl Waku {
     /// the list; the landing page renders immediately, so there is no separate
     /// confirm step. A selection filtered out by the query re-enters the list
     /// from whichever end matches the key.
-    fn cycle_settings_page(&mut self, key: &str, cx: &mut Context<Self>) {
+    fn cycle_settings_page(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         let query = self.settings_search_query(cx);
+        let targets = deerflow_settings::presentation::search(&query, &self.deerflow_settings);
+        if !targets.is_empty() {
+            let current = targets.iter().position(|target| {
+                Some(target.key().as_str()) == self.deerflow_settings.search_key.as_deref()
+            });
+            if let Some(next) = next_picker_highlight(current, targets.len(), key) {
+                self.deerflow_find_setting(targets[next].clone(), window, cx);
+                window.focus(&self.settings_search.read(cx).focus(), cx);
+            }
+            return;
+        }
         let pages = visible_settings_pages(&query)
             .map(|(page, ..)| page)
             .collect::<Vec<_>>();
@@ -365,6 +425,10 @@ impl Waku {
                     .text_color(theme.text)
                     .child(match page {
                         SettingsPage::DeerFlow => tr!("settings.deerflow"),
+                        SettingsPage::DeerFlowModels => tr!("settings.deerflow_models"),
+                        SettingsPage::DeerFlowTools => tr!("settings.deerflow_tools"),
+                        SettingsPage::DeerFlowAdvanced => tr!("settings.deerflow_advanced"),
+                        SettingsPage::DeerFlowSkillCenter => tr!("settings.deerflow_skill_center"),
                         SettingsPage::General => tr!("settings.general"),
                         SettingsPage::Providers => tr!("settings.providers"),
                         SettingsPage::Skills => tr!("settings.skills"),
@@ -375,7 +439,11 @@ impl Waku {
                     }),
             )
             .child(match page {
-                SettingsPage::DeerFlow => self.render_deerflow_settings(cx),
+                SettingsPage::DeerFlow
+                | SettingsPage::DeerFlowModels
+                | SettingsPage::DeerFlowTools
+                | SettingsPage::DeerFlowAdvanced
+                | SettingsPage::DeerFlowSkillCenter => self.render_deerflow_settings(cx),
                 SettingsPage::General => self.render_general_settings(cx),
                 SettingsPage::Providers => self.render_providers_settings(cx),
                 SettingsPage::Skills => self.render_skills_settings(cx),
@@ -432,30 +500,56 @@ impl Waku {
                         ))
                     }),
             )
+            .when(page.is_deerflow(), |element| {
+                element.child(self.render_deerflow_save_bar(cx))
+            })
     }
 
     fn render_general_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::current(cx);
         let enabled = self.state.render_math;
-        div().child(
-            div().mt(px(15.0)).w_full().px(px(20.0)).py(px(16.0))
-                .rounded(px(13.0)).bg(theme.raised)
-                .child(div().text_size(sp(13.5)).font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text).child("本地便携工作台"))
-                .child(div().mt(px(5.0)).text_size(sp(12.5)).line_height(sp(18.0))
-                    .text_color(theme.text_secondary)
-                    .child("会话与设置保存在便携数据目录。模型、智能体、记忆和工具权限在 DeerFlow 配置中管理。"))
-        ).child(
-            div().mt(px(15.0)).w_full().px(px(20.0)).py(px(14.0))
-                .rounded(px(13.0)).bg(theme.raised).flex().items_center().gap(px(24.0))
-                .child(div().flex_1().min_w_0()
-                    .child(div().text_size(sp(13.5)).font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text).child(tr!("settings.render_math")))
-                    .child(div().mt(px(5.0)).text_size(sp(12.5)).line_height(sp(18.0))
-                        .text_color(theme.text_secondary).child(tr!("settings.render_math_description"))))
-                .child(toggle_switch("render-math-toggle", enabled, false, theme, cx,
-                    move |this, _, cx| this.set_render_math(!enabled, cx)))
-        ).into_any_element()
+        div()
+            .child(
+                div()
+                    .mt(px(15.0))
+                    .w_full()
+                    .px(px(20.0))
+                    .py(px(14.0))
+                    .rounded(px(13.0))
+                    .bg(theme.raised)
+                    .flex()
+                    .items_center()
+                    .gap(px(24.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_size(sp(13.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text)
+                                    .child(tr!("settings.render_math")),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(5.0))
+                                    .text_size(sp(12.5))
+                                    .line_height(sp(18.0))
+                                    .text_color(theme.text_secondary)
+                                    .child(tr!("settings.render_math_description")),
+                            ),
+                    )
+                    .child(toggle_switch(
+                        "render-math-toggle",
+                        enabled,
+                        false,
+                        theme,
+                        cx,
+                        move |this, _, cx| this.set_render_math(!enabled, cx),
+                    )),
+            )
+            .into_any_element()
     }
 
     fn render_daemon_settings(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1390,6 +1484,7 @@ impl Waku {
                     )
                     .child(code_font_size_selector),
             )
+            .child(self.render_general_settings(cx))
             .into_any_element()
     }
 

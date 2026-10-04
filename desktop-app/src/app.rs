@@ -213,6 +213,10 @@ enum BranchPickerAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SettingsPage {
     DeerFlow,
+    DeerFlowModels,
+    DeerFlowTools,
+    DeerFlowAdvanced,
+    DeerFlowSkillCenter,
     General,
     Providers,
     Skills,
@@ -227,7 +231,25 @@ impl SettingsPage {
     /// its navigation entry points. Keeping this decision on the page itself
     /// makes the Settings sidebar and command palette use the same gate.
     fn is_visible_in_navigation(self) -> bool {
-        matches!(self, Self::DeerFlow | Self::General | Self::Appearance)
+        matches!(
+            self,
+            Self::DeerFlow
+                | Self::DeerFlowModels
+                | Self::DeerFlowTools
+                | Self::DeerFlowAdvanced
+                | Self::Appearance
+        )
+    }
+
+    fn is_deerflow(self) -> bool {
+        matches!(
+            self,
+            Self::DeerFlow
+                | Self::DeerFlowModels
+                | Self::DeerFlowTools
+                | Self::DeerFlowAdvanced
+                | Self::DeerFlowSkillCenter
+        )
     }
 }
 
@@ -2558,8 +2580,9 @@ impl Waku {
             .detach();
             cx.subscribe(
                 &settings_search,
-                |_: &mut Self, _, event: &InputEvent, cx| {
+                |this: &mut Self, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Edited) {
+                        this.deerflow_settings.search_key = None;
                         cx.notify();
                     }
                 },

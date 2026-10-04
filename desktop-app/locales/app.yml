@@ -2183,6 +2183,20 @@ usage_error.curl_no_status:
   en: curl returned no HTTP status line
 
 settings.deerflow:
-  en: DeerFlow
+  en: Essentials
+settings.deerflow_models:
+  en: Models
+settings.deerflow_tools:
+  en: Tools and permissions
+settings.deerflow_advanced:
+  en: Advanced
+settings.deerflow_skill_center:
+  en: Skill Center
+settings.deerflow_models_keywords:
+  en: models provider api endpoint key vision context
+settings.deerflow_tools_keywords:
+  en: tools permissions approval shell powershell bash opencli mcp web proxy
+settings.deerflow_advanced_keywords:
+  en: advanced subagents roles memory skills budget limits timeout service logs diagnostics data sources import
 settings.deerflow_keywords:
   en: deerflow models agents memory skills tools permissions acp runtime diagnostics recovery

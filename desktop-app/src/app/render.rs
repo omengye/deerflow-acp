@@ -244,6 +244,7 @@ impl Render for Waku {
         let image_preview = self.render_image_preview(cx);
         let task_switcher = self.render_task_switcher(window, cx);
         if self.settings_page.is_some() {
+            self.deerflow_focus_pending(window, cx);
             let command_palette = self.render_command_palette(window, cx);
             let commit_dialog = self.render_commit_dialog(cx);
             let goal_dialog = self.render_goal_dialog(window, cx);

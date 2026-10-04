@@ -502,7 +502,7 @@ impl Waku {
 
     pub(super) fn render_deerflow_roles(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let state = &self.deerflow_settings;
-        let mut picker = div().flex().flex_wrap().gap(px(6.0));
+        let mut picker = div().flex().flex_col().gap(px(6.0));
         for key in &state.roles.choices {
             let selected = *key == state.roles.selected;
             let label = format!(
@@ -511,25 +511,29 @@ impl Waku {
                 if key.custom() { "自定义" } else { "内置" }
             );
             let key = key.clone();
-            picker = picker.child(df_button(
-                SharedString::from(format!("df-role-{}-{}", key.collection, key.name)),
-                label,
-                state.busy() || !state.errors.is_empty(),
-                selected,
-                theme,
-                cx,
-                move |this, _, cx| {
-                    let same = this.deerflow_settings.roles.selected == key;
-                    if !this.deerflow_commit_names(cx) {
-                        return;
-                    }
-                    if !same {
-                        this.deerflow_settings.roles.selected = key.clone();
-                    }
-                    this.deerflow_rebind(cx);
-                    cx.notify();
-                },
-            ));
+            picker = picker.child(
+                df_button(
+                    SharedString::from(format!("df-role-{}-{}", key.collection, key.name)),
+                    label,
+                    state.busy() || !state.errors.is_empty(),
+                    selected,
+                    theme,
+                    cx,
+                    move |this, _, cx| {
+                        let same = this.deerflow_settings.roles.selected == key;
+                        if !this.deerflow_commit_names(cx) {
+                            return;
+                        }
+                        if !same {
+                            this.deerflow_settings.roles.selected = key.clone();
+                        }
+                        this.deerflow_rebind(cx);
+                        cx.notify();
+                    },
+                )
+                .w_full()
+                .justify_start(),
+            );
         }
         let key = &state.roles.selected;
         let pending = state.roles.pending_name.is_some();
@@ -580,12 +584,6 @@ impl Waku {
                 )),
         );
         group = group.child(df_label("角色配置", "选择角色只查看草稿；修改内置角色会创建覆盖配置。保存并应用后对新任务生效，已有任务保持原角色快照。", theme));
-        group = group.child(df_label(
-            "当前服务实际配置",
-            applied_settings_summary(&state.status)
-                .unwrap_or_else(|| "服务未运行或尚未提供实际值；下方显示已加载的配置草稿。".into()),
-            theme,
-        ));
         for diagnostic in &state.roles.diagnostics {
             group = group.child(df_label("迁移提示", diagnostic.clone(), theme));
         }

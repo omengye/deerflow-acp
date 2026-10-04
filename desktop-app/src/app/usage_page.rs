@@ -39,7 +39,7 @@ impl Waku {
     /// Switch the settings view to `page`, warming the Usage scan when that
     /// is where the user is heading.
     pub(super) fn open_settings_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
-        let page = if page.is_visible_in_navigation() {
+        let page = if page.is_visible_in_navigation() || page == SettingsPage::DeerFlowSkillCenter {
             page
         } else {
             SettingsPage::DeerFlow
@@ -48,7 +48,8 @@ impl Waku {
         // also masks the token again when the Daemon row is reselected.
         self.daemon_token_revealed = false;
         self.settings_page = Some(page);
-        if page == SettingsPage::DeerFlow {
+        if page.is_deerflow() {
+            self.deerflow_route_page(page, cx);
             self.ensure_deerflow_settings(cx);
         }
         // Each page starts at its own top; a scroll position carried over

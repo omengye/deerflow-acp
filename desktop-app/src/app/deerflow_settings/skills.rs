@@ -850,6 +850,39 @@ impl Waku {
             ));
         }
         group = group.child(filters);
+        group = group
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        TextField::new("df-catalog-search", self.skills_search.clone())
+                            .w(px(260.0)),
+                    )
+                    .child(df_button(
+                        "df-catalog-search-submit",
+                        "按技能名称查询",
+                        unavailable,
+                        false,
+                        theme,
+                        cx,
+                        |this, _, cx| {
+                            let name = this.skills_search.read(cx).content().trim().to_owned();
+                            let mut request = json!({"operation":"skill.list","limit":PAGE_SIZE});
+                            if !name.is_empty() {
+                                request["name"] = json!(name);
+                            }
+                            this.deerflow_request("manage", request, cx);
+                        },
+                    )),
+            )
+            .child(
+                div()
+                    .text_size(sp(12.0))
+                    .text_color(theme.text_tertiary)
+                    .child("名称精确匹配；留空查询全部。"),
+            );
         if let Some(request) = &browser.retry {
             let request = request.clone();
             group = group

@@ -2,6 +2,7 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 use gpui::{KeyBinding, actions};
 
 use super::*;
+use crate::ui::ActivationExt;
 
 actions!(waku_sidebar, [CancelSessionRename]);
 
@@ -936,6 +937,25 @@ impl Waku {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_settings_action(&OpenSettings, window, cx);
                     })),
+            )
+            .child(
+                div()
+                    .id("open-deerflow-skill-center")
+                    .tab_index(0)
+                    .focus_visible(|style| style.border_1().border_color(theme.accent))
+                    .ml(px(6.0))
+                    .px(px(8.0))
+                    .h(px(26.0))
+                    .rounded(px(6.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .text_size(sp(12.0))
+                    .text_color(theme.text_secondary)
+                    .hover(|el| el.bg(theme.overlay))
+                    .child(icon("icons/package.svg", 14.0, theme.text_tertiary))
+                    .child("技能中心")
+                    .on_activation(cx, |this, _, cx| this.open_deerflow_skill_center(cx)),
             )
             .child(div().flex_1())
             .when_some(self.render_updater_button(cx), |footer, button| {

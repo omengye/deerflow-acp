@@ -148,26 +148,52 @@ impl Waku {
             return div().into_any_element();
         };
         let selected = state.selected_tool.min(NAMES.len() - 1);
-        let mut picker = div().flex().flex_wrap().gap(px(6.0));
+        let mut picker = div().flex().flex_col().gap(px(5.0));
         for (index, name) in NAMES.iter().enumerate() {
+            if let Some(label) = match index {
+                0 => Some("网页"),
+                3 => Some("OpenCLI"),
+                4 => Some("文件"),
+                12 => Some("命令"),
+                _ => None,
+            } {
+                picker = picker.child(
+                    div()
+                        .mt(px(6.0))
+                        .text_size(sp(12.0))
+                        .text_color(theme.text_tertiary)
+                        .child(label),
+                );
+            }
             let configured = self::index(document, index).is_some();
-            picker = picker.child(df_button(
-                SharedString::from(format!("df-tool-{name}")),
-                if configured {
-                    format!("{name} · 已配置")
-                } else {
-                    (*name).to_owned()
-                },
-                state.busy() || !state.errors.is_empty(),
-                index == selected,
-                theme,
-                cx,
-                move |this, _, cx| {
-                    this.deerflow_settings.selected_tool = index;
-                    this.deerflow_rebind(cx);
-                    cx.notify();
-                },
-            ));
+            picker = picker.child(
+                df_button(
+                    SharedString::from(format!("df-tool-{name}")),
+                    if configured {
+                        format!("{name} · 已配置参数")
+                    } else {
+                        format!(
+                            "{name} · {}",
+                            if index <= 3 {
+                                "未配置"
+                            } else {
+                                "默认参数"
+                            }
+                        )
+                    },
+                    state.busy(),
+                    index == selected,
+                    theme,
+                    cx,
+                    move |this, _, cx| {
+                        this.deerflow_settings.selected_tool = index;
+                        this.deerflow_rebind(cx);
+                        cx.notify();
+                    },
+                )
+                .w_full()
+                .justify_start(),
+            );
         }
         let configured = index(document, selected).is_some();
         let mut group = df_group(theme)

@@ -1056,5 +1056,12 @@ usage_error.curl_failed: "curl 失败：%{error}"
 usage_error.unknown_error: 未知错误
 usage_error.curl_no_status: curl 未返回 HTTP 状态行
 
-settings.deerflow: DeerFlow 配置
+settings.deerflow: 常用
+settings.deerflow_models: 模型
+settings.deerflow_tools: 工具与权限
+settings.deerflow_advanced: 高级
+settings.deerflow_skill_center: 技能中心
+settings.deerflow_models_keywords: 模型 model provider api 地址 密钥 图片 上下文
+settings.deerflow_tools_keywords: 工具 tool 权限 审批 命令 powershell bash opencli mcp 网页 代理 proxy
+settings.deerflow_advanced_keywords: 高级 advanced 子代理 角色 记忆 技能 维护 预算 额度 超时 服务 日志 诊断 数据 来源 导入
 settings.deerflow_keywords: deerflow 模型 智能体 长期记忆 技能 工具 权限 ACP 运行 诊断 数据 恢复

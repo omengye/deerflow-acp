@@ -1867,54 +1867,36 @@ fn model_picker_highlight_wraps_at_both_ends() {
 #[test]
 fn settings_search_filters_pages_for_arrow_cycling() {
     use super::SettingsPage;
-
     let pages = |query: &str| {
         visible_settings_pages(query)
             .map(|(page, ..)| page)
             .collect::<Vec<_>>()
     };
-
-    // An empty query keeps every page in sidebar order, so the arrows cycle
-    // the full navigation even before anything is typed.
-    let mut all_pages = vec![
-        SettingsPage::General,
-        SettingsPage::Appearance,
-        SettingsPage::Providers,
-        SettingsPage::Skills,
-        SettingsPage::Usage,
-        SettingsPage::Daemon,
-    ];
-    if cfg!(debug_assertions) {
-        all_pages.push(SettingsPage::ComputerUse);
-    }
-    assert_eq!(pages(""), all_pages);
-
-    assert_eq!(pages("theme"), vec![SettingsPage::Appearance]);
-    assert_eq!(pages("skill"), vec![SettingsPage::Skills]);
-
-    // A keyword shared across pages keeps them all reachable.
-    let mut codex_pages = vec![
-        SettingsPage::Providers,
-        SettingsPage::Skills,
-        SettingsPage::Usage,
-    ];
-    if cfg!(debug_assertions) {
-        codex_pages.push(SettingsPage::ComputerUse);
-    }
-    assert_eq!(pages("codex"), codex_pages);
-
+    assert_eq!(
+        pages(""),
+        vec![
+            SettingsPage::DeerFlow,
+            SettingsPage::DeerFlowModels,
+            SettingsPage::DeerFlowTools,
+            SettingsPage::DeerFlowAdvanced,
+            SettingsPage::Appearance
+        ]
+    );
+    assert_eq!(pages("api"), vec![SettingsPage::DeerFlowModels]);
+    assert_eq!(pages("proxy"), vec![SettingsPage::DeerFlowTools]);
     assert_eq!(pages("no such setting"), vec![]);
+    assert!(!SettingsPage::General.is_visible_in_navigation());
+    assert!(!SettingsPage::Providers.is_visible_in_navigation());
+    assert!(!SettingsPage::Skills.is_visible_in_navigation());
+    assert!(!SettingsPage::Daemon.is_visible_in_navigation());
+    assert!(!SettingsPage::DeerFlowSkillCenter.is_visible_in_navigation());
 }
 
 #[test]
 fn computer_use_navigation_is_debug_only() {
-    use super::SettingsPage;
-
-    assert!(SettingsPage::General.is_visible_in_navigation());
-    assert_eq!(
-        SettingsPage::ComputerUse.is_visible_in_navigation(),
-        cfg!(debug_assertions)
-    );
+    // This branch uses only the Eino harness; retired provider screens remain
+    // hidden in both debug and release builds.
+    assert!(!super::SettingsPage::ComputerUse.is_visible_in_navigation());
 }
 
 #[test]

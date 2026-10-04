@@ -808,12 +808,39 @@ impl Waku {
             ),
         ]);
 
+        commands.push(CommandPaletteItem::command(
+            PaletteSection::Commands,
+            crate::i18n::translate("settings.deerflow_skill_center"),
+            "icons/package.svg",
+            None,
+            PaletteAction::OpenSettings(SettingsPage::DeerFlowSkillCenter),
+            "skills center 技能 中心 审核 发布",
+            next(),
+        ));
         for (page, label_key, icon, keywords) in [
             (
                 SettingsPage::DeerFlow,
                 "settings.deerflow",
                 "icons/bot.svg",
                 "deerflow models agents memory skills runtime settings 配置 模型 智能体 记忆",
+            ),
+            (
+                SettingsPage::DeerFlowModels,
+                "settings.deerflow_models",
+                "icons/bot.svg",
+                "models provider api 模型 地址 密钥",
+            ),
+            (
+                SettingsPage::DeerFlowTools,
+                "settings.deerflow_tools",
+                "icons/terminal.svg",
+                "tools permissions opencli mcp 工具 权限 代理",
+            ),
+            (
+                SettingsPage::DeerFlowAdvanced,
+                "settings.deerflow_advanced",
+                "icons/settings.svg",
+                "advanced budget runtime 高级 预算 日志",
             ),
             (
                 SettingsPage::General,
