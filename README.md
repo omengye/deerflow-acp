@@ -14,6 +14,7 @@
 | `deerflow-acp-go.exe` | 直接运行 Go ACP stdio agent |
 | `deerflow-config-go.exe` | 原生配置初始化、校验、保存与模型测试，由 Waku 调用 |
 | `go-harness/` | 可嵌入的 Go SDK |
+| `integrations/buzz/` | 原生 Go Buzz 适配器，使用官方 CLI 与 ACP v2 Bridge，独立 Windows ZIP 与 CI |
 
 Linux 的 ACP 可执行文件省略 `.exe`。客户端启动 Bridge 或直连 stdio 程序；`--start-daemon`、`--status`、`--stop-daemon` 用于管理常驻进程。
 
@@ -93,6 +94,8 @@ go build ./...
 ```
 
 Rust Bridge 与 Waku 的构建、协议 smoke 和 CI 入口见[桌面构建说明](docs/windows-desktop-actions.md)。桌面协议测试、真实交互测试及无 Python 环境验收分别记录。
+
+Buzz 的配置迁移、权限策略、故障恢复与独立构建见[适配器说明](integrations/buzz/README.md)。其测试使用模拟 Buzz CLI 和本地模型 fixture；真实 relay 收发由人工验收。
 
 ## 许可证
 

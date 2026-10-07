@@ -1,0 +1,71 @@
+[buzz]
+command = "D:/Program Files/Buzz/buzz.exe"
+args = []
+relay_url = "https://your-buzz-relay.example"
+agent_pubkey = "REPLACE_WITH_AGENT_HEX_PUBKEY"
+timeout_seconds = 60
+channels = []
+auto_discover_channels = true
+include_dms = true
+require_mention = true
+# Empty restricts callers to the authenticated owner, when BUZZ_AUTH_TAG is set.
+# Otherwise specify sender hex public keys here. Public mode must be explicit.
+allowed_pubkeys = []
+allow_any_sender = false
+message_kinds = [9]
+channel_names = {}
+
+[buzz.profile]
+name = "DeerFlow"
+about = "DeerFlow Eino Go agent"
+avatar = ""
+nip05 = ""
+
+[buzz.lifecycle]
+presence_enabled = true
+presence_heartbeat_seconds = 60
+status_enabled = true
+status_ready = "DeerFlow 就绪"
+status_working = "DeerFlow 正在处理"
+status_error = "DeerFlow 运行异常"
+status_emoji = ""
+
+[deerflow]
+# Extract and configure a CURRENT Eino Go desktop release first.
+# This derives the Bridge, config.yaml, runtime/acp-go and data/go-harness paths.
+desktop_root = "D:/Apps/DeerFlow-Desktop-Go"
+protocol = "v2"
+args = []
+workspace = "D:/ACP/workspace"
+timeout_seconds = 120
+prompt_timeout_seconds = 0
+# deny cancels all tool permission requests. allow_once permits tools only when
+# callers are constrained by allowed_pubkeys / owner attestation.
+permission_policy = "deny"
+# For a custom installation, omit desktop_root and set command, config_path,
+# runtime_dir and data_dir explicitly. Use the Rust deerflow-acp Bridge.
+# Never select deerflow-acp-go (its external wire protocol is v1).
+
+[observability]
+enabled = false
+owner_pubkey = ""
+queue_size = 256
+publish_timeout_seconds = 10
+include_raw_tool_data = false
+progress_messages = true
+progress_update_interval_seconds = 0.5
+progress_max_tools = 12
+
+[state]
+path = "./data/adapter.sqlite3"
+
+[adapter]
+poll_interval_seconds = 4
+max_poll_pages = 20
+replay_existing = false
+session_scope = "thread"
+transport_retry_attempts = 3
+transport_retry_base_seconds = 1
+transport_retry_max_seconds = 4
+max_message_attempts = 5
+log_level = "INFO"

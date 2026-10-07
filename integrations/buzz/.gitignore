@@ -1,0 +1,5 @@
+!.env.example
+/bin/
+/adapter.toml.bak-*
+/data/
+/.test-tmp*/
