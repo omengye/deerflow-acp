@@ -30,7 +30,7 @@ func modelAgentFields() []Field {
 		min, max  float64
 	}{
 		{"timeout_seconds", "number", .001, 86400},
-		{"max_turns", "integer", 1, 10000},
+		{"max_turns", "integer", 0, 10000},
 		{"max_depth", "integer", 1, 3},
 		{"background_workers", "integer", 1, 64},
 		{"max_tasks_per_root", "integer", 1, 10000},
@@ -69,7 +69,7 @@ func roleFields() []Field {
 			min, max  float64
 		}{
 			{"timeout_seconds", "number", .001, 86400},
-			{"max_turns", "integer", 1, 10000},
+			{"max_turns", "integer", 0, 10000},
 			{"model_settings/temperature", "number", 0, 2},
 			{"model_settings/max_tokens", "integer", 1, 1 << 30},
 			{"model_settings/thinking_budget_tokens", "integer", 1024, (1 << 30) - 1},

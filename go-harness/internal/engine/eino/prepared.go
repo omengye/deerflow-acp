@@ -298,7 +298,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	}
 	p.Agent, err = deep.New(ctx, &deep.Config{
 		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend,
-		ChatModel: chatModel, MaxIteration: e.config.MaxIterations,
+		ChatModel: chatModel, MaxIteration: nativeMaxIterations(e.config.MaxIterations),
 		ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}},
 		Handlers:    handlers, WithoutWriteTodos: !e.config.ToolPolicy.Allows("write_todos"),
 		SubAgents:              children,

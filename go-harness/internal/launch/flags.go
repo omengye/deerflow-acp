@@ -13,6 +13,7 @@ import (
 )
 
 func RuntimeFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
+	flags.IntVar(&cfg.MaxIterations, "max-iterations", harness.DefaultMaxIterations, "optional model/tool iteration limit per agent run; 0 disables")
 	flags.IntVar(&cfg.MaxActiveRuns, "max-active-runs", 2, "maximum concurrent foreground executions across sessions (1..128)")
 	flags.DurationVar(&cfg.QueueTimeout, "queue-timeout", 10*time.Minute, "time a foreground run may wait for an execution slot; 0 disables the deadline")
 	flags.BoolVar(&cfg.Retention.Enabled, "session-cleanup-enabled", true, "periodically delete expired detached sessions")

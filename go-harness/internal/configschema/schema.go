@@ -107,6 +107,11 @@ func Describe() Schema {
 	schema := Schema{Version: Version, Sections: []string{"runtime", "memory", "models", "subagents", "tools", "sandbox", "skill_evolution", "skill_sources"}, Fields: fields}
 	schema.HostSettings = []HostSetting{{ConfigPath: "mcp.host_recipes", Apply: "restart", Edit: "host_yaml", Description: "Explicit host-owned MCP recipes for exact workspaces; credentials are excluded from desktop and execution snapshots."}}
 	schema.HostSettings = append(schema.HostSettings, HostSetting{ConfigPath: "local_acp.max_run_tokens", Apply: "restart", Edit: "host_yaml", Description: "Optional aggregate task token budget shared by all agents; 0 (default) disables. Context windows and per-request output caps are separate."})
+	schema.HostSettings = append(schema.HostSettings,
+		HostSetting{ConfigPath: "local_acp.max_iterations", Apply: "restart", Edit: "host_yaml", Description: "Optional model/tool iterations per agent run; 0 (default) disables."},
+		HostSetting{ConfigPath: "local_acp.max_model_calls", Apply: "restart", Edit: "host_yaml", Description: "Optional model calls shared by the main and child agents; 0 (default) disables."},
+		HostSetting{ConfigPath: "local_acp.max_tool_calls", Apply: "restart", Edit: "host_yaml", Description: "Optional tool calls shared by the main and child agents; 0 (default) disables."},
+	)
 	schema.Hash = digest(schema)
 	return schema
 }

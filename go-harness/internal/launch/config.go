@@ -71,6 +71,9 @@ type runtimeDocument struct {
 		GoalAutoContinue       bool      `yaml:"goal_auto_continue"`
 		RunTimeoutSeconds      *float64  `yaml:"run_timeout_seconds"`
 		MaxRunTokens           *int64    `yaml:"max_run_tokens"`
+		MaxIterations          *int      `yaml:"max_iterations"`
+		MaxModelCalls          *int      `yaml:"max_model_calls"`
+		MaxToolCalls           *int      `yaml:"max_tool_calls"`
 		PromptOverlay          string    `yaml:"prompt_overlay"`
 		PromptOverlayFile      string    `yaml:"prompt_overlay_file"`
 		EnableBash             bool      `yaml:"enable_bash"`
@@ -368,6 +371,40 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 				cfg.Budget = &budget
 			}
 			cfg.Budget.MaxTokens = *source.LocalACP.MaxRunTokens
+		}
+	}
+	if source.LocalACP.MaxIterations != nil {
+		if *source.LocalACP.MaxIterations < 0 {
+			return result, fmt.Errorf("local_acp.max_iterations must not be negative; 0 disables the limit")
+		}
+		if !explicit["max-iterations"] {
+			cfg.MaxIterations = *source.LocalACP.MaxIterations
+		}
+	}
+	for _, limit := range []struct {
+		name, flag string
+		value      *int
+	}{
+		{"max_model_calls", "max-model-calls", source.LocalACP.MaxModelCalls},
+		{"max_tool_calls", "max-tool-calls", source.LocalACP.MaxToolCalls},
+	} {
+		if limit.value == nil {
+			continue
+		}
+		if *limit.value < 0 {
+			return result, fmt.Errorf("local_acp.%s must not be negative; 0 disables the limit", limit.name)
+		}
+		if explicit[limit.flag] {
+			continue
+		}
+		if cfg.Budget == nil {
+			budget := harness.DefaultBudgetLimits()
+			cfg.Budget = &budget
+		}
+		if limit.flag == "max-model-calls" {
+			cfg.Budget.MaxModelCalls = *limit.value
+		} else {
+			cfg.Budget.MaxToolCalls = *limit.value
 		}
 	}
 	overlay := strings.TrimSpace(source.LocalACP.PromptOverlay)

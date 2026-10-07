@@ -35,12 +35,13 @@ import (
 )
 
 type Config struct {
-	DataDir       string
-	Provider      string
-	APIKey        string
-	BaseURL       string
-	Model         string
-	Instruction   string
+	DataDir     string
+	Provider    string
+	APIKey      string
+	BaseURL     string
+	Model       string
+	Instruction string
+	// MaxIterations is an optional per-agent loop limit; zero disables it.
 	MaxIterations int
 	// MaxActiveRuns bounds concurrent foreground executions across sessions.
 	// Zero uses two slots. QueueTimeout is separate from the execution timeout;

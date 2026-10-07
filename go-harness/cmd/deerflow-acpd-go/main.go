@@ -38,7 +38,6 @@ func run(args []string) (err error) {
 	flags.StringVar(&cfg.Provider, "provider", env("DEERFLOW_MODEL_PROVIDER", "openai"), "model provider: openai, claude, ark")
 	flags.StringVar(&cfg.Model, "model", os.Getenv("DEERFLOW_MODEL"), "model identifier")
 	flags.StringVar(&cfg.BaseURL, "base-url", os.Getenv("DEERFLOW_MODEL_BASE_URL"), "model endpoint override")
-	flags.IntVar(&cfg.MaxIterations, "max-iterations", 50, "maximum model/tool iterations per run")
 	flags.IntVar(&hostCfg.MaxConnections, "max-connections", 32, "ACP connection limit; control requests are independent")
 	flags.StringVar(&configPath, "config", "", "DeerFlow config.yaml for model and portable ACP settings")
 	flags.StringVar(&logDir, "log-dir", os.Getenv("DEERFLOW_GO_LOG_DIR"), "daemon lifecycle log directory (default: runtime-dir/logs)")

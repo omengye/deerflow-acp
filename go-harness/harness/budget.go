@@ -2,6 +2,9 @@ package harness
 
 import "time"
 
+// DefaultMaxIterations disables the optional per-agent iteration quota.
+const DefaultMaxIterations = 0
+
 // BudgetLimits applies to one foreground run and its delegated agents together.
 // Zero values disable individual limits. Tokens without provider usage are
 // estimated; MaxOutputTokens also caps each provider request's output setting.
@@ -13,11 +16,10 @@ type BudgetLimits struct {
 	Timeout         time.Duration `json:"timeout,omitempty"`
 }
 
-// DefaultBudgetLimits is shared by the SDK and local executables. Quotas cover
-// the main agent and its children together. They count logical provider calls;
-// provider-internal transport retries may still incur additional charges.
-// Aggregate token spending is opt-in: replayed history counts on every model
-// call, so a fixed default would terminate otherwise healthy long tasks.
+// DefaultBudgetLimits is shared by the SDK and local executables. Model, tool
+// and aggregate token quotas are opt-in; normal tasks run until completion,
+// cancellation or the execution deadline. Explicit quotas cover the main agent
+// and its children together and count logical calls, including failed calls.
 func DefaultBudgetLimits() BudgetLimits {
-	return BudgetLimits{MaxModelCalls: 100, MaxToolCalls: 200, MaxOutputTokens: 4096, Timeout: 30 * time.Minute}
+	return BudgetLimits{MaxOutputTokens: 4096, Timeout: 30 * time.Minute}
 }

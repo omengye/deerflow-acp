@@ -26,7 +26,6 @@ func run() error {
 	flag.StringVar(&cfg.Provider, "provider", env("DEERFLOW_MODEL_PROVIDER", "openai"), "model provider: openai, claude, ark")
 	flag.StringVar(&cfg.Model, "model", os.Getenv("DEERFLOW_MODEL"), "model identifier")
 	flag.StringVar(&cfg.BaseURL, "base-url", os.Getenv("DEERFLOW_MODEL_BASE_URL"), "model endpoint override")
-	flag.IntVar(&cfg.MaxIterations, "max-iterations", 50, "maximum model/tool iterations per run")
 	launch.RuntimeFlags(flag.CommandLine, &cfg)
 	flag.Parse()
 	cfg.APIKey = os.Getenv("DEERFLOW_MODEL_API_KEY")

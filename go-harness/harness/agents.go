@@ -62,7 +62,7 @@ func (c SubagentsConfig) Validate(models map[string]bool) error {
 		value    *int
 		min, max int
 	}{
-		{"max_turns", c.MaxTurns, 1, 10000},
+		{"max_turns", c.MaxTurns, 0, 10000},
 		{"max_depth", c.MaxDepth, 1, 3},
 		{"max_concurrent", c.MaxConcurrent, 1, 64},
 		{"background_workers", c.BackgroundWorkers, 1, 64},
@@ -138,8 +138,8 @@ func (c SubagentsConfig) Validate(models map[string]bool) error {
 			if err := validateAgentTimeout(path+".timeout_seconds", agent.TimeoutSeconds); err != nil {
 				return err
 			}
-			if p := agent.MaxTurns; p != nil && (*p < 1 || *p > 10000) {
-				return fmt.Errorf("%s.max_turns must be 1..10000", path)
+			if p := agent.MaxTurns; p != nil && (*p < 0 || *p > 10000) {
+				return fmt.Errorf("%s.max_turns must be 0..10000; 0 disables the limit", path)
 			}
 			if p := agent.ModelSettings.Temperature; p != nil && (math.IsNaN(*p) || math.IsInf(*p, 0) || *p < 0 || *p > 2) {
 				return fmt.Errorf("%s.model_settings.temperature must be 0..2", path)

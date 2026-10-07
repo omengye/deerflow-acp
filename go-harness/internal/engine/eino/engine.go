@@ -120,11 +120,8 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	if config.MaxIterations == 0 {
-		config.MaxIterations = 50
-	}
-	if config.MaxIterations < 1 {
-		return nil, errors.New("max iterations must be positive")
+	if config.MaxIterations < 0 {
+		return nil, errors.New("max iterations must not be negative; 0 disables the limit")
 	}
 	if config.SessionStore == nil {
 		config.SessionStore = einosession.NewInMemoryStore[*schema.Message](nil)
@@ -467,6 +464,10 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 					result.StopReason = "cancelled"
 				case errors.Is(event.Err, adk.ErrExceedMaxIterations):
 					result.StopReason = "max_turn_requests"
+					result.Limit = "iterations"
+					if err := sink.emit(context.WithoutCancel(execCtx), harness.RunEvent{Kind: "budget_exhausted", Text: "The agent reached its configured model/tool iteration limit. Send a follow-up message to continue from the existing results. To remove the limit, set local_acp.max_iterations to 0 (or --max-iterations=0); also check subagents.max_turns and role-specific max_turns."}); err != nil {
+						runErr = errors.Join(runErr, err)
+					}
 				case errors.Is(event.Err, adk.ErrSessionBusy):
 					runErr = errors.Join(runErr, harness.ErrBusy)
 				}

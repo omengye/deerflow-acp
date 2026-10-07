@@ -78,6 +78,65 @@ func TestExplicitBudgetAdvicePreservesUserInputAndOutputCap(t *testing.T) {
 	}
 }
 
+func TestIterationLimitsAllowLongTasksAndExplainStops(t *testing.T) {
+	for _, tc := range []struct {
+		name                                          string
+		iterations, toolRounds, wantModels, wantTools int
+		wantStop, wantLimit                           string
+	}{
+		{"default-past-fifty", 0, 60, 61, 60, "end_turn", ""},
+		{"default-past-old-call-budgets", 0, 205, 206, 205, "end_turn", ""},
+		{"explicit-stop", 2, 3, 2, 2, "max_turn_requests", "iterations"},
+		{"configured-long-task", 125, 110, 111, 110, "end_turn", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			underlying := &recordingTool{}
+			fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+				if call >= tc.toolRounds {
+					return textStream("task complete"), nil
+				}
+				return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: fmt.Sprintf("iteration-%d", call), Type: "function", Function: schema.FunctionCall{Name: "read_workspace", Arguments: `{}`}}}}}), nil
+			}}
+			var terminal []harness.RunEvent
+			e := newTestEngine(t, Config{ChatModel: fake, Tools: []tool.BaseTool{underlying}, MaxIterations: tc.iterations, Budget: harness.DefaultBudgetLimits()})
+			result, err := e.Run(context.Background(), request(tc.name), func(_ context.Context, ev harness.RunEvent) error {
+				if ev.Kind == "budget_exhausted" {
+					terminal = append(terminal, ev)
+				}
+				return nil
+			}, allowTool)
+			if err != nil || result.StopReason != tc.wantStop || result.Limit != tc.wantLimit || fake.calls != tc.wantModels || int(underlying.calls.Load()) != tc.wantTools {
+				t.Fatalf("result=%+v err=%v models=%d tools=%d", result, err, fake.calls, underlying.calls.Load())
+			}
+			if tc.wantLimit != "" {
+				if len(terminal) != 1 || !strings.Contains(terminal[0].Text, "iteration limit") || !strings.Contains(terminal[0].Text, "follow-up") {
+					t.Fatalf("missing iteration explanation: %+v", terminal)
+				}
+			} else if len(terminal) != 0 {
+				t.Fatalf("unexpected terminal event: %+v", terminal)
+			}
+		})
+	}
+}
+
+func TestUnlimitedIterationsStillHonorCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	underlying := &recordingTool{}
+	fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		if call == 3 {
+			cancel()
+			return nil, context.Canceled
+		}
+		return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: fmt.Sprintf("cancel-%d", call), Type: "function", Function: schema.FunctionCall{Name: "read_workspace", Arguments: `{}`}}}}}), nil
+	}}
+	e := newTestEngine(t, Config{ChatModel: fake, Tools: []tool.BaseTool{underlying}, Budget: harness.DefaultBudgetLimits()})
+	result, err := e.Run(ctx, request("unlimited-cancel"), nil, allowTool)
+	if err != nil || result.StopReason != "cancelled" || fake.calls != 4 || underlying.calls.Load() != 3 {
+		t.Fatalf("result=%+v err=%v calls=%d tools=%d", result, err, fake.calls, underlying.calls.Load())
+	}
+}
+
 func TestBudgetStopsModelLoopBeforeNextRequest(t *testing.T) {
 	underlying := &recordingTool{}
 	fake := toolScript()

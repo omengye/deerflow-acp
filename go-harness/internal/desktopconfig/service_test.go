@@ -13,6 +13,9 @@ api:
   deerflow_home: ../data/deerflow
   extensions_config_path: ./extensions_config.json
 local_acp:
+  max_iterations: 0
+  max_model_calls: 300
+  max_tool_calls: 600
   permission_mode: dangerous
   memory_scope: workspace
   max_active_connections: 16
@@ -154,6 +157,10 @@ func TestInitSnapshotSaveAndRepeatOnSamePaths(t *testing.T) {
 	raw, err := readYAML(options.Config)
 	if err != nil {
 		t.Fatal(err)
+	}
+	limits := raw["local_acp"].(map[string]any)
+	if limits["max_iterations"] != 0 || limits["max_model_calls"] != 300 || limits["max_tool_calls"] != 600 {
+		t.Fatalf("host request limits changed during desktop save: %+v", limits)
 	}
 	if str(raw["models"].([]any)[0].(map[string]any), "api_key", "") != "first-private-key" {
 		t.Fatal("first credential changed")

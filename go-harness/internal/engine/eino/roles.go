@@ -330,7 +330,7 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 		&toolMiddleware{sink: sink, permissions: permissions, protected: protected, policy: roleToolPolicy(spec, len(children) > 0, ownedBackground), permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, durableTaskWait: ownedBackground["task_wait"], io: lifecycle, budget: budget, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore})
 	child, err := deep.New(ctx, &deep.Config{
 		Name: name, Description: spec.Description, Instruction: e.config.Instruction + "\n\n" + spec.Instruction + extensions.InstructionAppend,
-		ChatModel: chat, MaxIteration: spec.MaxTurns,
+		ChatModel: chat, MaxIteration: nativeMaxIterations(spec.MaxTurns),
 		ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: selected}},
 		Handlers:    handlers, SubAgents: children, WithoutGeneralSubAgent: true, WithoutWriteTodos: !spec.Tools.Allows("write_todos"),
 	})

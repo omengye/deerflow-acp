@@ -16,6 +16,43 @@ func researcher() harness.AgentConfig {
 	return harness.AgentConfig{Description: "Read evidence", SystemPrompt: "Return evidence and sources.", Model: "research-model"}
 }
 
+func TestOptionalRoleTurnLimitsInheritParentBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		role, parent, want int
+	}{
+		{"unrestricted", 0, 0, 0},
+		{"parent-bound", 0, 8, 8},
+		{"role-bound", 12, 0, 12},
+		{"narrower-parent", 12, 8, 8},
+		{"narrower-role", 4, 8, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			role := researcher()
+			role.MaxTurns = ptr(tc.role)
+			r, err := New(harness.SubagentsConfig{CustomAgents: map[string]harness.AgentConfig{"reader": role}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec, err := r.Resolve("reader", Parent{Model: "fixture", MaxTurns: tc.parent})
+			if err != nil || spec.MaxTurns != tc.want {
+				t.Fatalf("spec=%+v err=%v", spec, err)
+			}
+			if err := spec.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	r, err := New(harness.SubagentsConfig{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := r.Resolve("general-purpose", Parent{Model: "fixture"})
+	if err != nil || spec.MaxTurns != 0 {
+		t.Fatalf("hidden default role cap: %+v err=%v", spec, err)
+	}
+}
+
 func TestResolveNarrowsParentAndPinsIndependentSpec(t *testing.T) {
 	role := researcher()
 	role.Tools = []string{"web_search", "read_file", "write_file"}

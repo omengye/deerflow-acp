@@ -2,8 +2,21 @@
 
 Aggregate task token spending is unlimited by default. Set host YAML
 `local_acp.max_run_tokens` to a positive value to opt into a shared cost budget;
-`0` disables it. Direct Go executables also accept `--max-tokens`. Model/tool call
-counts, per-request output caps and execution timeouts remain enforced.
+`0` disables it. Direct Go executables also accept `--max-tokens`. Per-request
+output caps, execution timeouts, cancellation and concurrency limits remain
+enforced. Iteration, model-call and tool-call quotas are disabled by default.
+Tasks run until the agent finishes or an explicit resource policy stops them.
+To opt into count quotas, set `local_acp.max_iterations`,
+`local_acp.max_model_calls` and `local_acp.max_tool_calls` in the host YAML and
+restart the daemon. For example, use 250, 300 and 600 respectively. All three
+accept `0` to disable. Child roles also run without a default turn quota;
+explicit `subagents.max_turns` or role-specific `max_turns` still apply, and a
+child cannot exceed an explicit parent bound.
+Direct Go executables accept `--max-iterations`, `--max-model-calls` and
+`--max-tool-calls`, which take precedence over YAML. When an iteration limit
+is reached, the response explains the limit; a follow-up message starts a new
+run using the existing conversation and tool results. Changing these limits
+does not change the immutable policy of a paused run.
 Automatic context compaction follows each agent's selected model window, using
 75% after reserving output tokens and a 2% estimate margin. Only models without
 a configured window use a 32,000-token fallback. Explicit thresholds still work.

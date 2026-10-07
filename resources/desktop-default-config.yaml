@@ -3,6 +3,10 @@
 config_version: eino-harness-v1
 
 local_acp:
+  # Optional call/iteration quotas; 0 disables. Run deadlines still apply.
+  max_iterations: 0
+  max_model_calls: 0
+  max_tool_calls: 0
   # Optional cumulative task spending limit; 0 leaves long tasks unrestricted.
   max_run_tokens: 0
   model_name: null
