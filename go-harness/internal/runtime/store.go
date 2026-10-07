@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS harness_runs (id TEXT PRIMARY KEY, session_id TEXT NO
 CREATE TABLE IF NOT EXISTS harness_inputs (id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL REFERENCES harness_runs(id), content BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS harness_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES harness_sessions(id), run_id TEXT NOT NULL, event BLOB NOT NULL);
 CREATE INDEX IF NOT EXISTS harness_events_session ON harness_events(session_id,sequence);
+CREATE INDEX IF NOT EXISTS harness_events_run ON harness_events(run_id,sequence);
+CREATE INDEX IF NOT EXISTS harness_runs_session ON harness_runs(session_id,created_at,id);
 CREATE TABLE IF NOT EXISTS harness_approvals (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT NOT NULL, intent BLOB NOT NULL, decision TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS harness_tool_receipts (run_id TEXT NOT NULL REFERENCES harness_runs(id), tool_call_id TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES harness_sessions(id), state TEXT NOT NULL, version INTEGER NOT NULL, receipt BLOB NOT NULL, PRIMARY KEY(run_id,tool_call_id));
 CREATE INDEX IF NOT EXISTS harness_tool_receipts_session ON harness_tool_receipts(session_id,state);

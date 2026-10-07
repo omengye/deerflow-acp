@@ -669,7 +669,6 @@ func TestApplyConfigPreservesGlobalScopeWhenMemoryDisabled(t *testing.T) {
 
 func TestApplyConfigRejectsUnsupportedSummarization(t *testing.T) {
 	for _, yamlBody := range []string{
-		"  enabled: true\n",
 		"  enabled: true\n  model_name: another\n  trigger: {type: messages, value: 80}\n",
 		"  enabled: true\n  trigger: {type: fraction, value: 0.8}\n",
 		"  enabled: true\n  trigger: {type: messages, value: 12}\n  keep: {type: messages, value: 20}\n",

@@ -1,0 +1,39 @@
+{
+  "version": "skill-behavior-v1",
+  "id": "newsletter-generation-acceptance",
+  "source_id": "python-public",
+  "name": "newsletter-generation",
+  "cases": [
+    {
+      "id": "curate-attributed-digest",
+      "kind": "targeted",
+      "prompt": "Read sources.md and draft digest.md using only these supplied sources. Follow this exact concise format: '# Engineering Digest', blank line, two bullets in source order, each '- [Title](URL): Summary', blank line, 'Scope: supplied sources only.' Finish with a newline. Preserve titles, URLs and summaries exactly; do not invent other news. Reply 'digest ready'.",
+      "files": {
+        "sources.md": "Title: Build cache update\nURL: https://example.test/build-cache\nSummary: The local build cache now reuses unchanged modules.\n\nTitle: API retry guide\nURL: https://example.test/retry-guide\nSummary: The guide recommends bounded retries with backoff.\n"
+      },
+      "fixtures": [],
+      "assertions": [
+        {"id":"attributed-digest","kind":"file_equals","path":"digest.md","expected":"# Engineering Digest\n\n- [Build cache update](https://example.test/build-cache): The local build cache now reuses unchanged modules.\n- [API retry guide](https://example.test/retry-guide): The guide recommends bounded retries with backoff.\n\nScope: supplied sources only.\n"},
+        {"id":"ready","kind":"output_contains","expected":"digest ready"}
+      ],
+      "repetitions": 1
+    },
+    {
+      "id": "missing-evidence-without-fabrication",
+      "kind": "regression",
+      "prompt": "Read source.md. The operator asks for a release date and adoption percentage, but neither is supplied. Answer using the exact lines 'Release date: not provided.' and 'Adoption: not provided.', then cite the supplied URL. Do not write a newsletter file, invent numbers or contact any external service.",
+      "files": {
+        "source.md": "Title: Preview announcement\nURL: https://example.test/preview\nSummary: A preview is announced. No release date or adoption data is supplied.\n"
+      },
+      "fixtures": [],
+      "assertions": [
+        {"id":"date-unknown","kind":"output_contains","expected":"Release date: not provided."},
+        {"id":"adoption-unknown","kind":"output_contains","expected":"Adoption: not provided."},
+        {"id":"citation","kind":"output_contains","expected":"https://example.test/preview"},
+        {"id":"no-newsletter","kind":"file_absent","path":"digest.md"},
+        {"id":"read-only","kind":"tool_calls","tool":"write_file","count":0}
+      ],
+      "repetitions": 1
+    }
+  ]
+}

@@ -1,10 +1,28 @@
 # Windows Waku 与 Eino Go 构建
 
-[Build Windows Desktop](../.github/workflows/build-desktop.yml) 使用 `scripts/build-deerflow-desktop-go.ps1`，构建 Rust Waku、Waku daemon、ACP Bridge 和 Go harness/config/stdio 程序，以及 Go WSL helper。构建链路不安装或打包 Python、uv、pip。
+[Build Windows MVP](../.github/workflows/build-windows.yml) 使用 `scripts/build-windows.ps1`，可选择 Desktop、ACP 或 All。已有 [Build Windows Desktop](../.github/workflows/build-desktop.yml) 和 [Release Windows Portable ACP](../.github/workflows/build-portable.yml) 复用该工作流，保留手动运行和发布 Release 触发。构建链路不安装或打包 Python、uv、pip。
 
 ## 本地构建
 
-需要 Git、Go 1.26.8、兼容当前 Cargo.lock 的 Rust、MSVC x64 Build Tools、Windows SDK、CMake 和 shader 编译器 `fxc.exe`。CI 使用 Rust 1.96.0；当前本地已有 Rust 1.95.0 的构建缓存，可沿用通过检查的本机工具链。Go 模块通过 `toolchain go1.26.8` 选择版本，工作区外的 `go version` 可能显示另一个全局版本。
+推荐使用 PowerShell 7。需要 Git、Go 1.26.8、兼容当前 Cargo.lock 的 Rust、MSVC x64 Build Tools。桌面还需要 Windows SDK、CMake 和 shader 编译器 `fxc.exe`。CI 使用 Rust 1.96.0；当前本地已有 Rust 1.95.0 的构建缓存，可沿用通过检查的本机工具链。Go 模块通过 `toolchain go1.26.8` 选择版本，工作区外的 `go version` 可能显示另一个全局版本。
+
+从已配置 MSVC 的 PowerShell 执行统一入口：
+
+```powershell
+# 正式 ZIP、配套源码和校验文件；需要干净、已提交的工作树。
+.\scripts\build-windows.ps1 -Package Desktop
+.\scripts\build-windows.ps1 -Package ACP
+.\scripts\build-windows.ps1 -Package All -OutputDirectory 'dist/desktop/mvp-0.1.0'
+
+# 未提交开发构建，仍编译并检查包内协议，仅生成开发目录。
+.\scripts\build-windows.ps1 -Package ACP -Development
+```
+
+默认输出为新的时间戳目录。Desktop/All 的自定义输出必须位于 `dist/desktop` 下，ACP 可在 `dist` 下选择目录；现有目录会被拒绝。正式打包不能跳过测试。`-Development -SkipTests` 只省略源码回归，包内协议检查仍执行，构建记录标记回归未运行。`-TestTimeoutMinutes` 默认 15，控制单个 Go 包的测试总时限，不改变 Agent 的生产执行超时。
+
+统一入口依次运行 Go 依赖校验、全量 Go 回归、Bridge 测试与来源 fixture，再调用下层 assembler 编译。实际包内 Bridge/daemon 测试使用本地 fixture；Desktop 额外运行两种 MCP 策略的协议 smoke。全部通过后写入 `BUILD_PACKAGE.json`、`BUILD_SOURCE.json`、`BUILD_COMMIT.txt` 与 `PACKAGE_FILES.sha256`，随后创建 ZIP 与 `.sha256`。二进制和源码 ZIP 固定到同一个提交。
+
+原下层脚本仍可用于仅构建程序；其 `-CreateZip` 不包含统一入口的完整测试门禁：
 
 ```powershell
 # 本地开发目录，每次使用新的输出位置。
@@ -41,15 +59,17 @@ Visual Studio 开发环境会使用实际安装位置，不要求 SDK 位于 C �
 
 ## CI 触发与产物
 
-在 **Actions → Build Windows Desktop → Run workflow** 选择分支运行。发布 GitHub Release（含预发布）也触发对应标签构建；手动运行生成 artifact，不创建 Release。
+在 **Actions → Build Windows MVP → Run workflow** 选择分支与包类型。`All` 在一次作业中生成桌面和 ACP 两套包。**Build Windows Desktop** 与 **Release Windows Portable ACP** 也可手动运行；发布 GitHub Release（含预发布）触发对应标签构建。手动运行只生成 artifact，不创建 Release。新文件提交到对应分支后才能在 GitHub 执行；手动工作流入口通常需要先存在于默认分支。
 
-桌面 artifact `DeerFlow-Desktop-windows-x64` 包含：
+桌面 artifact `DeerFlow-Windows-Desktop-x64` 包含：
 
 - `DeerFlow-Desktop-Go-windows-x64.zip`。
 - `DeerFlow-Desktop-Go-source.zip`。
 - 两个 ZIP 对应的 SHA-256 文件。
 
-解压后运行 `DeerFlow-Desktop-Go/deerflow-desktop.exe`。程序包与源码使用同一固定提交，并保留 Waku GPL 和 DeerFlow 许可证。成功的发布作业将经 smoke 的附件上传至现有 Release。当前生成未签名的 Windows x64 便携包，不生成安装器。
+ACP artifact `DeerFlow-Windows-ACP-x64` 包含 `DeerFlow-ACP-Go-windows-x64.zip`、`DeerFlow-ACP-Go-source.zip` 及两份校验文件。All artifact 为 `DeerFlow-Windows-All-x64`，包含两套产物。
+
+解压后运行 `DeerFlow-Desktop-Go/deerflow-desktop.exe`。程序包与源码使用同一固定提交，并保留 Waku GPL 和 DeerFlow 许可证。成功的发布作业将经回归及 smoke 的附件上传至现有 Release。当前生成未签名的 Windows x64 便携包，不生成安装器。
 
 工作流缓存 Rust/Go 构建依赖，不复用发行目录或用户数据。普通 Go/Bridge 回归由 [Go harness](../.github/workflows/go-harness.yml) 执行，Waku 配置/协议及构建脚本检查由 [Desktop contracts](../.github/workflows/ci.yml) 执行。独立 ACP 的 [Release Windows Portable ACP](../.github/workflows/build-portable.yml) 只构建 Go ACP 与 Bridge 包，不包含 Waku。
 

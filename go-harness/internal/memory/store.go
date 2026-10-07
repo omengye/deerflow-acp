@@ -291,9 +291,15 @@ func (s *Store) Create(ctx context.Context, scope Scope, candidate Candidate) (F
 }
 
 func readFact(ctx context.Context, tx *sql.Tx, scope Scope, id string) (Fact, error) {
+	return scanFact(tx.QueryRowContext(ctx, `SELECT `+factColumns+` FROM memory_facts f JOIN memory_fact_revisions r ON r.fact_id=f.id AND r.revision=f.head_revision WHERE f.id=? AND f.scope_key=? AND f.deleted=0`, id, scope.key))
+}
+
+const factColumns = `f.id,f.scope_key,r.revision,r.content,r.category,r.confidence,r.source_id,r.source_kind,r.source_actor_id,r.source_run_id,r.source_input_id,r.source_event_sequence,r.policy_version,f.created_at,r.created_at`
+
+func scanFact(row interface{ Scan(...any) error }) (Fact, error) {
 	var f Fact
 	var created, updated string
-	err := tx.QueryRowContext(ctx, `SELECT f.id,f.scope_key,r.revision,r.content,r.category,r.confidence,r.source_id,r.source_kind,r.source_actor_id,r.source_run_id,r.source_input_id,r.source_event_sequence,r.policy_version,f.created_at,r.created_at FROM memory_facts f JOIN memory_fact_revisions r ON r.fact_id=f.id AND r.revision=f.head_revision WHERE f.id=? AND f.scope_key=? AND f.deleted=0`, id, scope.key).Scan(
+	err := row.Scan(
 		&f.ID, &f.ScopeKey, &f.Revision, &f.Content, &f.Category, &f.Confidence, &f.Source.ID, &f.Source.Kind, &f.Source.ActorID, &f.Source.RunID, &f.Source.InputID, &f.Source.EventSequence, &f.Source.PolicyVersion, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Fact{}, harness.ErrNotFound

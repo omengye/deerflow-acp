@@ -56,7 +56,9 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 		ToolPolicy                            *harness.ToolPolicy `json:",omitempty"`
 		PermissionMode                        harness.PermissionMode
 		Subagents                             *harness.SubagentsConfig `json:",omitempty"`
-	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.ModelRoutes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode, e.config.Subagents})
+		ContextWindows                        map[string]int           `json:",omitempty"`
+		ContextPolicy                         string
+	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.ModelRoutes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode, e.config.Subagents, e.config.ContextWindows, "adaptive-window-compaction-v2"})
 	if err != nil {
 		return "", fmt.Errorf("encode execution contract: %w", err)
 	}

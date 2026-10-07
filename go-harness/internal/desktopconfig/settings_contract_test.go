@@ -82,7 +82,7 @@ func TestSettingsContractNativeSaveDoesNotInjectLegacyDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := run(t, options, "snapshot", nil)
-	if len(readObject(doc, "memory")) != 4 {
+	if len(readObject(doc, "memory")) != len(configschema.Defaults("memory")) {
 		t.Fatal("snapshot exposes unsupported memory options")
 	}
 	for _, key := range []string{"memory", "memory_index"} {
@@ -95,7 +95,7 @@ func TestSettingsContractNativeSaveDoesNotInjectLegacyDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(readObject(raw, "memory")) != 4 {
+	if len(readObject(raw, "memory")) != len(configschema.Defaults("memory")) {
 		t.Fatal("native save injected legacy memory defaults")
 	}
 	for _, key := range []string{"agent_name", "thinking_enabled", "plan_mode", "goal_auto_continue", "goal_max_continuations", "goal_max_no_progress_continuations"} {

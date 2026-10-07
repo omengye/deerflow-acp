@@ -1,11 +1,101 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 )
+
+// Exercise recovery with the delivered executables, without modifying the
+// supplied installation or sending a model request while configuration is bad.
+func (s *smoke) startupRecovery() obj {
+	var raw map[string]any
+	must(yaml.Unmarshal([]byte(read(s.config)), &raw))
+	settings := raw["skills"].(map[string]any)
+	settings["managed_sources"] = []any{obj{"id": "managed-evolution", "root": "../skills/evolved", "scope": "global"}}
+	settings["export_root"] = "../skills-exports"
+	write := func() []byte {
+		body, err := yaml.Marshal(raw)
+		must(err)
+		must(os.WriteFile(s.config, body, 0600))
+		return body
+	}
+	before := write()
+	need(!exists(filepath.Join(s.root, "user-data/skills/evolved")), "managed fixture already exists")
+	document := s.waku.deerflow("snapshot")
+	need(bytes.Equal(before, []byte(read(s.config))), "bootstrap changed copied configuration")
+	need(exists(filepath.Join(s.root, "user-data/skills/evolved")) && exists(filepath.Join(s.root, "user-data/skills-exports")), "portable managed stores not initialized")
+	need(exists(filepath.Join(s.root, "user-data/skills/public/bootstrap/SKILL.md")), "store provisioning lost initial bundled skills")
+	s.log("Copied configuration initializes missing portable Skills stores", obj{})
+
+	// External custom sources must be diagnosed, never silently created.
+	outside := filepath.Join(s.root, "missing-external-source")
+	settings["managed_sources"] = []any{obj{"id": "managed-evolution", "root": outside, "scope": "global"}}
+	write()
+	document = s.waku.deerflow("snapshot")
+	need(strings.Contains(string(jsonBytes(document["skill_source_diagnostics"])), "skills.managed_sources.0"), "missing external source not diagnosed")
+	requests := s.fake.count()
+	started := time.Now()
+	state := s.waku.deerflow("start")
+	if state["applying"] == true {
+		need(state["starting"] == true, "automatic startup is indistinguishable from blocking apply")
+		candidate := clone(document)
+		candidate["skills_enabled"] = false
+		need(s.waku.deerflow("validate", candidate)["valid"] == true, "startup prevents validating a repair")
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for state["applying"] == true && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		state = s.waku.deerflow("status")
+	}
+	need(state["applying"] == false && state["starting"] == false && state["running"] == false, "failed startup did not release its state: %v", state)
+	need(strings.Contains(str(state["apply_error"]), "exited before becoming ready"), "startup failure hidden behind timeout: %v", state)
+	need(time.Since(started) < 8*time.Second, "failed daemon was not detected promptly")
+	need(s.fake.count() == requests, "bad configuration reached the model")
+	need(!exists(outside), "external custom source was provisioned")
+	document = s.waku.deerflow("snapshot")
+	document["skills_enabled"] = false
+	document = s.waku.deerflow("save", document)
+	need(document["skills_enabled"] == false, "failed startup prevented saving a repair")
+
+	// Prove an in-flight automatic start cannot block configuration writes.
+	// Everything here is in the disposable copy, including the daemon fixture.
+	daemon := filepath.Join(s.root, "deerflow-acpd.exe")
+	backup := filepath.Join(s.root, "smoke-real-daemon.exe")
+	marker := filepath.Join(s.root, "smoke-startup-delay.fixture")
+	must(os.Rename(daemon, backup))
+	copyFile(s.executable, daemon)
+	must(os.WriteFile(marker, []byte("isolated fixture"), 0600))
+	state = s.waku.deerflow("start")
+	need(state["applying"] == true && state["starting"] == true, "slow startup fixture did not enter automatic startup")
+	object(array(document["models"])[0])["description"] = "Saved during automatic startup"
+	document = s.waku.deerflow("save", document)
+	need(s.waku.deerflow("status")["applying"] == true, "save did not overlap the in-flight startup fixture")
+	deadline = time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		state = s.waku.deerflow("status")
+		if state["applying"] == false {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	need(state["applying"] == false && strings.Contains(str(state["apply_error"]), "17"), "slow failed startup did not settle")
+	need(s.waku.deerflow("snapshot")["config_revision"] == document["config_revision"], "startup failure rolled back the saved repair")
+	must(os.Remove(daemon))
+	must(os.Rename(backup, daemon))
+	must(os.Remove(marker))
+	s.log("Configuration saves during automatic startup and survives its failure", obj{})
+	object(document["skill_sources"])["managed"] = []any{obj{"id": "managed-evolution", "root": "../skills/evolved", "scope": "global", "workspace": ""}}
+	document["skills_enabled"] = true
+	document = s.waku.deerflow("save", document)
+	s.log("Failed startup returns promptly and configuration can be repaired", obj{"elapsed_ms": time.Since(started).Milliseconds()})
+	return document
+}
 
 func (s *smoke) options(mode, model string, cursor any) obj {
 	return obj{"provider": "deerFlow", "binary": filepath.Join(s.root, "deerflow-acp.exe"), "cwd": s.workspace, "mode": mode, "model": model, "reasoningEffort": "off", "serviceTier": nil, "contextWindow": nil, "agentPreset": nil, "computerUseEnabled": false, "providerCursor": cursor}
@@ -235,6 +325,7 @@ func (s *smoke) run() {
 	token := uuid()
 	wakuProcess := s.startWaku(token, "waku-daemon")
 	saved := s.configure()
+	saved = s.startupRecovery()
 	w := s.waku
 	w.deerflow("start")
 	state := s.settled()

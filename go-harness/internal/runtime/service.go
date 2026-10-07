@@ -229,7 +229,7 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 	if err = s.Store.requireReconciled(ctx, id); err != nil {
 		return harness.RunResult{}, err
 	}
-	releaseSlot, err := s.runQueue.acquire(ctx)
+	releaseSlot, err := s.runQueue.acquire(ctx, id)
 	if err != nil {
 		return harness.RunResult{}, err
 	}

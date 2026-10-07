@@ -132,7 +132,7 @@ func TestContextUsageExcludesNativeSubagentCalls(t *testing.T) {
 			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, Content: "parent answer", ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: 30, CompletionTokens: 3}}}}), nil
 		}
 	}}
-	e, err := New(context.Background(), Config{ChatModel: fake, Model: "fixture", ContextWindows: map[string]int{"fixture": 4096}})
+	e, err := New(context.Background(), Config{ChatModel: fake, Model: "fixture", ContextWindows: map[string]int{"fixture": 8192}})
 	if err != nil {
 		t.Fatal(err)
 	}

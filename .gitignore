@@ -76,3 +76,8 @@ data/acp-sessions.db-wal
 data/scheduled_tasks.db
 data/scheduled_tasks.db-shm
 data/scheduled_tasks.db-wal
+
+# Integration profiles, message databases and test artifacts are local data.
+integrations/*/adapter.toml
+integrations/*/data/
+integrations/*/.test-tmp*/

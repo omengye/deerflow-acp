@@ -1,0 +1,122 @@
+name: Build Windows MVP
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Windows package to build and verify
+        type: choice
+        options: [Desktop, ACP, All]
+        default: Desktop
+  workflow_call:
+    inputs:
+      package:
+        description: Desktop, ACP or All
+        type: string
+        default: Desktop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-mvp-${{ github.workflow }}-${{ github.ref }}-${{ inputs.package }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
+
+jobs:
+  build:
+    name: Verify and package Windows x64
+    runs-on: windows-2025
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_BUILD_JOBS: '2'
+      GOMAXPROCS: '2'
+      PACKAGE_SELECTION: ${{ inputs.package }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.96.0'
+          targets: x86_64-pc-windows-msvc
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go-harness/go.mod
+          cache-dependency-path: go-harness/go.sum
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-mvp-${{ hashFiles('desktop-app/.cargo/config.toml', 'scripts/cargo-windows-static-crt.toml') }}
+          workspaces: |
+            desktop-app -> ../.build-cache/desktop-build
+            bridge -> target
+      - name: Check desktop native build tools
+        if: inputs.package != 'ACP'
+        run: |
+          foreach ($tool in @('cl.exe', 'link.exe', 'rc.exe', 'cmake.exe')) {
+            Get-Command $tool -ErrorAction Stop | Select-Object Name, Source
+          }
+          $fxc = Get-Command fxc.exe -ErrorAction SilentlyContinue
+          if ($fxc) {
+            $fxcPath = $fxc.Source
+          } else {
+            $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+            $fxcPath = Get-ChildItem -Path "$sdkBin\*\x64\fxc.exe" |
+              Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $fxcPath) { throw 'Windows SDK shader compiler fxc.exe is required' }
+          "GPUI_FXC_PATH=$fxcPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Test Windows packaging failure gates
+        run: ./scripts/test-windows-package.ps1
+      - name: Build and verify Windows packages
+        id: build
+        run: |
+          ./scripts/build-windows.ps1 -Package $env:PACKAGE_SELECTION `
+            -OutputDirectory 'dist/desktop/windows-mvp'
+          if ($LASTEXITCODE -ne 0) { throw 'Windows package build failed' }
+          @"
+          Built **$env:PACKAGE_SELECTION** for Windows x64 from $env:GITHUB_SHA.
+          Go regression tests, Rust Bridge tests and packaged protocol checks passed.
+          Desktop protocol checks include copied Skills directories, failed startup recovery and configuration saves during startup.
+          Artifacts include binary/source ZIPs, SHA-256 checksums and build manifests.
+          Protocol checks use local fixtures; real model and GUI acceptance are separate.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+      - name: Test desktop configuration startup states
+        if: inputs.package != 'ACP'
+        working-directory: desktop-app
+        run: |
+          cargo test --release --locked --target-dir ../.build-cache/desktop-build `
+            --package waku --lib app::deerflow_settings:: 2>&1 |
+            Tee-Object -Variable startupTestOutput
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop startup state regression failed' }
+          $testText = $startupTestOutput -join "`n"
+          foreach ($case in @('service_phase_reports_startup_failures', 'startup_keeps_configuration_editable_and_failure_releases_it')) {
+            $passed = 'test app::deerflow_settings::integrity_tests::' + [regex]::Escape($case) + ' \.\.\. ok'
+            if ($testText -notmatch $passed) { throw "Required startup regression did not run: $case" }
+          }
+      - name: Upload verified packages and matching source
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeerFlow-Windows-${{ inputs.package }}-x64
+          path: |
+            dist/desktop/windows-mvp/*.zip
+            dist/desktop/windows-mvp/*.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Upload desktop protocol diagnostics
+        if: ${{ always() && steps.build.outcome != 'skipped' && inputs.package != 'ACP' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeerFlow-Windows-${{ inputs.package }}-smoke-logs
+          path: .build-cache/desktop-smoke/*/logs/**
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14

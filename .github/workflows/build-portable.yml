@@ -1,90 +1,34 @@
 name: Release Windows Portable ACP
 
 on:
+  workflow_dispatch:
   release:
     types: [published]
-  workflow_dispatch:
 
 permissions:
-  contents: write
-
-concurrency:
-  group: release-portable-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  contents: read
 
 jobs:
-  release-portable:
-    name: Build and Upload Windows x64 Portable Release
-    runs-on: windows-latest
-
+  build:
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      package: ACP
+  publish:
+    name: Attach verified ACP package to release
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+          name: DeerFlow-Windows-ACP-x64
+          path: dist/windows
+      - uses: softprops/action-gh-release@v2
         with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Set up Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            bridge -> target
-
-      - name: Set up Go toolchain
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.8'
-          cache-dependency-path: go-harness/go.sum
-
-      - name: Build Eino Go ACP package
-        shell: pwsh
-        run: |
-          ./scripts/build-go-acp-portable.ps1 -Configuration Release `
-            -OutputDirectory 'dist/portable/DeerFlow-Go-windows-x64' -CreateZip
-
-      - name: Verify packaged Bridge and Go daemon
-        shell: pwsh
-        working-directory: go-harness
-        env:
-          DEERFLOW_TEST_BRIDGE: ${{ github.workspace }}/dist/portable/DeerFlow-Go-windows-x64/deerflow-acp.exe
-          DEERFLOW_TEST_GO_DAEMON: ${{ github.workspace }}/dist/portable/DeerFlow-Go-windows-x64/deerflow-acpd.exe
-        run: go test -count=1 -run TestExistingRustBridge -timeout=5m ./cmd/deerflow-acpd-go
-      - name: Calculate SHA-256 Checksums
-        shell: pwsh
-        run: |
-          $distPortable = Join-Path (Get-Location) "dist\portable"
-          if (Test-Path -LiteralPath $distPortable) {
-            Get-ChildItem -Path $distPortable -Filter "*.zip" | ForEach-Object {
-              $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-              $checksumPath = "$($_.FullName).sha256"
-              "$hash  $($_.Name)" | Set-Content -Path $checksumPath -Encoding ascii
-              Write-Host "Generated checksum for $($_.Name): $hash"
-            }
-          } else {
-            throw "dist\portable directory was not found after build!"
-          }
-
-      - name: Upload to GitHub Release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          fail_on_unmatched_files: true
           files: |
-            dist/portable/*.zip
-            dist/portable/*.sha256
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload Artifacts to GitHub Actions
-        if: github.event_name != 'release'
-        uses: actions/upload-artifact@v4
-        with:
-          name: DeerFlow-windows-x64-portable
-          path: |
-            dist/portable/*.zip
-            dist/portable/*.sha256
-          if-no-files-found: error
+            dist/windows/*.zip
+            dist/windows/*.zip.sha256

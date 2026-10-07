@@ -107,6 +107,37 @@ func (b *runBudget) fail(resource string) *budgetError {
 }
 func (b *runBudget) failure() *budgetError { b.mu.Lock(); defer b.mu.Unlock(); return b.exhausted }
 
+// A host that opts into a cost budget gets an early model-facing reminder to
+// finish with the available findings. This transient instruction is metered
+// with the request and never changes the persisted user input or history.
+func (b *runBudget) inputWithBudgetAdvice(ctx context.Context, input []*schema.Message) []*schema.Message {
+	if b.limits.MaxTokens == 0 {
+		return input
+	}
+	b.mu.Lock()
+	remaining := b.limits.MaxTokens - b.spent - b.held
+	b.mu.Unlock()
+	if b.ledger != nil {
+		state, err := b.ledger.Snapshot(ctx, b.scope.RootBudgetID)
+		if err != nil {
+			return input // The authoritative reservation still reports any ledger failure.
+		}
+		remaining = state.Limits.MaxTokens - state.SpentTokens - state.HeldTokens
+	}
+	if remaining <= 0 || remaining > b.limits.MaxTokens/4 {
+		return input
+	}
+	note := schema.SystemMessage(fmt.Sprintf("The host's explicitly configured task token budget is nearly spent: %d of %d tokens remain, shared with all delegated agents. Replayed input context also counts toward this budget. Prefer completing the current task with the available findings and giving a concise answer. Explain any unfinished work; avoid starting additional broad exploration or delegation.", remaining, b.limits.MaxTokens))
+	end := 0
+	for end < len(input) && input[end] != nil && input[end].Role == schema.System {
+		end++
+	}
+	result := make([]*schema.Message, 0, len(input)+1)
+	result = append(result, input[:end]...)
+	result = append(result, note)
+	return append(result, input[end:]...)
+}
+
 // Optional model work must leave an already completed answer intact when the
 // shared root cannot afford another bounded call. The subsequent reservation
 // remains authoritative; this read is only an early skip.
@@ -145,6 +176,8 @@ func (b *runBudget) tool() error {
 }
 
 type modelReservation struct {
+	startedAt                                  time.Time
+	firstTokenAt                               time.Time
 	budget                                     *runBudget
 	input, outputBytes, outputImages, reserved int64
 	usage                                      harness.Usage
@@ -171,7 +204,7 @@ func (b *runBudget) reserveContext(ctx context.Context, input []*schema.Message,
 	}
 	// A byte estimate, not model-specific tokenization. Provider usage replaces
 	// it at settlement; providers can exceed this estimate on the in-flight call.
-	estimate := int64((len(encoded)+len(toolBytes)+3)/4+len(input)*8) + imageTokens
+	estimate := estimatedTextTokens(encoded) + estimatedTextTokens(toolBytes) + int64(len(input))*8 + imageTokens
 	if b.ledger != nil {
 		return b.reserveDurable(ctx, estimate, encoded, toolBytes, common, opts)
 	}

@@ -19,6 +19,15 @@ Linux 的 ACP 可执行文件省略 `.exe`。客户端启动 Bridge 或直连 st
 
 ## 从源码构建
 
+Windows MVP 统一交付入口支持桌面、独立 ACP 或全部包，并在归档前运行回归和包内协议检查：
+
+```powershell
+.\scripts\build-windows.ps1 -Package Desktop
+# -Package ACP 或 -Package All
+```
+
+正式 ZIP 要求干净、已提交的工作树；未提交开发构建使用 `-Development`，仅输出目录。GitHub Actions 的 **Build Windows MVP** 可以选择包类型；现有桌面和 ACP Release 工作流复用同一检查流程。当前 MVP 判断及验收边界见[评估记录](docs/mvp-readiness-20261006.md)，完整命令和产物见[Windows 构建说明](docs/windows-desktop-actions.md)。
+
 需要 Git、Go 和 Rust。Windows 桌面还需要 MSVC、Windows SDK、CMake 与 shader 编译器，详见[桌面构建说明](docs/windows-desktop-actions.md)。项目构建和运行不使用 Python、uv 或 pip。
 
 构建独立 ACP 包：
@@ -79,7 +88,7 @@ ACP 客户端命令填写 Bridge 的绝对路径，使用相同的环境与 `--r
 
 ```powershell
 cd go-harness
-go test -p 2 ./... -timeout 5m
+go test -p 2 ./... -timeout 15m
 go build ./...
 ```
 

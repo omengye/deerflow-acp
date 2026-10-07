@@ -499,7 +499,7 @@ func (s *Service) ProcessBackgroundNotification(ctx context.Context, owner, sess
 			return result, err
 		}
 	}
-	releaseSlot, err := s.runQueue.acquire(ctx)
+	releaseSlot, err := s.runQueue.acquire(ctx, sessionID)
 	if err != nil {
 		return result, err
 	}

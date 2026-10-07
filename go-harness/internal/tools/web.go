@@ -121,15 +121,28 @@ func (s *webService) get(ctx context.Context, target string, headers map[string]
 		if ctx.Err() != nil {
 			return nil, "", "", ctx.Err()
 		}
-		return nil, "", "", errors.New("web request failed; check the configured proxy, network or timeout")
+		return nil, "", "", harness.ClassifiedToolFailure("network", "web request failed; check the configured proxy, network or timeout")
 	}
 	defer response.Body.Close()
 	if response.StatusCode >= 400 {
-		return nil, "", "", fmt.Errorf("web request returned HTTP %d", response.StatusCode)
+		code := "remote"
+		if response.StatusCode == 401 || response.StatusCode == 403 {
+			code = "permission"
+		}
+		if response.StatusCode == 429 {
+			code = "rate_limit"
+		}
+		if response.StatusCode >= 500 {
+			code = "network"
+		}
+		return nil, "", "", harness.ClassifiedToolFailure(code, fmt.Sprintf("web request returned HTTP %d", response.StatusCode))
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, 2<<20+1))
 	if err != nil {
-		return nil, "", "", errors.New("web response could not be read")
+		if ctx.Err() != nil {
+			return nil, "", "", ctx.Err()
+		}
+		return nil, "", "", harness.ClassifiedToolFailure("network", "web response could not be read")
 	}
 	if len(body) > 2<<20 {
 		return nil, "", "", errors.New("web response exceeds 2 MiB")

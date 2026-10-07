@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 mod auto_patch;
 mod behavior;
 mod behavior_inspector;
+mod capability_probe;
+mod diagnostics;
 mod discovery;
 mod effective;
 mod evolution;
@@ -97,11 +99,11 @@ fn deerflow_service_phase(
         return DeerFlowServicePhase::Failed;
     }
     let applying = status["applying"].as_bool() == Some(true);
-    if !startup_pending && !applying && status["running"].as_bool() == Some(false) {
-        return DeerFlowServicePhase::Stopped;
-    }
     if status["apply_error"].as_str().is_some() || status["warmup"] == "failed" {
         return DeerFlowServicePhase::Failed;
+    }
+    if !startup_pending && !applying && status["running"].as_bool() == Some(false) {
+        return DeerFlowServicePhase::Stopped;
     }
     if applying {
         return if startup_pending {
@@ -128,6 +130,10 @@ fn deerflow_service_phase(
     } else {
         DeerFlowServicePhase::Stopped
     }
+}
+
+fn deerflow_editing_locked(status: &Value, pending_operation: Option<&str>) -> bool {
+    pending_operation == Some("apply") || (status["applying"] == true && status["starting"] != true)
 }
 #[derive(Clone, Copy)]
 enum Kind {
@@ -256,6 +262,7 @@ pub(super) struct DeerFlowSettings {
     memory_scope: String,
     selected_session: Option<String>,
     memory_data: Value,
+    diagnostic_data: Value,
     proposals: Vec<Value>,
     proposal: Option<Value>,
     revisions: Vec<Value>,
@@ -347,6 +354,7 @@ impl DeerFlowSettings {
             memory_scope: "workspace".into(),
             selected_session: None,
             memory_data: Value::Null,
+            diagnostic_data: Value::Null,
             proposals: Vec::new(),
             proposal: None,
             revisions: Vec::new(),
@@ -364,7 +372,11 @@ impl DeerFlowSettings {
             || self.status["applying"].as_bool().unwrap_or(false)
     }
     fn can_edit(&self) -> bool {
-        self.draft.is_some() && !self.busy() && !self.applying()
+        self.draft.is_some() && !self.busy() && !self.editing_locked()
+    }
+
+    fn editing_locked(&self) -> bool {
+        deerflow_editing_locked(&self.status, self.pending.as_deref())
     }
 
     fn can_edit_field(&self, path: &str) -> bool {
@@ -982,7 +994,9 @@ impl Waku {
                         }
                         "validate" => this.deerflow_settings.notice = Some("配置校验通过。".into()),
                         "test-model" => {
-                            if data["ok"].as_bool() == Some(true) {
+                            if data["capabilities"].is_object() {
+                                this.deerflow_settings.notice = Some(capability_probe::capability_notice(&data));
+                            } else if data["ok"].as_bool() == Some(true) {
                                 this.deerflow_settings.notice =
                                     Some(format!("模型连接成功，耗时 {} ms。", data["latency_ms"]));
                             } else {
@@ -1120,6 +1134,11 @@ impl Waku {
                                 Some("配置已保存，尚未应用。可点击“重试应用”。".into());
                         }
                         if !this.deerflow_settings.applying() {
+                            if this.deerflow_settings.observed_applied_generation
+                                != Some(applied_generation)
+                            {
+                                this.deerflow_settings.diagnostic_data = Value::Null;
+                            }
                             this.deerflow_settings.observed_applied_generation =
                                 Some(applied_generation);
                         }
@@ -1986,7 +2005,7 @@ impl Waku {
                         .child(df_button(
                             "df-reload",
                             "重新读取配置",
-                            busy || state.applying(),
+                            busy || state.editing_locked(),
                             false,
                             theme,
                             cx,
@@ -2464,6 +2483,18 @@ impl Waku {
                                 }
                             },
                         ));
+                    actions = actions.child(df_button(
+                        "df-model-agent-test", "测试 Agent 能力", !state.can_edit_field("/models") || invalid, false, theme, cx,
+                        |this, _, cx| {
+                            let index = this.deerflow_settings.selected_model;
+                            if let Some(document) = &this.deerflow_settings.draft {
+                                match document_with_model_names(document, &this.deerflow_settings.pending_model_names) {
+                                    Ok(document) => this.deerflow_request("test-model", json!({"model":document["models"][index],"profile":"agent"}), cx),
+                                    Err(error) => { this.deerflow_settings.error = Some(error); cx.notify(); }
+                                }
+                            }
+                        },
+                    ));
                 }
                 if !state.pending_model_names.is_empty() {
                     actions = actions.child(df_button(
@@ -2483,7 +2514,7 @@ impl Waku {
                         div()
                             .text_size(sp(12.5))
                             .text_color(theme.text_tertiary)
-                            .child("名称在确认或保存时统一更新引用；密钥留空保留已有值。更换 provider 或 API 地址会清除旧凭据及原 provider 扩展。测试连接会发送一条简短的真实模型请求。"),
+                            .child("名称在确认或保存时统一更新引用；密钥留空保留已有值。更换 provider 或 API 地址会清除旧凭据及原 provider 扩展。测试连接发送一次文本请求；Agent 能力测试最多两次请求，检查流式、工具调用及 usage，不执行工具。"),
                     ),
                 );
             }
@@ -3137,9 +3168,21 @@ impl Waku {
         let operation = request["operation"].as_str().unwrap_or("");
         self.deerflow_settings.confirm_manage = None;
         match operation {
+            "session.diagnostics" => {
+                if data["session_id"] == request["session_id"] {
+                    self.deerflow_settings.diagnostic_data = data;
+                } else {
+                    self.deerflow_settings.error = Some("诊断会话发生变化，请重新查询。".into());
+                }
+            }
             "session.list" => {
                 self.deerflow_settings.sessions =
                     data["sessions"].as_array().cloned().unwrap_or_default();
+                if !self.deerflow_settings.sessions.iter().any(|session| {
+                    session["session_id"] == self.deerflow_settings.diagnostic_data["session_id"]
+                }) {
+                    self.deerflow_settings.diagnostic_data = Value::Null;
+                }
                 self.deerflow_settings.session_page = 0;
             }
             "memory.get" | "memory.delete" | "memory.promote" => {
@@ -3301,6 +3344,9 @@ impl Waku {
             |this, _, cx| this.deerflow_load_memory(cx),
         ));
         group = group.child(scope_controls);
+        if state.diagnostic_data.is_object() {
+            group = group.child(diagnostics::render(&state.diagnostic_data, theme));
+        }
         let page_size = 12;
         let count = state.sessions.len();
         let offset = state.session_page * page_size;
@@ -3324,6 +3370,7 @@ impl Waku {
                     "保留"
                 };
                 let memory_id = id.clone();
+                let diagnostic_id = id.clone();
                 let delete_id = id.clone();
                 group = group.child(div().flex().flex_col().gap(px(8.0))
                     .child(df_label(title.to_owned(), format!("{cwd}\n{status}"), theme))
@@ -3331,6 +3378,8 @@ impl Waku {
                         .child(df_button(SharedString::from(format!("df-memory-{id}")), "查看记忆", unavailable,
                             state.selected_session.as_deref() == Some(id.as_str()), theme, cx,
                             move |this, _, cx| this.deerflow_select_memory(memory_id.clone(), cx)))
+                        .child(df_button(SharedString::from(format!("df-diagnostics-{id}")), "查看诊断", unavailable, false, theme, cx,
+                            move |this, _, cx| this.deerflow_request("manage", json!({"operation":"session.diagnostics","session_id":diagnostic_id}), cx)))
                         .child(df_button(SharedString::from(format!("df-session-delete-{id}")), "删除会话…", unavailable || !deletable_phase(&session["phase"]), false, theme, cx,
                             move |this, _, cx| {
                                 this.deerflow_settings.confirm_manage = Some((
@@ -3964,6 +4013,16 @@ mod integrity_tests {
     fn service_phase_reports_startup_failures() {
         assert_eq!(
             deerflow_service_phase(
+                &json!({"running":false,"applying":false,"apply_error":"configuration failed"}),
+                false,
+                false,
+                false,
+                None
+            ),
+            DeerFlowServicePhase::Failed
+        );
+        assert_eq!(
+            deerflow_service_phase(
                 &json!({"running":true,"warmup":"failed"}),
                 false,
                 true,
@@ -4014,6 +4073,27 @@ mod integrity_tests {
             deerflow_service_phase(&json!({"running":true}), false, false, false, Some("stop")),
             DeerFlowServicePhase::Stopping
         );
+    }
+
+    #[test]
+    fn startup_keeps_configuration_editable_and_failure_releases_it() {
+        assert!(!deerflow_editing_locked(
+            &json!({"running":false,"applying":true,"starting":true}),
+            None
+        ));
+        assert!(!deerflow_editing_locked(
+            &json!({"running":false,"applying":false,"starting":false,"apply_error":"failed"}),
+            None
+        ));
+        assert!(deerflow_editing_locked(
+            &json!({"applying":true,"starting":false}),
+            None
+        ));
+        assert!(deerflow_editing_locked(&json!({"applying":true}), None));
+        assert!(deerflow_editing_locked(
+            &json!({"applying":true,"starting":true}),
+            Some("apply")
+        ));
     }
 }
 

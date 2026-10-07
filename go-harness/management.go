@@ -124,6 +124,19 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 		return nil, err
 	}
 	switch request.Operation {
+	case "session.diagnostics":
+		if len(request.Fields) != 2 {
+			return nil, managementInvalid("session diagnostics accepts only operation and session_id")
+		}
+		id, err := managementID(request.Fields, "session_id")
+		if err != nil {
+			return nil, err
+		}
+		data, err := c.service.SessionDiagnostics(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		return data, nil
 	case "skill.auto_patch.status", "skill.auto_patch.list":
 		data, err := c.managementAutoPatch(ctx, request)
 		return data, proposalManagementError(err)

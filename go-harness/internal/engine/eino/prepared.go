@@ -261,7 +261,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	if extensions.ModelHandlerFactory != nil || extensions.PostRunFactory != nil {
 		privateMedia := *media
 		privateMedia.importer, privateMedia.publish = nil, nil
-		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia}
+		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, contextWindow: e.config.ContextWindows[selectedModel]}
 		if extensions.ModelHandlerFactory != nil {
 			modelHandlers, err := extensions.ModelHandlerFactory(ctx, metered)
 			if err != nil {
@@ -280,14 +280,14 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	if e.config.Compaction.Enabled {
 		privateMedia := *media
 		privateMedia.importer, privateMedia.publish = nil, nil
-		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia}
-		compaction, err := newCompactionMiddleware(ctx, e.config.Compaction, metered)
+		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, contextWindow: e.config.ContextWindows[selectedModel]}
+		compaction, err := newCompactionMiddleware(ctx, windowCompaction(e.config.Compaction, e.config.ContextWindows[selectedModel], outputReserve(b.limits.MaxOutputTokens, harness.AgentModelSettings{})), metered)
 		if err != nil {
 			return p, fmt.Errorf("build context compaction: %w", err)
 		}
 		handlers = append(handlers, compaction)
 	}
-	handlers = append(handlers, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media}, mw)
+	handlers = append(handlers, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media, contextWindow: e.config.ContextWindows[selectedModel]}, mw)
 	delegationEnabled := !e.config.DisableSubAgent && e.config.ToolPolicy.Allows("task") && !(req.Session.ConfigVersion > 0 && !req.Session.Subagents)
 	var children []adk.Agent
 	if e.roles != nil && delegationEnabled {

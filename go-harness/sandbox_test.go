@@ -173,11 +173,9 @@ func TestSDKCommandPermissionPrecedesProcessAndReceipt(t *testing.T) {
 				}
 				return harness.AllowOnce, nil
 			})
-			if scenario == "nonzero" {
-				if err == nil {
-					t.Error("nonzero command was reported successful")
-				}
-			} else if err != nil {
+			// Confirmed command failures stay visible in the failed tool receipt
+			// and partial output below, while the agent may finish or recover.
+			if err != nil {
 				t.Fatal(err)
 			}
 			shouldOffer := scenario == "allow" || scenario == "deny" || scenario == "nonzero"

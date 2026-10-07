@@ -129,7 +129,7 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores 
 		case "tool_end":
 			if e.Status == "failed" && e.Receipt != nil {
 				switch e.Receipt.FailureCode {
-				case "network", "permission", "quota", "cancelled", "uncertain", "unknown":
+				case "network", "permission", "quota", "cancelled", "uncertain", "unknown", "rate_limit", "remote":
 					receipt.FailureCode = e.Receipt.FailureCode
 				}
 			}

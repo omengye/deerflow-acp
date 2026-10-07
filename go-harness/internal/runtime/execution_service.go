@@ -599,7 +599,7 @@ func (s *Service) ResumeExecution(ctx context.Context, owner, sessionID string, 
 		defer cleanup()
 		ctx = prepared
 	}
-	releaseSlot, err := s.runQueue.acquire(ctx)
+	releaseSlot, err := s.runQueue.acquire(ctx, sessionID)
 	if err != nil {
 		return harness.RunResult{}, err
 	}

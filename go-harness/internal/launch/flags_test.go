@@ -88,13 +88,17 @@ func TestMemoryFlagsAreExplicit(t *testing.T) {
 	}
 }
 
-func TestCompactionFlagsAreExplicit(t *testing.T) {
+func TestCompactionFlagsDefaultToAutomaticAndAllowOptOut(t *testing.T) {
 	cfg, err := parseRuntimeFlags(t)
-	if err != nil || cfg.Compaction.Enabled {
+	if err != nil || !cfg.Compaction.Enabled || cfg.Budget.MaxTokens != 0 {
 		t.Fatalf("default compaction=%+v err=%v", cfg.Compaction, err)
 	}
 	cfg, err = parseRuntimeFlags(t, "--context-compaction", "--compact-after-messages=40", "--compact-after-tokens=30000", "--compact-keep-messages=6")
 	if err != nil || !cfg.Compaction.Enabled || cfg.Compaction.ContextMessages != 40 || cfg.Compaction.ContextTokens != 30000 || cfg.Compaction.KeepRecentMessages != 6 {
 		t.Fatalf("configured compaction=%+v err=%v", cfg.Compaction, err)
+	}
+	cfg, err = parseRuntimeFlags(t, "--context-compaction=false", "--max-tokens=500000")
+	if err != nil || cfg.Compaction.Enabled || cfg.Budget.MaxTokens != 500000 {
+		t.Fatalf("explicit opt-out/budget=%+v err=%v", cfg, err)
 	}
 }

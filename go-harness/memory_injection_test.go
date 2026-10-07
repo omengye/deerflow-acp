@@ -289,11 +289,11 @@ func TestDesktopMemoryPolicyScopesInjectionAndTool(t *testing.T) {
 		absent     []string
 		searchTool bool
 	}{
-		{"session middleware", Config{MemoryScope: harness.MemorySession, MemoryMode: "middleware", MemoryExtraction: true}, []string{"first-session"}, []string{"second-session", "workspace", "cobalt"}, false},
-		{"workspace middleware", Config{MemoryScope: harness.MemoryWorkspace, MemoryMode: "middleware"}, []string{"workspace"}, []string{"first-session", "second-session"}, false},
-		{"session tool", Config{MemoryScope: harness.MemorySession, MemoryMode: "tool", MemoryExtraction: true}, nil, []string{"first-session", "workspace"}, true},
-		{"injection disabled", Config{MemoryScope: harness.MemorySession, MemoryMode: "middleware", MemoryInjectionEnabled: &disabled, MemoryExtraction: true}, nil, []string{"first-session", "workspace"}, false},
-		{"retrieval disabled", Config{MemoryScope: harness.MemorySession, MemoryMode: "middleware", MemoryRetrievalEnabled: &disabled}, []string{"first-session", "cobalt"}, []string{"second-session", "workspace"}, false},
+		{"session middleware", Config{MemoryScope: harness.MemorySession, MemoryMode: "middleware", MemoryExtraction: true}, []string{"orchid first-session preference"}, []string{"orchid second-session preference", "orchid workspace preference", "unrelated cobalt preference"}, false},
+		{"workspace middleware", Config{MemoryScope: harness.MemoryWorkspace, MemoryMode: "middleware"}, []string{"orchid workspace preference"}, []string{"orchid first-session preference", "orchid second-session preference"}, false},
+		{"session tool", Config{MemoryScope: harness.MemorySession, MemoryMode: "tool", MemoryExtraction: true}, nil, []string{"orchid first-session preference", "orchid workspace preference"}, true},
+		{"injection disabled", Config{MemoryScope: harness.MemorySession, MemoryMode: "middleware", MemoryInjectionEnabled: &disabled, MemoryExtraction: true}, nil, []string{"orchid first-session preference", "orchid workspace preference"}, false},
+		{"retrieval disabled", Config{MemoryScope: harness.MemorySession, MemoryMode: "middleware", MemoryRetrievalEnabled: &disabled}, []string{"orchid first-session preference", "unrelated cobalt preference"}, []string{"orchid second-session preference", "orchid workspace preference"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := extensionFactory(tc.cfg, manager, registry, nil, store)(ctx, req, nil)

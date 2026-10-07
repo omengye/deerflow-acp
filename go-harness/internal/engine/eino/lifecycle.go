@@ -11,6 +11,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 )
 
 // runIO separates checkpoint persistence from cancellable external work. Native
@@ -158,31 +159,34 @@ func relayMappedStream[T any](source *schema.StreamReader[T], finish func(), onC
 
 type modelLifecycle struct {
 	adk.BaseChatModelAgentMiddleware
-	io       *runIO
-	budget   *runBudget
-	sink     *eventSink
-	media    *mediaProjection
-	settings harness.AgentModelSettings
-	tuning   *roleModelTuning
-	role     bool
+	contextWindow int
+	io            *runIO
+	budget        *runBudget
+	sink          *eventSink
+	media         *mediaProjection
+	settings      harness.AgentModelSettings
+	tuning        *roleModelTuning
+	role          bool
 }
 
 func (m *modelLifecycle) WrapModel(_ context.Context, inner model.BaseModel[*schema.Message], _ *adk.ModelContext) (model.BaseModel[*schema.Message], error) {
-	return &trackedModel{inner: inner, io: m.io, budget: m.budget, sink: m.sink, media: m.media, settings: m.settings, tuning: m.tuning, role: m.role}, nil
+	return &trackedModel{inner: inner, io: m.io, budget: m.budget, sink: m.sink, media: m.media, settings: m.settings, tuning: m.tuning, role: m.role, contextWindow: m.contextWindow}, nil
 }
 
 type trackedModel struct {
-	inner    model.BaseModel[*schema.Message]
-	io       *runIO
-	budget   *runBudget
-	sink     *eventSink
-	media    *mediaProjection
-	settings harness.AgentModelSettings
-	tuning   *roleModelTuning
-	role     bool
+	contextWindow int
+	inner         model.BaseModel[*schema.Message]
+	io            *runIO
+	budget        *runBudget
+	sink          *eventSink
+	media         *mediaProjection
+	settings      harness.AgentModelSettings
+	tuning        *roleModelTuning
+	role          bool
 }
 
 func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	input = m.budget.inputWithBudgetAdvice(ctx, input)
 	opts = roleModelOptions(m.settings, opts)
 	opts = m.tuning.beforeReservation(opts)
 	ctx, finish, err := m.io.beginEffect(ctx)
@@ -197,6 +201,10 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 			return nil, err
 		}
 	}
+	opts, err = m.windowOptions(input, opts)
+	if err != nil {
+		return nil, err
+	}
 	reservation, opts, err := m.budget.reserveContext(ctx, input, opts)
 	if err != nil {
 		m.recordAdmissionFailure(err)
@@ -210,6 +218,7 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 		return nil, err
 	}
 	endModel := beginRoleActivity(ctx, "model")
+	reservation.startedAt = time.Now()
 	msg, err := m.inner.Generate(ctx, input, opts...)
 	endModel()
 	observeErr := reservation.observe(msg)
@@ -230,6 +239,7 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 	return msg, nil
 }
 func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	input = m.budget.inputWithBudgetAdvice(ctx, input)
 	opts = roleModelOptions(m.settings, opts)
 	opts = m.tuning.beforeReservation(opts)
 	ctx, finish, err := m.io.beginEffect(ctx)
@@ -244,6 +254,11 @@ func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts
 			return nil, err
 		}
 	}
+	opts, err = m.windowOptions(input, opts)
+	if err != nil {
+		finish()
+		return nil, err
+	}
 	reservation, opts, err := m.budget.reserveContext(ctx, input, opts)
 	if err != nil {
 		m.recordAdmissionFailure(err)
@@ -257,6 +272,7 @@ func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts
 		return nil, err
 	}
 	endModel := beginRoleActivity(ctx, "model")
+	reservation.startedAt = time.Now()
 	source, err := m.inner.Stream(ctx, input, opts...)
 	if err != nil {
 		endModel()
@@ -273,6 +289,9 @@ func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts
 	complete := true
 	limit := &modelImageLimit{}
 	project := func(msg *schema.Message) (*schema.Message, error) {
+		if msg != nil && reservation.firstTokenAt.IsZero() && (msg.Content != "" || len(msg.ToolCalls) > 0) {
+			reservation.firstTokenAt = time.Now()
+		}
 		if m.media != nil {
 			return m.media.normalizeProviderOutput(ctx, msg, limit)
 		}
@@ -306,6 +325,7 @@ func (m *trackedModel) providerOptions(reservation *modelReservation, opts []mod
 }
 
 func (m *trackedModel) settle(ctx context.Context, r *modelReservation, complete bool) {
+	finishedAt := time.Now()
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	u, err := r.settleContext(cleanup, complete)
@@ -315,5 +335,22 @@ func (m *trackedModel) settle(ctx context.Context, r *modelReservation, complete
 	}
 	if err = m.sink.emit(cleanup, harness.RunEvent{Kind: "usage", Usage: &u}); err != nil {
 		m.io.recordError(err)
+	}
+	if !r.startedAt.IsZero() {
+		timing := &harness.ModelTiming{StartedAt: r.startedAt, DurationMS: finishedAt.Sub(r.startedAt).Milliseconds()}
+		if !r.firstTokenAt.IsZero() {
+			ms := r.firstTokenAt.Sub(r.startedAt).Milliseconds()
+			timing.FirstTokenMS = &ms
+		}
+		if scope, ok := durablebudget.ScopeFromContext(ctx); ok {
+			timing.RootBudgetID, timing.AttemptID = scope.RootBudgetID, scope.AttemptID
+		}
+		status := "failed"
+		if complete {
+			status = "completed"
+		}
+		if err := m.sink.emit(cleanup, harness.RunEvent{Kind: "model_timing", Status: status, Timing: timing}); err != nil {
+			m.io.recordError(err)
+		}
 	}
 }

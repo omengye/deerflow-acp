@@ -491,7 +491,22 @@ fn mcp_daemon_arguments(allowed: &[PathBuf]) -> Vec<OsString> {
     arguments
 }
 
-fn spawn_daemon(cli: &Cli, runtime_dir: &Path) -> Result<()> {
+#[cfg(windows)]
+type DaemonProcess = windows_daemon::Process;
+
+#[cfg(not(windows))]
+struct DaemonProcess(std::process::Child);
+
+#[cfg(not(windows))]
+impl DaemonProcess {
+    fn try_wait(&mut self) -> io::Result<Option<String>> {
+        self.0
+            .try_wait()
+            .map(|status| status.map(|status| status.to_string()))
+    }
+}
+
+fn spawn_daemon(cli: &Cli, runtime_dir: &Path) -> Result<DaemonProcess> {
     let daemon = find_daemon(cli)?;
     fs::create_dir_all(runtime_dir)?;
     let mut args = Vec::new();
@@ -504,22 +519,30 @@ fn spawn_daemon(cli: &Cli, runtime_dir: &Path) -> Result<()> {
     args.extend(mcp_daemon_arguments(&cli.mcp_allow_commands));
     args.push(OsString::from("--runtime-dir"));
     args.push(runtime_dir.as_os_str().to_owned());
-    spawn_detached(&daemon, &args, cwd).map_err(|error| {
+    let process = spawn_detached(&daemon, &args, cwd).map_err(|error| {
         format!(
             "failed to start Eino Go daemon {}: {error}",
             daemon.display()
         )
     })?;
-    Ok(())
+    Ok(process)
 }
 
 #[cfg(windows)]
-fn spawn_detached(program: &Path, args: &[OsString], cwd: Option<&Path>) -> io::Result<()> {
+fn spawn_detached(
+    program: &Path,
+    args: &[OsString],
+    cwd: Option<&Path>,
+) -> io::Result<DaemonProcess> {
     windows_daemon::spawn(program, args, cwd)
 }
 
 #[cfg(not(windows))]
-fn spawn_detached(program: &Path, args: &[OsString], cwd: Option<&Path>) -> io::Result<()> {
+fn spawn_detached(
+    program: &Path,
+    args: &[OsString],
+    cwd: Option<&Path>,
+) -> io::Result<DaemonProcess> {
     let mut command = Command::new(program);
     command
         .args(args)
@@ -529,7 +552,7 @@ fn spawn_detached(program: &Path, args: &[OsString], cwd: Option<&Path>) -> io::
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
-    command.spawn().map(|_child| ())
+    command.spawn().map(DaemonProcess)
 }
 
 fn start_timeout() -> Duration {
@@ -671,9 +694,10 @@ fn force_terminate_process(pid: u32) -> io::Result<()> {
     }
 }
 
-fn wait_for_status(cli: &Cli, path: &Path) -> Result<Endpoint> {
+fn wait_for_status(cli: &Cli, path: &Path, process: &mut DaemonProcess) -> Result<Endpoint> {
     let deadline = Instant::now() + start_timeout();
     let mut last_error = String::from("endpoint has not been published");
+    let mut exited: Option<(Instant, String)> = None;
     while Instant::now() < deadline {
         if let Ok(endpoint) = load_endpoint(path) {
             match validate_config(&endpoint, cli.config.as_deref()) {
@@ -683,6 +707,20 @@ fn wait_for_status(cli: &Cli, path: &Path) -> Result<Endpoint> {
                 },
                 Err(error) => last_error = error.to_string(),
             }
+        }
+        if exited.is_none() {
+            if let Some(status) = process.try_wait()? {
+                exited = Some((Instant::now(), status));
+            }
+        }
+        // A concurrent client may win the daemon lease. Give that instance a
+        // short chance to publish its endpoint before reporting our child's exit.
+        if let Some((when, status)) = &exited
+            && when.elapsed() >= Duration::from_millis(500)
+        {
+            return Err(format!(
+                "DeerFlow ACP daemon exited before becoming ready ({status}). Check configuration and the daemon lifecycle logs."
+            ).into());
         }
         thread::sleep(Duration::from_millis(50));
     }
@@ -699,8 +737,8 @@ fn ensure_running(cli: &Cli, path: &Path) -> Result<Endpoint> {
     if !cli.auto_start && cli.mode != Mode::Start {
         return Err("DeerFlow ACP daemon is not running".into());
     }
-    spawn_daemon(cli, path.parent().ok_or("invalid endpoint path")?)?;
-    wait_for_status(cli, path)
+    let mut process = spawn_daemon(cli, path.parent().ok_or("invalid endpoint path")?)?;
+    wait_for_status(cli, path, &mut process)
 }
 
 fn connect_proxy(cli: &Cli, path: &Path) -> Result<TcpStream> {
@@ -916,6 +954,28 @@ async fn main() {
 #[cfg(test)]
 mod process_tests {
     use super::*;
+
+    #[test]
+    fn daemon_exit_is_reported_without_waiting_for_startup_timeout() {
+        let root = tempfile::tempdir().unwrap();
+        let (program, expected) = if cfg!(windows) {
+            (
+                PathBuf::from(env::var_os("SYSTEMROOT").unwrap()).join("System32/where.exe"),
+                "exit code 2",
+            )
+        } else {
+            (PathBuf::from("/bin/false"), "exit status: 1")
+        };
+        let mut process = spawn_detached(&program, &[], None).unwrap();
+        let cli = parse_args(std::iter::empty()).unwrap();
+        let started = Instant::now();
+        let error = wait_for_status(&cli, &root.path().join(ENDPOINT_FILENAME), &mut process)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("exited before becoming ready"), "{error}");
+        assert!(error.contains(expected), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 
     #[test]
     fn host_mcp_allowlist_preserves_literal_paths() {

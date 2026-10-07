@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +22,8 @@ type runQueue struct {
 	slots   chan struct{}
 	timeout time.Duration
 	queued  atomic.Int64
+	mu      sync.Mutex
+	waiting map[string]bool
 }
 
 type automaticSlotKey struct{}
@@ -60,10 +63,16 @@ func newRunQueue(cfg RunQueueConfig) (*runQueue, error) {
 	if cfg.QueueTimeout < 0 || cfg.QueueTimeout > 24*time.Hour {
 		return nil, fmt.Errorf("%w: queue timeout must be 0..24h", harness.ErrInvalidInput)
 	}
-	return &runQueue{slots: make(chan struct{}, cfg.MaxActiveRuns), timeout: cfg.QueueTimeout}, nil
+	return &runQueue{slots: make(chan struct{}, cfg.MaxActiveRuns), timeout: cfg.QueueTimeout, waiting: make(map[string]bool)}, nil
 }
 
-func (q *runQueue) acquire(ctx context.Context) (func(), error) {
+func (q *runQueue) isWaiting(id string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.waiting[id]
+}
+
+func (q *runQueue) acquire(ctx context.Context, sessionIDs ...string) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -81,6 +90,13 @@ func (q *runQueue) acquire(ctx context.Context) (func(), error) {
 	}
 	q.queued.Add(1)
 	defer q.queued.Add(-1)
+	if len(sessionIDs) > 0 {
+		id := sessionIDs[0]
+		q.mu.Lock()
+		q.waiting[id] = true
+		q.mu.Unlock()
+		defer func() { q.mu.Lock(); delete(q.waiting, id); q.mu.Unlock() }()
+	}
 	select {
 	case q.slots <- struct{}{}:
 		// If cancellation raced with an available slot, do not start a run.

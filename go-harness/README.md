@@ -4,6 +4,8 @@ This module is the Go/Eino implementation on `codex/eino-harness-acp-refactor`.
 It is under active development. The complete V1 scope and acceptance gates are
 tracked in [the implementation plan](../docs/eino-subagents-skill-evolution-plan.md)
 and [implementation status](../docs/eino-subagents-skill-evolution-status.md).
+The latest bounded reliability, diagnostics and delivery work is recorded in
+[the three-iteration acceptance record](../docs/eino-three-iterations-20261004.md).
 
 The portable configuration now supports 13 migrated native Go tools and uses
 `models[].provider`, `sandbox.provider` and tool names without Python `use`
@@ -51,8 +53,12 @@ Successful candidates await manual publication approval. See the
 Optional [behavior evaluations](internal/skills/evolution/behavior.md) execute
 both versions through Eino with local fixture tools and Go assertions. Results
 and maintenance receipts are durable and queryable; manual submissions use a
-dedicated job when enabled. Trusted failure attribution, missing-report routing,
-repeated workflow discovery and automatic publication/rollback remain work.
+dedicated job when enabled. Missing-report routing, repeated workflow discovery
+and optional automatic publication/rollback are implemented and default off.
+Confirmed skill quality uses explicit operator evidence; network, permission,
+quota and remote service failures cannot establish skill quality failure.
+Two bounded [business behavior suites](../resources/skill-behavior) cover code
+documentation and newsletter attribution, including regression cases.
 
 ## Current execution path
 
@@ -106,12 +112,31 @@ Outbound MCP HTTP/SSE need `--mcp-allow-http` / `--mcp-allow-sse`. These flags d
 not create an HTTP server. See [MCP lifecycle and policy](internal/mcp/README.md).
 
 The SDK and both executables default to 100 model calls, 200 tool calls,
-200,000 aggregate tokens, 4,096 output tokens per request, and 30 minutes per run
+unlimited aggregate tokens, 4,096 output tokens per request, and 30 minutes per run
 shared with child agents. The corresponding flags are `--max-model-calls`,
 `--max-tool-calls`, `--max-tokens`, `--max-output-tokens`, and `--run-timeout`;
 zero disables an individual limit. Token usage is estimated until reported by
 the provider, so these limits cannot guarantee exact billing. Provider-internal
 transport retries are not counted as separate logical calls.
+
+Aggregate token spending is an optional cost policy, separate from a model's
+context window: replayed history is charged again on every model call. Opt in
+with `--max-tokens` or host YAML `local_acp.max_run_tokens` (default `0`, disabled);
+an explicit CLI flag takes precedence. Existing durable tasks keep their original
+budget policy; start a new request to use a changed policy.
+
+Both executables and bundled YAML enable automatic context compaction by default.
+Each agent uses about 75% of its selected model's `context_window`, after reserving
+the output cap and a 2% estimate margin. Large-window models therefore compact
+later; a 32,000-token fallback applies only when the window is unknown. Explicit
+token/message thresholds remain supported, with token thresholds clamped for
+smaller windows. Eight recent messages and complete tool call/result groups are
+retained. `summarization.enabled: false` or `--context-compaction=false` opts out.
+Summaries preserve the active user request even during a long first turn; earlier
+exchanges can be summarized without keeping the whole turn in model context.
+Full tool results remain in receipts and private snapshots; model previews are
+bounded to 8 KiB per result and 16 KiB per run, with `read_tool_output` for details.
+SDK embedders enable compaction with `Config.Compaction.Enabled`.
 
 Both executables allow two concurrent foreground runs across sessions by default.
 `--max-active-runs` changes this limit; `--queue-timeout` defaults to 10 minutes
@@ -126,6 +151,17 @@ reported input and output tokens. The SDK accepts `Config.ContextWindow` and
 per-model `Config.ContextWindows`; the Bridge config maps model
 `context_window`. Without a configured size or provider usage, ACP omits this
 context indicator. It is separate from aggregate run token usage.
+Configured windows now constrain compaction thresholds and preflight estimates
+for all model roles. Chinese text, tool schemas and images share the same estimate
+used for admission. These estimates remain approximate; provider usage is
+authoritative. Changed windows/estimator policy invalidate incompatible paused
+execution contracts; cancel the old execution and start a new turn.
+
+Desktop settings offer an explicit two-request Agent capability probe and cached
+session diagnostics, including slot waits, pause reasons, root budget counters
+and bounded model/tool timing metadata. Diagnostics omit conversation content
+and credentials. See [offline state backup and restore](../docs/go-runtime-backup.md)
+before upgrading a data directory.
 
 Use repeatable `--allow-model` to expose additional model IDs in session config;
 they use the same configured provider and credentials. Model, subagent and

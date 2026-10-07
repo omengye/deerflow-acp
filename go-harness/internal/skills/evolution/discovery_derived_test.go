@@ -137,5 +137,20 @@ func TestDerivedDiscoveryMissingWorkflowAndQuality(t *testing.T) {
 				t.Fatalf("kind=%s quality=%+v", kind, q)
 			}
 		}
+		for i, code := range []string{"rate_limit", "remote"} {
+			receipt := harness.ToolReceipt{SessionID: run.Session.ID, RunID: run.RunID, ToolCallID: "environment", ToolName: "web_fetch", State: harness.ReceiptFailed, FailureCode: code}
+			data, _ := json.Marshal(receipt)
+			if _, err := f.db.DB().Exec(`INSERT INTO harness_tool_receipts(run_id,tool_call_id,session_id,state,version,receipt) VALUES(?,?,?,?,1,?) ON CONFLICT(run_id,tool_call_id) DO UPDATE SET receipt=excluded.receipt`, run.RunID, receipt.ToolCallID, run.Session.ID, receipt.State, data); err != nil {
+				t.Fatal(err)
+			}
+			request = feedbackRequest(snapshot, "quality_failure")
+			request.RequestKey = "environment-" + code
+			request.ExpectedFeedbackVersion = int64(5 + i)
+			mustSubmitFeedback(t, f.service, request)
+			current, err := f.service.Feedback(ctx, request.SignalID)
+			if err != nil || current.Signal.Quality.Eligible || current.Signal.Quality.Kind != code {
+				t.Fatalf("environment=%s quality=%+v error=%v", code, current.Signal.Quality, err)
+			}
+		}
 	})
 }

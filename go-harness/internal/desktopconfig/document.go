@@ -8,6 +8,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
+	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
 
 var runtimeDefaults = configschema.Defaults("runtime")
@@ -43,6 +44,13 @@ func (s service) snapshot() (map[string]any, error) {
 	skillSources, skillSourceDiagnostics, err := configschema.ProjectSkillSources(readObject(data, "skills"))
 	if err != nil {
 		return nil, err
+	}
+	skillSourceDiagnostics = append(skillSourceDiagnostics, s.skillDirectoryDiagnostics...)
+	if boolValue(readObject(data, "skills"), "enabled", true) {
+		settings := readObject(data, "skills")
+		if _, err := skills.ResolveManagedSources(s.config, settings["managed_sources"], settings["export_root"]); err != nil {
+			skillSourceDiagnostics = append(skillSourceDiagnostics, err.Error())
+		}
 	}
 	configRevision, err := hashFile(s.config)
 	if err != nil {

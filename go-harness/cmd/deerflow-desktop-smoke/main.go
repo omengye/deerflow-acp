@@ -275,6 +275,14 @@ func (s *smoke) cleanup() {
 	}
 }
 func main() {
+	// A copied fixture executable can stand in for a slow, failed daemon.
+	// The real product daemon has no dependency on this marker or test mode.
+	if strings.EqualFold(filepath.Base(os.Args[0]), "deerflow-acpd.exe") {
+		if executable, err := os.Executable(); err == nil && exists(filepath.Join(filepath.Dir(executable), "smoke-startup-delay.fixture")) {
+			time.Sleep(3 * time.Second)
+			os.Exit(17)
+		}
+	}
 	var packagePath, cache string
 	var fixture, legacy bool
 	flag.StringVar(&packagePath, "package", "", "fresh extracted Windows Go desktop package")

@@ -3,6 +3,8 @@
 config_version: eino-harness-v1
 
 local_acp:
+  # Optional cumulative task spending limit; 0 leaves long tasks unrestricted.
+  max_run_tokens: 0
   model_name: null
   max_active_connections: 16
   max_active_runs: 2
@@ -55,6 +57,11 @@ skills:
   enabled: true
   path: ./skills
   extensions_file: ./extensions_config.json
+
+summarization:
+  # Trigger automatically follows the selected model's configured context_window.
+  enabled: true
+  keep: {type: messages, value: 8}
 
 memory:
   enabled: true

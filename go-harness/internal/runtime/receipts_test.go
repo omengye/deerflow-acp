@@ -141,6 +141,35 @@ func TestReceiptPermissionBindsArgumentsAndConfiguration(t *testing.T) {
 	}
 }
 
+func TestReceiptPersistsSanitizedEnvironmentFailureCodes(t *testing.T) {
+	for _, code := range []string{"network", "rate_limit", "remote", "unknown", "untrusted-provider-detail"} {
+		t.Run(code, func(t *testing.T) {
+			s, req := receiptFixture(t)
+			appendReceiptEvent(t, s, req, "tool_start", "call", "web_fetch")
+			appendReceiptEvent(t, s, req, "tool_execute", "call", "web_fetch")
+			end := receiptEvent(req, "tool_end", "call", "web_fetch")
+			end.Status = "failed"
+			end.Receipt = &harness.ToolReceipt{State: harness.ReceiptNoEffect, FailureCode: code, Error: "sanitized failure"}
+			result, err := s.Store.Append(context.Background(), end)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := code
+			if code == "untrusted-provider-detail" {
+				want = ""
+			}
+			saved, err := readReceipt(context.Background(), s.Store.db, req.Session.ID, req.RunID, "call")
+			if err != nil || saved.FailureCode != want || saved.State != harness.ReceiptNoEffect || result.Receipt.FailureCode != want {
+				t.Fatalf("saved=%+v event=%+v error=%v", saved, result.Receipt, err)
+			}
+			history, err := s.Store.History(context.Background(), req.Session.ID)
+			if err != nil || len(history) != 4 || history[3].Receipt.FailureCode != want {
+				t.Fatalf("failure classification lost from event history: %+v %v", history, err)
+			}
+		})
+	}
+}
+
 func TestReceiptRecoveryAfterDatabaseReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")

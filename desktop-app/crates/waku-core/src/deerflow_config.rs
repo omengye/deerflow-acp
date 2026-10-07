@@ -589,7 +589,9 @@ impl DeerFlowService {
             | "legacy-history-get" => paths.config_command(operation, &input),
             "save" | "save-and-apply" => {
                 let _guard = self.state.mutation.lock();
-                if self.state.applying.load(Ordering::Acquire) {
+                if self.state.applying.load(Ordering::Acquire)
+                    && !self.state.starting.load(Ordering::Acquire)
+                {
                     bail!("正在应用配置，请先等待或取消应用");
                 }
                 if operation == "save-and-apply" {
@@ -645,6 +647,7 @@ impl DeerFlowService {
     fn status(&self, paths: &Paths) -> Value {
         let mut value = paths.live_status();
         value["applying"] = json!(self.state.applying.load(Ordering::Acquire));
+        value["starting"] = json!(self.state.starting.load(Ordering::Acquire));
         value["applied_generation"] = json!(self.state.applied_generation.load(Ordering::Acquire));
         value["apply_error"] = json!(*self.state.apply_error.lock());
         value["acp_backend"] = json!("go");

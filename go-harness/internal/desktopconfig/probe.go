@@ -36,6 +36,17 @@ func (s service) testModel(request map[string]any) (map[string]any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	started := time.Now()
+	profile, _ := request["profile"].(string)
+	if profile != "" && profile != "text" && profile != "agent" {
+		return nil, errors.New("invalid model probe profile")
+	}
+	if profile == "agent" {
+		capabilities, err := eino.ProbeAgentCapabilities(ctx, provider, str(model, "model", ""), baseURL, apiKey)
+		if err != nil {
+			return map[string]any{"ok": false, "error_type": "ModelRequestError", "note": "无法构建模型能力测试，请检查配置"}, nil
+		}
+		return map[string]any{"ok": capabilities.Streaming.OK && capabilities.Tools.OK, "latency_ms": time.Since(started).Milliseconds(), "capabilities": capabilities, "note": "最多两次请求；工具不执行；usage 缺失仍按估算记账；未测试图片和 thinking"}, nil
+	}
 	err = eino.ProbeModel(ctx, provider, str(model, "model", ""), baseURL, apiKey)
 	if err != nil {
 		errorType := "ModelRequestError"

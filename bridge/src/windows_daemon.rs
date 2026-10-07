@@ -6,8 +6,8 @@ use std::{ffi::OsStr, ffi::OsString, io, os::windows::ffi::OsStrExt, path::Path,
 use windows_sys::Win32::{
     Foundation::CloseHandle,
     System::Threading::{
-        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CreateProcessW, PROCESS_INFORMATION,
-        STARTF_USESTDHANDLES, STARTUPINFOW,
+        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CreateProcessW, GetExitCodeProcess,
+        PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW, WaitForSingleObject,
     },
 };
 
@@ -46,7 +46,36 @@ fn quote(value: &OsStr, output: &mut Vec<u16>) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn spawn(program: &Path, args: &[OsString], cwd: Option<&Path>) -> io::Result<()> {
+pub(super) struct Process {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+impl Process {
+    pub(super) fn try_wait(&mut self) -> io::Result<Option<String>> {
+        use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        // The retained handle identifies this exact process even if its PID is reused.
+        match unsafe { WaitForSingleObject(self.handle, 0) } {
+            WAIT_TIMEOUT => Ok(None),
+            WAIT_OBJECT_0 => {
+                let mut code = 0;
+                if unsafe { GetExitCodeProcess(self.handle, &mut code) } == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(Some(format!("exit code {code}")))
+            }
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        // Closing a handle never terminates the detached, shared daemon.
+        unsafe { CloseHandle(self.handle) };
+    }
+}
+
+pub(super) fn spawn(program: &Path, args: &[OsString], cwd: Option<&Path>) -> io::Result<Process> {
     let application = wide(program.as_os_str())?;
     let mut command = Vec::new();
     quote(program.as_os_str(), &mut command)?;
@@ -72,8 +101,8 @@ pub(super) fn spawn(program: &Path, args: &[OsString], cwd: Option<&Path>) -> io
     let mut process = PROCESS_INFORMATION::default();
     // SAFETY: all strings are NUL-terminated and alive for the call; the
     // writable command buffer is exclusive. No security attributes or handles
-    // are inherited, the environment is inherited unchanged, and both returned
-    // handles are closed immediately after successful process creation.
+    // are inherited, the environment is inherited unchanged, and the process
+    // handle is retained only for startup monitoring. The thread handle is closed.
     let created = unsafe {
         CreateProcessW(
             application.as_ptr(),
@@ -95,9 +124,10 @@ pub(super) fn spawn(program: &Path, args: &[OsString], cwd: Option<&Path>) -> io
     }
     unsafe {
         CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
     }
-    Ok(())
+    Ok(Process {
+        handle: process.hProcess,
+    })
 }
 
 #[cfg(test)]

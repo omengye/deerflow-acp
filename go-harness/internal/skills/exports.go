@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -19,7 +20,7 @@ type exportTarget struct {
 func openExportTarget(directory string) (*exportTarget, error) {
 	s, err := openSource(harness.SkillSource{ID: "exports", Root: directory, Scope: harness.SkillScopeGlobal})
 	if err != nil {
-		return nil, invalid("export root must be an existing ordinary absolute directory")
+		return nil, fmt.Errorf("skills export root: %w", err)
 	}
 	return &exportTarget{root: s.root, key: s.identity}, nil
 }

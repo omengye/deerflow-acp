@@ -1,0 +1,40 @@
+{
+  "version": "skill-behavior-v1",
+  "id": "code-documentation-acceptance",
+  "source_id": "python-public",
+  "name": "code-documentation",
+  "cases": [
+    {
+      "id": "document-exported-api",
+      "kind": "targeted",
+      "prompt": "Read price.go. Create API.md with exactly this structure: heading '# Price API', blank line, one bullet per exported function containing the Go signature in backticks followed by ' — ' and its comment verbatim. Keep declaration order, omit private functions, end with a newline. Do not modify source files. Reply 'documented' when done.",
+      "files": {
+        "price.go": "package price\n\n// Total returns quantity times unit price in cents.\nfunc Total(quantity, unitCents int) int { return quantity * unitCents }\n\n// Discount subtracts a fixed amount, clamping the result to zero.\nfunc Discount(total, cents int) int { return max(0, total-cents) }\n\nfunc internalVersion() int { return 1 }\n"
+      },
+      "fixtures": [],
+      "assertions": [
+        {"id":"accurate-api","kind":"file_equals","path":"API.md","expected":"# Price API\n\n- `Total(quantity, unitCents int) int` — Total returns quantity times unit price in cents.\n- `Discount(total, cents int) int` — Discount subtracts a fixed amount, clamping the result to zero.\n"},
+        {"id":"complete","kind":"output_contains","expected":"documented"}
+      ],
+      "repetitions": 1
+    },
+    {
+      "id": "preserve-source-and-existing-guide",
+      "kind": "regression",
+      "prompt": "Read price.go and README.md. Explain in your final answer the exported function signature and the existing installation command, and include the exact sentence 'No undocumented error return is promised.' Do not write or change any file.",
+      "files": {
+        "price.go": "package price\n\n// Total returns quantity times unit price in cents.\nfunc Total(quantity, unitCents int) int { return quantity * unitCents }\n",
+        "README.md": "# Price\n\nInstall: go get example.test/price\n"
+      },
+      "fixtures": [],
+      "assertions": [
+        {"id":"signature","kind":"output_contains","expected":"Total(quantity, unitCents int) int"},
+        {"id":"installation","kind":"output_contains","expected":"go get example.test/price"},
+        {"id":"no-invented-error","kind":"output_contains","expected":"No undocumented error return is promised."},
+        {"id":"read-only","kind":"tool_calls","tool":"write_file","count":0},
+        {"id":"preserved-source","kind":"file_equals","path":"price.go","expected":"package price\n\n// Total returns quantity times unit price in cents.\nfunc Total(quantity, unitCents int) int { return quantity * unitCents }\n"}
+      ],
+      "repetitions": 1
+    }
+  ]
+}

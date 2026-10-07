@@ -694,7 +694,7 @@ impl Waku {
     }
 
     fn deerflow_undo_draft(&mut self, cx: &mut Context<Self>) {
-        if self.deerflow_settings.busy() || self.deerflow_settings.applying() {
+        if self.deerflow_settings.busy() || self.deerflow_settings.editing_locked() {
             return;
         }
         let Some(saved) = self.deerflow_settings.saved_draft.clone() else {
@@ -737,12 +737,14 @@ impl Waku {
                     .flex_1()
                     .text_size(sp(12.5))
                     .text_color(theme.text_secondary)
-                    .child(if state.applying() {
+                    .child(if state.editing_locked() {
                         "已保存，等待任务完成后生效".to_owned()
                     } else if !state.errors.is_empty() {
                         format!("{} 处需要修改；草稿已保留", state.errors.len())
                     } else if state.dirty {
                         "有未保存的更改".into()
+                    } else if state.applying() && state.status["starting"] == true {
+                        "ACP 正在启动；可修改配置".into()
                     } else {
                         "配置已保存，尚未生效".into()
                     }),

@@ -18,7 +18,7 @@ func AssessSignalTx(ctx context.Context, tx *sql.Tx, signal harness.SkillSignal)
 	err := tx.QueryRowContext(ctx, `SELECT blocked_reason,
  EXISTS(SELECT 1 FROM budget_members m JOIN harness_runs r ON r.id=m.id LEFT JOIN harness_skill_outcomes o ON o.run_id=r.id WHERE m.root_id=b.id AND (r.status NOT IN ('completed','failed','cancelled') OR o.sequence IS NULL OR o.processed<>1)),
  EXISTS(SELECT 1 FROM budget_members m JOIN harness_runs r ON r.id=m.id WHERE m.root_id=b.id AND r.status='cancelled'),
- EXISTS(SELECT 1 FROM budget_members m JOIN harness_skill_outcomes o ON o.run_id=m.id WHERE m.root_id=b.id AND o.effects_uncertain<>0),
+	 EXISTS(SELECT 1 FROM budget_members m JOIN harness_skill_outcomes o ON o.run_id=m.id WHERE m.root_id=b.id AND o.effects_uncertain<>0),
  EXISTS(SELECT 1 FROM budget_members m JOIN harness_runs r ON r.id=m.id WHERE m.root_id=b.id AND r.status='failed')
  FROM budget_roots b WHERE b.id=? AND b.session_id=?`, signal.RootID, signal.RootSessionID).Scan(&blocked, &pending, &cancelled, &uncertain, &failed)
 	if err != nil {
@@ -44,7 +44,7 @@ func AssessSignalTx(ctx context.Context, tx *sql.Tx, signal harness.SkillSignal)
 		return q, nil
 	}
 	var code string
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT json_extract(CAST(t.receipt AS TEXT),'$.failureCode') FROM harness_tool_receipts t JOIN budget_members m ON m.id=t.run_id WHERE m.root_id=? AND json_extract(CAST(t.receipt AS TEXT),'$.failureCode') IN ('network','permission','quota','cancelled','uncertain') ORDER BY t.rowid LIMIT 1),'')`, signal.RootID).Scan(&code)
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT json_extract(CAST(t.receipt AS TEXT),'$.failureCode') FROM harness_tool_receipts t JOIN budget_members m ON m.id=t.run_id WHERE m.root_id=? AND json_extract(CAST(t.receipt AS TEXT),'$.failureCode') IN ('network','permission','quota','cancelled','uncertain','rate_limit','remote') ORDER BY t.rowid LIMIT 1),'')`, signal.RootID).Scan(&code)
 	if err != nil {
 		return q, err
 	}

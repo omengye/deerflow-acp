@@ -146,6 +146,12 @@ func openSource(cfg harness.SkillSource) (*source, error) {
 	}
 	// Reject a symlink in every path component, including the configured root.
 	if err := noSymlinkPath(cfg.Root); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: skills source root does not exist", harness.ErrNotFound)
+		}
+		if errors.Is(err, os.ErrPermission) {
+			return nil, denied("source root is not readable")
+		}
 		return nil, denied("source root contains a link or inaccessible component")
 	}
 	real, err := session.NormalizeWorkspace(cfg.Root)

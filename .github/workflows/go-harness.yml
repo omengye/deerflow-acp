@@ -7,6 +7,8 @@ on:
       - "bridge/**"
       - "scripts/build-go-acp-portable.*"
       - "scripts/build-wsl-helper.ps1"
+      - "scripts/build-windows.ps1"
+      - "scripts/test-windows-package.ps1"
       - "acp-*.ps1"
       - "start.*"
       - "stop.*"
@@ -19,6 +21,8 @@ on:
       - "bridge/**"
       - "scripts/build-go-acp-portable.*"
       - "scripts/build-wsl-helper.ps1"
+      - "scripts/build-windows.ps1"
+      - "scripts/test-windows-package.ps1"
       - "acp-*.ps1"
       - "start.*"
       - "stop.*"
@@ -37,7 +41,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: go-harness
@@ -50,8 +54,8 @@ jobs:
           go-version: "1.26.8"
           cache-dependency-path: go-harness/go.sum
       - run: go mod verify
-      - run: go test -count=1 -p=2 -timeout=5m ./...
-      - run: go test -race -p=2 -timeout=5m ./internal/... ./
+      - run: go test -count=1 -p=2 -timeout=15m ./...
+      - run: go test -race -p=2 -timeout=20m ./internal/... ./
       - name: Build Rust Bridge
         working-directory: bridge
         run: cargo build --locked

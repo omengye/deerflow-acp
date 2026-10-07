@@ -9,7 +9,9 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $distRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "dist"))
-$outputRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot $OutputDirectory))
+$outputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) {
+    [IO.Path]::GetFullPath($OutputDirectory)
+} else { [IO.Path]::GetFullPath((Join-Path $repoRoot $OutputDirectory)) }
 if (-not $outputRoot.StartsWith($distRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw "OutputDirectory must be below $distRoot"
 }
@@ -18,7 +20,9 @@ if (Test-Path -LiteralPath $outputRoot) {
 }
 
 $profile = $Configuration.ToLowerInvariant()
-$cargoArgs = @("build", "--locked", "--manifest-path", (Join-Path $repoRoot "bridge\Cargo.toml"))
+$cargoArgs = @("build", "--locked", "--manifest-path", (Join-Path $repoRoot "bridge\Cargo.toml"),
+    "--config", (Join-Path $PSScriptRoot "cargo-windows-static-crt.toml"),
+    "--target-dir", (Join-Path $repoRoot "bridge\target"))
 if ($Configuration -eq "Release") { $cargoArgs += "--release" }
 & cargo @cargoArgs
 if ($LASTEXITCODE -ne 0) { throw "Rust Bridge build failed" }
@@ -38,6 +42,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Go stdio agent build failed" }
     & go build -trimpath -p=2 -o (Join-Path $outputRoot "deerflow-skill-go.exe") ./cmd/deerflow-skill-go
     if ($LASTEXITCODE -ne 0) { throw "Go skill authoring tool build failed" }
+    & go build -trimpath -p=2 -o (Join-Path $outputRoot "deerflow-state-go.exe") ./cmd/deerflow-state-go
+    if ($LASTEXITCODE -ne 0) { throw "Go state backup tool build failed" }
     & (Join-Path $PSScriptRoot "build-wsl-helper.ps1") -OutputDirectory $outputRoot
 }
 finally {
@@ -46,7 +52,9 @@ finally {
 
 Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $outputRoot "LICENSE.txt")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\go-acp-portable.md") -Destination (Join-Path $outputRoot "README.md")
-foreach ($binary in @("deerflow-acp.exe", "deerflow-acpd.exe", "deerflow-acp-go.exe", "deerflow-skill-go.exe", "deerflow-wsl-helper-linux-amd64")) {
+Copy-Item -LiteralPath (Join-Path $repoRoot "docs\go-runtime-backup.md") -Destination (Join-Path $outputRoot "go-runtime-backup.md")
+Copy-Item -LiteralPath (Join-Path $repoRoot "resources\skill-behavior") -Destination (Join-Path $outputRoot "skill-behavior") -Recurse
+foreach ($binary in @("deerflow-acp.exe", "deerflow-acpd.exe", "deerflow-acp-go.exe", "deerflow-skill-go.exe", "deerflow-state-go.exe", "deerflow-wsl-helper-linux-amd64")) {
     if ((Get-Item -LiteralPath (Join-Path $outputRoot $binary)).Length -eq 0) {
         throw "Package binary is empty: $binary"
     }

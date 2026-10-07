@@ -70,6 +70,7 @@ type runtimeDocument struct {
 		ToolDenylist           []string  `yaml:"tool_denylist"`
 		GoalAutoContinue       bool      `yaml:"goal_auto_continue"`
 		RunTimeoutSeconds      *float64  `yaml:"run_timeout_seconds"`
+		MaxRunTokens           *int64    `yaml:"max_run_tokens"`
 		PromptOverlay          string    `yaml:"prompt_overlay"`
 		PromptOverlayFile      string    `yaml:"prompt_overlay_file"`
 		EnableBash             bool      `yaml:"enable_bash"`
@@ -104,7 +105,7 @@ type runtimeDocument struct {
 		} `yaml:"backend_config"`
 	} `yaml:"memory"`
 	Summarization struct {
-		Enabled   bool      `yaml:"enabled"`
+		Enabled   *bool     `yaml:"enabled"`
 		ModelName string    `yaml:"model_name"`
 		Trigger   yaml.Node `yaml:"trigger"`
 		Keep      yaml.Node `yaml:"keep"`
@@ -356,6 +357,18 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 			cfg.Budget = &budget
 		}
 		cfg.Budget.Timeout = time.Duration(runTimeout * float64(time.Second))
+	}
+	if source.LocalACP.MaxRunTokens != nil {
+		if *source.LocalACP.MaxRunTokens < 0 {
+			return result, fmt.Errorf("local_acp.max_run_tokens must not be negative; 0 disables the aggregate token budget")
+		}
+		if !explicit["max-tokens"] {
+			if cfg.Budget == nil {
+				budget := harness.DefaultBudgetLimits()
+				cfg.Budget = &budget
+			}
+			cfg.Budget.MaxTokens = *source.LocalACP.MaxRunTokens
+		}
 	}
 	overlay := strings.TrimSpace(source.LocalACP.PromptOverlay)
 	if source.LocalACP.PromptOverlayFile != "" {
@@ -752,7 +765,7 @@ func decodeContextSizes(node yaml.Node) ([]contextSizeDocument, error) {
 
 func applyConfiguredSummarization(source runtimeDocument, cfg *deerflow.Config, explicit map[string]bool) error {
 	setting := source.Summarization
-	if !setting.Enabled {
+	if setting.Enabled != nil && !*setting.Enabled {
 		if !explicit["context-compaction"] {
 			cfg.Compaction.Enabled = false
 		}
@@ -761,17 +774,34 @@ func applyConfiguredSummarization(source runtimeDocument, cfg *deerflow.Config, 
 	if strings.TrimSpace(setting.ModelName) != "" {
 		return fmt.Errorf("summarization.model_name requires an explicit Go compaction model adapter")
 	}
+	if !explicit["context-compaction"] {
+		cfg.Compaction.Enabled = true
+	}
+	defaultThresholds := setting.Trigger.Kind == 0 || setting.Trigger.Tag == "!!null"
+	if defaultThresholds {
+		// Omitted thresholds use the same defaults as the CLI. A keep-only
+		// setting still needs decoding and validation below.
+		setting.Trigger = yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		if err := setting.Trigger.Encode([]map[string]any{}); err != nil {
+			return err
+		}
+	}
 	values, err := decodeContextSizes(setting.Trigger)
 	if err != nil {
 		return fmt.Errorf("summarization.trigger: %w", err)
 	}
-	if len(values) == 0 || len(values) > 8 {
+	if len(values) == 0 && !defaultThresholds || len(values) > 8 {
 		return fmt.Errorf("summarization.trigger must contain 1..8 supported thresholds")
 	}
 	// Go's Eino middleware accepts both message and token thresholds. Use its
 	// supported maxima for an omitted dimension so a single Python trigger does
 	// not acquire an earlier, unrelated threshold.
 	messages, tokens := 10_000, 2_000_000
+	if defaultThresholds {
+		// Resolve automatic tokens per role's selected model during assembly;
+		// no default message threshold should compact a large model early.
+		messages, tokens = 0, 0
+	}
 	for _, value := range values {
 		if math.IsNaN(value.Value) || math.IsInf(value.Value, 0) || value.Value != math.Trunc(value.Value) {
 			return fmt.Errorf("summarization.trigger must use whole messages or tokens")
@@ -792,6 +822,9 @@ func applyConfiguredSummarization(source runtimeDocument, cfg *deerflow.Config, 
 		}
 	}
 	keep := 20
+	if defaultThresholds {
+		keep = 8
+	}
 	if setting.Keep.Kind != 0 && setting.Keep.Tag != "!!null" {
 		values, err = decodeContextSizes(setting.Keep)
 		if err != nil || len(values) != 1 || values[0].Type != "messages" || math.IsNaN(values[0].Value) || math.IsInf(values[0].Value, 0) || values[0].Value != math.Trunc(values[0].Value) || values[0].Value < 1 || values[0].Value > 1000 {
@@ -799,7 +832,7 @@ func applyConfiguredSummarization(source runtimeDocument, cfg *deerflow.Config, 
 		}
 		keep = int(values[0].Value)
 	}
-	if messages <= keep+1 {
+	if messages > 0 && messages <= keep+1 {
 		return fmt.Errorf("summarization.trigger messages must exceed kept messages by at least two")
 	}
 	if !explicit["context-compaction"] {

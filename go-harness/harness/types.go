@@ -11,6 +11,7 @@ import (
 
 var (
 	ErrInvalidInput      = errors.New("invalid input")
+	ErrContextLimit      = errors.New("model context limit")
 	ErrNotFound          = errors.New("not found")
 	ErrBusy              = errors.New("session is busy")
 	ErrQueueTimeout      = errors.New("run queue timeout")
@@ -104,7 +105,17 @@ type RunEvent struct {
 	Usage        *Usage          `json:"usage,omitempty"`
 	ContextUsage *ContextUsage   `json:"contextUsage,omitempty"`
 	Plan         []PlanEntry     `json:"plan,omitempty"`
+	Timing       *ModelTiming    `json:"timing,omitempty"`
 	Receipt      *ToolReceipt    `json:"receipt,omitempty"`
+}
+
+// ModelTiming contains operational metadata only, never request or response text.
+type ModelTiming struct {
+	StartedAt    time.Time `json:"started_at"`
+	DurationMS   int64     `json:"duration_ms"`
+	FirstTokenMS *int64    `json:"first_token_ms,omitempty"`
+	RootBudgetID string    `json:"root_budget_id,omitempty"`
+	AttemptID    string    `json:"attempt_id,omitempty"`
 }
 
 type PermissionRequest struct {

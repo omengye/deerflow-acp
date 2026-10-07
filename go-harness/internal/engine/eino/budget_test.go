@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,6 +18,64 @@ import (
 
 func allowTool(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
 	return harness.AllowOnce, nil
+}
+
+func TestDefaultBudgetAllowsCumulativeTokensBeyondFormerLimit(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(fmt.Sprint(explicit), func(t *testing.T) {
+			limits := harness.DefaultBudgetLimits()
+			if explicit {
+				limits.MaxTokens = 200000
+			}
+			fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+				message := &schema.Message{Role: schema.Assistant, Content: "done", ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: 80000, CompletionTokens: 1, TotalTokens: 80001}}}
+				if call < 3 {
+					message.Content = ""
+					message.ToolCalls = []schema.ToolCall{{ID: fmt.Sprintf("read-%d", call), Type: "function", Function: schema.FunctionCall{Name: "read_workspace", Arguments: `{}`}}}
+				}
+				return schema.StreamReaderFromArray([]*schema.Message{message}), nil
+			}}
+			e := newTestEngine(t, Config{ChatModel: fake, Tools: []tool.BaseTool{&recordingTool{}}, Budget: limits})
+			var tokens int64
+			result, err := e.Run(context.Background(), request("long-context-budget"), func(_ context.Context, event harness.RunEvent) error {
+				if event.Usage != nil {
+					tokens += event.Usage.TotalTokens
+				}
+				return nil
+			}, allowTool)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if explicit {
+				if result.Limit != "tokens" || result.StopReason != "max_tokens" || fake.calls >= 4 {
+					t.Fatalf("explicit budget was ignored: result=%+v calls=%d", result, fake.calls)
+				}
+			} else if result.StopReason != "end_turn" || result.Limit != "" || fake.calls != 4 || tokens <= 200000 {
+				t.Fatalf("default stopped cumulative context spending: result=%+v calls=%d tokens=%d", result, fake.calls, tokens)
+			}
+		})
+	}
+}
+
+func TestExplicitBudgetAdvicePreservesUserInputAndOutputCap(t *testing.T) {
+	input := []*schema.Message{schema.SystemMessage("policy"), schema.UserMessage("original task")}
+	b := &runBudget{limits: harness.BudgetLimits{MaxTokens: 200000, MaxOutputTokens: 4096}, spent: 160000}
+	advised := b.inputWithBudgetAdvice(context.Background(), input)
+	if len(advised) != 3 || advised[0] != input[0] || advised[2] != input[1] || !strings.Contains(advised[1].Content, "40000 of 200000") || len(input) != 2 {
+		t.Fatalf("budget advice changed the original task: %+v", advised)
+	}
+	r, opts, err := b.reserve(advised, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap := model.GetCommonOptions(nil, opts...).MaxTokens; cap == nil || *cap != 4096 {
+		t.Fatalf("budget advice lost the output cap: %v", cap)
+	}
+	r.settle()
+	b.limits.MaxTokens = 0
+	if got := b.inputWithBudgetAdvice(context.Background(), input); len(got) != len(input) || got[1] != input[1] {
+		t.Fatal("unlimited runs received a cost-budget warning")
+	}
 }
 
 func TestBudgetStopsModelLoopBeforeNextRequest(t *testing.T) {

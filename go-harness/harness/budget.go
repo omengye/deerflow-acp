@@ -16,6 +16,8 @@ type BudgetLimits struct {
 // DefaultBudgetLimits is shared by the SDK and local executables. Quotas cover
 // the main agent and its children together. They count logical provider calls;
 // provider-internal transport retries may still incur additional charges.
+// Aggregate token spending is opt-in: replayed history counts on every model
+// call, so a fixed default would terminate otherwise healthy long tasks.
 func DefaultBudgetLimits() BudgetLimits {
-	return BudgetLimits{MaxModelCalls: 100, MaxToolCalls: 200, MaxTokens: 200_000, MaxOutputTokens: 4096, Timeout: 30 * time.Minute}
+	return BudgetLimits{MaxModelCalls: 100, MaxToolCalls: 200, MaxOutputTokens: 4096, Timeout: 30 * time.Minute}
 }

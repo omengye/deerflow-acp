@@ -431,7 +431,7 @@ func TestSDKNotificationContinuationSourceTamperBlocksResume(t *testing.T) {
 		t.Error("tampered source reached approval")
 		return harness.AllowOnce, nil
 	})
-	if !errors.Is(err, harness.ErrExecutionConflict) || f.calls.Load() != providerCalls {
+	if !errors.Is(err, harness.ErrExecutionUnresumable) || f.calls.Load() != providerCalls {
 		t.Fatalf("tampered source reached provider: err=%v calls=%d/%d", err, f.calls.Load(), providerCalls)
 	}
 	if _, err := os.Stat(filepath.Join(f.sess.CWD, "continued.txt")); !errors.Is(err, os.ErrNotExist) {

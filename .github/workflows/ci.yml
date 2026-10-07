@@ -48,3 +48,5 @@ jobs:
         run: ./scripts/test-desktop-source-identity.ps1
       - name: Validate build entry points
         run: ./scripts/test-go-build-entrypoints.ps1
+      - name: Test Windows package release gates
+        run: ./scripts/test-windows-package.ps1

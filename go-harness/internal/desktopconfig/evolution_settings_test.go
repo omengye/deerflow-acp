@@ -137,7 +137,7 @@ func TestEvolutionNewInvalidEditsRejectedEvenWhenDisabled(t *testing.T) {
 	}{
 		{"max_input_bytes", 1023}, {"max_input_bytes", 2097153}, {"max_output_tokens", 127},
 		{"max_output_tokens", 8193}, {"timeout_seconds", .5}, {"timeout_seconds", 301},
-		{"security_fail_closed", false}, {"mode", "auto_patch"}, {"moderation_model_name", "unknown"},
+		{"security_fail_closed", false}, {"mode", "unsupported"}, {"moderation_model_name", "unknown"},
 	} {
 		t.Run(fmt.Sprintf("%s-%v", edit.key, edit.value), func(t *testing.T) {
 			options, doc := reviewDocument(t)

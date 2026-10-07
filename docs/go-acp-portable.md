@@ -1,6 +1,17 @@
 # DeerFlow Go ACP package
 
-This package contains four local executables:
+Aggregate task token spending is unlimited by default. Set host YAML
+`local_acp.max_run_tokens` to a positive value to opt into a shared cost budget;
+`0` disables it. Direct Go executables also accept `--max-tokens`. Model/tool call
+counts, per-request output caps and execution timeouts remain enforced.
+Automatic context compaction follows each agent's selected model window, using
+75% after reserving output tokens and a 2% estimate margin. Only models without
+a configured window use a 32,000-token fallback. Explicit thresholds still work.
+Set `summarization.enabled: false` to opt out. Complete tool output remains in
+private snapshots; bounded previews and recent complete exchanges enter model
+context. Existing paused tasks retain their original immutable budget policy.
+
+This package contains five local executables:
 
 - `deerflow-acp` is the stdio Bridge for ACP clients. It discovers and starts
   the sibling `deerflow-acpd` when needed. Add `.exe` to these names on Windows.
@@ -8,6 +19,8 @@ This package contains four local executables:
   authenticated loopback IPC.
 - `deerflow-acp-go` runs the Go ACP agent directly over stdio without a daemon.
 - `deerflow-skill-go` initializes, validates and packages native skill content.
+- `deerflow-state-go` backs up, verifies and restores offline runtime state.
+  See [backup and restore](go-runtime-backup.md). Restore always uses a new directory.
 
 The Bridge starts the Eino Go daemon from `--daemon PATH`, then
 `DEER_FLOW_ACP_DAEMON`, or the sibling `deerflow-acpd` file, in that order.

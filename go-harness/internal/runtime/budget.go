@@ -45,7 +45,15 @@ func keepBudgetAlive(ctx context.Context, ledger *budget.Ledger, scope budget.Sc
 				if runCtx.Err() == nil {
 					probe, finish := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 					err := ledger.TaskTreeRootStopped(probe, scope.RootBudgetID)
+					readTimedOut := errors.Is(probe.Err(), context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded)
 					finish()
+					// This read-only poll shares SQLite's connection with business
+					// transactions. A busy connection is not a durable root stop.
+					// Retry on the next tick; effect admission and the lease heartbeat
+					// remain authoritative and still fail closed on persistence errors.
+					if readTimedOut && ctx.Err() == nil {
+						continue
+					}
 					if err != nil {
 						cancel(err)
 						if !errors.Is(err, harness.ErrTaskTreeStopped) {

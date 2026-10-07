@@ -36,11 +36,15 @@ $sourceFile = Join-Path $fixtureRepository 'source.txt'
 $fixtureBuilder = Join-Path $fixtureScripts 'build-deerflow-desktop-go.ps1'
 try {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'desktop-source-identity.ps1') -Destination $fixtureScripts
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'go-package-inputs.ps1') -Destination $fixtureScripts
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'build-deerflow-desktop-go.ps1') -Destination $fixtureScripts
+    $fixtureSkills = Join-Path $fixtureRepository 'skills'
+    $null = [IO.Directory]::CreateDirectory($fixtureSkills)
+    [IO.File]::WriteAllText((Join-Path $fixtureSkills 'SKILL.md'), '# Native fixture skill')
     [IO.File]::WriteAllText((Join-Path $fixtureRepository '.gitignore'), "ignored/`ndist/`n")
     [IO.File]::WriteAllText($sourceFile, "version one`n")
     $null = Invoke-DesktopSourceGit $fixtureRepository @('init', '--quiet')
-    $null = Invoke-DesktopSourceGit $fixtureRepository @('-c', 'core.autocrlf=false', 'add', '--', '.gitignore', 'source.txt', 'scripts')
+    $null = Invoke-DesktopSourceGit $fixtureRepository @('-c', 'core.autocrlf=false', 'add', '--', '.gitignore', 'source.txt', 'scripts', 'skills')
     $null = Invoke-DesktopSourceGit $fixtureRepository @('-c', 'user.name=Source identity fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=nonexistent-fixture-hooks', 'commit', '--quiet', '-m', 'fixture source one')
     $clean = Get-DesktopSourceIdentity -RepositoryRoot $fixtureRepository -RequireClean
     Assert-SourceFixture $clean.Clean 'fresh committed source must be clean'

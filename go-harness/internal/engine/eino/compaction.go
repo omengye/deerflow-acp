@@ -28,31 +28,22 @@ func normalizeCompaction(c harness.CompactionConfig) (harness.CompactionConfig, 
 	if !c.Enabled {
 		return c, nil
 	}
-	if c.ContextMessages == 0 {
-		c.ContextMessages = 80
-	}
-	if c.ContextTokens == 0 {
-		c.ContextTokens = 100_000
-	}
 	if c.KeepRecentMessages == 0 {
 		c.KeepRecentMessages = 8
 	}
-	if c.ContextMessages > 10_000 || c.ContextTokens > 2_000_000 || c.KeepRecentMessages > 1_000 || c.ContextMessages <= c.KeepRecentMessages+1 {
+	if c.ContextMessages > 10_000 || c.ContextTokens > 2_000_000 || c.KeepRecentMessages > 1_000 || c.ContextMessages > 0 && c.ContextMessages <= c.KeepRecentMessages+1 {
 		return c, fmt.Errorf("%w: compaction threshold must leave room beyond the recent window", harness.ErrInvalidInput)
 	}
 	return c, nil
 }
 
 func newCompactionMiddleware(ctx context.Context, c harness.CompactionConfig, tracked model.BaseModel[*schema.Message]) (adk.ChatModelAgentMiddleware, error) {
-	return summarization.New(ctx, &summarization.Config{
+	inner, err := summarization.New(ctx, &summarization.Config{
 		Model:   tracked,
 		Trigger: &summarization.TriggerCondition{ContextMessages: c.ContextMessages, ContextTokens: c.ContextTokens},
 		TokenCounter: func(_ context.Context, input *summarization.TokenCounterInput) (int, error) {
-			encoded, err := json.Marshal(input)
-			if err != nil {
-				return 0, err
-			}
-			return (len(encoded) + 3) / 4, nil
+			tokens, err := estimateModelTokens(input.Messages, input.Tools)
+			return int(tokens), err
 		},
 		Finalize: func(_ context.Context, original []*schema.Message, summary *schema.Message) ([]*schema.Message, error) {
 			return finalizeCompaction(original, summary, c.KeepRecentMessages)
@@ -61,6 +52,24 @@ func newCompactionMiddleware(ctx context.Context, c harness.CompactionConfig, tr
 		// makes one model call, without a hidden second budget reservation.
 		CustomFormatContextManagementInstruction: func(context.Context) string { return "" },
 	})
+	if err != nil {
+		return nil, err
+	}
+	return &guardedCompaction{ChatModelAgentMiddleware: inner, keep: c.KeepRecentMessages}, nil
+}
+
+type guardedCompaction struct {
+	adk.ChatModelAgentMiddleware
+	keep int
+}
+
+func (m *guardedCompaction) BeforeModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, modelCtx *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
+	// An oversized fresh request has no older history to summarize. Let normal
+	// window preflight enforce capacity instead of making a futile paid summary.
+	if _, err := finalizeCompaction(state.Messages, schema.AssistantMessage("compaction eligibility", nil), m.keep); err != nil {
+		return ctx, state, nil
+	}
+	return m.ChatModelAgentMiddleware.BeforeModelRewriteState(ctx, state, modelCtx)
 }
 
 func finalizeCompaction(original []*schema.Message, summary *schema.Message, keep int) ([]*schema.Message, error) {
@@ -81,8 +90,9 @@ func finalizeCompaction(original []*schema.Message, summary *schema.Message, kee
 	if start <= systemEnd {
 		return nil, errors.New("context compaction threshold leaves no old history")
 	}
-	// The newest user turn contains the active request and every subsequent
-	// assistant/tool exchange. Never retain a tool result without its call.
+	// Retain the active request and complete recent exchanges. Earlier exchanges
+	// within a long single turn can be summarized too; otherwise a first task
+	// could never compact. Never retain a tool result without its call.
 	activeUser := -1
 	for i := len(original) - 1; i >= systemEnd; i-- {
 		if original[i] != nil && original[i].Role == schema.User {
@@ -94,7 +104,9 @@ func finalizeCompaction(original []*schema.Message, summary *schema.Message, kee
 		return nil, errors.New("context compaction cannot locate the active user turn")
 	}
 	if start > activeUser {
-		start = activeUser
+		for start > activeUser && (original[start] == nil || original[start].Role == schema.Tool) {
+			start--
+		}
 	} else {
 		for start > systemEnd && (original[start] == nil || original[start].Role != schema.User) {
 			start--
@@ -140,6 +152,9 @@ func finalizeCompaction(original []*schema.Message, summary *schema.Message, kee
 	result = append(result, schema.UserMessage("<conversation_summary>\n"+summary.Content+"\n</conversation_summary>"))
 	if skills != "" {
 		result = append(result, schema.UserMessage(skills))
+	}
+	if start > activeUser {
+		result = append(result, original[activeUser])
 	}
 	result = append(result, recentMessages...)
 	return result, nil

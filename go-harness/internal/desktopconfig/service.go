@@ -23,6 +23,7 @@ type Options struct{ Config, UserData, Resources string }
 
 type service struct {
 	config, userData, resources string
+	skillDirectoryDiagnostics   []string
 }
 
 func Run(options Options, operation string, input json.RawMessage) (any, error) {
@@ -87,7 +88,7 @@ func decodeRequest(raw json.RawMessage, target any) error {
 	return nil
 }
 
-func (s service) init() error {
+func (s *service) init() error {
 	for _, part := range []string{"config", "data", "skills", "logs", "backups", filepath.Join("runtime", "acp-go")} {
 		if err := os.MkdirAll(filepath.Join(s.userData, part), 0700); err != nil {
 			return err
@@ -125,6 +126,9 @@ func (s service) init() error {
 	if err := copyInitialSkills(filepath.Join(s.resources, "skills"), paths.skills); err != nil {
 		return err
 	}
+	// Populate import skills before creating writable stores beneath skills:
+	// copyInitialSkills deliberately preserves an existing non-empty directory.
+	s.skillDirectoryDiagnostics = s.initializePortableSkillDirectories(data)
 	return nil
 }
 

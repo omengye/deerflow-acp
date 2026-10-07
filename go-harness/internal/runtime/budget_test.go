@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
 )
@@ -173,5 +174,73 @@ func TestRuntimePreservesHeartbeatPersistenceFailure(t *testing.T) {
 	}
 	if cancellationOnly(&budget.PersistenceError{Operation: "test", Err: context.Canceled}) {
 		t.Fatal("SQL cancellation became normal cancellation")
+	}
+}
+
+func TestRuntimeBudgetStopProbeContentionDoesNotCancelRun(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	s, native, ledger, session := budgetService(t, harness.BudgetLimits{}, budget.Config{})
+	if _, err := agents.NewController(native.DB()); err != nil {
+		t.Fatal(err)
+	}
+	req := harness.RunRequest{Session: session, RunID: NewID(), InputID: NewID(), Input: []harness.Content{{Type: "text", Text: "question"}}}
+	req.RootBudgetID = req.RunID
+	if err := s.Store.BeginRun(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	// SQLite has one shared connection. Holding it reproduces a slow business
+	// transaction without relying on CPU load or changing production deadlines.
+	conn, err := native.DB().Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	initialWaits := native.DB().Stats().WaitCount
+	runCtx, stop := keepBudgetAlive(ctx, ledger, foregroundBudgetScope(req))
+	defer func() {
+		conn.Close()
+		if err := stop(); err != nil {
+			t.Error(err)
+		}
+	}()
+	// A second pool wait proves the first stop probe expired and was retried.
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for native.DB().Stats().WaitCount < initialWaits+2 {
+		select {
+		case <-runCtx.Done():
+			t.Fatalf("database contention cancelled a healthy run: %v", context.Cause(runCtx))
+		case <-tick.C:
+		}
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.DB().ExecContext(ctx, `INSERT INTO harness_task_tree_stops(root_id,node_id,created_at) VALUES(?,'',?)`, req.RootBudgetID, timestamp()); err != nil {
+		t.Fatal(err)
+	}
+	// Retrying a timed-out read must still observe a real durable cancellation.
+	<-runCtx.Done()
+	if !errors.Is(context.Cause(runCtx), harness.ErrTaskTreeStopped) {
+		t.Fatalf("durable root stop was not observed: %v", context.Cause(runCtx))
+	}
+}
+
+func TestRuntimeBudgetStopProbePreservesDatabaseFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	_, native, ledger, _ := budgetService(t, harness.BudgetLimits{}, budget.Config{})
+	runCtx, stop := keepBudgetAlive(ctx, ledger, budget.Scope{RootBudgetID: "fixture-root"})
+	defer stop()
+	if err := native.DB().Close(); err != nil {
+		t.Fatal(err)
+	}
+	<-runCtx.Done()
+	if ctx.Err() != nil || context.Cause(runCtx) == nil {
+		t.Fatalf("database failure did not cancel the run: %v", context.Cause(runCtx))
+	}
+	if err := stop(); err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("database failure was hidden: %v", err)
 	}
 }

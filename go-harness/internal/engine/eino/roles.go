@@ -315,8 +315,8 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 	if e.config.Compaction.Enabled {
 		private := media
 		private.importer, private.publish = nil, nil
-		metered := &trackedModel{inner: chat, io: lifecycle, budget: budget, sink: sink, media: &private, settings: spec.ModelSettings, tuning: tuning, role: true}
-		compaction, err := newCompactionMiddleware(ctx, e.config.Compaction, metered)
+		metered := &trackedModel{inner: chat, io: lifecycle, budget: budget, sink: sink, media: &private, settings: spec.ModelSettings, tuning: tuning, role: true, contextWindow: e.config.ContextWindows[spec.Model]}
+		compaction, err := newCompactionMiddleware(ctx, windowCompaction(e.config.Compaction, e.config.ContextWindows[spec.Model], outputReserve(budget.limits.MaxOutputTokens, spec.ModelSettings)), metered)
 		if err != nil {
 			return nil, err
 		}
@@ -326,7 +326,7 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 		handlers = append(handlers, &roleContextMiddleware{request: req})
 	}
 	handlers = append(handlers,
-		&modelLifecycle{io: lifecycle, budget: budget, sink: sink, media: &media, settings: spec.ModelSettings, tuning: tuning, role: true},
+		&modelLifecycle{io: lifecycle, budget: budget, sink: sink, media: &media, settings: spec.ModelSettings, tuning: tuning, role: true, contextWindow: e.config.ContextWindows[spec.Model]},
 		&toolMiddleware{sink: sink, permissions: permissions, protected: protected, policy: roleToolPolicy(spec, len(children) > 0, ownedBackground), permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, durableTaskWait: ownedBackground["task_wait"], io: lifecycle, budget: budget, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore})
 	child, err := deep.New(ctx, &deep.Config{
 		Name: name, Description: spec.Description, Instruction: e.config.Instruction + "\n\n" + spec.Instruction + extensions.InstructionAppend,
