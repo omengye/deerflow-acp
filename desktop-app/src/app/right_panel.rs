@@ -884,7 +884,7 @@ impl RightPanelSurface {
 
     fn label(&self) -> String {
         match self {
-            Self::DeerFlowTasks => "DeerFlow 任务树".into(),
+            Self::DeerFlowTasks => "DeerFlow 运行状态".into(),
             Self::Browser(_) => tr!("right_panel.browser"),
             Self::Terminal(_) => tr!("right_panel.terminal"),
             Self::BackgroundWork { key, title } => {
@@ -2165,7 +2165,7 @@ impl Waku {
             self.right_panel_pending_terminal_focus = None;
         }
         let body = match self.active_right_panel_surface().cloned() {
-            Some(RightPanelSurface::DeerFlowTasks) => self.render_deerflow_task_tree(cx),
+            Some(RightPanelSurface::DeerFlowTasks) => self.render_deerflow_runtime(cx),
             None => self.render_right_panel_chooser(cx).into_any_element(),
             Some(RightPanelSurface::BackgroundWork { key, .. }) => self
                 .render_background_work_surface(&key, cx)

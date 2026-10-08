@@ -96,6 +96,16 @@ impl Waku {
         runtime: &mut SessionRuntime,
         item: ActivityItem,
     ) {
+        if let Some(session) = self
+            .state
+            .sessions
+            .iter()
+            .find(|s| s.id == session_id && s.provider == ProviderKind::DeerFlow)
+        {
+            let browser = self.deerflow_tasks.entry(session_id).or_default();
+            browser.sync_runtime(session);
+            browser.runtime_view.observe(&item);
+        }
         let previous_phase = runtime.stream_phase;
         if previous_phase == Some(StreamPhase::Text) {
             self.finish_streaming_assistant(session_id);
@@ -109,7 +119,13 @@ impl Waku {
             Some(StreamPhase::Reasoning | StreamPhase::Activity)
         );
         if let Some(session) = self.state.session_mut(session_id) {
+            let turn_id = session.active_turn_id();
             for block in session.transcript_blocks.iter_mut().rev() {
+                // ACP reuses the plan ID across turns. A new plan must not
+                // overwrite the previous turn's saved progress.
+                if item.kind == ActivityKind::Plan && block.turn_id != turn_id {
+                    continue;
+                }
                 let matching = block.activities.iter_mut().rev().find(|activity| {
                     item.source_id
                         .as_ref()

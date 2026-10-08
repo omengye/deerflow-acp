@@ -3,6 +3,7 @@
 use super::*;
 mod artifacts;
 mod receipts;
+pub(super) mod runtime_view;
 use crate::ui::ActivationExt;
 use std::collections::BTreeMap;
 use waku_protocol::deerflow_tasks::{
@@ -78,6 +79,10 @@ struct CachedNode {
     node: Node,
     title: SharedString,
     subtitle: SharedString,
+    runtime_description: SharedString,
+    progress: SharedString,
+    runtime_metadata: SharedString,
+    started_at: Option<u64>,
     details: SharedString,
     result: SharedString,
 }
@@ -276,11 +281,60 @@ impl CachedNode {
         let bytes = serde_json::to_vec(&node)?.len() * 2
             + lines.iter().map(String::len).sum::<usize>()
             + result.len();
+        let runtime_description: SharedString = if !node.blocked_reason.is_empty() {
+            format!("{} · {}", node.description, node.blocked_reason)
+        } else if node.description.is_empty() {
+            "宿主未提供任务描述".into()
+        } else {
+            node.description.clone()
+        }
+        .into();
+        let progress: SharedString = node
+            .usage
+            .as_ref()
+            .map_or_else(
+                || "调用进度尚未上报".to_owned(),
+                |usage| {
+                    format!(
+                        "{}模型 {} 次 · 工具 {} 次 · {} tokens{}",
+                        if node.mode == "root" {
+                            "含子 Agent · "
+                        } else {
+                            ""
+                        },
+                        usage.model_calls,
+                        usage.tool_calls,
+                        usage.total_tokens,
+                        if usage.estimated { "（估算）" } else { "" }
+                    )
+                },
+            )
+            .into();
+        let runtime_metadata: SharedString = format!(
+            "{} · {}",
+            subtitle,
+            if node.model.is_empty() {
+                "模型未上报"
+            } else {
+                &node.model
+            }
+        )
+        .into();
+        let started_at = node
+            .created_at
+            .as_ref()
+            .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+            .and_then(|time| u64::try_from(time.timestamp()).ok());
+        let bytes = bytes + runtime_description.len() + progress.len() + runtime_metadata.len();
         Ok(Self {
             bytes,
             node,
             title,
             subtitle,
+            runtime_description,
+            progress,
+            runtime_metadata,
+            started_at,
             details: lines.join("\n\n").into(),
             result: result.into(),
         })
@@ -302,6 +356,8 @@ pub(super) struct TaskBrowser {
     live_count: usize,
     detached_count: usize,
     child_active_count: usize,
+    pub(super) runtime_view: runtime_view::RuntimeView,
+    show_management: bool,
     uncached_live: bool,
     uncached_detached: bool,
     partial_view: bool,
@@ -345,6 +401,8 @@ impl Default for TaskBrowser {
             live_count: 0,
             detached_count: 0,
             child_active_count: 0,
+            runtime_view: Default::default(),
+            show_management: false,
             uncached_live: false,
             uncached_detached: false,
             partial_view: false,
@@ -379,6 +437,14 @@ impl Default for TaskBrowser {
 }
 
 impl TaskBrowser {
+    pub(super) fn sync_runtime(&mut self, session: &AgentSession) -> bool {
+        if self.runtime_view.sync(session) {
+            self.runtime_view.rebuild_agents(&self.nodes);
+            true
+        } else {
+            false
+        }
+    }
     pub(super) fn has_live(&self) -> bool {
         self.live_count > 0 || self.uncached_live
     }
@@ -426,6 +492,15 @@ impl TaskBrowser {
             cursor,
             limit: PAGE_SIZE,
         }
+    }
+    fn runtime_page_action(&self) -> Option<Action> {
+        (self.has_more
+            && !self.show_management
+            && !self.partial_view
+            && self.root_filter.is_none()
+            && self.error.is_none()
+            && self.nodes.len() + PAGE_SIZE as usize <= MAX_NODES)
+            .then(|| self.list_action(Some(self.cursor.clone())))
     }
     fn selected(&self) -> Option<&CachedNode> {
         self.nodes.get(self.selected.as_ref()?)
@@ -502,6 +577,7 @@ impl TaskBrowser {
         }
         self.rows = rows;
         self.list.reset(self.rows.len());
+        self.runtime_view.rebuild_agents(&self.nodes);
     }
     fn begin(&mut self, action: Action) -> Option<Command> {
         let supported = if matches!(
@@ -1136,6 +1212,16 @@ impl Waku {
         }
     }
     pub(super) fn maybe_refresh_deerflow_tasks(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = self.state.sessions.iter().find(|s| {
+            Some(s.id) == self.state.selected_session && s.provider == ProviderKind::DeerFlow
+        }) {
+            let browser = self.deerflow_tasks.entry(session.id).or_default();
+            if browser.sync_runtime(session) {
+                browser.refresh_needed |=
+                    browser.capabilities.tree && !browser.connection.is_empty();
+                cx.notify();
+            }
+        }
         let selected = self.state.selected_session;
         let visible = self.right_panel_visible
             && matches!(
@@ -1150,22 +1236,30 @@ impl Waku {
             {
                 continue;
             }
+            // Review forms need a pinned version while they are visible.
+            // Returning to the overview must resume live status refresh.
+            let reviewing = browser.show_management
+                && (browser.receipts.review.is_some()
+                    || browser.confirmation.is_some()
+                    || !browser.previews.is_empty());
             if let Some(action) = browser.next.take() {
                 requests.push((*session, action));
-            } else if browser.refresh_needed
-                && browser.receipts.review.is_none()
-                && browser.confirmation.is_none()
-                && browser.previews.is_empty()
-            {
+            } else if browser.refresh_needed && !reviewing {
                 browser.refresh_needed = false;
                 requests.push((*session, browser.list_action(None)));
             } else if selected == Some(*session)
                 && visible
+                && browser.runtime_page_action().is_some()
+                && !reviewing
+            {
+                // Only the visible runtime overview follows historical pages
+                // automatically, until the bounded cache is full.
+                requests.push((*session, browser.runtime_page_action().unwrap()));
+            } else if selected == Some(*session)
+                && visible
                 && browser.capabilities.tree
-                && browser.receipts.review.is_none()
+                && !reviewing
                 && browser.last_refresh.elapsed() >= Duration::from_secs(5)
-                && browser.confirmation.is_none()
-                && browser.previews.is_empty()
                 && !browser.has_more
                 && !browser.partial_view
             {
@@ -1178,13 +1272,20 @@ impl Waku {
     }
     fn open_deerflow_tasks(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self
-            .selected_session()
+            .state
+            .sessions
+            .iter()
+            .find(|s| Some(s.id) == self.state.selected_session)
             .filter(|s| s.provider == ProviderKind::DeerFlow)
         else {
             return;
         };
         let id = session.id;
         let has_cursor = session.provider_cursor.is_some();
+        self.deerflow_tasks
+            .entry(id)
+            .or_default()
+            .sync_runtime(session);
         self.open_right_panel_surface(RightPanelSurface::DeerFlowTasks, cx);
         if let Some(browser) = self.deerflow_tasks.get(&id) {
             if browser.pending.is_none()
@@ -1212,7 +1313,7 @@ impl Waku {
         Some(
             task_button(
                 "deerflow-task-tree-chip",
-                format!("任务与工具核对 · {count}"),
+                format!("运行状态 · {count} 个子 Agent"),
                 false,
                 cx,
                 |this, _, cx| this.open_deerflow_tasks(cx),
@@ -1220,7 +1321,19 @@ impl Waku {
             .into_any_element(),
         )
     }
-    pub(super) fn render_deerflow_task_tree(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_deerflow_runtime(&self, cx: &mut Context<Self>) -> AnyElement {
+        let management = self
+            .state
+            .selected_session
+            .and_then(|session| self.deerflow_tasks.get(&session))
+            .is_some_and(|browser| browser.show_management);
+        if management {
+            self.render_deerflow_task_tree(cx)
+        } else {
+            self.render_deerflow_runtime_view(cx)
+        }
+    }
+    fn render_deerflow_task_tree(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::current(cx);
         let Some(session) = self
             .selected_session()
@@ -1237,7 +1350,20 @@ impl Waku {
             .flex_col()
             .gap(px(8.0))
             .p(px(12.0))
-            .overflow_hidden();
+            .overflow_hidden()
+            .child(task_button(
+                "df-runtime-back",
+                "返回运行状态",
+                false,
+                cx,
+                move |this, _, cx| {
+                    this.deerflow_tasks
+                        .entry(session)
+                        .or_default()
+                        .show_management = false;
+                    cx.notify();
+                },
+            ));
         let Some(browser) = self.deerflow_tasks.get(&session) else {
             return panel
                 .child(task_text(
@@ -2044,6 +2170,27 @@ mod tests {
         assert!(b.has_live_detached());
         assert!(b.stale);
         assert!(b.pending.is_none());
+    }
+    #[test]
+    fn runtime_overview_follows_pages_while_management_and_failed_pages_stay_manual() {
+        let mut b = browser();
+        let command = b.begin(b.list_action(None)).unwrap();
+        b.accept(
+            &command,
+            page(vec![node("root/run", "", "root", 0)], "next"),
+        )
+        .unwrap();
+        assert!(
+            matches!(b.runtime_page_action(), Some(Action::List { cursor: Some(cursor), .. }) if cursor == "next")
+        );
+        b.show_management = true;
+        assert!(b.runtime_page_action().is_none());
+        b.show_management = false;
+        b.error = Some("cache limit".into());
+        assert!(b.runtime_page_action().is_none());
+        b.error = None;
+        b.root_filter = Some("run".into());
+        assert!(b.runtime_page_action().is_none());
     }
     #[test]
     fn deerflow_tree_live_keyset_pages_preserve_unseen_nodes_until_traversal_finishes() {

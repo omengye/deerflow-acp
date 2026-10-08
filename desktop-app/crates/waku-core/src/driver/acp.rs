@@ -2140,8 +2140,10 @@ fn finish_prompt(
         Ok(response) => response,
         Err(error) => {
             let mut message = error.to_string();
-            if message.contains("reconciliation_required") || message.contains("Uncertain tool effects require review") {
-                message.push_str("\n打开对话上方的「任务与工具核对」，读取待核对回执，核实实际结果后填写说明并提交核对；然后发送新消息继续。核对不会重新执行工具。");
+            if message.contains("reconciliation_required")
+                || message.contains("Uncertain tool effects require review")
+            {
+                message.push_str("\n打开对话上方的「运行状态」，进入「任务详情与管理」读取待核对回执，核实实际结果后填写说明并提交核对；然后发送新消息继续。核对不会重新执行工具。");
             }
             let _ = events.send(DriverEvent::Error(message));
             let _ = events.send(DriverEvent::TurnFinished {
@@ -2606,6 +2608,9 @@ fn handle_session_update(
                 Some(format!("{completed}/{total} completed")),
                 total > 0 && completed == total,
             )
+            // Keep the native entries for runtime progress. Markdown remains
+            // the transcript presentation, not the source of todo status.
+            .with_arguments(Some(json!({"entries": entries}).to_string()))
             .with_output(output);
             let _ = events.send(DriverEvent::RichActivity(item));
         }
@@ -3581,6 +3586,12 @@ mod tests {
             if !item.complete && item.kind == ActivityKind::Plan && item.output.as_deref().unwrap().contains("Write the report (in progress)")));
         assert!(matches!(&seen[1], DriverEvent::RichActivity(item)
             if item.complete && item.detail.as_deref() == Some("2/2 completed")));
+        let DriverEvent::RichActivity(item) = &seen[0] else {
+            panic!("missing plan");
+        };
+        let plan: Value = serde_json::from_str(item.arguments.as_deref().unwrap()).unwrap();
+        assert_eq!(plan["entries"][1]["status"], "in_progress");
+        assert_eq!(plan["entries"][0]["priority"], "high");
     }
 
     fn stored_image_attachment(

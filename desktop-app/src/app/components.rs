@@ -1496,6 +1496,11 @@ pub(super) fn activity_disclosure_sections(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .filter(|_| !shows_diff)
+        // Native ACP plans already have a readable checklist in output.
+        // Their structured entries are retained for the runtime overview.
+        .filter(|_| {
+            activity.kind != ActivityKind::Plan || activity.source_id.as_deref() != Some("acp-plan")
+        })
     {
         sections.push(ActivityDisclosureSection {
             kind: ActivityDisclosureSectionKind::Arguments,
