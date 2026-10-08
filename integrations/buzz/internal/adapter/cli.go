@@ -264,7 +264,11 @@ func (b *BuzzCLI) write(ctx context.Context, args []string, input string) (map[s
 			return &CLIError{"delivery_unknown", "successful write returned an invalid receipt"}
 		}
 		if result["accepted"] == false {
-			return &CLIError{"rejected", "relay rejected the write"}
+			detail := "relay rejected the write"
+			if message, ok := result["message"].(string); ok && strings.TrimSpace(message) != "" {
+				detail += ": " + message
+			}
+			return &CLIError{"rejected", b.Config.redact(detail)}
 		}
 		return nil
 	})
@@ -286,5 +290,9 @@ func (b *BuzzCLI) Send(ctx context.Context, channel, reply, body string) (string
 }
 func (b *BuzzCLI) Edit(ctx context.Context, id, body string) error {
 	_, err := b.write(ctx, []string{"messages", "edit", "--event", id, "--content", body}, "")
+	return err
+}
+func (b *BuzzCLI) React(ctx context.Context, id, emoji string) error {
+	_, err := b.write(ctx, []string{"reactions", "add", "--event", id, "--emoji", emoji}, "")
 	return err
 }

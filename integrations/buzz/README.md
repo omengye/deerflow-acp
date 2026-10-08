@@ -5,7 +5,7 @@
 ## Windows 使用
 
 1. 解压当前 Eino Go 桌面发布包，打开桌面设置并配置模型，确认工作区目录存在。
-2. 解压 Buzz 适配器 ZIP，安装支持 `messages get/send/edit`、`media get` 的官方 Buzz CLI。
+2. 解压 Buzz 适配器 ZIP，安装支持 `messages get/send/edit`、`reactions add`、`media get` 的官方 Buzz CLI。
 3. 复制 `adapter.example.toml` 为 `adapter.toml`，设置 `buzz.command`、relay、agent 公钥、`deerflow.desktop_root` 和工作区。
 4. 复制 `.env.example` 为 `.env`，填入已有 `BUZZ_PRIVATE_KEY` 和可选 `BUZZ_AUTH_TAG`。私钥必须与 agent 公钥匹配。
 5. 配置 `allowed_pubkeys`。留空且存在 owner attestation 时，仅接受该 owner。公共频道仍要求提及 agent 的 Nostr p-tag。显式 `allow_any_sender=true` 才允许所有发送者。
@@ -22,7 +22,30 @@
 
 `replay_existing=false` 对首次发现的频道记录已有消息边界；后续重启沿用已保存游标。保存消息和推进游标使用同一事务，同一秒的消息重叠读取并按 event ID 去重。时间戳分页无法继续或超过 `max_poll_pages` 时保留游标并报告失败。
 
+## 收到消息的表情确认
+
+默认在原消息上添加 👀，表示消息已收到，然后依次向 ACP 提交任务。本次从数据库读取的待处理消息会先统一确认，再开始执行任务。仅确认符合发送者、提及和消息类型规则的消息；首次启动跳过的历史消息不添加表情。
+
+旧配置无需补充字段即可启用。可以在 `adapter.toml` 中自定义或关闭：
+
+```toml
+[buzz.acknowledgement]
+enabled = true
+emoji = "👀"
+timeout_seconds = 3
+```
+
+设置 `enabled = false` 可关闭。启动检查在启用时验证本地 CLI 的 `reactions add --help`。表情使用独立超时，失败只记录日志，继续向 ACP 提交任务。每条消息在发送表情前保存尝试标记，丢失确认、任务重试或适配器重启均不会再次自动发送；明确可重试的连接错误仍可在该次超时范围内重试。若恰好在保存标记后崩溃，该消息可能没有表情，但任务仍可正常处理。
+
+适配器仍按 `poll_interval_seconds` 轮询，任务执行期间的新消息在下一轮读取后才会确认。此表情表示收到任务，最终结果仍以线程回复为准。
+
+启动日志包含 `acknowledgement_enabled=true` 和确认表情；发送成功时记录 `Buzz receipt reaction sent`，失败时记录 event ID、错误分类和脱敏后的具体原因。若源码已有该功能，但启动日志缺少确认表情字段，检查是否仍在运行旧 EXE。`start.ps1` 优先运行同目录的 `buzz-deerflow-adapter.exe`，不存在时才使用 `bin/buzz-deerflow-adapter.exe`；修改源码后必须重新构建并重启，单改配置不会更新旧程序。
+
 ## 故障恢复
+
+启动日志中的 `Buzz lifecycle update unavailable` 是非致命警告，表示资料、状态或在线心跳更新失败；日志的 `operation` 和脱敏后的 `detail` 会指出具体操作和原因，适配器继续收取消息。`permission_policy=deny` 只限制 DeerFlow 工具审批，与 Buzz 鉴权无关。
+
+若 `operation="users set-presence"` 返回 `Authentication failed: error: internal error recording agent owner`，这是 Relay 在线状态鉴权流程报告的服务端错误。可临时将本地 `adapter.toml` 已有的 `[buzz.lifecycle]` 中 `presence_enabled` 改为 `false`，停止适配器后重新运行 `start.bat`。资料和状态更新仍保留，但 Buzz 不再收到在线心跳；Relay 修复后改回 `true`。不要删除数据库、更换私钥或放宽发送者与工具权限来绕过此错误。
 
 提交模型任务前保存 `processing` 状态，模型回复保存后才进入发送流程。Buzz 暂时不可启动、明确可重试的连接错误会重试；已经生成的回复不会再次调用模型。发送前保存 `delivering` 状态。
 

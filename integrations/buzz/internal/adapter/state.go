@@ -58,7 +58,7 @@ func OpenState(path string) (*State, error) {
 			return nil, err
 		}
 	}
-	for _, column := range []struct{ table, name, definition string }{{"inbox_messages", "tags_json", "TEXT NOT NULL DEFAULT '[]'"}, {"sessions", "backend_id", "TEXT NOT NULL DEFAULT ''"}} {
+	for _, column := range []struct{ table, name, definition string }{{"inbox_messages", "tags_json", "TEXT NOT NULL DEFAULT '[]'"}, {"inbox_messages", "acknowledgement_attempted", "INTEGER NOT NULL DEFAULT 0"}, {"sessions", "backend_id", "TEXT NOT NULL DEFAULT ''"}} {
 		rows, e := db.Query("PRAGMA table_info(" + column.table + ")")
 		if e != nil {
 			return nil, e
@@ -211,6 +211,18 @@ func (s *State) PutSession(conversation, id, workspace, backend string) error {
 	_, err := s.db.Exec(`INSERT INTO sessions(conversation_key,session_id,workspace,backend_id) VALUES(?,?,?,?) ON CONFLICT(conversation_key) DO UPDATE SET session_id=excluded.session_id,workspace=excluded.workspace,backend_id=excluded.backend_id,updated_at=CURRENT_TIMESTAMP`, conversation, id, workspace, backend)
 	return err
 }
+
+// Persist the acknowledgement attempt before publishing. A lost receipt or a
+// restart must not repeat the reaction, and must not quarantine the ACP task.
+func (s *State) ClaimAcknowledgement(ctx context.Context, key string) (bool, error) {
+	r, err := s.db.ExecContext(ctx, `UPDATE inbox_messages SET acknowledgement_attempted=1 WHERE message_key=? AND status='pending' AND response_content IS NULL AND acknowledgement_attempted=0`, key)
+	if err != nil {
+		return false, err
+	}
+	n, err := r.RowsAffected()
+	return n == 1, err
+}
+
 func (s *State) BeginPrompt(key string) error {
 	r, err := s.db.Exec(`UPDATE inbox_messages SET status='processing' WHERE message_key=? AND status='pending' AND response_content IS NULL`, key)
 	if err != nil {

@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +60,11 @@ func TestConfigPolicies(t *testing.T) {
 		{"bad auth", func(c *Config) {}, testSecret, "secret-value", false},
 		{"bad relay", func(c *Config) { c.Buzz.RelayURL = "file:///tmp" }, testSecret, "", false},
 		{"bad limits", func(c *Config) { c.Adapter.MaxPages = 0 }, testSecret, "", false},
+		{"custom receipt emoji", func(c *Config) { c.Buzz.Acknowledgement.Emoji = "👍" }, testSecret, "", true},
+		{"empty receipt emoji", func(c *Config) { c.Buzz.Acknowledgement.Emoji = "  " }, testSecret, "", false},
+		{"disabled receipt", func(c *Config) { c.Buzz.Acknowledgement.Enabled = false; c.Buzz.Acknowledgement.Emoji = "" }, testSecret, "", true},
+		{"zero receipt timeout", func(c *Config) { c.Buzz.Acknowledgement.Timeout = 0 }, testSecret, "", false},
+		{"NaN receipt timeout", func(c *Config) { c.Buzz.Acknowledgement.Timeout = math.NaN() }, testSecret, "", false},
 		{"missing workspace", func(c *Config) { c.Deerflow.Workspace = filepath.Join(t.TempDir(), "absent") }, testSecret, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -114,5 +120,16 @@ func TestLoadConfigPathsAndArgs(t *testing.T) {
 	}
 	if c.Deerflow.Workspace != root || !filepath.IsAbs(c.State.Path) {
 		t.Fatal("paths not based on TOML")
+	}
+	if !c.Buzz.Acknowledgement.Enabled || c.Buzz.Acknowledgement.Emoji != "👀" || c.Buzz.Acknowledgement.Timeout != 3 {
+		t.Fatal("old configuration did not inherit receipt defaults")
+	}
+	body += "[buzz.acknowledgement]\nenabled=false\nemoji='👍'\ntimeout_seconds=2\n"
+	if err = os.WriteFile(p, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err = LoadConfig(p)
+	if err != nil || c.Buzz.Acknowledgement.Enabled || c.Buzz.Acknowledgement.Emoji != "👍" || c.Buzz.Acknowledgement.Timeout != 2 {
+		t.Fatal("receipt override ignored", err)
 	}
 }

@@ -97,7 +97,16 @@ func TestNativeReleaseBuzzIntegration(t *testing.T) {
 			a.Agent = client
 			t.Cleanup(client.Close)
 			sends := 0
-			a.Buzz.runner = func(_ context.Context, _ []string, input string, _ bool, _ io.Writer, _ int64) ([]byte, error) {
+			reactions := 0
+			initialModelCalls := calls.Load()
+			a.Buzz.runner = func(_ context.Context, args []string, input string, _ bool, _ io.Writer, _ int64) ([]byte, error) {
+				if args[0] == "reactions" {
+					reactions++
+					if calls.Load() != initialModelCalls {
+						t.Error("model started before receipt reaction")
+					}
+					return []byte(`{"accepted":true}`), nil
+				}
 				sends++
 				if policy == "allow_once" && !strings.Contains(input, "Done.") {
 					t.Error("missing native model response", input)
@@ -114,10 +123,10 @@ func TestNativeReleaseBuzzIntegration(t *testing.T) {
 				t.Fatal(e)
 			}
 			counts, _ := a.State.Counts()
-			if counts["done"] != 1 || sends != 1 {
+			if counts["done"] != 1 || sends != 1 || reactions != 1 {
 				var detail string
 				_ = a.State.db.QueryRow(`SELECT COALESCE(last_error,'') FROM inbox_messages WHERE message_key=?`, m.ID).Scan(&detail)
-				t.Fatal(counts, sends, detail, diagnostics.String())
+				t.Fatal(counts, sends, reactions, detail, diagnostics.String())
 			}
 			_, e := os.Stat(filepath.Join(a.Config.Deerflow.Workspace, "buzz-result.txt"))
 			if policy == "allow_once" && e != nil {

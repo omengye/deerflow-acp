@@ -15,6 +15,12 @@ allow_any_sender = false
 message_kinds = [9]
 channel_names = {}
 
+[buzz.acknowledgement]
+# React to admitted user messages before sending their prompts to ACP.
+enabled = true
+emoji = "👀"
+timeout_seconds = 3
+
 [buzz.profile]
 name = "DeerFlow"
 about = "DeerFlow Eino Go agent"

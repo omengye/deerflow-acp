@@ -51,7 +51,7 @@ func (a *App) lifecycle(ctx context.Context, online bool) {
 	defer cancel()
 	write := func(args []string) {
 		if _, err := a.Buzz.write(bounded, args, ""); err != nil {
-			slog.Warn("Buzz lifecycle update unavailable", "category", category(err))
+			slog.Warn("Buzz lifecycle update unavailable; continuing adapter", "operation", strings.Join(args[:2], " "), "category", category(err), "detail", c.redact(err.Error()))
 		}
 	}
 	if online {
@@ -119,6 +119,7 @@ func (a *App) Run(ctx context.Context, once bool) error {
 	}
 	a.Observer = observer
 	a.lifecycle(ctx, true)
+	slog.Info("Buzz adapter ready; starting message polling", "presence_enabled", a.Config.Buzz.Lifecycle.Presence, "status_enabled", a.Config.Buzz.Lifecycle.Status)
 	defer func() {
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -262,6 +263,18 @@ func (a *App) processPending(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Acknowledge the admitted batch before a long ACP turn can delay feedback
+	// for the other messages. Saved replies and unauthorized senders are skipped.
+	if a.Config.Buzz.Acknowledgement.Enabled {
+		for _, message := range messages {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if message.Response == nil && a.Config.eligible(message.Message) {
+				a.acknowledge(ctx, message)
+			}
+		}
+	}
 	for _, message := range messages {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -301,6 +314,25 @@ func (a *App) processPending(ctx context.Context) error {
 	}
 	return nil
 }
+
+func (a *App) acknowledge(ctx context.Context, message Pending) {
+	claimed, err := a.State.ClaimAcknowledgement(ctx, message.Key)
+	if err != nil {
+		slog.Warn("Buzz receipt reaction could not be recorded; continuing task", "event_id", message.ID, "category", category(err), "detail", a.Config.redact(err.Error()))
+		return
+	}
+	if !claimed {
+		return
+	}
+	bounded, cancel := context.WithTimeout(ctx, seconds(a.Config.Buzz.Acknowledgement.Timeout))
+	defer cancel()
+	if err = a.Buzz.React(bounded, message.ID, a.Config.Buzz.Acknowledgement.Emoji); err != nil {
+		slog.Warn("Buzz receipt reaction unavailable; continuing task", "event_id", message.ID, "category", category(err), "detail", a.Config.redact(err.Error()))
+		return
+	}
+	slog.Info("Buzz receipt reaction sent", "event_id", message.ID, "emoji", a.Config.Buzz.Acknowledgement.Emoji)
+}
+
 func (a *App) processMessage(ctx context.Context, message Pending) error {
 	response := message.Response
 	if response == nil {

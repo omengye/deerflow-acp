@@ -1,5 +1,6 @@
 !.env.example
 /bin/
+/buzz-deerflow-adapter.exe
 /adapter.toml.bak-*
 /data/
 /.test-tmp*/

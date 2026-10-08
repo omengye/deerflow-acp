@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -81,5 +82,20 @@ func TestCLIMalformedPageDoesNotAdvance(t *testing.T) {
 	}}
 	if _, e := b.Messages(context.Background(), Channel{ID: "c"}, 200, nil, nil); e == nil {
 		t.Fatal("invalid page accepted")
+	}
+}
+
+func TestCLIReactionContract(t *testing.T) {
+	id := strings.Repeat("b", 64)
+	calls := 0
+	b := BuzzCLI{Config: testConfig(t), runner: func(_ context.Context, args []string, input string, write bool, _ io.Writer, _ int64) ([]byte, error) {
+		calls++
+		if !reflect.DeepEqual(args, []string{"reactions", "add", "--event", id, "--emoji", "👍"}) || input != "" || !write {
+			t.Fatal("incorrect reaction command", args, input, write)
+		}
+		return []byte(`{"accepted":true}`), nil
+	}}
+	if err := b.React(context.Background(), id, "👍"); err != nil || calls != 1 {
+		t.Fatal(err, calls)
 	}
 }

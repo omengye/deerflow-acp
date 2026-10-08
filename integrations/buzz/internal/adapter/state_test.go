@@ -32,6 +32,16 @@ func TestStateMigrationAndBackendBoundary(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	// A pre-acknowledgement inbox already contains durable pending work.
+	_, e = db.Exec(`CREATE TABLE inbox_messages (message_key TEXT PRIMARY KEY, conversation_key TEXT NOT NULL, channel_id TEXT NOT NULL, event_id TEXT NOT NULL, created_at INTEGER NOT NULL, author_pubkey TEXT NOT NULL, kind INTEGER NOT NULL, content TEXT NOT NULL, is_dm INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, response_content TEXT, received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, completed_at TEXT)`)
+	if e != nil {
+		t.Fatal(e)
+	}
+	m := testMessage(t, "a", 10)
+	_, e = db.Exec(`INSERT INTO inbox_messages(message_key,conversation_key,channel_id,event_id,created_at,author_pubkey,kind,content) VALUES(?,?,?,?,?,?,?,?)`, m.ID, m.conversation("thread"), m.Channel, m.ID, m.Created, m.Author, m.Kind, m.Content)
+	if e != nil {
+		t.Fatal(e)
+	}
 	db.Close()
 	s, e := OpenState(p)
 	if e != nil {
@@ -49,6 +59,16 @@ func TestStateMigrationAndBackendBoundary(t *testing.T) {
 	}
 	if _, e = OpenState(p); e == nil {
 		t.Fatal("second writer got lock")
+	}
+	if claimed, e := s.ClaimAcknowledgement(context.Background(), m.ID); e != nil || !claimed {
+		t.Fatal("legacy pending message could not be acknowledged", claimed, e)
+	}
+	if claimed, e := s.ClaimAcknowledgement(context.Background(), m.ID); e != nil || claimed {
+		t.Fatal("reaction claimed twice", claimed, e)
+	}
+	pending, e := s.Pending()
+	if e != nil || len(pending) != 1 || pending[0].ID != m.ID || pending[0].Content != m.Content {
+		t.Fatal("migration or acknowledgement lost pending work", pending, e)
 	}
 }
 func TestStateDedupAndInterruptedBoundaries(t *testing.T) {

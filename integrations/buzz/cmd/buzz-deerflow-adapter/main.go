@@ -72,7 +72,7 @@ func run(args []string) error {
 		return errors.New(c.Redact(err.Error()))
 	}
 	defer app.Close()
-	slog.Info("Starting native Buzz adapter", "version", version, "permission_policy", c.Deerflow.PermissionPolicy)
+	slog.Info("Starting native Buzz adapter", "version", version, "permission_policy", c.Deerflow.PermissionPolicy, "acknowledgement_enabled", c.Buzz.Acknowledgement.Enabled, "acknowledgement_emoji", c.Buzz.Acknowledgement.Emoji)
 	if err = app.Run(ctx, *once); err != nil && !errors.Is(err, context.Canceled) {
 		return errors.New(c.Redact(err.Error()))
 	}

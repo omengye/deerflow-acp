@@ -24,20 +24,25 @@ import (
 
 type Config struct {
 	Buzz struct {
-		Command        string            `toml:"command"`
-		Args           []string          `toml:"args"`
-		RelayURL       string            `toml:"relay_url"`
-		AgentPubkey    string            `toml:"agent_pubkey"`
-		Channels       []string          `toml:"channels"`
-		AutoDiscover   bool              `toml:"auto_discover_channels"`
-		IncludeDMs     bool              `toml:"include_dms"`
-		RequireMention bool              `toml:"require_mention"`
-		AllowedPubkeys []string          `toml:"allowed_pubkeys"`
-		AllowAnySender bool              `toml:"allow_any_sender"`
-		MessageKinds   []int             `toml:"message_kinds"`
-		Timeout        float64           `toml:"timeout_seconds"`
-		ChannelNames   map[string]string `toml:"channel_names"`
-		Profile        struct {
+		Command         string            `toml:"command"`
+		Args            []string          `toml:"args"`
+		RelayURL        string            `toml:"relay_url"`
+		AgentPubkey     string            `toml:"agent_pubkey"`
+		Channels        []string          `toml:"channels"`
+		AutoDiscover    bool              `toml:"auto_discover_channels"`
+		IncludeDMs      bool              `toml:"include_dms"`
+		RequireMention  bool              `toml:"require_mention"`
+		AllowedPubkeys  []string          `toml:"allowed_pubkeys"`
+		AllowAnySender  bool              `toml:"allow_any_sender"`
+		MessageKinds    []int             `toml:"message_kinds"`
+		Timeout         float64           `toml:"timeout_seconds"`
+		ChannelNames    map[string]string `toml:"channel_names"`
+		Acknowledgement struct {
+			Enabled bool    `toml:"enabled"`
+			Emoji   string  `toml:"emoji"`
+			Timeout float64 `toml:"timeout_seconds"`
+		} `toml:"acknowledgement"`
+		Profile struct {
 			Name   string `toml:"name"`
 			Avatar string `toml:"avatar"`
 			About  string `toml:"about"`
@@ -103,6 +108,9 @@ func Defaults() Config {
 	c.Buzz.RequireMention = true
 	c.Buzz.MessageKinds = []int{9}
 	c.Buzz.Timeout = 60
+	c.Buzz.Acknowledgement.Enabled = true
+	c.Buzz.Acknowledgement.Emoji = "👀"
+	c.Buzz.Acknowledgement.Timeout = 3
 	c.Buzz.Lifecycle.Presence = true
 	c.Buzz.Lifecycle.Heartbeat = 60
 	c.Buzz.Lifecycle.Status = true
@@ -365,10 +373,13 @@ func (c *Config) Validate(secret, auth string) error {
 	if c.Adapter.SessionScope != "thread" && c.Adapter.SessionScope != "channel" {
 		return errors.New("adapter.session_scope must be thread or channel")
 	}
+	if c.Buzz.Acknowledgement.Enabled && strings.TrimSpace(c.Buzz.Acknowledgement.Emoji) == "" {
+		return errors.New("buzz.acknowledgement.emoji must not be empty when enabled")
+	}
 	if c.Adapter.MaxPages < 1 || c.Adapter.MaxPages > 1000 || c.Adapter.RetryAttempts < 1 || c.Adapter.RetryAttempts > 20 || c.Adapter.MaxAttempts < 1 || c.Observability.QueueSize < 1 || c.Observability.QueueSize > 4096 || c.Observability.MaxTools < 1 {
 		return errors.New("adapter retry, paging or observability limits are invalid")
 	}
-	for _, v := range []float64{c.Buzz.Timeout, c.Deerflow.Timeout, c.Adapter.PollInterval, c.Adapter.RetryBase, c.Adapter.RetryMax, c.Buzz.Lifecycle.Heartbeat, c.Observability.Timeout} {
+	for _, v := range []float64{c.Buzz.Timeout, c.Buzz.Acknowledgement.Timeout, c.Deerflow.Timeout, c.Adapter.PollInterval, c.Adapter.RetryBase, c.Adapter.RetryMax, c.Buzz.Lifecycle.Heartbeat, c.Observability.Timeout} {
 		if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v > 86400 {
 			return errors.New("timeouts and intervals must be finite values in (0, 86400]")
 		}
@@ -392,14 +403,21 @@ func (c Config) CheckDeployment(ctx context.Context) error {
 			daemon = c.Deerflow.Args[i+1]
 		}
 	}
-	for _, check := range []struct {
+	checks := []struct {
 		command, marker, label string
 		args                   []string
 	}{
 		{c.Buzz.Command, "messages", "Buzz CLI", append(append([]string{}, c.Buzz.Args...), "--help")},
 		{c.Deerflow.Command, "Eino Go", "native Go ACP Bridge", []string{"--help"}},
 		{daemon, "Eino Go state directory", "Go ACP daemon", []string{"--help"}},
-	} {
+	}
+	if c.Buzz.Acknowledgement.Enabled {
+		checks = append(checks, struct {
+			command, marker, label string
+			args                   []string
+		}{c.Buzz.Command, "--emoji", "Buzz reactions CLI", append(append([]string{}, c.Buzz.Args...), "reactions", "add", "--help")})
+	}
+	for _, check := range checks {
 		deadline, cancel := context.WithTimeout(ctx, 5*time.Second)
 		cmd := exec.CommandContext(deadline, check.command, check.args...)
 		hideCommand(cmd)
