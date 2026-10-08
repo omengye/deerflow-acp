@@ -50,6 +50,12 @@ clear old credentials and provider-specific extensions. Unrelated saves retain
 original unknown data on the same backend. Model probes use the selected native
 provider, including Ark.
 
+The session model override (`runtime.model_name`) defaults to inheritance from
+`default_model`. Its native control offers inheritance and configured model
+choices instead of a free-text reference. Subagent roles continue to inherit
+the model of their creating parent task, and context compaction uses the current
+task model. These defaults preserve per-session and per-role model selection.
+
 The two role maps have `agent_map`, wildcard `agent_role`, nested model settings,
 and per-field descriptors. Sparse role definitions do not acquire defaults when
 viewed; section defaults include direct children only. Scalar, list and byte
@@ -134,7 +140,7 @@ These changes do not replace real desktop and complete P0/P6/P7 acceptance.
 ## Skill review and source configuration
 
 Native review fields cover enablement, review-only mode, builtin overlays, two
-explicit configured model names, mandatory fail-closed security and nested
+optional configured model overrides, mandatory fail-closed security and nested
 `review_limits`. Numeric descriptors include `zero_is_default`: zero retains
 60 seconds / 131072 bytes / 1024 output tokens; otherwise the ranges are
 1–300 / 1024–2097152 / 128–8192. The security field carries `must_be_true`.
@@ -155,6 +161,13 @@ The source grant is the existing candidate destination set (at most 32 sources).
 Global evolution disable and generation disable both remove the worker option
 at launch, without deleting history. Waku renames the generation model reference
 alongside the two reviewer names and checks every nested descriptor's hash.
+
+All three maintenance model references are nullable and default to null.
+Omitted, null and empty names inherit the global `default_model`; explicit names
+still override it. Save preserves the inheritance marker rather than copying
+the current default name. Launch resolves the full named route and keeps each
+stage's context and maintenance limits independent. Session model overrides do
+not replace the global maintenance default.
 
 See [generation configuration and actual consumption](../acp/skill-evolution.md#yaml-and-waku-generation-settings).
 `generation_settings_test.go` exercises save -> launch -> actual Eino requests:

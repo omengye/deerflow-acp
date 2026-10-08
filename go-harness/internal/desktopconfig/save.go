@@ -118,7 +118,7 @@ func (s service) save(document map[string]any, validateOnly bool) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	evolution, err := validatedEvolution(evolutionDoc, readObject(data, "skill_evolution"), names, configRevision, document["skill_evolution_migration_ack"])
+	evolution, err := validatedEvolution(evolutionDoc, readObject(data, "skill_evolution"), names, defaultModel, configRevision, document["skill_evolution_migration_ack"])
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +378,7 @@ func validatedSubagents(document map[string]any, models map[string]bool, provide
 	}
 	return cloneMap(document), nil
 }
-func validatedEvolution(document, previous map[string]any, models map[string]bool, revision string, acknowledgment any) (map[string]any, error) {
+func validatedEvolution(document, previous map[string]any, models map[string]bool, defaultModel, revision string, acknowledgment any) (map[string]any, error) {
 	original, ignored, err := configschema.ProjectEvolution(previous)
 	if err != nil {
 		return nil, err
@@ -428,7 +428,7 @@ func validatedEvolution(document, previous map[string]any, models map[string]boo
 	if err != nil {
 		return nil, errors.New("skill_evolution 配置无法编码")
 	}
-	if _, err = evolution.DecodeReviewConfig(encoded, models); err != nil {
+	if _, err = evolution.DecodeReviewConfig(encoded, models, defaultModel); err != nil {
 		return nil, err
 	}
 	return raw, nil

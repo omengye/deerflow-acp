@@ -69,7 +69,9 @@ type ReviewSettings struct {
 	} `yaml:"budget"`
 }
 
-func DecodeReviewConfig(data []byte, models map[string]bool) (ReviewSettings, error) {
+// Omitted, null and empty model references inherit the configured global default.
+// Only active stages resolve their references; saved settings stay sparse.
+func DecodeReviewConfig(data []byte, models map[string]bool, defaultModel string) (ReviewSettings, error) {
 	var settings ReviewSettings
 	var enabled struct {
 		Enabled bool `yaml:"enabled"`
@@ -137,10 +139,20 @@ func DecodeReviewConfig(data []byte, models map[string]bool) (ReviewSettings, er
 	if settings.SecurityFailClosed != nil && !*settings.SecurityFailClosed {
 		return settings, fmt.Errorf("skill_evolution.security_fail_closed must be true")
 	}
-	for key, name := range map[string]string{"moderation_model_name": settings.ModerationModel, "evaluation_model_name": settings.EvaluationModel} {
-		if name == "" || !models[name] {
-			return settings, fmt.Errorf("skill_evolution.%s: requires a configured model name", key)
+	resolveModel := func(key string, name *string) error {
+		if *name == "" {
+			*name = defaultModel
 		}
+		if *name == "" || !models[*name] {
+			return fmt.Errorf("skill_evolution.%s: requires a configured model name or valid default_model", key)
+		}
+		return nil
+	}
+	if err := resolveModel("moderation_model_name", &settings.ModerationModel); err != nil {
+		return settings, err
+	}
+	if err := resolveModel("evaluation_model_name", &settings.EvaluationModel); err != nil {
+		return settings, err
 	}
 	if settings.Validation.TimeoutSeconds == 0 {
 		settings.Validation.TimeoutSeconds = 60
@@ -161,8 +173,8 @@ func DecodeReviewConfig(data []byte, models map[string]bool) (ReviewSettings, er
 		return settings, fmt.Errorf("skill_evolution.validation.max_output_tokens must be 128..8192")
 	}
 	if settings.Generation.Enabled {
-		if settings.GenerationModel == "" || !models[settings.GenerationModel] {
-			return settings, fmt.Errorf("skill_evolution.generation_model_name: requires a configured model name")
+		if err := resolveModel("generation_model_name", &settings.GenerationModel); err != nil {
+			return settings, err
 		}
 		// Unlike model limits, budget values must be explicitly positive.
 		for key, value := range map[string]any{

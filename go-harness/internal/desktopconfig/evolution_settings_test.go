@@ -209,13 +209,13 @@ func TestEvolutionTemplatesHaveOnlyNativeReviewDefaults(t *testing.T) {
 			if err := configschema.ValidateEvolutionDraft(projection, nil); err != nil {
 				t.Fatal(err)
 			}
-			review["enabled"], review["moderation_model_name"], review["evaluation_model_name"] = true, "first", "second"
+			review["enabled"] = true
 			encoded, err := yaml.Marshal(review)
 			if err != nil {
 				t.Fatal(err)
 			}
-			settings, err := evolution.DecodeReviewConfig(encoded, map[string]bool{"first": true, "second": true})
-			if err != nil || settings.Validation.TimeoutSeconds != 60 || settings.Validation.MaxInputBytes != 131072 || settings.Validation.MaxOutputTokens != 1024 {
+			settings, err := evolution.DecodeReviewConfig(encoded, map[string]bool{"first": true, "second": true}, "first")
+			if err != nil || settings.ModerationModel != "first" || settings.EvaluationModel != "first" || settings.GenerationModel != "" || settings.Validation.TimeoutSeconds != 60 || settings.Validation.MaxInputBytes != 131072 || settings.Validation.MaxOutputTokens != 1024 {
 				t.Fatal("template cannot enable native defaults", err)
 			}
 		})

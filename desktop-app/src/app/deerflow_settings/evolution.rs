@@ -30,8 +30,8 @@ pub(super) fn fields() -> Vec<Field> {
         (
             "moderation_model_name",
             "安全审查模型",
-            "选择已配置模型；检查越权、凭据泄漏及可执行内容",
-            Kind::ConfiguredModelReference,
+            "默认继承全局默认模型，也可单独指定；检查越权、凭据泄漏及可执行内容",
+            Kind::InheritableConfiguredModelReference,
         ),
         (
             "generation/enabled",
@@ -42,8 +42,8 @@ pub(super) fn fields() -> Vec<Field> {
         (
             "generation_model_name",
             "候选生成模型",
-            "选择已配置模型；与安全和质量审查分别调用",
-            Kind::ConfiguredModelReference,
+            "默认继承全局默认模型，也可单独指定；与安全和质量审查分别调用",
+            Kind::InheritableConfiguredModelReference,
         ),
         (
             "generation/timeout_seconds",
@@ -144,8 +144,8 @@ pub(super) fn fields() -> Vec<Field> {
         (
             "evaluation_model_name",
             "内容质量与行为评测模型",
-            "内容审查和已启用的行为评测使用独立上下文；内容审查本身不代表已通过行为测试",
-            Kind::ConfiguredModelReference,
+            "默认继承全局默认模型，也可单独指定；内容审查与行为评测使用独立上下文，内容审查本身不代表通过行为测试",
+            Kind::InheritableConfiguredModelReference,
         ),
         (
             "behavior/enabled",
@@ -255,6 +255,12 @@ pub(super) fn model_options(document: &Value) -> Vec<(Value, String)> {
                 .map(|name| (json!(name), name.to_owned())),
         );
     }
+    options
+}
+
+pub(super) fn inheritable_model_options(document: &Value) -> Vec<(Value, String)> {
+    let mut options = model_options(document);
+    options[0] = (Value::Null, "继承默认模型".into());
     options
 }
 
@@ -427,6 +433,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![json!(""), json!("one"), json!("two")]
         );
+        let inherited =
+            inheritable_model_options(&json!({"models":[{"name":"one"},{"name":"two"}]}));
+        assert_eq!(inherited[0], (Value::Null, "继承默认模型".into()));
+        assert_eq!(&inherited[1..], &choices[1..]);
+        for path in [
+            "moderation_model_name",
+            "evaluation_model_name",
+            "generation_model_name",
+        ] {
+            assert!(
+                fields()
+                    .iter()
+                    .any(|field| field.path == format!("/skill_evolution/{path}")
+                        && matches!(field.kind, Kind::InheritableConfiguredModelReference))
+            );
+        }
         assert!(
             fields()
                 .iter()

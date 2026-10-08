@@ -138,7 +138,6 @@ fn deerflow_editing_locked(status: &Value, pending_operation: Option<&str>) -> b
 #[derive(Clone, Copy)]
 enum Kind {
     Text,
-    Optional,
     Integer,
     Number,
     OptionalInteger,
@@ -148,6 +147,7 @@ enum Kind {
     OptionalBool,
     ModelReference,
     ConfiguredModelReference,
+    InheritableConfiguredModelReference,
     OptionalChoice(&'static [(&'static str, &'static str)]),
     Multiline,
     Json,
@@ -172,6 +172,7 @@ impl Kind {
                 | Self::OptionalChoice(_)
                 | Self::ModelReference
                 | Self::ConfiguredModelReference
+                | Self::InheritableConfiguredModelReference
         )
     }
 }
@@ -444,11 +445,6 @@ fn field_text(value: &Value, kind: Kind) -> String {
 fn parse_field(text: &str, kind: Kind) -> Result<Value, String> {
     match kind {
         Kind::Text | Kind::Multiline => Ok(Value::String(text.to_owned())),
-        Kind::Optional => Ok(if text.trim().is_empty() {
-            Value::Null
-        } else {
-            json!(text.trim())
-        }),
         Kind::Integer => text
             .trim()
             .parse::<i64>()
@@ -1770,8 +1766,8 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
                 (
                     "model_name",
                     "覆盖默认聊天模型",
-                    "留空使用常用页的默认模型；显式值优先",
-                    Kind::Optional,
+                    "默认继承常用页的默认模型，也可单独指定；显式值优先",
+                    Kind::InheritableConfiguredModelReference,
                 ),
                 (
                     "max_active_connections",
@@ -2656,7 +2652,10 @@ impl Waku {
                 }
                 row = row.flex_col().gap(px(8.0)).child(label).child(options);
             }
-            Kind::OptionalBool | Kind::ModelReference | Kind::ConfiguredModelReference => {
+            Kind::OptionalBool
+            | Kind::ModelReference
+            | Kind::ConfiguredModelReference
+            | Kind::InheritableConfiguredModelReference => {
                 let options: Vec<(Value, String)> = if matches!(field.kind, Kind::OptionalBool) {
                     vec![
                         (Value::Null, "继承".into()),
@@ -2665,6 +2664,10 @@ impl Waku {
                     ]
                 } else if matches!(field.kind, Kind::ConfiguredModelReference) {
                     evolution::model_options(state.draft.as_ref().unwrap_or(&Value::Null))
+                } else if matches!(field.kind, Kind::InheritableConfiguredModelReference) {
+                    evolution::inheritable_model_options(
+                        state.draft.as_ref().unwrap_or(&Value::Null),
+                    )
                 } else {
                     let mut options = vec![(Value::Null, "继承父模型".into())];
                     if let Some(models) = state
@@ -2684,6 +2687,9 @@ impl Waku {
                 let mut choices = div().flex().flex_wrap().gap(px(4.0));
                 for (index, (value, caption)) in options.into_iter().enumerate() {
                     let selected = &value == current
+                        || (matches!(field.kind, Kind::InheritableConfiguredModelReference)
+                            && value.is_null()
+                            && current.as_str() == Some(""))
                         || (matches!(field.kind, Kind::ModelReference)
                             && value.is_null()
                             && matches!(current.as_str(), Some("" | "inherit")));
@@ -2831,7 +2837,6 @@ mod tests {
             json!(0.5)
         );
         assert!(parse_field("1.5", Kind::OptionalInteger).is_err());
-        assert_eq!(parse_field("  ", Kind::Optional).unwrap(), Value::Null);
         assert!(parse_field("NaN", Kind::Number).is_err());
         assert!(parse_field("1.5", Kind::Integer).is_err());
         assert_eq!(parse_field("[]", Kind::Json).unwrap(), json!([]));

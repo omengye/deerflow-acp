@@ -592,7 +592,11 @@ func applySkillEvolution(configPath string, source runtimeDocument, cfg *deerflo
 	for name := range choices {
 		models[name] = true
 	}
-	settings, err := evolution.DecodeReviewConfig(data, models)
+	defaultModel := source.DefaultModel
+	if defaultModel == "" && len(source.Models) > 0 {
+		defaultModel = source.Models[0].Name
+	}
+	settings, err := evolution.DecodeReviewConfig(data, models, defaultModel)
 	if err != nil {
 		return err
 	}

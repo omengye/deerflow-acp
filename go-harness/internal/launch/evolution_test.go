@@ -100,3 +100,21 @@ func TestApplyConfigSkillReviewRejectsInactiveSettingsAndMissingDestinations(t *
 		}
 	}
 }
+
+func TestApplyConfigSkillMaintenanceInheritsFirstModelWithoutGlobalDefault(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "custom"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Replace(roleModels, "default_model: main\n", "", 1)
+	body = strings.Replace(body, "local_acp:\n", "local_acp:\n  model_name: research\n", 1)
+	body += fmt.Sprintf("skills:\n  path: %s\nskill_evolution:\n  enabled: true\n  generation:\n    enabled: true\n  budget:\n    max_daily_model_calls: 3\n    max_daily_tokens: 100000\n    max_job_seconds: 30\n    workers: 1\n", filepath.ToSlash(root))
+	var cfg deerflow.Config
+	connections := 0
+	if _, err := ApplyConfig(writeRoleConfig(t, body), &cfg, &connections, nil); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BaseURL != "https://two.invalid/v1" || cfg.SkillGeneration == nil || cfg.SkillGeneration.Model.Route.BaseURL != "https://one.invalid/v1" || cfg.SkillGeneration.Model.Route.APIKey != "fixture-one" {
+		t.Fatal("maintenance did not inherit the first model independently of the session override")
+	}
+}

@@ -282,9 +282,14 @@ skill_evolution:
 ```
 
 `generation.enabled` defaults to false. A historical `generation_model_name`
-alone does not activate work. Generation requires evolution and skills enabled;
-the model name must resolve to the named configuration even if two configurations
-share a provider model ID. The generation timeout/input/output fields accept 0
+alone does not activate work. Generation requires evolution and skills enabled.
+The moderation, evaluation and generation model names may be omitted, null or
+empty to inherit the global `default_model`; each can also name an explicit
+override. Inheritance is preserved on save and follows later global default
+changes after applying the configuration. The resolved route includes its
+provider, endpoint and credential, even if two configurations share a provider
+model ID. Session model overrides do not change the maintenance default.
+The generation timeout/input/output fields accept 0
 for native defaults (60 seconds / 131072 bytes / 8192 tokens), otherwise the
 ranges are 1–300 / 1024–2097152 / 128–32768. The positive `budget` fields must
 all be supplied when generation is enabled in YAML. Templates/draft defaults

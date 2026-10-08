@@ -75,7 +75,7 @@ memory:
 
 skill_evolution:
   # Manual candidates, optional operator generation, and user-approved publication.
-  # Select configured model names before enabling; disabled by default.
+  # Null/empty model names inherit default_model; named overrides are optional.
   enabled: false
   mode: review
   allow_builtin_overlays: false

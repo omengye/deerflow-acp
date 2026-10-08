@@ -13,17 +13,17 @@ const discoveryConfigBase = "enabled: true\nmoderation_model_name: primary\neval
 func TestDiscoveryConfigExplicitOptInAndDefaults(t *testing.T) {
 	models := map[string]bool{"primary": true}
 	for _, suffix := range []string{"", "discovery:\n  operator_corrections_enabled: false\n", "discovery:\n  repeat_threshold: 3\n"} {
-		settings, err := DecodeReviewConfig([]byte(discoveryConfigBase+suffix), models)
+		settings, err := DecodeReviewConfig([]byte(discoveryConfigBase+suffix), models, "primary")
 		if err != nil || settings.DiscoveryOptions() != nil {
 			t.Fatalf("configuration without native opt-in activated discovery: %+v %v", settings, err)
 		}
 	}
-	settings, err := DecodeReviewConfig([]byte(discoveryConfigBase+"discovery:\n  operator_corrections_enabled: true\n"), models)
+	settings, err := DecodeReviewConfig([]byte(discoveryConfigBase+"discovery:\n  operator_corrections_enabled: true\n"), models, "primary")
 	want := &harness.SkillDiscoveryOptions{RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxDailyProposals: 5, MaxPendingProposals: 20}
 	if err != nil || !reflect.DeepEqual(settings.DiscoveryOptions(), want) {
 		t.Fatalf("native defaults: %+v %v", settings.DiscoveryOptions(), err)
 	}
-	settings, err = DecodeReviewConfig([]byte("enabled: false\ndiscovery:\n  enabled: true\n  min_tool_calls: 5\n"), models)
+	settings, err = DecodeReviewConfig([]byte("enabled: false\ndiscovery:\n  enabled: true\n  min_tool_calls: 5\n"), models, "primary")
 	if err != nil || settings.DiscoveryOptions() != nil {
 		t.Fatalf("legacy flag activated discovery: %+v %v", settings, err)
 	}
@@ -45,7 +45,7 @@ func TestDiscoveryConfigRejectsConflictsAndInvalidLimits(t *testing.T) {
 		active + "  max_pending_proposals: 0\n", active + "  max_pending_proposals: 1001\n",
 		active + "  enabled: true\n", active + "  min_tool_calls: 5\n", active + "  repeat_threshold: null\n",
 	} {
-		if _, err := DecodeReviewConfig([]byte(bad), models); err == nil || !strings.Contains(err.Error(), "skill_evolution") {
+		if _, err := DecodeReviewConfig([]byte(bad), models, "primary"); err == nil || !strings.Contains(err.Error(), "skill_evolution") {
 			t.Errorf("invalid discovery configuration accepted: %q: %v", bad, err)
 		}
 	}

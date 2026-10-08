@@ -16,9 +16,9 @@ func evolutionFields() []Field {
 		{Path: "/skill_evolution/enabled", Type: "boolean", Default: false},
 		{Path: "/skill_evolution/mode", Type: "string", Default: "review", Enum: []string{"review", "auto_patch"}},
 		{Path: "/skill_evolution/allow_builtin_overlays", Type: "boolean", Default: false},
-		{Path: "/skill_evolution/moderation_model_name", Type: "string", Default: "", MaxLength: 256},
-		{Path: "/skill_evolution/evaluation_model_name", Type: "string", Default: "", MaxLength: 256},
-		{Path: "/skill_evolution/generation_model_name", Type: "string", Default: "", MaxLength: 256},
+		{Path: "/skill_evolution/moderation_model_name", Type: "string", Nullable: true, Default: nil, MaxLength: 256},
+		{Path: "/skill_evolution/evaluation_model_name", Type: "string", Nullable: true, Default: nil, MaxLength: 256},
+		{Path: "/skill_evolution/generation_model_name", Type: "string", Nullable: true, Default: nil, MaxLength: 256},
 		{Path: "/skill_evolution/security_fail_closed", Type: "boolean", Default: true, MustBeTrue: true},
 		{Path: "/skill_evolution/validation", Type: "review_limits", Default: map[string]any{
 			"timeout_seconds": 0, "max_input_bytes": 0, "max_output_tokens": 0,

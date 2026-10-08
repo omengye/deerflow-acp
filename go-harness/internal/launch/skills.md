@@ -72,12 +72,20 @@ Disabling evolution revokes model submission grants while retaining declared
 managed sources and their published content.
 
 Explicit `skill_evolution.generation.enabled` also enables the durable operator
-generation worker, requiring a configured `generation_model_name` and positive
+generation worker, requiring a resolved generation model route and positive
 maintenance `budget`. It uses the same candidate destinations and requires at
 most 32 sources. Generation disabled means no worker, even when a model name is
 present; disabling evolution also clears generation on launch. The YAML model
 and bounds are carried into `Config.SkillGeneration`; the SDK owns lifecycle,
 recovery and the independent ledger. See the [configuration example](../acp/skill-evolution.md#yaml-and-waku-generation-settings).
+
+The moderation, evaluation and generation model names are optional overrides.
+Omitted, null or empty values inherit the global `default_model` (the first
+configured model when that default is omitted), including its provider,
+endpoint and credential. Session model overrides do not change this maintenance
+default. Saving preserves inheritance, so changing the global default and
+applying the configuration updates all inherited routes. Each stage retains its
+independent context, review rules and maintenance budget.
 
 The SDK owns a local export worker. Every managed publication, enablement
 change or tombstone queues the exact head in the same SQLite transaction.
