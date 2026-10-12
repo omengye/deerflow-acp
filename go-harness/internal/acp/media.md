@@ -50,7 +50,9 @@ The tool is made available only for configured vision models.
 `present_files` explicitly registers files from `cwd/.deerflow/outputs`. Paths
 may be output-relative, workspace-relative `.deerflow/outputs/...`, absolute
 within that output root, or use `/mnt/user-data/outputs/...`. An artifact is a
-regular file of at most 200 MiB. A call supports up to 32 paths, deduplicated.
+regular file of at most 500 MiB by default. The host may override the per-file
+limit with `local_acp.max_artifact_size_mib` (positive integer; restart required).
+A tool call supports up to 16 paths, deduplicated.
 
 Registration, the completed receipt, `tool_end` and an internal audit event are
 one transaction. ACP emits the terminal tool card followed by one resource link

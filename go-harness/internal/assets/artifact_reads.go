@@ -29,7 +29,7 @@ type artifactReadDigest struct {
 	blocks [][sha256.Size]byte
 }
 
-// The bounded LRU retains only digests (at most 400 KiB of block hashes), never
+// The bounded LRU retains only digests (32 bytes per MiB per entry), never
 // output bytes. Every hit rehashes the entire requested blocks against a prior
 // full SHA256 verification. Neither mtime nor file identity grants trust.
 type artifactReadCache struct {
@@ -72,7 +72,7 @@ func (c *artifactReadCache) put(key artifactReadKey, blocks [][sha256.Size]byte)
 // subsequent reads verify all complete blocks covering the requested range.
 // Tampering outside a cached range is detected when that block is requested.
 func (s *Store) ReadArtifactRange(ctx context.Context, sessionID string, ref harness.AssetRef, offset int64, limit int) ([]byte, error) {
-	if offset < 0 || limit < 1 || limit > harness.MaxTaskArtifactReadLimit || ref.Size < 0 || ref.Size > 200*1024*1024 || offset > ref.Size {
+	if offset < 0 || limit < 1 || limit > harness.MaxTaskArtifactReadLimit || ref.Size < 0 || ref.Size > s.maxArtifactBytes || offset > ref.Size {
 		return nil, invalid("invalid artifact range")
 	}
 	if sessionID == "" || ref.SessionID != sessionID || ref.Kind != harness.AssetArtifact {

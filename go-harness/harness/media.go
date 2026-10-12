@@ -3,17 +3,18 @@ package harness
 import "context"
 
 const (
-	MaxInputImageBytes      int64 = 20 * 1024 * 1024
-	MaxInputImagesPerTurn         = 8
-	MaxInputImageTotalBytes int64 = 40 * 1024 * 1024
-	MaxInputFileBytes       int64 = 25 * 1024 * 1024
-	MaxTextAttachmentBytes        = 1024 * 1024
-	MaxTextAttachments            = 8
-	MaxTextAttachmentTotal        = 4 * 1024 * 1024
-	AssetImage                    = "image"
-	AssetFile                     = "file"
-	AssetArtifact                 = "artifact"
-	AssetToolOutput               = "tool_output"
+	DefaultMaxArtifactSizeMiB int64 = 500
+	MaxInputImageBytes        int64 = 20 * 1024 * 1024
+	MaxInputImagesPerTurn           = 8
+	MaxInputImageTotalBytes   int64 = 40 * 1024 * 1024
+	MaxInputFileBytes         int64 = 25 * 1024 * 1024
+	MaxTextAttachmentBytes          = 1024 * 1024
+	MaxTextAttachments              = 8
+	MaxTextAttachmentTotal          = 4 * 1024 * 1024
+	AssetImage                      = "image"
+	AssetFile                       = "file"
+	AssetArtifact                   = "artifact"
+	AssetToolOutput                 = "tool_output"
 )
 
 // AssetRef is durable metadata, never image bytes or a provider download URL.

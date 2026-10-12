@@ -521,7 +521,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 					return assetStore.StageAttributedArtifacts(ctx, req.Session, req.RunID, callID, paths, root, invocation, attempt)
 				}
 				return assetStore.StageArtifacts(ctx, req.Session, req.RunID, callID, paths)
-			})
+			}, assetStore.MaxArtifactBytes())
 			if err != nil {
 				return out, err
 			}

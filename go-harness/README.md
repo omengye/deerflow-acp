@@ -364,6 +364,14 @@ access; ACP exposes `_deerflow/artifacts/list`. See
 [media projection and limits](internal/engine/eino/media.md) and
 [ACP media behavior](internal/acp/media.md).
 
+Each output artifact defaults to at most 500 MiB. Set
+`local_acp.max_artifact_size_mib: 500` in `config.yaml` to change the limit
+(positive integer in MiB; omitted/null uses 500). Restart the backend after
+editing it. This host-only setting has no desktop editor and governs snapshot
+creation, resolution and chunked downloads. Lowering it also prevents reading
+existing artifacts larger than the new limit. Input attachment limits are
+unchanged. SDK callers can set `Config.MaxArtifactBytes` (zero uses the default).
+
 MCP image blocks and enhanced tool images use the staged asset importer.
 Model-generated media, automatic parent notification scheduling, full draft v2
 coverage and external ACP recovery remain open. This build is not the V1

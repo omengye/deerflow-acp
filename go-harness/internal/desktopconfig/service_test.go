@@ -15,6 +15,7 @@ api:
   deerflow_home: ../data/deerflow
   extensions_config_path: ./extensions_config.json
 local_acp:
+  max_artifact_size_mib: 750
   max_iterations: 0
   max_model_calls: 300
   max_tool_calls: 600
@@ -161,6 +162,9 @@ func TestInitSnapshotSaveAndRepeatOnSamePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	limits := raw["local_acp"].(map[string]any)
+	if limits["max_artifact_size_mib"] != 750 {
+		t.Fatalf("host artifact limit changed during desktop save: %+v", limits)
+	}
 	if limits["max_iterations"] != 0 || limits["max_model_calls"] != 300 || limits["max_tool_calls"] != 600 {
 		t.Fatalf("host request limits changed during desktop save: %+v", limits)
 	}

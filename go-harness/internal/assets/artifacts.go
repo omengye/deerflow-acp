@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"path/filepath"
@@ -80,15 +81,19 @@ func (s *Store) stageArtifacts(ctx context.Context, x harness.Session, runID, ca
 			f.Close()
 			return nil, err
 		}
-		if !before.Mode().IsRegular() || before.Size() > 200*1024*1024 {
+		if !before.Mode().IsRegular() {
 			f.Close()
-			return nil, invalid("artifact must be a regular output file at most 200 MiB")
+			return nil, invalid(fmt.Sprintf("artifact %q must be a regular output file", path))
+		}
+		if before.Size() > s.maxArtifactBytes {
+			f.Close()
+			return nil, invalid(fmt.Sprintf("artifact %q is %d bytes; exceeds configured limit of %d bytes (%.2f MiB); reduce the file size or increase local_acp.max_artifact_size_mib", path, before.Size(), s.maxArtifactBytes, float64(s.maxArtifactBytes)/(1024*1024)))
 		}
 		mediaType := mime.TypeByExtension(filepath.Ext(path))
 		if mediaType == "" {
 			mediaType = "application/octet-stream"
 		}
-		ref, err := p.snapshot(ctx, f, filepath.Base(path), mediaType, harness.AssetArtifact, 200*1024*1024)
+		ref, err := p.snapshot(ctx, f, filepath.Base(path), mediaType, harness.AssetArtifact, s.maxArtifactBytes)
 		after, statErr := f.Stat()
 		f.Close()
 		if err != nil {

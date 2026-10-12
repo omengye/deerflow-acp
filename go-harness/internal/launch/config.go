@@ -194,6 +194,11 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	if err = configschema.ValidateNative(native); err != nil {
 		return result, err
 	}
+	artifactMiB, err := configschema.ArtifactSizeLimitMiB(native)
+	if err != nil {
+		return result, err
+	}
+	cfg.MaxArtifactBytes = artifactMiB * 1024 * 1024
 	if cfg.HostMCPRecipes, err = hostMCPRecipes(native); err != nil {
 		return result, err
 	}

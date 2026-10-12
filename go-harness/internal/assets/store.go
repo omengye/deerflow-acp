@@ -24,16 +24,17 @@ import (
 )
 
 type Store struct {
-	db            *sql.DB
-	root          *os.Root
-	path          string
-	lock          *flock.Flock
-	lifecycle     sync.RWMutex
-	closed        bool
-	closing       atomic.Bool
-	mu            sync.Mutex
-	staged        map[string]*Prepared
-	artifactReads artifactReadCache
+	db               *sql.DB
+	root             *os.Root
+	path             string
+	lock             *flock.Flock
+	lifecycle        sync.RWMutex
+	closed           bool
+	closing          atomic.Bool
+	mu               sync.Mutex
+	staged           map[string]*Prepared
+	artifactReads    artifactReadCache
+	maxArtifactBytes int64
 }
 
 type record struct {
@@ -57,6 +58,19 @@ type Prepared struct {
 }
 
 func NewStore(ctx context.Context, path string, db *sql.DB) (*Store, error) {
+	return NewStoreWithArtifactLimit(ctx, path, db, 0)
+}
+
+// MaxArtifactBytes returns the immutable host policy shared by tools and reads.
+func (s *Store) MaxArtifactBytes() int64 { return s.maxArtifactBytes }
+
+func NewStoreWithArtifactLimit(ctx context.Context, path string, db *sql.DB, maxArtifactBytes int64) (*Store, error) {
+	if maxArtifactBytes == 0 {
+		maxArtifactBytes = harness.DefaultMaxArtifactSizeMiB * 1024 * 1024
+	}
+	if maxArtifactBytes < 0 || maxArtifactBytes == 1<<63-1 {
+		return nil, invalid("artifact byte limit must be positive and leave room for overflow detection")
+	}
 	if db == nil || !filepath.IsAbs(path) {
 		return nil, invalid("asset directory must be absolute and database configured")
 	}
@@ -89,7 +103,7 @@ func NewStore(ctx context.Context, path string, db *sql.DB) (*Store, error) {
 		}
 		return nil, harness.ErrBusy
 	}
-	s := &Store{db: db, root: root, path: path, lock: lock, staged: make(map[string]*Prepared)}
+	s := &Store{db: db, root: root, path: path, lock: lock, staged: make(map[string]*Prepared), maxArtifactBytes: maxArtifactBytes}
 	_, err = db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS harness_assets (id TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES harness_sessions(id),workspace TEXT NOT NULL,path TEXT UNIQUE NOT NULL,metadata BLOB NOT NULL,created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS harness_assets_session ON harness_assets(session_id);
@@ -287,7 +301,11 @@ func (s *Store) resolve(ctx context.Context, sessionID string, ref harness.Asset
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Size() != ref.Size || ref.Size < 0 || ref.Size > 200*1024*1024 {
+	limit := harness.MaxInputFileBytes
+	if ref.Kind == harness.AssetArtifact {
+		limit = s.maxArtifactBytes
+	}
+	if !info.Mode().IsRegular() || info.Size() != ref.Size || ref.Size < 0 || ref.Size > limit {
 		return nil, invalid("asset snapshot size changed")
 	}
 	result, err := io.ReadAll(&contextReader{ctx: ctx, reader: io.LimitReader(f, ref.Size+1)})

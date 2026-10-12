@@ -73,6 +73,7 @@ func appliedSettings(document map[string]any, cfg *deerflow.Config, maxConnectio
 	add("/runtime/provider", cfg.Provider, "provider", "models")
 	add("/runtime/max_active_connections", maxConnections, "max-connections", "local_acp.max_active_connections")
 	add("/runtime/max_active_runs", cfg.MaxActiveRuns, "max-active-runs", "local_acp.max_active_runs")
+	add("/runtime/max_artifact_size_mib", cfg.MaxArtifactBytes/(1024*1024), "", "local_acp.max_artifact_size_mib")
 	output := harness.DefaultBudgetLimits().MaxOutputTokens
 	if cfg.Budget != nil {
 		output = cfg.Budget.MaxOutputTokens

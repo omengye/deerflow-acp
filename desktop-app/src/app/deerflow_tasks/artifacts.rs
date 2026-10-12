@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use waku_protocol::deerflow_tasks::{Artifact, ArtifactChunk};
 
 const CHUNK_BYTES: u32 = 1024 * 1024;
-const MAX_ARTIFACT_BYTES: u64 = 200 * 1024 * 1024;
+// The host enforces its configured artifact limit; the client streams bounded
+// chunks to disk and verifies the advertised size and digest independently.
 
 #[derive(Clone)]
 struct Binding {
@@ -95,8 +96,7 @@ impl ChunkVerifier {
     fn accept(&mut self, chunk: ArtifactChunk) -> anyhow::Result<(Vec<u8>, bool)> {
         let expected = &self.binding.artifact;
         anyhow::ensure!(
-            expected.size <= MAX_ARTIFACT_BYTES
-                && chunk.root_id == self.binding.root
+            chunk.root_id == self.binding.root
                 && chunk.node_id == self.binding.node
                 && chunk.artifact.id == expected.id
                 && chunk.artifact.size == expected.size
@@ -139,9 +139,7 @@ async fn save_file(
     cancelled: Arc<AtomicBool>,
 ) -> anyhow::Result<PathBuf> {
     anyhow::ensure!(
-        destination.is_absolute()
-            && destination.file_name().is_some()
-            && binding.artifact.size <= MAX_ARTIFACT_BYTES,
+        destination.is_absolute() && destination.file_name().is_some(),
         "保存路径或产物大小无效"
     );
     let directory = destination
@@ -202,7 +200,6 @@ impl Waku {
             || browser.transfer.is_some()
             || browser.save_selecting
             || !browser.capabilities.artifact_read
-            || artifact.size > MAX_ARTIFACT_BYTES
         {
             return;
         }
@@ -360,6 +357,22 @@ impl Waku {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deerflow_artifact_accepts_host_sizes_above_legacy_limit() {
+        let total = 600 * 1024 * 1024;
+        let mut verifier = ChunkVerifier {
+            binding: binding(total),
+            offset: 0,
+            hash: None,
+            digest: Sha256::new(),
+        };
+        assert_eq!(
+            verifier
+                .accept(chunk(b"hello", total, 0, &"a".repeat(64)))
+                .unwrap(),
+            (b"hello".to_vec(), false)
+        );
+    }
     fn binding(size: u64) -> Binding {
         Binding {
             connection: "connection".into(),

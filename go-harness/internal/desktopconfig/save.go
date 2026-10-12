@@ -42,6 +42,9 @@ func (s service) save(document map[string]any, validateOnly bool) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, err := configschema.ArtifactSizeLimitMiB(data); err != nil {
+		return nil, err
+	}
 	paths := s.paths(data)
 	configRevision, err := hashFile(s.config)
 	if err != nil {

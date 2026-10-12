@@ -37,12 +37,14 @@ import (
 )
 
 type Config struct {
-	DataDir     string
-	Provider    string
-	APIKey      string
-	BaseURL     string
-	Model       string
-	Instruction string
+	// MaxArtifactBytes limits each output artifact. Zero uses 500 MiB.
+	MaxArtifactBytes int64
+	DataDir          string
+	Provider         string
+	APIKey           string
+	BaseURL          string
+	Model            string
+	Instruction      string
 	// OutputTokenParameter controls only the default route's wire field.
 	// Budget.MaxOutputTokens remains the single per-request output budget.
 	OutputTokenParameter harness.OutputTokenParameter
@@ -557,7 +559,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		return nil, err
 	}
 	cfg.skillEvolution = skillEvolution
-	assetStore, err := assets.NewStore(ctx, filepath.Join(cfg.DataDir, "assets"), store.DB())
+	assetStore, err := assets.NewStoreWithArtifactLimit(ctx, filepath.Join(cfg.DataDir, "assets"), store.DB(), cfg.MaxArtifactBytes)
 	if err != nil {
 		return nil, err
 	}

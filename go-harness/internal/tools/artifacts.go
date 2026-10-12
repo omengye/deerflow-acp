@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 
@@ -26,11 +27,11 @@ type artifactTool struct {
 // PresentFilesTool stages immutable output snapshots. The runtime commits the
 // staged assets together with the terminal tool event and receipt before any
 // reference is delivered to ACP. Stage itself must not publish client events.
-func PresentFilesTool(stage func(context.Context, string, []string) ([]harness.Content, error)) (tool.InvokableTool, error) {
+func PresentFilesTool(stage func(context.Context, string, []string) ([]harness.Content, error), maxArtifactBytes int64) (tool.InvokableTool, error) {
 	if stage == nil {
 		return nil, errors.New("artifact staging backend is required")
 	}
-	info, err := utils.GoStruct2ToolInfo[artifactInput]("present_files", "Present completed output files to the user. First create files inside .deerflow/outputs in the selected workspace, then provide their paths. This snapshots existing files and records stable artifact references; it does not execute, upload, or fetch remote files. /mnt/user-data/outputs/... is an alias for that directory.")
+	info, err := utils.GoStruct2ToolInfo[artifactInput]("present_files", fmt.Sprintf("Present completed output files to the user. Each file must be a regular file at most %d bytes (%.2f MiB). First create files inside .deerflow/outputs in the selected workspace, then provide their paths. This snapshots existing files and records stable artifact references; it does not execute, upload, or fetch remote files. /mnt/user-data/outputs/... is an alias for that directory.", maxArtifactBytes, float64(maxArtifactBytes)/(1024*1024)))
 	if err != nil {
 		return nil, err
 	}

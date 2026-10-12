@@ -1703,8 +1703,7 @@ impl Waku {
                     format!("另存为 {}（{} 字节）", artifact.name, artifact.size),
                     unavailable
                         || browser.stale
-                        || !browser.capabilities.artifact_read
-                        || artifact.size > 200 * 1024 * 1024,
+                        || !browser.capabilities.artifact_read,
                     cx,
                     move |this, _, cx| {
                         this.save_deerflow_task_artifact(

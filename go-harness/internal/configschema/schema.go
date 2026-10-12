@@ -109,6 +109,7 @@ func Describe() Schema {
 	schema.HostSettings = []HostSetting{{ConfigPath: "mcp.host_recipes", Apply: "restart", Edit: "host_yaml", Description: "Explicit host-owned MCP recipes for exact workspaces; credentials are excluded from desktop and execution snapshots."}}
 	schema.HostSettings = append(schema.HostSettings, HostSetting{ConfigPath: "local_acp.max_run_tokens", Apply: "restart", Edit: "host_yaml", Description: "Optional aggregate task token budget shared by all agents; 0 (default) disables. Context windows and per-request output caps are separate."})
 	schema.HostSettings = append(schema.HostSettings,
+		HostSetting{ConfigPath: "local_acp.max_artifact_size_mib", Apply: "restart", Edit: "host_yaml", Description: "Maximum size of each output artifact in MiB; positive integer, default 500. Applies to presentation and reads."},
 		HostSetting{ConfigPath: "local_acp.max_iterations", Apply: "restart", Edit: "host_yaml", Description: "Optional model/tool iterations per agent run; 0 (default) disables."},
 		HostSetting{ConfigPath: "local_acp.max_model_calls", Apply: "restart", Edit: "host_yaml", Description: "Optional model calls shared by the main and child agents; 0 (default) disables."},
 		HostSetting{ConfigPath: "local_acp.max_tool_calls", Apply: "restart", Edit: "host_yaml", Description: "Optional tool calls shared by the main and child agents; 0 (default) disables."},
@@ -193,6 +194,9 @@ func ValidateDraft(section string, document map[string]any) error {
 // ValidateNative checks only present native settings. Unknown retained fields
 // remain migration input. YAML null means unset, as in the launch decoder.
 func ValidateNative(document map[string]any) error {
+	if _, err := ArtifactSizeLimitMiB(document); err != nil {
+		return err
+	}
 	if _, err := HostMCPRecipes(document); err != nil {
 		return err
 	}

@@ -3,6 +3,8 @@
 config_version: eino-harness-v1
 
 local_acp:
+  # Maximum size per output artifact in MiB; positive integer, restart required.
+  max_artifact_size_mib: 500
   # Optional call/iteration quotas; 0 disables. Run deadlines still apply.
   max_iterations: 0
   max_model_calls: 0
