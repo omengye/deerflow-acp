@@ -9,6 +9,8 @@ on:
       - "scripts/build-wsl-helper.ps1"
       - "scripts/build-windows.ps1"
       - "scripts/test-windows-package.ps1"
+      - "scripts/*go*test*.ps1"
+      - "scripts/test-go-harness.ps1"
       - "acp-*.ps1"
       - "start.*"
       - "stop.*"
@@ -23,6 +25,8 @@ on:
       - "scripts/build-wsl-helper.ps1"
       - "scripts/build-windows.ps1"
       - "scripts/test-windows-package.ps1"
+      - "scripts/*go*test*.ps1"
+      - "scripts/test-go-harness.ps1"
       - "acp-*.ps1"
       - "start.*"
       - "stop.*"
@@ -54,8 +58,21 @@ jobs:
           go-version: "1.26.8"
           cache-dependency-path: go-harness/go.sum
       - run: go mod verify
-      - run: go test -count=1 -p=2 -timeout=30m ./...
-      - run: go test -race -p=2 -timeout=40m ./internal/... ./
+      - name: Test regression runner
+        shell: pwsh
+        run: ../scripts/test-go-test-batches.ps1
+      - name: Go regression (serial bounded batches)
+        shell: pwsh
+        run: ../scripts/test-go-harness.ps1
+      - name: Upload Go regression diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Go-regression-${{ runner.os }}
+          path: .build-cache/go-tests/**
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
       - name: Build Rust Bridge
         working-directory: bridge
         run: cargo build --locked
@@ -117,3 +134,48 @@ jobs:
           "$bridge" --runtime-dir "$runtime" --status
           "$bridge" --runtime-dir "$runtime" --stop-daemon
           trap - EXIT
+
+  race:
+    name: Race (${{ matrix.os }}, ${{ matrix.suite }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        suite: [runtime, sdk, internal]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: go-harness
+        shell: pwsh
+    env:
+      GOMAXPROCS: "2"
+      RACE_SUITE: ${{ matrix.suite }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.8"
+          cache-dependency-path: go-harness/go.sum
+      - run: go mod verify
+      - name: Go race regression (serial bounded batches)
+        run: |
+          switch ($env:RACE_SUITE) {
+            runtime { $packages = @('./internal/runtime') }
+            sdk { $packages = @('./') }
+            internal {
+              $packages = @(go list -mod=readonly ./internal/... | Where-Object { $_ -notmatch '/internal/runtime$' })
+              if ($LASTEXITCODE -ne 0 -or $packages.Count -eq 0) { throw 'Race package discovery failed' }
+            }
+            default { throw 'Unknown race suite' }
+          }
+          ../scripts/test-go-harness.ps1 -Race -TestTimeoutMinutes 40 -Packages $packages
+      - name: Upload Go race diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Go-race-${{ runner.os }}-${{ matrix.suite }}
+          path: .build-cache/go-tests/**
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14

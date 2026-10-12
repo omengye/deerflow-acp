@@ -59,6 +59,20 @@ Visual Studio 开发环境会使用实际安装位置，不要求 SDK 位于 C �
 
 ## CI 触发与产物
 
+### Go 回归分批执行
+
+本地与 Actions 共用 `scripts/test-go-harness.ps1`。脚本先通过 `go test -list` 获取实际测试清单，再按每批最多 32 个顶层测试串行运行，包含所有子测试。普通回归保留每批 30 分钟上限，race 回归为 40 分钟，不使用测试结果缓存。这样避免大型包的累计耗时耗尽单次 `go test` 的包级超时，同时减少多个 SQLite 测试包并行落盘的争用。单个测试及产品代码内的 deadline 不因此延长。
+
+```powershell
+.\scripts\test-go-test-batches.ps1
+.\scripts\test-go-harness.ps1
+.\scripts\test-go-harness.ps1 -Race -TestTimeoutMinutes 40 -Packages './internal/...', './'
+```
+
+脚本逐批校验清单中的测试是否都有结束结果。退出码非零、遗漏、重复或失败均中止；环境相关 skip 单独记录，不算通过。`.build-cache/go-tests/<run>/manifest.json` 保存清单、批次及结果，每批 JSONL 保留实时输出和超时堆栈。Go harness 与 Windows 打包工作流均上传这些诊断，无须等待最终 ZIP 生成。普通回归与 race 在独立 runner 作业执行，不争用同一磁盘，也不共同消耗一个作业的时限。分批执行不是重试，也不改变 SQLite 持久化级别。
+
+race 进一步划分为 runtime、SDK 根包、其余 internal 包三个独立作业。其余 internal 包从 `go list` 动态获取，仅排除已单独运行的 runtime，整体范围仍为 `./internal/... ./`。
+
 在 **Actions → Build Windows MVP → Run workflow** 选择分支与包类型。`All` 在一次作业中生成桌面和 ACP 两套包。**Build Windows Desktop** 与 **Release Windows Portable ACP** 也可手动运行；发布 GitHub Release（含预发布）触发对应标签构建。手动运行只生成 artifact，不创建 Release。新文件提交到对应分支后才能在 GitHub 执行；手动工作流入口通常需要先存在于默认分支。
 
 桌面 artifact `DeerFlow-Windows-Desktop-x64` 包含：

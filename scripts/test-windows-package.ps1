@@ -52,6 +52,11 @@ try {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'desktop-source-identity.ps1') -Destination $fixtureScripts
     Set-Content -LiteralPath (Join-Path $fixtureScripts 'test-desktop-source-identity.ps1') -Value '# Identity fixture is tested separately.'
     @'
+param([int]$TestTimeoutMinutes)
+'Go regression runner' | Add-Content -LiteralPath $env:DEERFLOW_PACKAGE_FIXTURE_TRACE
+if ($env:DEERFLOW_PACKAGE_FIXTURE_FAILURE -eq 'regression') { throw 'Go regression failed (exit 42)' }
+'@ | Set-Content -LiteralPath (Join-Path $fixtureScripts 'test-go-harness.ps1') -Encoding utf8
+    @'
 param([string]$Configuration,[string]$OutputDirectory)
 New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
 foreach ($name in @('deerflow-acp.exe','deerflow-acpd.exe','README.md')) {

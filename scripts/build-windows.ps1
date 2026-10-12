@@ -72,7 +72,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Cannot read Go version' }
         Invoke-CheckedNative go @('mod', 'verify')
         if (-not $SkipTests) {
-            Invoke-CheckedNative go @('test', '-count=1', '-p=2', "-timeout=$($TestTimeoutMinutes)m", './...')
+            & (Join-Path $PSScriptRoot 'test-go-harness.ps1') -TestTimeoutMinutes $TestTimeoutMinutes
         }
     } finally { Pop-Location }
     $cargoVersion = (& cargo --version) -join ' '

@@ -104,8 +104,11 @@ func TestSkillLearningSourceSDKManagementCitedHintsDisabledAndWithdrawal(t *test
 		t.Fatal(err)
 	}
 	var page harness.SkillExperiencePage
-	deadline := time.Now().Add(6 * time.Second)
-	for time.Now().Before(deadline) {
+	// This checks the source contract, not a six-second scheduling SLA. Use
+	// the existing bounded test context, including durable worker publication.
+	poll := time.NewTicker(50 * time.Millisecond)
+	defer poll.Stop()
+	for {
 		page, err = c.SkillExperiences(ctx, x.ID, "", 10)
 		if err != nil {
 			t.Fatal(err)
@@ -113,7 +116,11 @@ func TestSkillLearningSourceSDKManagementCitedHintsDisabledAndWithdrawal(t *test
 		if len(page.Experiences) != 0 {
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		select {
+		case <-poll.C:
+		case <-ctx.Done():
+			t.Fatalf("source fixture did not extract: calls=%d page=%+v: %v", extractor.calls.Load(), page, ctx.Err())
+		}
 	}
 	if len(page.Experiences) != 1 {
 		t.Fatal("source fixture did not extract", page)

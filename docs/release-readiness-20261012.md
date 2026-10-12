@@ -129,6 +129,75 @@ All model transport remains streaming by default; no model-call implementation
 or user configuration changed in this correction. Live desktop executables,
 configuration, session databases and in-flight tasks were not modified.
 
+## Follow-up Windows cumulative test timeout
+
+The subsequent Actions runs on `4567b6a5` also failed and are NOT release
+evidence. Desktop run `38244979273` exhausted the runtime package's cumulative
+30-minute test deadline. The reported
+`TestSkillLearningExtractionChunkingPreservesSingleEpisode` had been running
+for only two seconds; its stack was in SQLite WAL `FlushFileBuffers` during
+commit. The log does not establish a deadlock in that test. The preceding full
+local run completed that case in 1.52 seconds. Harness run `38244975275` also
+reported source-publication polling, cancelled-turn follow-up and maintenance
+generation deadlines on Windows; Ubuntu passed. Slow durable I/O is consistent
+with these failures but is not proof that every deadline has the same cause.
+
+The existing artifact-size configuration changes were committed first as
+`dd816f65`, separately from this test infrastructure correction, as requested.
+
+Both Windows packaging and Go CI now use `scripts/test-go-harness.ps1`:
+
+- Discover the actual Test/Example/Fuzz inventory and execute all top-level
+  cases and their subtests in batches of at most 32 using ordinary `go test`.
+  Each batch preserves the 30-minute normal / 40-minute race ceiling and runs
+  uncached. Compilation, vet, package working directories and helper processes
+  retain Go's standard behavior. No test is silently omitted or retried.
+- Execute packages serially with `-p=1`, rather than competing SQLite suites
+  writing concurrently. Normal and race suites have independent Actions jobs;
+  neither shares a runner disk or a cumulative job budget with the other.
+- Fail on nonzero exit, missing/duplicate results or failing tests. Manifests
+  retain the exact inventory, batches, statuses and per-batch JSONL logs.
+  Environmental skips remain explicit. Diagnostics upload even on failure.
+- Give fresh follow-up turns their own original 10-second test contexts,
+  instead of reusing the stopped turn's remaining lifetime. Source inspection
+  waits within its existing 25-second context instead of an unrelated six-
+  second polling deadline. Generation failures now report persisted job state.
+
+These changes do not relax workspace checks, worker fencing, product deadlines
+or SQLite FULL durability. They do not modify model transport, installed EXEs,
+live configuration or session databases. Clean-checkout Windows packaging and
+the remaining real-environment acceptance checks are still required.
+
+Local follow-up verification (real Windows, process-local short TEMP/TMP):
+
+- Complete uncached normal regression passes through the shared runner, from
+  21:16 to 22:01 China time: 43 packages discovered, 34 with tests, 1,319 top-
+  level tests in 72 batches; 3,125 passing test/subtest events, zero failures
+  and 18 explicit environment-dependent skips. This includes the artifact-
+  size changes in `dd816f65`. The longest batch takes 288.50 seconds.
+- Runtime's 266 top-level tests pass in nine batches. The chunking case takes
+  1.47 seconds, the auto-patch daily-shared case 2.85 seconds, source inspection
+  2.50 seconds and cancellation/follow-up 0.77 seconds. Product worker deadlines
+  and durable on-disk SQLite fixtures remain unchanged.
+- Runner fixtures pass 388 inventory, boundary, anchoring, skip-recording and
+  failure-propagation checks. Packaging passes 30 failure/archive/checksum/
+  environment checks. Build entry-point syntax and workflow actionlint pass.
+- Complete uncached race regression of `./internal/... ./` also passes through
+  the same runner, from 22:02 to 23:33: 34 packages discovered, 29 with tests,
+  1,293 top-level tests in 63 batches; 3,087 passing test/subtest events, zero
+  failures or data-race reports and 13 explicit skips. The longest batch takes
+  649.58 seconds. CI partitions this unchanged race scope into runtime, SDK
+  and the dynamically discovered remaining internal packages on separate
+  runners, avoiding another cumulative whole-job deadline on slower hosts.
+- Rebuilt desktop release tests pass: three artifact-transfer tests (including
+  host sizes above the former 200 MiB limit), 144 settings tests and 50 ACP
+  contracts. Three authenticated external-agent cases remain ignored. The
+  Windows packaging workflow now explicitly gates on artifact-transfer tests
+  as well. Local Rust remains 1.95.0; Actions still verifies pinned 1.96.0.
+- A freshly rebuilt Go daemon passes all four native Rust Bridge integration
+  tests (18.33 seconds), covering those skipped by the generic normal suite.
+  Go module verification and the disjoint 34-package race partition union pass.
+
 ## Upgrade boundaries
 
 Existing file overwrite/append clients must supply `expected_version` from
@@ -148,6 +217,10 @@ These directories are intentionally ignored and must not enter source archives:
 - `.build-cache/windows-ci-fix-20261012/`: before/after reproduction, complete
   short-TEMP JSON test log and result/count manifests, affected-package tests,
   race tests, Buzz validation and subsequent local build diagnostics.
+- `.build-cache/windows-ci-timeout-20261012/`: full failed Actions logs,
+  follow-up regression summaries and runner fixture results.
+- `.build-cache/go-tests/`: discovered test inventories, per-batch JSONL logs
+  and normal/race manifests from the shared regression runner.
 
 The GitHub run result and artifact identity must be checked after dispatch;
 they are not predeclared in this document.

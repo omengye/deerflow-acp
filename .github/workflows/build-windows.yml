@@ -76,6 +76,7 @@ jobs:
       - name: Test Windows packaging failure gates
         run: |
           ./scripts/test-go-build-entrypoints.ps1
+          ./scripts/test-go-test-batches.ps1
           ./scripts/test-windows-package.ps1
       - name: Build and verify Windows packages
         id: build
@@ -116,6 +117,13 @@ jobs:
           cargo test --release --locked --target-dir ../.build-cache/desktop-build `
             --package waku-core --lib driver::acp
           if ($LASTEXITCODE -ne 0) { throw 'Desktop ACP regression failed' }
+      - name: Test desktop artifact transfer contracts
+        if: inputs.package != 'ACP'
+        working-directory: desktop-app
+        run: |
+          cargo test --release --locked --target-dir ../.build-cache/desktop-build `
+            --package waku --lib app::deerflow_tasks::artifacts::tests::
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop artifact regression failed' }
       - name: Upload verified packages and matching source
         uses: actions/upload-artifact@v4
         with:
@@ -140,7 +148,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: DeerFlow-Windows-${{ inputs.package }}-build-logs
-          path: .build-cache/windows-release-logs/**
+          path: |
+            .build-cache/windows-release-logs/**
+            .build-cache/go-tests/**
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14

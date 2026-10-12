@@ -99,7 +99,10 @@ func adoptLearningBase(t *testing.T, r *skills.Registry) {
 func autoPatchLearningProposal(t *testing.T, e *evolution.Service, discovery harness.SkillDiscovery) harness.SkillProposal {
 	t.Helper()
 	if worked, err := e.RunGeneration(context.Background()); err != nil || !worked {
-		t.Fatal("generation did not run", worked, err)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		job, readErr := e.GetGeneration(ctx, discovery.GenerationID)
+		t.Fatalf("generation did not run: worked=%v err=%v state=%s phase=%s code=%s read=%v", worked, err, job.State, job.Phase, job.ErrorCode, readErr)
 	}
 	j, err := e.GetGeneration(context.Background(), discovery.GenerationID)
 	if err != nil {

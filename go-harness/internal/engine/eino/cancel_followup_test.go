@@ -86,8 +86,13 @@ func TestCancelledToolAllowsFreshPromptWithoutReplayingEffect(t *testing.T) {
 				t.Fatalf("stopped effect was falsely certified: %+v %v", receipts, err)
 			}
 			stopped := receipts[0]
+			cancel()
 			for _, prompt := range []string{"new question", "new tool request"} {
-				result, err := s.Run(ctx, "owner", session.ID, []harness.Content{{Type: "text", Text: prompt}}, nil, approveReceiptTool)
+				// A new user turn has its own lifetime, not the stopped turn's
+				// remaining deadline (which also included durable cancellation).
+				followup, stop := context.WithTimeout(context.Background(), 10*time.Second)
+				result, err := s.Run(followup, "owner", session.ID, []harness.Content{{Type: "text", Text: prompt}}, nil, approveReceiptTool)
+				stop()
 				if err != nil || result.StopReason != "end_turn" {
 					t.Fatalf("fresh prompt %q blocked after stop: %+v %v", prompt, result, err)
 				}
@@ -95,7 +100,9 @@ func TestCancelledToolAllowsFreshPromptWithoutReplayingEffect(t *testing.T) {
 			if effects.Load() != 2 || !warned.Load() {
 				t.Fatalf("stopped work replayed or safety context lost: effects=%d warned=%v", effects.Load(), warned.Load())
 			}
-			receipts, err = s.ListToolReceipts(ctx, "owner", session.ID)
+			verify, stop := context.WithTimeout(context.Background(), 10*time.Second)
+			defer stop()
+			receipts, err = s.ListToolReceipts(verify, "owner", session.ID)
 			if err != nil || len(receipts) != 2 {
 				t.Fatalf("receipts=%+v err=%v", receipts, err)
 			}
@@ -109,7 +116,7 @@ func TestCancelledToolAllowsFreshPromptWithoutReplayingEffect(t *testing.T) {
 				if err := native.DB().QueryRow(`SELECT COUNT(*) FROM eino_checkpoints WHERE id=?`, CheckpointID(stopped.RunID)).Scan(&checkpoints); err != nil || checkpoints != 0 {
 					t.Fatalf("cancelled checkpoint retained: count=%d err=%v", checkpoints, err)
 				}
-				_, err := s.ResumeExecution(ctx, "owner", session.ID, harness.ResumeExecutionRequest{RunID: stopped.RunID, ExpectedVersion: 1}, nil, approveReceiptTool)
+				_, err := s.ResumeExecution(verify, "owner", session.ID, harness.ResumeExecutionRequest{RunID: stopped.RunID, ExpectedVersion: 1}, nil, approveReceiptTool)
 				if !errors.Is(err, harness.ErrExecutionConflict) {
 					t.Fatalf("stopped execution became resumable: %v", err)
 				}
