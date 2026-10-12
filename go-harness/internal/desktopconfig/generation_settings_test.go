@@ -19,6 +19,7 @@ import (
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/launch"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 )
 
 func generationDocument(t *testing.T) (Options, map[string]any) {
@@ -96,8 +97,7 @@ func TestGenerationSettingsSaveLaunchAndProviderConsumption(t *testing.T) {
 						answer = map[string]any{"skill_name": input["skill_name"], "base_version": input["base_version"], "reason": "Check source evidence", "files": map[string]string{"SKILL.md": "---\nname: evidence\ndescription: Check source evidence\n---\nCite the source and verify claims.\n"}}
 					}
 					body, _ := json.Marshal(answer)
-					w.Header().Set("Content-Type", "application/json")
-					_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(body)}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125}})
+					_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(body)}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125}})
 				}))
 				defer server.Close()
 				model := modelByName(t, doc, name)

@@ -64,6 +64,42 @@ func snapshot(t *testing.T, l *Ledger, id string) Snapshot {
 	return s
 }
 
+func TestDefaultBudgetSurvivesMultiDayExecutionAndReopen(t *testing.T) {
+	ctx := context.Background()
+	clock := newClock()
+	path := filepath.Join(t.TempDir(), "multi-day.db")
+	// A fake long lease lets this clock-based test cover days without sleeping.
+	cfg := Config{Now: clock.now, LeaseDuration: 7 * 24 * time.Hour}
+	l := openBudget(t, path, cfg)
+	if err := l.CreateRoot(ctx, RootSpec{RootBudgetID: "root", RootRunID: "run", SessionID: "parent", Limits: harness.DefaultBudgetLimits()}); err != nil {
+		t.Fatal(err)
+	}
+	s := Scope{RootBudgetID: "root", MemberID: "run", SessionID: "parent", AttemptID: "run/1", Fence: 1}
+	if err := l.BeginAttempt(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	clock.add(72 * time.Hour)
+	if err := l.Heartbeat(ctx, s); err != nil {
+		t.Fatal("multi-day heartbeat stopped", err)
+	}
+	if got := snapshot(t, l, "root"); got.Limits.Timeout != 0 || got.Elapsed < 72*time.Hour || got.BlockedReason != "" {
+		t.Fatal(got)
+	}
+	if err := l.EndAttempt(ctx, s, OutcomeWaitingInput); err != nil {
+		t.Fatal(err)
+	}
+	l = openBudget(t, path, cfg)
+	clock.add(48 * time.Hour)
+	s.AttemptID = "run/2"
+	s.Fence++
+	if err := l.BeginAttempt(ctx, s); err != nil {
+		t.Fatal("reopen reset unlimited policy", err)
+	}
+	if _, err := l.ReserveTool(ctx, s, ToolRequest{OperationID: "after-days", Digest: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConcurrentLedgersRespectSharedCaps(t *testing.T) {
 	ctx := context.Background()
 	clock := newClock()

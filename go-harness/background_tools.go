@@ -340,7 +340,8 @@ func (t *backgroundTool) InvokableRun(ctx context.Context, args string, _ ...too
 		binding := background.Binding{ParentSessionID: actor.SessionID, SubmittedBy: actor.OwnerID, ChildSessionID: in.ChildSessionID, OriginRunID: t.run.RunID, OriginToolCallID: callID, Workspace: t.run.Session.CWD, ExecutionContract: contract, RootBudgetID: t.run.RootBudgetID, AgentVersion: spec.AgentVersion, ConfigVersion: t.run.Session.ConfigVersion}
 		binding.ParentInvocationID = spec.ParentInvocationID
 		ctx = context.WithValue(ctx, backgroundSpecKey{}, spec)
-		task, err = t.service.SubmitNativeSubagent(ctx, actor, binding, &adk.AgentInput{Messages: []*schema.Message{schema.UserMessage(in.Instruction)}}, in.Description)
+		// Match foreground execution; some compatible providers reject non-streaming requests.
+		task, err = t.service.SubmitNativeSubagent(ctx, actor, binding, &adk.AgentInput{Messages: []*schema.Message{schema.UserMessage(in.Instruction)}, EnableStreaming: true}, in.Description)
 		if task.ID == "" && errors.Is(err, agents.ErrTaskLimit) {
 			err = harness.MarkToolNotExecuted(err)
 		}
@@ -356,6 +357,9 @@ func (t *backgroundTool) InvokableRun(ctx context.Context, args string, _ ...too
 		}
 		if t.info.Name == "task_status" {
 			task, err = t.service.Get(ctx, actor, in.TaskID)
+			if err != nil {
+				return "", backgroundAdmissionError(err)
+			}
 		} else {
 			task, err = t.service.Cancel(ctx, actor, in.TaskID, "cancelled by parent agent")
 		}
@@ -394,7 +398,7 @@ func (t *backgroundTool) InvokableRun(ctx context.Context, args string, _ ...too
 			}
 			task, err = t.service.Get(ctx, actor, in.TaskID)
 			if err != nil {
-				return "", err
+				return "", backgroundAdmissionError(err)
 			}
 			if ready && task.BlockedReason == "" && (task.Status == "completed" || task.Status == "failed" || task.Status == "canceled") {
 				if err = t.observeTaskResult(ctx, task, wait); err != nil {

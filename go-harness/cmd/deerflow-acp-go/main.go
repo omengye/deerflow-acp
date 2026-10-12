@@ -23,7 +23,7 @@ func main() {
 func run() error {
 	var cfg deerflow.Config
 	flag.StringVar(&cfg.DataDir, "data-dir", os.Getenv("DEERFLOW_GO_DATA_DIR"), "Go runtime state directory (separate from Python)")
-	flag.StringVar(&cfg.Provider, "provider", env("DEERFLOW_MODEL_PROVIDER", "openai"), "model provider: openai, claude, ark")
+	flag.StringVar(&cfg.Provider, "provider", env("DEERFLOW_MODEL_PROVIDER", "openai"), "model provider: openai, claude")
 	flag.StringVar(&cfg.Model, "model", os.Getenv("DEERFLOW_MODEL"), "model identifier")
 	flag.StringVar(&cfg.BaseURL, "base-url", os.Getenv("DEERFLOW_MODEL_BASE_URL"), "model endpoint override")
 	launch.RuntimeFlags(flag.CommandLine, &cfg)
@@ -33,8 +33,6 @@ func run() error {
 		switch cfg.Provider {
 		case "claude":
 			cfg.APIKey = os.Getenv("ANTHROPIC_API_KEY")
-		case "ark":
-			cfg.APIKey = os.Getenv("ARK_API_KEY")
 		default:
 			cfg.APIKey = os.Getenv("OPENAI_API_KEY")
 		}

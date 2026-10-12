@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillbehavior"
 )
 
@@ -27,8 +28,7 @@ func writeBehaviorAnswer(w http.ResponseWriter, content string, calls ...map[str
 		message["tool_calls"] = calls
 		reason = "tool_calls"
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": message, "finish_reason": reason}}, "usage": map[string]int{"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}})
+	_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": message, "finish_reason": reason}}, "usage": map[string]int{"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}})
 }
 func behaviorCall(id, name, args string) map[string]any {
 	return map[string]any{"id": id, "type": "function", "function": map[string]any{"name": name, "arguments": args}}
@@ -37,7 +37,7 @@ func behaviorCall(id, name, args string) map[string]any {
 func TestSkillBehaviorActualToolLoopVariantIsolationAndReceipts(t *testing.T) {
 	s, _, claim, ctx := maintenanceReviewFixture(t, 20)
 	var calls atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		var request struct {
 			Messages            []struct{ Role, Content string }
@@ -121,7 +121,7 @@ func TestSkillBehaviorClosedToolsBoundsAndOracleSeparation(t *testing.T) {
 			}
 			_, _, _, ctx := maintenanceReviewFixture(t, allowed)
 			var providerCalls atomic.Int64
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 				n := providerCalls.Add(1)
 				var request any
 				_ = json.NewDecoder(r.Body).Decode(&request)
@@ -215,7 +215,7 @@ func TestSkillBehaviorCancellationAndUnknownUsageKeepCharge(t *testing.T) {
 			s, _, claim, parent := maintenanceReviewFixture(t, 4)
 			started := make(chan struct{}, 1)
 			var calls atomic.Int64
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
 				var request any
 				_ = json.NewDecoder(r.Body).Decode(&request)
@@ -229,7 +229,7 @@ func TestSkillBehaviorCancellationAndUnknownUsageKeepCharge(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`))
+				_ = modelstreamtest.WriteJSON(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
 			}))
 			defer server.Close()
 			evaluator, err := NewSkillBehaviorEvaluator(parent, harness.SkillBehaviorModelConfig{Route: harness.ModelRoute{Model: "fixture", BaseURL: server.URL}})
@@ -282,7 +282,7 @@ func TestSkillBehaviorSharedEvaluatorConcurrentCaseIsolation(t *testing.T) {
 	_, _, _, rightContext := maintenanceReviewFixture(t, 10)
 	var atRead atomic.Int64
 	releaseReads := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Messages []struct{ Role, Content string }
 			Tools    []struct{ Function struct{ Name string } }
@@ -371,7 +371,7 @@ func TestSkillBehaviorInputAndToolCapsStopBeforeFurtherEffects(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			s, _, claim, ctx := maintenanceReviewFixture(t, 10)
 			var calls atomic.Int64
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 				n := calls.Add(1)
 				writeBehaviorAnswer(w, "", behaviorCall(fmt.Sprint(n), "write_file", `{"path":"result.txt","content":"bounded"}`))
 			}))

@@ -16,6 +16,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 )
 
 func TestRoleProviderOptionsReachWireWithinBudget(t *testing.T) {
@@ -26,15 +27,13 @@ func TestRoleProviderOptionsReachWireWithinBudget(t *testing.T) {
 	}{
 		{"openai-reasoning", "openai", "high", "", nil, 0},
 		{"openai-xhigh", "openai", "xhigh", "", nil, 0},
-		{"ark-thinking", "ark", "high", "enabled", rolePointer(true), 0},
-		{"ark-disabled", "ark", "", "disabled", rolePointer(false), 0},
 		{"claude-thinking", "claude", "", "enabled", rolePointer(true), 1200},
 		{"claude-disabled", "claude", "", "disabled", rolePointer(false), 0},
 	} {
 		for _, stream := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
 				var calls atomic.Int32
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 					calls.Add(1)
 					var body map[string]any
 					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -64,20 +63,11 @@ func TestRoleProviderOptionsReachWireWithinBudget(t *testing.T) {
 					if body["model"] != "fixture-model" {
 						t.Error("lost selected model")
 					}
+					w.Header().Set("Content-Type", "text/event-stream")
 					if tc.provider == "claude" {
-						if stream {
-							w.Header().Set("Content-Type", "text/event-stream")
-							fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"fixture\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"fixture-model\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
-						} else {
-							w.Header().Set("Content-Type", "application/json")
-							fmt.Fprint(w, `{"id":"fixture","type":"message","role":"assistant","model":"fixture-model","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":1}}`)
-						}
-					} else if stream {
-						w.Header().Set("Content-Type", "text/event-stream")
-						fmt.Fprint(w, "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"done\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":1,\"total_tokens\":11}}\n\ndata: [DONE]\n\n")
+						fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"fixture\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"fixture-model\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 					} else {
-						w.Header().Set("Content-Type", "application/json")
-						fmt.Fprint(w, `{"id":"fixture","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`)
+						fmt.Fprint(w, "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"done\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":1,\"total_tokens\":11}}\n\ndata: [DONE]\n\n")
 					}
 				}))
 				defer server.Close()
@@ -165,8 +155,6 @@ func TestConfiguredRoleProviderValidationAtStartup(t *testing.T) {
 	}{
 		{"openai", harness.AgentConfig{ThinkingEnabled: rolePointer(false)}, "thinking_enabled"},
 		{"claude", harness.AgentConfig{ReasoningEffort: "high"}, "reasoning_effort"},
-		{"ark", harness.AgentConfig{ReasoningEffort: "xhigh"}, "reasoning_effort"},
-		{"ark", harness.AgentConfig{ReasoningEffort: "high", ThinkingEnabled: rolePointer(false)}, "thinking_enabled"},
 		{"claude", harness.AgentConfig{ThinkingEnabled: rolePointer(true), ModelSettings: harness.AgentModelSettings{Temperature: rolePointer(0.5)}}, "temperature"},
 		{"claude", harness.AgentConfig{ThinkingEnabled: rolePointer(true), ModelSettings: harness.AgentModelSettings{MaxTokens: rolePointer(1024)}}, "thinking_budget_tokens"},
 	} {

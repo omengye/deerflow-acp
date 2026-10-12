@@ -33,7 +33,7 @@ func (m PermissionMode) RequiresPermission(name string) bool {
 		return false
 	case PermissionModeDangerous:
 		switch name {
-		case "ask_clarification", "list_uploaded_files", "memory_search", "task", "tool_search":
+		case "ask_clarification", "list_uploaded_files", "list_attachments", "memory_search", "task", "tool_search", "task_note":
 			return false
 		}
 		if name == "ls" || containsToolKind(name, "read", "view", "list_file") {

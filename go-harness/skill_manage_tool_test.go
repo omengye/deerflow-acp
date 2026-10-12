@@ -14,12 +14,16 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
-func skillToolResponse(w http.ResponseWriter, stream bool, name, args, text string) {
+func skillToolResponse(w http.ResponseWriter, stream bool, name, args, text string, callIDs ...string) {
 	message := map[string]any{"role": "assistant", "content": text}
 	finish := "stop"
 	if name != "" {
+		callID := "call-" + name
+		if len(callIDs) > 0 {
+			callID = callIDs[0]
+		}
 		message["content"] = nil
-		message["tool_calls"] = []any{map[string]any{"index": 0, "id": "call-" + name, "type": "function", "function": map[string]string{"name": name, "arguments": args}}}
+		message["tool_calls"] = []any{map[string]any{"index": 0, "id": callID, "type": "function", "function": map[string]string{"name": name, "arguments": args}}}
 		finish = "tool_calls"
 	}
 	usage := map[string]any{"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
@@ -34,7 +38,7 @@ func skillToolResponse(w http.ResponseWriter, stream bool, name, args, text stri
 }
 
 func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
-	for _, mode := range []string{"root", "role", "background-role", "managed-create", "builtin-overlay", "builtin-create", "hidden-role-skill", "review-fails", "review-storage-fails", "budget-exhausted", "read-only", "tool-denied"} {
+	for _, mode := range []string{"root", "role", "background-role", "managed-create", "builtin-overlay", "builtin-create", "hidden-role-skill", "quality-rejected", "quality-unavailable", "review-fails", "review-storage-fails", "budget-exhausted", "read-only", "tool-denied"} {
 		t.Run(mode, func(t *testing.T) {
 			workspace, cfg := skillFixture(t)
 			cfg.Skills.Install = []harness.SkillInstall{{SourceID: "project", Directory: "research", Enabled: true}}
@@ -74,6 +78,12 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 				number := calls[request.Model]
 				mu.Unlock()
 				if request.Model == "moderator" || request.Model == "evaluator" {
+					if mode == "quality-unavailable" && request.Model == "evaluator" {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(503)
+						fmt.Fprint(w, `{"error":{"message":"private-review-error","type":"unavailable"}}`)
+						return
+					}
 					if mode == "review-fails" {
 						w.WriteHeader(400)
 						fmt.Fprint(w, `{"error":{"message":"private-review-error"}}`)
@@ -86,8 +96,12 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 					if err := json.Unmarshal([]byte(request.Messages[1].Content), &input); err != nil {
 						t.Error(err)
 					}
-					decision, _ := json.Marshal(map[string]any{"base_version": input["base_version"], "candidate_version": input["candidate_version"], "passed": true, "reason": "Scoped content review"})
-					skillToolResponse(w, false, "", "", string(decision))
+					passed, reason := true, "Scoped content review"
+					if mode == "quality-rejected" && request.Model == "evaluator" {
+						passed, reason = false, "Missing output consistency check."
+					}
+					decision, _ := json.Marshal(map[string]any{"base_version": input["base_version"], "candidate_version": input["candidate_version"], "passed": passed, "reason": reason})
+					skillToolResponse(w, request.Stream, "", "", string(decision))
 					return
 				}
 				for _, m := range request.Messages {
@@ -96,6 +110,20 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 						toolResult = m.Content
 						mu.Unlock()
 					}
+				}
+				if (mode == "quality-rejected" || mode == "quality-unavailable") && number == 2 {
+					mu.Lock()
+					priorResult := toolResult
+					mu.Unlock()
+					var prior struct {
+						ProposalID string `json:"proposal_id"`
+					}
+					if err := json.Unmarshal([]byte(priorResult), &prior); err != nil || prior.ProposalID == "" {
+						t.Errorf("missing proposal for get: %s %v", priorResult, err)
+					}
+					args, _ := json.Marshal(map[string]string{"action": "get", "proposal_id": prior.ProposalID})
+					skillToolResponse(w, request.Stream, "skill_manage", string(args), "", "call-skill-manage-get")
+					return
 				}
 				if number == 1 {
 					visible := false
@@ -243,7 +271,7 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 				}
 				p := page.Proposals[0]
 				wantStatus := "pending_review"
-				if mode == "review-fails" || mode == "review-storage-fails" || mode == "budget-exhausted" {
+				if mode == "review-fails" || mode == "review-storage-fails" || mode == "budget-exhausted" || mode == "quality-rejected" || mode == "quality-unavailable" {
 					wantStatus = "failed"
 				}
 				if p.Status != wantStatus || p.Base != before || !strings.HasPrefix(p.Author, "model/") || p.Trigger.ThreadID != proposalSession {
@@ -254,6 +282,27 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 				}
 				if mode == "review-fails" && (strings.Contains(resultText, "private-review-error") || !strings.Contains(resultText, `"status":"failed"`)) {
 					t.Fatalf("review failure leaked or killed session: %s", resultText)
+				}
+				if mode == "quality-rejected" || mode == "quality-unavailable" {
+					var feedback struct {
+						Security, Quality string
+						Code              string `json:"error_code"`
+						Stage             string `json:"failure_stage"`
+						Retryable         bool
+					}
+					if err := json.Unmarshal([]byte(resultText), &feedback); err != nil {
+						t.Fatal(err)
+					}
+					wantCode, wantQuality := "quality_rejected", "failed"
+					if mode == "quality-unavailable" {
+						wantCode, wantQuality = "review_temporarily_unavailable", "unavailable"
+					}
+					if feedback.Security != "passed" || feedback.Quality != wantQuality || feedback.Code != wantCode || feedback.Stage != "quality" || feedback.Retryable != (mode == "quality-unavailable") || reviewCalls != 2 || strings.Contains(resultText, "private-review-error") {
+						t.Fatalf("get lost cause, leaked diagnostics or reran reviews: %s calls=%d", resultText, reviewCalls)
+					}
+					if mode == "quality-rejected" && !strings.Contains(resultText, "Missing output consistency check.") {
+						t.Fatalf("agent cannot revise the rejected candidate: %s", resultText)
+					}
 				}
 			} else if len(page.Proposals) != 0 || reviewCalls != 0 {
 				t.Fatalf("unauthorized candidate/model calls: %+v %d", page, reviewCalls)

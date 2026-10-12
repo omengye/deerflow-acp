@@ -16,6 +16,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/localhost"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 )
 
 func TestSkillGenerationSDKWorkerAndAuthenticatedManagement(t *testing.T) {
@@ -54,8 +55,7 @@ func TestSkillGenerationSDKWorkerAndAuthenticatedManagement(t *testing.T) {
 				} else {
 					answer, _ = json.Marshal(map[string]any{"base_version": base, "candidate_version": candidate, "passed": mode != "quality-rejected" || req.Model != "evaluator", "reason": "Fixture content assessment"})
 				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125}})
+				_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125}})
 			}))
 			defer server.Close()
 			workspace, cfg := skillFixture(t)

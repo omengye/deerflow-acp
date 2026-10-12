@@ -154,6 +154,56 @@ func TestAcquireChecksActualSchemaOnSameConnection(t *testing.T) {
 	}
 }
 
+func TestResourceIdentityIgnoresJSONObjectOrder(t *testing.T) {
+	ctx := context.Background()
+	server := sdk.NewServer(&sdk.Implementation{Name: "schema-order-fixture", Version: "1"}, nil)
+	sdk.AddTool(server, &sdk.Tool{Name: "record", Description: "Record a structured request"}, func(context.Context, *sdk.CallToolRequest, struct {
+		Name      string   `json:"name"`
+		Prompt    string   `json:"prompt"`
+		AgentType string   `json:"agent_type"`
+		Workspace string   `json:"workspace"`
+		Enabled   bool     `json:"enabled"`
+		Labels    []string `json:"labels"`
+		Options   struct {
+			Timezone string `json:"timezone"`
+			Schedule string `json:"schedule"`
+			Action   string `json:"action"`
+		} `json:"options"`
+	}) (*sdk.CallToolResult, any, error) {
+		return &sdk.CallToolResult{}, nil, nil
+	})
+	httpServer := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil))
+	defer httpServer.Close()
+	m := testManager(t, harness.MCPPolicy{AllowHTTP: true})
+	defer m.Close()
+	if err := m.Bind(ctx, "owner", "s", t.TempDir(), []harness.MCPServer{{Name: "fixture", Transport: "http", URL: httpServer.URL}}); err != nil {
+		t.Fatal(err)
+	}
+	descriptor, generation := describeLease(t, m, "s")
+	var firstInfo []byte
+	for i := 0; i < 32; i++ {
+		lease, err := m.Acquire(ctx, "s", descriptor, generation)
+		if err != nil {
+			t.Fatalf("unchanged multi-property schema rejected on discovery %d: %v", i, err)
+		}
+		info, infoErr := lease.Tools[0].Info(ctx)
+		data, encodeErr := json.Marshal(info)
+		_ = lease.Close()
+		if infoErr != nil || encodeErr != nil {
+			t.Fatalf("tool metadata: %v %v", infoErr, encodeErr)
+		}
+		if i == 0 {
+			firstInfo = data
+		} else if string(data) != string(firstInfo) {
+			t.Fatal("unchanged schema altered the execution contract")
+		}
+		current, currentGeneration := describeLease(t, m, "s")
+		if !reflect.DeepEqual(current, descriptor) || currentGeneration != generation {
+			t.Fatal("object property order changed resource identity")
+		}
+	}
+}
+
 func TestLeaseTransportLossPreservesUncertainEffectWithoutReplay(t *testing.T) {
 	ctx := context.Background()
 	cfg := processConfig(t, "one")

@@ -33,14 +33,36 @@ func evolutionFields() []Field {
 		generationLimit("timeout_seconds", 1, 300),
 		generationLimit("max_input_bytes", 1024, 2<<20),
 		generationLimit("max_output_tokens", 128, 32768),
+		{Path: "/skill_evolution/learning", Type: "learning_settings", Default: map[string]any{
+			"enabled": false, "extraction_model_name": nil, "consolidation_enabled": false, "consolidation_model_name": nil, "cross_session_enabled": false, "matching_enabled": false, "matching_model_name": nil, "idle_seconds": 300,
+			"timeout_seconds": 60, "max_input_bytes": 131072, "max_output_tokens": 4096,
+			"max_daily_model_calls": 10, "max_daily_tokens": 50000, "external_context_policy": "hints_only",
+		}},
+		{Path: "/skill_evolution/learning/enabled", Type: "boolean", Default: false},
+		{Path: "/skill_evolution/learning/extraction_model_name", Type: "string", Nullable: true, Default: nil, MaxLength: 256},
+		{Path: "/skill_evolution/learning/consolidation_enabled", Type: "boolean", Default: false},
+		{Path: "/skill_evolution/learning/consolidation_model_name", Type: "string", Nullable: true, Default: nil, MaxLength: 256},
+		{Path: "/skill_evolution/learning/cross_session_enabled", Type: "boolean", Default: false},
+		{Path: "/skill_evolution/learning/matching_enabled", Type: "boolean", Default: false},
+		{Path: "/skill_evolution/learning/matching_model_name", Type: "string", Nullable: true, Default: nil, MaxLength: 256},
+		{Path: "/skill_evolution/learning/external_context_policy", Type: "string", Default: "hints_only", Enum: []string{"hints_only"}},
+		numeric("skill_evolution/learning", "idle_seconds", "integer", 300, 1, 86400),
+		numeric("skill_evolution/learning", "timeout_seconds", "integer", 60, 1, 300),
+		numeric("skill_evolution/learning", "max_input_bytes", "integer", 131072, 1024, 2<<20),
+		numeric("skill_evolution/learning", "max_output_tokens", "integer", 4096, 128, 32768),
+		numeric("skill_evolution/learning", "max_daily_model_calls", "integer", 10, 1, 100000),
+		numeric("skill_evolution/learning", "max_daily_tokens", "integer", 50000, 1, 1000000000),
 		{Path: "/skill_evolution/discovery", Type: "discovery_settings", Default: map[string]any{
 			"operator_corrections_enabled": false, "repeat_threshold": 2, "repeat_window_days": 30,
-			"missing_reports_enabled": false, "successful_workflows_enabled": false, "new_skill_source_id": "",
+			"missing_reports_enabled": false, "successful_workflows_enabled": false, "experience_patterns_enabled": false, "experience_new_skills_enabled": false, "experience_review_drafts_enabled": false, "new_skill_source_id": "",
 			"cooldown_hours": 24, "max_daily_proposals": 5, "max_pending_proposals": 20,
 		}},
 		{Path: "/skill_evolution/discovery/operator_corrections_enabled", Type: "boolean", Default: false},
 		{Path: "/skill_evolution/discovery/missing_reports_enabled", Type: "boolean", Default: false},
 		{Path: "/skill_evolution/discovery/successful_workflows_enabled", Type: "boolean", Default: false},
+		{Path: "/skill_evolution/discovery/experience_patterns_enabled", Type: "boolean", Default: false},
+		{Path: "/skill_evolution/discovery/experience_new_skills_enabled", Type: "boolean", Default: false},
+		{Path: "/skill_evolution/discovery/experience_review_drafts_enabled", Type: "boolean", Default: false},
 		{Path: "/skill_evolution/discovery/new_skill_source_id", Type: "string", Default: "", MaxLength: 128},
 		numeric("skill_evolution/discovery", "repeat_threshold", "integer", 2, 2, 16),
 		numeric("skill_evolution/discovery", "repeat_window_days", "integer", 30, 1, 365),
@@ -58,9 +80,11 @@ func evolutionFields() []Field {
 		numeric("skill_evolution/behavior", "max_input_bytes", "integer", 131072, 1024, 2<<20),
 		numeric("skill_evolution/behavior", "max_output_tokens", "integer", 1024, 128, 8192),
 		{Path: "/skill_evolution/auto_patch", Type: "auto_patch_settings", Default: map[string]any{
-			"max_changed_lines": 40, "max_daily_publications": 2, "observation_hours": 72,
+			"experience_patterns_enabled": false,
+			"max_changed_lines":           40, "max_daily_publications": 2, "observation_hours": 72,
 			"min_observations": 3, "rollback_failure_threshold": 2,
 		}},
+		{Path: "/skill_evolution/auto_patch/experience_patterns_enabled", Type: "boolean", Default: false},
 		numeric("skill_evolution/auto_patch", "max_changed_lines", "integer", 40, 1, 200),
 		numeric("skill_evolution/auto_patch", "max_daily_publications", "integer", 2, 1, 20),
 		numeric("skill_evolution/auto_patch", "observation_hours", "integer", 72, 1, 720),
@@ -113,7 +137,7 @@ func ProjectEvolution(raw map[string]any) (map[string]any, []string, error) {
 		for name, item := range values {
 			if _, known := limits[name]; !known {
 				ignored = append(ignored, "skill_evolution."+key+"."+name)
-			} else if item != nil || key == "discovery" || key == "behavior" {
+			} else if item != nil || key == "discovery" || key == "behavior" || key == "auto_patch" && name == "experience_patterns_enabled" || key == "learning" && name != "extraction_model_name" && name != "consolidation_model_name" && name != "matching_model_name" {
 				limits[name] = item
 			}
 		}
@@ -158,7 +182,7 @@ func ValidateEvolutionDraft(document, dormant map[string]any) error {
 			return fmt.Errorf("skill_evolution.%s: missing setting", key)
 		}
 	}
-	for _, group := range []string{"validation", "generation", "discovery", "behavior", "auto_patch", "budget"} {
+	for _, group := range []string{"validation", "generation", "learning", "discovery", "behavior", "auto_patch", "budget"} {
 		values, ok := document[group].(map[string]any)
 		if !ok {
 			return fmt.Errorf("skill_evolution.%s: must be an object", group)
@@ -186,7 +210,13 @@ func ValidateEvolutionDraft(document, dormant map[string]any) error {
 // ValidateEvolutionWorkerPrerequisites checks native paid-work opt-ins even
 // when the surrounding document otherwise retains disabled legacy data.
 func ValidateEvolutionWorkerPrerequisites(document map[string]any) error {
+	if err := ValidateEvolutionLearningPrerequisites(document); err != nil {
+		return err
+	}
 	if err := ValidateEvolutionDiscoveryPrerequisites(document); err != nil {
+		return err
+	}
+	if err := validateLearningAutoPatchPrerequisites(document); err != nil {
 		return err
 	}
 	behavior, _ := document["behavior"].(map[string]any)
@@ -217,11 +247,110 @@ func ValidateEvolutionWorkerPrerequisites(document map[string]any) error {
 	return nil
 }
 
+// Existing automatic publication grants must not silently cover learned
+// procedures. This gate is native, independent and disabled by default.
+func validateLearningAutoPatchPrerequisites(document map[string]any) error {
+	patch, _ := document["auto_patch"].(map[string]any)
+	value, present := patch["experience_patterns_enabled"]
+	if !present {
+		return nil
+	}
+	if err := ValidateValue("/skill_evolution/auto_patch/experience_patterns_enabled", value); err != nil {
+		return err
+	}
+	if value == false {
+		return nil
+	}
+	discovery, _ := document["discovery"].(map[string]any)
+	behavior, _ := document["behavior"].(map[string]any)
+	if document["enabled"] != true || document["mode"] != "auto_patch" || discovery["experience_patterns_enabled"] != true || behavior["enabled"] != true {
+		return fmt.Errorf("skill_evolution.auto_patch.experience_patterns_enabled requires enabled auto_patch mode, experience discovery and host behavior evaluation")
+	}
+	return nil
+}
+
+// Learning is an independent paid-work opt-in. It does not grant candidate
+// generation or publication and cannot be activated by legacy discovery keys.
+func ValidateEvolutionLearningPrerequisites(document map[string]any) error {
+	learning, _ := document["learning"].(map[string]any)
+	if shared, exists := learning["cross_session_enabled"]; exists {
+		if err := ValidateValue("/skill_evolution/learning/cross_session_enabled", shared); err != nil {
+			return err
+		}
+		if shared == true && (learning["enabled"] != true || learning["consolidation_enabled"] != true) {
+			return fmt.Errorf("skill_evolution.learning.cross_session_enabled requires learning.enabled and consolidation_enabled")
+		}
+	}
+	if matching, exists := learning["matching_enabled"]; exists {
+		if err := ValidateValue("/skill_evolution/learning/matching_enabled", matching); err != nil {
+			return err
+		}
+		if matching == true && (learning["enabled"] != true || learning["consolidation_enabled"] != true) {
+			return fmt.Errorf("skill_evolution.learning.matching_enabled requires learning.enabled and consolidation_enabled")
+		}
+	}
+	if consolidate, exists := learning["consolidation_enabled"]; exists {
+		if err := ValidateValue("/skill_evolution/learning/consolidation_enabled", consolidate); err != nil {
+			return err
+		}
+		if consolidate == true && learning["enabled"] != true {
+			return fmt.Errorf("skill_evolution.learning.consolidation_enabled requires learning.enabled")
+		}
+	}
+	value, present := learning["enabled"]
+	if !present {
+		return nil
+	}
+	if err := ValidateValue("/skill_evolution/learning/enabled", value); err != nil {
+		return err
+	}
+	if value == false {
+		return nil
+	}
+	if document["enabled"] != true {
+		return fmt.Errorf("skill_evolution.learning.enabled requires skill_evolution.enabled")
+	}
+	for key, item := range learning {
+		if err := ValidateValue("/skill_evolution/learning/"+key, item); err != nil {
+			return err
+		}
+	}
+	defaults := Defaults("skill_evolution")["learning"].(map[string]any)
+	budget, _ := document["budget"].(map[string]any)
+	for _, key := range []string{"max_daily_model_calls", "max_daily_tokens", "max_job_seconds", "workers"} {
+		if err := ValidateValue("/skill_evolution/budget/"+key, budget[key]); err != nil {
+			return err
+		}
+	}
+	for _, key := range []string{"max_daily_model_calls", "max_daily_tokens"} {
+		value, present := learning[key]
+		if !present {
+			value = defaults[key]
+		}
+		calls, ok := evolutionNumber(value)
+		total, totalOK := evolutionNumber(budget[key])
+		if !ok || !totalOK || calls > total {
+			return fmt.Errorf("skill_evolution.learning.%s must fit the shared maintenance budget", key)
+		}
+	}
+	return nil
+}
+
+func evolutionNumber(value any) (float64, bool) {
+	data, err := json.Marshal(value)
+	if err != nil || string(data) == "null" {
+		return 0, false
+	}
+	var number float64
+	err = json.Unmarshal(data, &number)
+	return number, err == nil
+}
+
 // ValidateEvolutionDiscoveryPrerequisites checks the new paid-worker opt-in
 // even in an otherwise dormant document. Legacy discovery flags have no effect.
 func ValidateEvolutionDiscoveryPrerequisites(document map[string]any) error {
 	discovery, _ := document["discovery"].(map[string]any)
-	for _, key := range []string{"operator_corrections_enabled", "missing_reports_enabled", "successful_workflows_enabled"} {
+	for _, key := range []string{"operator_corrections_enabled", "missing_reports_enabled", "successful_workflows_enabled", "experience_patterns_enabled", "experience_new_skills_enabled", "experience_review_drafts_enabled"} {
 		value, present := discovery[key]
 		if !present {
 			continue
@@ -239,7 +368,19 @@ func ValidateEvolutionDiscoveryPrerequisites(document map[string]any) error {
 		if generation["enabled"] != true {
 			return fmt.Errorf("skill_evolution.discovery.%s requires skill_evolution.generation.enabled", key)
 		}
-		if key != "operator_corrections_enabled" {
+		if key == "experience_patterns_enabled" {
+			learning, _ := document["learning"].(map[string]any)
+			if learning["enabled"] != true || learning["consolidation_enabled"] != true || learning["matching_enabled"] != true {
+				return fmt.Errorf("skill_evolution.discovery.experience_patterns_enabled requires learning.enabled, consolidation_enabled and matching_enabled")
+			}
+		}
+		if key == "experience_new_skills_enabled" && discovery["experience_patterns_enabled"] != true {
+			return fmt.Errorf("skill_evolution.discovery.experience_new_skills_enabled requires experience_patterns_enabled")
+		}
+		if key == "experience_review_drafts_enabled" && discovery["experience_patterns_enabled"] != true {
+			return fmt.Errorf("skill_evolution.discovery.experience_review_drafts_enabled requires experience_patterns_enabled")
+		}
+		if key == "missing_reports_enabled" || key == "successful_workflows_enabled" || key == "experience_new_skills_enabled" {
 			id, ok := discovery["new_skill_source_id"].(string)
 			if !ok || strings.TrimSpace(id) == "" {
 				return fmt.Errorf("skill_evolution.discovery.new_skill_source_id requires an authorized non-builtin source")
@@ -264,7 +405,10 @@ func validateNativeEvolution(document map[string]any) error {
 		}
 		return nil
 	}
-	projection, _, err := ProjectEvolution(raw)
+	if err := ValidateEvolutionLearningPrerequisites(raw); err != nil {
+		return err
+	}
+	projection, ignored, err := ProjectEvolution(raw)
 	if err != nil {
 		return err
 	}
@@ -273,6 +417,9 @@ func validateNativeEvolution(document map[string]any) error {
 	}
 	if projection["enabled"] == false {
 		return nil // Dormant legacy data is not active policy.
+	}
+	if len(ignored) != 0 {
+		return fmt.Errorf("%s: unsupported setting", ignored[0])
 	}
 	return ValidateEvolutionDraft(projection, nil)
 }

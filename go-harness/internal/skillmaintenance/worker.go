@@ -14,10 +14,14 @@ type Handler func(context.Context, Job) (code string, retry bool)
 // RunOne claims at most one job and joins its heartbeat and handler. A host may
 // drive a bounded worker loop; this package does not start a hidden scheduler.
 func (s *Store) RunOne(ctx context.Context, handler Handler) (bool, error) {
+	return s.RunKinds(ctx, []JobKind{SkillGeneration, SkillBehavior}, handler)
+}
+
+func (s *Store) RunKinds(ctx context.Context, kinds []JobKind, handler Handler) (bool, error) {
 	if handler == nil {
 		return false, ErrInvalid
 	}
-	claim, ok, err := s.Claim(ctx)
+	claim, ok, err := s.ClaimKinds(ctx, kinds)
 	if err != nil || !ok {
 		return false, err
 	}
@@ -38,6 +42,13 @@ func (s *Store) RunOne(ctx context.Context, handler Handler) (bool, error) {
 				err := s.Heartbeat(check, claim)
 				stop()
 				if err != nil {
+					// RunKinds cancels work after the handler joins. An in-flight
+					// renewal interrupted by that shutdown is not a storage fault.
+					// A renewal's own deadline while work is live still fails closed.
+					if work.Err() != nil && errors.Is(err, work.Err()) {
+						done <- nil
+						return
+					}
 					cancel()
 					done <- err
 					return

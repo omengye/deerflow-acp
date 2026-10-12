@@ -99,6 +99,7 @@ type Peer struct {
 	handledNotifications atomic.Uint64
 	writes               chan writeJob
 	notifications        chan envelope
+	notificationMu       sync.Mutex
 	notificationProgress chan struct{}
 	requestSlots         chan struct{}
 	loops                sync.WaitGroup
@@ -115,7 +116,7 @@ func NewPeer(in io.ReadCloser, out io.WriteCloser, handler Handler, options Opti
 		in: in, out: out, handler: handler, opts: options, ctx: ctx, cancel: cancel,
 		writes:               make(chan writeJob, options.WriteQueueCapacity),
 		notifications:        make(chan envelope, options.NotificationQueueSize),
-		notificationProgress: make(chan struct{}, 1),
+		notificationProgress: make(chan struct{}),
 		requestSlots:         make(chan struct{}, options.MaxConcurrentRequests),
 		pending:              make(map[string]chan envelope), inflight: make(map[string]context.CancelFunc),
 	}
@@ -152,16 +153,22 @@ func (p *Peer) Done() <-chan struct{} { return p.ctx.Done() }
 // the read loop may see the response before the notification handler finishes.
 func (p *Peer) DrainNotifications(ctx context.Context) error {
 	target := p.queuedNotifications.Load()
-	for p.handledNotifications.Load() < target {
+	for {
+		p.notificationMu.Lock()
+		if p.handledNotifications.Load() >= target {
+			p.notificationMu.Unlock()
+			return nil
+		}
+		progress := p.notificationProgress
+		p.notificationMu.Unlock()
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-p.ctx.Done():
 			return ErrClosed
-		case <-p.notificationProgress:
+		case <-progress:
 		}
 	}
-	return nil
 }
 
 func (p *Peer) Close() error {
@@ -523,11 +530,13 @@ func (p *Peer) notificationLoop() {
 			return
 		case msg := <-p.notifications:
 			_, _ = p.invoke(ctx, msg.Method, msg.Params)
+			// Broadcast completion; permissions in different sessions may all
+			// be waiting for the same earlier cancellation notification.
+			p.notificationMu.Lock()
 			p.handledNotifications.Add(1)
-			select {
-			case p.notificationProgress <- struct{}{}:
-			default:
-			}
+			close(p.notificationProgress)
+			p.notificationProgress = make(chan struct{})
+			p.notificationMu.Unlock()
 		}
 	}
 }

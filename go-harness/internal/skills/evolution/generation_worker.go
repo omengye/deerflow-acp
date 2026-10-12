@@ -1,14 +1,17 @@
 package evolution
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/learning"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
@@ -27,11 +30,11 @@ func (s *Service) attachGenerationProposal(ctx context.Context, tx *skills.Publi
 	if err != nil {
 		return err
 	}
-	if _, err = s.generation.discoveryEvidence(ctx, tx.SQL(), r); err != nil {
-		return err
-	}
 	if r.input.Target != p.Target || r.input.Request.Base != p.Base || r.candidate == "" || r.candidate != p.CandidateVersion || r.proposal != "" && r.proposal != p.ID || p.Origin != "automatic" || p.Author != r.input.Request.Author || p.Reason != r.reason || !skills.SameOverlayBase(r.input.OverlayBase, p.OverlayBase) {
 		return harness.ErrSkillConflict
+	}
+	if _, err = s.generation.discoveryEvidence(ctx, tx.SQL(), r); err != nil {
+		return err
 	}
 	r.proposal = p.ID
 	_, err = tx.SQL().ExecContext(ctx, `UPDATE df_skill_generation_inputs SET proposal_id=?,progress_sha=? WHERE job_id=?`, p.ID, generationProgress(r), id)
@@ -61,13 +64,14 @@ func (s *Service) guardGenerationValidation(ctx context.Context, tx *skills.Publ
 	if err != nil {
 		return err
 	}
-	if _, err = s.generation.discoveryEvidence(ctx, tx.SQL(), r); err != nil {
-		return err
-	}
 	if r.input.Target != p.Target || r.input.Request.Base != p.Base || r.candidate != p.CandidateVersion || !skills.SameOverlayBase(r.input.OverlayBase, p.OverlayBase) {
 		return harness.ErrSkillConflict
 	}
-	return nil
+	if err = s.guardExperienceCandidate(ctx, tx, r); err != nil {
+		return err
+	}
+	_, err = s.generation.discoveryEvidence(ctx, tx.SQL(), r)
+	return err
 }
 
 func (s *Service) generationInput(ctx context.Context, id string) (generationRecord, skillmaintenance.GenerationInput, error) {
@@ -92,12 +96,16 @@ func (s *Service) generationInput(ctx context.Context, id string) (generationRec
 			// was interrupted. Acknowledge that durable result without using a
 			// new model configuration or requiring the former installed head.
 			if p.Status != "validating" {
+				if p.Status == "pending_review" {
+					if err := s.guardExperienceCandidate(ctx, tx, r); err != nil {
+						return err
+					}
+				}
 				result = r
 				return nil
 			}
 		}
-		evidence, err := s.generation.discoveryEvidence(ctx, tx.SQL(), r)
-		if err != nil {
+		if err := s.guardExperienceCandidate(ctx, tx, r); err != nil {
 			return err
 		}
 		if err := s.generation.checkConfiguration(r); err != nil {
@@ -117,7 +125,18 @@ func (s *Service) generationInput(ctx context.Context, id string) (generationRec
 		if !skills.SameOverlayBase(overlay, r.input.OverlayBase) {
 			return harness.ErrSkillConflict
 		}
+		evidence, err := s.generation.discoveryEvidence(ctx, tx.SQL(), r)
+		if err != nil {
+			return err
+		}
 		input = skillmaintenance.GenerationInput{Target: r.input.Target, Base: r.input.Request.Base, Reason: r.input.Request.Reason, Evidence: evidence}
+		if r.input.DiscoveryID != "" {
+			d, _, _, err := readDiscovery(ctx, tx.SQL(), r.input.DiscoveryID)
+			if err != nil {
+				return err
+			}
+			input.InstructionOnly = d.kind() == "experience_pattern"
+		}
 		if input.Base.Exists {
 			base, err := tx.ReadVersion(input.Base.Version)
 			if err != nil {
@@ -146,19 +165,11 @@ func (s *Service) saveGeneratedCandidate(ctx context.Context, id string, c skill
 	if err != nil {
 		return err
 	}
-	for _, finding := range candidate.Findings() {
-		if finding.Code == "possible_credential" {
-			return invalid("generated candidate contains a credential-like literal")
-		}
-	}
 	return s.withGeneration(ctx, id, func(tx *skills.PublicationTx, r generationRecord) error {
 		if err := skillmaintenance.GuardTx(ctx, tx.SQL(), id); err != nil {
 			return err
 		}
 		if err := s.generation.checkConfiguration(r); err != nil {
-			return err
-		}
-		if _, err := s.generation.discoveryEvidence(ctx, tx.SQL(), r); err != nil {
 			return err
 		}
 		head, err := tx.Current()
@@ -175,11 +186,63 @@ func (s *Service) saveGeneratedCandidate(ctx context.Context, id string, c skill
 		if !skills.SameOverlayBase(overlay, r.input.OverlayBase) {
 			return harness.ErrSkillConflict
 		}
+		if _, err := s.generation.discoveryEvidence(ctx, tx.SQL(), r); err != nil {
+			return err
+		}
 		if r.candidate != "" {
 			return harness.ErrSkillConflict
 		}
 		if candidate.Version() == r.input.Request.Base.Version {
 			return invalid("generated candidate has no changes")
+		}
+		experience := false
+		if r.input.DiscoveryID != "" {
+			d, _, _, err := readDiscovery(ctx, tx.SQL(), r.input.DiscoveryID)
+			if err != nil {
+				return err
+			}
+			if d.kind() == "experience_pattern" {
+				experience = true
+				if err := validateCandidateCredentials(candidate, true); err != nil {
+					return err
+				}
+				if head.Exists {
+					base, err := tx.ReadVersion(head.Version)
+					if err != nil {
+						return err
+					}
+					files := base.Files()
+					if len(c.Files) != len(files) {
+						return invalid("experience candidates cannot add or remove support files")
+					}
+					for path, data := range files {
+						other, exists := c.Files[path]
+						if !exists || path != "SKILL.md" && !bytes.Equal(data, other) {
+							return invalid("experience candidates can only change SKILL.md")
+						}
+					}
+				} else if len(c.Files) != 1 || c.Files["SKILL.md"] == nil {
+					return invalid("new experience skills may only contain SKILL.md")
+				}
+				c.Reason, err = learning.RedactPromotionReason(c.Reason)
+				if err != nil {
+					return err
+				}
+				var retained bool
+				if err := tx.SQL().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_versions WHERE source_key=? AND name=? AND version=?)`, r.input.Target.SourceIdentity, r.input.Target.Name, candidate.Version()).Scan(&retained); err != nil {
+					return err
+				}
+				if !retained {
+					if _, err := tx.SQL().ExecContext(ctx, `INSERT OR IGNORE INTO df_learning_owned_versions(source_key,name,version) VALUES(?,?,?)`, r.input.Target.SourceIdentity, r.input.Target.Name, candidate.Version()); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if !experience {
+			if err := validateCandidateCredentials(candidate, false); err != nil {
+				return err
+			}
 		}
 		r.candidate, err = tx.Stage(candidate)
 		if err != nil {
@@ -192,9 +255,12 @@ func (s *Service) saveGeneratedCandidate(ctx context.Context, id string, c skill
 }
 
 func generationFailure(err error) (string, bool) {
+	var review *harness.SkillValidationFailure
 	switch {
 	case errors.Is(err, errGenerationConfiguration):
 		return "configuration_changed", false
+	case errors.Is(err, skillmaintenance.ErrSourceActive):
+		return "source_active", true
 	case errors.Is(err, errDiscoveryEvidence):
 		return "evidence_changed", false
 	case errors.Is(err, harness.ErrPermissionDenied):
@@ -205,6 +271,17 @@ func generationFailure(err error) (string, bool) {
 		return "budget_exhausted", false
 	case errors.Is(err, harness.ErrInvalidInput):
 		return "invalid_candidate", false
+	case errors.As(err, &review):
+		switch review.Code {
+		case "review_budget_exhausted":
+			return "budget_exhausted", false
+		case "review_storage_error":
+			return "storage_error", false
+		case "review_cancelled":
+			return "cancelled", false
+		default:
+			return "model_failed", review.Retryable
+		}
 	case errors.Is(err, harness.ErrSkillValidation):
 		return "model_failed", true
 	default:
@@ -353,6 +430,10 @@ func closeGenerationProposal(ctx context.Context, tx *sql.Tx, r generationRecord
 	p.UpdatedAt = time.Now().UTC()
 	p.Status = "failed"
 	p.Error = "Skill generation stopped before review completed."
+	if p.ValidationFailure != nil {
+		p.ValidationFailure.Retryable = false
+		p.Error = p.ValidationFailure.Error()
+	}
 	if r.job.State == "cancelled" {
 		p.Status = "rejected"
 		p.Error = "Skill generation was cancelled by the operator."
@@ -412,8 +493,16 @@ func (s *Service) RunGeneration(ctx context.Context) (bool, error) {
 	before = errors.Join(before, s.reconcileBehavior(cleanup))
 	cancel()
 	var activeID string
-	worked, err := s.generation.store.RunOne(ctx, func(work context.Context, job skillmaintenance.Job) (string, bool) {
+	kinds := []skillmaintenance.JobKind{skillmaintenance.SkillGeneration, skillmaintenance.SkillBehavior}
+	for kind := range s.maintenanceProducers {
+		kinds = append(kinds, kind)
+	}
+	slices.Sort(kinds)
+	worked, err := s.generation.store.RunKinds(ctx, kinds, func(work context.Context, job skillmaintenance.Job) (string, bool) {
 		activeID = job.ID
+		if producer, exists := s.maintenanceProducers[job.Request.Kind]; exists {
+			return producer.handler(work, job)
+		}
 		id, err := manualBehaviorProposal(work, s.db, job.ID)
 		if err != nil {
 			return generationFailure(err)

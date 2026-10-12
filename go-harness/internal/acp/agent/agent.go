@@ -13,6 +13,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/acp/protocol"
+	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
@@ -117,11 +118,15 @@ func mapError(err error) error {
 		return err
 	}
 	switch {
+	case errors.Is(err, harness.ErrNoProgress):
+		return &protocol.Error{Code: -32023, Message: "Agent stopped as incomplete after repeated identical tool observations. Inspect the results and change strategy before continuing.", Data: map[string]any{"kind": "no_progress", "automaticReplay": false}}
 	case errors.Is(err, harness.ErrExecutionWaitingInput):
 		return executionRecoveryError(executionWaitingCode)
 	case errors.Is(err, harness.ErrExecutionConflict):
 		return executionRecoveryError(executionConflictCode)
 	case errors.Is(err, harness.ErrExecutionUnresumable):
+		return executionRecoveryError(executionUnresumableCode)
+	case errors.Is(err, budget.ErrUnknown):
 		return executionRecoveryError(executionUnresumableCode)
 	case errors.Is(err, harness.ErrReconciliationRequired):
 		return receiptRecoveryError(false)
@@ -135,6 +140,12 @@ func mapError(err error) error {
 		return rpcError(protocol.ServerBusy, "Run queue timeout")
 	case errors.Is(err, harness.ErrAttachedElsewhere):
 		return rpcError(protocol.ServerBusy, "Session is attached to another connection")
+	case errors.Is(err, harness.ErrResourcesIncompatible):
+		return rpcError(protocol.InvalidParams, "MCP resources changed; reconnect with compatible server configuration and tool schemas")
+	case errors.Is(err, harness.ErrResourcesWaiting):
+		return rpcError(protocol.ServerBusy, "MCP resources are unavailable or require explicit authorization")
+	case errors.Is(err, harness.ErrPermissionDenied):
+		return rpcError(protocol.InvalidParams, "Permission denied; check the host MCP executable allowlist and resource access policy")
 	case errors.Is(err, harness.ErrNotAttached):
 		return rpcError(protocol.InvalidParams, "Session is not attached to this connection")
 	case errors.Is(err, harness.ErrNotFound):
@@ -169,9 +180,12 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		a.initialized = true
 		a.capabilities = req.ClientCapabilities
 		httpMCP, sseMCP := a.service.MCPCapabilities()
-		response := map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": a.service.ImageInputEnabled(), "audio": false, "embeddedContext": false}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}, "delete": map[string]any{}}}, "_meta": map[string]any{"deerflow": map[string]any{"toolReceipts": receiptCapabilities(), "history": map[string]any{"version": 1, "listMethod": historyListMethod}, "artifacts": map[string]any{"version": 1, "listMethod": listArtifactsMethod}}}}
+		response := map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": a.service.ImageInputEnabled(), "audio": false, "embeddedContext": a.service.Assets != nil}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}, "delete": map[string]any{}}}, "_meta": map[string]any{"deerflow": map[string]any{"toolReceipts": receiptCapabilities(), "history": map[string]any{"version": 1, "listMethod": historyListMethod}, "artifacts": map[string]any{"version": 1, "listMethod": listArtifactsMethod}}}}
 		if a.service.Memory != nil {
 			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["memory"] = memoryCapabilities(a.service.MemoryUserID != "", a.service.MemoryGlobalID != "")
+		}
+		if a.service.Store.Learning != nil {
+			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["skillLearning"] = learningCapabilities()
 		}
 		if a.service.DurableExecutionsEnabled() {
 			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["executions"] = executionCapabilities()
@@ -201,6 +215,8 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		return nil, rpcError(protocol.InvalidRequest, "initialize must complete first")
 	}
 	switch method {
+	case getLearningControlMethod, setLearningControlMethod, listExperiencesMethod, listExperiencePatternsMethod, listExperienceMatchesMethod, listLearningJobsMethod, startLearningEpisodeMethod, cancelLearningMethod:
+		return a.learningRequest(ctx, method, raw)
 	case taskTreeListMethod, taskTreeGetMethod, taskTreeCancelMethod:
 		return a.taskTreeRequest(ctx, method, raw)
 	case taskArtifactReadMethod:
@@ -495,8 +511,8 @@ func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 			entries = append(entries, acp.PlanEntry{Content: item.Content, Status: status, Priority: priority})
 		}
 		update = map[string]any{"sessionUpdate": "plan", "entries": entries}
-	case "budget_exhausted":
-		update = map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": a.streamMessageID(e, "assistant"), "content": harness.Content{Type: "text", Text: e.Text}, "_meta": map[string]any{"deerflow": map[string]any{"event": "budget_exhausted"}}}
+	case "budget_exhausted", "output_limit", "no_progress":
+		update = map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": a.streamMessageID(e, "assistant"), "content": harness.Content{Type: "text", Text: e.Text}, "_meta": map[string]any{"deerflow": map[string]any{"event": e.Kind}}}
 	case "tool_start":
 		update = map[string]any{"sessionUpdate": "tool_call", "toolCallId": e.ToolCallID, "title": e.ToolName, "kind": "other", "status": e.Status, "rawInput": e.Arguments}
 	case "tool_execute", "tool_update", "tool_end", "tool_reconciled":
@@ -663,6 +679,15 @@ func (a *Agent) permission(ctx context.Context, p harness.PermissionRequest) (ha
 	}
 	if err := a.peer.Call(ctx, "session/request_permission", request, &response); err != nil {
 		return harness.PermissionCancelled, a.connectionError(ctx, err)
+	}
+	// Stop sends session/cancel before answering pending permissions. The
+	// reader routes replies independently, so join that earlier notification
+	// before a reply can preserve a wait or grant another execution attempt.
+	if err := a.peer.DrainNotifications(ctx); err != nil {
+		return harness.PermissionCancelled, a.connectionError(ctx, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return harness.PermissionCancelled, err
 	}
 	if response.Outcome.Outcome == "cancelled" {
 		return harness.PermissionCancelled, nil

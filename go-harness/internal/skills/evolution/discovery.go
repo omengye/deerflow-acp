@@ -76,7 +76,7 @@ func discoverySkippable(err error) bool {
 func discoveryPending(ctx context.Context, tx *sql.Tx) (int, error) {
 	var count int
 	err := tx.QueryRowContext(ctx, `SELECT
- (SELECT count(*) FROM df_skill_maintenance_jobs WHERE state IN ('queued','running','retry'))+
+ (SELECT count(*) FROM df_skill_maintenance_jobs WHERE owner_kind='skill' AND state IN ('queued','running','retry'))+
  (SELECT count(*) FROM df_skill_proposals p WHERE p.status IN ('validating','pending_review','publishing') AND NOT EXISTS(
  SELECT 1 FROM df_skill_generation_inputs i JOIN df_skill_maintenance_jobs j ON j.id=i.job_id WHERE i.proposal_id=p.id AND j.state IN ('queued','running','retry')) AND NOT EXISTS(
  SELECT 1 FROM df_skill_behavior_evaluations e JOIN df_skill_maintenance_jobs j ON j.id=e.job_id WHERE e.proposal_id=p.id AND e.manual=1 AND j.state IN ('queued','running','retry')))`).Scan(&count)
@@ -139,6 +139,15 @@ func (s *Service) discoveryConsider(ctx context.Context, item discoveryScanItem)
 		if err = tx.SQL().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_discovery_consumed WHERE root_digest=?)`, discoveryRootKey(sig.RootID, target, head.Version)).Scan(&consumed); err != nil {
 			return err
 		}
+		key, err := discoveryEpisodeTx(ctx, tx.SQL(), sig.RootID)
+		if err != nil {
+			return err
+		}
+		unified, err := discoveryEpisodeConsumedTx(ctx, tx.SQL(), sig.RootID, key, target, head.Version)
+		if err != nil {
+			return err
+		}
+		consumed = consumed || unified
 		if consumed {
 			return remove(item.id)
 		}
@@ -196,6 +205,7 @@ func (s *Service) discoveryConsider(ctx context.Context, item discoveryScanItem)
 		}
 		refs := make([]harness.SkillDiscoveryEvidence, 0, s.discovery.options.RepeatThreshold)
 		roots := map[string]bool{}
+		episodes := map[string]bool{}
 		for _, id := range ids {
 			signal, feedback, err := discoveryFeedback(ctx, tx.SQL(), id, target, head.Version)
 			if discoverySkippable(err) {
@@ -226,8 +236,20 @@ func (s *Service) discoveryConsider(ctx context.Context, item discoveryScanItem)
 			if roots[signal.RootID] {
 				continue
 			}
+			key, err := discoveryEpisodeTx(ctx, tx.SQL(), signal.RootID)
+			if err != nil {
+				return err
+			}
+			consumed, err = discoveryEpisodeConsumedTx(ctx, tx.SQL(), signal.RootID, key, target, head.Version)
+			if err != nil {
+				return err
+			}
+			if consumed || episodes[key] {
+				continue
+			}
 			roots[signal.RootID] = true
-			refs = append(refs, harness.SkillDiscoveryEvidence{SignalID: id, RootID: signal.RootID, SignalStateVersion: signal.StateVersion, FeedbackRevision: feedback.Revision, ReadIDs: feedback.ReadIDs})
+			episodes[key] = true
+			refs = append(refs, harness.SkillDiscoveryEvidence{SignalID: id, RootID: signal.RootID, EpisodeKey: key, SignalStateVersion: signal.StateVersion, FeedbackRevision: feedback.Revision, ReadIDs: feedback.ReadIDs})
 			if len(refs) == s.discovery.options.RepeatThreshold {
 				break
 			}
@@ -239,7 +261,7 @@ func (s *Service) discoveryConsider(ctx context.Context, item discoveryScanItem)
 		if err != nil {
 			return err
 		}
-		d := discoverySnapshot{ID: "sd_" + rand.Text(), Target: target, Base: head, OverlayBase: overlay, Options: s.discovery.options, CreatedAt: now, Evidence: refs}
+		d := discoverySnapshot{ID: "sd_" + rand.Text(), Target: target, Base: head, OverlayBase: overlay, Options: s.discovery.options, CreatedAt: now, Evidence: refs, EpisodeDedup: true}
 		payload, err := json.Marshal(d)
 		if err != nil {
 			return err
@@ -271,6 +293,9 @@ func (s *Service) discoveryConsider(ctx context.Context, item discoveryScanItem)
 				return err
 			}
 		}
+		if err = reserveDiscoveryEpisodesTx(ctx, tx.SQL(), d); err != nil {
+			return err
+		}
 		if _, err = tx.SQL().ExecContext(ctx, `INSERT INTO df_skill_discovery_days(day,reservations) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET reservations=reservations+1`, now.Format("2006-01-02")); err != nil {
 			return err
 		}
@@ -292,7 +317,12 @@ func (s *Service) RunDiscovery(ctx context.Context) (bool, error) {
 	if s.discovery == nil {
 		return false, invalid("discovery is not configured")
 	}
+	experienceWork, experienceErr := s.discoverExperiences(ctx)
+	if ctx.Err() != nil {
+		return experienceWork, errors.Join(experienceErr, ctx.Err())
+	}
 	derivedWork, derivedErr := s.runDerivedDiscovery(ctx)
+	derivedWork, derivedErr = derivedWork || experienceWork, errors.Join(derivedErr, experienceErr)
 	if ctx.Err() != nil {
 		return derivedWork, errors.Join(derivedErr, ctx.Err())
 	}

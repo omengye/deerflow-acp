@@ -51,13 +51,37 @@ A suite has version `skill-behavior-v1`, an ID and 1–16 cases. Each case has:
 - 1–32 host assertions: `output_equals`, `output_contains`, `file_equals`,
   `file_absent` or `tool_calls`. At least one suite case must be targeted.
 
+`skill-behavior-v2` preserves those execution cases and adds metadata-only trigger
+cases. It requires at least one `trigger_positive` and one `trigger_negative`,
+as well as a targeted execution case. The existing 16-case/3-repetition cap is
+shared, not doubled. See
+[`docs/fixtures/skill-behavior-v2.json`](../../../../docs/fixtures/skill-behavior-v2.json).
+
+Each trigger case has no task files or fixture tools and exactly one
+`skill_selected` assertion: `count=1` for a positive and `count=0` for a negative.
+`trigger_skills` may contain up to eight host-fixed competing name/description
+entries, never an override of the evaluated target. Only the target description
+comes from the immutable baseline/candidate package, parsed with the runtime's
+installation parser. The fixed catalog is sorted and digested. It is not a live
+inventory scan and proves only that suite's selection boundaries.
+
+The evaluator uses the pinned native Eino Skill middleware's prompt, reminder and
+tool schema in a fresh context, then observes the first model response. An exact
+valid Skill call selects its name; a final answer without calls means no skill.
+No tool is invoked, no body is loaded, no workspace is created, and no simulated
+selection becomes a runtime read. Expected labels, case IDs/kinds and assertion
+values remain outside model messages. Unknown tools/names, malformed arguments,
+multiple calls, truncation and timeouts are operational failures, not evidence
+that the old description was wrong. Calls use the original job's `behavior`
+maintenance receipts and budget; no extra worker or paid retry loop is added.
+
 JSON duplicate keys, unknown fields, explicit nulls, executable assertions,
 invalid paths and oversized data are rejected. Builtin fixture tools are
 `read_skill`, `read_file`, `write_file` and `list_files`. They access only the
 immutable skill package or the current temporary task workspace. Simulated
 external tools return host fixture data; they never call the real service.
 
-Each base/candidate/case/repetition has a fresh temporary workspace and model
+Each execution base/candidate/case/repetition has a fresh temporary workspace and model
 context. Expected answers and assertion paths are absent from model messages
 and tool-readable files. The Go host inspects actual task output and file/tool
 effects. Creating a skill uses a real no-skill baseline; deleting a skill uses
@@ -85,10 +109,20 @@ reviewer/evaluator identities, suite digest and comparison rule version. Source,
 configuration, head, evidence or claim changes prevent stale work from advancing.
 The evolution service recomposes reports from stored results before approval.
 
-All targeted candidate repetitions must pass and no previously passing baseline
+All targeted and trigger candidate repetitions must pass and no previously passing baseline
 case may regress. The report includes comparisons, improvements, regressions,
 digests, calls, token charges and elapsed time. Passing evaluation still produces
-only a proposal for explicit review. It does not enable automatic publication.
+only a proposal for explicit review unless an independently authorized auto-patch
+policy admits it. Enabling behavior or using a v2 suite does not grant publication.
+
+V1 saved reports retain `skill-behavior-comparison-v1` and their original digest.
+V2 reports use `skill-behavior-comparison-v2`, separate positive/negative counts
+and paired selection observations. Approval reconstructs checks from host labels
+and observed names, and reconstructs each catalog from immutable variant bytes.
+The Eino evaluator identity is now `eino-skill-behavior-v2/<config digest>`;
+unfinished v1-evaluator work is fenced after upgrade rather than silently reused.
+Completed old evidence remains explicitly manually reviewable; automatic admission
+still requires today's exact evaluator/suite/configuration identity.
 
 A target without a matching suite records `not_run` and needs manual review.
 An applicable evaluation that fails or cannot complete cannot claim `not_run`

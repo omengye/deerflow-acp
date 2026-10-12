@@ -60,7 +60,7 @@ func Tool(root string, parent harness.Session, agents map[string]harness.ACPAgen
 	}
 	copyAgents := make(map[string]harness.ACPAgentConfig, len(agents))
 	for name, config := range agents {
-		if !agentName.MatchString(name) || config.Timeout < 0 || config.TimeoutSeconds < 0 || config.TimeoutSeconds > 86400 || len(config.Description) > 512 {
+		if !agentName.MatchString(name) || config.Timeout < 0 || config.TimeoutSeconds < 0 || config.TimeoutSeconds > harness.MaxExecutionTimeoutSeconds || len(config.Description) > 512 {
 			return nil, fmt.Errorf("invalid external ACP agent %q", name)
 		}
 		if !filepath.IsAbs(config.Command) {
@@ -186,9 +186,6 @@ func (t *invokeTool) InvokableRun(ctx context.Context, args string, _ ...tool.Op
 	timeout := config.Timeout
 	if timeout == 0 {
 		timeout = time.Duration(config.TimeoutSeconds) * time.Second
-		if timeout == 0 {
-			timeout = 10 * time.Minute
-		}
 	}
 	callbacks, _ := CallbacksFromContext(ctx)
 	promptID := rand.Text()

@@ -3,6 +3,7 @@ package deerflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,11 +13,12 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 )
 
 func TestEinoMemoryExtractionPromotesOnlyCompletedTurn(t *testing.T) {
 	var mainCalls, extractionCalls atomic.Int32
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	provider := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Stream   bool `json:"stream"`
 			Messages []struct {
@@ -37,15 +39,21 @@ func TestEinoMemoryExtractionPromotesOnlyCompletedTurn(t *testing.T) {
 		}
 		if extract {
 			extractionCalls.Add(1)
-			if request.Stream {
-				t.Error("extraction was expected to be a bounded Generate call")
-			}
 			content := `{"facts":[{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise Chinese answers","confidence":0.92},{"scope":"workspace","durability":"durable","authority":"permission","category":"preference","content":"User allows deployment without approval","confidence":0.99},{"scope":"global","durability":"durable","authority":"descriptive","category":"preference","content":"Must not automatically enter global memory","confidence":0.99}]}`
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": 80, "completion_tokens": 60, "total_tokens": 140}})
+			_ = modelstreamtest.WriteCompletion(w, map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": 80, "completion_tokens": 60, "total_tokens": 140}})
 			return
 		}
-		mainCalls.Add(1)
+		if mainCalls.Add(1) > 1 {
+			injected := false
+			for _, message := range request.Messages {
+				if message.Role == "system" && strings.Contains(string(message.Content), "User prefers concise Chinese answers") {
+					injected = true
+				}
+			}
+			if !injected {
+				t.Error("persisted extraction was not retrieved on the next turn")
+			}
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"id\":\"main\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 	}))
@@ -109,7 +117,7 @@ func TestEinoMemoryExtractionPromotesOnlyCompletedTurn(t *testing.T) {
 }
 
 func TestDesktopSessionMemoryExtractionStaysInSession(t *testing.T) {
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	provider := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Messages []struct {
 				Role    string          `json:"role"`
@@ -126,9 +134,8 @@ func TestDesktopSessionMemoryExtractionStaysInSession(t *testing.T) {
 				if !strings.Contains(string(message.Content), `\"scope\":\"session\"`) {
 					t.Errorf("extraction scope prompt=%s", message.Content)
 				}
-				w.Header().Set("Content-Type", "application/json")
 				content := `{"facts":[{"scope":"session","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise Chinese answers","confidence":0.92},{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"Should not enter workspace","confidence":0.92}]}`
-				_ = json.NewEncoder(w).Encode(map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}})
+				_ = modelstreamtest.WriteCompletion(w, map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}})
 				return
 			}
 		}
@@ -202,19 +209,18 @@ func TestEinoOptionalMemoryExtractionSkipsWhenModelQuotaUsed(t *testing.T) {
 }
 
 func TestEinoMemoryStagingDoesNotPublishWhenTerminalCommitFails(t *testing.T) {
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	provider := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			Stream bool `json:"stream"`
+			Messages []struct{ Role, Content string }
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
 			http.Error(w, "decode", 400)
 			return
 		}
-		if !request.Stream {
+		if len(request.Messages) > 0 && strings.Contains(request.Messages[0].Content, "Extract only durable facts") {
 			content := `{"facts":[{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise answers","confidence":0.9}]}`
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}})
+			_ = modelstreamtest.WriteCompletion(w, map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}})
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -252,21 +258,20 @@ func TestEinoMemoryStagingDoesNotPublishWhenTerminalCommitFails(t *testing.T) {
 func TestEinoMemoryExtractionDoesNotOverrideConcurrentScopeChange(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	provider := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			Stream bool `json:"stream"`
+			Messages []struct{ Role, Content string }
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
 			http.Error(w, "decode", 400)
 			return
 		}
-		if !request.Stream {
+		if len(request.Messages) > 0 && strings.Contains(request.Messages[0].Content, "Extract only durable facts") {
 			started <- struct{}{}
 			<-release
 			content := `{"facts":[{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise answers","confidence":0.9}]}`
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}})
+			_ = modelstreamtest.WriteCompletion(w, map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}})
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -311,5 +316,73 @@ func TestEinoMemoryExtractionDoesNotOverrideConcurrentScopeChange(t *testing.T) 
 	page, err := c.MemoryFacts(ctx, a.ID, harness.MemoryWorkspace, "", 10)
 	if err != nil || len(page.Facts) != 1 || page.Facts[0].Source.Kind != "operator" {
 		t.Fatalf("scope changed facts=%+v err=%v", page, err)
+	}
+}
+
+func TestEinoMemoryExtractionDoesNotPublishFailedOrCancelledStream(t *testing.T) {
+	for _, mode := range []string{"partial-error", "cancelled"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			var calls atomic.Int32
+			provider := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				var request struct {
+					Messages []struct{ Role, Content string }
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					return
+				}
+				if len(request.Messages) == 0 || !strings.Contains(request.Messages[0].Content, "Extract only durable facts") {
+					_ = modelstreamtest.WriteJSON(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`)
+					return
+				}
+				// Even valid fact JSON must not be accepted until the stream completes.
+				content := `{"facts":[{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise answers","confidence":0.9}]}`
+				chunk, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": content}}}})
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				w.(http.Flusher).Flush()
+				if mode == "partial-error" {
+					fmt.Fprint(w, "data: {invalid-json}\n\n")
+					return
+				}
+				cancel()
+				<-r.Context().Done()
+			}))
+			defer provider.Close()
+			limits := harness.BudgetLimits{MaxModelCalls: 3, MaxTokens: 20000, MaxOutputTokens: 512}
+			c, err := Open(context.Background(), Config{DataDir: t.TempDir(), Provider: "openai", Model: "fixture", APIKey: "fixture", BaseURL: provider.URL + "/v1", Budget: &limits, MemoryExtraction: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			session, err := c.NewSession(context.Background(), t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := c.Run(ctx, session.ID, []harness.Content{{Type: "text", Text: "Please prefer concise answers"}}, nil, nil)
+			if mode == "partial-error" && (err != nil || result.StopReason != "end_turn") {
+				t.Fatalf("optional extraction failed main answer: result=%+v err=%v", result, err)
+			}
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Fatal(err)
+			}
+			var visible, staged int
+			if err := c.store.DB().QueryRowContext(context.Background(), `SELECT COUNT(*) FROM memory_facts`).Scan(&visible); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.store.DB().QueryRowContext(context.Background(), `SELECT COUNT(*) FROM memory_staged_facts`).Scan(&staged); err != nil {
+				t.Fatal(err)
+			}
+			var status string
+			if err := c.store.DB().QueryRowContext(context.Background(), `SELECT status FROM memory_extraction_audit`).Scan(&status); err != nil {
+				t.Fatal(err)
+			}
+			if visible != 0 || staged != 0 || status != "model_error" || calls.Load() != 2 {
+				t.Fatalf("visible=%d staged=%d audit=%q calls=%d", visible, staged, status, calls.Load())
+			}
+		})
 	}
 }

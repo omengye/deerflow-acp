@@ -178,6 +178,16 @@ func TestACPExecutionDisconnectResumeAndCancel(t *testing.T) {
 			if len(receipts) != 1 || receipts[0].State != want {
 				t.Fatalf("receipts=%+v", receipts)
 			}
+			if cancelWaiting {
+				promptID := c2.request(t, "session/prompt", promptParams(sid, "new question after cancelled approval"))
+				stopReason(t, executionPromptResult(t, c2, promptID), "end_turn")
+				if calls.Load() != 2 {
+					t.Fatalf("cancelled permission replayed instead of a new turn: calls=%d", calls.Load())
+				}
+				if _, err := os.Stat(filepath.Join(f.cwd, "approved.txt")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("new prompt executed the cancelled tool: %v", err)
+				}
+			}
 		})
 	}
 }

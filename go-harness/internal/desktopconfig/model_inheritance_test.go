@@ -12,6 +12,7 @@ import (
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/launch"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 )
 
 // Inheritance survives saves and default changes; named endpoints and credentials
@@ -52,11 +53,10 @@ func TestMaintenanceModelInheritanceSaveLaunchAndDefaultChanges(t *testing.T) {
 						return
 					}
 					answer, _ := json.Marshal(map[string]any{"base_version": input["base_version"], "candidate_version": input["candidate_version"], "passed": true, "reason": "Fixture review"})
-					w.Header().Set("Content-Type", "application/json")
-					_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}})
+					_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}})
 				}))
 				defer server.Close()
-				routes[index] = harness.ModelRoute{Provider: "openai", Model: "shared-id", BaseURL: server.URL + "/v1", APIKey: modelName + "-private-key"}
+				routes[index] = harness.ModelRoute{Provider: "openai", Model: "shared-id", BaseURL: server.URL + "/v1", APIKey: modelName + "-private-key", OutputTokenParameter: harness.OutputTokensAuto}
 				model := modelByName(t, doc, modelName)
 				model["provider"], model["model"], model["base_url"], model["api_key"] = routes[index].Provider, routes[index].Model, routes[index].BaseURL, routes[index].APIKey
 			}

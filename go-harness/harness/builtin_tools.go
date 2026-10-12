@@ -81,8 +81,6 @@ func NativeModelProvider(value string) (string, error) {
 	switch value {
 	case "openai", "openai-compatible", "langchain_openai:ChatOpenAI", "deerflow.models.patched_openai:PatchedChatOpenAI":
 		return "openai", nil
-	case "ark":
-		return "ark", nil
 	case "claude", "anthropic", "langchain_anthropic:ChatAnthropic":
 		return "claude", nil
 	default:

@@ -1,6 +1,7 @@
 package evolution
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -43,6 +44,9 @@ INSERT OR IGNORE INTO df_skill_auto_patch_scan VALUES(1,'','','');`)
 func (s *Service) ConfigureAutoPatch(options harness.SkillAutoPatchOptions) error {
 	if s.autoPatch != nil || s.generation == nil || s.behavior == nil || !validAutoPatchOptions(options) {
 		return invalid("auto_patch requires generation, behavior evaluation and bounded options")
+	}
+	if options.ExperiencePatternsEnabled && (s.experienceSource == nil || !s.experienceSource.PromotionEnabled() || s.discovery == nil || !s.discovery.options.ExperiencePatternsEnabled) {
+		return invalid("learning auto_patch requires enabled experience discovery and host learning authority")
 	}
 	s.autoPatch = &autoPatchHost{options: options, now: time.Now}
 	return nil
@@ -95,8 +99,15 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 	if enabled, _ := ctx.Value(autoPatchContextKey{}).(bool); !enabled {
 		return nil
 	}
+	learningCandidate := p.Trigger.Type == "experience_pattern"
 	a := s.autoPatch
+	if learningCandidate && (a == nil || !a.options.ExperiencePatternsEnabled || s.discovery == nil || !s.discovery.options.ExperiencePatternsEnabled) {
+		return errAutoPatchReview
+	}
 	if a == nil || !p.Base.Exists || !p.Base.Enabled || !p.Base.Managed || p.OverlayBase != nil || p.Origin != "automatic" || p.Action != "edit" && p.Action != "patch" || !slices.Equal(p.ChangedFiles, []string{"SKILL.md"}) || p.Evaluation.Security != "passed" || p.Evaluation.Behavior != "passed" || p.Evaluation.BehaviorReport == nil || p.Evaluation.BehaviorReport.Regressions != 0 || p.Evaluation.BehaviorReport.TargetedCases < 1 || p.Evaluation.BehaviorReport.RegressionCases < 1 {
+		return errAutoPatchReview
+	}
+	if learningCandidate && !learningAutoPatchContentAllowed(input.BaseFiles["SKILL.md"], input.CandidateFiles["SKILL.md"], *p.Evaluation.BehaviorReport) {
 		return errAutoPatchReview
 	}
 	changed := changedTextLines(input.BaseFiles["SKILL.md"], input.CandidateFiles["SKILL.md"], a.options.MaxChangedLines)
@@ -121,6 +132,18 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 		return err
 	}
 	if err = s.generation.checkConfiguration(r); err != nil {
+		return errAutoPatchReview
+	}
+	if r.input.DiscoveryID != "" {
+		d, _, _, err := readDiscovery(ctx, tx.SQL(), r.input.DiscoveryID)
+		if err != nil {
+			return err
+		}
+		if (d.kind() == "experience_pattern") != learningCandidate || learningCandidate && (d.Options != s.discovery.options ||
+			d.HostAdjudicated || d.ReviewDraft || len(d.Evidence) < d.Options.RepeatThreshold || d.Evidence[0].Experience == nil || strings.HasPrefix(d.Evidence[0].Experience.MatchID, "ladj_")) {
+			return errAutoPatchReview
+		}
+	} else if learningCandidate {
 		return errAutoPatchReview
 	}
 	var count int
@@ -166,7 +189,7 @@ func readAutoPatchObservation(ctx context.Context, db rowReader, id string) (har
 	if err != nil {
 		return o, err
 	}
-	if hash(data) != digest || json.Unmarshal(data, &o) != nil || o.ProposalID != id || o.Target.SourceIdentity != source || o.Target.Name != name || o.Status != status || o.StartedAt.UnixNano() != started || o.PublicationRevision < 2 || o.BaselineRevision != o.PublicationRevision-1 || !o.Head.Exists || !o.Head.Enabled || !validAutoPatchOptions(o.Options) || !o.Deadline.Equal(o.StartedAt.Add(time.Duration(o.Options.ObservationHours)*time.Hour)) {
+	if hash(data) != digest || json.Unmarshal(data, &o) != nil || o.ProposalID != id || o.Target.SourceIdentity != source || o.Target.Name != name || o.Status != status || o.StartedAt.UnixNano() != started || o.PublicationRevision < 2 || o.BaselineRevision != o.PublicationRevision-1 || !o.Head.Exists || !o.Head.Enabled || !validAutoPatchOptions(o.Options) || !o.Deadline.Equal(o.StartedAt.Add(time.Duration(o.Options.ObservationHours)*time.Hour)) || !validAutoPatchLearningSource(o) {
 		return o, invalid("auto_patch observation is inconsistent")
 	}
 	switch o.Status {
@@ -177,7 +200,7 @@ func readAutoPatchObservation(ctx context.Context, db rowReader, id string) (har
 	return o, nil
 }
 
-func (s *Service) attachAutoPatchObservation(ctx context.Context, tx *skills.PublicationTx, p Publication) error {
+func (s *Service) attachAutoPatchObservation(ctx context.Context, tx *skills.PublicationTx, p Publication, proposal Proposal) error {
 	if enabled, _ := ctx.Value(autoPatchContextKey{}).(bool); !enabled {
 		return nil
 	}
@@ -190,5 +213,46 @@ func (s *Service) attachAutoPatchObservation(ctx context.Context, tx *skills.Pub
 	}
 	now := s.autoPatch.now().UTC()
 	o := harness.SkillAutoPatchObservation{ProposalID: p.ProposalID, Target: p.Target, PublicationRevision: p.Revision, BaselineRevision: previous.Revision, Head: p.Head, Options: s.autoPatch.options, Status: "observing", StartedAt: now, Deadline: now.Add(time.Duration(s.autoPatch.options.ObservationHours) * time.Hour), UpdatedAt: now}
+	if proposal.Trigger.Type == "experience_pattern" {
+		o.LearningSource, err = autoPatchLearningSource(ctx, tx.SQL(), proposal)
+		if err != nil {
+			return err
+		}
+	}
 	return writeAutoPatchObservation(ctx, tx.SQL(), o, true)
+}
+
+// Execution-only evidence cannot authorize a metadata rewrite. This exact
+// comparison remains the body-only path, with CRLF normalized for portability.
+func sameAutoPatchFrontmatter(base, candidate []byte) bool {
+	frontmatter := func(data []byte) []byte {
+		text := bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+		if !bytes.HasPrefix(text, []byte("---\n")) {
+			return nil
+		}
+		end := bytes.Index(text[4:], []byte("\n---\n"))
+		if end < 0 || end > 16<<10 {
+			return nil
+		}
+		return text[:4+end+5]
+	}
+	a, b := frontmatter(base), frontmatter(candidate)
+	return a != nil && b != nil && bytes.Equal(a, b)
+}
+
+func learningAutoPatchImproved(report harness.SkillBehaviorReport) bool {
+	if report.State != "passed" || report.TargetedCases < 1 || report.RegressionCases < 1 || report.Regressions != 0 {
+		return false
+	}
+	improved := false
+	for _, result := range report.Results {
+		// Operational failures do not establish a baseline skill deficiency.
+		if result.BaseErrorCode != "" && result.BaseErrorCode != "assertion_failed" || result.CandidateErrorCode != "" && result.CandidateErrorCode != "assertion_failed" || result.BasePassed && !result.CandidatePassed {
+			return false
+		}
+		if result.Kind == "targeted" && !result.BasePassed && result.BaseErrorCode == "assertion_failed" && result.CandidatePassed && result.CandidateErrorCode == "" {
+			improved = true
+		}
+	}
+	return improved
 }

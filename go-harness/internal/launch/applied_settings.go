@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -72,6 +73,11 @@ func appliedSettings(document map[string]any, cfg *deerflow.Config, maxConnectio
 	add("/runtime/provider", cfg.Provider, "provider", "models")
 	add("/runtime/max_active_connections", maxConnections, "max-connections", "local_acp.max_active_connections")
 	add("/runtime/max_active_runs", cfg.MaxActiveRuns, "max-active-runs", "local_acp.max_active_runs")
+	output := harness.DefaultBudgetLimits().MaxOutputTokens
+	if cfg.Budget != nil {
+		output = cfg.Budget.MaxOutputTokens
+	}
+	add("/runtime/max_output_tokens", output, "max-output-tokens", "local_acp.max_output_tokens")
 	add("/runtime/queue_timeout_seconds", cfg.QueueTimeout.Seconds(), "queue-timeout", "local_acp.queue_timeout_seconds")
 	if cfg.Budget != nil {
 		add("/runtime/run_timeout_seconds", cfg.Budget.Timeout.Seconds(), "run-timeout", "local_acp.run_timeout_seconds", "api.chat_request_timeout")
@@ -107,6 +113,10 @@ func appliedSettings(document map[string]any, cfg *deerflow.Config, maxConnectio
 	add("/skill_evolution/generation/enabled", cfg.SkillGeneration != nil, "", "skill_evolution.generation.enabled")
 	add("/skill_evolution/discovery/enabled", cfg.SkillDiscovery != nil, "", "skill_evolution.discovery")
 	add("/skill_evolution/behavior/enabled", cfg.SkillBehavior != nil, "", "skill_evolution.behavior.enabled")
+	add("/skill_evolution/learning/enabled", cfg.SkillLearning != nil, "", "skill_evolution.learning.enabled")
+	add("/skill_evolution/learning/consolidation_enabled", cfg.SkillLearning != nil && cfg.SkillLearning.Consolidation != nil, "", "skill_evolution.learning.consolidation_enabled")
+	add("/skill_evolution/learning/matching_enabled", cfg.SkillLearning != nil && cfg.SkillLearning.Matching != nil, "", "skill_evolution.learning.matching_enabled")
+	add("/skill_evolution/learning/cross_session_enabled", cfg.SkillLearning != nil && cfg.SkillLearning.CrossSession, "", "skill_evolution.learning.cross_session_enabled")
 	mode := "review"
 	if cfg.SkillAutoPatch != nil {
 		mode = "auto_patch"
@@ -131,10 +141,28 @@ func appliedSettings(document map[string]any, cfg *deerflow.Config, maxConnectio
 		evolutionValue("budget/max_job_seconds", generation.Budget.MaxJobSeconds)
 		evolutionValue("budget/workers", generation.Budget.Workers)
 	}
+	if learning := cfg.SkillLearning; learning != nil {
+		evolutionValue("learning/idle_seconds", int64(learning.Idle/time.Second))
+		evolutionValue("learning/timeout_seconds", int64(learning.Model.Timeout/time.Second))
+		evolutionValue("learning/max_input_bytes", learning.Model.MaxInputBytes)
+		evolutionValue("learning/max_output_tokens", learning.Model.MaxOutputTokens)
+		evolutionValue("learning/max_daily_model_calls", learning.MaxDailyModelCalls)
+		evolutionValue("learning/max_daily_tokens", learning.MaxDailyTokens)
+		evolutionValue("learning/external_context_policy", "hints_only")
+		if cfg.SkillGeneration == nil {
+			evolutionValue("budget/max_daily_model_calls", learning.Budget.MaxDailyModelCalls)
+			evolutionValue("budget/max_daily_tokens", learning.Budget.MaxDailyTokens)
+			evolutionValue("budget/max_job_seconds", learning.Budget.MaxJobSeconds)
+			evolutionValue("budget/workers", learning.Budget.Workers)
+		}
+	}
 	if discovery := cfg.SkillDiscovery; discovery != nil {
 		evolutionValue("discovery/operator_corrections_enabled", !discovery.DisableOperatorCorrections)
 		evolutionValue("discovery/missing_reports_enabled", discovery.MissingReportsEnabled)
 		evolutionValue("discovery/successful_workflows_enabled", discovery.SuccessfulWorkflowsEnabled)
+		evolutionValue("discovery/experience_patterns_enabled", discovery.ExperiencePatternsEnabled)
+		evolutionValue("discovery/experience_new_skills_enabled", discovery.ExperienceNewSkillsEnabled)
+		evolutionValue("discovery/experience_review_drafts_enabled", discovery.ExperienceReviewDraftsEnabled)
 		evolutionValue("discovery/new_skill_source_id", discovery.NewSkillSourceID)
 		evolutionValue("discovery/repeat_threshold", discovery.RepeatThreshold)
 		evolutionValue("discovery/repeat_window_days", discovery.RepeatWindowDays)
@@ -149,6 +177,7 @@ func appliedSettings(document map[string]any, cfg *deerflow.Config, maxConnectio
 		evolutionValue("behavior/max_output_tokens", review.Behavior.MaxOutputTokens)
 	}
 	if patch := cfg.SkillAutoPatch; patch != nil {
+		evolutionValue("auto_patch/experience_patterns_enabled", patch.ExperiencePatternsEnabled)
 		evolutionValue("auto_patch/max_changed_lines", patch.MaxChangedLines)
 		evolutionValue("auto_patch/max_daily_publications", patch.MaxDailyPublications)
 		evolutionValue("auto_patch/observation_hours", patch.ObservationHours)

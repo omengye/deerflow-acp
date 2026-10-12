@@ -63,6 +63,20 @@ func (f *fakeModel) planned(body obj) obj {
 		return nil
 	}
 	fn := object(call["function"])
+	if fn["name"] == "__desktop_attachment_read__" {
+		for i := latest; i >= 0; i-- {
+			m := object(messages[i])
+			if m["role"] != "user" {
+				continue
+			}
+			if _, tail, ok := strings.Cut(messageText(m), "read_attachment with id="); ok {
+				id, _, _ := strings.Cut(tail, " ")
+				fn["name"] = "read_attachment"
+				fn["arguments"] = string(jsonBytes(obj{"id": id}))
+				break
+			}
+		}
+	}
 	if fn["name"] == "__desktop_mcp_record__" {
 		for _, v := range array(body["tools"]) {
 			name := str(object(object(v)["function"])["name"])
@@ -111,6 +125,26 @@ func (f *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	call := f.planned(body)
 	f.mu.Unlock()
+	if body["stream"] == true {
+		messages := array(body["messages"])
+		for i := len(messages) - 1; i >= 0; i-- {
+			message := object(messages[i])
+			if message["role"] != "user" {
+				continue
+			}
+			if strings.HasPrefix(messageText(message), "smoke-cancel-stream-") {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "data: {\"id\":\"cancel-fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"cancellable partial output\"},\"finish_reason\":null}]}\n\n")
+				w.(http.Flusher).Flush()
+				select {
+				case <-r.Context().Done():
+				case <-time.After(60 * time.Second):
+				}
+				return
+			}
+			break
+		}
+	}
 	content := reply
 	for _, v := range array(body["messages"]) {
 		m := object(v)

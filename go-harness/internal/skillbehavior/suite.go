@@ -18,6 +18,7 @@ import (
 )
 
 const Version = "skill-behavior-v1"
+const TriggerVersion = "skill-behavior-v2"
 const MaxSuiteBytes = 1 << 20
 
 var identifier = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,63}$`)
@@ -199,11 +200,12 @@ func Digest(s harness.SkillBehaviorSuite) (string, error) {
 func Hash(data []byte) string { return fmt.Sprintf("%x", sha256.Sum256(data)) }
 
 func Validate(s harness.SkillBehaviorSuite) error {
-	if s.Version != Version || !identifier.MatchString(s.ID) || !harness.ValidSkillName(s.SourceID) || !harness.ValidSkillName(s.Name) || len(s.Cases) < 1 || len(s.Cases) > 16 {
+	if s.Version != Version && s.Version != TriggerVersion || !identifier.MatchString(s.ID) || !harness.ValidSkillName(s.SourceID) || !harness.ValidSkillName(s.Name) || len(s.Cases) < 1 || len(s.Cases) > 16 {
 		return invalid("suite identity or case count is invalid")
 	}
 	seen := map[string]bool{}
 	targeted := false
+	positive, negative := false, false
 	for _, c := range s.Cases {
 		if seen[c.ID] {
 			return invalid("duplicate case id")
@@ -215,9 +217,24 @@ func Validate(s harness.SkillBehaviorSuite) error {
 		if err := ValidateCase(c); err != nil {
 			return err
 		}
+		if TriggerCase(c) {
+			if s.Version != TriggerVersion {
+				return invalid("trigger cases require the v2 suite contract")
+			}
+			positive = positive || c.Kind == "trigger_positive"
+			negative = negative || c.Kind == "trigger_negative"
+			for _, competitor := range c.TriggerSkills {
+				if competitor.Name == s.Name {
+					return invalid("trigger competitor cannot override the evaluated skill")
+				}
+			}
+		}
 	}
 	if !targeted {
 		return invalid("suite requires a targeted case")
+	}
+	if s.Version == TriggerVersion && (!positive || !negative) {
+		return invalid("v2 suite requires positive and negative trigger cases")
 	}
 	data, err := json.Marshal(s)
 	if err != nil || len(data) > MaxSuiteBytes {
@@ -226,8 +243,14 @@ func Validate(s harness.SkillBehaviorSuite) error {
 	return nil
 }
 func ValidateCase(c harness.SkillBehaviorCase) error {
-	if !identifier.MatchString(c.ID) || c.Kind != "targeted" && c.Kind != "regression" || strings.TrimSpace(c.Prompt) == "" || !Text(c.Prompt, 32768) || c.Repetitions < 1 || c.Repetitions > 3 || len(c.Files) > 64 || len(c.Fixtures) > 8 || len(c.Assertions) < 1 || len(c.Assertions) > 32 {
+	if !identifier.MatchString(c.ID) || c.Kind != "targeted" && c.Kind != "regression" && !TriggerCase(c) || strings.TrimSpace(c.Prompt) == "" || !Text(c.Prompt, 32768) || c.Repetitions < 1 || c.Repetitions > 3 || len(c.Files) > 64 || len(c.Fixtures) > 8 || len(c.Assertions) < 1 || len(c.Assertions) > 32 {
 		return invalid("case identity or limits are invalid")
+	}
+	if TriggerCase(c) {
+		return validateTriggerCase(c)
+	}
+	if len(c.TriggerSkills) != 0 {
+		return invalid("execution cases cannot carry a trigger catalog")
 	}
 	total := 0
 	paths := map[string]bool{}

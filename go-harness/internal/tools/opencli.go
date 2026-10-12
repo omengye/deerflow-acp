@@ -27,11 +27,44 @@ func OpenCLITool(backend harness.CommandBackend, plan opencli.Launcher, sites []
 	if backend == nil {
 		return nil, errors.New("OpenCLI command backend is required")
 	}
-	info, err := utils.GoStruct2ToolInfo[opencliInput]("host_opencli", "Run a host-installed OpenCLI command. Allowed adapter sites: "+strings.Join(sites, ", ")+". Discover commands with {command:'list'} or {site:'twitter',command:'help'}; use help with arguments:['search'] for one adapter command's options. Omit site for list/help/doctor/version. Only adapter execution and list request JSON by default; help/version/doctor use their native output. Browser adapters require the user's OpenCLI browser bridge. Returns bounded stdout/stderr, exit_code, state, truncation flags and termination confirmation. Execution can have side effects and requires the session's tool approval policy.")
+	info, err := openCLIToolInfo(sites)
 	if err != nil {
 		return nil, err
 	}
 	return &opencliTool{info: info, backend: backend, plan: plan, sites: slices.Clone(sites)}, nil
+}
+
+func openCLIToolInfo(sites []string) (*schema.ToolInfo, error) {
+	return utils.GoStruct2ToolInfo[opencliInput]("host_opencli", "Run a host-installed OpenCLI command. Allowed adapter sites: "+strings.Join(sites, ", ")+". Discover commands with {command:'list'} or {site:'twitter',command:'help'}; use help with arguments:['search'] for one adapter command's options. Omit site for list/help/doctor/version. Only adapter execution and list request JSON by default; help/version/doctor use their native output. Browser adapters require the user's OpenCLI browser bridge. Returns bounded stdout/stderr, exit_code, state, truncation flags and termination confirmation. Execution can have side effects and requires the session's tool approval policy.")
+}
+
+// Optional host setup failures belong to a tool result, not agent assembly.
+// Keep the exact tool schema and approval boundary while certifying no effects.
+func UnavailableOpenCLITool(cause error, sites []string) (tool.InvokableTool, error) {
+	if cause == nil {
+		return nil, errors.New("OpenCLI unavailability reason is required")
+	}
+	info, err := openCLIToolInfo(sites)
+	if err != nil {
+		return nil, err
+	}
+	return &unavailableOpenCLITool{info: info, cause: cause}, nil
+}
+
+type unavailableOpenCLITool struct {
+	info  *schema.ToolInfo
+	cause error
+}
+
+func (t *unavailableOpenCLITool) Info(context.Context) (*schema.ToolInfo, error) {
+	return t.info, nil
+}
+
+func (t *unavailableOpenCLITool) InvokableRun(ctx context.Context, _ string, _ ...tool.Option) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", harness.MarkToolNotExecuted(err)
+	}
+	return "", harness.MarkToolNotExecuted(fmt.Errorf("OpenCLI is unavailable; no command was executed. Explain the setup problem or use another available tool: %w", t.cause))
 }
 
 type opencliTool struct {

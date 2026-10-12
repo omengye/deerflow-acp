@@ -27,7 +27,9 @@ import (
 // harness.Engine, so alpha API changes stay at this boundary.
 type Config struct {
 	Provider, APIKey, BaseURL, Model, Instruction string
+	OutputTokenParameter                          harness.OutputTokenParameter
 	ModelRoutes                                   map[string]harness.ModelRoute
+	ModelReasoningEfforts                         map[string][]string
 	Models                                        []harness.ConfigValue
 	ChatModel                                     model.ToolCallingChatModel
 	Tools                                         []tool.BaseTool
@@ -48,6 +50,7 @@ type Config struct {
 	ToolImageImporter  harness.ToolImageImporter
 	ModelImageImporter harness.ModelImageImporter
 	ToolOutputStore    harness.ToolOutputStore
+	TaskContextStore   harness.TaskContextStore
 	Compaction         harness.CompactionConfig
 	// ContextWindows contains configured model context sizes. A missing size
 	// suppresses ACP context occupancy rather than guessing from run budgets.
@@ -140,6 +143,22 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 	config.Media.VisionModels = append([]string(nil), config.Media.VisionModels...)
 	config.ContextWindows = maps.Clone(config.ContextWindows)
 	config.ModelRoutes = maps.Clone(config.ModelRoutes)
+	for _, route := range config.ModelRoutes {
+		if _, err := harness.ResolveOutputTokenParameter(route.Provider, route.BaseURL, route.OutputTokenParameter); err != nil {
+			return nil, err
+		}
+	}
+	config.ModelReasoningEfforts = maps.Clone(config.ModelReasoningEfforts)
+	for name, efforts := range config.ModelReasoningEfforts {
+		provider := config.Provider
+		if route, ok := config.ModelRoutes[name]; ok {
+			provider = route.Provider
+		}
+		if err := harness.ValidateReasoningEfforts(provider, efforts); err != nil {
+			return nil, err
+		}
+		config.ModelReasoningEfforts[name] = append([]string(nil), efforts...)
+	}
 	config.Models = append([]harness.ConfigValue(nil), config.Models...)
 	for name, size := range config.ContextWindows {
 		if name == "" || size <= 0 {
@@ -153,6 +172,10 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 		if err != nil {
 			return nil, err
 		}
+	} else {
+		// SDK-injected models must follow the same transport contract even
+		// when Eino invokes its synchronous middleware endpoint.
+		chatModel = &outputTokenModel{inner: chatModel, provider: "injected"}
 	}
 	var roles *agents.Registry
 	// New runs always use host-owned role admission, including deployments that
@@ -419,6 +442,7 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	result = harness.RunResult{StopReason: "end_turn"}
 	var runErr error
 	var lastRootAnswer string
+	var continuingRootAnswer bool
 	var lastRootUsage *harness.Usage
 	var bindings []ExecutionInterruptBinding
 	var waits []interaction.TaskWaitBinding
@@ -458,6 +482,9 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 				}
 			}
 			if event.Err != nil {
+				if modelWillContinue(event.Err) {
+					continue
+				}
 				var cancelled *adk.CancelError
 				switch {
 				case errors.As(event.Err, &cancelled), errors.Is(event.Err, context.Canceled), errors.Is(event.Err, adk.ErrStreamCanceled):
@@ -474,9 +501,14 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 				runErr = errors.Join(runErr, withoutNativeTermination(event.Err))
 			}
 			if event.Output != nil && event.Output.MessageOutput != nil {
-				observed, err := consumeMessage(execCtx, event.Output.MessageOutput, sink, &result)
+				observed, err := consumeMessage(execCtx, event.Output.MessageOutput, sink, &result, event.AgentName)
 				if event.AgentName == "deerflow" && observed.assistant {
-					lastRootAnswer = observed.text
+					if continuingRootAnswer {
+						lastRootAnswer += observed.text
+					} else {
+						lastRootAnswer = observed.text
+					}
+					continuingRootAnswer = observed.continued
 					lastRootUsage = observed.usage
 					if observed.toolCalls {
 						lastRootAnswer = ""
@@ -489,8 +521,18 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 					}
 				}
 				if err != nil {
+					var exhausted *outputContinuationError
+					remaining, outputOnly := removeErrorLeaves(err, func(err error) bool { _, ok := err.(*outputContinuationError); return ok })
+					if event.AgentName != "" && event.AgentName != "deerflow" && outputOnly && remaining == nil {
+						// The role wrapper reports this as a failed task result after
+						// joining its work. The parent can finish with other evidence.
+						result.StopReason = "end_turn"
+						continue
+					}
 					runErr = errors.Join(runErr, withoutNativeTermination(err))
-					requestCancel()
+					if !errors.As(err, &exhausted) || remaining != nil {
+						requestCancel()
+					}
 				}
 			}
 		}
@@ -525,6 +567,17 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	}
 	checkpoints.setInterrupts(bindings, waits)
 	runErr = errors.Join(runErr, withoutNativeTermination(exitErr), exit.CheckpointErr, checkpoints.failure())
+	var stalled *noProgressError
+	if errors.As(runErr, &stalled) {
+		result.Limit = "no_progress"
+		runErr = errors.Join(runErr, sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "no_progress", Text: "\n\n" + stalled.Error()}))
+	}
+	var outputLimit *outputContinuationError
+	if errors.As(runErr, &outputLimit) {
+		result.StopReason = "max_tokens"
+		runErr, _ = removeErrorLeaves(runErr, func(err error) bool { _, ok := err.(*outputContinuationError); return ok })
+		runErr = errors.Join(runErr, sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "output_limit", Text: "\n\n" + outputLimit.Error()}))
+	}
 	if runErr == nil && result.StopReason == "end_turn" && ctx.Err() == nil && lastRootAnswer != "" && prepared.postRun != nil {
 		runErr = errors.Join(runErr, prepared.postRun(ctx, lastRootAnswer, budget.canOptionalModelCall(ctx, 2048)))
 	}
@@ -597,6 +650,7 @@ func (e *Engine) input(ctx context.Context, req harness.RunRequest) ([]*schema.M
 
 type consumedMessage struct {
 	assistant bool
+	continued bool
 	toolCalls bool
 	text      string
 	usage     *harness.Usage
@@ -633,8 +687,13 @@ func planFromTodoResult(output string) ([]harness.PlanEntry, bool) {
 	return entries, true
 }
 
-func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *eventSink, result *harness.RunResult) (consumedMessage, error) {
+func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *eventSink, result *harness.RunResult, names ...string) (consumedMessage, error) {
 	var observed consumedMessage
+	previousStop := result.StopReason
+	var agentName string
+	if len(names) == 1 {
+		agentName = names[0]
+	}
 	var toolCallID string
 	consume := func(msg *schema.Message) error {
 		if msg == nil {
@@ -646,12 +705,20 @@ func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *even
 				observed.plan, observed.planSeen = planFromTodoResult(msg.Content)
 			}
 		}
+		if outputConsolidated(msg) {
+			observed.assistant, observed.text = true, msg.Content
+			if msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
+				u := msg.ResponseMeta.Usage
+				observed.usage = &harness.Usage{InputTokens: int64(u.PromptTokens), OutputTokens: int64(u.CompletionTokens), TotalTokens: int64(u.TotalTokens)}
+			}
+			return nil
+		}
 		if variant.Role == schema.Assistant || (variant.Role == "" && msg.Role == schema.Assistant) {
 			observed.assistant = true
 			observed.text += msg.Content
 			observed.toolCalls = observed.toolCalls || len(msg.ToolCalls) > 0
 			if msg.Content != "" {
-				if err := sink.emit(ctx, harness.RunEvent{Kind: "text_delta", Text: msg.Content}); err != nil {
+				if err := sink.emit(ctx, harness.RunEvent{Kind: "text_delta", AgentName: agentName, Text: msg.Content}); err != nil {
 					return err
 				}
 			}
@@ -665,7 +732,7 @@ func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *even
 				case schema.ChatMessagePartTypeText:
 					if msg.Content == "" && part.Text != "" {
 						observed.text += part.Text
-						if err := sink.emit(ctx, harness.RunEvent{Kind: "text_delta", Text: part.Text}); err != nil {
+						if err := sink.emit(ctx, harness.RunEvent{Kind: "text_delta", AgentName: agentName, Text: part.Text}); err != nil {
 							return err
 						}
 					}
@@ -680,10 +747,10 @@ func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *even
 					observed.usage.OutputTokens = max(observed.usage.OutputTokens, int64(u.CompletionTokens))
 					observed.usage.TotalTokens = max(observed.usage.TotalTokens, int64(u.TotalTokens))
 				}
-				if meta.FinishReason == "length" {
+				if meta.FinishReason == "length" || meta.FinishReason == "max_tokens" {
 					result.StopReason = "max_tokens"
 				}
-				if meta.FinishReason == "content_filter" {
+				if meta.FinishReason == "content_filter" || meta.FinishReason == "refusal" {
 					result.StopReason = "refusal"
 				}
 			}
@@ -698,6 +765,11 @@ func consumeMessage(ctx context.Context, variant *adk.MessageVariant, sink *even
 				break
 			}
 			if err != nil {
+				if modelWillContinue(err) {
+					observed.continued = true
+					result.StopReason = previousStop
+					return observed, nil
+				}
 				return observed, err
 			}
 			if err := consume(msg); err != nil {

@@ -241,6 +241,10 @@ func Run(ctx context.Context, cfg Config, workspace, remoteSessionID, prompt str
 		}
 		returnErr = errors.Join(returnErr, terminationErr)
 	}()
+	// A stalled handshake must not occupy an execution slot forever. This
+	// setup deadline is deliberately not inherited by the multi-day prompt.
+	setupCtx, cancelSetup := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancelSetup()
 	initRequest := map[string]any{"protocolVersion": 1, "clientInfo": map[string]string{"name": "deerflow-go", "version": "0.1.0-dev"}, "clientCapabilities": map[string]any{}}
 	var initialized struct {
 		ProtocolVersion   int `json:"protocolVersion"`
@@ -248,7 +252,7 @@ func Run(ctx context.Context, cfg Config, workspace, remoteSessionID, prompt str
 			LoadSession bool `json:"loadSession"`
 		} `json:"agentCapabilities"`
 	}
-	if err := peer.Call(ctx, "initialize", initRequest, &initialized); err != nil {
+	if err := peer.Call(setupCtx, "initialize", initRequest, &initialized); err != nil {
 		return Result{}, fmt.Errorf("initialize external agent: %w", err)
 	}
 	if initialized.ProtocolVersion != 1 {
@@ -258,7 +262,7 @@ func Run(ctx context.Context, cfg Config, workspace, remoteSessionID, prompt str
 		var created struct {
 			SessionID string `json:"sessionId"`
 		}
-		if err := peer.Call(ctx, "session/new", map[string]any{"cwd": workspace, "mcpServers": []any{}}, &created); err != nil {
+		if err := peer.Call(setupCtx, "session/new", map[string]any{"cwd": workspace, "mcpServers": []any{}}, &created); err != nil {
 			return Result{}, fmt.Errorf("new external session: %w", err)
 		}
 		if created.SessionID == "" || len(created.SessionID) > 512 {
@@ -269,7 +273,7 @@ func Run(ctx context.Context, cfg Config, workspace, remoteSessionID, prompt str
 		mu.Unlock()
 		result.SessionID = created.SessionID
 		if callbacks.SessionReady != nil {
-			if err := callbacks.SessionReady(ctx, created.SessionID); err != nil {
+			if err := callbacks.SessionReady(setupCtx, created.SessionID); err != nil {
 				return Result{}, fmt.Errorf("persist external session before prompt: %w", err)
 			}
 		}
@@ -277,14 +281,15 @@ func Run(ctx context.Context, cfg Config, workspace, remoteSessionID, prompt str
 		if !initialized.AgentCapabilities.LoadSession {
 			return Result{}, errors.New("external agent does not support session/load")
 		}
-		if err := peer.Call(ctx, "session/load", map[string]any{"sessionId": sessionID, "cwd": workspace, "mcpServers": []any{}}, nil); err != nil {
+		if err := peer.Call(setupCtx, "session/load", map[string]any{"sessionId": sessionID, "cwd": workspace, "mcpServers": []any{}}, nil); err != nil {
 			return Result{}, fmt.Errorf("load external session: %w", err)
 		}
-		if err := peer.DrainNotifications(ctx); err != nil {
+		if err := peer.DrainNotifications(setupCtx); err != nil {
 			return Result{}, fmt.Errorf("drain external history: %w", err)
 		}
 		result.SessionID = sessionID
 	}
+	cancelSetup()
 	if callbacks.PromptReady != nil {
 		if err := callbacks.PromptReady(ctx, sessionID); err != nil {
 			return result, fmt.Errorf("persist external prompt before dispatch: %w", err)

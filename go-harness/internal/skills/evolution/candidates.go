@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
 
@@ -182,11 +183,6 @@ func (s *Service) submit(ctx context.Context, request Request, validate bool) (P
 		if err != nil {
 			return Proposal{}, err
 		}
-		for _, finding := range candidate.Findings() {
-			if finding.Code == "possible_credential" {
-				return Proposal{}, invalid("candidate contains a credential-like literal")
-			}
-		}
 	} else if len(request.Files) != 0 {
 		return Proposal{}, invalid("delete must not include candidate files")
 	}
@@ -199,6 +195,11 @@ func (s *Service) submit(ctx context.Context, request Request, validate bool) (P
 	existing := false
 	queued := false
 	err = s.registry.WithPublication(ctx, request.SourceID, request.Name, func(tx *skills.PublicationTx) error {
+		if candidate != nil {
+			if err := s.guardSubmittedCredentials(ctx, tx, candidate); err != nil {
+				return err
+			}
+		}
 		var priorID, sha string
 		err := tx.SQL().QueryRowContext(ctx, `SELECT id,request_sha FROM df_skill_proposals WHERE source_key=? AND name=? AND request_key=?`, tx.Target().SourceIdentity, request.Name, request.RequestKey).Scan(&priorID, &sha)
 		if err == nil {
@@ -367,6 +368,10 @@ func (s *Service) Validate(ctx context.Context, id string, expected int64) (Prop
 	if generationID != "" && (s.generation == nil || report.ValidatorVersion != s.generation.reviewIdentity) {
 		valid = false
 	}
+	var failure *harness.SkillValidationFailure
+	if !valid {
+		failure = validationFailure(report, input, reviewErr, s.validator != nil || cached != nil)
+	}
 	if !reportBoundTo(report, input) {
 		report = Report{BaseVersion: input.Proposal.Base.Version, CandidateVersion: input.Proposal.CandidateVersion, Security: "unavailable", Behavior: "not_run"}
 	}
@@ -391,6 +396,7 @@ func (s *Service) Validate(ctx context.Context, id string, expected int64) (Prop
 		p.UpdatedAt = time.Now().UTC()
 		p.Evaluation = report
 		p.EvaluationDigest = encodedHash(report)
+		p.ValidationFailure = nil
 		if head != p.Base {
 			p.Status = "stale"
 			p.Error = "The installed skill changed during validation."
@@ -398,10 +404,12 @@ func (s *Service) Validate(ctx context.Context, id string, expected int64) (Prop
 			// Preserve the candidate while the durable job decides whether its
 			// remaining attempts and independent budget permit another review.
 			p.Status = "validating"
+			p.ValidationFailure = failure
 			p.Error = "Candidate review could not complete in this maintenance attempt."
 		} else if !valid {
 			p.Status = "failed"
-			p.Error = "Candidate validation was unavailable or did not pass."
+			p.ValidationFailure = failure
+			p.Error = failure.Error()
 		} else {
 			p.Status = "pending_review"
 			p.Error = ""
@@ -443,7 +451,7 @@ func reportBoundTo(report Report, input ValidationInput) bool {
 		}
 	} else {
 		native := report.BehaviorReport
-		if !hexDigest(report.BehaviorDigest) || report.BehaviorDigest != encodedHash(*native) || native.RuleVersion != behaviorRuleVersion || native.BaseVersion != report.BaseVersion || native.CandidateVersion != report.CandidateVersion || native.State != report.Behavior || native.State != "passed" && native.State != "failed" || report.IsolatedScripts {
+		if !hexDigest(report.BehaviorDigest) || report.BehaviorDigest != encodedHash(*native) || native.RuleVersion != behaviorRuleVersion && native.RuleVersion != behaviorTriggerRuleVersion || native.BaseVersion != report.BaseVersion || native.CandidateVersion != report.CandidateVersion || native.State != report.Behavior || native.State != "passed" && native.State != "failed" || report.IsolatedScripts {
 			return false
 		}
 	}

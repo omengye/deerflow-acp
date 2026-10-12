@@ -103,6 +103,43 @@ func (s *smoke) options(mode, model string, cursor any) obj {
 func (s *smoke) prompt(session, runtime, text string) {
 	s.waku.rpc(obj{"type": "prompt", "prompt": text, "turnId": uuid(), "messageId": uuid()}, session, runtime)
 }
+
+func (s *smoke) textAttachment(session, runtime string, first bool) {
+	marker, callID := s.fake.plan("__desktop_attachment_read__", obj{})
+	start := s.fake.count()
+	request := obj{"type": "prompt", "prompt": marker + ": Read the attached CSV.", "turnId": uuid(), "messageId": uuid()}
+	var storedPath string
+	if first {
+		original := filepath.Join(s.root, "attachment-original.csv")
+		must(os.WriteFile(original, []byte("mvp-attachment-body-42,hello\n"), 0600))
+		stored := object(s.waku.rpc(obj{"type": "importPathAttachment", "path": original})["attachment"])
+		must(os.Remove(original))
+		storedPath = str(stored["path"])
+		need(below(storedPath, s.root), "attachment escaped isolated root")
+		request["type"] = "promptWithAttachments"
+		request["attachments"] = []any{obj{"path": storedPath, "mention": stored["name"], "name": stored["name"], "is_dir": false, "is_image": false, "blob_reference": stored["reference"]}}
+	}
+	s.waku.rpc(request, session, runtime)
+	finished := object(s.waku.event(runtime, "turnFinished", nil, nil))
+	need(finished["success"] == true, "text attachment turn failed: %v", finished)
+	read := false
+	for _, r := range s.fake.since(start) {
+		for _, v := range array(r["messages"]) {
+			m := object(v)
+			if m["role"] == "user" {
+				need(!strings.Contains(messageText(m), "mvp-attachment-body-42"), "attachment inlined into model user prompt")
+			}
+			if m["role"] == "tool" && m["tool_call_id"] == callID {
+				read = strings.Contains(messageText(m), "mvp-attachment-body-42")
+			}
+		}
+	}
+	need(read, "model did not read attachment through scoped tool")
+	if first {
+		must(os.Remove(storedPath))
+	}
+	s.log("Waku text attachment read from immutable session snapshot", obj{"after_service_restart": !first, "original_removed": true})
+}
 func (s *smoke) route() {
 	catalog := s.waku.rpc(obj{"type": "probeProvider", "provider": "deerFlow", "binaryOverride": filepath.Join(s.root, "deerflow-acp.exe"), "discoverModels": true, "probeVersion": false})
 	models := map[string]string{}
@@ -214,9 +251,7 @@ func (s *smoke) startChat(session string, cursor any) (string, any) {
 	need(skill, "bundled skills not exposed")
 	extraction := false
 	for _, r := range s.fake.since(start) {
-		if r["stream"] == true {
-			continue
-		}
+		// The tracked Generate API now consumes a stream for memory extraction.
 		for _, v := range array(r["messages"]) {
 			m := object(v)
 			extraction = extraction || (m["role"] == "system" && strings.Contains(messageText(m), "Extract only durable facts"))
@@ -278,6 +313,35 @@ func (s *smoke) setApproval(session, runtime, mode string) {
 	r := s.waku.rpc(obj{"type": "setToolApproval", "mode": mode}, session, runtime)
 	need(r["type"] == "toolApproval" && r["mode"] == mode, "approval change not acknowledged")
 }
+
+func (s *smoke) cancelThenChat(session, runtime string) {
+	for _, phase := range []string{"stream", "permission"} {
+		path := filepath.Join(s.workspace, "cancelled-permission.txt")
+		if phase == "stream" {
+			s.prompt(session, runtime, "smoke-cancel-stream-"+uuid())
+			s.waku.event(runtime, "textDelta", nil, nil)
+		} else {
+			marker, _ := s.fake.plan("write_file", obj{"path": filepath.Base(path), "content": "must not execute"})
+			s.prompt(session, runtime, marker+": wait for permission, then stop")
+			s.waku.event(runtime, "permission", nil, nil)
+		}
+		need(s.waku.rpc(obj{"type": "cancel"}, session, runtime)["type"] == "ack", "cancel not acknowledged")
+		s.waku.event(runtime, "turnFinished", nil, nil)
+		s.prompt(session, runtime, "Reply after stopping "+phase+"; do not retry old tools.")
+		var events []obj
+		finished := object(s.waku.event(runtime, "turnFinished", &events, nil))
+		text := ""
+		for _, event := range events {
+			if event["kind"] == "textDelta" {
+				text += str(event["payload"])
+			}
+		}
+		need(finished["success"] == true && strings.Contains(text, reply), "fresh prompt after %s stop failed: %v %q", phase, finished, text)
+		need(!exists(path), "cancelled permission executed during a new prompt")
+		s.log("Cancel then prompt on the same Waku/ACP runtime", obj{"phase": phase})
+	}
+}
+
 func (s *smoke) writeTurn(session, runtime, name, decision, content string, cachedReject, prior bool) string {
 	need(filepath.Base(name) == name && name != "." && name != "..", "invalid write fixture name")
 	path := filepath.Join(s.workspace, name)
@@ -327,6 +391,11 @@ func (s *smoke) run() {
 	saved := s.configure()
 	saved = s.startupRecovery()
 	w := s.waku
+	beforeReadiness := s.fake.count()
+	readiness := w.deerflow("check-readiness")
+	need(readiness["network_checked"] == false && readiness["config_revision"] == saved["config_revision"] && len(array(readiness["items"])) == 4, "invalid local readiness result")
+	need(s.fake.count() == beforeReadiness, "local readiness invoked model")
+	s.log("Local readiness uses saved revision without model requests", obj{})
 	w.deerflow("start")
 	state := s.settled()
 	generation := state["applied_generation"]
@@ -348,10 +417,12 @@ func (s *smoke) run() {
 	s.log("ACP initialize/new/list/load/close", obj{"original_session": original})
 	session, approvalSession := uuid(), uuid()
 	oldRuntime, cursor := s.startChat(session, nil)
+	s.textAttachment(session, oldRuntime, true)
 	s.skill(session, oldRuntime)
 	approvalRuntime, approvalCursor := s.startApproval(approvalSession, nil)
 	s.writeTurn(approvalSession, approvalRuntime, "full-access.txt", "", "", false, false)
 	s.setApproval(approvalSession, approvalRuntime, "ask")
+	s.cancelThenChat(approvalSession, approvalRuntime)
 	s.writeTurn(approvalSession, approvalRuntime, "ask-rejected.txt", "reject_once", "", false, false)
 	s.writeTurn(approvalSession, approvalRuntime, "ask-allowed-once.txt", "allow_once", "", false, false)
 	allowed := s.writeTurn(approvalSession, approvalRuntime, "ask-allowed-always.txt", "allow_always", "", false, false)
@@ -411,6 +482,7 @@ func (s *smoke) run() {
 		time.Sleep(200 * time.Millisecond)
 	}
 	current, _ := s.startChat(session, cursor)
+	s.textAttachment(session, current, false)
 	w.rpc(obj{"type": "closeSession"}, session, current)
 	approvalRuntime, _ = s.startApproval(approvalSession, approvalCursor)
 	s.writeTurn(approvalSession, approvalRuntime, "restored-ask-rejected.txt", "reject_once", "", false, true)

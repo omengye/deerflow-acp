@@ -186,7 +186,7 @@ func (s *Service) queueBehaviorManual(ctx context.Context, tx *skills.Publicatio
 	if err != nil {
 		return false, err
 	}
-	job, err := s.generation.store.EnqueueTx(ctx, tx.SQL(), skillmaintenance.Request{SourceIdentity: p.Target.SourceIdentity, Name: p.Target.Name, Key: "behavior-review/" + p.ID, Reference: in.ID, InputDigest: hash(payload)})
+	job, err := s.generation.store.EnqueueTx(ctx, tx.SQL(), skillmaintenance.Request{Kind: skillmaintenance.SkillBehavior, SourceIdentity: p.Target.SourceIdentity, Name: p.Target.Name, Key: "behavior-review/" + p.ID, Reference: in.ID, InputDigest: hash(payload)})
 	if err != nil {
 		return false, err
 	}

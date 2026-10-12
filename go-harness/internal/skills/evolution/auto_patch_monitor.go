@@ -37,6 +37,9 @@ func (s *Service) monitorAutoPatch(ctx context.Context, id string) error {
 			return err
 		}
 		o.UpdatedAt = now
+		if err = refreshAutoPatchLearningSource(ctx, tx.SQL(), &o); err != nil {
+			return err
+		}
 		if current != o.Head {
 			o.Status, o.Reason = "superseded", "The installed version changed during observation."
 			return writeAutoPatchObservation(ctx, tx.SQL(), o, false)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/learning"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
@@ -25,6 +26,7 @@ type generationHost struct {
 	lifecycle                collectorLifecycle
 	discovery                *discoveryHost
 	behavior                 *behaviorHost
+	experienceSource         *learning.Store
 }
 
 var errGenerationConfiguration = errors.New("skill generation configuration changed")
@@ -32,14 +34,15 @@ var errGenerationConfiguration = errors.New("skill generation configuration chan
 func (s *Service) GenerationEnabled() bool { return s.generation != nil }
 
 type generationSnapshot struct {
-	Request           harness.SkillGenerationRequest `json:"request"`
-	Target            harness.SkillTarget            `json:"target"`
-	OverlayBase       *harness.SkillRef              `json:"overlay_base,omitempty"`
-	GeneratorIdentity string                         `json:"generator_identity"`
-	ValidatorIdentity string                         `json:"validator_identity"`
-	DiscoveryID       string                         `json:"discovery_id,omitempty"`
-	DiscoveryDigest   string                         `json:"discovery_digest,omitempty"`
-	BehaviorIdentity  string                         `json:"behavior_identity,omitempty"`
+	Request                    harness.SkillGenerationRequest `json:"request"`
+	Target                     harness.SkillTarget            `json:"target"`
+	OverlayBase                *harness.SkillRef              `json:"overlay_base,omitempty"`
+	GeneratorIdentity          string                         `json:"generator_identity"`
+	ValidatorIdentity          string                         `json:"validator_identity"`
+	DiscoveryID                string                         `json:"discovery_id,omitempty"`
+	DiscoveryDigest            string                         `json:"discovery_digest,omitempty"`
+	BehaviorIdentity           string                         `json:"behavior_identity,omitempty"`
+	CreationRetryAuthorization string                         `json:"creation_retry_authorization,omitempty"`
 }
 
 type generationRecord struct {
@@ -64,7 +67,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS df_skill_generation_proposal ON df_skill_gener
 INSERT OR IGNORE INTO df_skill_generation_catalog VALUES(1,0);
 CREATE TRIGGER IF NOT EXISTS df_skill_generation_insert AFTER INSERT ON df_skill_generation_inputs BEGIN UPDATE df_skill_generation_catalog SET revision=revision+1 WHERE id=1; END;
 CREATE TRIGGER IF NOT EXISTS df_skill_generation_update AFTER UPDATE ON df_skill_generation_inputs BEGIN UPDATE df_skill_generation_catalog SET revision=revision+1 WHERE id=1; END;
-CREATE TRIGGER IF NOT EXISTS df_skill_generation_job_update AFTER UPDATE ON df_skill_maintenance_jobs BEGIN UPDATE df_skill_generation_catalog SET revision=revision+1 WHERE id=1; END;`)
+DROP TRIGGER IF EXISTS df_skill_generation_job_update;
+CREATE TRIGGER df_skill_generation_job_update AFTER UPDATE ON df_skill_maintenance_jobs WHEN NEW.owner_kind='skill' BEGIN UPDATE df_skill_generation_catalog SET revision=revision+1 WHERE id=1; END;`)
 	return err
 }
 
@@ -103,7 +107,7 @@ func (s *Service) ConfigureGeneration(ctx context.Context, generator skillmainte
 			return invalid("generation source is unavailable or not authorized")
 		}
 	}
-	g.store, err = skillmaintenance.NewWithHooks(ctx, s.db, policy, skillmaintenance.Hooks{Admission: s.admitMaintenance, Terminal: s.finalizeMaintenanceTx})
+	g.store, err = skillmaintenance.NewWithHooks(ctx, s.db, policy, skillmaintenance.Hooks{Admission: s.admitMaintenance, Ready: s.readyMaintenance, Terminal: s.finalizeMaintenanceTx, CallAdmission: s.admitMaintenanceCall})
 	if err != nil {
 		return err
 	}
@@ -127,6 +131,9 @@ func readGeneration(ctx context.Context, db rowReader, jobID string) (generation
 		return r, err
 	}
 	r.job = job
+	if job.Request.OwnerKind != skillmaintenance.SkillOwner || job.Request.Kind != skillmaintenance.SkillGeneration && job.Request.Kind != skillmaintenance.LegacyJob {
+		return r, invalid("generation producer is inconsistent")
+	}
 	err = db.QueryRowContext(ctx, `SELECT id,source_key,name,request_key,request_sha,payload,candidate_version,candidate_reason,proposal_id,progress_sha,created_at FROM df_skill_generation_inputs WHERE job_id=?`, jobID).
 		Scan(&r.id, &source, &name, &key, &requestSHA, &payload, &r.candidate, &r.reason, &r.proposal, &progress, &created)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -142,6 +149,9 @@ func readGeneration(ctx context.Context, db rowReader, jobID string) (generation
 	}
 	if (r.input.DiscoveryID == "") != (r.input.DiscoveryDigest == "") || r.input.DiscoveryID != "" && (!strings.HasPrefix(r.input.DiscoveryID, "sd_") || len(r.input.DiscoveryID) > 128 || !hexDigest(r.input.DiscoveryDigest)) {
 		return r, invalid("generation discovery identity is inconsistent")
+	}
+	if r.input.CreationRetryAuthorization != "" && (r.input.DiscoveryID == "" || !hexDigest(r.input.CreationRetryAuthorization)) {
+		return r, invalid("creation retry authorization is inconsistent")
 	}
 	r.created, err = time.Parse(time.RFC3339Nano, created)
 	if err != nil {
@@ -180,9 +190,6 @@ func (g *generationHost) admit(ctx context.Context, tx *sql.Tx, job skillmainten
 	if err = g.checkConfiguration(r); err != nil {
 		return err
 	}
-	if _, err = g.discoveryEvidence(ctx, tx, r); err != nil {
-		return err
-	}
 	head, err := skills.ReadPublicationHead(ctx, tx, r.input.Target.SourceIdentity, r.input.Target.Name)
 	if err != nil {
 		return err
@@ -203,7 +210,8 @@ func (g *generationHost) admit(ctx context.Context, tx *sql.Tx, job skillmainten
 			return harness.ErrSkillConflict
 		}
 	}
-	return nil
+	_, err = g.discoveryEvidence(ctx, tx, r)
+	return err
 }
 
 func (s *Service) EnqueueGeneration(ctx context.Context, request harness.SkillGenerationRequest) (harness.SkillGenerationJob, error) {

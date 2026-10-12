@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/url"
+	"strings"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/acp/protocol"
@@ -47,6 +49,25 @@ func decodePrompt(raw json.RawMessage) (promptRequest, error) {
 		}
 		allowed := []string{"type", "annotations", "_meta"}
 		switch header.Type {
+		case "resource":
+			block, err := strictObject(part, "type", "resource", "annotations", "_meta")
+			if err != nil {
+				return invalid()
+			}
+			resource, err := strictObject(block["resource"], "uri", "mimeType", "text", "_meta")
+			if err != nil {
+				return invalid()
+			}
+			var uri, text, mime string
+			if json.Unmarshal(resource["uri"], &uri) != nil || json.Unmarshal(resource["text"], &text) != nil || json.Unmarshal(resource["mimeType"], &mime) != nil || mime != "text/plain" {
+				return invalid()
+			}
+			u, err := url.Parse(uri)
+			if err != nil || u.Scheme != "attachment" || u.Host != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !strings.HasPrefix(u.Path, "/") || len(uri) > 2048 {
+				return invalid()
+			}
+			req.Prompt = append(req.Prompt, harness.Content{Type: "attachment", Name: strings.TrimPrefix(u.Path, "/"), Text: text})
+			continue
 		case "text":
 			allowed = append(allowed, "text")
 		case "image":

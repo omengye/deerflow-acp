@@ -219,6 +219,9 @@ func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, le
 			return err
 		}
 		inputSource, err = s.executionInputSourceTx(ctx, tx, row)
+		if err == nil && inputSource == nil {
+			ctx, err = stoppedToolRecoveryContext(ctx, tx, req.Session.ID)
+		}
 		if err == nil && lease.Scope.Fence > 1 {
 			waitTargets, err = executionWaitTargets(ctx, tx, row)
 		}
@@ -291,6 +294,7 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 	explicitCancel := ctx.Err() != nil && !disconnectedExecution(ctx)
 	roleFailure := !explicitCancel && !disconnectedExecution(ctx) && interaction.IsRoleContinuationFailure(runErr)
 	var state harness.ExecutionState
+	var budgetRecoveryErr error
 	err := withExecutionTransaction(persist, s.Store, func(tx *sql.Tx) error {
 		var err error
 		outcome := budget.OutcomeCompleted
@@ -330,7 +334,23 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 			return err
 		}
 		if err = s.Store.BudgetLedger.EndAttemptTx(persist, tx, lease.Scope, outcome); err != nil {
-			return err
+			if !errors.Is(err, budget.ErrUnknown) {
+				return err
+			}
+			// Joined I/O with unsettled usage must not roll the business state
+			// back to running. Retain every hold and fence replay for review.
+			budgetRecoveryErr = err
+			if err = s.Store.blockRecoveredExecutionTx(persist, tx, lease.Scope); err != nil {
+				return err
+			}
+			if err = s.Store.BudgetLedger.EndAttemptTx(persist, tx, lease.Scope, budget.OutcomeInterrupted); err != nil {
+				return err
+			}
+			row, readErr := readExecution(persist, tx, lease.Scope.SessionID, lease.Scope.MemberID)
+			if readErr != nil {
+				return readErr
+			}
+			state = row.State
 		}
 		if runErr == nil && (state.Status == harness.ExecutionCompleted || state.Status == harness.ExecutionWaitingInput) {
 			if err = commitTaskDeliveriesTx(persist, tx, lease, deliveries); err != nil {
@@ -367,6 +387,7 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 	if err != nil {
 		return result, errors.Join(runErr, &runPersistenceError{err: err})
 	}
+	runErr = errors.Join(runErr, budgetRecoveryErr)
 	state, err = s.Store.Execution(persist, lease.Scope.SessionID, lease.Scope.MemberID)
 	if err != nil {
 		return result, errors.Join(runErr, &runPersistenceError{err: err})

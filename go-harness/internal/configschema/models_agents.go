@@ -3,6 +3,8 @@ package configschema
 import (
 	"fmt"
 	"strings"
+
+	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
 func modelAgentFields() []Field {
@@ -12,11 +14,13 @@ func modelAgentFields() []Field {
 		{Path: "/models/*/name", Type: "string", Default: "", MaxLength: 256},
 		{Path: "/models/*/display_name", Type: "string", Default: "", MaxLength: 4096},
 		{Path: "/models/*/description", Type: "string", Default: "", MaxLength: 4096},
-		{Path: "/models/*/provider", Type: "string", Default: "openai", Enum: []string{"openai", "ark", "claude"}},
+		{Path: "/models/*/provider", Type: "string", Default: "openai", Enum: []string{"openai", "claude"}},
 		{Path: "/models/*/model", Type: "string", Default: "", MaxLength: 256},
 		{Path: "/models/*/api_key", Type: "string", Default: ""},
 		{Path: "/models/*/base_url", Type: "string", Default: ""},
+		{Path: "/models/*/output_token_parameter", Type: "string", Default: "auto", Enum: []string{"auto", "max_tokens", "max_completion_tokens"}},
 		{Path: "/models/*/supports_vision", Type: "boolean", Default: false},
+		{Path: "/models/*/reasoning_efforts", Type: "reasoning_efforts", Nullable: true, Default: nil},
 		numeric("models/*", "context_window", "integer", 0, 0, 1<<30),
 		{Path: "/models/*/clear_api_key", Type: "boolean", Default: false},
 		{Path: "/subagents/enabled", Type: "boolean", Default: false},
@@ -29,7 +33,7 @@ func modelAgentFields() []Field {
 		key, kind string
 		min, max  float64
 	}{
-		{"timeout_seconds", "number", .001, 86400},
+		{"timeout_seconds", "number", .001, harness.MaxExecutionTimeoutSeconds},
 		{"max_turns", "integer", 0, 10000},
 		{"max_depth", "integer", 1, 3},
 		{"background_workers", "integer", 1, 64},
@@ -37,6 +41,7 @@ func modelAgentFields() []Field {
 		{"max_auto_continuations", "integer", 0, 1000},
 	} {
 		field := numeric("subagents", spec.key, spec.kind, nil, spec.min, spec.max)
+		field.ZeroIsDefault = spec.key == "timeout_seconds"
 		field.Nullable = true
 		fields = append(fields, field)
 	}
@@ -55,7 +60,7 @@ func roleFields() []Field {
 			Field{Path: root + "/system_prompt", Type: "string", Nullable: true, Default: nil, MaxBytes: 65536},
 			Field{Path: root + "/model", Type: "string", Nullable: true, Default: nil, MaxBytes: 256},
 			Field{Path: root + "/thinking_enabled", Type: "boolean", Nullable: true, Default: nil},
-			Field{Path: root + "/reasoning_effort", Type: "string", Nullable: true, Default: nil, Enum: []string{"", "low", "medium", "high", "xhigh"}},
+			Field{Path: root + "/reasoning_effort", Type: "string", Nullable: true, Default: nil, Enum: []string{"", "low", "medium", "high", "xhigh", "max"}},
 		)
 		for _, key := range []string{"tools", "disallowed_tools", "skills", "delegate_to"} {
 			kind := "tool_names"
@@ -68,13 +73,14 @@ func roleFields() []Field {
 			key, kind string
 			min, max  float64
 		}{
-			{"timeout_seconds", "number", .001, 86400},
+			{"timeout_seconds", "number", .001, harness.MaxExecutionTimeoutSeconds},
 			{"max_turns", "integer", 0, 10000},
 			{"model_settings/temperature", "number", 0, 2},
 			{"model_settings/max_tokens", "integer", 1, 1 << 30},
 			{"model_settings/thinking_budget_tokens", "integer", 1024, (1 << 30) - 1},
 		} {
 			field := numeric(strings.TrimPrefix(root, "/"), spec.key, spec.kind, nil, spec.min, spec.max)
+			field.ZeroIsDefault = spec.key == "timeout_seconds"
 			field.Nullable = true
 			fields = append(fields, field)
 		}
@@ -139,6 +145,9 @@ func ValidateModelDraft(model map[string]any) error {
 	}
 	for _, field := range Describe().Fields {
 		if key, ok := strings.CutPrefix(field.Path, "/models/*/"); ok {
+			if key == "reasoning_efforts" || key == "output_token_parameter" {
+				continue // Older desktop drafts preserve these optional settings.
+			}
 			if _, exists := model[key]; !exists {
 				return fmt.Errorf("%s: missing setting", field.Path)
 			}
@@ -149,5 +158,28 @@ func ValidateModelDraft(model map[string]any) error {
 			return fmt.Errorf("/models/*/%s: must be a nonempty single-line identifier", key)
 		}
 	}
-	return nil
+	return validateModelReasoning(model)
+}
+
+func validateModelReasoning(model map[string]any) error {
+	provider, _ := model["provider"].(string)
+	if provider == "" {
+		legacy, _ := model["use"].(string)
+		provider, _ = harness.NativeModelProvider(legacy)
+	}
+	parameter, _ := model["output_token_parameter"].(string)
+	if _, err := harness.ResolveOutputTokenParameter(provider, "", harness.OutputTokenParameter(parameter)); err != nil {
+		return fmt.Errorf("/models/*/output_token_parameter: %w", err)
+	}
+	var efforts []string
+	switch values := model["reasoning_efforts"].(type) {
+	case []string:
+		efforts = values
+	case []any:
+		for _, value := range values {
+			text, _ := value.(string)
+			efforts = append(efforts, text)
+		}
+	}
+	return harness.ValidateReasoningEfforts(provider, efforts)
 }

@@ -30,6 +30,7 @@ func (s *Store) Prepare(ctx context.Context, x harness.Session, input []harness.
 	}()
 	var imageCount int
 	var imageBytes int64
+	var textCount, textBytes int
 	hasContent := false
 	for _, content := range input {
 		if err = ctx.Err(); err != nil {
@@ -39,6 +40,18 @@ func (s *Store) Prepare(ctx context.Context, x harness.Session, input []harness.
 			return nil, invalid("attachment metadata is too large")
 		}
 		switch content.Type {
+		case "attachment":
+			textCount++
+			textBytes += len(content.Text)
+			if content.Asset != nil || content.URI != "" || content.Data != "" || !validTextAttachment(content.Name, content.Text) || textCount > harness.MaxTextAttachments || textBytes > harness.MaxTextAttachmentTotal {
+				return nil, invalid("attach at most 8 UTF-8 text files, 1 MiB each and 4 MiB total; PDF, Office, directories and binary files are unsupported")
+			}
+			ref, snapshotErr := p.snapshot(ctx, strings.NewReader(content.Text), content.Name, "text/plain", harness.AssetFile, harness.MaxTextAttachmentBytes)
+			if snapshotErr != nil {
+				return nil, snapshotErr
+			}
+			p.Input = append(p.Input, assetContent(ref, "User-attached text; read with read_attachment using the opaque ID."))
+			hasContent = true
 		case "text":
 			if content.Data != "" || content.Asset != nil || content.URI != "" {
 				return nil, invalid("text content cannot carry attachment data")
@@ -112,7 +125,7 @@ func (s *Store) Prepare(ctx context.Context, x harness.Session, input []harness.
 			p.Input = append(p.Input, normalized)
 			hasContent = true
 		default:
-			return nil, invalid("only text, image and resource_link prompt content is supported")
+			return nil, invalid("only text, image, attachment and resource_link prompt content is supported")
 		}
 	}
 	if !hasContent {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
+	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 )
 
 func isToolEvent(kind string) bool {
@@ -326,9 +327,25 @@ func (s *Store) ListToolReceipts(ctx context.Context, sessionID string) ([]harne
 	return result, rows.Err()
 }
 
+// Cancellation ends the old execution, not the conversation. Keep uncertain
+// receipts for review, but do not require review before a fresh user turn.
+// The receipt's owning run must be durably cancelled, not merely interrupted.
+const receiptRunCancelled = `EXISTS(SELECT 1 FROM harness_runs stopped WHERE stopped.id=r.run_id AND stopped.session_id=r.session_id AND stopped.status='cancelled' AND stopped.stop_reason='cancelled')`
+
+func stoppedToolRecoveryContext(ctx context.Context, q executionQuery, sessionID string) (context.Context, error) {
+	var stopped bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_runs WHERE session_id=? AND status='cancelled' AND stop_reason='cancelled')`, sessionID).Scan(&stopped); err != nil {
+		return ctx, err
+	}
+	if stopped {
+		ctx = interaction.WithStoppedToolRecovery(ctx)
+	}
+	return ctx, nil
+}
+
 func (s *Store) requireReconciled(ctx context.Context, sessionID string) error {
 	var uncertain bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state='uncertain')`, sessionID).Scan(&uncertain); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts r WHERE r.session_id=? AND r.state='uncertain' AND NOT `+receiptRunCancelled+`)`, sessionID).Scan(&uncertain); err != nil {
 		return err
 	}
 	if uncertain {
@@ -528,7 +545,7 @@ func eventError(e harness.RunEvent) string {
 // MCP tools always have a namespace; their readOnlyHint is not evidence.
 func failedStartedState(toolName string) harness.ReceiptState {
 	switch toolName {
-	case "read_file", "read_tool_output", "list_directory", "search_files", "read_skill_file", "skill", "view_image", "search_memory":
+	case "read_file", "read_tool_output", "read_attachment", "list_attachments", "list_directory", "search_files", "read_skill_file", "skill", "view_image", "search_memory":
 		return harness.ReceiptNoEffect
 	default:
 		return harness.ReceiptUncertain

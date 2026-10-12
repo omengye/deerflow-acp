@@ -200,8 +200,10 @@ func modelDocument(raw map[string]any) map[string]any {
 		"display_name": str(raw, "display_name", ""), "description": str(raw, "description", ""),
 		"provider": nativeProvider(raw), "model": str(raw, "model", ""),
 		"api_key": reference, "api_key_configured": key != "", "api_key_literal": key != "" && reference == "", "clear_api_key": false,
-		"base_url":        str(raw, "base_url", ""),
-		"supports_vision": boolValue(raw, "supports_vision", false), "context_window": contextWindow,
+		"base_url":               str(raw, "base_url", ""),
+		"output_token_parameter": str(raw, "output_token_parameter", "auto"),
+		"supports_vision":        boolValue(raw, "supports_vision", false), "context_window": contextWindow,
+		"reasoning_efforts": raw["reasoning_efforts"],
 	}
 }
 

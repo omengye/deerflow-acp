@@ -45,6 +45,9 @@ func Run(options Options, operation string, input json.RawMessage) (any, error) 
 		return nil, err
 	}
 	s := service{config: config, userData: userData, resources: resources}
+	if operation == "check-readiness" {
+		return s.readiness()
+	}
 	if err := s.init(); err != nil {
 		return nil, err
 	}
@@ -71,8 +74,6 @@ func Run(options Options, operation string, input json.RawMessage) (any, error) 
 			return nil, err
 		}
 		return s.testModel(request)
-	case "legacy-agent-preview", "legacy-history-import", "legacy-history-list", "legacy-history-get":
-		return s.legacyImport(operation, input)
 	default:
 		return nil, fmt.Errorf("unsupported configuration operation %q", operation)
 	}

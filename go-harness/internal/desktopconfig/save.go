@@ -280,6 +280,16 @@ func validatedModels(incoming, existing []any) ([]any, map[string]bool, error) {
 		raw["model"] = id
 		raw["supports_vision"] = model["supports_vision"]
 		raw["context_window"] = model["context_window"]
+		if parameter, present := model["output_token_parameter"]; present {
+			raw["output_token_parameter"] = parameter
+		}
+		if efforts, present := model["reasoning_efforts"]; present {
+			if efforts == nil {
+				delete(raw, "reasoning_efforts")
+			} else {
+				raw["reasoning_efforts"] = efforts
+			}
+		}
 		for _, key := range []string{"display_name", "description", "base_url"} {
 			value := strings.TrimSpace(str(model, key, ""))
 			if value != "" {
@@ -409,12 +419,25 @@ func validatedEvolution(document, previous map[string]any, models map[string]boo
 	if convert && document["security_fail_closed"] != true {
 		return nil, errors.New("skill_evolution.security_fail_closed 必须为 true")
 	}
+	learning, oldLearning := readObject(document, "learning"), readObject(original, "learning")
+	selected := str(learning, "extraction_model_name", "")
+	if selected != "" && !models[selected] && (enabled && boolValue(learning, "enabled", false) || convert || !configschema.SameValue(learning["extraction_model_name"], oldLearning["extraction_model_name"])) {
+		return nil, errors.New("skill_evolution.learning.extraction_model_name references an unknown model")
+	}
+	selected = str(learning, "consolidation_model_name", "")
+	if selected != "" && !models[selected] && (enabled && boolValue(learning, "enabled", false) && boolValue(learning, "consolidation_enabled", false) || convert || !configschema.SameValue(learning["consolidation_model_name"], oldLearning["consolidation_model_name"])) {
+		return nil, errors.New("skill_evolution.learning.consolidation_model_name references an unknown model")
+	}
+	selected = str(learning, "matching_model_name", "")
+	if selected != "" && !models[selected] && (enabled && boolValue(learning, "enabled", false) && boolValue(learning, "matching_enabled", false) || convert || !configschema.SameValue(learning["matching_model_name"], oldLearning["matching_model_name"])) {
+		return nil, errors.New("skill_evolution.learning.matching_model_name references an unknown model")
+	}
 	raw := cloneMap(previous)
 	if convert {
 		raw = map[string]any{}
 	}
 	for key, value := range document {
-		if key == "validation" || key == "generation" || key == "discovery" || key == "behavior" || key == "auto_patch" || key == "budget" {
+		if key == "validation" || key == "generation" || key == "learning" || key == "discovery" || key == "behavior" || key == "auto_patch" || key == "budget" {
 			limits := cloneMap(readObject(raw, key))
 			for name, limit := range value.(map[string]any) {
 				limits[name] = limit

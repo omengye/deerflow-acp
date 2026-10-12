@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 )
 
@@ -25,6 +26,7 @@ func (s service) testModel(request map[string]any) (map[string]any, error) {
 	}
 	model := models[0].(map[string]any)
 	provider := nativeProvider(model)
+	parameter := harness.OutputTokenParameter(str(model, "output_token_parameter", "auto"))
 	apiKey, err := resolveSecret(str(model, "api_key", ""))
 	if err != nil {
 		return map[string]any{"ok": false, "error_type": "MissingCredential", "note": "请求失败，请检查凭据、地址、模型 ID 和网络；测试最长 30 秒"}, nil
@@ -41,13 +43,13 @@ func (s service) testModel(request map[string]any) (map[string]any, error) {
 		return nil, errors.New("invalid model probe profile")
 	}
 	if profile == "agent" {
-		capabilities, err := eino.ProbeAgentCapabilities(ctx, provider, str(model, "model", ""), baseURL, apiKey)
+		capabilities, err := eino.ProbeAgentCapabilities(ctx, provider, str(model, "model", ""), baseURL, apiKey, parameter)
 		if err != nil {
 			return map[string]any{"ok": false, "error_type": "ModelRequestError", "note": "无法构建模型能力测试，请检查配置"}, nil
 		}
 		return map[string]any{"ok": capabilities.Streaming.OK && capabilities.Tools.OK, "latency_ms": time.Since(started).Milliseconds(), "capabilities": capabilities, "note": "最多两次请求；工具不执行；usage 缺失仍按估算记账；未测试图片和 thinking"}, nil
 	}
-	err = eino.ProbeModel(ctx, provider, str(model, "model", ""), baseURL, apiKey)
+	err = eino.ProbeModel(ctx, provider, str(model, "model", ""), baseURL, apiKey, parameter)
 	if err != nil {
 		errorType := "ModelRequestError"
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {

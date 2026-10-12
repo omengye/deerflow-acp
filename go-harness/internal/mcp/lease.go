@@ -90,8 +90,7 @@ func (m *Manager) resourceSnapshot(ctx context.Context, id string) (harness.MCPR
 		if err != nil || info == nil {
 			return empty, nil, nil, errors.New("MCP tool schema is invalid")
 		}
-		// Re-encoding normalizes schema object key order before hashing.
-		data, err := json.Marshal(info)
+		data, err := canonicalToolInfo(info)
 		if err != nil {
 			return empty, nil, nil, errors.New("MCP tool schema is invalid")
 		}

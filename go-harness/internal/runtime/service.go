@@ -131,6 +131,16 @@ func (s *Service) Load(ctx context.Context, owner, id, cwd string, replay bool, 
 	if err = s.bindResources(ctx, owner, x, servers); err != nil {
 		return x, err
 	}
+	if !harness.ReasoningEffortAllowed(s.Settings.ModelReasoningEfforts[x.Model], x.ReasoningEffort) {
+		if err = s.Store.requireNoWaitingExecution(ctx, id); err != nil {
+			return x, err
+		}
+		x.ReasoningEffort = ""
+		x.ConfigVersion++
+		if err = s.Store.SaveConfig(ctx, x); err != nil {
+			return x, err
+		}
+	}
 	s.clearDecisions(owner, id)
 	if replay {
 		cursor := ""
@@ -227,6 +237,10 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 		return harness.RunResult{}, err
 	}
 	if err = s.Store.requireReconciled(ctx, id); err != nil {
+		return harness.RunResult{}, err
+	}
+	ctx, err = stoppedToolRecoveryContext(ctx, s.Store.db, id)
+	if err != nil {
 		return harness.RunResult{}, err
 	}
 	releaseSlot, err := s.runQueue.acquire(ctx, id)

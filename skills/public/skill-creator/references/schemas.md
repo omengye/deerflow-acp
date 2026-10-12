@@ -34,3 +34,7 @@ Keep fixtures and records in a separate evaluation workspace so the deployable s
 ```
 
 Use `not_run`, `completed`, `failed`, `cancelled` or `blocked` for status. `failed` describes the test execution; give separate expectation evidence before attributing a failure to the skill. Store short evidence and fixture references, not full conversations, credentials or tool payloads. Human-authored result files are review aids, not trusted runtime receipts.
+
+## Candidate review failures
+
+Record the proposal ID, source, candidate hash, submission reason, status, security, quality, behavior, error code and failed check reasons separately. Preserve uncertainty when a field is unavailable. An empty field or a passing security check does not establish a validator outage. For a source comparison, hold the complete candidate, base, submission reason and review configuration constant; identical candidate hashes alone do not identify identical model inputs. Even identical inputs may yield different model judgments.

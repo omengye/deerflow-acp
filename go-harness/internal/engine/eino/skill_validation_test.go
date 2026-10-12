@@ -13,6 +13,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 )
 
 func reviewInput() harness.SkillValidationInput {
@@ -21,7 +22,7 @@ func reviewInput() harness.SkillValidationInput {
 
 func TestSkillModelValidatorIsolatedProviderCallsAndEvidence(t *testing.T) {
 	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 		index := calls.Add(1)
 		var request struct {
 			Model               string                           `json:"model"`
@@ -51,8 +52,7 @@ func TestSkillModelValidatorIsolatedProviderCallsAndEvidence(t *testing.T) {
 			t.Error(err)
 		}
 		decision, _ := json.Marshal(map[string]any{"base_version": input["base_version"], "candidate_version": input["candidate_version"], "passed": true, "reason": reason})
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "review", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": string(decision)}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}})
+		_ = modelstreamtest.WriteCompletion(w, map[string]any{"id": "review", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": string(decision)}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}})
 	}))
 	defer server.Close()
 	validator, err := NewSkillModelValidator(context.Background(), harness.SkillModelReviewConfig{Moderation: harness.ModelRoute{Model: "moderator", BaseURL: server.URL, APIKey: "fixture-secret"}, Evaluation: harness.ModelRoute{Model: "evaluator", BaseURL: server.URL, APIKey: "fixture-secret"}, MaxOutputTokens: 512})
@@ -78,7 +78,7 @@ func TestSkillModelValidatorFailureAndBounds(t *testing.T) {
 	for _, mode := range []string{"rejected", "wrong-digest", "missing-passed", "duplicate", "truncated", "provider-error"} {
 		t.Run(mode, func(t *testing.T) {
 			var calls atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
 				if mode == "provider-error" {
 					w.WriteHeader(400)
@@ -99,8 +99,7 @@ func TestSkillModelValidatorFailureAndBounds(t *testing.T) {
 				case "truncated":
 					finish = "length"
 				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": finish}}})
+				_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": finish}}})
 			}))
 			defer server.Close()
 			route := harness.ModelRoute{Model: "reviewer", BaseURL: server.URL, APIKey: "fixture-secret"}
@@ -146,7 +145,7 @@ func TestSkillModelValidatorPreservesAdmissionStorageFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			var calls atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
 				http.Error(w, "unexpected provider call", 400)
 			}))

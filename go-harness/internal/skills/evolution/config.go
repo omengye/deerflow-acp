@@ -35,16 +35,35 @@ type ReviewSettings struct {
 		MaxInputBytes   int  `yaml:"max_input_bytes"`
 		MaxOutputTokens int  `yaml:"max_output_tokens"`
 	} `yaml:"generation"`
+	Learning struct {
+		Enabled               bool   `yaml:"enabled"`
+		ExtractionModel       string `yaml:"extraction_model_name"`
+		ConsolidationEnabled  bool   `yaml:"consolidation_enabled"`
+		ConsolidationModel    string `yaml:"consolidation_model_name"`
+		CrossSessionEnabled   bool   `yaml:"cross_session_enabled"`
+		MatchingEnabled       bool   `yaml:"matching_enabled"`
+		MatchingModel         string `yaml:"matching_model_name"`
+		IdleSeconds           int    `yaml:"idle_seconds"`
+		TimeoutSeconds        int    `yaml:"timeout_seconds"`
+		MaxInputBytes         int    `yaml:"max_input_bytes"`
+		MaxOutputTokens       int    `yaml:"max_output_tokens"`
+		MaxDailyModelCalls    int64  `yaml:"max_daily_model_calls"`
+		MaxDailyTokens        int64  `yaml:"max_daily_tokens"`
+		ExternalContextPolicy string `yaml:"external_context_policy"`
+	} `yaml:"learning"`
 	Discovery struct {
-		OperatorCorrectionsEnabled bool   `yaml:"operator_corrections_enabled"`
-		MissingReportsEnabled      bool   `yaml:"missing_reports_enabled"`
-		SuccessfulWorkflowsEnabled bool   `yaml:"successful_workflows_enabled"`
-		NewSkillSourceID           string `yaml:"new_skill_source_id"`
-		RepeatThreshold            int    `yaml:"repeat_threshold"`
-		RepeatWindowDays           int    `yaml:"repeat_window_days"`
-		CooldownHours              int    `yaml:"cooldown_hours"`
-		MaxDailyProposals          int    `yaml:"max_daily_proposals"`
-		MaxPendingProposals        int    `yaml:"max_pending_proposals"`
+		OperatorCorrectionsEnabled    bool   `yaml:"operator_corrections_enabled"`
+		MissingReportsEnabled         bool   `yaml:"missing_reports_enabled"`
+		SuccessfulWorkflowsEnabled    bool   `yaml:"successful_workflows_enabled"`
+		ExperiencePatternsEnabled     bool   `yaml:"experience_patterns_enabled"`
+		ExperienceNewSkillsEnabled    bool   `yaml:"experience_new_skills_enabled"`
+		ExperienceReviewDraftsEnabled bool   `yaml:"experience_review_drafts_enabled"`
+		NewSkillSourceID              string `yaml:"new_skill_source_id"`
+		RepeatThreshold               int    `yaml:"repeat_threshold"`
+		RepeatWindowDays              int    `yaml:"repeat_window_days"`
+		CooldownHours                 int    `yaml:"cooldown_hours"`
+		MaxDailyProposals             int    `yaml:"max_daily_proposals"`
+		MaxPendingProposals           int    `yaml:"max_pending_proposals"`
 	} `yaml:"discovery"`
 	Behavior struct {
 		Enabled         bool   `yaml:"enabled"`
@@ -55,11 +74,12 @@ type ReviewSettings struct {
 		MaxOutputTokens int    `yaml:"max_output_tokens"`
 	} `yaml:"behavior"`
 	AutoPatch struct {
-		MaxChangedLines          int `yaml:"max_changed_lines"`
-		MaxDailyPublications     int `yaml:"max_daily_publications"`
-		ObservationHours         int `yaml:"observation_hours"`
-		MinObservations          int `yaml:"min_observations"`
-		RollbackFailureThreshold int `yaml:"rollback_failure_threshold"`
+		ExperiencePatternsEnabled bool `yaml:"experience_patterns_enabled"`
+		MaxChangedLines           int  `yaml:"max_changed_lines"`
+		MaxDailyPublications      int  `yaml:"max_daily_publications"`
+		ObservationHours          int  `yaml:"observation_hours"`
+		MinObservations           int  `yaml:"min_observations"`
+		RollbackFailureThreshold  int  `yaml:"rollback_failure_threshold"`
 	} `yaml:"auto_patch"`
 	Budget struct {
 		MaxDailyModelCalls int64 `yaml:"max_daily_model_calls"`
@@ -113,6 +133,13 @@ func DecodeReviewConfig(data []byte, models map[string]bool, defaultModel string
 	}
 	if err := yaml.Unmarshal(behaviorYAML, &settings.Behavior); err != nil {
 		return settings, fmt.Errorf("skill_evolution.behavior: %w", err)
+	}
+	learningYAML, err := yaml.Marshal(projected["learning"])
+	if err != nil {
+		return settings, err
+	}
+	if err := yaml.Unmarshal(learningYAML, &settings.Learning); err != nil {
+		return settings, fmt.Errorf("skill_evolution.learning: %w", err)
 	}
 	autoPatchYAML, err := yaml.Marshal(projected["auto_patch"])
 	if err != nil {
@@ -172,10 +199,27 @@ func DecodeReviewConfig(data []byte, models map[string]bool, defaultModel string
 	if settings.Validation.MaxOutputTokens < 128 || settings.Validation.MaxOutputTokens > 8192 {
 		return settings, fmt.Errorf("skill_evolution.validation.max_output_tokens must be 128..8192")
 	}
+	if settings.Learning.Enabled {
+		if err := resolveModel("learning.extraction_model_name", &settings.Learning.ExtractionModel); err != nil {
+			return settings, err
+		}
+		if settings.Learning.ConsolidationEnabled {
+			if err := resolveModel("learning.consolidation_model_name", &settings.Learning.ConsolidationModel); err != nil {
+				return settings, err
+			}
+		}
+		if settings.Learning.MatchingEnabled {
+			if err := resolveModel("learning.matching_model_name", &settings.Learning.MatchingModel); err != nil {
+				return settings, err
+			}
+		}
+	}
 	if settings.Generation.Enabled {
 		if err := resolveModel("generation_model_name", &settings.GenerationModel); err != nil {
 			return settings, err
 		}
+	}
+	if settings.Generation.Enabled || settings.Learning.Enabled {
 		// Unlike model limits, budget values must be explicitly positive.
 		for key, value := range map[string]any{
 			"max_daily_model_calls": settings.Budget.MaxDailyModelCalls,
@@ -188,10 +232,36 @@ func DecodeReviewConfig(data []byte, models map[string]bool, defaultModel string
 			}
 		}
 	}
-	if (settings.Discovery.MissingReportsEnabled || settings.Discovery.SuccessfulWorkflowsEnabled) && !harness.ValidSkillName(settings.Discovery.NewSkillSourceID) {
+	if (settings.Discovery.MissingReportsEnabled || settings.Discovery.SuccessfulWorkflowsEnabled || settings.Discovery.ExperienceNewSkillsEnabled) && !harness.ValidSkillName(settings.Discovery.NewSkillSourceID) {
 		return settings, fmt.Errorf("skill_evolution.discovery.new_skill_source_id: requires a valid source identifier")
 	}
 	return settings, nil
+}
+
+func (s ReviewSettings) LearningOptions(route harness.ModelRoute) *harness.SkillLearningOptions {
+	if !s.Enabled || !s.Learning.Enabled {
+		return nil
+	}
+	return &harness.SkillLearningOptions{
+		Model:        harness.SkillGenerationModelConfig{Route: route, Timeout: time.Duration(s.Learning.TimeoutSeconds) * time.Second, MaxInputBytes: s.Learning.MaxInputBytes, MaxOutputTokens: s.Learning.MaxOutputTokens},
+		Budget:       harness.SkillMaintenanceBudget{MaxDailyModelCalls: s.Budget.MaxDailyModelCalls, MaxDailyTokens: s.Budget.MaxDailyTokens, MaxJobSeconds: s.Budget.MaxJobSeconds, Workers: s.Budget.Workers},
+		CrossSession: s.Learning.CrossSessionEnabled,
+		Idle:         time.Duration(s.Learning.IdleSeconds) * time.Second, MaxDailyModelCalls: s.Learning.MaxDailyModelCalls, MaxDailyTokens: s.Learning.MaxDailyTokens,
+	}
+}
+
+func (s ReviewSettings) LearningConsolidationModel(route harness.ModelRoute) *harness.SkillGenerationModelConfig {
+	if !s.Enabled || !s.Learning.Enabled || !s.Learning.ConsolidationEnabled {
+		return nil
+	}
+	return &harness.SkillGenerationModelConfig{Route: route, Timeout: time.Duration(s.Learning.TimeoutSeconds) * time.Second, MaxInputBytes: s.Learning.MaxInputBytes, MaxOutputTokens: s.Learning.MaxOutputTokens}
+}
+
+func (s ReviewSettings) LearningMatchingModel(route harness.ModelRoute) *harness.SkillGenerationModelConfig {
+	if !s.Enabled || !s.Learning.Enabled || !s.Learning.ConsolidationEnabled || !s.Learning.MatchingEnabled {
+		return nil
+	}
+	return &harness.SkillGenerationModelConfig{Route: route, Timeout: time.Duration(s.Learning.TimeoutSeconds) * time.Second, MaxInputBytes: s.Learning.MaxInputBytes, MaxOutputTokens: s.Learning.MaxOutputTokens}
 }
 
 func (s ReviewSettings) ModelConfig(moderation, evaluation harness.ModelRoute) harness.SkillModelReviewConfig {
@@ -210,14 +280,17 @@ func (s ReviewSettings) GenerationOptions(route harness.ModelRoute, sources []st
 }
 
 func (s ReviewSettings) DiscoveryOptions() *harness.SkillDiscoveryOptions {
-	if !s.Enabled || !s.Generation.Enabled || !(s.Discovery.OperatorCorrectionsEnabled || s.Discovery.MissingReportsEnabled || s.Discovery.SuccessfulWorkflowsEnabled) {
+	if !s.Enabled || !s.Generation.Enabled || !(s.Discovery.OperatorCorrectionsEnabled || s.Discovery.MissingReportsEnabled || s.Discovery.SuccessfulWorkflowsEnabled || s.Discovery.ExperiencePatternsEnabled) {
 		return nil
 	}
 	return &harness.SkillDiscoveryOptions{
 		DisableOperatorCorrections: !s.Discovery.OperatorCorrectionsEnabled,
 		MissingReportsEnabled:      s.Discovery.MissingReportsEnabled, SuccessfulWorkflowsEnabled: s.Discovery.SuccessfulWorkflowsEnabled,
-		NewSkillSourceID: s.Discovery.NewSkillSourceID,
-		RepeatThreshold:  s.Discovery.RepeatThreshold, RepeatWindowDays: s.Discovery.RepeatWindowDays,
+		ExperiencePatternsEnabled:     s.Discovery.ExperiencePatternsEnabled,
+		ExperienceNewSkillsEnabled:    s.Discovery.ExperienceNewSkillsEnabled,
+		ExperienceReviewDraftsEnabled: s.Discovery.ExperienceReviewDraftsEnabled,
+		NewSkillSourceID:              s.Discovery.NewSkillSourceID,
+		RepeatThreshold:               s.Discovery.RepeatThreshold, RepeatWindowDays: s.Discovery.RepeatWindowDays,
 		CooldownHours: s.Discovery.CooldownHours, MaxDailyProposals: s.Discovery.MaxDailyProposals,
 		MaxPendingProposals: s.Discovery.MaxPendingProposals,
 	}
@@ -227,7 +300,7 @@ func (s ReviewSettings) AutoPatchOptions() *harness.SkillAutoPatchOptions {
 	if !s.Enabled || s.Mode != "auto_patch" {
 		return nil
 	}
-	return &harness.SkillAutoPatchOptions{MaxChangedLines: s.AutoPatch.MaxChangedLines, MaxDailyPublications: s.AutoPatch.MaxDailyPublications, ObservationHours: s.AutoPatch.ObservationHours, MinObservations: s.AutoPatch.MinObservations, RollbackFailureThreshold: s.AutoPatch.RollbackFailureThreshold}
+	return &harness.SkillAutoPatchOptions{ExperiencePatternsEnabled: s.AutoPatch.ExperiencePatternsEnabled, MaxChangedLines: s.AutoPatch.MaxChangedLines, MaxDailyPublications: s.AutoPatch.MaxDailyPublications, ObservationHours: s.AutoPatch.ObservationHours, MinObservations: s.AutoPatch.MinObservations, RollbackFailureThreshold: s.AutoPatch.RollbackFailureThreshold}
 }
 
 func (s ReviewSettings) BehaviorModelConfig(route harness.ModelRoute) harness.SkillBehaviorModelConfig {

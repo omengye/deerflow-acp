@@ -19,6 +19,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
 	"github.com/omengye/deerflow-acp/go-harness/internal/launch"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills/evolution"
 	"go.yaml.in/yaml/v3"
 )
@@ -209,6 +210,9 @@ func TestEvolutionTemplatesHaveOnlyNativeReviewDefaults(t *testing.T) {
 			if err := configschema.ValidateEvolutionDraft(projection, nil); err != nil {
 				t.Fatal(err)
 			}
+			if readObject(projection, "auto_patch")["experience_patterns_enabled"] != false || readObject(review, "auto_patch")["experience_patterns_enabled"] != false {
+				t.Fatal("packaged template enabled learning automatic publication")
+			}
 			review["enabled"] = true
 			encoded, err := yaml.Marshal(review)
 			if err != nil {
@@ -257,8 +261,7 @@ func TestEvolutionSaveLaunchUsesReviewRoutesAndBounds(t *testing.T) {
 				t.Error(err)
 			}
 			answer, _ := json.Marshal(map[string]any{"base_version": evidence["base_version"], "candidate_version": evidence["candidate_version"], "passed": true, "reason": "Fixture review"})
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}})
+			_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}})
 		}))
 		defer server.Close()
 		model := modelByName(t, doc, name)

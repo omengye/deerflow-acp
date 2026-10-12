@@ -18,7 +18,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 )
 
-const skillBehaviorVersion = "eino-skill-behavior-v1"
+const skillBehaviorVersion = "eino-skill-behavior-v2"
 
 type skillBehaviorEvaluator struct {
 	config   harness.SkillBehaviorModelConfig
@@ -45,11 +45,11 @@ func NewSkillBehaviorEvaluator(ctx context.Context, cfg harness.SkillBehaviorMod
 	if cfg.Timeout < time.Second || cfg.Timeout > 300*time.Second || cfg.MaxInputBytes < 1024 || cfg.MaxInputBytes > 2<<20 || cfg.MaxOutputTokens < 128 || cfg.MaxOutputTokens > 8192 || cfg.MaxModelCalls < 1 || cfg.MaxModelCalls > 32 || cfg.MaxToolCalls < 1 || cfg.MaxToolCalls > 128 {
 		return nil, fmt.Errorf("%w: invalid behavior model limits", harness.ErrInvalidInput)
 	}
-	chat, err := newModelWithRetryPolicy(ctx, Config{Provider: cfg.Route.Provider, APIKey: cfg.Route.APIKey, BaseURL: cfg.Route.BaseURL, Model: cfg.Route.Model}, cfg.Route.Model, true)
+	chat, err := newModelWithRetryPolicy(ctx, Config{Provider: cfg.Route.Provider, APIKey: cfg.Route.APIKey, BaseURL: cfg.Route.BaseURL, Model: cfg.Route.Model, OutputTokenParameter: cfg.Route.OutputTokenParameter}, cfg.Route.Model, true)
 	if err != nil {
 		return nil, skillReviewError("cannot construct behavior model")
 	}
-	identity, _ := json.Marshal([]any{skillBehaviorVersion, cfg.Route.Provider, cfg.Route.Model, cfg.Route.BaseURL, cfg.Timeout.String(), cfg.MaxInputBytes, cfg.MaxOutputTokens, cfg.MaxModelCalls, cfg.MaxToolCalls})
+	identity, _ := json.Marshal([]any{skillBehaviorVersion, cfg.Route.Provider, cfg.Route.Model, cfg.Route.BaseURL, cfg.Route.OutputTokenParameter, cfg.Timeout.String(), cfg.MaxInputBytes, cfg.MaxOutputTokens, cfg.MaxModelCalls, cfg.MaxToolCalls})
 	return &skillBehaviorEvaluator{config: cfg, chat: chat, identity: skillBehaviorVersion + "/" + skillbehavior.Hash(identity)}, nil
 }
 func (e *skillBehaviorEvaluator) Identity() string { return e.identity }
@@ -106,11 +106,15 @@ func (e *skillBehaviorEvaluator) Evaluate(parent context.Context, in harness.Ski
 	started := time.Now()
 	trace := behaviorTrace{sha256.New()}
 	final := ""
+	triggerRun := false
 	result = harness.SkillBehaviorResult{CaseID: in.CaseID, Variant: in.Variant, Version: in.Version, Repetition: in.Repetition, StopReason: "failed", ErrorCode: "invalid_input", OutputDigest: skillbehavior.Hash(nil), TraceDigest: skillbehavior.Hash(nil)}
 	for _, a := range in.Case.Assertions {
 		result.Checks = append(result.Checks, harness.SkillBehaviorCheck{ID: a.ID, ActualDigest: skillbehavior.Hash(nil)})
 	}
 	defer func() {
+		if triggerRun {
+			return // The metadata-only evaluator owns its distinct trace/output.
+		}
 		result.OutputDigest = skillbehavior.Hash([]byte(final))
 		result.TraceDigest = fmt.Sprintf("%x", trace.Sum(nil))
 		result.ElapsedMillis = time.Since(started).Milliseconds()
@@ -137,6 +141,10 @@ func (e *skillBehaviorEvaluator) Evaluate(parent context.Context, in harness.Ski
 	}
 	ctx, cancel := context.WithTimeout(parent, e.config.Timeout)
 	defer cancel()
+	if skillbehavior.TriggerCase(in.Case) {
+		triggerRun = true
+		return e.evaluateTrigger(ctx, broker, in)
+	}
 	workspace, err := newBehaviorWorkspace(in.Files, in.Case)
 	if err != nil {
 		result.ErrorCode = "workspace_error"

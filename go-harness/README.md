@@ -28,8 +28,13 @@ $env:DEERFLOW_MODEL_BASE_URL = "https://your-provider.example/v1"
 ```
 
 On Linux, build the same command without `.exe`. Supported provider adapters are
-`openai`, `claude`, and `ark` (`--provider`, or `DEERFLOW_MODEL_PROVIDER`). Provider
-keys may also come from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `ARK_API_KEY`.
+`openai` and `claude` (`--provider`, or `DEERFLOW_MODEL_PROVIDER`). Provider
+keys may also come from `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
+
+All model requests use streaming transport, including memory extraction,
+summaries, connection probes and skill maintenance. Synchronous `Generate`
+calls collect a stream rather than requesting non-streaming completions; there
+is no non-streaming fallback. See the [transport audit](../docs/model-streaming-audit-20261010.md).
 Model credentials are accepted through the process environment, never command-line flags.
 
 Configure your editor's ACP command to launch this executable with `--data-dir`
@@ -60,7 +65,96 @@ quota and remote service failures cannot establish skill quality failure.
 Two bounded [business behavior suites](../resources/skill-behavior) cover code
 documentation and newsletter attribution, including regression cases.
 
+Optional multi-turn procedural learning now captures real accepted inputs and
+extracts redacted experiences after an idle, settled task. A second, explicit
+opt-in enables bounded semantic consolidation, preserving conflicts and
+host-counted independent episodes. It defaults to one session; a separate
+workspace gate and each session's sharing consent permit cross-session grouping
+in the same private profile/workspace. Shared histories are host-management-only,
+and source revocation removes transitive derived text. Copied tasks use a durable
+lineage key rather than counting session IDs as successes. A third model-stage opt-in
+matches patterns to the session's authorized visible skill inventory, pinning
+source identity, publication head and overlay. Real reads stay separate from
+semantic relatedness. All three stages default
+off and share the maintenance budget and learning sublimits. They remain in
+**shadow** mode unless generation and the separate default-off
+`skill_evolution.discovery.experience_patterns_enabled` are also enabled.
+That bridge requires independently observed local completion receipts and a
+precise authorized existing target, then creates instruction-only SKILL.md
+changes as **pending-review proposals**. It never fabricates operator feedback.
+Before any generation reservation, a genuine catalog/head change can trigger a
+fresh automatic matching assessment, not a rebase or retry of the old result.
+Current source, sharing, consolidation and host model/access identities must
+still validate. At most two extra assessments per pattern are allowed, with a
+one-minute cooldown and a thirty-day window from the first match; they share the
+existing queue and paid budgets. Cancelled, host-controlled, revoked, corrupt or
+already-generated work is not revived. Old jobs, outputs and charges remain
+historical; only the current input binding can advance to discovery.
+For automatically generated review-only drafts without manually starting another
+episode or requesting generation, separately enable
+`skill_evolution.discovery.experience_review_drafts_enabled` (default false).
+One source-verified observed task can then draft SKILL.md through the same
+dispatcher, quotas, target matching and revocation guards. Immutable
+`review_draft=true` candidates always require human approval; even passing
+behavior tests and auto-patch opt-in cannot publish them automatically. Fully
+qualified multi-episode candidates retain the original automatic patch path.
+Learning proposals stay manual unless the separate default-off
+`skill_evolution.auto_patch.experience_patterns_enabled` is explicitly authorized
+with auto-patch mode, current experience discovery and trusted host behavior suites.
+Only an existing enabled managed skill's bounded SKILL.md patch qualifies, with
+at least one targeted assertion improvement and no regressions or operational
+fixture failures for body changes. A description-only edit instead requires
+a trusted v2 suite with positive/negative metadata-only Skill selections, an
+actual trigger assertion improvement and passing execution coverage. Combined
+description/body changes need both kinds of improvement. Other metadata changes,
+first import adoption, builtin overlays,
+support files and new capabilities remain manual. Publication-time source digests
+join the existing atomic observation/rollback record; withdrawal after adoption
+does not invent quality votes or delete the skill.
+Source withdrawal cleans unpublished derived text and exclusively learning-owned
+staged versions while preserving accounting and adopted skills. New-capability
+creation is a further default-off opt-in,
+`skill_evolution.discovery.experience_new_skills_enabled`, requiring the complete
+authorized inventory, a readable matcher suggestion and an explicitly selected
+non-builtin `new_skill_source_id`. The host checks source visibility and blocks
+existing, disabled, tombstoned or pending names; it never invents a hash fallback
+or retries the same pattern under another name. New candidates contain only
+SKILL.md and still require human approval. The desktop skill center now includes
+cached learning history, session contribution/sharing controls, explicit task
+boundaries, job cancellation, individual pattern ignore/restore and explicit
+existing-skill target adjudication in source. Original control/cancel/episode
+mutations are not blindly replayed. The two new host-only review mutations have
+original request-key receipts and exact pattern/review/head preconditions;
+replay remains bound to the original service store and returns a historical
+outcome, not current authority. Adjudication is `host_adjudicated / unassessed`,
+does not refund consumption or retry creation, and its candidates always need
+human publication. Explicit creation retry now has trusted SDK/MANAGE prepare
+and keyed enqueue, fixed original name/source/revision, terminal-job/proposal CAS,
+one successor per job and at most three host retries per pattern. It preserves the
+automatic lifetime reservation, reuses original episode evidence without votes or
+refunds, consumes fresh shared capacity and always needs human publication.
+Trusted SDK `SkillLearningSource` and MANAGE `skill.learning.source.get` inspect
+one experience or one current pattern member's cited, redacted capture view.
+Source reads revalidate consent and original task/receipt/read/result identities
+without model calls, votes or publication grants. They return at most 32 references
+in 512 KiB, never external/MCP result bodies, and distinguish `checked_at_read`
+from unassessed quality. Private inspection remains available with paid learning
+disabled; workspace access still requires independent sharing authority. Cached
+desktop source details clear on selection, service, scope and source changes.
+Isolated state/transport tests pass, but desktop build/visual and real-model
+semantic/trigger quality acceptance remain unfinished. Trigger fixtures prove
+only the fixed host catalog, not all runtime tasks or inventory. See the
+[learning implementation and controls](../docs/skill-learning-status-20261008.md)
+for configuration, SDK/ACP management and remaining phases.
+
 ## Current execution path
+
+Native file writes now require the version returned by `read_file` before
+overwriting existing content. A bounded no-progress guard stops repeated identical
+observations as incomplete, and the lead agent has session-local `task_note`,
+`history_search` and `history_read` tools. These add no Goal mode or auxiliary
+model requests. See [contracts and limits](../docs/harness-reliability-20261012.md),
+including the compatibility boundary for older paused executions.
 
 `ACP → session coordinator → durable accepted input → Eino TurnLoop/DeepAgent →
 permission-protected tools → session/checkpoint stores → ACP updates`.
@@ -111,9 +205,13 @@ ACP client MCP servers are scoped to the attached session. Use repeatable
 Outbound MCP HTTP/SSE need `--mcp-allow-http` / `--mcp-allow-sse`. These flags do
 not create an HTTP server. See [MCP lifecycle and policy](internal/mcp/README.md).
 
-The SDK and both executables default to 100 model calls, 200 tool calls,
-unlimited aggregate tokens, 4,096 output tokens per request, and 30 minutes per run
-shared with child agents. The corresponding flags are `--max-model-calls`,
+The SDK and both executables default to unlimited model/tool calls, unlimited
+aggregate tokens, 4,096 output tokens per request, and no total execution time
+limit. Native child roles and foreground queue waits also default to unlimited
+time; healthy multi-day tasks are not stopped by a default run deadline.
+Tool calls, connection setup, worker leases and cleanup retain their separate
+timeouts and fencing. Model calls remain cancellable; per-request transport
+timeouts depend on the provider. The corresponding flags are `--max-model-calls`,
 `--max-tool-calls`, `--max-tokens`, `--max-output-tokens`, and `--run-timeout`;
 zero disables an individual limit. Token usage is estimated until reported by
 the provider, so these limits cannot guarantee exact billing. Provider-internal
@@ -124,6 +222,31 @@ context window: replayed history is charged again on every model call. Opt in
 with `--max-tokens` or host YAML `local_acp.max_run_tokens` (default `0`, disabled);
 an explicit CLI flag takes precedence. Existing durable tasks keep their original
 budget policy; start a new request to use a changed policy.
+
+`local_acp.max_output_tokens` is the single host per-response allowance (default
+4096); `--max-output-tokens` overrides it. It is distinct from the aggregate
+`max_run_tokens` spending limit. Reasoning can consume this allowance too.
+Each model route accepts `output_token_parameter: auto|max_tokens|max_completion_tokens`.
+`auto` uses `max_tokens` for Claude and the verified `copilot.tencent.com`
+OpenAI-compatible endpoint, and `max_completion_tokens` for other OpenAI-compatible
+chat routes. An explicit route setting overrides this compatibility rule;
+`--output-token-parameter` configures the default route. Only one wire field
+is sent after the host, role, caller and context-window caps have been applied.
+Thinking settings do not switch that field. `auto` selects a wire parameter,
+not a guessed model output size. OpenAI Responses is not implemented here.
+
+A provider `length` / Claude `max_tokens` finish now triggers native automatic
+continuation rather than immediately ending the task. Already streamed text is
+preserved; the next request rechecks compaction and makes a fresh shared-budget
+reservation. Entire truncated tool-call groups are discarded, even if one call
+has valid JSON; only newly generated complete calls can execute. Root agents,
+configured roles and prepared background agents share this behavior. Continued
+final answers are consolidated for history, role results and post-run consumers
+without emitting duplicate UI text. Recovery permits four additional requests
+per interrupted response and stops earlier on repeated empty/repeated output,
+cancellation, explicit spending limits or an error. Exhaustion reports an
+actionable incomplete-output notice, never successful completion. A normal
+`stop`, refusal or transport failure is not guessed into a continuation.
 
 Both executables and bundled YAML enable automatic context compaction by default.
 Each agent uses about 75% of its selected model's `context_window`, after reserving
@@ -139,8 +262,9 @@ bounded to 8 KiB per result and 16 KiB per run, with `read_tool_output` for deta
 SDK embedders enable compaction with `Config.Compaction.Enabled`.
 
 Both executables allow two concurrent foreground runs across sessions by default.
-`--max-active-runs` changes this limit; `--queue-timeout` defaults to 10 minutes
-and `0` disables the queue deadline. Waiting for a slot does not consume the
+`--max-active-runs` changes this limit; `--queue-timeout` defaults to `0`, with
+no queue deadline. An explicit positive value enables one, including multi-day
+waits. Waiting for a slot does not consume the
 run's execution timeout or persist a new input. A queue timeout returns an ACP
 server-busy error, and cancellation removes the waiting run. Background child
 attempts have a separate `--background-workers` limit.
@@ -160,8 +284,8 @@ execution contracts; cancel the old execution and start a new turn.
 Desktop settings offer an explicit two-request Agent capability probe and cached
 session diagnostics, including slot waits, pause reasons, root budget counters
 and bounded model/tool timing metadata. Diagnostics omit conversation content
-and credentials. See [offline state backup and restore](../docs/go-runtime-backup.md)
-before upgrading a data directory.
+and credentials. Runtime backup/restore is no longer part of the MVP. Session
+persistence, execution recovery and skill version rollback remain supported.
 
 Use repeatable `--allow-model` to expose additional model IDs in session config;
 they use the same configured provider and credentials. Model, subagent and

@@ -83,7 +83,7 @@ func New(config harness.SubagentsConfig, models map[string]bool) (*Registry, err
 }
 
 func (r *Registry) spec(name string, c harness.AgentConfig) Spec {
-	turns, timeout := 0, 900.0
+	turns, timeout := 0, 0.0
 	if r.config.MaxTurns != nil {
 		turns = *r.config.MaxTurns
 	}
@@ -134,7 +134,7 @@ func (r *Registry) Resolve(name string, parent Parent) (Spec, error) {
 	if parent.MaxTurns > 0 && (spec.MaxTurns == 0 || parent.MaxTurns < spec.MaxTurns) {
 		spec.MaxTurns = parent.MaxTurns
 	}
-	if parent.TimeoutSeconds > 0 && parent.TimeoutSeconds < spec.TimeoutSeconds {
+	if parent.TimeoutSeconds > 0 && (spec.TimeoutSeconds == 0 || parent.TimeoutSeconds < spec.TimeoutSeconds) {
 		spec.TimeoutSeconds = parent.TimeoutSeconds
 	}
 	// Canonical selections give equivalent policies the same version.
@@ -158,7 +158,7 @@ func (s Spec) Validate() error {
 	if err != nil {
 		return err
 	}
-	if version == "" || version != fmt.Sprintf("%x", sha256.Sum256(data)) || s.Name == "" || s.Description == "" || s.Instruction == "" || s.MaxTurns < 0 || s.TimeoutSeconds <= 0 {
+	if version == "" || version != fmt.Sprintf("%x", sha256.Sum256(data)) || s.Name == "" || s.Description == "" || s.Instruction == "" || s.MaxTurns < 0 || s.TimeoutSeconds < 0 || s.TimeoutSeconds > harness.MaxExecutionTimeoutSeconds {
 		return fmt.Errorf("%w: invalid immutable role recipe", harness.ErrInvalidInput)
 	}
 	return s.Tools.Validate()

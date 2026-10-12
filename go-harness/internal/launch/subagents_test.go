@@ -112,7 +112,7 @@ func TestApplyConfigSubagentErrorsAreActionable(t *testing.T) {
 	for _, tc := range []struct{ name, extra, field string }{
 		{"typo", "subagents:\n  max_dept: 2\n", "max_dept"},
 		{"unknown-model", "subagents:\n  agents:\n    general-purpose:\n      model: missing\n", ".model"},
-		{"bad-timeout", "subagents:\n  timeout_seconds: 0\n", "timeout_seconds"},
+		{"bad-timeout", "subagents:\n  timeout_seconds: -1\n", "timeout_seconds"},
 		{"unsupported-thinking", "subagents:\n  agents:\n    general-purpose:\n      thinking_enabled: false\n", "thinking_enabled"},
 		{"bad-thinking-budget", "subagents:\n  agents:\n    general-purpose:\n      model_settings:\n        thinking_budget_tokens: 10\n", "thinking_budget_tokens"},
 	} {
@@ -142,19 +142,19 @@ func TestAppliedSubagentSettingsIncludeToolPolicyRestriction(t *testing.T) {
 	}
 }
 
-func TestApplyConfigSubagentArkOptions(t *testing.T) {
-	path := writeRoleConfig(t, strings.Replace(roleModels, "provider: openai", "provider: ark", 1)+"subagents:\n  agents:\n    general-purpose:\n      model: main\n      thinking_enabled: true\n      reasoning_effort: high\n")
+func TestApplyConfigSubagentClaudeOptions(t *testing.T) {
+	path := writeRoleConfig(t, strings.Replace(roleModels, "provider: openai", "provider: claude", 1)+"subagents:\n  agents:\n    general-purpose:\n      model: main\n      thinking_enabled: true\n")
 	var cfg deerflow.Config
 	connections := 0
 	if _, err := ApplyConfig(path, &cfg, &connections, nil); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Provider != "ark" || cfg.Subagents.Agents["general-purpose"].ReasoningEffort != "high" {
-		t.Fatal("Ark role options were not loaded")
+	if cfg.Provider != "claude" || cfg.Subagents.Agents["general-purpose"].ThinkingEnabled == nil || !*cfg.Subagents.Agents["general-purpose"].ThinkingEnabled {
+		t.Fatal("Claude role options were not loaded")
 	}
 	// Inherited roles can be selected under either model. Validate every route,
 	// so choosing the OpenAI session model cannot defer failure until execution.
-	path = writeRoleConfig(t, strings.Replace(roleModels, "provider: openai", "provider: ark", 1)+"subagents:\n  agents:\n    general-purpose:\n      thinking_enabled: true\n")
+	path = writeRoleConfig(t, strings.Replace(roleModels, "provider: openai", "provider: claude", 1)+"subagents:\n  agents:\n    general-purpose:\n      thinking_enabled: true\n")
 	if _, err := ApplyConfig(path, &cfg, &connections, nil); err == nil || !strings.Contains(err.Error(), "thinking_enabled") {
 		t.Fatalf("inherited option validation: %v", err)
 	}

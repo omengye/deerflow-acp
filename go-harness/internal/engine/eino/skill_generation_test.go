@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 )
 
@@ -24,7 +25,7 @@ func TestSkillGenerationAndBothReviewsShareMaintenanceBudget(t *testing.T) {
 		t.Run(fmt.Sprint(allowed), func(t *testing.T) {
 			s, _, c, ctx := maintenanceReviewFixture(t, allowed)
 			var calls atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 				index := calls.Add(1)
 				var req struct {
 					Messages            []struct{ Role, Content string }
@@ -55,8 +56,7 @@ func TestSkillGenerationAndBothReviewsShareMaintenanceBudget(t *testing.T) {
 					}
 					answer, _ = json.Marshal(map[string]any{"base_version": payload["base_version"], "candidate_version": payload["candidate_version"], "passed": true, "reason": "Scoped content change"})
 				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125}})
+				_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125}})
 			}))
 			defer server.Close()
 			route := harness.ModelRoute{Model: "fixture", BaseURL: server.URL, APIKey: "private-key"}

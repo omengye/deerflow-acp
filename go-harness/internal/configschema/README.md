@@ -43,12 +43,12 @@ need their separate capability contract.
 
 Model fields use `/models/*/...` descriptors; the desktop matches these to
 array indices. `clear_api_key` is an edit operation with no native YAML path.
-Provider choices are openai/ark/claude and the effective `context_window` is
+Provider choices are openai/claude and the effective `context_window` is
 explicit. Original-name and credential-presence metadata is validated but not
 written as model parameters. Literal credentials stay hidden; backend changes
 clear old credentials and provider-specific extensions. Unrelated saves retain
 original unknown data on the same backend. Model probes use the selected native
-provider, including Ark.
+provider.
 
 The session model override (`runtime.model_name`) defaults to inheritance from
 `default_model`. Its native control offers inheritance and configured model
@@ -81,7 +81,10 @@ remain available for future explicit import.
 `ValidateDraft` rejects unknown, missing, and malformed scoped fields. Native
 launch validates present known fields through the same definitions; retained
 unknown YAML is migration input. Native YAML null remains unset. Integer fields
-reject fractions, durations use 0.001–86400 seconds, and prompt length counts
+reject fractions. Run/queue/native-role execution limits use 0 for unlimited
+(the default) or 0.001–315360000 seconds; tool/connection/maintenance timeouts
+retain their separate bounds, while model request timeouts depend on the
+provider. Prompt length counts
 Unicode characters. Root tool names share native trimming/deduplication; role
 tool lists use the existing stricter exact-name/duplicate checks. Cross-field
 memory validation also runs after explicit launch

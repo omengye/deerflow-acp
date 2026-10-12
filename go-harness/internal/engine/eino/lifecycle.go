@@ -12,6 +12,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstream"
 )
 
 // runIO separates checkpoint persistence from cancellable external work. Native
@@ -20,6 +21,7 @@ import (
 type runIO struct {
 	mu        sync.Mutex
 	closed    bool
+	parent    context.Context
 	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
@@ -30,7 +32,7 @@ type runIO struct {
 
 func newRunIO(ctx context.Context) *runIO {
 	ioCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	return &runIO{ctx: ioCtx, cancel: cancel}
+	return &runIO{ctx: ioCtx, parent: ctx, cancel: cancel}
 }
 
 func (r *runIO) begin(ctx context.Context) (context.Context, func(), error) {
@@ -38,6 +40,11 @@ func (r *runIO) begin(ctx context.Context) (context.Context, func(), error) {
 	defer r.mu.Unlock()
 	if r.closed {
 		return nil, nil, context.Canceled
+	}
+	// The native cancel monitor may not have run yet. Do not admit a fresh
+	// continuation (or tool) after the owning caller has already cancelled.
+	if r.parent != nil && r.parent.Err() != nil {
+		return nil, nil, r.parent.Err()
 	}
 	r.wg.Add(1)
 	workCtx, cancel := context.WithCancel(ctx)
@@ -170,22 +177,23 @@ type modelLifecycle struct {
 }
 
 func (m *modelLifecycle) WrapModel(_ context.Context, inner model.BaseModel[*schema.Message], _ *adk.ModelContext) (model.BaseModel[*schema.Message], error) {
-	return &trackedModel{inner: inner, io: m.io, budget: m.budget, sink: m.sink, media: m.media, settings: m.settings, tuning: m.tuning, role: m.role, contextWindow: m.contextWindow}, nil
+	return &trackedModel{inner: inner, nativeEndpoint: true, io: m.io, budget: m.budget, sink: m.sink, media: m.media, settings: m.settings, tuning: m.tuning, role: m.role, contextWindow: m.contextWindow}, nil
 }
 
 type trackedModel struct {
-	contextWindow int
-	inner         model.BaseModel[*schema.Message]
-	io            *runIO
-	budget        *runBudget
-	sink          *eventSink
-	media         *mediaProjection
-	settings      harness.AgentModelSettings
-	tuning        *roleModelTuning
-	role          bool
+	contextWindow  int
+	inner          model.BaseModel[*schema.Message]
+	nativeEndpoint bool
+	io             *runIO
+	budget         *runBudget
+	sink           *eventSink
+	media          *mediaProjection
+	settings       harness.AgentModelSettings
+	tuning         *roleModelTuning
+	role           bool
 }
 
-func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (result *schema.Message, resultErr error) {
 	input = m.budget.inputWithBudgetAdvice(ctx, input)
 	opts = roleModelOptions(m.settings, opts)
 	opts = m.tuning.beforeReservation(opts)
@@ -211,7 +219,7 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 		return nil, err
 	}
 	complete := false
-	defer func() { m.settle(ctx, reservation, complete && ctx.Err() == nil) }()
+	defer func() { resultErr = errors.Join(resultErr, m.settle(ctx, reservation, complete && ctx.Err() == nil)) }()
 	opts, err = m.providerOptions(reservation, opts)
 	if err != nil {
 		complete = true // No provider I/O: settle the admission with zero tokens.
@@ -219,9 +227,23 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 	}
 	endModel := beginRoleActivity(ctx, "model")
 	reservation.startedAt = time.Now()
-	msg, err := m.inner.Generate(ctx, input, opts...)
+	observe := func(chunk *schema.Message) error {
+		if chunk != nil && reservation.firstTokenAt.IsZero() && (chunk.Content != "" || len(chunk.ToolCalls) > 0) {
+			reservation.firstTokenAt = time.Now()
+		}
+		return reservation.observe(chunk)
+	}
+	var msg *schema.Message
+	if m.nativeEndpoint {
+		// Eino supplies a Generate-only middleware endpoint for synchronous
+		// runners. Preserve that chain; its terminal model still streams HTTP.
+		msg, err = m.inner.Generate(ctx, input, opts...)
+		err = errors.Join(err, observe(msg))
+	} else {
+		// Optional calls retain their own failure policy and shared budget.
+		msg, err = modelstream.GenerateObserved(ctx, m.inner, input, observe, opts...)
+	}
 	endModel()
-	observeErr := reservation.observe(msg)
 	providerErr := m.modelError(err)
 	err = nil
 	if m.media != nil {
@@ -231,10 +253,7 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 	}
 	complete = err == nil && providerErr == nil
 	if err != nil || providerErr != nil {
-		return nil, errors.Join(providerErr, err, observeErr)
-	}
-	if observeErr != nil {
-		return msg, observeErr
+		return nil, errors.Join(providerErr, err)
 	}
 	return msg, nil
 }
@@ -297,7 +316,23 @@ func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts
 		}
 		return msg, validateProviderOutput(msg, "")
 	}
-	return relayMappedStream(source, func() { endModel(); m.settle(ctx, reservation, complete && ctx.Err() == nil); finish() }, project, func(err error) { complete = false; m.io.recordError(err) }, m.modelError, reservation.observe), nil
+	settled := make(chan struct{})
+	var settlementErr error
+	relayed := relayMappedStream(source, func() {
+		defer close(settled)
+		endModel()
+		settlementErr = m.settle(ctx, reservation, complete && ctx.Err() == nil)
+		finish()
+	}, project, func(err error) { complete = false; m.io.recordError(err) }, m.modelError, reservation.observe)
+	// EOF is the native continuation boundary. Release the previous token hold
+	// before admitting another request, not in a racing cleanup goroutine.
+	return schema.StreamReaderWithConvert(relayed, func(msg *schema.Message) (*schema.Message, error) { return msg, nil }, schema.WithOnEOF(func() (any, error) {
+		<-settled
+		if settlementErr != nil {
+			return nil, settlementErr
+		}
+		return nil, io.EOF
+	})), nil
 }
 
 // Nested consumers such as skill review intentionally sanitize provider errors.
@@ -324,14 +359,14 @@ func (m *trackedModel) providerOptions(reservation *modelReservation, opts []mod
 	return result, err
 }
 
-func (m *trackedModel) settle(ctx context.Context, r *modelReservation, complete bool) {
+func (m *trackedModel) settle(ctx context.Context, r *modelReservation, complete bool) error {
 	finishedAt := time.Now()
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	u, err := r.settleContext(cleanup, complete)
 	if err != nil {
 		m.io.recordError(err)
-		return
+		return err
 	}
 	if err = m.sink.emit(cleanup, harness.RunEvent{Kind: "usage", Usage: &u}); err != nil {
 		m.io.recordError(err)
@@ -349,8 +384,10 @@ func (m *trackedModel) settle(ctx context.Context, r *modelReservation, complete
 		if complete {
 			status = "completed"
 		}
-		if err := m.sink.emit(cleanup, harness.RunEvent{Kind: "model_timing", Status: status, Timing: timing}); err != nil {
-			m.io.recordError(err)
+		if timingErr := m.sink.emit(cleanup, harness.RunEvent{Kind: "model_timing", Status: status, Timing: timing}); timingErr != nil {
+			m.io.recordError(timingErr)
+			err = errors.Join(err, timingErr)
 		}
 	}
+	return err
 }

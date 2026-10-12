@@ -12,6 +12,6 @@ type ACPAgentConfig struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Description string            `json:"description,omitempty"`
 	Timeout     time.Duration     `json:"-"`
-	// TimeoutSeconds is used by JSON configuration files. Zero defaults to 600.
+	// TimeoutSeconds is used by JSON configuration files. Zero adds no task deadline.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 }

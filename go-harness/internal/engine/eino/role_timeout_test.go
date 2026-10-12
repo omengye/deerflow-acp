@@ -13,6 +13,61 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
+func TestUnlimitedRunAndRoleHaveNoDeadlineAndRemainCancellable(t *testing.T) {
+	for _, scenario := range []string{"default", "explicit-zero", "cancel-child"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			// Bound the test externally without hiding an injected task deadline.
+			watchdog := time.AfterFunc(10*time.Second, cancel)
+			defer watchdog.Stop()
+			var childSeen, childJoined atomic.Bool
+			fake := &scriptedModel{stream: func(callCtx context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+				if deadline, ok := callCtx.Deadline(); ok {
+					t.Errorf("model call %d unexpectedly bounded by %v", call, deadline)
+				}
+				if call == 0 {
+					return delegateReaderMessage(), nil
+				}
+				if call == 1 {
+					childSeen.Store(true)
+					if scenario == "cancel-child" {
+						cancel()
+						<-callCtx.Done()
+						childJoined.Store(true)
+						return nil, callCtx.Err()
+					}
+					childJoined.Store(true)
+					return textStream("child completed"), nil
+				}
+				if !childJoined.Load() {
+					t.Error("parent continued before child joined")
+				}
+				return textStream("parent completed"), nil
+			}}
+			role := harness.AgentConfig{Description: "reader", SystemPrompt: "read"}
+			if scenario == "explicit-zero" {
+				role.TimeoutSeconds = rolePointer(0.0)
+			}
+			e, err := New(ctx, Config{ChatModel: fake, Budget: harness.DefaultBudgetLimits(), Subagents: &harness.SubagentsConfig{CustomAgents: map[string]harness.AgentConfig{"reader": role}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := e.Run(ctx, request(scenario), nil, allowTool)
+			if !childSeen.Load() || !childJoined.Load() {
+				t.Fatalf("child did not execute and join: %+v %v", result, err)
+			}
+			if scenario == "cancel-child" {
+				if result.StopReason != "cancelled" {
+					t.Fatalf("unlimited child ignored cancellation: %+v %v", result, err)
+				}
+			} else if err != nil || result.StopReason != "end_turn" {
+				t.Fatalf("unlimited run did not complete: %+v %v", result, err)
+			}
+		})
+	}
+}
+
 func TestConfiguredRoleTimeoutAndCancellationBoundaries(t *testing.T) {
 	for _, scenario := range []string{"model-timeout", "stream-timeout", "safe-tool-timeout", "unknown-tool-timeout", "user-cancel", "storage-failure"} {
 		t.Run(scenario, func(t *testing.T) {

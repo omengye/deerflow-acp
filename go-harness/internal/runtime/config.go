@@ -11,9 +11,10 @@ import (
 // ConfigSettings must be installed before the service is shared with clients.
 // Model identifiers use the host's configured provider and credentials.
 type ConfigSettings struct {
-	Models           []harness.ConfigValue
-	EnableSubagents  bool
-	DefaultSubagents bool
+	Models                []harness.ConfigValue
+	ModelReasoningEfforts map[string][]string
+	EnableSubagents       bool
+	DefaultSubagents      bool
 }
 
 func (s *Service) modelOptions() []harness.ConfigValue {
@@ -38,7 +39,26 @@ func (s *Service) modelOptions() []harness.ConfigValue {
 func (s *Service) ConfigOptions(x harness.Session) []harness.ConfigOption {
 	options := make([]harness.ConfigOption, 0, 3)
 	if models := s.modelOptions(); len(models) > 0 {
-		options = append(options, harness.ConfigOption{ID: "model", Name: "Model", Category: "model", Type: "select", CurrentValue: x.Model, Options: models})
+		option := harness.ConfigOption{ID: "model", Name: "Model", Category: "model", Type: "select", CurrentValue: x.Model, Options: models}
+		// Optional discovery metadata avoids creating one probe session per model.
+		// The live thought_level option remains authoritative for setting values.
+		capabilities := make(map[string][]string, len(models))
+		for _, model := range models {
+			capabilities[model.Value] = append([]string{}, s.Settings.ModelReasoningEfforts[model.Value]...)
+		}
+		option.Meta = map[string]any{"deerflow": map[string]any{"reasoningEfforts": capabilities}}
+		options = append(options, option)
+	}
+	if efforts := s.Settings.ModelReasoningEfforts[x.Model]; len(efforts) > 0 {
+		choices := []harness.ConfigValue{{Value: "default", Name: "Default", Description: "Use the model provider's default reasoning settings."}}
+		for _, effort := range efforts {
+			choices = append(choices, harness.ConfigValue{Value: effort, Name: effort})
+		}
+		current := x.ReasoningEffort
+		if current == "" {
+			current = "default"
+		}
+		options = append(options, harness.ConfigOption{ID: "reasoning_effort", Name: "Reasoning effort", Category: "thought_level", Type: "select", CurrentValue: current, Options: choices})
 	}
 	approval := x.ApprovalMode
 	if approval == "" {
@@ -91,6 +111,14 @@ func (s *Service) SetConfigOption(ctx context.Context, owner, id, key, value str
 	switch key {
 	case "model":
 		x.Model = value
+		if !harness.ReasoningEffortAllowed(s.Settings.ModelReasoningEfforts[value], x.ReasoningEffort) {
+			x.ReasoningEffort = ""
+		}
+	case "reasoning_effort":
+		x.ReasoningEffort = value
+		if value == "default" {
+			x.ReasoningEffort = ""
+		}
 	case "approval":
 		x.ApprovalMode = value
 	case "subagent":
@@ -123,7 +151,7 @@ func (s *Service) clearDecisions(owner, id string) {
 func configuredPermission(x harness.Session, p harness.PermissionRequest) (harness.PermissionDecision, bool) {
 	if x.Mode == "plan" || x.ApprovalMode == harness.ApprovalReadOnly {
 		switch p.ToolName {
-		case "read_file", "read_tool_output", "list_directory", "search_files", "skill", "read_skill_file", "view_image", "search_memory", "task_status", "task_wait":
+		case "read_file", "read_tool_output", "read_attachment", "list_attachments", "list_directory", "search_files", "skill", "read_skill_file", "view_image", "search_memory", "task_status", "task_wait":
 			return harness.AllowOnce, true
 		default:
 			return harness.RejectOnce, true
@@ -165,7 +193,7 @@ func (s *Store) SaveConfig(ctx context.Context, x harness.Session) error {
 	if n == 0 {
 		return harness.ErrNotFound
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO harness_session_configs(session_id,approval_mode,subagents,version) VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET approval_mode=excluded.approval_mode,subagents=excluded.subagents,version=excluded.version`, x.ID, x.ApprovalMode, x.Subagents, x.ConfigVersion)
+	_, err = tx.ExecContext(ctx, `INSERT INTO harness_session_configs(session_id,approval_mode,subagents,version,reasoning_effort) VALUES(?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET approval_mode=excluded.approval_mode,subagents=excluded.subagents,version=excluded.version,reasoning_effort=excluded.reasoning_effort`, x.ID, x.ApprovalMode, x.Subagents, x.ConfigVersion, x.ReasoningEffort)
 	if err != nil {
 		return err
 	}

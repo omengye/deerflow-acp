@@ -73,7 +73,7 @@ func (m *guardedCompaction) BeforeModelRewriteState(ctx context.Context, state *
 }
 
 func finalizeCompaction(original []*schema.Message, summary *schema.Message, keep int) ([]*schema.Message, error) {
-	if summary == nil || summary.Role != schema.Assistant || len(summary.ToolCalls) != 0 || len(summary.AssistantGenMultiContent) != 0 || !utf8.ValidString(summary.Content) || strings.TrimSpace(summary.Content) == "" || len(summary.Content) > maxSummaryBytes {
+	if summary == nil || outputExhausted(summary) || summary.Role != schema.Assistant || len(summary.ToolCalls) != 0 || len(summary.AssistantGenMultiContent) != 0 || !utf8.ValidString(summary.Content) || strings.TrimSpace(summary.Content) == "" || len(summary.Content) > maxSummaryBytes {
 		return nil, errors.New("context compaction returned an invalid or oversized summary")
 	}
 	if len(original) == 0 || keep < 1 {
@@ -95,7 +95,7 @@ func finalizeCompaction(original []*schema.Message, summary *schema.Message, kee
 	// could never compact. Never retain a tool result without its call.
 	activeUser := -1
 	for i := len(original) - 1; i >= systemEnd; i-- {
-		if original[i] != nil && original[i].Role == schema.User {
+		if original[i] != nil && original[i].Role == schema.User && !isOutputContinuation(original[i]) {
 			activeUser = i
 			break
 		}

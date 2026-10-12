@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/learning"
 )
 
 // purgeSession removes a detached foreground session and its private durable
@@ -51,6 +52,9 @@ func (s *Store) purgeSession(ctx context.Context, id string, automatic bool) (bo
 	var paths []string
 	targets := append(children, id)
 	for _, target := range targets {
+		if err = learning.ForgetSessionTx(ctx, tx, target); err != nil {
+			return false, nil, err
+		}
 		if !tables["harness_assets"] {
 			continue
 		}
@@ -79,6 +83,7 @@ func (s *Store) purgeSession(ctx context.Context, id string, automatic bool) (bo
 	// Delete leaf rows before their parents. Optional subsystems create tables
 	// only when configured; every query here has a fixed, audited table name.
 	steps := []struct{ table, query string }{
+		{"harness_task_notes", `DELETE FROM harness_task_notes WHERE session_id=?`},
 		{"memory_facts_fts", `DELETE FROM memory_facts_fts WHERE scope_key IN (SELECT key FROM memory_scopes WHERE kind='session' AND subject=?)`},
 		{"memory_fts_state", `DELETE FROM memory_fts_state WHERE scope_key IN (SELECT key FROM memory_scopes WHERE kind='session' AND subject=?)`},
 		{"memory_fact_revisions", `DELETE FROM memory_fact_revisions WHERE fact_id IN (SELECT f.id FROM memory_facts f JOIN memory_scopes sc ON sc.key=f.scope_key WHERE sc.kind='session' AND sc.subject=?)`},

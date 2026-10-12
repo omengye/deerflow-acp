@@ -25,7 +25,7 @@ func (b *claimBroker) Settle(ctx context.Context, r Receipt, u Usage) error {
 // A crash, timeout, cancellation or invalid usage cannot refund that charge.
 func (s *Store) reserve(ctx context.Context, c Claim, r ModelCall) (Receipt, error) {
 	switch r.Stage {
-	case "generation", "security", "quality", "behavior":
+	case "generation", "security", "quality", "behavior", "experience_extract", "experience_consolidate", "skill_match":
 	default:
 		return Receipt{}, ErrInvalid
 	}
@@ -45,8 +45,16 @@ func (s *Store) reserve(ctx context.Context, c Claim, r ModelCall) (Receipt, err
 	if err != nil {
 		return Receipt{}, err
 	}
+	if !stageAllowed(j.Request.Kind, r.Stage) {
+		return Receipt{}, ErrInvalid
+	}
 	if s.admit != nil {
 		if err = s.admit(ctx, tx, j); err != nil {
+			return Receipt{}, err
+		}
+	}
+	if s.callAdmission != nil {
+		if err = s.callAdmission(ctx, tx, j, r, now); err != nil {
 			return Receipt{}, err
 		}
 	}
@@ -84,6 +92,19 @@ func (s *Store) reserve(ctx context.Context, c Claim, r ModelCall) (Receipt, err
 		return Receipt{}, err
 	}
 	return receipt, tx.Commit()
+}
+
+func stageAllowed(kind JobKind, stage string) bool {
+	switch kind {
+	case SkillGeneration:
+		return stage == "generation" || stage == "security" || stage == "quality" || stage == "behavior"
+	case SkillBehavior:
+		return stage == "security" || stage == "quality" || stage == "behavior"
+	case ExperienceExtract, ExperienceConsolidate, SkillMatch:
+		return stage == string(kind)
+	default:
+		return false
+	}
 }
 
 const receiptColumns = `sequence,id,job_id,attempt,day,stage,model_identity,input_digest,reserved_tokens,charged_tokens,input_tokens,output_tokens,state,estimated`

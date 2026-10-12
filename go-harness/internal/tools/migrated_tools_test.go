@@ -47,8 +47,8 @@ func TestMigratedWorkspaceOperationsAndBoundaries(t *testing.T) {
 		return out
 	}
 	run("write_file", map[string]any{"path": "nested/notes.txt", "content": "你好\nfirst\nsecond\n", "append": false})
-	run("write_file", map[string]any{"path": filepath.Join(cwd, "nested/notes.txt"), "content": "third\n", "append": true})
-	run("str_replace", map[string]any{"path": "/mnt/acp-workspace/nested/notes.txt", "old_str": "first", "new_str": "FIRST"})
+	run("write_file", map[string]any{"path": filepath.Join(cwd, "nested/notes.txt"), "content": "third\n", "append": true, "expected_version": fileVersion("你好\nfirst\nsecond\n")})
+	run("str_replace", map[string]any{"path": "/mnt/acp-workspace/nested/notes.txt", "old_str": "first", "new_str": "FIRST", "expected_version": fileVersion("你好\nfirst\nsecond\nthird\n")})
 	var first map[string]any
 	json.Unmarshal([]byte(run("read_file", map[string]any{"path": "nested/notes.txt", "max_bytes": 4})), &first)
 	if first["content"] != "你" || first["next_offset"] != float64(3) {

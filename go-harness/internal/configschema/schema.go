@@ -65,8 +65,9 @@ func Describe() Schema {
 		{Path: "/runtime/model_name", Type: "string", Nullable: true, Default: nil},
 		numeric("runtime", "max_active_connections", "integer", 16, 1, 128),
 		numeric("runtime", "max_active_runs", "integer", 2, 1, 128),
-		numeric("runtime", "run_timeout_seconds", "number", 600, .001, 86400),
-		numeric("runtime", "queue_timeout_seconds", "number", 600, .001, 86400),
+		numeric("runtime", "max_output_tokens", "integer", harness.DefaultBudgetLimits().MaxOutputTokens, 0, 1<<30),
+		executionTimeoutField("runtime", "run_timeout_seconds", 0),
+		executionTimeoutField("runtime", "queue_timeout_seconds", 0),
 		{Path: "/runtime/session_cleanup_enabled", Type: "boolean", Default: true},
 		numeric("runtime", "inactive_session_retention_days", "integer", 30, 1, 3650),
 		numeric("runtime", "closed_session_retention_days", "integer", 30, 0, 3650),
@@ -118,6 +119,12 @@ func Describe() Schema {
 
 func numeric(section, key, kind string, value any, min, max float64) Field {
 	return Field{Path: "/" + section + "/" + key, Type: kind, Default: value, Minimum: &min, Maximum: &max}
+}
+
+func executionTimeoutField(section, key string, value any) Field {
+	field := numeric(section, key, "number", value, .001, harness.MaxExecutionTimeoutSeconds)
+	field.ZeroIsDefault = true
+	return field
 }
 
 func digest(value any) string {
@@ -247,6 +254,9 @@ func ValidateNative(document map[string]any) error {
 					return fmt.Errorf("models.%d: %w", index, err)
 				}
 			}
+			if err := validateModelReasoning(model); err != nil {
+				return fmt.Errorf("models.%d: %w", index, err)
+			}
 		}
 	}
 	if subagents, ok := document["subagents"].(map[string]any); ok {
@@ -317,7 +327,7 @@ func validate(field Field, value any) error {
 			}
 			return fail(fmt.Sprintf("must be %g..%g", *field.Minimum, *field.Maximum))
 		}
-	case "string_array", "tool_names", "role_names":
+	case "string_array", "tool_names", "role_names", "reasoning_efforts":
 		var values []string
 		switch list := value.(type) {
 		case []string:
@@ -337,6 +347,9 @@ func validate(field Field, value any) error {
 			if !utf8.ValidString(text) || strings.ContainsRune(text, 0) {
 				return fail("must contain valid UTF-8 names without NUL")
 			}
+		}
+		if field.Type == "reasoning_efforts" {
+			return harness.ValidateReasoningEfforts("openai", values)
 		}
 		if field.Type == "role_names" {
 			if len(values) > 128 {
@@ -361,7 +374,7 @@ func validate(field Field, value any) error {
 		if _, ok := value.(map[string]any); !ok {
 			return fail("must be a role object")
 		}
-	case "review_limits", "generation_settings", "discovery_settings", "behavior_settings", "auto_patch_settings", "maintenance_budget", "skill_source", "skill_source_settings":
+	case "review_limits", "generation_settings", "learning_settings", "discovery_settings", "behavior_settings", "auto_patch_settings", "maintenance_budget", "skill_source", "skill_source_settings":
 		if _, ok := value.(map[string]any); !ok {
 			return fail("must be an object")
 		}

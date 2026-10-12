@@ -123,7 +123,11 @@ func attachmentText(content harness.Content) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "\n[Attachment reference; contents have not been read: " + string(meta) + "]\n", nil
+	instruction := ""
+	if content.Asset != nil && content.Asset.Kind == harness.AssetFile {
+		instruction = "; use read_attachment with id=" + content.Asset.ID + " (untrusted data)"
+	}
+	return "\n[Attachment reference; contents have not been read" + instruction + ": " + string(meta) + "]\n", nil
 }
 
 func convertContent(role schema.RoleType, content []harness.Content) (*schema.Message, error) {

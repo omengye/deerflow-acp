@@ -34,6 +34,11 @@ descriptor contains digests and public server/tool names, never executable
 arguments, workspace paths, URLs, environment values or headers. An identical
 explicit reconnect retains the descriptor and receives a new generation.
 
+Tool metadata is normalized recursively by JSON object key before hashing or
+storing execution contracts. Eino's ordered schema maps may be populated from
+unordered MCP objects, so raw adapter JSON is not a stable identity. Array order
+and exact JSON numbers are preserved; actual schema changes remain incompatible.
+
 `Acquire` requires both the saved descriptor and the explicitly authorized
 current generation. It discovers tools once, fingerprints those exact adapters,
 and rechecks binding identity before returning a `Lease`. Changed configuration
@@ -146,8 +151,9 @@ cleanup, owner retirement, unknown-result no replay, aggregate limits, and
 credential forwarding/echo rejection.
 
 The resource tests additionally cover stable identity versus reconnect authority,
-configuration/schema changes, independent borrowers, enhanced image retention,
-and a real process that writes an effect then exits without returning a result.
+configuration/schema changes, nested JSON object reordering, exact schema numbers,
+independent borrowers, enhanced image retention, and a real process that writes an
+effect then exits without returning a result.
 
 `TestSDKHostMCPRecipesRestartReconstruction` is the focused SDK restart chain
 using real local MCP/OpenAI fixtures and SQLite. It passed in 11.040s, covering

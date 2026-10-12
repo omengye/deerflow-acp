@@ -3,6 +3,7 @@ package eino
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,15 +11,15 @@ import (
 	"testing"
 	"time"
 
-	"errors"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 )
 
 func TestAgentProbeBoundedRequestsAndCapabilities(t *testing.T) {
 	for _, failed := range []bool{false, true} {
 		t.Run(fmt.Sprint(failed), func(t *testing.T) {
 			var calls atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
 				if failed {
 					http.Error(w, "private-key-and-provider-details", 503)
@@ -29,13 +30,12 @@ func TestAgentProbeBoundedRequestsAndCapabilities(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				if request["stream"] == true {
+				if request["tools"] == nil {
 					w.Header().Set("Content-Type", "text/event-stream")
 					fmt.Fprint(w, "data: {\"id\":\"probe\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"OK\"},\"finish_reason\":null}]}\n\n")
 					fmt.Fprint(w, "data: {\"id\":\"probe\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":1,\"total_tokens\":11}}\n\ndata: [DONE]\n\n")
 				} else {
-					w.Header().Set("Content-Type", "application/json")
-					fmt.Fprint(w, `{"id":"probe","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call","type":"function","function":{"name":"deerflow_probe","arguments":"{\"marker\":\"deerflow-ok\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":8,"total_tokens":18}}`)
+					_ = modelstreamtest.WriteJSON(w, `{"id":"probe","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call","type":"function","function":{"name":"deerflow_probe","arguments":"{\"marker\":\"deerflow-ok\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":8,"total_tokens":18}}`)
 				}
 			}))
 			defer server.Close()

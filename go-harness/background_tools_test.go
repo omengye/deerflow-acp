@@ -132,7 +132,7 @@ func TestBackgroundToolsSubmitUsesRuntimeIdentityAndExactArguments(t *testing.T)
 			if err != nil || contract != b.ExecutionContract {
 				t.Fatalf("contract=%s binding=%s err=%v", contract, b.ExecutionContract, err)
 			}
-			if description != "inspect" || input == nil || len(input.Messages) != 1 || input.Messages[0].Role != schema.User || input.Messages[0].Content != "child task" {
+			if description != "inspect" || input == nil || !input.EnableStreaming || len(input.Messages) != 1 || input.Messages[0].Role != schema.User || input.Messages[0].Content != "child task" {
 				t.Fatalf("child input=%+v description=%s", input, description)
 			}
 			return harness.BackgroundTask{ID: "accepted", SessionID: actor.SessionID, ChildSessionID: "prior-child", Status: "pending", Version: 1}, nil
@@ -294,6 +294,26 @@ func TestBackgroundToolsWaitPropagatesCallerCancellation(t *testing.T) {
 		}
 		if _, err := backgroundToolsByName(t, list)["task_wait"].InvokableRun(waitCtx, `{"taskId":"task","afterVersion":1}`); !errors.Is(err, context.Canceled) {
 			t.Fatalf("caller cancellation hidden: %v", err)
+		}
+	})
+}
+
+func TestBackgroundStatusCertifiesOnlyKnownAdmissionFailures(t *testing.T) {
+	withBackgroundToolsRun(t, func(ctx context.Context, req harness.RunRequest, runtime *hr.Service) {
+		for _, cause := range []error{harness.ErrPermissionDenied, harness.ErrNotAttached, harness.ErrNotFound, errors.New("storage unavailable")} {
+			backend := &backgroundToolsBackend{get: func(context.Context, harness.TaskActor, string) (harness.BackgroundTask, error) {
+				return harness.BackgroundTask{}, cause
+			}}
+			list, err := newBackgroundTools(ctx, req, []byte(`{"version":1}`), "policy", backend, runtime.AuthorizeTaskAccess)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = backgroundToolsByName(t, list)["task_status"].InvokableRun(ctx, `{"taskId":"task"}`)
+			var notExecuted *harness.ToolNotExecutedError
+			want := cause == harness.ErrPermissionDenied || cause == harness.ErrNotAttached || cause == harness.ErrNotFound
+			if !errors.Is(err, cause) || errors.As(err, &notExecuted) != want {
+				t.Fatalf("cause=%v returned=%v certified=%v want=%v", cause, err, notExecuted != nil, want)
+			}
 		}
 	})
 }

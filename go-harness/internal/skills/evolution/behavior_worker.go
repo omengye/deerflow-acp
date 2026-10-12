@@ -22,6 +22,12 @@ func manualBehaviorProposal(ctx context.Context, db rowReader, jobID string) (st
 }
 
 func (s *Service) admitMaintenance(ctx context.Context, tx *sql.Tx, job skillmaintenance.Job) error {
+	if producer, exists := s.maintenanceProducers[job.Request.Kind]; exists {
+		return producer.hooks.Admission(ctx, tx, job)
+	}
+	if job.Request.Kind != skillmaintenance.SkillGeneration && job.Request.Kind != skillmaintenance.SkillBehavior {
+		return harness.ErrPermissionDenied
+	}
 	id, err := manualBehaviorProposal(ctx, tx, job.ID)
 	if err != nil {
 		return err
@@ -99,6 +105,12 @@ func (s *Service) reviewBehaviorManual(ctx context.Context, job skillmaintenance
 }
 
 func (s *Service) finalizeMaintenanceTx(ctx context.Context, tx *sql.Tx, job skillmaintenance.Job) error {
+	if producer, exists := s.maintenanceProducers[job.Request.Kind]; exists {
+		return producer.hooks.Terminal(ctx, tx, job)
+	}
+	if job.Request.Kind != skillmaintenance.SkillGeneration && job.Request.Kind != skillmaintenance.SkillBehavior {
+		return harness.ErrPermissionDenied
+	}
 	id, err := manualBehaviorProposal(ctx, tx, job.ID)
 	if err != nil {
 		return err
@@ -125,6 +137,10 @@ func (s *Service) finalizeMaintenanceTx(ctx context.Context, tx *sql.Tx, job ski
 	p.UpdatedAt = time.Now().UTC()
 	p.Status = "failed"
 	p.Error = "Skill evaluation stopped before review completed."
+	if p.ValidationFailure != nil {
+		p.ValidationFailure.Retryable = false
+		p.Error = p.ValidationFailure.Error()
+	}
 	if job.State == "cancelled" {
 		p.Status = "rejected"
 		p.Error = "Skill evaluation was cancelled by the operator."
@@ -132,7 +148,9 @@ func (s *Service) finalizeMaintenanceTx(ctx context.Context, tx *sql.Tx, job ski
 	if job.ErrorCode == "base_changed" || job.ErrorCode == "evidence_changed" {
 		p.Status = "stale"
 	}
-	p.Evaluation = Report{BaseVersion: p.Base.Version, CandidateVersion: p.CandidateVersion, Security: "unavailable", Behavior: "not_run"}
+	if p.EvaluationDigest == "" {
+		p.Evaluation = Report{BaseVersion: p.Base.Version, CandidateVersion: p.CandidateVersion, Security: "unavailable", Behavior: "not_run"}
+	}
 	if r.content != nil {
 		p.Evaluation = *r.content
 	}

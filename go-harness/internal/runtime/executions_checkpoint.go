@@ -77,7 +77,7 @@ func executionEventCursor(ctx context.Context, tx *sql.Tx, sessionID string) (in
 }
 func executionReceiptFrontier(ctx context.Context, tx *sql.Tx, sessionID, runID string) (string, error) {
 	var unsafe bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND (state='uncertain' OR (run_id=? AND state='started')))`, sessionID, runID).Scan(&unsafe); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts r WHERE r.session_id=? AND ((r.state='uncertain' AND (r.run_id=? OR NOT `+receiptRunCancelled+`)) OR (r.run_id=? AND r.state='started')))`, sessionID, runID, runID).Scan(&unsafe); err != nil {
 		return "", err
 	}
 	if unsafe {

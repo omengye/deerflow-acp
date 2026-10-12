@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -29,10 +30,39 @@ func (a *executionAttempt) ObserveTaskResult(ctx context.Context, d interaction.
 	if err := a.service.Coordinator.Authorize(a.lease.Scope.SessionID, a.lease.OwnerID); err != nil {
 		return err
 	}
+	observed := false
 	err := withExecutionTransaction(ctx, a.service.Store, func(tx *sql.Tx) error {
 		row, err := checkExecutionLease(ctx, tx, a.lease)
 		if err != nil {
 			return err
+		}
+		w := d.Wait
+		if w.CallID == "" || w.RunID != row.State.RunID || w.SessionID != row.State.SessionID || w.RootBudgetID != row.RootBudgetID || w.AfterVersion < 1 || d.TaskVersion < w.AfterVersion {
+			return harness.ErrPermissionDenied
+		}
+		var data []byte
+		var rootSession string
+		var version int64
+		if err = tx.QueryRowContext(ctx, `SELECT b.payload,t.version,r.root_session_id FROM harness_background_bindings b JOIN eino_background_tasks t ON t.id=b.task_id JOIN harness_background_tree r ON r.task_id=b.task_id WHERE b.task_id=?`, w.TaskID).Scan(&data, &version, &rootSession); err != nil {
+			return err
+		}
+		var binding background.Binding
+		if err = json.Unmarshal(data, &binding); err != nil {
+			return err
+		}
+		if binding.TaskID != w.TaskID || binding.RootSession() != rootSession || rootSession != row.State.SessionID {
+			return harness.ErrPermissionDenied
+		}
+		if version != d.TaskVersion {
+			return harness.ErrExecutionConflict
+		}
+		if binding.RootBudgetID != row.RootBudgetID {
+			if w.RoleID != "" {
+				return harness.ErrPermissionDenied
+			}
+			// The attached root may inspect tasks from earlier turns. That is
+			// not delivery to their original execution or private parent role.
+			return nil
 		}
 		ready, err := checkExecutionTaskWaits(ctx, tx, row, []interaction.TaskWaitBinding{{Wait: d.Wait, NativeInterruptID: "delivery"}})
 		if err != nil {
@@ -41,16 +71,10 @@ func (a *executionAttempt) ObserveTaskResult(ctx context.Context, d interaction.
 		if !ready {
 			return harness.ErrExecutionWaitingInput
 		}
-		var version int64
-		if err = tx.QueryRowContext(ctx, `SELECT version FROM eino_background_tasks WHERE id=?`, d.Wait.TaskID).Scan(&version); err != nil {
-			return err
-		}
-		if version != d.TaskVersion {
-			return harness.ErrExecutionConflict
-		}
+		observed = true
 		return nil
 	})
-	if err != nil {
+	if err != nil || !observed {
 		return err
 	}
 	a.mu.Lock()

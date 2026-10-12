@@ -171,6 +171,13 @@ func (r *Registry) readPackage(ctx context.Context, s *source, dir string) (skil
 	return p, nil
 }
 
+// ParseSkillDescription uses the installation parser, so a trigger fixture
+// cannot advertise metadata that the runtime would reject or parse differently.
+func ParseSkillDescription(data []byte) (name, description string, err error) {
+	fm, _, err := parse(data)
+	return fm.Name, fm.Description, err
+}
+
 func parse(data []byte) (metadata, string, error) {
 	var result metadata
 	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {

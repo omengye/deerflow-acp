@@ -141,7 +141,7 @@ func TestSettingsContractRejectsSameScalarValuesOnSaveAndLaunch(t *testing.T) {
 		{"runtime", "max_active_runs", 1.5},
 		{"subagents", "max_concurrent", 65},
 		{"runtime", "run_timeout_seconds", .00000000001},
-		{"runtime", "queue_timeout_seconds", 0},
+		{"runtime", "queue_timeout_seconds", -1},
 		{"subagents", "enabled", "true"},
 		{"runtime", "tool_allowlist", []string{"bad\nname"}},
 		{"runtime", "prompt_overlay", strings.Repeat("界", 65537)},

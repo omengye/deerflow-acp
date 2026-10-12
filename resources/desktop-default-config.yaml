@@ -9,11 +9,14 @@ local_acp:
   max_tool_calls: 0
   # Optional cumulative task spending limit; 0 leaves long tasks unrestricted.
   max_run_tokens: 0
+  # Total output per request, including reasoning. Field selection is per route.
+  max_output_tokens: 4096
   model_name: null
   max_active_connections: 16
   max_active_runs: 2
-  queue_timeout_seconds: 600
-  run_timeout_seconds: 600
+  # No default task/queue wall-clock limit; individual calls remain bounded.
+  queue_timeout_seconds: 0
+  run_timeout_seconds: 0
   permission_mode: dangerous
   memory_scope: workspace
   enable_bash: false
@@ -41,7 +44,8 @@ default_model: openai
 subagents:
   enabled: false
   max_concurrent: 2
-  timeout_seconds: 900
+  # Native roles inherit parent limits; 0 adds no role time limit.
+  timeout_seconds: 0
   max_turns: null
   agents: {}
   custom_agents: {}
@@ -95,12 +99,34 @@ skill_evolution:
     timeout_seconds: 0
     max_input_bytes: 0
     max_output_tokens: 0
+  learning:
+    # Separate shadow extraction/consolidation/matching opt-ins. No publication.
+    # generation.enabled is not required; a positive shared budget is required.
+    enabled: false
+    extraction_model_name: null
+    consolidation_enabled: false
+    consolidation_model_name: null
+    cross_session_enabled: false
+    matching_enabled: false
+    matching_model_name: null
+    idle_seconds: 300
+    timeout_seconds: 60
+    max_input_bytes: 131072
+    max_output_tokens: 4096
+    # Sublimits inside budget below, not additional spending authority.
+    max_daily_model_calls: 10
+    max_daily_tokens: 50000
+    external_context_policy: hints_only
   # Explicit native opt-in; legacy discovery.enabled does not enable this.
   discovery:
     operator_corrections_enabled: false
     missing_reports_enabled: false
     successful_workflows_enabled: false
-    # Set an authorized managed source before enabling either new-skill trigger.
+    experience_patterns_enabled: false
+    experience_new_skills_enabled: false
+    # Automatically draft from one observed task; drafts always need human approval.
+    experience_review_drafts_enabled: false
+    # Set an authorized non-builtin source before enabling a new-skill trigger.
     new_skill_source_id: ""
     repeat_threshold: 2
     repeat_window_days: 30
@@ -109,6 +135,7 @@ skill_evolution:
     max_pending_proposals: 20
   # Used only when mode=auto_patch and generation/behavior are enabled.
   auto_patch:
+    experience_patterns_enabled: false
     max_changed_lines: 40
     max_daily_publications: 2
     observation_hours: 72
@@ -122,7 +149,7 @@ skill_evolution:
     max_input_bytes: 131072
     max_output_tokens: 1024
   budget:
-    # Shared UTC-day maintenance quota for generation and both reviews.
+    # Shared UTC-day maintenance quota for learning, generation and reviews.
     # All values must be positive; restart does not reset existing charges.
     max_daily_model_calls: 30
     max_daily_tokens: 100000

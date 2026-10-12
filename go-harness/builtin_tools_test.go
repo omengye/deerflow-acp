@@ -22,6 +22,9 @@ import (
 // The child executable acts as a tiny CLI fixture. Production launcher,
 // sandbox, Eino middleware and durable permission/receipt handling remain real.
 func TestMain(m *testing.M) {
+	if code, handled := openCLIFailureFixture(); handled {
+		os.Exit(code)
+	}
 	if len(os.Args) >= 3 && os.Args[1] == "web" && os.Args[2] == "fixture" {
 		if err := os.WriteFile("opencli-effect", []byte("executed"), 0600); err != nil {
 			os.Exit(3)

@@ -12,6 +12,7 @@ import (
 var (
 	ErrInvalidInput      = errors.New("invalid input")
 	ErrContextLimit      = errors.New("model context limit")
+	ErrNoProgress        = errors.New("agent stopped without progress")
 	ErrNotFound          = errors.New("not found")
 	ErrBusy              = errors.New("session is busy")
 	ErrQueueTimeout      = errors.New("run queue timeout")
@@ -38,16 +39,17 @@ type Message struct {
 }
 
 type Session struct {
-	ID            string    `json:"id"`
-	CWD           string    `json:"cwd"`
-	Title         string    `json:"title,omitempty"`
-	Mode          string    `json:"mode"`
-	Model         string    `json:"model"`
-	ApprovalMode  string    `json:"approvalMode"`
-	Subagents     bool      `json:"subagents"`
-	ConfigVersion int64     `json:"configVersion"`
-	CreatedAt     time.Time `json:"createdAt"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	ID              string    `json:"id"`
+	CWD             string    `json:"cwd"`
+	Title           string    `json:"title,omitempty"`
+	Mode            string    `json:"mode"`
+	Model           string    `json:"model"`
+	ReasoningEffort string    `json:"reasoningEffort,omitempty"`
+	ApprovalMode    string    `json:"approvalMode"`
+	Subagents       bool      `json:"subagents"`
+	ConfigVersion   int64     `json:"configVersion"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 // RetentionPolicy controls automatic cleanup of detached sessions. A zero
@@ -96,6 +98,7 @@ type RunEvent struct {
 	SessionID    string          `json:"sessionId"`
 	RunID        string          `json:"runId"`
 	Kind         string          `json:"kind"`
+	AgentName    string          `json:"agentName,omitempty"`
 	Text         string          `json:"text,omitempty"`
 	ToolCallID   string          `json:"toolCallId,omitempty"`
 	ToolName     string          `json:"toolName,omitempty"`

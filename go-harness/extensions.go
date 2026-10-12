@@ -265,11 +265,12 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		selection.Workspace = req.Session.CWD
 		readOnly := req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
 		var opencliPlan opencli.Launcher
+		var opencliErr error
 		for _, setting := range cfg.BuiltinTools {
 			if setting.Name == "host_opencli" && cfg.HostToolsAllowed && cfg.ToolPolicy.Allows(setting.Name) {
-				opencliPlan, err = opencli.Resolve(setting.Executable)
-				if err != nil {
-					return out, err
+				opencliPlan, opencliErr = opencli.Resolve(setting.Executable)
+				if ctx.Err() != nil {
+					return out, ctx.Err()
 				}
 			}
 		}
@@ -443,6 +444,21 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			return out, err
 		}
 		out.Tools = append(out.Tools, modelTools...)
+		if assetStore != nil {
+			attachments, attachmentErr := tools.AttachmentTools(assetStore, req.Session)
+			if attachmentErr != nil {
+				return out, attachmentErr
+			}
+			for _, attachment := range attachments {
+				info, infoErr := attachment.Info(ctx)
+				if infoErr != nil {
+					return out, infoErr
+				}
+				if cfg.ToolPolicy.Allows(info.Name) {
+					out.Tools = append(out.Tools, attachment)
+				}
+			}
+		}
 		for _, setting := range cfg.BuiltinTools {
 			if !cfg.ToolPolicy.Allows(setting.Name) {
 				continue
@@ -462,6 +478,14 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		}
 		for _, setting := range cfg.BuiltinTools {
 			if setting.Name != "host_opencli" || !cfg.HostToolsAllowed || !cfg.ToolPolicy.Allows(setting.Name) {
+				continue
+			}
+			if opencliErr != nil {
+				unavailable, toolErr := tools.UnavailableOpenCLITool(opencliErr, opencli.AllowedSites(setting))
+				if toolErr != nil {
+					return out, toolErr
+				}
+				out.Tools = append(out.Tools, unavailable)
 				continue
 			}
 			timeout := setting.Timeout

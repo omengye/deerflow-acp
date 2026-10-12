@@ -60,8 +60,8 @@ func newRunQueue(cfg RunQueueConfig) (*runQueue, error) {
 	if cfg.MaxActiveRuns < 1 || cfg.MaxActiveRuns > 128 {
 		return nil, fmt.Errorf("%w: max active runs must be 1..128", harness.ErrInvalidInput)
 	}
-	if cfg.QueueTimeout < 0 || cfg.QueueTimeout > 24*time.Hour {
-		return nil, fmt.Errorf("%w: queue timeout must be 0..24h", harness.ErrInvalidInput)
+	if cfg.QueueTimeout < 0 || cfg.QueueTimeout > harness.MaxExecutionTimeoutSeconds*time.Second {
+		return nil, fmt.Errorf("%w: queue timeout must be 0 (unlimited) or at most %d seconds", harness.ErrInvalidInput, harness.MaxExecutionTimeoutSeconds)
 	}
 	return &runQueue{slots: make(chan struct{}, cfg.MaxActiveRuns), timeout: cfg.QueueTimeout, waiting: make(map[string]bool)}, nil
 }

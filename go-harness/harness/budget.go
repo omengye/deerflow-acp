@@ -5,6 +5,9 @@ import "time"
 // DefaultMaxIterations disables the optional per-agent iteration quota.
 const DefaultMaxIterations = 0
 
+// Explicit execution limits may span days. Zero remains the unlimited default.
+const MaxExecutionTimeoutSeconds = 10 * 365 * 24 * 60 * 60
+
 // BudgetLimits applies to one foreground run and its delegated agents together.
 // Zero values disable individual limits. Tokens without provider usage are
 // estimated; MaxOutputTokens also caps each provider request's output setting.
@@ -17,9 +20,9 @@ type BudgetLimits struct {
 }
 
 // DefaultBudgetLimits is shared by the SDK and local executables. Model, tool
-// and aggregate token quotas are opt-in; normal tasks run until completion,
-// cancellation or the execution deadline. Explicit quotas cover the main agent
-// and its children together and count logical calls, including failed calls.
+// and aggregate token quotas are opt-in; normal tasks run until completion or
+// cancellation. A host can opt into an execution deadline. Explicit quotas cover
+// the main agent and its children together, including failed logical calls.
 func DefaultBudgetLimits() BudgetLimits {
-	return BudgetLimits{MaxOutputTokens: 4096, Timeout: 30 * time.Minute}
+	return BudgetLimits{MaxOutputTokens: 4096}
 }

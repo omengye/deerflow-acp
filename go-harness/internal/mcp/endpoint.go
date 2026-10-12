@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -298,7 +299,7 @@ func (e *endpoint) tools(ctx context.Context) ([]tool.BaseTool, error) {
 		if err != nil {
 			return nil, errors.New("MCP tool metadata is invalid")
 		}
-		data, err := json.Marshal(info)
+		data, err := canonicalToolInfo(info)
 		if err != nil {
 			return nil, errors.New("MCP tool schema is invalid")
 		}
@@ -314,6 +315,23 @@ func (e *endpoint) tools(ctx context.Context) ([]tool.BaseTool, error) {
 		wrapped = append(wrapped, &guardTool{endpoint: e, raw: invokable, info: data})
 	}
 	return wrapped, nil
+}
+
+// Eino schemas contain ordered maps populated from unordered MCP objects.
+// Normalize object keys before storing metadata or hashing execution identity;
+// preserve array order and exact JSON numbers so actual changes still differ.
+func canonicalToolInfo(info *schema.ToolInfo) ([]byte, error) {
+	data, err := json.Marshal(info)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	return json.Marshal(value)
 }
 
 func toolName(server, name string) string {

@@ -482,10 +482,10 @@ models:
 
 func TestApplyConfigRejectsInvalidPortableBounds(t *testing.T) {
 	for _, local := range []string{
-		"run_timeout_seconds: 0", "run_timeout_seconds: -1", "run_timeout_seconds: .nan",
+		"run_timeout_seconds: -1", "run_timeout_seconds: .nan", "run_timeout_seconds: 315360001",
 		"max_active_connections: 0", "max_active_connections: 129",
 		"max_active_runs: 0", "max_active_runs: 129",
-		"queue_timeout_seconds: 0", "queue_timeout_seconds: 86401", "queue_timeout_seconds: .nan",
+		"queue_timeout_seconds: -1", "queue_timeout_seconds: 315360001", "queue_timeout_seconds: .nan",
 		"prompt_overlay_file: missing.md",
 	} {
 		path := filepath.Join(t.TempDir(), "config.yaml")

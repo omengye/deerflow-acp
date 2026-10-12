@@ -38,12 +38,24 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 		if p.StateVersion != review.ExpectedStateVersion || p.Status != "pending_review" {
 			return ErrConflict
 		}
-		if err := s.guardDiscoveryApproval(ctx, tx.SQL(), *p); err != nil {
+		if err := s.guardDiscoveryApproval(ctx, tx, *p); err != nil {
+			if errors.Is(err, errExperienceCredential) {
+				p.StateVersion++
+				p.Status = "failed"
+				p.UpdatedAt = time.Now().UTC()
+				p.Error = "The generated skill contains a credential-like literal."
+				if updateErr := updateProposal(ctx, tx.SQL(), *p, review.ExpectedStateVersion); updateErr != nil {
+					return updateErr
+				}
+				result = *p
+				outcome = ErrValidation
+				return nil
+			}
 			if errors.Is(err, errDiscoveryEvidence) {
 				p.StateVersion++
 				p.Status = "stale"
 				p.UpdatedAt = time.Now().UTC()
-				p.Error = "The operator correction evidence changed or was withdrawn."
+				p.Error = "The discovery evidence changed or was withdrawn."
 				if updateErr := updateProposal(ctx, tx.SQL(), *p, review.ExpectedStateVersion); updateErr != nil {
 					return updateErr
 				}
@@ -117,7 +129,7 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 		if err != nil {
 			return err
 		}
-		if err = s.attachAutoPatchObservation(ctx, tx, publication); err != nil {
+		if err = s.attachAutoPatchObservation(ctx, tx, publication, *p); err != nil {
 			return err
 		}
 		p.StateVersion++

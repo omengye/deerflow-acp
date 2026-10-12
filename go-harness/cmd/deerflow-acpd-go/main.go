@@ -35,7 +35,7 @@ func run(args []string) (err error) {
 	flags := flag.NewFlagSet("deerflow-acpd-go", flag.ContinueOnError)
 	flags.StringVar(&cfg.DataDir, "data-dir", os.Getenv("DEERFLOW_GO_DATA_DIR"), "Eino Go state directory")
 	flags.StringVar(&hostCfg.RuntimeDir, "runtime-dir", os.Getenv("DEERFLOW_GO_RUNTIME_DIR"), "private Go daemon endpoint directory")
-	flags.StringVar(&cfg.Provider, "provider", env("DEERFLOW_MODEL_PROVIDER", "openai"), "model provider: openai, claude, ark")
+	flags.StringVar(&cfg.Provider, "provider", env("DEERFLOW_MODEL_PROVIDER", "openai"), "model provider: openai, claude")
 	flags.StringVar(&cfg.Model, "model", os.Getenv("DEERFLOW_MODEL"), "model identifier")
 	flags.StringVar(&cfg.BaseURL, "base-url", os.Getenv("DEERFLOW_MODEL_BASE_URL"), "model endpoint override")
 	flags.IntVar(&hostCfg.MaxConnections, "max-connections", 32, "ACP connection limit; control requests are independent")
@@ -96,8 +96,6 @@ func run(args []string) (err error) {
 		switch cfg.Provider {
 		case "claude":
 			cfg.APIKey = os.Getenv("ANTHROPIC_API_KEY")
-		case "ark":
-			cfg.APIKey = os.Getenv("ARK_API_KEY")
 		default:
 			cfg.APIKey = os.Getenv("OPENAI_API_KEY")
 		}

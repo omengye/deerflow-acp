@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 )
 
 type discoveryProvider struct {
@@ -28,7 +29,7 @@ func skillDiscoveryFixture(t *testing.T) (string, Config, *discoveryProvider) {
 	t.Helper()
 	workspace, cfg := skillFixture(t)
 	provider := &discoveryProvider{generated: make(chan []harness.SkillGenerationEvidence, 8)}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Model    string `json:"model"`
 			Stream   bool   `json:"stream"`
@@ -59,8 +60,8 @@ func skillDiscoveryFixture(t *testing.T) (string, Config, *discoveryProvider) {
 			}
 		} else {
 			provider.maintenanceCalls.Add(1)
-			if len(request.Tools) != 0 || len(request.Messages) != 2 || request.Stream {
-				t.Error("automatic maintenance received user tools/history or streaming")
+			if len(request.Tools) != 0 || len(request.Messages) != 2 || !request.Stream {
+				t.Error("automatic maintenance received user tools/history or non-streaming transport")
 				http.Error(w, "maintenance isolation violation", http.StatusBadRequest)
 				return
 			}
@@ -96,14 +97,7 @@ func skillDiscoveryFixture(t *testing.T) (string, Config, *discoveryProvider) {
 			}
 			message["content"] = string(answer)
 		}
-		if request.Stream {
-			w.Header().Set("Content-Type", "text/event-stream")
-			body, _ := json.Marshal(map[string]any{"id": "discovery-fixture", "choices": []any{map[string]any{"index": 0, "delta": message, "finish_reason": finish}}})
-			fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", body)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "discovery-fixture", "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125}})
+		_ = modelstreamtest.WriteCompletion(w, map[string]any{"id": "discovery-fixture", "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125}})
 	}))
 	t.Cleanup(server.Close)
 	cfg.Provider, cfg.Model, cfg.BaseURL, cfg.APIKey = "openai", "user", server.URL+"/v1", "user-fixture-key"

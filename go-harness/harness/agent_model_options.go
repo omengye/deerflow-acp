@@ -50,14 +50,16 @@ func (c SubagentsConfig) ValidateModelOptions(providers map[string]string, maxOu
 func (c AgentConfig) ValidateModelOptions(provider string, maxOutputTokens int) error {
 	provider = strings.ToLower(provider)
 	thinking := c.ThinkingEnabled != nil && *c.ThinkingEnabled
-	if c.ThinkingEnabled != nil && !slices.Contains([]string{"ark", "claude", "anthropic"}, provider) {
+	if c.ThinkingEnabled != nil && !slices.Contains([]string{"claude", "anthropic"}, provider) {
 		return fmt.Errorf("thinking_enabled is not supported by provider %q", provider)
 	}
 	if c.ReasoningEffort != "" {
-		if !slices.Contains([]string{"", "openai", "openai-compatible", "ark"}, provider) {
+		if !slices.Contains([]string{"", "openai", "openai-compatible"}, provider) {
 			return fmt.Errorf("reasoning_effort is not supported by provider %q", provider)
 		}
-		if !slices.Contains([]string{"low", "medium", "high", "xhigh"}, c.ReasoningEffort) || provider == "ark" && c.ReasoningEffort == "xhigh" {
+		// The endpoint owns the final model capability check; this is only the
+		// shared OpenAI-compatible wire contract allowlist.
+		if !slices.Contains([]string{"low", "medium", "high", "xhigh", "max"}, c.ReasoningEffort) {
 			return fmt.Errorf("reasoning_effort %q is not supported by provider %q", c.ReasoningEffort, provider)
 		}
 		if c.ThinkingEnabled != nil && !thinking {

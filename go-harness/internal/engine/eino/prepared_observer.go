@@ -86,6 +86,9 @@ func (a *preparedObserver) observe(parent context.Context, begin func(context.Co
 			}
 		}()
 		fail := func(err error) {
+			if modelWillContinue(err) {
+				return
+			}
 			p.io.recordError(err)
 			cancel()
 		}
@@ -149,7 +152,7 @@ func (a *preparedObserver) observe(parent context.Context, begin func(context.Co
 				out.MessageOutput = &variant
 				projected.Output = &out
 				observe := func(message *schema.Message) error {
-					return p.observeText(ctx, variant.Role, message)
+					return p.observeText(ctx, variant.Role, message, event.AgentName)
 				}
 				if variant.IsStreaming && variant.MessageStream != nil {
 					streams.Add(1)
@@ -202,12 +205,19 @@ func (a *preparedObserver) interruptBindings(contexts []*adk.InterruptCtx) ([]Ex
 	return PermissionInterruptBindings(permissions)
 }
 
-func (p *PreparedAttempt) observeText(ctx context.Context, role schema.RoleType, message *schema.Message) error {
+func (p *PreparedAttempt) observeText(ctx context.Context, role schema.RoleType, message *schema.Message, names ...string) error {
+	if outputConsolidated(message) {
+		return nil
+	}
 	if message == nil || (role != schema.Assistant && (role != "" || message.Role != schema.Assistant)) {
 		return nil
 	}
 	if message.Content != "" {
-		if err := p.sink.emit(ctx, harness.RunEvent{Kind: "text_delta", Text: message.Content}); err != nil {
+		var name string
+		if len(names) == 1 {
+			name = names[0]
+		}
+		if err := p.sink.emit(ctx, harness.RunEvent{Kind: "text_delta", AgentName: name, Text: message.Content}); err != nil {
 			return err
 		}
 	}

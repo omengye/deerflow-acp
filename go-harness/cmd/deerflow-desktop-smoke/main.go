@@ -138,6 +138,8 @@ func (s *smoke) settled() obj {
 }
 func (s *smoke) prepare() {
 	need(runtime.GOOS == "windows", "this smoke command targets the Windows portable package")
+	need(!exists(filepath.Join(s.packagePath, "deerflow-state-go.exe")), "removed runtime backup CLI still shipped")
+	need(!exists(filepath.Join(s.packagePath, "resources/go-runtime-backup.md")), "retired backup manual still shipped")
 	for _, name := range []string{"resources/default-config.yaml", "waku-daemon.exe", "deerflow-acp.exe", "deerflow-desktop.exe", "deerflow-acpd.exe", "deerflow-config-go.exe"} {
 		need(exists(filepath.Join(s.packagePath, name)), "incomplete package: %s", name)
 	}
@@ -179,6 +181,11 @@ func (s *smoke) configure() obj {
 	need(below(str(object(snapshot["paths"])["config"]), s.root), "snapshot config escaped isolated package")
 	need(len(array(snapshot["models"])) > 0, "default snapshot has no model")
 	need(w.deerflow("status")["acp_backend"] == "go", "wrong ACP backend")
+	for _, key := range []string{"run_timeout_seconds", "queue_timeout_seconds"} {
+		need(object(snapshot["runtime"])[key] == float64(0), "fresh package has a default %s limit", key)
+	}
+	need(object(snapshot["subagents"])["timeout_seconds"] == float64(0), "fresh package limits child task duration")
+	s.log("Fresh package task, queue and child time limits are disabled", obj{})
 	raw := read(s.config)
 	need(strings.Contains(raw, "  accept_client_mcp_servers: false") && strings.Contains(raw, "  client_mcp_allowed_commands: []"), "default config lacks host MCP policy")
 	raw = strings.Replace(raw, "  accept_client_mcp_servers: false", "  accept_client_mcp_servers: true", 1)

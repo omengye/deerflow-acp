@@ -669,7 +669,7 @@ func TestToolFactoryCleanupFailureAfterSuccessfulRun(t *testing.T) {
 }
 
 func TestProviderConstructorsCompileAgainstPinnedEino(t *testing.T) {
-	for _, provider := range []string{"openai", "claude", "ark"} {
+	for _, provider := range []string{"openai", "claude"} {
 		t.Run(provider, func(t *testing.T) {
 			if _, err := New(context.Background(), Config{Provider: provider, Model: "test-model", APIKey: "test-key"}); err != nil {
 				t.Fatal(err)

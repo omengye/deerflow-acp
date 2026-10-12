@@ -8,11 +8,13 @@ import (
 	"fmt"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/skillbehavior"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
 
 const behaviorRuleVersion = "skill-behavior-comparison-v1"
+const behaviorTriggerRuleVersion = "skill-behavior-comparison-v2"
 
 // Every stage uses the proposal's publication transaction and the maintenance
 // claim, including cache reads. A completed case never grants another worker
@@ -120,6 +122,9 @@ func validateBehaviorResult(r harness.SkillBehaviorResult, in harness.SkillBehav
 	if len(want) != 0 {
 		return invalid("behavior result checks are incomplete")
 	}
+	if err := validateTriggerResult(r, in); err != nil {
+		return err
+	}
 	data, err := json.Marshal(r)
 	if err != nil || len(data) > 16<<10 {
 		return invalid("behavior result exceeds bounds")
@@ -139,7 +144,7 @@ func behaviorInputs(r behaviorRecord) []harness.SkillBehaviorInput {
 				if variant == "candidate" {
 					version = r.input.CandidateVersion
 				}
-				result = append(result, harness.SkillBehaviorInput{EvaluationID: r.input.ID, CaseID: c.ID, Variant: variant, Version: version, Repetition: rep, Case: c})
+				result = append(result, harness.SkillBehaviorInput{EvaluationID: r.input.ID, CaseID: c.ID, Variant: variant, Version: version, SkillName: r.input.Target.Name, Repetition: rep, Case: c})
 			}
 		}
 	}
@@ -170,6 +175,9 @@ func readBehaviorResults(ctx context.Context, tx *sql.Tx, r behaviorRecord) ([]h
 			return nil, invalid("stored behavior result is inconsistent")
 		}
 		if err = validateBehaviorResult(value, in); err != nil {
+			return nil, err
+		}
+		if err = validateTriggerCatalogTx(ctx, tx, r.input.Target, value, in); err != nil {
 			return nil, err
 		}
 		result = append(result, value)
@@ -204,22 +212,30 @@ func composeBehaviorReport(r behaviorRecord, results []harness.SkillBehaviorResu
 		}
 	}
 	report = harness.SkillBehaviorReport{EvaluationID: r.input.ID, EvaluatorIdentity: r.input.EvaluatorIdentity, SuiteID: r.input.Suite.ID, SuiteDigest: r.input.SuiteDigest, RuleVersion: behaviorRuleVersion, BaseVersion: r.input.Base.Version, CandidateVersion: r.input.CandidateVersion, State: "passed", Results: []harness.SkillBehaviorComparison{}}
+	if r.input.Suite.Version == skillbehavior.TriggerVersion {
+		report.RuleVersion = behaviorTriggerRuleVersion
+	}
 	for _, c := range r.input.Suite.Cases {
-		if c.Kind == "targeted" {
+		switch c.Kind {
+		case "targeted":
 			report.TargetedCases++
-		} else {
+		case "regression":
 			report.RegressionCases++
+		case "trigger_positive":
+			report.TriggerPositiveCases++
+		case "trigger_negative":
+			report.TriggerNegativeCases++
 		}
 		for rep := 1; rep <= c.Repetitions; rep++ {
 			base, candidate := byKey[resultKey(c.ID, "base", rep)], byKey[resultKey(c.ID, "candidate", rep)]
-			report.Results = append(report.Results, harness.SkillBehaviorComparison{CaseID: c.ID, Kind: c.Kind, Repetition: rep, BasePassed: base.Passed, CandidatePassed: candidate.Passed, BaseOutputDigest: base.OutputDigest, CandidateOutputDigest: candidate.OutputDigest, BaseErrorCode: base.ErrorCode, CandidateErrorCode: candidate.ErrorCode})
+			report.Results = append(report.Results, harness.SkillBehaviorComparison{CaseID: c.ID, Kind: c.Kind, Repetition: rep, BasePassed: base.Passed, CandidatePassed: candidate.Passed, BaseOutputDigest: base.OutputDigest, CandidateOutputDigest: candidate.OutputDigest, BaseErrorCode: base.ErrorCode, CandidateErrorCode: candidate.ErrorCode, BaseSelection: base.Selection, CandidateSelection: candidate.Selection})
 			if base.Passed && !candidate.Passed {
 				report.Regressions++
 			}
 			if !base.Passed && candidate.Passed {
 				report.Improvements++
 			}
-			if c.Kind == "targeted" && !candidate.Passed {
+			if (c.Kind == "targeted" || skillbehavior.TriggerCase(c)) && !candidate.Passed {
 				report.State = "failed"
 			}
 			for _, v := range []harness.SkillBehaviorResult{base, candidate} {
@@ -297,6 +313,11 @@ func (s *Service) runBehavior(ctx context.Context, input ValidationInput, report
 			break
 		}
 		if err = validateBehaviorResult(result, in); err != nil {
+			break
+		}
+		catalogInput := in
+		catalogInput.Files = files
+		if err = validateTriggerCatalog(result, catalogInput); err != nil {
 			break
 		}
 		data, _ := json.Marshal(result)

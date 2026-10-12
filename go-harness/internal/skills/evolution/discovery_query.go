@@ -11,7 +11,7 @@ import (
 )
 
 func (s *Service) DiscoveryStatus(ctx context.Context) (harness.SkillDiscoveryStatus, error) {
-	result := harness.SkillDiscoveryStatus{Version: "skill-discovery-v1", Triggers: []string{"operator_corrections", "missing_skill", "repeated_workflow"}, Sources: []harness.SkillTarget{}, Today: time.Now().UTC().Format("2006-01-02")}
+	result := harness.SkillDiscoveryStatus{Version: "skill-discovery-v1", Triggers: []string{"operator_corrections", "missing_skill", "repeated_workflow", "experience_pattern"}, Sources: []harness.SkillTarget{}, Today: time.Now().UTC().Format("2006-01-02")}
 	if d := s.discovery; d != nil {
 		result.Enabled = true
 		options := d.options
@@ -111,7 +111,7 @@ func (s *Service) QueryDiscoveries(ctx context.Context, q harness.SkillQuery) (h
 		if r.input.DiscoveryID != id || r.input.DiscoveryDigest != digest || r.input.Target != d.Target || r.input.Request.Base != d.Base {
 			return page, invalid("discovery generation binding is inconsistent")
 		}
-		page.Discoveries = append(page.Discoveries, harness.SkillDiscovery{ID: id, Target: d.Target, Base: d.Base, GenerationID: job, CreatedAt: d.CreatedAt, Attribution: "unassessed", Kind: d.kind(), Evidence: d.Evidence, State: r.job.State, ProposalID: r.proposal})
+		page.Discoveries = append(page.Discoveries, harness.SkillDiscovery{ID: id, Target: d.Target, Base: d.Base, GenerationID: job, CreatedAt: d.CreatedAt, Attribution: "unassessed", Kind: d.kind(), Evidence: d.Evidence, State: r.job.State, ProposalID: r.proposal, HostAdjudicated: d.HostAdjudicated, ReviewDraft: d.ReviewDraft, CreationRetry: d.CreationRetry})
 		cursor.Key = id
 	}
 	return page, tx.Commit()

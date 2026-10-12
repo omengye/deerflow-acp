@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
 )
@@ -41,7 +42,7 @@ func maintenanceReviewFixture(t *testing.T, calls int64) (*skillmaintenance.Stor
 }
 
 func TestSkillMaintenanceReviewChargesBothStages(t *testing.T) {
-	for _, mode := range []string{"complete", "one-call-budget", "invalid-answer", "provider-failure", "missing-usage", "partial-usage", "inconsistent-usage", "settle-failure", "reserve-failure"} {
+	for _, mode := range []string{"complete", "one-call-budget", "invalid-answer", "provider-failure", "missing-usage", "partial-usage", "inconsistent-usage", "underreported-usage", "settle-failure", "reserve-failure"} {
 		t.Run(mode, func(t *testing.T) {
 			budget := int64(3)
 			if mode == "one-call-budget" {
@@ -59,7 +60,7 @@ func TestSkillMaintenanceReviewChargesBothStages(t *testing.T) {
 				}
 			}
 			var calls atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
 				if mode == "provider-failure" {
 					http.Error(w, "private-provider", 503)
@@ -89,8 +90,10 @@ func TestSkillMaintenanceReviewChargesBothStages(t *testing.T) {
 				if mode == "inconsistent-usage" {
 					body["usage"] = map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 30}
 				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(body)
+				if mode == "underreported-usage" {
+					body["usage"] = map[string]any{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 5}
+				}
+				_ = modelstreamtest.WriteCompletion(w, body)
 			}))
 			defer server.Close()
 			route := harness.ModelRoute{Model: "reviewer", BaseURL: server.URL, APIKey: "private-key"}
@@ -100,7 +103,7 @@ func TestSkillMaintenanceReviewChargesBothStages(t *testing.T) {
 			}
 			report, e := validator.Validate(ctx, reviewInput())
 			wantCalls := int32(1)
-			success := mode == "complete" || mode == "missing-usage" || mode == "partial-usage" || mode == "inconsistent-usage"
+			success := mode == "complete" || mode == "missing-usage" || mode == "partial-usage" || mode == "inconsistent-usage" || mode == "underreported-usage"
 			if success {
 				wantCalls = 2
 			}
@@ -131,7 +134,7 @@ func TestSkillMaintenanceReviewChargesBothStages(t *testing.T) {
 				if r.Stage != stage || len(r.ModelIdentity) != 64 || len(r.InputDigest) != 64 {
 					t.Fatal(r)
 				}
-				estimated := mode == "provider-failure" || mode == "missing-usage" || mode == "partial-usage" || mode == "inconsistent-usage" || mode == "settle-failure"
+				estimated := mode == "provider-failure" || mode == "missing-usage" || mode == "partial-usage" || mode == "inconsistent-usage" || mode == "underreported-usage" || mode == "settle-failure"
 				if r.Estimated != estimated || estimated && r.ChargedTokens != r.ReservedTokens || !estimated && r.ChargedTokens != 15 {
 					t.Fatalf("charge %+v", r)
 				}
@@ -141,10 +144,10 @@ func TestSkillMaintenanceReviewChargesBothStages(t *testing.T) {
 }
 
 func TestSkillMaintenanceProviderRetriesAreHostOwned(t *testing.T) {
-	for _, provider := range []string{"openai", "claude", "ark"} {
+	for _, provider := range []string{"openai", "claude"} {
 		t.Run(provider, func(t *testing.T) {
 			var calls atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(503)

@@ -97,6 +97,69 @@ func TestControllerTimeSettlementExcludesSuspensionAndUnionsActivity(t *testing.
 	}
 }
 
+func TestUnlimitedRoleTimeSurvivesMultiDayWorkAndReconstruction(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "agents.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Unix(100, 0)
+	c, err := NewController(store.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.now = func() time.Time { return now }
+	if err = c.Register(ctx, invocation("multi-day"), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate settled work; do not sleep for three days or weaken lease fencing.
+	if err = c.Charge(ctx, "multi-day", 72*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	a, err := c.BeginAttempt(ctx, "multi-day", 0)
+	if err != nil {
+		t.Fatal("unlimited cumulative time rejected", err)
+	}
+	now = now.Add(2 * time.Second)
+	if err = a.Heartbeat(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.Finish(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c, err = NewController(store.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(4 * 24 * time.Hour)
+	c.now = func() time.Time { return now }
+	if _, err = c.BeginAttempt(ctx, "multi-day", time.Hour); !errors.Is(err, ErrTimeLimit) {
+		t.Fatal("explicit limit bypassed", err)
+	}
+	a, err = c.BeginAttempt(ctx, "multi-day", 0)
+	if err != nil {
+		t.Fatal("restart imposed deadline", err)
+	}
+	now = now.Add(timeLease + time.Second)
+	if err = a.Check(ctx); !errors.Is(err, ErrAttemptConflict) {
+		t.Fatal("unlimited time disabled lease fence", err)
+	}
+	next, err := c.BeginAttempt(ctx, "multi-day", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.Heartbeat(ctx); !errors.Is(err, ErrAttemptConflict) {
+		t.Fatal("stale attempt renewed", err)
+	}
+	if err = next.Finish(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestControllerCrashRetainsReservedTimeAndFencesOldAttempt(t *testing.T) {
 	store, err := sqlite.Open(filepath.Join(t.TempDir(), "agents.db"))
 	if err != nil {

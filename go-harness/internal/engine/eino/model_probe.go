@@ -10,6 +10,7 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
 type ProbeCheck struct {
@@ -27,8 +28,12 @@ type AgentProbe struct {
 
 // ProbeAgentCapabilities makes at most two bounded requests and never executes
 // a returned tool. Callers provide a deadline; SDK transport retries are disabled.
-func ProbeAgentCapabilities(ctx context.Context, provider, name, baseURL, apiKey string) (AgentProbe, error) {
-	chat, err := newModelWithRetryPolicy(ctx, Config{Provider: provider, Model: name, BaseURL: baseURL, APIKey: apiKey}, name, true)
+func ProbeAgentCapabilities(ctx context.Context, provider, name, baseURL, apiKey string, parameter ...harness.OutputTokenParameter) (AgentProbe, error) {
+	cfg := Config{Provider: provider, Model: name, BaseURL: baseURL, APIKey: apiKey}
+	if len(parameter) > 0 {
+		cfg.OutputTokenParameter = parameter[0]
+	}
+	chat, err := newModelWithRetryPolicy(ctx, cfg, name, true)
 	if err != nil {
 		return AgentProbe{}, err
 	}

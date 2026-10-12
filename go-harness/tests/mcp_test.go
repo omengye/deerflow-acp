@@ -39,6 +39,11 @@ func TestACPClientMCPFixture(t *testing.T) {
 	}
 	sdk.AddTool(server, &sdk.Tool{Name: "record", Description: "Record the requested value"}, func(_ context.Context, _ *sdk.CallToolRequest, args struct {
 		Value string `json:"value"`
+		Meta  struct {
+			Label   string `json:"label,omitempty"`
+			Enabled bool   `json:"enabled,omitempty"`
+			Count   int64  `json:"count,omitempty"`
+		} `json:"meta,omitempty"`
 	}) (*sdk.CallToolResult, any, error) {
 		if os.Getenv("ACP_MCP_SECRET") == "" {
 			return nil, nil, fmt.Errorf("fixture credentials missing")

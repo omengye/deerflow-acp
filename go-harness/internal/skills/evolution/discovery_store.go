@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/learning"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
 
@@ -21,14 +22,18 @@ type discoveryHost struct {
 }
 
 type discoverySnapshot struct {
-	Kind        string                           `json:"kind,omitempty"`
-	ID          string                           `json:"id"`
-	Target      harness.SkillTarget              `json:"target"`
-	Base        harness.SkillHead                `json:"base"`
-	OverlayBase *harness.SkillRef                `json:"overlay_base,omitempty"`
-	Options     harness.SkillDiscoveryOptions    `json:"options"`
-	CreatedAt   time.Time                        `json:"created_at"`
-	Evidence    []harness.SkillDiscoveryEvidence `json:"evidence"`
+	Kind            string                                       `json:"kind,omitempty"`
+	ID              string                                       `json:"id"`
+	Target          harness.SkillTarget                          `json:"target"`
+	Base            harness.SkillHead                            `json:"base"`
+	OverlayBase     *harness.SkillRef                            `json:"overlay_base,omitempty"`
+	Options         harness.SkillDiscoveryOptions                `json:"options"`
+	CreatedAt       time.Time                                    `json:"created_at"`
+	Evidence        []harness.SkillDiscoveryEvidence             `json:"evidence"`
+	EpisodeDedup    bool                                         `json:"episode_dedup,omitempty"`
+	HostAdjudicated bool                                         `json:"host_adjudicated,omitempty"`
+	ReviewDraft     bool                                         `json:"review_draft,omitempty"`
+	CreationRetry   *harness.SkillLearningNewSkillRetryReference `json:"creation_retry,omitempty"`
 }
 
 var errDiscoveryEvidence = errors.New("automatic discovery evidence changed")
@@ -36,7 +41,7 @@ var errDiscoveryEvidence = errors.New("automatic discovery evidence changed")
 func (s *Service) DiscoveryEnabled() bool { return s.discovery != nil }
 
 func validDiscoveryOptions(o harness.SkillDiscoveryOptions) bool {
-	return (!(o.MissingReportsEnabled || o.SuccessfulWorkflowsEnabled) || harness.ValidSkillName(o.NewSkillSourceID)) && o.RepeatThreshold >= 2 && o.RepeatThreshold <= 16 && o.RepeatWindowDays >= 1 && o.RepeatWindowDays <= 365 && o.CooldownHours >= 1 && o.CooldownHours <= 8760 && o.MaxDailyProposals >= 1 && o.MaxDailyProposals <= 100 && o.MaxPendingProposals >= 1 && o.MaxPendingProposals <= 1000
+	return (!(o.ExperienceNewSkillsEnabled || o.ExperienceReviewDraftsEnabled) || o.ExperiencePatternsEnabled) && (!(o.MissingReportsEnabled || o.SuccessfulWorkflowsEnabled || o.ExperienceNewSkillsEnabled) || harness.ValidSkillName(o.NewSkillSourceID)) && o.RepeatThreshold >= 2 && o.RepeatThreshold <= 16 && o.RepeatWindowDays >= 1 && o.RepeatWindowDays <= 365 && o.CooldownHours >= 1 && o.CooldownHours <= 8760 && o.MaxDailyProposals >= 1 && o.MaxDailyProposals <= 100 && o.MaxPendingProposals >= 1 && o.MaxPendingProposals <= 1000
 }
 
 func migrateDiscovery(ctx context.Context, tx *sql.Tx) error {
@@ -57,6 +62,10 @@ CREATE TABLE IF NOT EXISTS df_skill_discoveries(
  payload BLOB NOT NULL,payload_sha TEXT NOT NULL,created_ns INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS df_skill_discoveries_source ON df_skill_discoveries(source_key,name,id);
 CREATE TABLE IF NOT EXISTS df_skill_discovery_consumed(root_digest TEXT PRIMARY KEY,discovery_id TEXT NOT NULL REFERENCES df_skill_discoveries(id));
+CREATE TABLE IF NOT EXISTS df_skill_discovery_episode_consumed(digest TEXT PRIMARY KEY,discovery_id TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS df_skill_discovery_episode_roots(root_id TEXT PRIMARY KEY,episode_key TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS df_skill_discovery_experience_scan(id INTEGER PRIMARY KEY CHECK(id=1),cursor TEXT NOT NULL);
+INSERT OR IGNORE INTO df_skill_discovery_experience_scan VALUES(1,'');
 CREATE TABLE IF NOT EXISTS df_skill_discovery_days(day TEXT PRIMARY KEY,reservations INTEGER NOT NULL CHECK(reservations>=0));
 CREATE TABLE IF NOT EXISTS df_skill_discovery_cooldowns(source_key TEXT NOT NULL,name TEXT NOT NULL,until_ns INTEGER NOT NULL,PRIMARY KEY(source_key,name));`)
 	if err != nil {
@@ -71,7 +80,10 @@ func (s *Service) ConfigureDiscovery(options harness.SkillDiscoveryOptions) erro
 	if s.discovery != nil || s.generation == nil || !validDiscoveryOptions(options) {
 		return invalid("discovery requires configured generation and bounded options")
 	}
-	if options.MissingReportsEnabled || options.SuccessfulWorkflowsEnabled {
+	if options.ExperiencePatternsEnabled && (s.experienceSource == nil || !s.experienceSource.PromotionEnabled()) {
+		return invalid("experience discovery requires explicitly enabled extraction, consolidation and matching")
+	}
+	if options.MissingReportsEnabled || options.SuccessfulWorkflowsEnabled || options.ExperienceNewSkillsEnabled {
 		if _, ok := s.generation.allowed[options.NewSkillSourceID]; !ok {
 			return invalid("new skill discovery source is not authorized for generation")
 		}
@@ -110,11 +122,16 @@ func readDiscovery(ctx context.Context, db rowReader, id string) (discoverySnaps
 		return discoverySnapshot{}, "", "", invalid("discovery record is inconsistent")
 	}
 	roots := map[string]bool{}
+	episodes := map[string]bool{}
 	for _, ref := range d.Evidence {
-		if ref.RootID == "" || roots[ref.RootID] || !validDiscoveryReference(d.kind(), ref) {
+		if ref.RootID == "" || roots[ref.RootID] || !validDiscoveryReference(d.kind(), ref) || d.EpisodeDedup && (!hexDigest(ref.EpisodeKey) || episodes[ref.EpisodeKey]) {
 			return discoverySnapshot{}, "", "", invalid("discovery evidence record is inconsistent")
 		}
+		if d.kind() == "experience_pattern" && d.HostAdjudicated != strings.HasPrefix(ref.Experience.MatchID, "ladj_") {
+			return discoverySnapshot{}, "", "", invalid("discovery target origin is inconsistent")
+		}
 		roots[ref.RootID] = true
+		episodes[ref.EpisodeKey] = true
 	}
 	return d, job, digest, nil
 }
@@ -185,16 +202,27 @@ func (g *generationHost) discoveryEvidence(ctx context.Context, tx *sql.Tx, r ge
 	if d.Options != g.discovery.options {
 		return nil, errGenerationConfiguration
 	}
-	return liveDiscoveryEvidence(ctx, tx, r)
+	return liveDiscoveryEvidence(ctx, tx, r, g.experienceSource)
 }
 
-func liveDiscoveryEvidence(ctx context.Context, tx *sql.Tx, r generationRecord) ([]harness.SkillGenerationEvidence, error) {
+func liveDiscoveryEvidence(ctx context.Context, tx *sql.Tx, r generationRecord, source *learning.Store) ([]harness.SkillGenerationEvidence, error) {
 	d, job, digest, err := readDiscovery(ctx, tx, r.input.DiscoveryID)
 	if err != nil {
 		return nil, err
 	}
 	if job != r.job.ID || digest != r.input.DiscoveryDigest || d.Target != r.input.Target || d.Base != r.input.Request.Base || !skills.SameOverlayBase(d.OverlayBase, r.input.OverlayBase) {
 		return nil, errDiscoveryEvidence
+	}
+	if (d.CreationRetry != nil) != (r.input.CreationRetryAuthorization != "") {
+		return nil, errDiscoveryEvidence
+	}
+	if d.EpisodeDedup {
+		if err = verifyDiscoveryEpisodesTx(ctx, tx, d); err != nil {
+			return nil, err
+		}
+	}
+	if d.kind() == "experience_pattern" {
+		return liveExperienceDiscovery(ctx, tx, source, d, job)
 	}
 	if d.kind() != "operator_corrections" {
 		return derivedDiscoveryEvidence(ctx, tx, d)
@@ -231,9 +259,9 @@ func liveDiscoveryEvidence(ctx context.Context, tx *sql.Tx, r generationRecord) 
 // changed evidence or source revocation cannot publish a candidate merely
 // because its model review completed before the change. Turning discovery off
 // stops new paid work while preserving explicit approval of valid prior work.
-func (s *Service) guardDiscoveryApproval(ctx context.Context, tx *sql.Tx, p Proposal) error {
+func (s *Service) guardDiscoveryApproval(ctx context.Context, tx *skills.PublicationTx, p Proposal) error {
 	var jobID string
-	err := tx.QueryRowContext(ctx, `SELECT job_id FROM df_skill_generation_inputs WHERE proposal_id=?`, p.ID).Scan(&jobID)
+	err := tx.SQL().QueryRowContext(ctx, `SELECT job_id FROM df_skill_generation_inputs WHERE proposal_id=?`, p.ID).Scan(&jobID)
 	if errors.Is(err, sql.ErrNoRows) {
 		if isDiscoveryTrigger(p.Trigger.Type) {
 			return errDiscoveryEvidence
@@ -243,7 +271,7 @@ func (s *Service) guardDiscoveryApproval(ctx context.Context, tx *sql.Tx, p Prop
 	if err != nil {
 		return err
 	}
-	r, err := readGeneration(ctx, tx, jobID)
+	r, err := readGeneration(ctx, tx.SQL(), jobID)
 	if err != nil {
 		return err
 	}
@@ -256,11 +284,20 @@ func (s *Service) guardDiscoveryApproval(ctx context.Context, tx *sql.Tx, p Prop
 	if r.input.Target != p.Target || r.input.Request.Base != p.Base || r.candidate != p.CandidateVersion {
 		return errDiscoveryEvidence
 	}
-	if _, err = liveDiscoveryEvidence(ctx, tx, r); err != nil {
+	if s.experienceSource != nil {
+		ready, err := s.experienceSource.PromotionReadyTx(ctx, tx.SQL(), jobID)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			return harness.ErrPermissionDenied
+		}
+	}
+	if _, err = liveDiscoveryEvidence(ctx, tx.SQL(), r, s.experienceSource); err != nil {
 		if discoverySkippable(err) {
 			return errDiscoveryEvidence
 		}
 		return err
 	}
-	return nil
+	return s.guardExperienceCandidate(ctx, tx, r)
 }

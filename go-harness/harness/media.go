@@ -7,6 +7,9 @@ const (
 	MaxInputImagesPerTurn         = 8
 	MaxInputImageTotalBytes int64 = 40 * 1024 * 1024
 	MaxInputFileBytes       int64 = 25 * 1024 * 1024
+	MaxTextAttachmentBytes        = 1024 * 1024
+	MaxTextAttachments            = 8
+	MaxTextAttachmentTotal        = 4 * 1024 * 1024
 	AssetImage                    = "image"
 	AssetFile                     = "file"
 	AssetArtifact                 = "artifact"
@@ -27,6 +30,17 @@ type AssetRef struct {
 
 type AssetResolver interface {
 	Resolve(context.Context, string, AssetRef) ([]byte, error)
+}
+
+type AttachmentPage struct {
+	Attachments []AssetRef `json:"attachments"`
+	NextCursor  string     `json:"next_cursor,omitempty"`
+}
+
+// AttachmentReader accepts opaque IDs, never paths or another session's grants.
+type AttachmentReader interface {
+	ListAttachments(context.Context, Session, string) (AttachmentPage, error)
+	ReadAttachment(context.Context, Session, string, int64, int) (ToolOutputChunk, error)
 }
 
 // ToolOutputChunk is one bounded, UTF-8 slice of a durable tool result.

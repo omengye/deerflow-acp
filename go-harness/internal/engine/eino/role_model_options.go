@@ -4,13 +4,11 @@ import (
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/cloudwego/eino-ext/components/model/ark"
 	"github.com/cloudwego/eino-ext/components/model/claude"
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
-	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 )
 
 // Provider options are attached at the last model boundary after the shared
@@ -69,35 +67,8 @@ func (t *roleModelTuning) afterReservation(opts []model.Option) ([]model.Option,
 	}
 	result := append([]model.Option(nil), opts...)
 	switch t.provider {
-	case "", "openai", "openai-compatible", "ark":
-		if common.MaxTokens != nil && *common.MaxTokens > 0 {
-			// Each public Eino Option changes one common field or one provider
-			// field. Remove only common MaxTokens setters to avoid sending both
-			// mutually exclusive output limits to the provider.
-			result = nil
-			for _, opt := range opts {
-				if model.GetCommonOptions(nil, opt).MaxTokens == nil {
-					result = append(result, opt)
-				}
-			}
-			if t.provider == "ark" {
-				result = append(result, ark.WithMaxCompletionTokens(*common.MaxTokens))
-			} else {
-				result = append(result, openai.WithMaxCompletionTokens(*common.MaxTokens))
-			}
-		}
-		if t.provider == "ark" {
-			if t.thinking != nil {
-				typ := arkmodel.ThinkingTypeDisabled
-				if *t.thinking {
-					typ = arkmodel.ThinkingTypeEnabled
-				}
-				result = append(result, ark.WithThinking(&arkmodel.Thinking{Type: typ}))
-			}
-			if t.effort != "" {
-				result = append(result, ark.WithReasoningEffort(arkmodel.ReasoningEffort(t.effort)))
-			}
-		} else if t.effort != "" {
+	case "", "openai", "openai-compatible":
+		if t.effort != "" {
 			result = append(result, openai.WithReasoningEffort(openai.ReasoningEffortLevel(t.effort)))
 		}
 	case "claude", "anthropic":

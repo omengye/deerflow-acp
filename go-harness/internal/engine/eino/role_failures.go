@@ -18,6 +18,10 @@ func (e *roleProviderError) Unwrap() error { return e.cause }
 type delegationFailure struct{ cause error }
 
 func (e *delegationFailure) Error() string {
+	var stalled *noProgressError
+	if errors.As(e.cause, &stalled) {
+		return "subagent stopped for repeated identical observations; result is incomplete; inspect its evidence and change strategy rather than blindly delegating the same work again"
+	}
 	var deadline *roleDeadline
 	if errors.As(e.cause, &deadline) {
 		return deadline.Error() + "; completed tool receipts remain authoritative, so do not repeat completed effects"
@@ -94,7 +98,7 @@ func recoverableRoleCause(err error) bool {
 	}
 	remaining, removed := removeErrorLeaves(err, func(leaf error) bool {
 		switch leaf.(type) {
-		case *roleProviderError, *delegationFailure, *harness.ToolNotExecutedError, *harness.ToolNoEffectError:
+		case *roleProviderError, *outputContinuationError, *noProgressError, *delegationFailure, *harness.ToolNotExecutedError, *harness.ToolNoEffectError:
 			return true
 		}
 		return leaf == adk.ErrExceedMaxIterations

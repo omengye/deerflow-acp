@@ -113,6 +113,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 				return p, fmt.Errorf("%w: session model is not configured", harness.ErrInvalidInput)
 			}
 			selected.Provider, selected.BaseURL, selected.APIKey = route.Provider, route.BaseURL, route.APIKey
+			selected.OutputTokenParameter = route.OutputTokenParameter
 			modelID = route.Model
 		}
 		chatModel, err = newModel(ctx, selected, modelID)
@@ -160,6 +161,14 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		tools = append(tools, readOutput)
 	}
 	protected := make(map[string]bool, len(tools))
+	rootContext := e.config.TaskContextStore != nil && len(role) == 0
+	if rootContext {
+		more, err := harnesstools.TaskContextTools(e.config.TaskContextStore, req)
+		if err != nil {
+			return p, err
+		}
+		tools = append(tools, more...)
+	}
 	seenTools := make(map[string]bool, len(tools))
 	contracts := make([]*schema.ToolInfo, 0, len(tools))
 	allowedTools := make([]tool.BaseTool, 0, len(tools))
@@ -251,6 +260,18 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		return p, nil
 	}
 	durableWait := false
+	// Root-session effort is intentionally not inherited by role agents. Their
+	// independently validated recipes continue to own their model tuning.
+	var tuning *roleModelTuning
+	if effort := req.Session.ReasoningEffort; effort != "" && effort != "default" {
+		if !harness.ReasoningEffortAllowed(e.config.ModelReasoningEfforts[selectedModel], effort) {
+			return p, fmt.Errorf("%w: reasoning effort is not configured for this model", harness.ErrInvalidInput)
+		}
+		tuning, err = e.roleTuning(agents.Spec{Model: selectedModel, ReasoningEffort: effort})
+		if err != nil {
+			return p, err
+		}
+	}
 	for _, t := range tools {
 		if wait, ok := t.(interface{ DurableTaskWait() bool }); ok && wait.DurableTaskWait() {
 			durableWait = true
@@ -261,7 +282,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	if extensions.ModelHandlerFactory != nil || extensions.PostRunFactory != nil {
 		privateMedia := *media
 		privateMedia.importer, privateMedia.publish = nil, nil
-		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, contextWindow: e.config.ContextWindows[selectedModel]}
+		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel]}
 		if extensions.ModelHandlerFactory != nil {
 			modelHandlers, err := extensions.ModelHandlerFactory(ctx, metered)
 			if err != nil {
@@ -277,17 +298,22 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 			}
 		}
 	}
+	handlers = append(handlers, &stoppedToolHistory{}, &progressGuard{})
+	if rootContext && e.config.ToolPolicy.Allows("task_note") {
+		handlers = append(handlers, &taskContextMiddleware{store: e.config.TaskContextStore, req: req})
+	}
+	var compaction adk.ChatModelAgentMiddleware
 	if e.config.Compaction.Enabled {
 		privateMedia := *media
 		privateMedia.importer, privateMedia.publish = nil, nil
-		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, contextWindow: e.config.ContextWindows[selectedModel]}
-		compaction, err := newCompactionMiddleware(ctx, windowCompaction(e.config.Compaction, e.config.ContextWindows[selectedModel], outputReserve(b.limits.MaxOutputTokens, harness.AgentModelSettings{})), metered)
+		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel]}
+		compaction, err = newCompactionMiddleware(ctx, windowCompaction(e.config.Compaction, e.config.ContextWindows[selectedModel], outputReserve(b.limits.MaxOutputTokens, harness.AgentModelSettings{})), metered)
 		if err != nil {
 			return p, fmt.Errorf("build context compaction: %w", err)
 		}
 		handlers = append(handlers, compaction)
 	}
-	handlers = append(handlers, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media, contextWindow: e.config.ContextWindows[selectedModel]}, mw)
+	handlers = append(handlers, &outputContinuationHistory{}, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel]}, mw)
 	delegationEnabled := !e.config.DisableSubAgent && e.config.ToolPolicy.Allows("task") && !(req.Session.ConfigVersion > 0 && !req.Session.Subagents)
 	var children []adk.Agent
 	if e.roles != nil && delegationEnabled {
@@ -297,10 +323,11 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		}
 	}
 	p.Agent, err = deep.New(ctx, &deep.Config{
-		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend,
+		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend + stoppedToolInstruction(ctx),
 		ChatModel: chatModel, MaxIteration: nativeMaxIterations(e.config.MaxIterations),
-		ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}},
-		Handlers:    handlers, WithoutWriteTodos: !e.config.ToolPolicy.Allows("write_todos"),
+		ModelRetryConfig: outputContinuationPolicy(compaction),
+		ToolsConfig:      adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}},
+		Handlers:         handlers, WithoutWriteTodos: !e.config.ToolPolicy.Allows("write_todos"),
 		SubAgents:              children,
 		WithoutGeneralSubAgent: !delegationEnabled || e.roles != nil,
 	})

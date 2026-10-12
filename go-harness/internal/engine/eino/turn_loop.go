@@ -28,6 +28,7 @@ type turnItem struct {
 	Workspace, Contract                     string
 	RootBudgetID                            string
 	SourceKind, SourceSHA, SourceContentSHA string
+	ReasoningEffort                         string `json:",omitempty"`
 }
 
 func itemFor(req harness.RunRequest) turnItem {
@@ -35,7 +36,7 @@ func itemFor(req harness.RunRequest) turnItem {
 	if inputID == "" {
 		inputID = req.RunID
 	}
-	return turnItem{InputID: inputID, SessionID: req.Session.ID, ConfigVersion: req.Session.ConfigVersion, Model: req.Session.Model, Mode: req.Session.Mode, ApprovalMode: req.Session.ApprovalMode, Subagents: req.Session.Subagents, Workspace: req.Session.CWD, RootBudgetID: req.RootBudgetID}
+	return turnItem{InputID: inputID, SessionID: req.Session.ID, ConfigVersion: req.Session.ConfigVersion, Model: req.Session.Model, ReasoningEffort: req.Session.ReasoningEffort, Mode: req.Session.Mode, ApprovalMode: req.Session.ApprovalMode, Subagents: req.Session.Subagents, Workspace: req.Session.CWD, RootBudgetID: req.RootBudgetID}
 }
 
 func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawMessage) (string, error) {
@@ -45,6 +46,7 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 	}
 	data, err := json.Marshal(struct {
 		Provider, BaseURL, Model, Instruction string
+		OutputTokenParameter                  harness.OutputTokenParameter
 		ModelRoutes                           map[string]harness.ModelRoute `json:",omitempty"`
 		MaxIterations                         int
 		Budget                                harness.BudgetLimits
@@ -58,7 +60,7 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 		Subagents                             *harness.SubagentsConfig `json:",omitempty"`
 		ContextWindows                        map[string]int           `json:",omitempty"`
 		ContextPolicy                         string
-	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.ModelRoutes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode, e.config.Subagents, e.config.ContextWindows, "adaptive-window-compaction-v2"})
+	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.OutputTokenParameter, e.config.ModelRoutes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode, e.config.Subagents, e.config.ContextWindows, "adaptive-window-compaction-v2/output-parameter-v1/output-continuation-v1/stopped-tool-followup-v1/progress-v1/continuity-v1"})
 	if err != nil {
 		return "", fmt.Errorf("encode execution contract: %w", err)
 	}

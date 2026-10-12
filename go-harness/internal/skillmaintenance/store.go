@@ -19,23 +19,36 @@ const maxAttempts = 3
 const leaseDuration = 15 * time.Second
 
 type Store struct {
-	db       *sql.DB
-	policy   Policy
-	now      func() time.Time
-	admit    AdmissionCheck
-	terminal TerminalHook
+	db            *sql.DB
+	policy        Policy
+	now           func() time.Time
+	admit         AdmissionCheck
+	ready         ClaimReadinessCheck
+	terminal      TerminalHook
+	callAdmission CallAdmissionCheck
 }
 
 // AdmissionCheck runs in the reservation transaction before any provider I/O.
 // It must use only this transaction and immutable host metadata.
 type AdmissionCheck func(context.Context, *sql.Tx, Job) error
 
+// ClaimReadinessCheck may defer transiently busy sources without starting a
+// claim. It is not authorization; every paid call still runs AdmissionCheck.
+// Like admission, it may use only this transaction and host metadata.
+type ClaimReadinessCheck func(context.Context, *sql.Tx, Job) (bool, error)
+
 // TerminalHook commits producer metadata cleanup with a terminal job state.
 // It must not perform I/O outside this SQL transaction.
 type TerminalHook func(context.Context, *sql.Tx, Job) error
+
+// CallAdmissionCheck applies producer sublimits inside the same reservation
+// transaction; it cannot enlarge the database-wide policy.
+type CallAdmissionCheck func(context.Context, *sql.Tx, Job, ModelCall, time.Time) error
 type Hooks struct {
-	Admission AdmissionCheck
-	Terminal  TerminalHook
+	Admission     AdmissionCheck
+	Ready         ClaimReadinessCheck
+	Terminal      TerminalHook
+	CallAdmission CallAdmissionCheck
 }
 
 func New(ctx context.Context, db *sql.DB, policy Policy) (*Store, error) {
@@ -50,7 +63,7 @@ func NewWithHooks(ctx context.Context, db *sql.DB, policy Policy, hooks Hooks) (
 	if db == nil || !validPolicy(policy) {
 		return nil, ErrInvalid
 	}
-	s := &Store{db: db, policy: policy, now: time.Now, admit: hooks.Admission, terminal: hooks.Terminal}
+	s := &Store{db: db, policy: policy, now: time.Now, admit: hooks.Admission, ready: hooks.Ready, terminal: hooks.Terminal, callAdmission: hooks.CallAdmission}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -81,7 +94,10 @@ CREATE TABLE IF NOT EXISTS df_skill_maintenance_calls (
  state TEXT NOT NULL,estimated INTEGER NOT NULL DEFAULT 1,settlement_digest TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS df_skill_maintenance_job_calls ON df_skill_maintenance_calls(job_id,id);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	return migrateJobOwners(ctx, tx)
 }
 
 func bounded(v string, n int) bool {
@@ -129,23 +145,33 @@ func readJob(ctx context.Context, db rowQuery, id string) (Job, string, int64, e
 	var token string
 	var lease, deadline, retry int64
 	var policy []byte
-	err := db.QueryRowContext(ctx, `SELECT id,source_key,name,request_key,reference,input_digest,policy,state,state_version,attempts,token,lease_ns,deadline_ns,retry_ns,error_code FROM df_skill_maintenance_jobs WHERE id=?`, id).
-		Scan(&j.ID, &j.Request.SourceIdentity, &j.Request.Name, &j.Request.Key, &j.Request.Reference, &j.Request.InputDigest, &policy, &j.State, &j.StateVersion, &j.Attempts, &token, &lease, &deadline, &retry, &j.ErrorCode)
+	var storageKey, ownerRequestKey string
+	err := db.QueryRowContext(ctx, `SELECT id,source_key,name,request_key,reference,input_digest,policy,state,state_version,attempts,token,lease_ns,deadline_ns,retry_ns,error_code,job_kind,owner_kind,owner_key,owner_request_key FROM df_skill_maintenance_jobs WHERE id=?`, id).
+		Scan(&j.ID, &j.Request.SourceIdentity, &j.Request.Name, &storageKey, &j.Request.Reference, &j.Request.InputDigest, &policy, &j.State, &j.StateVersion, &j.Attempts, &token, &lease, &deadline, &retry, &j.ErrorCode, &j.Request.Kind, &j.Request.OwnerKind, &j.Request.OwnerKey, &ownerRequestKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return j, token, lease, harness.ErrNotFound
 	}
 	if err != nil {
 		return j, token, lease, err
 	}
-	if json.Unmarshal(policy, &j.Policy) != nil || !validPolicy(j.Policy) || j.StateVersion < 1 || j.Attempts < 0 || j.Attempts > maxAttempts || !validRequest(j.Request) {
+	j.Request.Key = storageKey
+	if j.Request.OwnerKind != SkillOwner {
+		j.Request.Key = ownerRequestKey
+	} else if ownerRequestKey != "" {
 		return Job{}, "", 0, ErrInvalid
 	}
+	normalized, valid := normalizeRequest(j.Request, true)
+	if json.Unmarshal(policy, &j.Policy) != nil || !validPolicy(j.Policy) || j.StateVersion < 1 || j.Attempts < 0 || j.Attempts > maxAttempts || !valid || storageKey != requestStorageKey(normalized) {
+		return Job{}, "", 0, ErrInvalid
+	}
+	j.Request = normalized
 	j.Deadline, j.RetryAt = timestamp(deadline), timestamp(retry)
 	return j, token, lease, nil
 }
 
 func validRequest(r Request) bool {
-	return digest(r.SourceIdentity) && harness.ValidSkillName(r.Name) && bounded(r.Key, 256) && bounded(r.Reference, 256) && digest(r.InputDigest)
+	_, valid := normalizeRequest(r, false)
+	return valid
 }
 
 func (s *Store) Enqueue(ctx context.Context, r Request) (Job, error) {
@@ -166,11 +192,14 @@ func (s *Store) Enqueue(ctx context.Context, r Request) (Job, error) {
 
 // EnqueueTx lets the producer save its input snapshot in the same transaction.
 func (s *Store) EnqueueTx(ctx context.Context, tx *sql.Tx, r Request) (Job, error) {
-	if !validRequest(r) {
+	var valid bool
+	r, valid = normalizeRequest(r, false)
+	if !valid {
 		return Job{}, ErrInvalid
 	}
+	storageKey := requestStorageKey(r)
 	var id string
-	err := tx.QueryRowContext(ctx, `SELECT id FROM df_skill_maintenance_jobs WHERE source_key=? AND name=? AND request_key=?`, r.SourceIdentity, r.Name, r.Key).Scan(&id)
+	err := tx.QueryRowContext(ctx, `SELECT id FROM df_skill_maintenance_jobs WHERE source_key=? AND name=? AND request_key=?`, r.SourceIdentity, r.Name, storageKey).Scan(&id)
 	if err == nil {
 		j, _, _, err := readJob(ctx, tx, id)
 		if err == nil && j.Request != r {
@@ -181,16 +210,22 @@ func (s *Store) EnqueueTx(ctx context.Context, tx *sql.Tx, r Request) (Job, erro
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Job{}, err
 	}
-	var pending int
-	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM df_skill_maintenance_jobs WHERE state IN ('queued','running','retry')`).Scan(&pending); err != nil {
+	var pending, learningPending int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(CASE WHEN owner_kind<>'skill' THEN 1 ELSE 0 END),0) FROM df_skill_maintenance_jobs WHERE state IN ('queued','running','retry')`).Scan(&pending, &learningPending); err != nil {
 		return Job{}, err
 	}
-	if pending >= 100 {
+	// Learning stages share a smaller inventory inside the global cap, leaving
+	// room for explicit skill generation and evaluation when capture backs up.
+	if pending >= 100 || r.OwnerKind != SkillOwner && learningPending >= 20 {
 		return Job{}, ErrBudget
 	}
 	j := Job{ID: "smj_" + rand.Text(), Request: r, Policy: s.policy, State: "queued", StateVersion: 1}
 	policy, _ := json.Marshal(j.Policy)
-	_, err = tx.ExecContext(ctx, `INSERT INTO df_skill_maintenance_jobs(id,source_key,name,request_key,reference,input_digest,policy,state,state_version,attempts) VALUES(?,?,?,?,?,?,?,?,1,0)`, j.ID, r.SourceIdentity, r.Name, r.Key, r.Reference, r.InputDigest, policy, j.State)
+	ownerRequestKey := ""
+	if r.OwnerKind != SkillOwner {
+		ownerRequestKey = r.Key
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO df_skill_maintenance_jobs(id,source_key,name,request_key,reference,input_digest,policy,state,state_version,attempts,job_kind,owner_kind,owner_key,owner_request_key) VALUES(?,?,?,?,?,?,?,?,1,0,?,?,?,?)`, j.ID, r.SourceIdentity, r.Name, storageKey, r.Reference, r.InputDigest, policy, j.State, r.Kind, r.OwnerKind, r.OwnerKey, ownerRequestKey)
 	if err != nil {
 		return Job{}, err
 	}
@@ -225,6 +260,24 @@ func GuardTx(ctx context.Context, tx *sql.Tx, jobID string) error {
 // Claim persists both concurrency admission and the first-start deadline.
 // Expired workers keep all charged calls and attempts. Recovery is bounded.
 func (s *Store) Claim(ctx context.Context) (Claim, bool, error) {
+	return s.ClaimKinds(ctx, []JobKind{SkillGeneration, SkillBehavior})
+}
+
+// ClaimKinds isolates producers while concurrency and daily budgets remain
+// database-wide. Unknown legacy jobs are never selected implicitly.
+func (s *Store) ClaimKinds(ctx context.Context, kinds []JobKind) (Claim, bool, error) {
+	if len(kinds) == 0 || len(kinds) > 5 {
+		return Claim{}, false, ErrInvalid
+	}
+	args := make([]any, len(kinds))
+	seen := map[JobKind]bool{}
+	for i, kind := range kinds {
+		if !validKind(kind) || seen[kind] {
+			return Claim{}, false, ErrInvalid
+		}
+		seen[kind], args[i] = true, kind
+	}
+	filter := `job_kind IN (` + strings.TrimSuffix(strings.Repeat("?,", len(kinds)), ",") + `)`
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Claim{}, false, err
@@ -236,7 +289,7 @@ func (s *Store) Claim(ctx context.Context) (Claim, bool, error) {
 	}
 	var expired []string
 	if s.terminal != nil {
-		rows, err := tx.QueryContext(ctx, `SELECT id FROM df_skill_maintenance_jobs WHERE (state='running' AND lease_ns<=?) OR (state IN ('queued','retry') AND deadline_ns>0 AND deadline_ns<=?)`, now.UnixNano(), now.UnixNano())
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM df_skill_maintenance_jobs WHERE `+filter+` AND ((state='running' AND lease_ns<=?) OR (state IN ('queued','retry') AND deadline_ns>0 AND deadline_ns<=?))`, append(append([]any{}, args...), now.UnixNano(), now.UnixNano())...)
 		if err != nil {
 			return Claim{}, false, err
 		}
@@ -256,11 +309,11 @@ func (s *Store) Claim(ctx context.Context) (Claim, bool, error) {
 		}
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET state=CASE WHEN attempts>=? OR deadline_ns<=? THEN 'failed' ELSE 'retry' END,
- state_version=state_version+1,token='',lease_ns=0,retry_ns=0,error_code='worker_interrupted' WHERE state='running' AND lease_ns<=?`, maxAttempts, now.UnixNano(), now.UnixNano())
+ state_version=state_version+1,token='',lease_ns=0,retry_ns=0,error_code='worker_interrupted' WHERE `+filter+` AND state='running' AND lease_ns<=?`, append([]any{maxAttempts, now.UnixNano()}, append(append([]any{}, args...), now.UnixNano())...)...)
 	if err != nil {
 		return Claim{}, false, err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET state='failed',state_version=state_version+1,error_code='job_deadline',retry_ns=0 WHERE state IN ('queued','retry') AND deadline_ns>0 AND deadline_ns<=?`, now.UnixNano())
+	_, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET state='failed',state_version=state_version+1,error_code='job_deadline',retry_ns=0 WHERE `+filter+` AND state IN ('queued','retry') AND deadline_ns>0 AND deadline_ns<=?`, append(append([]any{}, args...), now.UnixNano())...)
 	if err != nil {
 		return Claim{}, false, err
 	}
@@ -276,25 +329,54 @@ func (s *Store) Claim(ctx context.Context) (Claim, bool, error) {
 		}
 	}
 	var active int
-	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM df_skill_maintenance_jobs WHERE state='running'`).Scan(&active); err != nil {
+	// A different, disabled producer can leave expired jobs for its own
+	// recovery hook. They cannot hold live slots or renew expired claims.
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM df_skill_maintenance_jobs WHERE state='running' AND lease_ns>? AND deadline_ns>?`, now.UnixNano(), now.UnixNano()).Scan(&active); err != nil {
 		return Claim{}, false, err
 	}
 	if active >= s.policy.Workers {
 		return Claim{}, false, tx.Commit()
 	}
-	var id string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM df_skill_maintenance_jobs WHERE state IN ('queued','retry') AND retry_ns<=? AND attempts<? ORDER BY rowid LIMIT 1`, now.UnixNano(), maxAttempts).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Claim{}, false, tx.Commit()
-	}
+	// Cover the existing global pending cap, including experience-backed skill
+	// generation, so busy sources cannot hide ready work later in the queue.
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM df_skill_maintenance_jobs WHERE `+filter+` AND state IN ('queued','retry') AND retry_ns<=? AND attempts<? ORDER BY CASE WHEN owner_kind='skill' THEN 0 ELSE 1 END,rowid LIMIT 100`, append(append([]any{}, args...), now.UnixNano(), maxAttempts)...)
 	if err != nil {
 		return Claim{}, false, err
 	}
-	j, _, _, err := readJob(ctx, tx, id)
-	if err != nil {
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			break
+		}
+		ids = append(ids, id)
+	}
+	if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
 		return Claim{}, false, err
 	}
-	if active >= j.Policy.Workers {
+	var j Job
+	found := false
+	for _, id := range ids {
+		candidate, _, _, err := readJob(ctx, tx, id)
+		if err != nil {
+			return Claim{}, false, err
+		}
+		if active >= candidate.Policy.Workers {
+			return Claim{}, false, tx.Commit()
+		}
+		if s.ready != nil {
+			ready, err := s.ready(ctx, tx, candidate)
+			if err != nil {
+				return Claim{}, false, err
+			}
+			if !ready {
+				continue
+			}
+		}
+		j, found = candidate, true
+		break
+	}
+	if !found {
 		return Claim{}, false, tx.Commit()
 	}
 	if j.Deadline.IsZero() {
@@ -345,7 +427,7 @@ func (s *Store) Heartbeat(ctx context.Context, c Claim) error {
 // Complete/Fail never release model charges. Error codes are a fixed enum.
 func (s *Store) Finish(ctx context.Context, c Claim, code string, retry bool) error {
 	switch code {
-	case "", "model_failed", "invalid_candidate", "budget_exhausted", "storage_error", "cancelled", "job_deadline", "source_unavailable", "base_changed", "configuration_changed", "evidence_changed":
+	case "", "model_failed", "invalid_candidate", "budget_exhausted", "storage_error", "cancelled", "job_deadline", "source_unavailable", "source_active", "inventory_changed", "base_changed", "configuration_changed", "evidence_changed":
 	default:
 		return ErrInvalid
 	}

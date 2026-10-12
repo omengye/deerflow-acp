@@ -12,6 +12,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/learning"
 )
 
 type Store struct {
@@ -20,6 +21,7 @@ type Store struct {
 	// the same transaction as accepted input and terminal run state.
 	BudgetLedger *budget.Ledger
 	BudgetLimits harness.BudgetLimits
+	Learning     *learning.Store
 }
 
 func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
@@ -43,6 +45,9 @@ CREATE TABLE IF NOT EXISTS harness_tool_reconciliations (run_id TEXT NOT NULL, t
 	if err = migrateSessionRetention(ctx, db); err != nil {
 		return nil, err
 	}
+	if err = migrateSessionReasoning(ctx, db); err != nil {
+		return nil, err
+	}
 	if err = migrateExecutions(ctx, db); err != nil {
 		return nil, err
 	}
@@ -59,6 +64,20 @@ CREATE TABLE IF NOT EXISTS harness_tool_reconciliations (run_id TEXT NOT NULL, t
 		return nil, err
 	}
 	if err = migrateSkillEvidence(ctx, db); err != nil {
+		return nil, err
+	}
+	if err = migrateTaskContext(ctx, db); err != nil {
+		return nil, err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err = learning.Migrate(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
 	return &Store{db: db}, nil
@@ -79,7 +98,7 @@ type scanner interface{ Scan(...any) error }
 func scanSession(row scanner) (harness.Session, error) {
 	var x harness.Session
 	var created, updated string
-	err := row.Scan(&x.ID, &x.CWD, &x.Title, &x.Mode, &x.Model, &created, &updated, &x.ApprovalMode, &x.Subagents, &x.ConfigVersion)
+	err := row.Scan(&x.ID, &x.CWD, &x.Title, &x.Mode, &x.Model, &created, &updated, &x.ApprovalMode, &x.Subagents, &x.ConfigVersion, &x.ReasoningEffort)
 	if errors.Is(err, sql.ErrNoRows) {
 		return x, harness.ErrNotFound
 	}
@@ -94,7 +113,7 @@ func scanSession(row scanner) (harness.Session, error) {
 	return x, err
 }
 func (s *Store) Session(ctx context.Context, id string) (harness.Session, error) {
-	return scanSession(s.db.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, id))
+	return scanSession(s.db.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, id))
 }
 
 // ManagementSession resolves an existing foreground session without requiring
@@ -110,7 +129,7 @@ func (s *Store) List(ctx context.Context, cwd, cursor string, limit int) ([]harn
 	if err != nil {
 		return nil, err
 	}
-	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE (?='' OR s.cwd=?) AND s.id>?`
+	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE (?='' OR s.cwd=?) AND s.id>?`
 	if children {
 		query += ` AND NOT EXISTS(SELECT 1 FROM harness_background_specs b WHERE b.child_session_id=s.id)`
 	}
@@ -141,7 +160,7 @@ func (s *Store) ListForManagement(ctx context.Context, limit int) ([]harness.Ses
 	if err != nil {
 		return nil, err
 	}
-	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id`
+	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id`
 	if children {
 		query += ` WHERE NOT EXISTS(SELECT 1 FROM harness_background_specs b WHERE b.child_session_id=s.id)`
 	}
@@ -215,8 +234,18 @@ func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest, prepared .
 			}
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO harness_events(session_id,run_id,event) VALUES(?,?,?)`, req.Session.ID, req.RunID, user); err != nil {
+	event, err := tx.ExecContext(ctx, `INSERT INTO harness_events(session_id,run_id,event) VALUES(?,?,?)`, req.Session.ID, req.RunID, user)
+	if err != nil {
 		return err
+	}
+	if s.Learning != nil {
+		sequence, err := event.LastInsertId()
+		if err != nil {
+			return err
+		}
+		if err = s.Learning.CaptureInputTx(ctx, tx, req, sequence, input); err != nil {
+			return err
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE harness_sessions SET updated_at=? WHERE id=?`, now, req.Session.ID); err != nil {
 		return err

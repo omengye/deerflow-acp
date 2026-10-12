@@ -1,12 +1,27 @@
 # ACP media and local artifacts
 
-The stdio transport accepts `text`, inline `image`, and `resource_link` prompt
-blocks. Embedded resources and audio are not implemented. Image capability is
+The stdio transport accepts `text`, inline `image`, `resource_link`, and bounded
+embedded text `resource` prompt blocks. Audio and arbitrary embedded resources
+are not implemented. Image capability is
 advertised only when asset storage is configured and an available model appears
 in `Media.VisionModels`. The selected session model is checked on every prompt.
 
 ## Input
 
+- Explicit desktop text attachments use ACP `resource` blocks with
+  `resource: {uri: "attachment:///notes.csv", mimeType: "text/plain", text: "..."}`.
+  `embeddedContext` is advertised only when asset storage is available. Names
+  must be basenames; the URI never grants filesystem access. Supported UTF-8
+  formats are TXT, MD/Markdown, CSV, TSV, JSON, YAML/YML and LOG: at most 8 files,
+  1 MiB per file, 4 MiB per prompt. PDF, Office, directories and binary content
+  are rejected before acceptance. SDK clients use `Content{Type:"attachment",
+  Name:"notes.csv", Text:"..."}`; accepted history contains only stable refs.
+- Models receive metadata and call `list_attachments` (32 per page) and
+  `read_attachment` (4-4096 UTF-8 bytes, default 4096, byte offsets) under the
+  current session and workspace. Snapshots must have a committed input grant;
+  IDs from another session are not readable, even in the same workspace.
+  Original files are not reread. Host tool policy and session read-only policy
+  still apply. Attachment content remains untrusted data, not instructions.
 - Images support PNG, JPEG, GIF and WebP, with Base64 and MIME checks. The limits
   are 8 images per turn, 20 MiB per image and 40 MiB combined decoded image bytes.
 - Local `file:` resource links must refer to regular files within the session

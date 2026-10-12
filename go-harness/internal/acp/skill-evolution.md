@@ -5,6 +5,84 @@ application service. These are operator operations, not standard ACP methods or
 model tools. No HTTP server or Python runtime is used. The daemon's existing
 token authentication is required before the management request is accepted.
 
+Multi-turn learning has separate extraction, consolidation and authorized
+skill-matching opt-ins that store unassessed experiences/patterns/matches.
+Its SDK, authenticated `skill.learning.*` operations and
+owner-bound `_deerflow/learning/*` ACP extensions are documented in the
+[learning implementation reference](../../../docs/skill-learning-status-20261008.md).
+Enabling these stages does not grant generation or publication. Pattern history
+is available through `skill.learning.patterns` and `_deerflow/learning/patterns`.
+Match history is available through `skill.learning.matches` and
+`_deerflow/learning/matches`; exact target heads and actual read refs are separate.
+Workspace aggregation additionally requires the host's `cross_session_enabled`
+gate and per-session `workspace_shared` consent. ACP control.set accepts optional
+`workspaceShared`, but ordinary ACP pattern/match lists exclude shared text.
+Only trusted SDK hosts and authenticated MANAGE can query
+`skill.learning.workspace.patterns`, `skill.learning.workspace.matches` or link
+copied tasks with `skill.learning.lineage.link`; one ACP session owner is not an
+authority to read other conversations. Sharing changes increment the consent
+epoch and delete transitive unpublished summaries, without refunding charges.
+History reads report `source_state=not_revalidated`; they do not certify live
+evidence, which model admission and promotion check again.
+
+`skill_evolution.discovery.experience_patterns_enabled` is a fourth, independent,
+default-off discovery trigger. It requires generation plus extraction,
+consolidation and matching. Only a precise authorized existing skill with a
+`body_gap` or `trigger_mismatch`, current evidence and enough independent
+completed local observations can produce an instruction-only pending-review
+proposal. Existing support files remain unchanged. These proposals require
+human approval unless the independent learning auto-patch gate is enabled and
+its trusted host admission rules pass. Existing `auto_patch` alone is not this grant.
+The separate default-off `discovery.experience_review_drafts_enabled` permits
+automatic drafts below the repeat threshold, still requiring a source-verified
+local observation and all other live guards. These immutable `review_draft=true`
+candidates always require human approval; no manual drafting request is needed.
+`new_capability` remains a classification,
+not authorization to choose a source/name or create a skill.
+
+Creation from `new_capability` requires the additional default-off
+`discovery.experience_new_skills_enabled` and explicit non-builtin
+`new_skill_source_id`. The matcher only suggests a readable goal/procedure name;
+the host checks the complete inventory, unrestricted selection, canonical workspace
+and global visibility, existing/disabled/tombstoned names and unpublished conflicts.
+One pattern receives only one creation reservation across revisions, names and
+sources. The candidate contains only SKILL.md and is always human-approved.
+ACP learning methods remain owner-bound shadow history/control and cannot choose
+a source or authorize creation. Custom/legacy matcher results with no name remain
+shadow classifications, never auto-generated capabilities.
+
+SDK/MANAGE `skill.learning.status` reports `proposal_discovery_enabled` and
+`mode=review_candidates` when this bridge is enabled. The independent publication
+grant adds `auto_patch_enabled=true` and `mode=guarded_auto_patch`; neither mode
+claims any candidate has passed or published. Otherwise it reports `mode=shadow`.
+ACP's learning extension advertises only its owner-bound shadow
+history/control methods, not cross-session or proposal authority. Discovery and
+proposal inspection use existing authenticated `skill.discovery.*` and
+`proposal.*` operations. Withdrawal clears unpublished derived text/candidates;
+published or independently retained immutable versions and paid receipts survive.
+
+`skill_evolution.auto_patch.experience_patterns_enabled` defaults false and
+requires active auto-patch mode, complete learning/experience discovery and host
+behavior evaluation. New capabilities, imported skills' first managed adoption,
+builtin overlays, support files and non-description metadata changes remain manual.
+Eligible existing managed body patches need a targeted baseline assertion failure
+to candidate pass, a regression case, no regressions, and no operational fixture
+errors. The normal approval transaction revalidates live learning provenance and
+exact configured generation/behavior/discovery identities before publishing.
+Daily publications and same-target observation locks are shared with old triggers.
+`skill.auto_patch.list` includes digest-only `learning_source` references and
+historical `source_state=valid_at_publication`, `withdrawn` or `unavailable`.
+Source withdrawal after adoption preserves the skill and confirmed-quality
+observation/rollback; it is not a failure vote. Turning learning publication off
+on restart still permits monitoring under overall auto_patch. Turning overall
+auto_patch off pauses its existing worker. Description changes additionally require
+a trusted `skill-behavior-v2` suite's positive/negative first-turn Skill selections
+and an assertion improvement, with all candidate execution coverage passing.
+Combined body/description edits also need a targeted body assertion improvement.
+No trusted trigger suite, no improvement, unrelated metadata or operational
+failures keep a description edit manual. Selection reads metadata only, executes
+no tools and is not runtime skill-read attribution or confirmed quality.
+
 ## Available operations
 
 Responses retain the desktop envelope `{ "ok": true, "data": ... }`; errors
@@ -151,10 +229,10 @@ SDK equivalents are `SkillGenerationStatus`, `PrepareSkillGeneration`,
 `QueueSkillGeneration`, `GetSkillGeneration`,
 `ListSkillGenerations`, `CancelSkillGeneration` and `SkillGenerationReceipts`.
 `proposal.history.capabilities.generation` reports explicit host configuration;
-it is false by default. `discovery` reports the separate repeated-correction
-opt-in described below; `probation` remains false. Explicit jobs use the submitted
-reason and pinned base. Automatic jobs also use current, sanitized correction
-evidence and report `discovery_id`. Trusted attribution remains pending.
+it is false by default. `discovery` reports the applied default-off trigger
+configuration described below; `probation` remains false. Explicit jobs use the
+submitted reason and pinned base. Automatic jobs use current sanitized evidence
+and report `discovery_id`. Trusted attribution remains pending.
 
 #### Host-defined behavior evaluation
 
@@ -181,6 +259,12 @@ including after evaluation is disabled. They expose digests and host checks,
 without fixture inputs, expected answers or model messages. SDK equivalents are
 `SkillBehaviorEvaluation` and `SkillBehaviorReceipts`. At most 96 variant results
 are returned; receipt pages use the last sequence for continuation.
+
+V2 reports add `trigger_positive_cases`, `trigger_negative_cases` and optional
+`base_selection` / `candidate_selection` per comparison. Variant results carry
+`selection` with rule version, target/selected name (empty means none) and the
+fixed metadata catalog SHA-256. Expected selection labels and prompts are still
+private. These observations do not create runtime read records or quality votes.
 
 #### Automatic selection from repeated corrections
 
@@ -608,6 +692,28 @@ describes the effect of this tool call, including a `get` of an already publishe
 proposal. It is not the current publication state; consult `status` and operator
 history for that.
 
+The model tool returns `quality`, bounded/sanitized `model_checks` (stage,
+passed, reason, reason_redacted and input_hash), `error_code`, `failure_stage`,
+`retryable` and `next_action` for both submission and `get`. `ok: true` means
+the request was handled, not that the candidate passed. Model explanations are
+untrusted evidence, never instructions or approval authority. Security/quality
+rejections are distinct from incomplete, invalid, unavailable and transient
+review requests. New failures persist `validation_failure` outside the immutable
+evaluation digest. Legacy reports are projected without rewriting their saved
+evidence; a missing quality decision is `unknown` unless its not-run/unavailable
+state is known. Historical generic errors do not prove an outage or authorize
+retry. Old tool receipts remain unchanged; a fresh `get` exposes the projection.
+
+The reviewer evaluates the submission reason as well as the complete content;
+changing reason is not an equivalent review, even with the same candidate hash.
+Content rejections require a targeted revision preserving the original problem
+and unmet requirements, not switching sources or weakening reason to seek a pass.
+Only classified transient timeouts/network/408/429/5xx errors suggest bounded
+retry under the same authorization and budget. `retryable` schedules nothing;
+duplicate request keys and `get` never rerun validation. Maintenance jobs retain
+their existing attempt/deadline limits and stop on classified permanent review
+failures. A managed source's preferred label is not a health probe.
+
 The daemon and desktop config validator currently support this manual subset:
 
 ```yaml
@@ -714,6 +820,17 @@ data import remains pending and is distinct from configuration conversion.
 
 ## Current limits
 
+Ordinary multi-turn conversations can automatically create review-only skill
+proposals with the separate default-off
+`skill_evolution.discovery.experience_review_drafts_enabled` grant and the full
+learning/matching/generation chain. No manual episode boundary, target decision
+or generation request is required for this path. It still requires source-verified
+local observations and blocks unresolved/conflicting/ambiguous evidence. Records
+expose `review_draft=true`; they always need human approval, even with passing
+behavior evaluation and auto-patch enabled. Candidates satisfying the full
+independent-episode threshold keep the existing guarded auto-patch rules.
+No ACP extension or manual drafting operation is introduced.
+
 The operator service, native candidate storage, model-scoped `skill_manage`,
 manual-review YAML wiring, builtin overlays, import observations and content
 reviewer, managed sources and recoverable export views are available. Durable
@@ -727,9 +844,54 @@ request/job/receipt and observed-feedback panels are connected in source.
 Operator missing-skill reports have SDK/MANAGE endpoints and a cached desktop
 task-selection/report/history form in source. Repeated explicit corrections
 have an opt-in automatic selection worker, native settings and provenance in
-the existing job panel. Automatic missing-report routing, repeated-workflow
-discovery, trusted feedback/quality attribution, probation
-and automatic rollback remain pending. History advertises discovery according
+the existing job panel. Missing-report routing, repeated-workflow discovery and
+existing-target multi-turn experience proposals are connected in source.
+Experience proposals default to manual review; independently authorized existing
+managed body patches can pass learning-specific auto-patch admission. New-capability
+naming/source arbitration and cached learning-history/session-consent controls are
+connected in source. Learning history keeps actual reads separate from inference;
+workspace history uses authenticated MANAGE, not ACP owner authority. Original
+control/cancel/episode mutations have no replay receipts. Host-only
+`skill.learning.pattern.ignore` and `skill.learning.pattern.adjudicate` are now
+available through trusted SDK/MANAGE with complete review objects, independent
+review CAS, current pattern revision and original-key historical receipts. They
+are not ACP extensions or model tools. Explicit existing-target adjudication
+rebuilds access/evidence and fixes the exact head/overlay, preserves original
+model history, does not refund consumption or creation reservations, and always
+requires human publication of its candidates. Independent learning auto-patch
+and description positive/negative trigger evaluation are connected in source,
+including observation/source revocation. Explicit creation retries have trusted
+SDK `PrepareSkillLearningNewSkillRetry` / `RetrySkillLearningNewSkill` and MANAGE
+`skill.learning.creation_retry.prepare` / `skill.learning.creation_retry.enqueue`.
+Both use `session_id` and complete `retry` objects. Prepare fixes current pattern
+and review versions, original terminal generation/proposal versions and exact
+absent source/name/head/overlay; enqueue adds the original `request_key`. Names,
+sources and pattern revisions cannot change. Each pattern permits at most three
+explicit retries and each previous job has at most one successor. Automatic
+creation and original episode reservations, costs and installed assets remain;
+fresh attempts reuse evidence without new votes, occupy shared proposal/maintenance
+capacity and remain human-publication-only. Keyed replay reports the original
+historical IDs without reexecuting, including disabled paid work or ignored
+patterns; scope and revocation still apply. Original control/cancel/episode
+mutations do not acquire receipts. Desktop build/visual and real-model quality
+acceptance remain pending.
+Read-only source inspection uses trusted SDK `SkillLearningSource` and MANAGE
+`skill.learning.source.get`, with explicit `session_id` and the five required
+`source` fields: `kind`, `id`, `expected_revision`, `scope`, `experience_id`.
+It is not an ACP extension or model tool. An experience request is session-private
+and names itself; a pattern request fixes its current revision and one real member.
+Workspace reads require the acting session and all pattern members' current shared
+consent and workspace authority. The host revalidates the selected extraction's
+accepted input, captured frontier, settled task tree, receipts, actual skill reads
+and immutable input/result/job identities in one SQL transaction, then returns
+only cited redacted references (at most 32 / 512 KiB). External/MCP/unknown tools
+remain argument-shape hints with no result body. `checked_at_read` covers that
+member at read time, not ongoing consent, semantic quality, matching or causal
+success. Paid work may be disabled for private inspection; source revocation
+still removes it. Desktop cached details are read-only, single-selection-bound
+and discarded on failures and source/session/service/scope changes. No request
+key, mutation receipt, model call or new evidence vote is created.
+History advertises discovery according
 to the applied opt-in and probation as false; legacy signal/probation arrays
 remain empty. Use explicit signal and discovery queries for those records.
 

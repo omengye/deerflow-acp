@@ -15,7 +15,7 @@ On 2026-10-02, an opt-in `Config.DisableRetries` was added. It sends the SDK's
 `option.WithMaxRetries(0)` on model requests, so skill maintenance can charge
 and retry each provider request through its durable budget. The default retains
 upstream retries; ordinary conversation models keep that default. Maintenance
-provider fixtures exercise HTTP 503 failures for OpenAI, Claude and Ark.
+provider fixtures exercise HTTP 503 failures for OpenAI and Claude.
 
 Original `claude.go` SHA256:
 `3D6DF9037EBB0506E55EE8C71BA0833DC39B32BDC0C2C050939F2AAD9DC07E25`.

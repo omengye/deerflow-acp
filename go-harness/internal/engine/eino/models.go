@@ -5,22 +5,26 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cloudwego/eino-ext/components/model/ark"
 	"github.com/cloudwego/eino-ext/components/model/claude"
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
 // ProbeModel uses the same provider constructors as normal Go harness runs.
 // Callers must sanitize provider errors because HTTP clients can include
 // request headers and credentials in their error text.
-func ProbeModel(ctx context.Context, provider, name, baseURL, apiKey string) error {
-	chat, err := newModel(ctx, Config{Provider: provider, Model: name, BaseURL: baseURL, APIKey: apiKey}, name)
+func ProbeModel(ctx context.Context, provider, name, baseURL, apiKey string, parameter ...harness.OutputTokenParameter) error {
+	cfg := Config{Provider: provider, Model: name, BaseURL: baseURL, APIKey: apiKey}
+	if len(parameter) > 0 {
+		cfg.OutputTokenParameter = parameter[0]
+	}
+	chat, err := newModel(ctx, cfg, name)
 	if err != nil {
 		return err
 	}
-	_, err = chat.Generate(ctx, []*schema.Message{schema.UserMessage("Reply OK.")})
+	_, err = chat.Generate(ctx, []*schema.Message{schema.UserMessage("Reply OK.")}, model.WithMaxTokens(512))
 	return err
 }
 
@@ -34,22 +38,25 @@ func newModelWithRetryPolicy(ctx context.Context, cfg Config, name string, disab
 	if strings.TrimSpace(name) == "" {
 		return nil, fmt.Errorf("model is required")
 	}
+	parameter, err := harness.ResolveOutputTokenParameter(cfg.Provider, cfg.BaseURL, cfg.OutputTokenParameter)
+	if err != nil {
+		return nil, err
+	}
+	wrap := func(inner model.ToolCallingChatModel, err error) (model.ToolCallingChatModel, error) {
+		if err != nil {
+			return nil, err
+		}
+		return &outputTokenModel{inner: inner, provider: strings.ToLower(cfg.Provider), parameter: parameter}, nil
+	}
 	switch strings.ToLower(cfg.Provider) {
 	case "", "openai", "openai-compatible":
-		return openai.NewChatModel(ctx, &openai.ChatModelConfig{APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: name})
+		return wrap(openai.NewChatModel(ctx, &openai.ChatModelConfig{APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: name}))
 	case "claude", "anthropic":
 		conf := &claude.Config{APIKey: cfg.APIKey, Model: name, MaxTokens: 8192, DisableRetries: disableRetries}
 		if cfg.BaseURL != "" {
 			conf.BaseURL = &cfg.BaseURL
 		}
-		return claude.NewChatModel(ctx, conf)
-	case "ark":
-		conf := &ark.ChatModelConfig{APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: name}
-		if disableRetries {
-			zero := 0
-			conf.RetryTimes = &zero
-		}
-		return ark.NewChatModel(ctx, conf)
+		return wrap(claude.NewChatModel(ctx, conf))
 	default:
 		return nil, fmt.Errorf("unsupported model provider %q", cfg.Provider)
 	}

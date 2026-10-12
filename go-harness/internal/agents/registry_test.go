@@ -12,6 +12,32 @@ import (
 
 func ptr[T any](v T) *T { return &v }
 
+func TestUnlimitedRoleTimeoutStillInheritsParentLimit(t *testing.T) {
+	for _, tc := range []struct{ role, parent, want float64 }{{0, 0, 0}, {0, 12, 12}, {259200, 0, 259200}, {259200, 12, 12}, {12, 259200, 12}} {
+		role := researcher()
+		role.TimeoutSeconds = ptr(tc.role)
+		r, err := New(harness.SubagentsConfig{CustomAgents: map[string]harness.AgentConfig{"reader": role}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec, err := r.Resolve("reader", Parent{Model: "fixture", TimeoutSeconds: tc.parent})
+		if err != nil || spec.TimeoutSeconds != tc.want {
+			t.Fatal(spec, err)
+		}
+		if err := spec.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := New(harness.SubagentsConfig{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := r.Resolve("general-purpose", Parent{Model: "fixture"})
+	if err != nil || spec.TimeoutSeconds != 0 {
+		t.Fatal("implicit role deadline", spec, err)
+	}
+}
+
 func researcher() harness.AgentConfig {
 	return harness.AgentConfig{Description: "Read evidence", SystemPrompt: "Return evidence and sources.", Model: "research-model"}
 }
@@ -165,7 +191,7 @@ func TestConfigRejectsInvalidAuthorityAndBounds(t *testing.T) {
 			r.Model = "missing"
 			c.CustomAgents["researcher"] = r
 		}, ".model"},
-		{"zero-timeout", func(c *harness.SubagentsConfig) { c.TimeoutSeconds = ptr(0.0) }, "timeout_seconds"},
+		{"negative-timeout", func(c *harness.SubagentsConfig) { c.TimeoutSeconds = ptr(-1.0) }, "timeout_seconds"},
 		{"nan-timeout", func(c *harness.SubagentsConfig) { c.TimeoutSeconds = ptr(math.NaN()) }, "timeout_seconds"},
 		{"too-deep", func(c *harness.SubagentsConfig) { c.MaxDepth = ptr(4) }, "max_depth"},
 		{"zero-concurrency", func(c *harness.SubagentsConfig) { c.MaxConcurrent = ptr(0) }, "max_concurrent"},

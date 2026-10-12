@@ -76,6 +76,48 @@ func TestExternalACPProcess(t *testing.T) {
 	}
 }
 
+func TestExternalACPUnlimitedPromptHasBoundedSetup(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, timeout := range []time.Duration{0, 72 * time.Hour} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			watchdog := time.AfterFunc(10*time.Second, cancel)
+			defer watchdog.Stop()
+			config := Config{Command: executable, Args: []string{"-test.run=^TestExternalACPProcess$"}, Env: map[string]string{"DEERFLOW_ACP_HELPER": "1"}, Timeout: timeout}
+			var setupSeen, promptSeen bool
+			callbacks := Callbacks{
+				SessionReady: func(setup context.Context, _ string) error {
+					setupSeen = true
+					deadline, ok := setup.Deadline()
+					if !ok || time.Until(deadline) > 2*time.Minute {
+						t.Error("external setup has no bounded deadline")
+					}
+					return nil
+				},
+				PromptReady: func(prompt context.Context, _ string) error {
+					promptSeen = true
+					deadline, ok := prompt.Deadline()
+					if timeout == 0 && ok {
+						t.Error("unlimited external prompt inherited a setup deadline")
+					}
+					if timeout > 0 && (!ok || time.Until(deadline) < 71*time.Hour) {
+						t.Error("explicit multi-day external prompt deadline was shortened")
+					}
+					return prompt.Err()
+				},
+			}
+			result, err := Run(ctx, config, t.TempDir(), "", "first", callbacks)
+			if err != nil || !setupSeen || !promptSeen || result.StopReason != "end_turn" {
+				t.Fatalf("setup=%v prompt=%v result=%+v err=%v", setupSeen, promptSeen, result, err)
+			}
+		})
+	}
+}
+
 func TestExternalACPCancel(t *testing.T) {
 	if os.Getenv("DEERFLOW_ACP_HELPER") != "" {
 		helperAgent()

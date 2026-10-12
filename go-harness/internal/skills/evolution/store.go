@@ -13,18 +13,22 @@ import (
 	"unicode/utf8"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/learning"
+	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
 
 type Service struct {
-	registry   *skills.Registry
-	db         *sql.DB
-	validator  Validator
-	collector  collectorLifecycle
-	generation *generationHost
-	discovery  *discoveryHost
-	behavior   *behaviorHost
-	autoPatch  *autoPatchHost
+	registry             *skills.Registry
+	db                   *sql.DB
+	validator            Validator
+	collector            collectorLifecycle
+	generation           *generationHost
+	discovery            *discoveryHost
+	behavior             *behaviorHost
+	autoPatch            *autoPatchHost
+	experienceSource     *learning.Store
+	maintenanceProducers map[skillmaintenance.JobKind]maintenanceProducer
 }
 
 func New(ctx context.Context, registry *skills.Registry, validator Validator) (*Service, error) {
@@ -70,6 +74,9 @@ CREATE TABLE IF NOT EXISTS df_skill_publications (
 		return nil, err
 	}
 	if err = migrateAutoPatch(ctx, tx); err != nil {
+		return nil, err
+	}
+	if err = bindLegacyMaintenance(ctx, tx); err != nil {
 		return nil, err
 	}
 	return s, tx.Commit()

@@ -85,7 +85,7 @@ explicit approval transaction. See [behavior contract](../skills/evolution/behav
 The existing Eino security/quality reviewer recognizes the same broker. All
 content stages and behavior calls commit reservations and settle receipts at the provider boundary.
 Skill model constructors disable provider SDK retries; retry decisions belong
-to the durable job. OpenAI, Claude and Ark HTTP failure fixtures verify this.
+to the durable job. OpenAI and Claude HTTP failure fixtures verify this.
 Ordinary conversation model constructors keep their previous retry policy.
 
 `df_skill_generation_inputs` pins the full target/source/workspace identity,

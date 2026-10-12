@@ -31,6 +31,20 @@ root limits. Worker tools can manage only their own descendants. Cancellation
 records a durable stop for the selected subtree before delivering cancellation
 to each task; an already completed parent can still have active descendants.
 
+New `background_agent` requests explicitly enable model streaming, matching the
+foreground turn loop. Background scheduling does not require non-streaming
+provider requests. This also supports providers that reject `stream: false`.
+
+The root's `task_status` and `task_cancel` can inspect terminal tasks from an
+earlier turn in the same session. Such inspection is not result delivery to the
+original budget root and does not consume its continuation notification. Role
+ancestry checks still apply. Durable `task_wait` remains restricted to the
+current execution's root; use `task_status` to inspect an earlier root instead.
+Known status-query admission rejections produce a not-executed receipt, while
+storage failures retain their stopping behavior. Existing uncertain receipts
+still require explicit [receipt review](receipts.md); upgrading never replays
+or silently reclassifies them.
+
 ## Methods
 
 | Method | Additional parameters | Result |

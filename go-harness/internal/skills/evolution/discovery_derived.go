@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/learning"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
@@ -21,9 +22,20 @@ func (d discoverySnapshot) kind() string {
 	return d.Kind
 }
 func isDiscoveryTrigger(kind string) bool {
-	return kind == "operator_corrections" || kind == "missing_skill" || kind == "repeated_workflow"
+	return kind == "operator_corrections" || kind == "missing_skill" || kind == "repeated_workflow" || kind == "experience_pattern"
 }
 func validDiscoverySnapshot(d discoverySnapshot) bool {
+	if d.ReviewDraft && (d.kind() != "experience_pattern" || !d.Options.ExperienceReviewDraftsEnabled || d.CreationRetry != nil) {
+		return false
+	}
+	if retry := d.CreationRetry; retry != nil && (d.kind() != "experience_pattern" || d.Base != (harness.SkillHead{}) || d.HostAdjudicated ||
+		!validMissingIdentity(retry.PreviousGenerationID) || !validMissingIdentity(retry.EvidenceReservationID) ||
+		retry.EvidenceReservationID == d.ID || retry.RetryNumber < 1 || retry.RetryNumber > learning.MaxNewSkillRetries) {
+		return false
+	}
+	if d.HostAdjudicated && d.kind() != "experience_pattern" {
+		return false
+	}
 	switch d.kind() {
 	case "operator_corrections":
 		return d.Base.Exists && d.Base.Enabled && hexDigest(d.Base.Version) && len(d.Evidence) == d.Options.RepeatThreshold
@@ -31,10 +43,19 @@ func validDiscoverySnapshot(d discoverySnapshot) bool {
 		return d.Options.MissingReportsEnabled && !d.Base.Exists && d.Base.Version == "" && len(d.Evidence) == 1 && d.Target.SourceID == d.Options.NewSkillSourceID
 	case "repeated_workflow":
 		return d.Options.SuccessfulWorkflowsEnabled && !d.Base.Exists && d.Base.Version == "" && len(d.Evidence) == d.Options.RepeatThreshold && d.Target.SourceID == d.Options.NewSkillSourceID
+	case "experience_pattern":
+		existing := d.Base.Exists && d.Base.Enabled && hexDigest(d.Base.Version)
+		newSkill := d.Options.ExperienceNewSkillsEnabled && d.Base == (harness.SkillHead{}) && d.OverlayBase == nil && d.Target.SourceID == d.Options.NewSkillSourceID && harness.ValidSkillCapabilityName(d.Target.Name)
+		count := len(d.Evidence)
+		validCount := !d.ReviewDraft && count == d.Options.RepeatThreshold || d.ReviewDraft && count >= 1 && count < d.Options.RepeatThreshold
+		return d.Options.ExperiencePatternsEnabled && d.EpisodeDedup && (existing || newSkill && !d.HostAdjudicated) && validCount
 	}
 	return false
 }
 func validDiscoveryReference(kind string, r harness.SkillDiscoveryEvidence) bool {
+	if kind != "experience_pattern" && r.Experience != nil {
+		return false
+	}
 	switch kind {
 	case "operator_corrections":
 		return validSignalID(r.SignalID) && r.SignalStateVersion > 0 && r.FeedbackRevision > 0 && validFeedbackReads(r.ReadIDs, false) && r.MissingReportID == "" && r.WorkflowDigest == ""
@@ -50,6 +71,9 @@ func validDiscoveryReference(kind string, r harness.SkillDiscoveryEvidence) bool
 			}
 		}
 		return true
+	case "experience_pattern":
+		x := r.Experience
+		return r.SignalID == "" && r.SignalStateVersion == 0 && r.FeedbackRevision == 0 && len(r.ReadIDs) == 0 && r.MissingReportID == "" && r.ReportRevision == 0 && r.WorkflowDigest == "" && len(r.Receipts) == 0 && x != nil && validMissingIdentity(x.MatchID) && validMissingIdentity(x.PatternID) && x.PatternRevision > 0 && hexDigest(x.MatchInputSHA) && hexDigest(x.MatchResultSHA) && hexDigest(x.PatternSHA) && hexDigest(x.PolicyIdentity) && validMissingIdentity(x.EpisodeID) && hexDigest(x.IndependenceKey) && r.EpisodeKey == x.IndependenceKey
 	}
 	return false
 }
@@ -189,6 +213,9 @@ func derivedDiscoveryEvidence(ctx context.Context, tx *sql.Tx, d discoverySnapsh
 		}
 		if err != nil {
 			return nil, err
+		}
+		if d.EpisodeDedup {
+			actual.EpisodeKey = saved.EpisodeKey
 		}
 		if encodedHash(actual) != encodedHash(saved) {
 			return nil, errDiscoveryEvidence
@@ -405,12 +432,24 @@ func (s *Service) considerDerivedRoot(ctx context.Context, root string, target h
 			}
 		}
 		var refs []harness.SkillDiscoveryEvidence
+		episodes := map[string]bool{}
 		for _, id := range roots {
 			var consumed bool
 			if err = sqltx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_discovery_consumed WHERE root_digest=?)`, derivedRootKey(kind, id, target)).Scan(&consumed); err != nil {
 				return err
 			}
 			if consumed {
+				continue
+			}
+			key, err := discoveryEpisodeTx(ctx, sqltx, id)
+			if err != nil {
+				return err
+			}
+			consumed, err = discoveryEpisodeConsumedTx(ctx, sqltx, id, key, target, head.Version)
+			if err != nil {
+				return err
+			}
+			if consumed || episodes[key] {
 				continue
 			}
 			var ref harness.SkillDiscoveryEvidence
@@ -432,6 +471,8 @@ func (s *Service) considerDerivedRoot(ctx context.Context, root string, target h
 			if err != nil {
 				return err
 			}
+			ref.EpisodeKey = key
+			episodes[key] = true
 			refs = append(refs, ref)
 			if kind == "missing_skill" || len(refs) == s.discovery.options.RepeatThreshold {
 				break
@@ -444,7 +485,7 @@ func (s *Service) considerDerivedRoot(ctx context.Context, root string, target h
 		if len(refs) != required {
 			return nil
 		}
-		d := discoverySnapshot{Kind: kind, ID: "sd_" + rand.Text(), Target: target, Base: head, Options: s.discovery.options, CreatedAt: now, Evidence: refs}
+		d := discoverySnapshot{Kind: kind, ID: "sd_" + rand.Text(), Target: target, Base: head, Options: s.discovery.options, CreatedAt: now, Evidence: refs, EpisodeDedup: true}
 		payload, err := json.Marshal(d)
 		if err != nil {
 			return err
@@ -476,6 +517,9 @@ func (s *Service) considerDerivedRoot(ctx context.Context, root string, target h
 			if _, err = sqltx.ExecContext(ctx, `INSERT INTO df_skill_discovery_consumed(root_digest,discovery_id) VALUES(?,?)`, derivedRootKey(kind, ref.RootID, target), d.ID); err != nil {
 				return err
 			}
+		}
+		if err = reserveDiscoveryEpisodesTx(ctx, sqltx, d); err != nil {
+			return err
 		}
 		if _, err = sqltx.ExecContext(ctx, `INSERT INTO df_skill_discovery_days(day,reservations) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET reservations=reservations+1`, now.Format("2006-01-02")); err != nil {
 			return err

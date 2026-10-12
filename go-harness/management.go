@@ -124,6 +124,9 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 		return nil, err
 	}
 	switch request.Operation {
+	case "skill.learning.status", "skill.learning.control.get", "skill.learning.control.set", "skill.learning.episode.start", "skill.learning.lineage.link", "skill.learning.experiences", "skill.learning.patterns", "skill.learning.matches", "skill.learning.workspace.patterns", "skill.learning.workspace.matches", "skill.learning.jobs", "skill.learning.cancel", "skill.learning.pattern.ignore", "skill.learning.pattern.adjudicate", "skill.learning.creation_retry.prepare", "skill.learning.creation_retry.enqueue", "skill.learning.source.get":
+		value, err := c.managementLearning(ctx, request)
+		return value, proposalManagementError(err)
 	case "session.diagnostics":
 		if len(request.Fields) != 2 {
 			return nil, managementInvalid("session diagnostics accepts only operation and session_id")

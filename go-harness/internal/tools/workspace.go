@@ -23,13 +23,15 @@ type pathInput struct {
 	Path string `json:"path" jsonschema:"description=Path relative to the session workspace"`
 }
 type writeInput struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	Path            string `json:"path"`
+	Content         string `json:"content"`
+	ExpectedVersion string `json:"expected_version,omitempty" jsonschema:"description=Version from read_file for existing files; absent or omitted means create only"`
 }
 type editInput struct {
-	Path    string `json:"path"`
-	OldText string `json:"old_text"`
-	NewText string `json:"new_text"`
+	Path            string `json:"path"`
+	OldText         string `json:"old_text"`
+	NewText         string `json:"new_text"`
+	ExpectedVersion string `json:"expected_version" jsonschema:"description=Version returned by read_file"`
 }
 type searchInput struct {
 	Path string `json:"path"`
@@ -82,7 +84,7 @@ func ConfiguredWorkspaceFactory(ctx context.Context, req harness.RunRequest, con
 }
 
 func workspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root) ([]tool.BaseTool, error) {
-	read, err := inferTool("read_file", "Read a UTF-8 text file inside the workspace, at most 512 KiB.", func(ctx context.Context, in pathInput) (string, error) { return readRootFile(ctx, root, in.Path) })
+	read, err := inferTool("read_file", "Read a UTF-8 text file inside the workspace, at most 512 KiB. Returns content and version; pass version as expected_version when writing or editing.", func(ctx context.Context, in pathInput) (string, error) { return readVersionedFile(ctx, root, in.Path) })
 	if err != nil {
 		return nil, err
 	}
@@ -186,30 +188,22 @@ func workspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root) 
 	if req.Session.Mode == "plan" {
 		return result, nil
 	}
-	write, err := inferTool("write_file", "Write UTF-8 text inside the workspace. Existing contents are replaced; maximum 512 KiB.", func(ctx context.Context, in writeInput) (string, error) {
-		if err := writeRootFile(ctx, root, in.Path, in.Content); err != nil {
-			return "", err
-		}
-		return "File written: " + in.Path, nil
+	write, err := inferTool("write_file", "Write UTF-8 text inside the workspace; maximum 512 KiB. Existing files require expected_version from read_file. Omitted version or absent means create-only. Conflicts require a fresh read.", func(ctx context.Context, in writeInput) (string, error) {
+		return mutateVersionedFile(ctx, root, in.Path, in.ExpectedVersion, func(string, bool) (string, error) { return in.Content, nil })
 	})
 	if err != nil {
 		return nil, err
 	}
-	edit, err := inferTool("edit_file", "Replace exactly one occurrence of old_text in a workspace text file.", func(ctx context.Context, in editInput) (string, error) {
+	edit, err := inferTool("edit_file", "Replace exactly one occurrence of old_text in a workspace text file. Requires expected_version from read_file; conflicts require a fresh read.", func(ctx context.Context, in editInput) (string, error) {
 		if in.OldText == "" {
 			return "", harness.MarkToolNotExecuted(fmt.Errorf("old_text must not be empty"))
 		}
-		original, err := readRootFile(ctx, root, in.Path)
-		if err != nil {
-			return "", harness.MarkToolNotExecuted(err)
-		}
-		if strings.Count(original, in.OldText) != 1 {
-			return "", harness.MarkToolNotExecuted(fmt.Errorf("old_text must match exactly once"))
-		}
-		if err = writeRootFile(ctx, root, in.Path, strings.Replace(original, in.OldText, in.NewText, 1)); err != nil {
-			return "", err
-		}
-		return "File edited: " + in.Path, nil
+		return mutateVersionedFile(ctx, root, in.Path, in.ExpectedVersion, func(original string, exists bool) (string, error) {
+			if !exists || strings.Count(original, in.OldText) != 1 {
+				return "", fmt.Errorf("old_text must match exactly once in an existing file")
+			}
+			return strings.Replace(original, in.OldText, in.NewText, 1), nil
+		})
 	})
 	if err != nil {
 		return nil, err

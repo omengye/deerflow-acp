@@ -60,31 +60,32 @@ type SkillTrigger struct {
 }
 
 type SkillProposal struct {
-	ID                string                `json:"id"`
-	Status            string                `json:"status"`
-	StateVersion      int64                 `json:"state_version"`
-	Action            string                `json:"action"`
-	SkillName         string                `json:"skill_name"`
-	Target            SkillTarget           `json:"target"`
-	Base              SkillHead             `json:"base"`
-	OverlayBase       *SkillRef             `json:"overlay_base,omitempty"`
-	CandidateVersion  string                `json:"candidate_sha256,omitempty"`
-	Reason            string                `json:"reason"`
-	Trigger           SkillTrigger          `json:"trigger"`
-	Origin            string                `json:"origin"`
-	Author            string                `json:"author"`
-	ChangedFiles      []string              `json:"changed_files"`
-	Diff              string                `json:"diff,omitempty"`
-	Evaluation        SkillValidationReport `json:"evaluation"`
-	EvaluationDigest  string                `json:"evaluation_sha256,omitempty"`
-	CreatedAt         time.Time             `json:"created_at"`
-	UpdatedAt         time.Time             `json:"updated_at"`
-	ReviewedAt        *time.Time            `json:"reviewed_at,omitempty"`
-	ReviewNote        string                `json:"review_note,omitempty"`
-	ReviewedBy        string                `json:"reviewed_by,omitempty"`
-	PublishedRevision int64                 `json:"published_revision,omitempty"`
-	BehaviorJobID     string                `json:"behavior_job_id,omitempty"`
-	Error             string                `json:"error,omitempty"`
+	ID                string                  `json:"id"`
+	Status            string                  `json:"status"`
+	StateVersion      int64                   `json:"state_version"`
+	Action            string                  `json:"action"`
+	SkillName         string                  `json:"skill_name"`
+	Target            SkillTarget             `json:"target"`
+	Base              SkillHead               `json:"base"`
+	OverlayBase       *SkillRef               `json:"overlay_base,omitempty"`
+	CandidateVersion  string                  `json:"candidate_sha256,omitempty"`
+	Reason            string                  `json:"reason"`
+	Trigger           SkillTrigger            `json:"trigger"`
+	Origin            string                  `json:"origin"`
+	Author            string                  `json:"author"`
+	ChangedFiles      []string                `json:"changed_files"`
+	Diff              string                  `json:"diff,omitempty"`
+	Evaluation        SkillValidationReport   `json:"evaluation"`
+	EvaluationDigest  string                  `json:"evaluation_sha256,omitempty"`
+	CreatedAt         time.Time               `json:"created_at"`
+	UpdatedAt         time.Time               `json:"updated_at"`
+	ReviewedAt        *time.Time              `json:"reviewed_at,omitempty"`
+	ReviewNote        string                  `json:"review_note,omitempty"`
+	ReviewedBy        string                  `json:"reviewed_by,omitempty"`
+	PublishedRevision int64                   `json:"published_revision,omitempty"`
+	BehaviorJobID     string                  `json:"behavior_job_id,omitempty"`
+	Error             string                  `json:"error,omitempty"`
+	ValidationFailure *SkillValidationFailure `json:"validation_failure,omitempty"`
 }
 
 // SkillValidationReport is produced by the host's configured validator, never by the model

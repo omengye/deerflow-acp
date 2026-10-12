@@ -19,7 +19,7 @@ The Bridge defaults to stable ACP v1. Select its draft v2 option only when the a
 
 ## Configure a standalone client
 
-Use absolute executable and private data paths. Configure the child environment with `DEERFLOW_MODEL`, `DEERFLOW_MODEL_PROVIDER` (`openai`, `claude`, or `ark`), and the credential supplied by the user's existing secure configuration. The common credential variable is `DEERFLOW_MODEL_API_KEY`. `DEERFLOW_MODEL_BASE_URL` is optional. Use `DEERFLOW_GO_DATA_DIR` for the state directory. Do not print credentials or store them in this skill.
+Use absolute executable and private data paths. Configure the child environment with `DEERFLOW_MODEL`, `DEERFLOW_MODEL_PROVIDER` (`openai` for OpenAI-compatible services or `claude`), and the credential supplied by the user's existing secure configuration. The common credential variable is `DEERFLOW_MODEL_API_KEY`. `DEERFLOW_MODEL_BASE_URL` is optional. Use `DEERFLOW_GO_DATA_DIR` for the state directory. Do not print credentials or store them in this skill.
 
 A direct-process client command can be represented as these separate arguments:
 

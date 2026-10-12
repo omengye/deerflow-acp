@@ -204,9 +204,14 @@ func TestRunQueueCancellationDoesNotStartLater(t *testing.T) {
 }
 
 func TestRunQueueConfigValidation(t *testing.T) {
-	for _, cfg := range []RunQueueConfig{{}, {MaxActiveRuns: 129}, {MaxActiveRuns: 1, QueueTimeout: -time.Second}, {MaxActiveRuns: 1, QueueTimeout: 25 * time.Hour}} {
+	for _, cfg := range []RunQueueConfig{{}, {MaxActiveRuns: 129}, {MaxActiveRuns: 1, QueueTimeout: -time.Second}, {MaxActiveRuns: 1, QueueTimeout: (harness.MaxExecutionTimeoutSeconds + 1) * time.Second}} {
 		if _, err := newRunQueue(cfg); !errors.Is(err, harness.ErrInvalidInput) {
 			t.Fatalf("accepted invalid run queue %+v: %v", cfg, err)
+		}
+	}
+	for _, timeout := range []time.Duration{0, 72 * time.Hour} {
+		if _, err := newRunQueue(RunQueueConfig{MaxActiveRuns: 1, QueueTimeout: timeout}); err != nil {
+			t.Fatal("multi-day queue rejected", err)
 		}
 	}
 }

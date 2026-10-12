@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -36,14 +35,16 @@ type migratedRead struct {
 }
 type migratedWrite struct {
 	migratedPath
-	Content string `json:"content"`
-	Append  bool   `json:"append,omitempty"`
+	Content         string `json:"content"`
+	Append          bool   `json:"append,omitempty"`
+	ExpectedVersion string `json:"expected_version,omitempty"`
 }
 type migratedReplace struct {
 	migratedPath
-	OldStr     string `json:"old_str"`
-	NewStr     string `json:"new_str"`
-	ReplaceAll bool   `json:"replace_all,omitempty"`
+	OldStr          string `json:"old_str"`
+	NewStr          string `json:"new_str"`
+	ReplaceAll      bool   `json:"replace_all,omitempty"`
+	ExpectedVersion string `json:"expected_version"`
 }
 type migratedGlob struct {
 	migratedPath
@@ -75,10 +76,9 @@ type migratedMove struct {
 	Overwrite   bool   `json:"overwrite,omitempty"`
 }
 
-// Mutations share a run-scoped lock. All operations use the pinned os.Root,
+// Mutations share a process-wide lock. All operations use the pinned os.Root,
 // including recursive deletion; no absolute path is passed to a shell.
 func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root, standard []tool.BaseTool, configs []harness.BuiltinToolConfig) ([]tool.BaseTool, error) {
-	var mu sync.Mutex
 	path := func(value string) (string, error) {
 		p, err := migratedLocalPath(req.Session.CWD, value)
 		return p, harness.MarkToolNotExecuted(err)
@@ -177,30 +177,23 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 			if req.Session.Mode == "plan" {
 				continue
 			}
-			err = add(inferTool("write_file", "Atomically write or append UTF-8 text to a workspace file, at most 512 KiB total.", func(ctx context.Context, in migratedWrite) (string, error) {
-				mu.Lock()
-				defer mu.Unlock()
+			err = add(inferTool("write_file", "Atomically write or append UTF-8 text, at most 512 KiB total. Existing files require expected_version from read_file; absent or omitted means create-only. Re-read on conflict.", func(ctx context.Context, in migratedWrite) (string, error) {
 				p, err := path(in.Path)
 				if err != nil {
 					return "", err
 				}
-				content := in.Content
-				if in.Append {
-					old, e := readRootFile(ctx, root, p)
-					if e != nil && !errors.Is(e, os.ErrNotExist) {
-						return "", harness.MarkToolNotExecuted(e)
+				return mutateVersionedFile(ctx, root, p, in.ExpectedVersion, func(old string, _ bool) (string, error) {
+					if in.Append {
+						return old + in.Content, nil
 					}
-					content = old + content
-				}
-				return "OK", writeRootFile(ctx, root, p, content)
+					return in.Content, nil
+				})
 			}))
 		case "str_replace":
 			if req.Session.Mode == "plan" {
 				continue
 			}
-			err = add(inferTool("str_replace", "Replace old_str with new_str in a workspace text file. Without replace_all, old_str must appear exactly once.", func(ctx context.Context, in migratedReplace) (string, error) {
-				mu.Lock()
-				defer mu.Unlock()
+			err = add(inferTool("str_replace", "Replace old_str with new_str in a workspace text file. Requires expected_version from read_file. Without replace_all, old_str must appear exactly once.", func(ctx context.Context, in migratedReplace) (string, error) {
 				p, err := path(in.Path)
 				if err != nil {
 					return "", err
@@ -208,19 +201,17 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 				if in.OldStr == "" {
 					return "", harness.MarkToolNotExecuted(errors.New("old_str must not be empty"))
 				}
-				content, err := readRootFile(ctx, root, p)
-				if err != nil {
-					return "", harness.MarkToolNotExecuted(err)
-				}
-				count := strings.Count(content, in.OldStr)
-				if count == 0 || (!in.ReplaceAll && count != 1) {
-					return "", harness.MarkToolNotExecuted(errors.New("old_str must match; without replace_all it must match exactly once"))
-				}
-				n := 1
-				if in.ReplaceAll {
-					n = -1
-				}
-				return "OK", writeRootFile(ctx, root, p, strings.Replace(content, in.OldStr, in.NewStr, n))
+				return mutateVersionedFile(ctx, root, p, in.ExpectedVersion, func(content string, exists bool) (string, error) {
+					count := strings.Count(content, in.OldStr)
+					if !exists || count == 0 || (!in.ReplaceAll && count != 1) {
+						return "", harness.MarkToolNotExecuted(errors.New("old_str must match; without replace_all it must match exactly once"))
+					}
+					n := 1
+					if in.ReplaceAll {
+						n = -1
+					}
+					return strings.Replace(content, in.OldStr, in.NewStr, n), nil
+				})
 			}))
 		case "glob":
 			err = add(inferTool("glob", "Find workspace paths by glob, including **. Bounded traversal; returns matches and truncation/coverage flags.", func(ctx context.Context, in migratedGlob) (string, error) {
@@ -352,8 +343,8 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 				continue
 			}
 			err = add(inferTool("delete_path", "Delete a workspace file/symlink or empty directory. recursive explicitly allows a directory tree. Workspace root cannot be deleted.", func(ctx context.Context, in migratedDelete) (string, error) {
-				mu.Lock()
-				defer mu.Unlock()
+				workspaceMutationMu.Lock()
+				defer workspaceMutationMu.Unlock()
 				p, err := path(in.Path)
 				if err != nil {
 					return "", err
@@ -379,8 +370,8 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 				continue
 			}
 			err = add(inferTool("move_path", "Move/rename within the workspace. Creates destination parents. Existing file/symlink requires overwrite=true; existing directories cannot be overwritten.", func(ctx context.Context, in migratedMove) (string, error) {
-				mu.Lock()
-				defer mu.Unlock()
+				workspaceMutationMu.Lock()
+				defer workspaceMutationMu.Unlock()
 				src, err := path(in.Source)
 				if err != nil {
 					return "", err
@@ -556,5 +547,11 @@ func migratedReadFile(ctx context.Context, root *os.Root, path string, in migrat
 	if end < rangeEnd {
 		next = end
 	}
-	return marshalString(map[string]any{"content": string(body[start:end]), "version": version, "offset": start, "next_offset": next, "truncated": next > 0})
+	return marshalString(struct {
+		Version    string `json:"version"`
+		Offset     int    `json:"offset"`
+		NextOffset int    `json:"next_offset"`
+		Truncated  bool   `json:"truncated"`
+		Content    string `json:"content"`
+	}{version, start, next, next > 0, string(body[start:end])})
 }

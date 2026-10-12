@@ -218,6 +218,9 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 		// Background capabilities currently belong to the attached parent.
 		// A role never borrows that TaskActor to create or manage siblings.
 		switch info.Name {
+		case "task_note", "history_search", "history_read":
+			// A delegated role never borrows the parent's conversation authority.
+			return nil
 		case "background_agent", "task_status", "task_wait", "task_cancel":
 			if !ownedBackground[info.Name] {
 				return nil
@@ -312,11 +315,13 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 			return nil, err
 		}
 	}
+	handlers = append(handlers, &stoppedToolHistory{}, &progressGuard{})
+	var compaction adk.ChatModelAgentMiddleware
 	if e.config.Compaction.Enabled {
 		private := media
 		private.importer, private.publish = nil, nil
 		metered := &trackedModel{inner: chat, io: lifecycle, budget: budget, sink: sink, media: &private, settings: spec.ModelSettings, tuning: tuning, role: true, contextWindow: e.config.ContextWindows[spec.Model]}
-		compaction, err := newCompactionMiddleware(ctx, windowCompaction(e.config.Compaction, e.config.ContextWindows[spec.Model], outputReserve(budget.limits.MaxOutputTokens, spec.ModelSettings)), metered)
+		compaction, err = newCompactionMiddleware(ctx, windowCompaction(e.config.Compaction, e.config.ContextWindows[spec.Model], outputReserve(budget.limits.MaxOutputTokens, spec.ModelSettings)), metered)
 		if err != nil {
 			return nil, err
 		}
@@ -326,13 +331,15 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 		handlers = append(handlers, &roleContextMiddleware{request: req})
 	}
 	handlers = append(handlers,
+		&outputContinuationHistory{},
 		&modelLifecycle{io: lifecycle, budget: budget, sink: sink, media: &media, settings: spec.ModelSettings, tuning: tuning, role: true, contextWindow: e.config.ContextWindows[spec.Model]},
 		&toolMiddleware{sink: sink, permissions: permissions, protected: protected, policy: roleToolPolicy(spec, len(children) > 0, ownedBackground), permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, durableTaskWait: ownedBackground["task_wait"], io: lifecycle, budget: budget, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore})
 	child, err := deep.New(ctx, &deep.Config{
-		Name: name, Description: spec.Description, Instruction: e.config.Instruction + "\n\n" + spec.Instruction + extensions.InstructionAppend,
+		Name: name, Description: spec.Description, Instruction: e.config.Instruction + "\n\n" + spec.Instruction + extensions.InstructionAppend + stoppedToolInstruction(ctx),
 		ChatModel: chat, MaxIteration: nativeMaxIterations(spec.MaxTurns),
-		ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: selected}},
-		Handlers:    handlers, SubAgents: children, WithoutGeneralSubAgent: true, WithoutWriteTodos: !spec.Tools.Allows("write_todos"),
+		ModelRetryConfig: outputContinuationPolicy(compaction),
+		ToolsConfig:      adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: selected}},
+		Handlers:         handlers, SubAgents: children, WithoutGeneralSubAgent: true, WithoutWriteTodos: !spec.Tools.Allows("write_todos"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create subagent %s: %w", name, err)
@@ -366,6 +373,7 @@ func (e *Engine) roleModel(ctx context.Context, reference, parentReference strin
 	selected := e.config
 	if route, ok := e.config.ModelRoutes[reference]; ok {
 		selected.Provider, selected.BaseURL, selected.APIKey = route.Provider, route.BaseURL, route.APIKey
+		selected.OutputTokenParameter = route.OutputTokenParameter
 		return newModel(ctx, selected, route.Model)
 	}
 	// The SDK also permits an explicit catalog on one shared provider. Only
@@ -448,16 +456,11 @@ func beginRoleWork(ctx context.Context) (func(), error) {
 	if !ok {
 		return func() {}, nil
 	}
-	queue, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	endQueue := beginRoleActivity(ctx, "queue")
 	defer endQueue()
-	release, err := work.controller.Acquire(queue, work.rootID, work.id)
+	release, err := work.controller.Acquire(ctx, work.rootID, work.id)
 	if errors.Is(err, agents.ErrQueueFull) {
 		return nil, harness.MarkToolNotExecuted(err)
-	}
-	if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
-		return nil, harness.MarkToolNotExecuted(errors.New("subagent execution queue timed out"))
 	}
 	if err == nil {
 		if err = work.attempt.Check(ctx); err != nil {
@@ -527,8 +530,12 @@ func (r *timedRole) forward(ctx context.Context, run func(context.Context, adk.R
 		tracked = context.WithValue(tracked, roleWorkKey{}, roleWork{controller: r.controller, rootID: r.rootID, id: id, attempt: attempt, invocation: invocation})
 		observation := &roleTreeObservation{}
 		tracked = context.WithValue(tracked, roleTreeObservationKey{}, observation)
-		bounded, cancel := context.WithTimeoutCause(tracked, attempt.Remaining(), deadline)
-		defer cancel()
+		bounded := tracked
+		if r.timeout > 0 {
+			var cancel context.CancelFunc
+			bounded, cancel = context.WithTimeoutCause(tracked, attempt.Remaining(), deadline)
+			defer cancel()
+		}
 		work, stopWork := context.WithCancelCause(bounded)
 		defer stopWork(nil)
 		stopLease, leaseDone := make(chan struct{}), make(chan error, 1)

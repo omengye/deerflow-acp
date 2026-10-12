@@ -36,15 +36,17 @@ type ConfigSource struct {
 }
 
 type modelDocument struct {
-	Name           string `yaml:"name"`
-	DisplayName    string `yaml:"display_name"`
-	Use            string `yaml:"use"`
-	Provider       string `yaml:"provider"`
-	Model          string `yaml:"model"`
-	APIKey         string `yaml:"api_key"`
-	BaseURL        string `yaml:"base_url"`
-	SupportsVision bool   `yaml:"supports_vision"`
-	ContextWindow  int    `yaml:"context_window"`
+	Name                 string                       `yaml:"name"`
+	DisplayName          string                       `yaml:"display_name"`
+	Use                  string                       `yaml:"use"`
+	Provider             string                       `yaml:"provider"`
+	Model                string                       `yaml:"model"`
+	APIKey               string                       `yaml:"api_key"`
+	BaseURL              string                       `yaml:"base_url"`
+	SupportsVision       bool                         `yaml:"supports_vision"`
+	ContextWindow        int                          `yaml:"context_window"`
+	ReasoningEfforts     []string                     `yaml:"reasoning_efforts"`
+	OutputTokenParameter harness.OutputTokenParameter `yaml:"output_token_parameter"`
 }
 
 type runtimeDocument struct {
@@ -71,6 +73,7 @@ type runtimeDocument struct {
 		GoalAutoContinue       bool      `yaml:"goal_auto_continue"`
 		RunTimeoutSeconds      *float64  `yaml:"run_timeout_seconds"`
 		MaxRunTokens           *int64    `yaml:"max_run_tokens"`
+		MaxOutputTokens        *int      `yaml:"max_output_tokens"`
 		MaxIterations          *int      `yaml:"max_iterations"`
 		MaxModelCalls          *int      `yaml:"max_model_calls"`
 		MaxToolCalls           *int      `yaml:"max_tool_calls"`
@@ -265,7 +268,7 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	if source.LocalACP.GoalAutoContinue {
 		return result, fmt.Errorf("local_acp.goal_auto_continue has no Go equivalent")
 	}
-	runTimeout := 600.0
+	runTimeout := 0.0
 	if source.API.ChatRequestTimeout != nil {
 		runTimeout = *source.API.ChatRequestTimeout
 	}
@@ -275,7 +278,7 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	if err := configschema.ValidateValue("/runtime/run_timeout_seconds", runTimeout); err != nil {
 		return result, err
 	}
-	queueTimeout := 600.0
+	queueTimeout := 0.0
 	if source.LocalACP.QueueTimeoutSeconds != nil {
 		queueTimeout = *source.LocalACP.QueueTimeoutSeconds
 	}
@@ -333,6 +336,9 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	// service. Never carry the selected Python model's credential or advertised
 	// model capabilities across that boundary.
 	sameBackend := cfg.Provider == provider && cfg.BaseURL == baseURL
+	if !explicit["output-token-parameter"] && sameBackend && cfg.Model == model.Model {
+		cfg.OutputTokenParameter = model.OutputTokenParameter
+	}
 	if sameBackend && apiKey != "" && cfg.APIKey == "" {
 		cfg.APIKey = apiKey
 	}
@@ -372,6 +378,13 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 			}
 			cfg.Budget.MaxTokens = *source.LocalACP.MaxRunTokens
 		}
+	}
+	if source.LocalACP.MaxOutputTokens != nil && !explicit["max-output-tokens"] {
+		if cfg.Budget == nil {
+			budget := harness.DefaultBudgetLimits()
+			cfg.Budget = &budget
+		}
+		cfg.Budget.MaxOutputTokens = *source.LocalACP.MaxOutputTokens
 	}
 	if source.LocalACP.MaxIterations != nil {
 		if *source.LocalACP.MaxIterations < 0 {
@@ -503,6 +516,7 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	modelChoices := make(map[string]string, len(source.Models))
 	usedChoices := map[string]bool{cfg.Model: true}
 	cfg.ModelRoutes = nil
+	cfg.ModelReasoningEfforts = make(map[string][]string)
 	if configuredRoutes {
 		cfg.ModelRoutes = make(map[string]harness.ModelRoute)
 		seenNames := make(map[string]bool, len(source.Models))
@@ -542,12 +556,16 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 				return result, fmt.Errorf("configured model choices must be unique")
 			}
 			usedChoices[choice] = true
-			cfg.ModelRoutes[choice] = harness.ModelRoute{Provider: optionProvider, Model: option.Model, BaseURL: url, APIKey: key}
+			cfg.ModelRoutes[choice] = harness.ModelRoute{Provider: optionProvider, Model: option.Model, BaseURL: url, APIKey: key, OutputTokenParameter: option.OutputTokenParameter}
 		}
 		if option.Name == selected {
 			choice = cfg.Model
 		}
 		modelChoices[option.Name] = choice
+		if err := harness.ValidateReasoningEfforts(optionProvider, option.ReasoningEfforts); err != nil {
+			return result, fmt.Errorf("model %q: %w", option.Name, err)
+		}
+		cfg.ModelReasoningEfforts[choice] = append([]string(nil), option.ReasoningEfforts...)
 		if option.ContextWindow < 0 || option.ContextWindow > 1<<30 {
 			return result, fmt.Errorf("invalid context_window for model %q", option.Name)
 		}
@@ -603,6 +621,8 @@ func applySkillEvolution(configPath string, source runtimeDocument, cfg *deerflo
 	if !settings.Enabled {
 		cfg.SkillProposalSources = nil
 		cfg.SkillGeneration = nil
+		cfg.SkillLearning, cfg.SkillExperienceExtractor, cfg.SkillExperienceConsolidator = nil, nil, nil
+		cfg.SkillExperienceMatcher = nil
 		cfg.SkillDiscovery = nil
 		cfg.SkillAutoPatch = nil
 		cfg.SkillBehavior, cfg.SkillBehaviorEvaluator = nil, nil
@@ -623,7 +643,7 @@ func applySkillEvolution(configPath string, source runtimeDocument, cfg *deerflo
 		if route, ok := cfg.ModelRoutes[choice]; ok {
 			return route
 		}
-		return harness.ModelRoute{Provider: cfg.Provider, Model: choice, BaseURL: cfg.BaseURL, APIKey: cfg.APIKey}
+		return harness.ModelRoute{Provider: cfg.Provider, Model: choice, BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, OutputTokenParameter: cfg.OutputTokenParameter}
 	}
 	validator, err := deerflow.NewSkillModelValidator(context.Background(), settings.ModelConfig(resolve(settings.ModerationModel), resolve(settings.EvaluationModel)))
 	if err != nil {
@@ -631,6 +651,11 @@ func applySkillEvolution(configPath string, source runtimeDocument, cfg *deerflo
 	}
 	cfg.SkillValidator, cfg.SkillProposalSources = validator, destinations
 	cfg.SkillGeneration = settings.GenerationOptions(resolve(settings.GenerationModel), destinations)
+	cfg.SkillLearning = settings.LearningOptions(resolve(settings.Learning.ExtractionModel))
+	if cfg.SkillLearning != nil {
+		cfg.SkillLearning.Consolidation = settings.LearningConsolidationModel(resolve(settings.Learning.ConsolidationModel))
+		cfg.SkillLearning.Matching = settings.LearningMatchingModel(resolve(settings.Learning.MatchingModel))
+	}
 	cfg.SkillDiscovery = settings.DiscoveryOptions()
 	cfg.SkillAutoPatch = settings.AutoPatchOptions()
 	cfg.SkillBehavior, cfg.SkillBehaviorEvaluator = nil, nil

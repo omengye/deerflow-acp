@@ -150,7 +150,7 @@ func (c SubagentsConfig) Validate(models map[string]bool) error {
 			if p := agent.ModelSettings.ThinkingBudgetTokens; p != nil && (*p < 1024 || *p >= 1<<30) {
 				return fmt.Errorf("%s.model_settings.thinking_budget_tokens must be 1024..2^30-1", path)
 			}
-			if agent.ReasoningEffort != "" && !slices.Contains([]string{"low", "medium", "high", "xhigh"}, agent.ReasoningEffort) {
+			if agent.ReasoningEffort != "" && !slices.Contains([]string{"low", "medium", "high", "xhigh", "max"}, agent.ReasoningEffort) {
 				return fmt.Errorf("%s.reasoning_effort is invalid", path)
 			}
 		}
@@ -194,8 +194,8 @@ func (c SubagentsConfig) Validate(models map[string]bool) error {
 }
 
 func validateAgentTimeout(path string, value *float64) error {
-	if value != nil && (math.IsNaN(*value) || math.IsInf(*value, 0) || *value < .001 || *value > 86400) {
-		return fmt.Errorf("%s must be 0.001..86400", path)
+	if value != nil && (math.IsNaN(*value) || math.IsInf(*value, 0) || *value != 0 && (*value < .001 || *value > MaxExecutionTimeoutSeconds)) {
+		return fmt.Errorf("%s must be 0 (unlimited) or 0.001..%d", path, MaxExecutionTimeoutSeconds)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package eino
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,8 +89,9 @@ func TestLargeWorkspaceReadStaysBoundedThroughNativeCompaction(t *testing.T) {
 		req.Session.CWD = cwd
 		req.Input[0].Text = prompt
 		_, err := engine.Run(context.Background(), req, func(_ context.Context, event harness.RunEvent) error {
-			if event.Kind == "tool_end" && len(event.Content) > 0 && event.Content[0].Text == content {
-				largeEvent = true
+			if event.Kind == "tool_end" && event.ToolName == "read_file" && len(event.Content) > 0 {
+				var read struct{ Content, Version string }
+				largeEvent = json.Unmarshal([]byte(event.Content[0].Text), &read) == nil && read.Content == content && read.Version != ""
 			}
 			return nil
 		}, nil)
@@ -97,7 +99,8 @@ func TestLargeWorkspaceReadStaysBoundedThroughNativeCompaction(t *testing.T) {
 			t.Fatalf("run %d failed: %v", i, err)
 		}
 	}
-	if !largeEvent || outputs.text != content {
+	var stored struct{ Content, Version string }
+	if !largeEvent || json.Unmarshal([]byte(outputs.text), &stored) != nil || stored.Content != content || stored.Version == "" {
 		t.Fatal("full tool result was not preserved outside the model context")
 	}
 	if model.calls < 6 || outputs.reads != 1 {

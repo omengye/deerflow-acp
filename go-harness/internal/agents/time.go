@@ -26,6 +26,7 @@ type Attempt struct {
 	id, invocation string
 	started        time.Time
 	remaining      time.Duration
+	unlimited      bool
 	mu             sync.Mutex
 	activities     map[string]*activityClock
 	closed         bool
@@ -67,13 +68,13 @@ func (c *Controller) BeginAttempt(ctx context.Context, invocation string, limit 
 		return nil, err
 	}
 	defer func() { err = wrapTimePersistence("begin role attempt", err) }()
-	if invocation == "" || limit <= 0 {
+	if invocation == "" || limit < 0 {
 		return nil, ErrInvocationConflict
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
-	a := &Attempt{controller: c, id: rand.Text(), invocation: invocation, started: now, activities: map[string]*activityClock{}}
+	a := &Attempt{controller: c, id: rand.Text(), invocation: invocation, started: now, unlimited: limit == 0, activities: map[string]*activityClock{}}
 	var elapsed time.Duration
 	if c.db == nil {
 		found := false
@@ -96,11 +97,14 @@ func (c *Controller) BeginAttempt(ctx context.Context, invocation string, limit 
 			old.state = "interrupted"
 		}
 		elapsed = c.elapsed[invocation]
-		if elapsed >= limit {
+		if limit > 0 && elapsed >= limit {
 			return nil, ErrTimeLimit
 		}
-		a.remaining = limit - elapsed
-		held := min(timeLease, a.remaining)
+		a.remaining = max(0, limit-elapsed)
+		held := timeLease
+		if !a.unlimited {
+			held = min(held, a.remaining)
+		}
 		c.elapsed[invocation] += held
 		c.attempts[a.id] = &timeRecord{id: a.id, invocation: invocation, state: "active", started: now.UnixNano(), reserved: held, timings: map[string]time.Duration{}}
 		return a, nil
@@ -132,14 +136,17 @@ func (c *Controller) BeginAttempt(ctx context.Context, invocation string, limit 
 	if err = tx.QueryRowContext(ctx, `SELECT elapsed_ns FROM harness_agent_invocations WHERE id=?`, invocation).Scan(&elapsed); err != nil {
 		return nil, err
 	}
-	if elapsed >= limit {
+	if limit > 0 && elapsed >= limit {
 		if err = tx.Commit(); err != nil {
 			return nil, err
 		}
 		return nil, ErrTimeLimit
 	}
-	a.remaining = limit - elapsed
-	held := min(timeLease, a.remaining)
+	a.remaining = max(0, limit-elapsed)
+	held := timeLease
+	if !a.unlimited {
+		held = min(held, a.remaining)
+	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO harness_agent_attempts(id,invocation_id,state,started_ns,reserved_ns,observed_ns,timings_json) VALUES(?,?,'active',?,?,0,'{}')`, a.id, invocation, now.UnixNano(), int64(held)); err != nil {
 		return nil, err
 	}
@@ -153,6 +160,9 @@ func (c *Controller) BeginAttempt(ctx context.Context, invocation string, limit 
 }
 
 func (a *Attempt) Remaining() time.Duration {
+	if a.unlimited {
+		return 0
+	}
 	return max(0, a.remaining-max(0, a.controller.now().Sub(a.started)))
 }
 func (a *Attempt) HeartbeatInterval() time.Duration { return timeLease / 3 }
@@ -296,7 +306,11 @@ func (a *Attempt) update(ctx context.Context, finish bool) (err error) {
 			record.reserved = actual
 			record.state = "ended"
 		} else {
-			record.reserved = max(record.reserved, min(a.remaining, actual+timeLease))
+			held := actual + timeLease
+			if !a.unlimited {
+				held = min(a.remaining, held)
+			}
+			record.reserved = max(record.reserved, held)
 		}
 		return nil
 	}

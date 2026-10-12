@@ -95,11 +95,12 @@ type SkillMaintenanceReceipt struct {
 
 // These host-side types contain no publication or filesystem authority.
 type SkillGenerationInput struct {
-	Target    SkillTarget
-	Base      SkillHead
-	Reason    string
-	BaseFiles map[string][]byte
-	Evidence  []SkillGenerationEvidence
+	Target          SkillTarget
+	Base            SkillHead
+	Reason          string
+	BaseFiles       map[string][]byte
+	Evidence        []SkillGenerationEvidence
+	InstructionOnly bool
 }
 
 type SkillGenerationEvidence struct {

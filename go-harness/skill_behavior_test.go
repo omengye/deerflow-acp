@@ -16,6 +16,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/localhost"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 )
 
 func TestSkillBehaviorSDKManualAndGeneratedCandidates(t *testing.T) {
@@ -89,8 +90,7 @@ func TestSkillBehaviorSDKManualAndGeneratedCandidates(t *testing.T) {
 					}
 					message["content"] = string(answer)
 				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": message, "finish_reason": finish}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125}})
+				_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": message, "finish_reason": finish}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125}})
 			}))
 			defer server.Close()
 			workspace, cfg := skillFixture(t)

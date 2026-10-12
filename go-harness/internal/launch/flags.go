@@ -15,7 +15,7 @@ import (
 func RuntimeFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
 	flags.IntVar(&cfg.MaxIterations, "max-iterations", harness.DefaultMaxIterations, "optional model/tool iteration limit per agent run; 0 disables")
 	flags.IntVar(&cfg.MaxActiveRuns, "max-active-runs", 2, "maximum concurrent foreground executions across sessions (1..128)")
-	flags.DurationVar(&cfg.QueueTimeout, "queue-timeout", 10*time.Minute, "time a foreground run may wait for an execution slot; 0 disables the deadline")
+	flags.DurationVar(&cfg.QueueTimeout, "queue-timeout", 0, "time a foreground run may wait for an execution slot; 0 (default) disables the deadline")
 	flags.BoolVar(&cfg.Retention.Enabled, "session-cleanup-enabled", true, "periodically delete expired detached sessions")
 	flags.IntVar(&cfg.Retention.ClosedDays, "closed-session-retention-days", 30, "days to retain explicitly closed sessions; 0 permits immediate cleanup")
 	flags.IntVar(&cfg.Retention.InactiveDays, "inactive-session-retention-days", 30, "days to retain inactive open sessions")
@@ -35,7 +35,15 @@ func RuntimeFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
 	flags.IntVar(&budget.MaxToolCalls, "max-tool-calls", budget.MaxToolCalls, "tool calls across main and child agents; 0 disables")
 	flags.Int64Var(&budget.MaxTokens, "max-tokens", budget.MaxTokens, "aggregate run token budget, estimated until provider usage arrives; 0 disables")
 	flags.IntVar(&budget.MaxOutputTokens, "max-output-tokens", budget.MaxOutputTokens, "output token cap per model request; 0 disables")
-	flags.DurationVar(&budget.Timeout, "run-timeout", budget.Timeout, "run execution timeout; 0 disables")
+	flags.Func("output-token-parameter", "default route output limit field: auto, max_tokens, or max_completion_tokens", func(value string) error {
+		parameter := harness.OutputTokenParameter(value)
+		if _, err := harness.ResolveOutputTokenParameter("openai", "", parameter); err != nil {
+			return err
+		}
+		cfg.OutputTokenParameter = parameter
+		return nil
+	})
+	flags.DurationVar(&budget.Timeout, "run-timeout", budget.Timeout, "optional cumulative run execution timeout; 0 (default) disables")
 	flags.IntVar(&cfg.ContextWindow, "context-window", 0, "configured context size for the default model; 0 omits ACP usage_update")
 	flags.BoolVar(&cfg.DisableSubagents, "disable-subagents", false, "disable subagent delegation")
 	flags.IntVar(&cfg.BackgroundWorkers, "background-workers", 4, "maximum concurrent background attempts (1..64)")

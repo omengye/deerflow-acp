@@ -21,3 +21,23 @@ func TestAutomaticExecutionNotificationErrorsArePublic(t *testing.T) {
 		t.Fatalf("lost public recovery guidance: %+v", rpc)
 	}
 }
+
+func TestMCPResourceErrorsArePublicAndDoNotExposePrivateDetails(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		cause error
+		code  int
+	}{
+		{"incompatible", errors.Join(harness.ErrResourcesWaiting, harness.ErrResourcesIncompatible), protocol.InvalidParams},
+		{"waiting", harness.ErrResourcesWaiting, protocol.ServerBusy},
+		{"permission", harness.ErrPermissionDenied, protocol.InvalidParams},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rpc := executionUpdateError(errors.Join(test.cause, errors.New("fixture-secret in private/workspace")))
+			encoded, err := json.Marshal(rpc)
+			if err != nil || rpc.Code != test.code || rpc.Message == "Internal error" || !strings.Contains(rpc.Message, "MCP") || strings.Contains(string(encoded), "fixture-secret") || strings.Contains(string(encoded), "private/workspace") {
+				t.Fatalf("invalid public MCP diagnostic: %s %v", encoded, err)
+			}
+		})
+	}
+}

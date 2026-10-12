@@ -14,12 +14,13 @@ import (
 
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 )
 
 func TestApplyConfigSkillReviewUsesConfiguredRoutesAndCustomSource(t *testing.T) {
 	var calls [2]atomic.Int32
 	server := func(index int) *httptest.Server {
-		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		return httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
 			calls[index].Add(1)
 			var req struct {
 				Model    string                     `json:"model"`
@@ -38,8 +39,7 @@ func TestApplyConfigSkillReviewUsesConfiguredRoutesAndCustomSource(t *testing.T)
 				t.Error(err)
 			}
 			content, _ := json.Marshal(map[string]any{"base_version": input["base_version"], "candidate_version": input["candidate_version"], "passed": true, "reason": "Independent configured review"})
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(content)}, "finish_reason": "stop"}}})
+			_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(content)}, "finish_reason": "stop"}}})
 		}))
 	}
 	moderator, evaluator := server(0), server(1)
