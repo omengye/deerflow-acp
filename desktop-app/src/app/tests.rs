@@ -19,7 +19,7 @@ use super::{
     should_show_navigation_rail, should_show_scroll_to_bottom, task_id_from_notification_tag,
     task_notification_tag, transcript_anchor_end_space, transcript_navigation_turns,
     transcript_rests_at_tail, transcript_row_kinds, transcript_row_splice,
-    transcript_rows_fingerprint, widened_panel_width_for_file_editor,
+    transcript_rows_fingerprint, turn_finish_summary, widened_panel_width_for_file_editor,
     widened_panel_width_for_review,
 };
 use crate::git_branch::BranchEntry;
@@ -338,6 +338,21 @@ fn driver_errors_are_bounded_before_rendering() {
     let long = compact_driver_error(&"x".repeat(2_000));
     assert_eq!(long.chars().count(), 800);
     assert!(long.ends_with('…'));
+}
+
+#[test]
+fn failed_empty_turn_retains_its_driver_error() {
+    let error = "MCP resources changed; reconnect with compatible server configuration";
+    assert_eq!(
+        turn_finish_summary(false, None, Some(error.into())),
+        Some(error.into())
+    );
+    assert_eq!(
+        turn_finish_summary(false, Some("Out of context".into()), Some(error.into())),
+        Some("Out of context".into())
+    );
+    assert_eq!(turn_finish_summary(true, None, Some(error.into())), None);
+    assert_eq!(turn_finish_summary(false, None, None), None);
 }
 
 #[test]

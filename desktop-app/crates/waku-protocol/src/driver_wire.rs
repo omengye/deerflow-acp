@@ -32,6 +32,14 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
             ("agentPresetSelected", serde_json::to_value(preset)?)
         }
         DriverEvent::ToolApprovalChanged(mode) => ("toolApprovalChanged", Value::String(mode)),
+        DriverEvent::DeerFlowModelsChanged {
+            models,
+            model,
+            reasoning_effort,
+        } => (
+            "deerflowModelsChanged",
+            json!({"models": models, "model": model, "reasoningEffort": reasoning_effort}),
+        ),
         DriverEvent::AutoTitleUpdated(title) => ("autoTitleUpdated", serde_json::to_value(title)?),
         DriverEvent::AvailableCommands(commands) => {
             ("availableCommands", serde_json::to_value(commands)?)
@@ -135,6 +143,11 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
         },
         "agentPresetSelected" => DriverEvent::AgentPresetSelected(serde_json::from_value(payload)?),
         "toolApprovalChanged" => DriverEvent::ToolApprovalChanged(serde_json::from_value(payload)?),
+        "deerflowModelsChanged" => DriverEvent::DeerFlowModelsChanged {
+            models: serde_json::from_value(payload["models"].clone())?,
+            model: serde_json::from_value(payload["model"].clone())?,
+            reasoning_effort: serde_json::from_value(payload["reasoningEffort"].clone())?,
+        },
         "autoTitleUpdated" => DriverEvent::AutoTitleUpdated(serde_json::from_value(payload)?),
         "availableCommands" => DriverEvent::AvailableCommands(serde_json::from_value(payload)?),
         "turnStarted" => DriverEvent::TurnStarted,
@@ -292,6 +305,20 @@ struct TurnFinishedWire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_reasoning_authority_survives_wire_round_trip() {
+        let event = DriverEvent::DeerFlowModelsChanged {
+            models: vec![crate::model::ProviderModel::new("a", "A")],
+            model: Some("a".into()),
+            reasoning_effort: Some("high".into()),
+        };
+        let wire = event_to_wire(event).unwrap();
+        assert!(
+            matches!(event_from_wire(wire).unwrap(), DriverEvent::DeerFlowModelsChanged { models, model, reasoning_effort }
+            if models.len() == 1 && model.as_deref() == Some("a") && reasoning_effort.as_deref() == Some("high"))
+        );
+    }
 
     #[test]
     fn tool_approval_authority_survives_wire_round_trip() {

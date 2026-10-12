@@ -909,7 +909,7 @@ impl Waku {
         }
     }
 
-    fn remember_selected_model_traits(&mut self) {
+    pub(super) fn remember_selected_model_traits(&mut self) {
         let Some((provider, model, reasoning_effort, service_tier, context_window)) =
             self.selected_session().and_then(|session| {
                 Some((
@@ -1113,6 +1113,16 @@ impl Waku {
         if self.block_during_deerflow_approval(cx) {
             return;
         }
+        if self.selected_session().is_some_and(|session| {
+            session.provider == ProviderKind::DeerFlow
+                && (session.is_busy()
+                    || self.submission_preparations.contains(&session.id)
+                    || self.goal_runtime_starts.contains(&session.id))
+        }) {
+            self.show_toast("请等待当前操作结束后再切换思考强度。");
+            cx.notify();
+            return;
+        }
         if let Some(session) = self.selected_session_mut()
             && session.reasoning_effort.as_deref() != Some(effort.as_str())
         {
@@ -1213,6 +1223,17 @@ impl Waku {
         // stop, so they leave with the turn.
         self.pending_goal_operations.remove(&session_id);
         let mut runtime = self.runtimes.remove(&session_id);
+        if let Some(runtime) = runtime.as_mut()
+            && self.state.sessions.iter().any(|session| {
+                session.id == session_id
+                    && session.provider == ProviderKind::DeerFlow
+                    && (session.active_turn_id().is_some() || runtime.cancel_drain.is_pending())
+            })
+        {
+            // Stop is optimistic in the UI. Keep the old response and cleanup
+            // from racing a fresh prompt on the same retained ACP connection.
+            runtime.cancel_drain.begin();
+        }
         if let Some(runtime) = runtime.as_ref() {
             runtime.driver.cancel();
             if retain_runtime {

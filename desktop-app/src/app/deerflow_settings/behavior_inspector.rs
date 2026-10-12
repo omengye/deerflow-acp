@@ -50,6 +50,8 @@ struct ResultRow {
     output_tokens: u64,
     usage_estimated: bool,
     elapsed_millis: u64,
+    #[serde(default)]
+    selection: Option<behavior::Selection>,
 }
 
 #[derive(Deserialize)]
@@ -313,6 +315,17 @@ impl BehaviorInspector {
                 "行为样例结果无效或重复"
             );
             cases.insert(result.case_id.clone());
+            if let Some(selection) = &result.selection {
+                anyhow::ensure!(
+                    selection.validate()
+                        && selection.target_name == evaluation.target.name
+                        && result.tool_calls == 0
+                        && result.model_calls > 0
+                        && result.stop_reason == "completed"
+                        && matches!(result.error_code.as_str(), "" | "assertion_failed"),
+                    "元数据触发证据不得宣称工具执行或伪造目标"
+                );
+            }
             let checks = result
                 .checks
                 .iter()
@@ -326,9 +339,10 @@ impl BehaviorInspector {
                 .collect::<Vec<_>>()
                 .join(" · ");
             rows.push((format!("{} · {} · 第 {} 次 · {}",result.case_id,if result.variant == "base" {"基础版本"} else {"候选版本"},result.repetition,if result.passed {"通过"} else {"未通过"}),
-                format!("结束状态 {}{}\n断言：{}\n模型 {} 次 · fixture 工具 {} 次 · 输入 {} / 输出 {} tokens{} · {} ms\n输出摘要 {} · 轨迹摘要 {}（SHA-256 前 16 位）",
+                format!("结束状态 {}{}\n断言：{}\n模型 {} 次 · fixture 工具 {} 次 · 输入 {} / 输出 {} tokens{} · {} ms\n输出摘要 {} · 轨迹摘要 {}（SHA-256 前 16 位）{}",
                 result.stop_reason,if result.error_code.is_empty() {String::new()} else {format!(" · {}",result.error_code)},checks,result.model_calls,result.tool_calls,result.input_tokens,result.output_tokens,
-                if result.usage_estimated {"（估算）"} else {""},result.elapsed_millis,&result.output_digest[..16],&result.trace_digest[..16])));
+                if result.usage_estimated {"（估算）"} else {""},result.elapsed_millis,&result.output_digest[..16],&result.trace_digest[..16],
+                result.selection.as_ref().map_or(String::new(), |selection| format!("\n{}", selection.detail())))));
         }
         anyhow::ensure!(cases.len() <= 16, "行为样例种类超过限制");
         if !evaluation.report.is_null() {
@@ -685,6 +699,44 @@ mod tests {
         assert!(detail.rows[0].1.contains("references：未通过"));
         assert!(detail.rows[0].1.contains("（估算）"));
         assert!(browser.proposal.as_ref().unwrap()["evaluation"].is_null());
+    }
+
+    #[test]
+    fn skill_trigger_inspector_keeps_selection_separate_from_execution() {
+        let a = proposal("sp_a");
+        let request = request(&a);
+        for mode in [
+            "valid",
+            "tool-executed",
+            "rebound-target",
+            "quality-claim",
+            "bad-digest",
+        ] {
+            let mut browser = BehaviorInspector::default();
+            browser.bind(&a);
+            browser.begin(&request);
+            let mut data = detail(&a);
+            data["results"][0]["tool_calls"] = json!(0);
+            data["results"][0]["selection"] = json!({"rule_version":"skill-trigger-selection-v1","target_name":"source-check","selected_name":"","catalog_digest":"a".repeat(64)});
+            match mode {
+                "tool-executed" => data["results"][0]["tool_calls"] = json!(1),
+                "rebound-target" => {
+                    data["results"][0]["selection"]["target_name"] = json!("another-check")
+                }
+                "quality-claim" => {
+                    data["results"][0]["selection"]["rule_version"] = json!("quality-confirmed")
+                }
+                "bad-digest" => data["results"][0]["selection"]["catalog_digest"] = json!("bad"),
+                _ => {}
+            }
+            let outcome = browser.accept(&request, data);
+            assert_eq!(outcome.is_ok(), mode == "valid", "{mode}");
+            if mode == "valid" {
+                let detail = browser.detail.as_ref().unwrap();
+                assert!(detail.rows[0].1.contains("未加载正文、未执行工具"));
+                assert!(detail.rows[0].1.contains("不是质量确认"));
+            }
+        }
     }
 
     #[test]

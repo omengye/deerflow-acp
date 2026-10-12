@@ -2776,6 +2776,10 @@ impl Waku {
             return;
         };
         runtime.options_generation = runtime.options_generation.wrapping_add(1);
+        runtime.deerflow_options_pending =
+            self.state.sessions.iter().any(|session| {
+                session.id == session_id && session.provider == ProviderKind::DeerFlow
+            });
         let generation = runtime.options_generation;
         let driver = runtime.driver.clone();
         cx.spawn(async move |waku, cx| {
@@ -3017,6 +3021,8 @@ impl Waku {
             SessionRuntime {
                 driver: prepared.handle,
                 options_generation: 0,
+                deerflow_options_pending: false,
+                cancel_drain: Default::default(),
                 events: prepared.events,
                 pending_events: VecDeque::new(),
                 pending_steers: VecDeque::new(),
@@ -3245,6 +3251,7 @@ impl Waku {
         if session.is_busy()
             || session.queued_messages.is_empty()
             || self.pending_deerflow_approvals.contains_key(&session_id)
+            || self.runtimes.get(&session_id).is_some_and(|runtime| runtime.deerflow_options_pending || runtime.cancel_drain.is_pending())
             || self.ending_checkpoint_pending(session_id)
             // Messages parked behind a goal-initiated provider start stay
             // queued until that runtime installs.
@@ -3284,7 +3291,24 @@ impl Waku {
         else {
             return;
         };
-        if self.ending_checkpoint_pending(session_id) {
+        if let Some(runtime) = self.runtimes.get_mut(&session_id)
+            && runtime.cancel_drain.is_pending()
+        {
+            let position = runtime.cancel_drain.queue_followup();
+            if let Some(session) = self.state.session_mut(session_id) {
+                let position = position.min(session.queued_messages.len());
+                session.queued_messages.insert(position, submission.into_queued_message());
+            }
+            self.save();
+            cx.notify();
+            return;
+        }
+        if self.ending_checkpoint_pending(session_id)
+            || self
+                .runtimes
+                .get(&session_id)
+                .is_some_and(|runtime| runtime.deerflow_options_pending)
+        {
             self.enqueue_follow_up_submission(session_id, submission, cx);
             self.defer_queue_drain(session_id);
             return;
@@ -3739,6 +3763,7 @@ impl Waku {
                     event,
                     DriverEvent::Connected { .. }
                         | DriverEvent::ToolApprovalChanged(_)
+                        | DriverEvent::DeerFlowModelsChanged { .. }
                         | DriverEvent::AgentPresetSelected(_)
                         | DriverEvent::AutoTitleUpdated(_)
                         | DriverEvent::Permission { .. }

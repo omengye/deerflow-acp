@@ -179,6 +179,30 @@ fn valid_head(head: &Head) -> bool {
 }
 
 impl GenerationBrowser {
+    pub(super) fn creation_retry_previous(&self) -> Option<(String, String)> {
+        let job = self.selected.as_ref()?;
+        (!self.selected_stale
+            && !job.discovery_id.is_empty()
+            && matches!(job.state.as_str(), "failed" | "cancelled" | "completed"))
+        .then(|| {
+            (
+                job.id.clone(),
+                format!(
+                    "{} / {} · 作业 {} · {}",
+                    job.target.source_id, job.target.name, job.id, job.state
+                ),
+            )
+        })
+    }
+
+    pub(super) fn invalidate_learning_sources(&mut self) {
+        self.invalidate();
+        self.jobs.clear();
+        self.jobs_loaded = false;
+        self.jobs_nav = PageNav::default();
+        self.selected = None;
+    }
+
     pub(super) fn invalidate(&mut self) {
         self.status = None;
         self.prepared = None;
@@ -821,8 +845,10 @@ impl Waku {
                 let id = job.id.clone();
                 let version = job.state_version;
                 group = group.child(df_button("df-generation-cancel","取消生成作业",unavailable || browser.selected_stale || state.dirty || state.skill_browser.mutations_pending(),false,theme,cx,move |this,_,cx| {
-                    this.deerflow_settings.confirm_manage = Some(("取消该生成作业及尚未完成的候选审核；已经使用的维护额度会保留，已发布版本不受影响。".into(),json!({"operation":"skill.generation.cancel","job_id":id,"expected_state_version":version}))); cx.notify();
+                    this.deerflow_settings.confirm_manage = None;
+                    this.deerflow_request("manage", json!({"operation":"skill.generation.cancel","job_id":id,"expected_state_version":version}), cx);
                 }));
+                group = group.child(df_label("取消说明", "停止该作业及尚未完成的候选审核；已发生的维护用量和已发布版本保留。", theme));
             }
             if !job.proposal_id.is_empty() {
                 let id = job.proposal_id.clone();
@@ -1031,6 +1057,30 @@ mod tests {
         assert!(!browser.selected_stale);
         assert!(browser.jobs_stale);
         assert_eq!(browser.selected.as_ref().unwrap().id, "smj_one");
+    }
+
+    #[test]
+    fn deerflow_generation_learning_source_change_clears_cached_jobs_without_erasing_draft() {
+        let mut browser = editor();
+        let request = json!({"operation":"skill.generation.list", "limit":PAGE_SIZE});
+        browser
+            .accept(&request, json!({"jobs":[job("smj_one")]}))
+            .unwrap();
+        select(&mut browser, "smj_one");
+        browser.receipts_loaded = true;
+        let name = browser.name.clone();
+        let reason = browser.reason.clone();
+        browser.invalidate_learning_sources();
+        assert_eq!(browser.name, name);
+        assert_eq!(browser.reason, reason);
+        assert!(browser.jobs.is_empty());
+        assert!(!browser.jobs_loaded);
+        assert!(browser.jobs_stale);
+        assert!(browser.selected.is_none());
+        assert!(browser.receipts.is_empty());
+        assert!(!browser.receipts_loaded);
+        assert!(browser.prepare_request().is_none());
+        assert!(browser.jobs_nav.request(true).is_none());
     }
 
     #[test]

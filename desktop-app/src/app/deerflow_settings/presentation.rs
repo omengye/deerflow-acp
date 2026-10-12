@@ -7,14 +7,16 @@ pub(super) enum SkillCenterTab {
     Catalog,
     Review,
     Generation,
+    Learning,
     History,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EvolutionMode {
     Off,
     Manual,
     Discover,
+    ReviewLearning,
 }
 
 impl EvolutionMode {
@@ -23,6 +25,16 @@ impl EvolutionMode {
             Self::Off => "关闭",
             Self::Manual => "手动改进，审核发布",
             Self::Discover => "自动发现，审核发布",
+            Self::ReviewLearning => "自动起草，人工审核",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Off => "关闭新的生成、学习、发现、评测和经验自动补丁工作；保留模型、来源、额度和历史。选择仅修改草稿，保存并应用后生效。",
+            Self::Manual => "手动提交和生成候选，发布需人工审核；关闭自动发现、学习和经验自动补丁。模型、来源、额度和行为评测参数保留，保存并应用后生效。",
+            Self::Discover => "通过纠正、缺失报告和成功流程自动发现候选，发布需人工审核；关闭经验学习和经验自动补丁。模型、来源、额度和行为评测参数保留，保存并应用后生效。",
+            Self::ReviewLearning => "提取、归并和匹配经验，为已有技能自动起草；发布需人工审核，可能消耗维护模型额度。不回填旧聊天。另行配置的发现规则以高级设置为准；切换此方式时不启用跨会话共享、新技能发现或自动发布。选择仅修改草稿，保存并应用后生效。",
         }
     }
 }
@@ -34,7 +46,25 @@ const EVOLUTION_PATHS: &[&str] = &[
     "/skill_evolution/discovery/operator_corrections_enabled",
     "/skill_evolution/discovery/missing_reports_enabled",
     "/skill_evolution/discovery/successful_workflows_enabled",
+    "/skill_evolution/learning/enabled",
+    "/skill_evolution/learning/consolidation_enabled",
+    "/skill_evolution/learning/matching_enabled",
+    "/skill_evolution/discovery/experience_patterns_enabled",
+    "/skill_evolution/discovery/experience_review_drafts_enabled",
+    "/skill_evolution/discovery/experience_new_skills_enabled",
+    "/skill_evolution/learning/cross_session_enabled",
+    "/skill_evolution/auto_patch/experience_patterns_enabled",
+    "/skill_evolution/behavior/enabled",
 ];
+
+fn mode_paths(mode: EvolutionMode) -> &'static [&'static str] {
+    match mode {
+        EvolutionMode::Off => EVOLUTION_PATHS,
+        EvolutionMode::Manual | EvolutionMode::Discover | EvolutionMode::ReviewLearning => {
+            &EVOLUTION_PATHS[..14]
+        }
+    }
+}
 
 pub(super) fn evolution_mode(doc: &Value) -> Option<EvolutionMode> {
     let e = &doc["skill_evolution"];
@@ -42,6 +72,23 @@ pub(super) fn evolution_mode(doc: &Value) -> Option<EvolutionMode> {
         return Some(EvolutionMode::Off);
     }
     if e["enabled"] != true || e["mode"] != "review" || e["generation"]["enabled"] != true {
+        return None;
+    }
+    // Extra correction/report/workflow triggers do not change the review-draft
+    // workflow. Recognize the current mode without rewriting those settings.
+    if EVOLUTION_PATHS[6..11]
+        .iter()
+        .all(|path| doc.pointer(path).and_then(Value::as_bool) == Some(true))
+        && EVOLUTION_PATHS[11..14]
+            .iter()
+            .all(|path| doc.pointer(path).and_then(Value::as_bool) == Some(false))
+    {
+        return Some(EvolutionMode::ReviewLearning);
+    }
+    if EVOLUTION_PATHS[6..14]
+        .iter()
+        .any(|path| doc.pointer(path).and_then(Value::as_bool) == Some(true))
+    {
         return None;
     }
     let flags = [
@@ -60,17 +107,34 @@ pub(super) fn evolution_mode(doc: &Value) -> Option<EvolutionMode> {
 }
 
 fn set_evolution_mode(doc: &mut Value, mode: EvolutionMode) {
-    // Only the explicitly reviewed flags change. Models, sources, limits and
+    // Only the selected preset's flags change. Models, sources, limits and
     // custom behavior settings remain in the draft for the host to validate.
     set_value(doc, EVOLUTION_PATHS[0], json!(mode != EvolutionMode::Off));
     if mode == EvolutionMode::Off {
+        for path in &EVOLUTION_PATHS[2..] {
+            set_value(doc, path, json!(false));
+        }
         return;
     }
     set_value(doc, EVOLUTION_PATHS[1], json!("review"));
     set_value(doc, EVOLUTION_PATHS[2], json!(true));
-    for path in &EVOLUTION_PATHS[3..] {
+    for path in &EVOLUTION_PATHS[3..6] {
         set_value(doc, path, json!(mode == EvolutionMode::Discover));
     }
+    for path in &EVOLUTION_PATHS[6..11] {
+        set_value(doc, path, json!(mode == EvolutionMode::ReviewLearning));
+    }
+    for path in &EVOLUTION_PATHS[11..14] {
+        set_value(doc, path, json!(false));
+    }
+}
+
+fn select_evolution_mode(doc: &mut Value, mode: EvolutionMode) -> bool {
+    if evolution_mode(doc) == Some(mode) {
+        return false;
+    }
+    set_evolution_mode(doc, mode);
+    true
 }
 
 pub(super) const ADVANCED_GROUPS: &[(Section, &str, &str)] = &[
@@ -100,7 +164,6 @@ pub(super) const ADVANCED_GROUPS: &[(Section, &str, &str)] = &[
         "服务与诊断",
         "实际运行值、日志、启动与配置重读",
     ),
-    (Section::Legacy, "旧数据导入", "角色预览和只读技能历史"),
 ];
 
 const SKILL_GROUPS: &[(&str, &str)] = &[
@@ -288,6 +351,18 @@ const SEARCH_TARGETS: &[SearchSeed] = &[
     ),
     target!("模型密钥", "/models/*/api_key", Models, "api key 密钥 模型"),
     target!(
+        "输出上限参数",
+        "/models/*/output_token_parameter",
+        Models,
+        "max_tokens max_completion_tokens 输出 兼容 参数"
+    ),
+    target!(
+        "思考强度",
+        "/models/*/reasoning_efforts",
+        Models,
+        "reasoning effort 思考 推理 强度"
+    ),
+    target!(
         "上下文窗口",
         "/models/*/context_window",
         Models,
@@ -446,6 +521,12 @@ const SEARCH_TARGETS: &[SearchSeed] = &[
         "runtime timeout 运行 超时"
     ),
     target!(
+        "单次模型输出上限",
+        "/runtime/max_output_tokens",
+        Runtime,
+        "output tokens 输出 推理 预算 上限"
+    ),
+    target!(
         "排队超时",
         "/runtime/queue_timeout_seconds",
         Runtime,
@@ -468,12 +549,6 @@ const SEARCH_TARGETS: &[SearchSeed] = &[
         "/diagnostics",
         Overview,
         "acp service log 日志 服务 诊断 运行值"
-    ),
-    target!(
-        "旧数据导入",
-        "/legacy",
-        Legacy,
-        "legacy import 旧 数据 导入"
     ),
 ];
 
@@ -591,6 +666,29 @@ pub(super) fn page_for_section(section: Section) -> SettingsPage {
 }
 
 impl Waku {
+    fn deerflow_select_evolution_mode(&mut self, mode: EvolutionMode, cx: &mut Context<Self>) {
+        let state = &mut self.deerflow_settings;
+        if !state.can_edit() || !mode_paths(mode).iter().all(|path| state.can_edit_field(path)) {
+            return;
+        }
+        let Some(doc) = state.draft.as_mut() else {
+            return;
+        };
+        if !select_evolution_mode(doc, mode) {
+            return;
+        }
+        state.dirty = true;
+        state.edit_generation += 1;
+        state.confirm_reload = false;
+        state.notice = Some("方式已加入草稿，保存并应用后生效；可撤销更改。".into());
+        for path in mode_paths(mode) {
+            state.errors.remove(*path);
+            state.invalid_text.remove(*path);
+        }
+        self.deerflow_rebind(cx);
+        cx.notify();
+    }
+
     pub(in crate::app) fn deerflow_route_page(
         &mut self,
         page: SettingsPage,
@@ -705,7 +803,6 @@ impl Waku {
         state.invalid_text.clear();
         state.pending_model_names.clear();
         state.roles.pending_name = None;
-        state.pending_evolution_mode = None;
         state.confirm_reload = false;
         state.errors.clear();
         state.error = None;
@@ -796,30 +893,29 @@ impl Waku {
             .anchor_scroll(state.field_anchors.get("/skill_evolution/enabled").cloned())
             .child(df_label(
                 "技能改进方式",
-                "生成和审查可能产生模型费用；新版本发布需人工审核。",
+                "选中项高亮；切换仅修改草稿，保存并应用后生效。生成和审查可能产生模型费用；新版本发布需人工审核。",
                 theme,
             ));
-        let editable = state.can_edit()
-            && EVOLUTION_PATHS
-                .iter()
-                .all(|path| state.can_edit_field(path));
         let mut choices = div().flex().flex_wrap().gap(px(6.0));
         for mode in [
             EvolutionMode::Off,
             EvolutionMode::Manual,
             EvolutionMode::Discover,
+            EvolutionMode::ReviewLearning,
         ] {
+            let selected = current == Some(mode);
+            let editable = state.can_edit()
+                && mode_paths(mode)
+                    .iter()
+                    .all(|path| state.can_edit_field(path));
             choices = choices.child(df_button(
                 SharedString::from(format!("df-evolution-mode-{}", mode.label())),
                 mode.label(),
                 !editable,
-                current == Some(mode),
+                selected,
                 theme,
                 cx,
-                move |this, _, cx| {
-                    this.deerflow_settings.pending_evolution_mode = Some(mode);
-                    cx.notify();
-                },
+                move |this, _, cx| this.deerflow_select_evolution_mode(mode, cx),
             ));
         }
         group = group.child(choices);
@@ -830,70 +926,15 @@ impl Waku {
                 theme,
             ));
         }
-        if let Some(mode) = state.pending_evolution_mode {
-            let explanation = match mode {
-                EvolutionMode::Off => "将停止新的技能维护工作，保留已配置模型、预算、规则和历史。",
-                EvolutionMode::Manual => {
-                    "将开启候选提交和后台生成，关闭三类自动发现，发布方式设为人工审核；预算保持当前值。"
-                }
-                EvolutionMode::Discover => {
-                    "将开启候选提交、后台生成和三类自动发现，发布方式设为人工审核；需要已配置的维护模型和可写技能源。预算保持当前值。"
-                }
-            };
-            group = group
-                .child(df_label("拟修改的规则", explanation, theme))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(6.0))
-                        .child(df_button(
-                            "df-evolution-mode-confirm",
-                            "采用此方式",
-                            !editable,
-                            true,
-                            theme,
-                            cx,
-                            move |this, _, cx| {
-                                if !EVOLUTION_PATHS
-                                    .iter()
-                                    .all(|path| this.deerflow_settings.can_edit_field(path))
-                                {
-                                    return;
-                                }
-                                if let Some(doc) = this.deerflow_settings.draft.as_mut() {
-                                    set_evolution_mode(doc, mode);
-                                }
-                                this.deerflow_settings.pending_evolution_mode = None;
-                                this.deerflow_settings.dirty = true;
-                                this.deerflow_settings.edit_generation += 1;
-                                this.deerflow_settings.notice = Some(
-                                "方式已加入草稿，保存后生效。模型、来源和预算仍按当前配置校验。"
-                                    .into(),
-                            );
-                                self::clear_mode_errors(&mut this.deerflow_settings);
-                                this.deerflow_rebind(cx);
-                                cx.notify();
-                            },
-                        ))
-                        .child(df_button(
-                            "df-evolution-mode-cancel",
-                            "取消",
-                            state.busy(),
-                            false,
-                            theme,
-                            cx,
-                            |this, _, cx| {
-                                this.deerflow_settings.pending_evolution_mode = None;
-                                cx.notify();
-                            },
-                        )),
-                );
+        if let Some(mode) = current {
+            group = group.child(df_label("方式说明", mode.description(), theme));
         }
         let mut links = div().flex().flex_wrap().gap(px(6.0));
         for (section, label) in [
             (Section::Agents, "管理角色"),
             (Section::Memory, "管理记忆"),
             (Section::Skills, "维护规则与预算"),
+            (Section::Sources, "配置技能来源"),
         ] {
             links = links.child(df_button(
                 SharedString::from(format!("df-common-link-{label}")),
@@ -917,7 +958,18 @@ impl Waku {
             cx,
             |this, _, cx| this.open_deerflow_skill_center(cx),
         ));
-        group.child(links).into_any_element()
+        div()
+            .child(self.render_deerflow_readiness(theme, cx))
+            .child(
+                group
+                    .child(df_label(
+                        "学习前置条件与排查",
+                        learning_setup_hint(doc),
+                        theme,
+                    ))
+                    .child(links),
+            )
+            .into_any_element()
     }
 
     pub(super) fn render_deerflow_panel(
@@ -1059,6 +1111,7 @@ impl Waku {
             (SkillCenterTab::Catalog, "我的技能"),
             (SkillCenterTab::Review, "待审核"),
             (SkillCenterTab::Generation, "生成记录"),
+            (SkillCenterTab::Learning, "学习来源"),
             (SkillCenterTab::History, "发布历史"),
         ] {
             tabs = tabs.child(df_button(
@@ -1120,7 +1173,9 @@ impl Waku {
                     },
                 )),
         );
+        body = body.child(self.render_deerflow_skill_pending(theme, cx));
         match state.skill_center_tab {
+            SkillCenterTab::Learning => body = body.child(self.render_deerflow_learning(theme, cx)),
             SkillCenterTab::Catalog => {
                 body = body
                     .child(self.render_deerflow_skill_catalog(theme, cx))
@@ -1180,10 +1235,32 @@ impl Waku {
     }
 }
 
-fn clear_mode_errors(state: &mut DeerFlowSettings) {
-    for path in EVOLUTION_PATHS {
-        state.errors.remove(*path);
-    }
+fn learning_setup_hint(doc: &Value) -> String {
+    let e = &doc["skill_evolution"];
+    let budget_ok = [
+        "max_daily_model_calls",
+        "max_daily_tokens",
+        "max_job_seconds",
+        "workers",
+    ]
+    .iter()
+    .all(|key| e["budget"][key].as_u64().is_some_and(|n| n > 0))
+        && ["max_daily_model_calls", "max_daily_tokens"]
+            .iter()
+            .all(|key| e["learning"][key].as_u64().is_some_and(|n| n > 0));
+    format!(
+        "草稿检查：技能系统 {}；维护与学习额度 {}。\n先确认模型和可维护的技能来源，再保存并应用。此方式只改进已匹配的现有技能；只有内置技能、来源不可维护或没有匹配时，不保证产生草稿。\n在技能中心“学习来源”核对运行阶段、聊天贡献、作业等待或失败原因；草稿在“审核”中批准或驳回。未出现提案不等于故障，也不代表任务已完成。",
+        if doc["skills_enabled"] == true {
+            "已启用"
+        } else {
+            "未启用，请在维护规则中开启"
+        },
+        if budget_ok {
+            "已填写正数，剩余额度以运行服务为准"
+        } else {
+            "不完整，请检查预算和学习额度；不会自动增加额度"
+        },
+    )
 }
 
 fn skill_group(path: &str) -> &str {
@@ -1203,6 +1280,234 @@ fn skill_group(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn evolution_document() -> Value {
+        json!({"skill_evolution": {
+            "generation": {}, "learning": {}, "discovery": {},
+            "auto_patch": {}, "behavior": {}
+        }})
+    }
+
+    #[test]
+    fn selecting_each_mode_updates_the_draft_and_selected_highlight_together() {
+        let modes = [
+            EvolutionMode::Off,
+            EvolutionMode::Manual,
+            EvolutionMode::Discover,
+            EvolutionMode::ReviewLearning,
+        ];
+        for from in modes {
+            for to in modes {
+                let mut saved = evolution_document();
+                set_evolution_mode(&mut saved, from);
+                let mut draft = saved.clone();
+                assert_eq!(select_evolution_mode(&mut draft, to), from != to);
+                assert_eq!(evolution_mode(&draft), Some(to), "{from:?} -> {to:?}");
+                assert_eq!(evolution_mode(&saved), Some(from));
+                if from != to {
+                    assert_ne!(draft, saved);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_and_custom_drafts_do_not_highlight_a_default_mode() {
+        for doc in [Value::Null, json!({}), evolution_document()] {
+            assert_eq!(evolution_mode(&doc), None);
+        }
+
+        let mut doc = evolution_document();
+        set_evolution_mode(&mut doc, EvolutionMode::Manual);
+        set_value(&mut doc, EVOLUTION_PATHS[3], json!(true));
+        let original = doc.clone();
+        assert_eq!(evolution_mode(&doc), None);
+        assert_eq!(doc, original);
+
+        assert!(select_evolution_mode(&mut doc, EvolutionMode::Discover));
+        assert_eq!(evolution_mode(&doc), Some(EvolutionMode::Discover));
+    }
+
+    #[test]
+    fn restoring_saved_draft_restores_mode_selection_without_confirmation() {
+        let modes = [
+            EvolutionMode::Off,
+            EvolutionMode::Manual,
+            EvolutionMode::Discover,
+            EvolutionMode::ReviewLearning,
+        ];
+        for saved_mode in modes {
+            let mut saved = evolution_document();
+            set_evolution_mode(&mut saved, saved_mode);
+            for selected_mode in modes {
+                let mut draft = saved.clone();
+                select_evolution_mode(&mut draft, selected_mode);
+                assert_eq!(evolution_mode(&draft), Some(selected_mode));
+
+                draft = saved.clone();
+                assert_eq!(evolution_mode(&draft), Some(saved_mode));
+                assert!(!select_evolution_mode(&mut draft, saved_mode));
+                assert_eq!(draft, saved);
+            }
+        }
+    }
+
+    #[test]
+    fn selecting_the_current_mode_keeps_advanced_choices_and_draft_unchanged() {
+        let mut doc = evolution_document();
+        set_evolution_mode(&mut doc, EvolutionMode::ReviewLearning);
+        for enabled in 0..8 {
+            for (index, path) in EVOLUTION_PATHS[3..6].iter().enumerate() {
+                set_value(&mut doc, path, json!(enabled & (1 << index) != 0));
+            }
+            let original = doc.clone();
+            assert!(!select_evolution_mode(
+                &mut doc,
+                EvolutionMode::ReviewLearning
+            ));
+            assert_eq!(doc, original);
+        }
+        set_evolution_mode(&mut doc, EvolutionMode::Off);
+        set_value(&mut doc, EVOLUTION_PATHS[3], json!(true));
+        let original = doc.clone();
+        assert!(!select_evolution_mode(&mut doc, EvolutionMode::Off));
+        assert_eq!(doc, original);
+    }
+
+    #[test]
+    fn selecting_manual_or_discover_resolves_partial_learning_settings() {
+        for mode in [EvolutionMode::Manual, EvolutionMode::Discover] {
+            for path in &EVOLUTION_PATHS[6..14] {
+                let mut doc = evolution_document();
+                set_evolution_mode(&mut doc, mode);
+                set_value(&mut doc, path, json!(true));
+                assert_eq!(evolution_mode(&doc), None);
+                assert!(select_evolution_mode(&mut doc, mode));
+                assert_eq!(evolution_mode(&doc), Some(mode));
+                for path in &EVOLUTION_PATHS[6..14] {
+                    assert_eq!(doc.pointer(path), Some(&json!(false)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mode_selection_changes_only_capability_checked_flags() {
+        let mut original = evolution_document();
+        set_evolution_mode(&mut original, EvolutionMode::ReviewLearning);
+        original["models"] = json!([{"name":"keep-model","api_key":"$MODEL_KEY"}]);
+        original["skill_sources"] = json!({"managed":[{"id":"keep-source"}]});
+        original["skill_evolution"]["mode"] = json!("auto_patch");
+        original["skill_evolution"]["budget"] = json!({"max_daily_model_calls":3});
+        original["skill_evolution"]["learning"]["max_daily_tokens"] = json!(123);
+        original["skill_evolution"]["discovery"]["new_skill_source_id"] = json!("keep-source");
+        original["skill_evolution"]["behavior"] =
+            json!({"enabled":true,"suite_path":"keep-suite"});
+        for mode in [
+            EvolutionMode::Off,
+            EvolutionMode::Manual,
+            EvolutionMode::Discover,
+            EvolutionMode::ReviewLearning,
+        ] {
+            let mut draft = original.clone();
+            assert!(select_evolution_mode(&mut draft, mode));
+            assert_eq!(evolution_mode(&draft), Some(mode));
+            for path in mode_paths(mode) {
+                set_value(&mut draft, path, original.pointer(path).unwrap().clone());
+            }
+            assert_eq!(draft, original, "{mode:?} changed an unrelated setting");
+        }
+    }
+
+    #[test]
+    fn review_learning_mode_accepts_additional_discovery_triggers_without_mutation() {
+        let mut doc = evolution_document();
+        set_evolution_mode(&mut doc, EvolutionMode::ReviewLearning);
+        for enabled in 0..8 {
+            for (index, path) in EVOLUTION_PATHS[3..6].iter().enumerate() {
+                set_value(&mut doc, path, json!(enabled & (1 << index) != 0));
+            }
+            let original = doc.clone();
+            assert_eq!(evolution_mode(&doc), Some(EvolutionMode::ReviewLearning));
+            assert_eq!(doc, original);
+            let reloaded: Value = serde_json::from_str(&doc.to_string()).unwrap();
+            assert_eq!(
+                evolution_mode(&reloaded),
+                Some(EvolutionMode::ReviewLearning)
+            );
+        }
+    }
+
+    #[test]
+    fn review_learning_mode_keeps_other_workflows_distinct() {
+        let mut doc = evolution_document();
+        set_evolution_mode(&mut doc, EvolutionMode::ReviewLearning);
+        for path in &EVOLUTION_PATHS[6..11] {
+            let mut changed = doc.clone();
+            set_value(&mut changed, path, json!(false));
+            assert_ne!(
+                evolution_mode(&changed),
+                Some(EvolutionMode::ReviewLearning)
+            );
+        }
+        for path in &EVOLUTION_PATHS[11..14] {
+            let mut changed = doc.clone();
+            set_value(&mut changed, path, json!(true));
+            assert_ne!(
+                evolution_mode(&changed),
+                Some(EvolutionMode::ReviewLearning)
+            );
+        }
+        doc["skill_evolution"]["mode"] = json!("auto_patch");
+        assert_eq!(evolution_mode(&doc), None);
+        for mode in [
+            EvolutionMode::Off,
+            EvolutionMode::Manual,
+            EvolutionMode::Discover,
+        ] {
+            let mut doc = evolution_document();
+            set_evolution_mode(&mut doc, mode);
+            assert_eq!(evolution_mode(&doc), Some(mode));
+        }
+    }
+
+    #[test]
+    fn legacy_import_is_absent_from_settings_navigation_and_search() {
+        assert_eq!(ADVANCED_GROUPS.len(), 6);
+        assert!(
+            ADVANCED_GROUPS
+                .iter()
+                .all(|(_, label, _)| !label.contains("旧数据"))
+        );
+        assert!(SEARCH_TARGETS.iter().all(|seed| seed.path != "/legacy"));
+    }
+
+    #[test]
+    fn review_learning_preset_is_bounded_and_reversible() {
+        let mut doc = json!({"skills_enabled":true,"skill_sources":{"managed":[{"id":"keep"}]},"skill_evolution":{"mode":"auto_patch","generation":{"enabled":false},"behavior":{"enabled":true},"generation_model_name":"keep-model","budget":{"max_daily_model_calls":3},"learning":{"cross_session_enabled":true,"max_daily_tokens":123},"discovery":{"new_skill_source_id":"keep-source","experience_new_skills_enabled":true},"auto_patch":{"experience_patterns_enabled":true}}});
+        let sources = doc["skill_sources"].clone();
+        let budget = doc["skill_evolution"]["budget"].clone();
+        set_evolution_mode(&mut doc, EvolutionMode::ReviewLearning);
+        assert!(evolution_mode(&doc) == Some(EvolutionMode::ReviewLearning));
+        assert_eq!(doc["skill_sources"], sources);
+        assert_eq!(doc["skill_evolution"]["budget"], budget);
+        assert_eq!(doc["skill_evolution"]["learning"]["max_daily_tokens"], 123);
+        assert_eq!(
+            doc["skill_evolution"]["generation_model_name"],
+            "keep-model"
+        );
+        assert_eq!(doc["skill_evolution"]["behavior"]["enabled"], true);
+        assert_eq!(
+            doc["skill_evolution"]["discovery"]["new_skill_source_id"],
+            "keep-source"
+        );
+        assert!(learning_setup_hint(&doc).contains("不会自动增加额度"));
+        set_evolution_mode(&mut doc, EvolutionMode::Off);
+        for path in &EVOLUTION_PATHS[2..] {
+            assert_eq!(doc.pointer(path), Some(&json!(false)));
+        }
+        assert_eq!(doc["skill_evolution"]["budget"], budget);
+    }
     #[test]
     fn settings_mode_changes_preserve_limits_models_and_custom_discovery() {
         let mut doc = json!({"skill_evolution":{"enabled":true,"mode":"review","generation":{"enabled":true,"max_output_tokens":4096},"discovery":{"operator_corrections_enabled":true,"missing_reports_enabled":false,"successful_workflows_enabled":true,"new_skill_source_id":"managed"},"budget":{"max_daily_model_calls":8},"generation_model_name":"model","behavior":{"enabled":false}}});

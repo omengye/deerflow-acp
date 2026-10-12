@@ -1631,12 +1631,23 @@ impl Waku {
             .unwrap_or_else(|| "default".to_owned());
         let weak = cx.entity().downgrade();
         let handle = self.menu_handle("model-traits", cx);
+        let pending = self
+            .runtimes
+            .get(&session.id)
+            .is_some_and(|runtime| runtime.deerflow_options_pending);
         Some(dropdown_menu(
             MenuChip::new("model-traits")
                 .when(fast, |trigger| {
                     trigger.icon("icons/zap.svg", theme.text_secondary)
                 })
-                .label(trigger_label)
+                .label(if pending {
+                    "...".to_owned()
+                } else {
+                    trigger_label
+                })
+                .disabled(
+                    pending || (session.provider == ProviderKind::DeerFlow && session.is_busy()),
+                )
                 .caret(false)
                 .selected(handle.is_open()),
             "model-traits-menu",
@@ -2189,11 +2200,14 @@ impl Waku {
         prompt: &str,
         cx: &mut Context<Self>,
     ) -> Option<ComposerSubmission> {
-        if self
-            .selected_session()
-            .is_some_and(|session| self.pending_deerflow_approvals.contains_key(&session.id))
-        {
-            self.show_toast("权限切换尚未确认，请稍后发送。草稿已保留。");
+        if self.selected_session().is_some_and(|session| {
+            self.pending_deerflow_approvals.contains_key(&session.id)
+                || self
+                    .runtimes
+                    .get(&session.id)
+                    .is_some_and(|runtime| runtime.deerflow_options_pending)
+        }) {
+            self.show_toast("会话设置切换尚未确认，请稍后发送。草稿已保留。");
             cx.notify();
             return None;
         }
@@ -2768,6 +2782,10 @@ impl Waku {
             self.submission_preparations.contains(&session.id)
                 || self.response_fork_preparations.contains_key(&session.id)
                 || self.pending_deerflow_approvals.contains_key(&session.id)
+                || self
+                    .runtimes
+                    .get(&session.id)
+                    .is_some_and(|runtime| runtime.deerflow_options_pending)
         });
         let submit_action =
             composer_submit_action(session.map(|session| session.status), preparing);

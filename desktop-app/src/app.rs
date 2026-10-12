@@ -878,6 +878,8 @@ struct SessionRuntime {
     /// Invalidates stale ApplyOptions responses when settings change again or
     /// this runtime is replaced while the RPC is in flight.
     options_generation: u64,
+    deerflow_options_pending: bool,
+    cancel_drain: cancel_drain::CancelDrain,
     events: Receiver<DriverEvent>,
     pending_events: VecDeque<DriverEvent>,
     /// Presentation metadata for steering messages awaiting the provider's
@@ -1640,6 +1642,7 @@ mod activity_diff;
 mod autocomplete;
 mod background_work;
 mod branches;
+mod cancel_drain;
 mod command_palette;
 mod commit_dialog;
 mod components;

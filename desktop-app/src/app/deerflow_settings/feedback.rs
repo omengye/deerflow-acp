@@ -885,16 +885,8 @@ impl Waku {
                             .feedback
                             .submit_request(withdrawn, &Uuid::new_v4().to_string())
                         {
-                            if withdrawn {
-                                this.deerflow_settings.confirm_manage = Some((
-                                    "撤回当前人工反馈，并保留历史修订。此操作不删除使用证据。"
-                                        .into(),
-                                    request,
-                                ));
-                                cx.notify();
-                            } else {
-                                this.deerflow_request("manage", request, cx);
-                            }
+                            this.deerflow_settings.confirm_manage = None;
+                            this.deerflow_request("manage", request, cx);
                         }
                     }
                 },

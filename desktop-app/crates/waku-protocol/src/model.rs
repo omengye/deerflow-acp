@@ -1873,6 +1873,12 @@ pub enum DriverEvent {
     /// The backend's effective session approval policy: ask, allow_always,
     /// reject_always, or off. It is authoritative over remembered UI modes.
     ToolApprovalChanged(String),
+    /// Authoritative ACP model capabilities and selection for this session.
+    DeerFlowModelsChanged {
+        models: Vec<ProviderModel>,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+    },
     /// A provider-owned, automatically generated session title. `None`
     /// clears that fallback but never overwrites a user-owned title.
     AutoTitleUpdated(Option<String>),

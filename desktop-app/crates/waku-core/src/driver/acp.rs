@@ -688,6 +688,7 @@ async fn run_sdk_connection(
             let mut current_effort = reasoning_effort;
             let mut current_tier = service_tier;
             let mut current_window = context_window;
+            stream_state.lock().deerflow_config_options = config_options.clone();
             let mut model_options_ready = apply_model(
                 &connection,
                 &session_id,
@@ -698,6 +699,7 @@ async fn run_sdk_connection(
                 current_tier.as_deref(),
                 current_window.as_deref(),
                 &events,
+                &stream_state,
             )
             .await;
             let mut fork_context = fork_context;
@@ -857,7 +859,14 @@ async fn run_sdk_connection(
                         }
                     }
                     CommandMessage::Options(options) => {
-                        if !model_options_ready
+                        if provider == ProviderKind::DeerFlow && !prompt_requests.lock().is_empty() {
+                            let _ = events.send(DriverEvent::Error("Wait for the current turn before changing model settings.".into()));
+                            if let Some(options) = &stream_state.lock().deerflow_config_options {
+                                report_deerflow_models(options, &events);
+                            }
+                            continue;
+                        }
+                        if provider == ProviderKind::DeerFlow || !model_options_ready
                             || options.model != current_model
                             || options.reasoning_effort != current_effort
                             || options.service_tier != current_tier
@@ -877,6 +886,7 @@ async fn run_sdk_connection(
                                 current_tier.as_deref(),
                                 current_window.as_deref(),
                                 &events,
+                                &stream_state,
                             )
                             .await;
                         }
@@ -1601,18 +1611,29 @@ async fn apply_model(
     service_tier: Option<&str>,
     context_window: Option<&str>,
     events: &DriverEventSender,
+    stream_state: &Arc<Mutex<AcpStreamState>>,
 ) -> bool {
     if provider == ProviderKind::DeerFlow {
-        return match apply_deerflow_model(
+        let options = {
+            let mut state = stream_state.lock();
+            state.deerflow_applying_model = true;
+            state.deerflow_config_options.clone()
+        };
+        let result = apply_deerflow_model(
             connection,
             session_id,
-            config_options,
+            options.as_deref().or(config_options),
             model,
             reasoning_effort,
         )
-        .await
-        {
-            Ok(()) => true,
+        .await;
+        let mut state = stream_state.lock();
+        state.deerflow_applying_model = false;
+        let ready = match result {
+            Ok(options) => {
+                state.deerflow_config_options = Some(options);
+                true
+            }
             Err(error) => {
                 let _ = events.send(DriverEvent::Error(tr!(
                     "errors.select_model",
@@ -1621,6 +1642,10 @@ async fn apply_model(
                 false
             }
         };
+        if let Some(options) = &state.deerflow_config_options {
+            report_deerflow_models(options, events);
+        }
+        return ready;
     }
     apply_other_model(
         connection,
@@ -1643,9 +1668,14 @@ async fn apply_deerflow_model(
     config_options: Option<&[SessionConfigOption]>,
     model: Option<&str>,
     thinking: Option<&str>,
-) -> agent_client_protocol::Result<()> {
+) -> agent_client_protocol::Result<Vec<SessionConfigOption>> {
     let mut options = config_options.unwrap_or_default().to_vec();
-    if let Some(model) = model.filter(|model| !model.is_empty()) {
+    let model_changed = model.is_some_and(|model| {
+        !options.iter().any(|option| {
+            option.id.to_string() == "model" && session_config_current_value(option) == Some(model)
+        })
+    });
+    if let Some(model) = model.filter(|model| !model.is_empty() && model_changed) {
         let response = connection
             .send_request(SetSessionConfigOptionRequest::new(
                 session_id.clone(),
@@ -1655,6 +1685,40 @@ async fn apply_deerflow_model(
             .block_task()
             .await?;
         options = response.config_options;
+    }
+    if let Some(option) = deerflow_effort_option(&options) {
+        let values = session_config_select_values(option);
+        let requested = thinking.or_else(|| model_changed.then_some("default"));
+        if let Some(requested) = requested {
+            let value = if values.contains(&requested) {
+                requested
+            } else if model_changed && values.contains(&"default") {
+                "default"
+            } else {
+                return Err(approval_error(
+                    "The selected reasoning effort is not supported by this model",
+                ));
+            };
+            if session_config_current_value(option) != Some(value) {
+                let response = connection
+                    .send_request(SetSessionConfigOptionRequest::new(
+                        session_id.clone(),
+                        option.id.clone(),
+                        value,
+                    ))
+                    .block_task()
+                    .await?;
+                options = response.config_options;
+                if !deerflow_effort_option(&options)
+                    .is_some_and(|option| session_config_current_value(option) == Some(value))
+                {
+                    return Err(approval_error(
+                        "The agent did not confirm the requested reasoning effort",
+                    ));
+                }
+            }
+        }
+        return Ok(options);
     }
     // An agent with no advertised options may be an older DeerFlow server.
     // When options are present, only send the switch if the agent exposes it.
@@ -1678,7 +1742,45 @@ async fn apply_deerflow_model(
     if !models.is_empty() {
         crate::model_catalog::write_cached_models(ProviderKind::DeerFlow, &models);
     }
-    Ok(())
+    Ok(options)
+}
+
+fn deerflow_effort_option(options: &[SessionConfigOption]) -> Option<&SessionConfigOption> {
+    options.iter().find(|option| {
+        option.id.to_string() == "reasoning_effort"
+            || (option.category == Some(SessionConfigOptionCategory::ThoughtLevel)
+                && option.id.to_string() != "thinking_enabled")
+    })
+}
+
+fn report_deerflow_models(options: &[SessionConfigOption], events: &impl DriverEventSink) {
+    let models = crate::model_catalog::parse_deerflow_models(options);
+    if models.is_empty() {
+        return;
+    }
+    let model = models
+        .iter()
+        .find(|model| model.is_default)
+        .map(|model| model.id.clone());
+    let reasoning_effort = deerflow_effort_option(options)
+        .and_then(session_config_current_value)
+        .map(str::to_owned)
+        .or_else(|| {
+            options
+                .iter()
+                .find(|option| option.id.to_string() == "thinking_enabled")
+                .and_then(|option| match &option.kind {
+                    SessionConfigKind::Boolean(toggle) => {
+                        Some(if toggle.current_value { "on" } else { "off" }.to_owned())
+                    }
+                    _ => session_config_current_value(option).map(str::to_owned),
+                })
+        });
+    let _ = events.send(DriverEvent::DeerFlowModelsChanged {
+        models,
+        model,
+        reasoning_effort,
+    });
 }
 
 fn deerflow_thinking_value(
@@ -1974,7 +2076,7 @@ fn image_mime_type(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// Only explicit, daemon-managed composer attachments become image blocks.
+/// Only explicit, daemon-managed composer attachments become media/resources.
 /// Textual @paths never grant permission to read a local file. The canonical
 /// containment check also excludes symlinks that escape the attachment store.
 fn deerflow_prompt_content(
@@ -1983,6 +2085,7 @@ fn deerflow_prompt_content(
     data_root: &Path,
 ) -> agent_client_protocol::Result<Vec<ContentBlock>> {
     let mut content = vec![ContentBlock::Text(TextContent::new(text))];
+    content.extend(deerflow_text_attachments(attachments, data_root)?);
     let images = attachments
         .iter()
         .filter(|attachment| attachment.is_image)
@@ -2071,6 +2174,106 @@ fn deerflow_prompt_content(
         ));
     }
     Ok(content)
+}
+
+fn deerflow_text_attachments(
+    attachments: &[crate::model::MessageAttachment],
+    data_root: &Path,
+) -> agent_client_protocol::Result<Vec<ContentBlock>> {
+    let files = attachments
+        .iter()
+        .filter(|a| !a.is_image)
+        .collect::<Vec<_>>();
+    if files.len() > 8 {
+        return Err(image_attachment_error("Attach at most 8 text files."));
+    }
+    let roots = [data_root.join("attachments"), data_root.join("blobs")]
+        .into_iter()
+        .filter_map(|p| p.canonicalize().ok())
+        .collect::<Vec<_>>();
+    let mut result = Vec::new();
+    let mut total = 0;
+    for attachment in files {
+        let extension = Path::new(&attachment.name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if attachment.is_dir
+            || !matches!(
+                extension.as_str(),
+                "txt" | "md" | "markdown" | "csv" | "tsv" | "json" | "yaml" | "yml" | "log"
+            )
+        {
+            return Err(image_attachment_error(
+                "Only UTF-8 TXT, Markdown, CSV, TSV, JSON, YAML and LOG attachments are supported. PDF, Office and directories are not supported.",
+            ));
+        }
+        if attachment.name.len() > 255
+            || attachment
+                .name
+                .chars()
+                .any(|c| c.is_control() || c == '/' || c == '\\')
+            || attachment
+                .blob_reference
+                .as_deref()
+                .is_none_or(|s| s.trim().is_empty())
+        {
+            return Err(image_attachment_error(
+                "Invalid stored text attachment. Attach it again.",
+            ));
+        }
+        let path = attachment.path.canonicalize().map_err(|_| {
+            image_attachment_error("Text attachment is unavailable. Attach it again.")
+        })?;
+        if !roots.iter().any(|root| path.starts_with(root)) {
+            return Err(image_attachment_error(
+                "Text attachment is outside the desktop attachment store.",
+            ));
+        }
+        let file = std::fs::File::open(path)
+            .map_err(|_| image_attachment_error("Could not open text attachment."))?;
+        let metadata = file
+            .metadata()
+            .map_err(|_| image_attachment_error("Could not inspect text attachment."))?;
+        if !metadata.is_file() || metadata.len() > 1024 * 1024 {
+            return Err(image_attachment_error(
+                "Each text attachment must be a regular file no larger than 1 MiB.",
+            ));
+        }
+        let mut bytes = Vec::new();
+        file.take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| image_attachment_error("Could not read text attachment."))?;
+        total += bytes.len();
+        if bytes.len() > 1024 * 1024 || total > 4 * 1024 * 1024 {
+            return Err(image_attachment_error(
+                "Text attachments exceed 1 MiB per file or 4 MiB per message.",
+            ));
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|_| image_attachment_error("Text attachments must use UTF-8 encoding."))?;
+        if text
+            .chars()
+            .any(|c| c < ' ' && !matches!(c, '\n' | '\r' | '\t'))
+        {
+            return Err(image_attachment_error(
+                "Binary content is not a supported text attachment.",
+            ));
+        }
+        let mut uri = url::Url::parse("attachment:///").expect("fixed attachment URI");
+        uri.path_segments_mut()
+            .expect("hierarchical attachment URI")
+            .clear()
+            .push(&attachment.name);
+        result.push(
+            serde_json::from_value(json!({"type":"resource", "resource":{
+                "uri":uri.as_str(), "mimeType":"text/plain", "text":text
+            }}))
+            .map_err(|_| image_attachment_error("Could not encode text attachment."))?,
+        );
+    }
+    Ok(result)
 }
 
 fn settle_prompt_request(prompt_requests: &Mutex<PendingPrompts>, request_id: &RequestId) -> bool {
@@ -2560,6 +2763,15 @@ fn handle_session_update(
                 let _ = events.send(DriverEvent::TextDelta(text));
             }
         }
+        Some("config_option_update") if provider == ProviderKind::DeerFlow => {
+            if let Some(value) = update.get("configOptions") {
+                let options: Vec<SessionConfigOption> = serde_json::from_value(value.clone())?;
+                if !state.deerflow_applying_model {
+                    report_deerflow_models(&options, events);
+                }
+                state.deerflow_config_options = Some(options);
+            }
+        }
         Some("agent_thought_chunk") => {
             if let Some(text) = update
                 .pointer("/content/text")
@@ -2676,6 +2888,8 @@ fn fx_context_notice(text: &str) -> bool {
 
 #[derive(Default)]
 struct AcpStreamState {
+    deerflow_config_options: Option<Vec<SessionConfigOption>>,
+    deerflow_applying_model: bool,
     deerflow_tasks: Option<deerflow_tasks::NotificationState>,
     deerflow_early: deerflow_tasks::EarlyUpdates,
     deerflow_buffering: bool,
@@ -3508,6 +3722,134 @@ mod tests {
         assert_eq!(*calls.lock(), ["model"]);
     }
 
+    fn session_reasoning_options(model: &str, effort: &str) -> Vec<SessionConfigOption> {
+        serde_json::from_value(json!([
+            {"id":"model","name":"Model","type":"select","currentValue":model,"options":[
+                {"value":"a","name":"A"},{"value":"b","name":"B"}
+            ]},
+            {"id":"effort-id","name":"Reasoning","category":"thought_level","type":"select","currentValue":effort,"options":[
+                {"value":"default","name":"Default"},{"value":"low","name":"Low"},{"value":"high","name":"High"}
+            ]}
+        ])).unwrap()
+    }
+
+    #[test]
+    fn session_reasoning_selection_uses_advertised_id_and_confirms_value() {
+        use agent_client_protocol::schema::v1::SetSessionConfigOptionResponse;
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let captured = calls.clone();
+        let agent = Agent.builder().on_receive_request(
+            async move |request: SetSessionConfigOptionRequest,
+                        responder: Responder<SetSessionConfigOptionResponse>,
+                        _connection| {
+                let value = request.value.as_value_id().unwrap().to_string();
+                captured
+                    .lock()
+                    .push((request.config_id.to_string(), value.clone()));
+                let options = if request.config_id.to_string() == "model" {
+                    session_reasoning_options(&value, "default")
+                } else {
+                    // A rejection by returning the old value must not look successful.
+                    session_reasoning_options("b", if value == "low" { "high" } else { &value })
+                };
+                responder.respond(SetSessionConfigOptionResponse::new(options))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        smol::block_on(
+            Client
+                .builder()
+                .connect_with(agent, async move |connection| {
+                    let selected = apply_deerflow_model(
+                        &connection,
+                        &SessionId::new("s"),
+                        Some(&session_reasoning_options("a", "default")),
+                        Some("b"),
+                        Some("high"),
+                    )
+                    .await?;
+                    assert_eq!(
+                        session_config_current_value(deerflow_effort_option(&selected).unwrap()),
+                        Some("high")
+                    );
+                    assert!(
+                        apply_deerflow_model(
+                            &connection,
+                            &SessionId::new("s"),
+                            Some(&selected),
+                            Some("b"),
+                            Some("xhigh")
+                        )
+                        .await
+                        .is_err()
+                    );
+                    assert!(
+                        apply_deerflow_model(
+                            &connection,
+                            &SessionId::new("s"),
+                            Some(&selected),
+                            Some("b"),
+                            Some("low")
+                        )
+                        .await
+                        .is_err()
+                    );
+                    let reset = apply_deerflow_model(
+                        &connection,
+                        &SessionId::new("s"),
+                        Some(&selected),
+                        Some("b"),
+                        Some("default"),
+                    )
+                    .await?;
+                    assert_eq!(
+                        session_config_current_value(deerflow_effort_option(&reset).unwrap()),
+                        Some("default")
+                    );
+                    Ok(())
+                }),
+        )
+        .unwrap();
+        assert_eq!(
+            *calls.lock(),
+            [
+                ("model".into(), "b".into()),
+                ("effort-id".into(), "high".into()),
+                ("effort-id".into(), "low".into()),
+                ("effort-id".into(), "default".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn session_reasoning_updates_report_authoritative_selection() {
+        let (events, rx) = crossbeam_channel::unbounded();
+        let mut state = AcpStreamState::default();
+        let options = session_reasoning_options("a", "high");
+        for applying in [true, false] {
+            state.deerflow_applying_model = applying;
+            let update = serde_json::from_value(
+                json!({"sessionUpdate":"config_option_update","configOptions":options}),
+            )
+            .unwrap();
+            handle_session_update(
+                ProviderKind::DeerFlow,
+                SessionNotification::new("s", update),
+                &events,
+                &mut state,
+            )
+            .unwrap();
+            if applying {
+                assert!(rx.is_empty());
+            }
+        }
+        assert!(
+            matches!(rx.recv().unwrap(), DriverEvent::DeerFlowModelsChanged { model, reasoning_effort, .. }
+            if model.as_deref() == Some("a") && reasoning_effort.as_deref() == Some("high"))
+        );
+        assert!(state.deerflow_config_options.is_some());
+    }
+
     #[test]
     fn deerflow_skips_thinking_when_agent_does_not_advertise_it() {
         use agent_client_protocol::schema::v1::SetSessionConfigOptionResponse;
@@ -3611,6 +3953,38 @@ mod tests {
             is_image: true,
             blob_reference: Some(format!("waku-attachment:{name}")),
         }
+    }
+
+    #[test]
+    fn deerflow_text_resources_are_explicit_bounded_utf8_snapshots() {
+        let root = std::env::temp_dir().join(format!("deerflow-acp-text-{}", uuid::Uuid::new_v4()));
+        let mut file = stored_image_attachment(&root, "notes #1%25.csv", "key,value\n你好,42\n".as_bytes());
+        file.is_image = false;
+        let content = deerflow_prompt_content("Read the CSV".into(), &[file.clone()], &root).unwrap();
+        let block = serde_json::to_value(&content[1]).unwrap();
+        assert_eq!(block["type"], "resource");
+        assert_eq!(block["resource"]["text"], "key,value\n你好,42\n");
+        assert_eq!(block["resource"]["uri"], "attachment:///notes%20%231%2525.csv");
+        assert_eq!(block["resource"]["mimeType"], "text/plain");
+        assert_eq!(deerflow_prompt_content(format!("@{}", file.path.display()), &[], &root).unwrap().len(), 1);
+        let original = file.clone();
+        file.blob_reference = None;
+        assert!(deerflow_prompt_content(String::new(), &[file], &root).is_err());
+        file = original.clone();
+        file.path = root.join("outside.txt");
+        std::fs::write(&file.path, "outside").unwrap();
+        assert!(deerflow_prompt_content(String::new(), &[file], &root).is_err());
+        for (name, data) in [("bad.pdf", b"%PDF".as_slice()), ("bad.txt", b"\xff"), ("nul.txt", b"a\0b")] {
+            let mut file = stored_image_attachment(&root, name, data);
+            file.is_image = false;
+            assert!(deerflow_prompt_content(String::new(), &[file], &root).is_err());
+        }
+        assert!(deerflow_prompt_content(String::new(), &vec![original.clone(); 9], &root).is_err());
+        std::fs::write(&original.path, vec![b'x'; 1024 * 1024]).unwrap();
+        assert!(deerflow_prompt_content(String::new(), &vec![original.clone(); 5], &root).is_err());
+        std::fs::File::create(&original.path).unwrap().set_len(1024 * 1024 + 1).unwrap();
+        assert!(deerflow_prompt_content(String::new(), &[original], &root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

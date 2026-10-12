@@ -578,15 +578,13 @@ impl DeerFlowService {
     pub fn request(&self, operation: &str, input: Value) -> Result<Value> {
         ensure_operation(operation)?;
         let paths = Paths::discover()?;
-        paths.bootstrap()?;
+        if operation != "check-readiness" {
+            paths.bootstrap()?;
+        }
         match operation {
             "snapshot" => paths.config_snapshot(),
             "validate" => paths.save_config_document(operation, &input),
-            "test-model"
-            | "legacy-agent-preview"
-            | "legacy-history-import"
-            | "legacy-history-list"
-            | "legacy-history-get" => paths.config_command(operation, &input),
+            "test-model" | "check-readiness" => paths.config_command(operation, &input),
             "save" | "save-and-apply" => {
                 let _guard = self.state.mutation.lock();
                 if self.state.applying.load(Ordering::Acquire)
@@ -771,10 +769,7 @@ fn ensure_operation(operation: &str) -> Result<()> {
             | "save-and-apply"
             | "validate"
             | "test-model"
-            | "legacy-agent-preview"
-            | "legacy-history-import"
-            | "legacy-history-list"
-            | "legacy-history-get"
+            | "check-readiness"
             | "manage"
             | "manage-envelope"
             | "status"
@@ -1107,6 +1102,10 @@ mod tests {
             "",
             "inspect",
             "restore",
+            "legacy-agent-preview",
+            "legacy-history-import",
+            "legacy-history-list",
+            "legacy-history-get",
         ] {
             assert!(ensure_operation(operation).is_err());
         }

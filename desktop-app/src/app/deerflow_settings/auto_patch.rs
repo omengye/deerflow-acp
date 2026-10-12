@@ -6,6 +6,8 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct Options {
+    #[serde(default)]
+    experience_patterns_enabled: bool,
     max_changed_lines: u64,
     max_daily_publications: u64,
     observation_hours: u64,
@@ -28,12 +30,17 @@ impl Options {
 
     fn summary(&self) -> String {
         format!(
-            "最多修改 {} 行 · 每日发布 {} 次 · 观察 {} 小时 · 最少 {} 个有效样本 · 连续 {} 次质量失败回滚",
+            "最多修改 {} 行 · 每日发布 {} 次 · 观察 {} 小时 · 最少 {} 个有效样本 · 连续 {} 次质量失败回滚 · 学习来源自动补丁{}",
             self.max_changed_lines,
             self.max_daily_publications,
             self.observation_hours,
             self.min_observations,
-            self.rollback_failure_threshold
+            self.rollback_failure_threshold,
+            if self.experience_patterns_enabled {
+                "已授权"
+            } else {
+                "未授权"
+            },
         )
     }
 }
@@ -70,6 +77,55 @@ struct Observation {
     rollback_revision: u64,
     #[serde(default)]
     reason: String,
+    #[serde(default)]
+    learning_source: Option<LearningSource>,
+}
+
+#[derive(Deserialize)]
+struct LearningSource {
+    generation_id: String,
+    discovery_id: String,
+    discovery_sha256: String,
+    pattern_id: String,
+    pattern_revision: u64,
+    match_id: String,
+    policy_identity: String,
+    evidence_sha256: String,
+    source_state: String,
+}
+
+impl LearningSource {
+    fn summary(&self, options: &Options) -> anyhow::Result<String> {
+        anyhow::ensure!(
+            options.experience_patterns_enabled
+                && bounded(&self.generation_id, 128)
+                && self.generation_id.starts_with("smj_")
+                && bounded(&self.discovery_id, 128)
+                && self.discovery_id.starts_with("sd_")
+                && bounded(&self.pattern_id, 128)
+                && bounded(&self.match_id, 128)
+                && (1..=i64::MAX as u64).contains(&self.pattern_revision)
+                && digest(&self.discovery_sha256)
+                && digest(&self.policy_identity)
+                && digest(&self.evidence_sha256),
+            "自动补丁学习来源引用无效"
+        );
+        let state = match self.source_state.as_str() {
+            "valid_at_publication" => "仅发布时已核验；不是当前来源授权",
+            "withdrawn" => "来源已撤销；已采用版本保留",
+            "unavailable" => "来源链接不可用；不作为质量判断",
+            _ => anyhow::bail!("未知自动补丁学习来源状态"),
+        };
+        Ok(format!(
+            "\n学习来源：{state}\n发现 {} · 生成 {}\n归并 {} 修订 {} · 匹配 {}\n来源证据摘要 {}\n观察仍仅计算操作者确认的质量反馈，不把经验摘要当质量票。",
+            self.discovery_id,
+            self.generation_id,
+            self.pattern_id,
+            self.pattern_revision,
+            self.match_id,
+            self.evidence_sha256,
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -154,6 +210,12 @@ impl AutoPatchBrowser {
                 let mut seen = std::collections::HashSet::new();
                 for observation in page.observations {
                     observation.options.validate()?;
+                    let learning = observation
+                        .learning_source
+                        .as_ref()
+                        .map(|source| source.summary(&observation.options))
+                        .transpose()?
+                        .unwrap_or_default();
                     anyhow::ensure!(
                         bounded(&observation.proposal_id, 128)
                             && seen.insert(observation.proposal_id.clone())
@@ -206,13 +268,13 @@ impl AutoPatchBrowser {
                     };
                     rows.push((
                         format!("{} / {} · {state}", observation.target.source_id, observation.target.name),
-                        format!("提案 {} · 发布修订 {} · 基线修订 {}\n发布版本 {} · 状态版本 {}\n开始 {} · 截止 {} · 更新 {}\n有效成功 {} · 累计质量失败 {} · 当前连续失败 {} · 未计入 {}\n{}{}{}",
+                        format!("提案 {} · 发布修订 {} · 基线修订 {}\n发布版本 {} · 状态版本 {}\n开始 {} · 截止 {} · 更新 {}\n有效成功 {} · 累计质量失败 {} · 当前连续失败 {} · 未计入 {}\n{}{}{}{}",
                             observation.proposal_id, observation.publication_revision, observation.baseline_revision,
                             observation.head.version, observation.head.state_version,
                             observation.started_at, observation.deadline, observation.updated_at,
                             observation.successes, observation.failures, observation.consecutive_failures, observation.ignored, observation.options.summary(),
                             if observation.rollback_revision > 0 { format!("\n回滚修订 {}", observation.rollback_revision) } else { String::new() },
-                            if observation.reason.is_empty() { String::new() } else { format!("\n原因：{}", observation.reason) }),
+                            if observation.reason.is_empty() { String::new() } else { format!("\n原因：{}", observation.reason) }, learning),
                     ));
                 }
                 self.nav.accept(request, &page.next_cursor, "cursor")?;
@@ -224,6 +286,10 @@ impl AutoPatchBrowser {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "auto_patch_learning_tests.rs"]
+mod learning_tests;
 
 impl Waku {
     pub(super) fn render_deerflow_auto_patch(

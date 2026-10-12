@@ -16,6 +16,19 @@ struct Record {
     state: String,
     #[serde(default)]
     proposal_id: String,
+    #[serde(default)]
+    host_adjudicated: bool,
+    #[serde(default)]
+    review_draft: bool,
+    #[serde(default)]
+    creation_retry: Option<CreationRetry>,
+}
+
+#[derive(Deserialize)]
+struct CreationRetry {
+    previous_generation_id: String,
+    evidence_reservation_id: String,
+    retry_number: u64,
 }
 
 #[derive(Deserialize)]
@@ -36,6 +49,23 @@ struct Evidence {
     workflow_digest: String,
     #[serde(default)]
     receipts: Vec<Receipt>,
+    #[serde(default)]
+    episode_key: String,
+    #[serde(default)]
+    experience: Option<Experience>,
+}
+
+#[derive(Deserialize)]
+struct Experience {
+    match_id: String,
+    pattern_id: String,
+    pattern_revision: u64,
+    match_input_sha256: String,
+    match_result_sha256: String,
+    pattern_sha256: String,
+    policy_identity: String,
+    episode_id: String,
+    independence_key: String,
 }
 
 #[derive(Deserialize)]
@@ -72,6 +102,7 @@ fn label(kind: &str) -> Option<&'static str> {
         "operator_corrections" => Some("重复纠正"),
         "missing_skill" => Some("缺失技能报告"),
         "repeated_workflow" => Some("重复成功流程"),
+        "experience_pattern" => Some("多轮会话经验"),
         _ => None,
     }
 }
@@ -100,7 +131,7 @@ impl DiscoveryBrowser {
                 let status: Status = serde_json::from_value(data)?;
                 anyhow::ensure!(
                     status.version == "skill-discovery-v1"
-                        && status.triggers.len() <= 3
+                        && status.triggers.len() <= 4
                         && status.triggers.iter().all(|kind| label(kind).is_some())
                         && chrono::NaiveDate::parse_from_str(&status.today, "%Y-%m-%d").is_ok()
                         && [
@@ -186,7 +217,34 @@ impl DiscoveryBrowser {
                             },
                         "自动发现记录的身份、状态或证据无效"
                     );
-                    let mut evidence = Vec::with_capacity(record.evidence.len());
+                    let independent_count = record.evidence.len();
+                    anyhow::ensure!(
+                        !record.review_draft
+                            || record.kind == "experience_pattern"
+                                && record.creation_retry.is_none(),
+                        "待审经验草案不能伪称其他触发或人工创建重试"
+                    );
+                    let mut evidence = Vec::with_capacity(
+                        independent_count + usize::from(record.creation_retry.is_some()),
+                    );
+                    if let Some(retry) = &record.creation_retry {
+                        anyhow::ensure!(
+                            record.kind == "experience_pattern"
+                                && !record.host_adjudicated
+                                && !record.base.exists
+                                && record.base.state_version == 0
+                                && record.base.version.is_empty()
+                                && bounded(&retry.previous_generation_id, 128)
+                                && retry.previous_generation_id.starts_with("smj_")
+                                && bounded(&retry.evidence_reservation_id, 128)
+                                && retry.evidence_reservation_id.starts_with("sd_")
+                                && retry.evidence_reservation_id != record.id
+                                && (1..=3).contains(&retry.retry_number),
+                            "人工创建重试来源无效"
+                        );
+                        evidence.push(("人工创建重试授权".into(), format!("人工重试 {} / 3\n原作业 {}\n原独立 episode 消费预留 {}\n复用证据不新增独立票、旧费用不退；新技能必须人工发布。",
+                            retry.retry_number, retry.previous_generation_id, retry.evidence_reservation_id)));
+                    }
                     let mut roots = std::collections::HashSet::new();
                     for item in record.evidence {
                         anyhow::ensure!(
@@ -224,6 +282,42 @@ impl DiscoveryBrowser {
                                     item.missing_report_id, item.report_revision
                                 )
                             }
+                            "experience_pattern" => {
+                                let experience = item
+                                    .experience
+                                    .ok_or_else(|| anyhow::anyhow!("经验来源引用缺失"))?;
+                                anyhow::ensure!(
+                                    bounded(&experience.match_id, 128)
+                                        && bounded(&experience.pattern_id, 128)
+                                        && experience.pattern_revision > 0
+                                        && experience.pattern_revision <= i64::MAX as u64
+                                        && digest(&experience.match_input_sha256)
+                                        && digest(&experience.match_result_sha256)
+                                        && digest(&experience.pattern_sha256)
+                                        && digest(&experience.policy_identity)
+                                        && bounded(&experience.episode_id, 256)
+                                        && digest(&experience.independence_key)
+                                        && item.episode_key == experience.independence_key,
+                                    "经验来源身份或摘要无效"
+                                );
+                                format!(
+                                    "Pattern {} · 修订 {}\n匹配 {}\nEpisode {} · 独立键 {}\n输入 {}\n结果 {}\nPattern 摘要 {}\n策略 {}\n质量尚未评估；本地完成回执不证明有效性或技能因果贡献。{}",
+                                    experience.pattern_id,
+                                    experience.pattern_revision,
+                                    experience.match_id,
+                                    experience.episode_id,
+                                    experience.independence_key,
+                                    experience.match_input_sha256,
+                                    experience.match_result_sha256,
+                                    experience.pattern_sha256,
+                                    experience.policy_identity,
+                                    if record.host_adjudicated {
+                                        "目标经人工裁决，此候选必须人工发布，不借用自动补丁授权"
+                                    } else {
+                                        "发布遵循独立宿主准入或人工审核"
+                                    }
+                                )
+                            }
                             _ => {
                                 anyhow::ensure!(
                                     digest(&item.workflow_digest)
@@ -254,9 +348,10 @@ impl DiscoveryBrowser {
                         evidence.push((format!("根任务 {}", item.root_id), detail));
                     }
                     rows.push(Row { title: format!("{kind} · {} / {}", record.target.source_id, record.target.name),
-                        details: format!("发现 {} · {}\n生成作业 {} · {}\n提案 {} · 基础状态版本 {} · {} 个独立根任务",
+                        details: format!("发现 {} · {}\n生成作业 {} · {}\n提案 {} · 基础状态版本 {} · {} 个独立任务来源\n{}",
                             record.id, record.created_at, record.generation_id, record.state,
-                            if record.proposal_id.is_empty() { "尚未生成" } else { &record.proposal_id }, record.base.state_version, evidence.len()),
+                            if record.proposal_id.is_empty() { "尚未生成" } else { &record.proposal_id }, record.base.state_version, independent_count,
+                            if record.review_draft { "系统自动起草；独立任务证据不足，仅可人工审核发布，不因后来证据增加而升级自动发布授权" } else { "系统自动生成；是否自动发布由独立授权和可信评测决定，新技能仍人工审核" }),
                         id: record.id, generation_id: record.generation_id, evidence });
                 }
                 self.nav.accept(request, &page.next_cursor, "cursor")?;
@@ -295,7 +390,7 @@ impl Waku {
             !supported || state.busy() || state.applying() || state.status["running"] != true;
         let mut group = df_group(theme).child(df_label(
             "自动发现记录",
-            "显示真实触发类型、独立根任务及回执引用。发现和生成结果需要经过发布审核。",
+            "显示真实触发类型、任务独立性及回执或经验来源引用。多轮经验候选仅改或新建 SKILL.md；默认人工发布，独立授权的正文补丁需行为改善，描述补丁另需正负触发选择改善。新技能和其他元数据仍人工处理。",
             theme,
         ));
         if !supported {
@@ -411,5 +506,76 @@ impl Waku {
             }
         }
         group.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn retry_record() -> Value {
+        let reference = json!({"match_id":"lmatch_original", "pattern_id":"lpat_original", "pattern_revision":2,
+            "match_input_sha256":"a".repeat(64), "match_result_sha256":"b".repeat(64), "pattern_sha256":"c".repeat(64),
+            "policy_identity":"d".repeat(64), "episode_id":"lep_first", "independence_key":"e".repeat(64)});
+        let mut second = reference.clone();
+        second["episode_id"] = json!("lep_second");
+        second["independence_key"] = json!("f".repeat(64));
+        json!({"id":"sd_retry","target":{"source_id":"project","source_identity":"a".repeat(64),"name":"json-audit","scope":"global"},
+            "base":{"version":"","state_version":0,"exists":false,"enabled":false,"managed":false},"generation_id":"smj_retry",
+            "created_at":"2026-10-09T08:20:00Z","kind":"experience_pattern","state":"queued","host_adjudicated":false,
+            "creation_retry":{"previous_generation_id":"smj_previous","evidence_reservation_id":"sd_original","retry_number":1},
+            "evidence":[{"root_id":"root_first","episode_key":"e".repeat(64),"experience":reference},
+                {"root_id":"root_second","episode_key":"f".repeat(64),"experience":second}]})
+    }
+
+    #[test]
+    fn learning_review_draft_is_system_generated_and_never_displayed_as_auto_publishable() {
+        let mut record = retry_record();
+        record.as_object_mut().unwrap().remove("creation_retry");
+        record["review_draft"] = json!(true);
+        record["evidence"].as_array_mut().unwrap().truncate(1);
+        let mut browser = DiscoveryBrowser::default();
+        let query = json!({"operation":"skill.discovery.list","limit":PAGE_SIZE});
+        browser
+            .accept(&query, json!({"discoveries":[record.clone()]}))
+            .unwrap();
+        assert!(browser.rows[0].details.contains("1 个独立任务来源"));
+        assert!(browser.rows[0].details.contains("系统自动起草"));
+        assert!(browser.rows[0].details.contains("仅可人工审核发布"));
+        assert_eq!(browser.rows[0].evidence.len(), 1);
+        record["creation_retry"] = retry_record()["creation_retry"].clone();
+        assert!(
+            browser
+                .accept(&query, json!({"discoveries":[record]}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn learning_creation_retry_discovery_does_not_count_authorization_as_an_episode() {
+        let mut browser = DiscoveryBrowser::default();
+        let query = json!({"operation":"skill.discovery.list","limit":PAGE_SIZE});
+        browser
+            .accept(&query, json!({"discoveries":[retry_record()]}))
+            .unwrap();
+        assert!(browser.rows[0].details.contains("2 个独立任务来源"));
+        assert_eq!(browser.rows[0].evidence.len(), 3);
+        assert!(browser.rows[0].evidence[0].1.contains("不新增独立票"));
+        for number in [0, 4] {
+            let mut wrong = retry_record();
+            wrong["creation_retry"]["retry_number"] = json!(number);
+            assert!(
+                browser
+                    .accept(&query, json!({"discoveries":[wrong]}))
+                    .is_err()
+            );
+        }
+        let mut wrong = retry_record();
+        wrong["creation_retry"]["evidence_reservation_id"] = json!("sd_retry");
+        assert!(
+            browser
+                .accept(&query, json!({"discoveries":[wrong]}))
+                .is_err()
+        );
     }
 }

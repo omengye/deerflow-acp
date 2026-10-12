@@ -79,6 +79,7 @@ impl Capabilities {
         for group in [
             "validation",
             "generation",
+            "learning",
             "budget",
             "discovery",
             "behavior",
@@ -209,6 +210,7 @@ impl Capabilities {
             && [
                 "validation",
                 "generation",
+                "learning",
                 "budget",
                 "discovery",
                 "behavior",
@@ -344,10 +346,28 @@ const EVOLUTION_FIELDS: &[&str] = &[
     "/generation/timeout_seconds",
     "/generation/max_input_bytes",
     "/generation/max_output_tokens",
+    "/learning",
+    "/learning/enabled",
+    "/learning/extraction_model_name",
+    "/learning/consolidation_enabled",
+    "/learning/consolidation_model_name",
+    "/learning/cross_session_enabled",
+    "/learning/matching_enabled",
+    "/learning/matching_model_name",
+    "/learning/idle_seconds",
+    "/learning/timeout_seconds",
+    "/learning/max_input_bytes",
+    "/learning/max_output_tokens",
+    "/learning/max_daily_model_calls",
+    "/learning/max_daily_tokens",
+    "/learning/external_context_policy",
     "/discovery",
     "/discovery/operator_corrections_enabled",
     "/discovery/missing_reports_enabled",
     "/discovery/successful_workflows_enabled",
+    "/discovery/experience_patterns_enabled",
+    "/discovery/experience_new_skills_enabled",
+    "/discovery/experience_review_drafts_enabled",
     "/discovery/new_skill_source_id",
     "/discovery/repeat_threshold",
     "/discovery/repeat_window_days",
@@ -362,6 +382,7 @@ const EVOLUTION_FIELDS: &[&str] = &[
     "/behavior/max_input_bytes",
     "/behavior/max_output_tokens",
     "/auto_patch",
+    "/auto_patch/experience_patterns_enabled",
     "/auto_patch/max_changed_lines",
     "/auto_patch/max_daily_publications",
     "/auto_patch/observation_hours",
@@ -411,18 +432,31 @@ fn expected_type(path: &str) -> Option<&'static str> {
         | "/skill_evolution/moderation_model_name"
         | "/skill_evolution/generation_model_name"
         | "/skill_evolution/evaluation_model_name"
+        | "/skill_evolution/learning/extraction_model_name"
+        | "/skill_evolution/learning/consolidation_model_name"
+        | "/skill_evolution/learning/matching_model_name"
+        | "/skill_evolution/learning/external_context_policy"
         | "/skill_evolution/discovery/new_skill_source_id"
         | "/skill_evolution/behavior/suite_path" => Some("string"),
         "/skill_evolution/enabled"
         | "/skill_evolution/allow_builtin_overlays"
         | "/skill_evolution/generation/enabled"
+        | "/skill_evolution/learning/enabled"
+        | "/skill_evolution/learning/consolidation_enabled"
+        | "/skill_evolution/learning/cross_session_enabled"
+        | "/skill_evolution/learning/matching_enabled"
         | "/skill_evolution/discovery/operator_corrections_enabled"
         | "/skill_evolution/discovery/missing_reports_enabled"
         | "/skill_evolution/discovery/successful_workflows_enabled"
+        | "/skill_evolution/discovery/experience_patterns_enabled"
+        | "/skill_evolution/discovery/experience_new_skills_enabled"
+        | "/skill_evolution/discovery/experience_review_drafts_enabled"
         | "/skill_evolution/behavior/enabled"
+        | "/skill_evolution/auto_patch/experience_patterns_enabled"
         | "/skill_evolution/security_fail_closed" => Some("boolean"),
         "/skill_evolution/validation" => Some("review_limits"),
         "/skill_evolution/generation" => Some("generation_settings"),
+        "/skill_evolution/learning" => Some("learning_settings"),
         "/skill_evolution/discovery" => Some("discovery_settings"),
         "/skill_evolution/behavior" => Some("behavior_settings"),
         "/skill_evolution/auto_patch" => Some("auto_patch_settings"),
@@ -433,6 +467,12 @@ fn expected_type(path: &str) -> Option<&'static str> {
         | "/skill_evolution/generation/timeout_seconds"
         | "/skill_evolution/generation/max_input_bytes"
         | "/skill_evolution/generation/max_output_tokens"
+        | "/skill_evolution/learning/idle_seconds"
+        | "/skill_evolution/learning/timeout_seconds"
+        | "/skill_evolution/learning/max_input_bytes"
+        | "/skill_evolution/learning/max_output_tokens"
+        | "/skill_evolution/learning/max_daily_model_calls"
+        | "/skill_evolution/learning/max_daily_tokens"
         | "/skill_evolution/discovery/repeat_threshold"
         | "/skill_evolution/discovery/repeat_window_days"
         | "/skill_evolution/discovery/cooldown_hours"
@@ -473,8 +513,10 @@ fn expected_type(path: &str) -> Option<&'static str> {
         | "/models/*/provider"
         | "/models/*/model"
         | "/models/*/api_key"
+        | "/models/*/output_token_parameter"
         | "/models/*/base_url" => Some("string"),
         "/models" => Some("model_catalog"),
+        "/models/*/reasoning_efforts" => Some("reasoning_efforts"),
         "/models/*/context_window"
         | "/subagents/max_turns"
         | "/subagents/max_concurrent"
@@ -500,6 +542,7 @@ fn expected_type(path: &str) -> Option<&'static str> {
         | "/memory/injection_enabled"
         | "/memory/retrieval_enabled" => Some("boolean"),
         "/runtime/max_active_connections"
+        | "/runtime/max_output_tokens"
         | "/runtime/max_active_runs"
         | "/runtime/inactive_session_retention_days"
         | "/runtime/closed_session_retention_days" => Some("integer"),
@@ -552,6 +595,24 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn output_budget_fields_require_live_contract() {
+        let mut doc = document();
+        let mut applied = doc.clone();
+        applied["running"] = json!(true);
+        assert!(!Capabilities::read(&doc, &applied).allows("/runtime/max_output_tokens"));
+        for (path, kind) in [
+            ("/runtime/max_output_tokens", "integer"),
+            ("/models/*/output_token_parameter", "string"),
+        ] {
+            let field = json!({"path":path,"type":kind,"apply":"restart","operations":["validate","save"],"hash":"output-v1"});
+            doc["config_schema"]["fields"].as_array_mut().unwrap().push(field.clone());
+            assert!(!Capabilities::read(&doc, &applied).allows(path));
+            applied["config_schema"]["fields"].as_array_mut().unwrap().push(field);
+            assert!(Capabilities::read(&doc, &applied).allows(path));
+        }
+    }
+
     fn document() -> Value {
         let mut doc = json!({"runtime":{"max_active_runs":3},"memory":{"enabled":false},"subagents":{"enabled":false},"tools":[],"sandbox":{"provider":"local","allow_host_bash":false,"allow_host_tools":false},"models":[{"name":"example","provider":"openai","original_name":"example"}],"default_model":"example","config_schema":{
         "version":VERSION,"hash":"fixture-schema","sections":["runtime","memory"],"fields":[
@@ -567,8 +628,9 @@ mod tests {
             "moderation_model_name":"","evaluation_model_name":"","generation_model_name":"","security_fail_closed":true,
             "validation":{"timeout_seconds":0,"max_input_bytes":0,"max_output_tokens":0},
             "generation":{"enabled":false,"timeout_seconds":0,"max_input_bytes":0,"max_output_tokens":0},
-            "discovery":{"operator_corrections_enabled":false,"missing_reports_enabled":false,"successful_workflows_enabled":false,"new_skill_source_id":"","repeat_threshold":2,"repeat_window_days":30,"cooldown_hours":24,"max_daily_proposals":5,"max_pending_proposals":20},
-            "auto_patch":{"max_changed_lines":40,"max_daily_publications":2,"observation_hours":72,"min_observations":3,"rollback_failure_threshold":2},
+            "learning":{"enabled":false,"extraction_model_name":null,"consolidation_enabled":false,"consolidation_model_name":null,"cross_session_enabled":false,"matching_enabled":false,"matching_model_name":null,"idle_seconds":300,"timeout_seconds":60,"max_input_bytes":131072,"max_output_tokens":4096,"max_daily_model_calls":10,"max_daily_tokens":50000,"external_context_policy":"hints_only"},
+            "discovery":{"operator_corrections_enabled":false,"missing_reports_enabled":false,"successful_workflows_enabled":false,"experience_patterns_enabled":false,"experience_new_skills_enabled":false,"experience_review_drafts_enabled":false,"new_skill_source_id":"","repeat_threshold":2,"repeat_window_days":30,"cooldown_hours":24,"max_daily_proposals":5,"max_pending_proposals":20},
+            "auto_patch":{"experience_patterns_enabled":false,"max_changed_lines":40,"max_daily_publications":2,"observation_hours":72,"min_observations":3,"rollback_failure_threshold":2},
             "behavior":{"enabled":false,"suite_path":"","timeout_seconds":60,"max_steps":6,"max_input_bytes":131072,"max_output_tokens":1024},
             "budget":{"max_daily_model_calls":30,"max_daily_tokens":100000,"max_job_seconds":300,"workers":1}});
         doc["skill_evolution_migration_ack"] = json!("");
@@ -714,6 +776,9 @@ mod tests {
             "/skill_evolution/discovery/operator_corrections_enabled",
             "/skill_evolution/discovery/missing_reports_enabled",
             "/skill_evolution/discovery/successful_workflows_enabled",
+            "/skill_evolution/discovery/experience_patterns_enabled",
+            "/skill_evolution/discovery/experience_new_skills_enabled",
+            "/skill_evolution/discovery/experience_review_drafts_enabled",
             "/skill_evolution/discovery/new_skill_source_id",
             "/skill_evolution/discovery/repeat_threshold",
             "/skill_evolution/discovery/repeat_window_days",
@@ -728,6 +793,7 @@ mod tests {
             "/skill_evolution/behavior/max_input_bytes",
             "/skill_evolution/behavior/max_output_tokens",
             "/skill_evolution/auto_patch",
+            "/skill_evolution/auto_patch/experience_patterns_enabled",
             "/skill_evolution/auto_patch/max_changed_lines",
             "/skill_evolution/auto_patch/max_daily_publications",
             "/skill_evolution/auto_patch/observation_hours",

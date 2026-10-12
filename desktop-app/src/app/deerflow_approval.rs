@@ -27,11 +27,14 @@ fn approval_runtime_mode(value: &str) -> Option<RuntimeMode> {
 
 impl Waku {
     pub(super) fn block_during_deerflow_approval(&mut self, cx: &mut Context<Self>) -> bool {
-        if self
-            .selected_session()
-            .is_some_and(|session| self.pending_deerflow_approvals.contains_key(&session.id))
-        {
-            self.show_toast("请等待权限切换完成后再修改会话设置。");
+        if self.selected_session().is_some_and(|session| {
+            self.pending_deerflow_approvals.contains_key(&session.id)
+                || self
+                    .runtimes
+                    .get(&session.id)
+                    .is_some_and(|runtime| runtime.deerflow_options_pending)
+        }) {
+            self.show_toast("请等待会话设置切换完成后再修改。");
             cx.notify();
             true
         } else {
@@ -66,6 +69,10 @@ impl Waku {
             || self.submission_preparations.contains(&session_id)
             || self.goal_runtime_starts.contains(&session_id)
             || self.pending_deerflow_approvals.contains_key(&session_id)
+            || self
+                .runtimes
+                .get(&session_id)
+                .is_some_and(|runtime| runtime.deerflow_options_pending)
         {
             self.show_toast("请先等待当前操作结束，或停止任务后切换权限。");
             cx.notify();

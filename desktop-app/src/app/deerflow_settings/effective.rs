@@ -42,7 +42,7 @@ pub(super) fn read(status: &Value) -> Vec<Row> {
         ),
         (
             "/runtime/run_timeout_seconds",
-            "任务超时（秒）",
+            "任务总执行时限（秒）",
             Section::Runtime,
             true,
         ),
@@ -200,6 +200,30 @@ pub(super) fn read(status: &Value) -> Vec<Row> {
             false,
         ),
         (
+            "/skill_evolution/learning/enabled",
+            "会话经验提取（仅积累）",
+            Section::Skills,
+            false,
+        ),
+        (
+            "/skill_evolution/learning/consolidation_enabled",
+            "经验语义归并（仅积累）",
+            Section::Skills,
+            false,
+        ),
+        (
+            "/skill_evolution/learning/cross_session_enabled",
+            "工作区跨会话归并（需会话授权）",
+            Section::Skills,
+            false,
+        ),
+        (
+            "/skill_evolution/learning/matching_enabled",
+            "经验技能匹配（仅积累）",
+            Section::Skills,
+            false,
+        ),
+        (
             "/skill_evolution/behavior/enabled",
             "技能行为评测",
             Section::Skills,
@@ -235,6 +259,13 @@ pub(super) fn read(status: &Value) -> Vec<Row> {
         ("generation/timeout_seconds", "生成超时（秒）"),
         ("generation/max_input_bytes", "生成输入上限（字节）"),
         ("generation/max_output_tokens", "生成输出 Token 上限"),
+        ("learning/idle_seconds", "经验提取空闲窗口（秒）"),
+        ("learning/timeout_seconds", "经验提取超时（秒）"),
+        ("learning/max_input_bytes", "经验输入上限（字节）"),
+        ("learning/max_output_tokens", "经验输出 Token 上限"),
+        ("learning/max_daily_model_calls", "每日学习调用子额度"),
+        ("learning/max_daily_tokens", "每日学习 Token 子额度"),
+        ("learning/external_context_policy", "外部上下文学习策略"),
         ("budget/max_daily_model_calls", "每日维护调用上限"),
         ("budget/max_daily_tokens", "每日维护 Token 上限"),
         ("budget/max_job_seconds", "维护作业时限（秒）"),
@@ -242,6 +273,15 @@ pub(super) fn read(status: &Value) -> Vec<Row> {
         ("discovery/operator_corrections_enabled", "重复纠正发现"),
         ("discovery/missing_reports_enabled", "缺失技能发现"),
         ("discovery/successful_workflows_enabled", "成功流程发现"),
+        ("discovery/experience_patterns_enabled", "会话经验改进提案"),
+        (
+            "discovery/experience_new_skills_enabled",
+            "会话经验新技能提案",
+        ),
+        (
+            "discovery/experience_review_drafts_enabled",
+            "单任务自动起草待审核提案",
+        ),
         ("discovery/new_skill_source_id", "新技能源 ID"),
         ("discovery/repeat_threshold", "发现所需独立任务数"),
         ("discovery/repeat_window_days", "发现统计范围（天）"),
@@ -252,6 +292,10 @@ pub(super) fn read(status: &Value) -> Vec<Row> {
         ("behavior/max_steps", "行为样例步数上限"),
         ("behavior/max_input_bytes", "行为输入上限（字节）"),
         ("behavior/max_output_tokens", "行为输出 Token 上限"),
+        (
+            "auto_patch/experience_patterns_enabled",
+            "会话经验受限自动补丁",
+        ),
         ("auto_patch/max_changed_lines", "自动补丁修改行数上限"),
         ("auto_patch/max_daily_publications", "每日自动发布上限"),
         ("auto_patch/observation_hours", "发布观察期（小时）"),
@@ -398,6 +442,9 @@ fn push_row(
         Value::Null => "继承".to_owned(),
         Value::String(text) if text.is_empty() => "宿主默认".to_owned(),
         Value::String(text) if text.len() <= 512 => text.clone(),
+        Value::Number(number)
+            if number.as_f64() == Some(0.0)
+                && matches!(path, "/runtime/run_timeout_seconds" | "/runtime/queue_timeout_seconds" | "/subagents/timeout_seconds") => "不限时（0）".to_owned(),
         Value::Number(number) => number.to_string(),
         Value::Array(items) if items.len() <= 128 => {
             let Some(items) = items.iter().map(Value::as_str).collect::<Option<Vec<_>>>() else {
@@ -425,6 +472,12 @@ fn push_row(
 
 impl DeerFlowSettings {
     pub(super) fn set_status(&mut self, status: Value) {
+        if skills::service_identity(&self.status) != skills::service_identity(&status)
+            || self.status["applied_generation"] != status["applied_generation"]
+            || self.status["config_revision"] != status["config_revision"]
+        {
+            self.readiness = None;
+        }
         self.applied_values = read(&status);
         self.status = status;
     }

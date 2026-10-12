@@ -14,15 +14,18 @@ mod effective;
 mod evolution;
 mod feedback;
 mod generation;
-mod legacy;
+mod learning;
+mod learning_state;
 mod mcp_editor;
 mod memory_management;
+mod readiness;
 mod missing;
 pub(super) mod presentation;
 mod roles;
 mod settings_contract;
 mod skill_sources;
 mod skills;
+mod skills_contract;
 mod tools;
 use skills::SkillBrowser;
 
@@ -30,7 +33,7 @@ const SINGLE_FIELDS: usize = 40;
 const FIELD_COUNT: usize = 56;
 
 // Local transcript IDs cannot identify native Go tasks. Only the provider
-// cursor establishes the session used for missing-capability discovery.
+// cursor establishes the session used for reports and learning controls.
 fn missing_session_context(session: Option<&AgentSession>) -> Option<(Uuid, String, String)> {
     let session = session.filter(|session| session.provider == ProviderKind::DeerFlow)?;
     let Some(ProviderResumeCursor::DeerFlow { session_id }) = &session.provider_cursor else {
@@ -54,7 +57,6 @@ pub(super) enum Section {
     SkillCenter,
     Sources,
     MCP,
-    Legacy,
     Overview,
     Models,
     Agents,
@@ -219,7 +221,7 @@ pub(super) struct DeerFlowSettings {
     pub(super) search_catalogue: Vec<presentation::SearchTarget>,
     skill_center_tab: presentation::SkillCenterTab,
     show_more: bool,
-    pending_evolution_mode: Option<presentation::EvolutionMode>,
+    readiness: Option<Value>,
     selected_mcp: usize,
     selected_mcp_env: usize,
     fields: Vec<Field>,
@@ -231,7 +233,6 @@ pub(super) struct DeerFlowSettings {
     selected_skill_source: usize,
     pending_model_names: HashMap<usize, String>,
     roles: roles::RoleEditor,
-    legacy: legacy::LegacyBrowser,
     advanced: bool,
     dirty: bool,
     needs_apply: bool,
@@ -311,7 +312,7 @@ impl DeerFlowSettings {
             search_catalogue: Vec::new(),
             skill_center_tab: presentation::SkillCenterTab::default(),
             show_more: false,
-            pending_evolution_mode: None,
+            readiness: None,
             selected_mcp: 0,
             selected_mcp_env: 0,
             fields: Vec::new(),
@@ -323,7 +324,6 @@ impl DeerFlowSettings {
             selected_skill_source: 0,
             pending_model_names: HashMap::new(),
             roles: roles::RoleEditor::default(),
-            legacy: legacy::LegacyBrowser::default(),
             advanced: false,
             dirty: false,
             needs_apply: false,
@@ -526,6 +526,9 @@ fn remap_model_references(document: &mut Value, names: &HashMap<String, String>)
         "/skill_evolution/moderation_model_name",
         "/skill_evolution/evaluation_model_name",
         "/skill_evolution/generation_model_name",
+        "/skill_evolution/learning/extraction_model_name",
+        "/skill_evolution/learning/consolidation_model_name",
+        "/skill_evolution/learning/matching_model_name",
     ] {
         if let Some(value) = document.pointer_mut(path) {
             replace(value, names, false);
@@ -604,12 +607,14 @@ impl Waku {
             // Local views may share a native session; switching views still
             // revokes the form's previously observed action state.
             state.skill_browser.missing.invalidate();
+            state.skill_browser.set_learning_session(native.as_deref());
             state.skills_local_session_id = local;
             state.skills_session_id = native;
             if state.confirm_manage.as_ref().is_some_and(|(_, request)| {
                 request["operation"]
                     .as_str()
                     .is_some_and(|op| op.starts_with("skill.missing."))
+                    || learning_state::session_bound(request)
             }) {
                 state.confirm_manage = None;
             }
@@ -757,21 +762,27 @@ impl Waku {
             return;
         }
         if operation == "manage"
-            && input["operation"]
+            && (input["operation"]
                 .as_str()
                 .is_some_and(|op| op.starts_with("skill.missing."))
+                || learning_state::session_bound(&input))
         {
             self.deerflow_sync_missing_session(cx);
-            // Only an exact unresolved mutation may still refer to the previous
-            // session; ordinary reads and newly composed writes use this session.
+            // Only an exact unresolved keyed mutation or read-only learning
+            // reconciliation can refer to the previous session.
             if input["session_id"].as_str() != self.deerflow_settings.skills_session_id.as_deref()
                 && !self
                     .deerflow_settings
                     .skill_browser
                     .is_original_retry(&input)
+                && !self
+                    .deerflow_settings
+                    .skill_browser
+                    .learning
+                    .is_reconciliation(&input)
             {
                 self.deerflow_settings.error =
-                    Some("会话已变化，请刷新当前会话的任务后继续。草稿已保留。".into());
+                    Some("会话已变化，请刷新当前会话的任务或学习来源后继续。草稿已保留。".into());
                 cx.notify();
                 return;
             }
@@ -789,7 +800,6 @@ impl Waku {
             return;
         }
         match operation {
-            "legacy-agent-preview" => self.deerflow_settings.legacy.clear_preview(),
             "start" => {
                 self.deerflow_settings.startup_completion_pending = true;
                 self.deerflow_settings.startup_error = None;
@@ -843,6 +853,13 @@ impl Waku {
             self.deerflow_settings
                 .skill_browser
                 .begin_at(&management_request, &self.deerflow_settings.status);
+            if management_request["operation"] == "skill.learning.control.set" {
+                self.deerflow_settings.proposals.clear();
+                self.deerflow_settings.proposal = None;
+                self.deerflow_settings
+                    .proposal_diff
+                    .update(cx, |input, cx| input.set_content(String::new(), cx));
+            }
         }
         let operation = operation.to_owned();
         let daemon = self.daemon.client();
@@ -873,10 +890,21 @@ impl Waku {
                     return;
                 }
                 this.deerflow_settings.pending = None;
+                if operation == "check-readiness"
+                    && (skills::service_identity(&this.deerflow_settings.status) != service_identity
+                        || this.deerflow_settings.status["applied_generation"].as_u64() != service_generation)
+                {
+                    this.deerflow_settings.readiness = None;
+                    this.deerflow_settings.notice = Some("服务已变化，请重新检查本地配置。".into());
+                    this.deerflow_freeze_inputs(cx);
+                    cx.notify();
+                    return;
+                }
                 if structured_manage
-                    && management_request["operation"]
+                    && (management_request["operation"]
                         .as_str()
                         .is_some_and(|op| op.starts_with("skill.missing."))
+                        || learning_state::session_bound(&management_request))
                 {
                     this.deerflow_sync_missing_session(cx);
                 }
@@ -937,10 +965,8 @@ impl Waku {
                         this.deerflow_service_error(&message, cx);
                     }
                     Ok(data) => match operation.as_str() {
-                        "legacy-agent-preview" | "legacy-history-import" | "legacy-history-list" | "legacy-history-get" => {
-                            this.deerflow_legacy_response(&operation, &management_request, data, edits, cx);
-                        }
                         "snapshot" | "save" | "save-and-apply" => {
+                            this.deerflow_settings.readiness = None;
                             let (document, application) = if operation == "save-and-apply" {
                                 (data["document"].clone(), Some(data["status"].clone()))
                             } else {
@@ -987,6 +1013,10 @@ impl Waku {
                             } else {
                                 this.deerflow_managed(&management_request, data, cx);
                             }
+                        }
+                        "check-readiness" => {
+                            this.deerflow_settings.readiness = Some(data);
+                            this.deerflow_settings.notice = Some("本地检查完成；网络和实际模型能力未验证。".into());
                         }
                         "validate" => this.deerflow_settings.notice = Some("配置校验通过。".into()),
                         "test-model" => {
@@ -1498,6 +1528,7 @@ impl Waku {
     fn deerflow_add_model(&mut self, cx: &mut Context<Self>) {
         if !self.deerflow_settings.can_edit_field("/models")
             || !self.deerflow_settings.errors.is_empty()
+            || !self.deerflow_commit_names(cx)
         {
             return;
         }
@@ -1514,7 +1545,7 @@ impl Waku {
         {
             number += 1;
         }
-        items.push(json!({"original_name":"", "name":format!("model-{number}"), "display_name":"", "description":"", "provider":"openai", "model":"", "base_url":"", "api_key":"", "api_key_configured":false, "api_key_literal":false, "clear_api_key":false, "supports_vision":false, "context_window":0}));
+        items.push(json!({"original_name":"", "name":format!("model-{number}"), "display_name":"", "description":"", "provider":"openai", "model":"", "base_url":"", "api_key":"", "api_key_configured":false, "api_key_literal":false, "clear_api_key":false, "supports_vision":false, "context_window":0, "output_token_parameter":"auto"}));
         self.deerflow_settings.selected_model = items.len() - 1;
         self.deerflow_settings.dirty = true;
         self.deerflow_settings.edit_generation += 1;
@@ -1589,11 +1620,7 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
                 format!("{root}/provider"),
                 "模型提供商",
                 "使用已接入的 Go 模型适配器",
-                Kind::Choice(&[
-                    ("openai", "OpenAI 兼容"),
-                    ("ark", "火山方舟 Ark"),
-                    ("claude", "Claude"),
-                ]),
+                Kind::Choice(&[("openai", "OpenAI 兼容"), ("claude", "Claude")]),
             );
             add(
                 format!("{root}/supports_vision"),
@@ -1606,6 +1633,22 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
                 "上下文窗口",
                 "Token 数；0 使用模型/宿主默认",
                 Kind::Integer,
+            );
+            add(
+                format!("{root}/reasoning_efforts"),
+                "支持的思考强度",
+                "每行一个档位，如 low、medium、high；OpenAI 兼容可加 xhigh 或 max。仅填写模型实际支持的值；留空不显示会话选择器。Claude 暂不支持此参数。",
+                Kind::Names,
+            );
+            add(
+                format!("{root}/output_token_parameter"),
+                "输出上限参数（高级）",
+                "通常选自动；腾讯 Copilot 使用 max_tokens，其余 OpenAI 兼容默认使用 max_completion_tokens。未知网关请按实测覆盖，与思考强度无关。",
+                Kind::Choice(&[
+                    ("auto", "自动选择"),
+                    ("max_tokens", "max_tokens"),
+                    ("max_completion_tokens", "max_completion_tokens"),
+                ]),
             );
         }
         Section::Agents => {
@@ -1624,8 +1667,8 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
             for (key, label, hint, kind) in [
                 (
                     "timeout_seconds",
-                    "默认角色超时（秒）",
-                    "留空使用 900；0.001–86400，仍受父任务剩余预算限制",
+                    "默认角色执行时限（秒）",
+                    "留空或 0 默认不限时，支持跨天；正数显式限时，仍受父任务剩余预算限制",
                     Kind::OptionalNumber,
                 ),
                 (
@@ -1777,15 +1820,21 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
                 ),
                 ("max_active_runs", "同时运行任务数", "1–128", Kind::Integer),
                 (
+                    "max_output_tokens",
+                    "单次模型输出上限",
+                    "包含推理和正文 tokens；默认 4096，0 不设宿主上限，仍受模型、角色及上下文限制。修改后重启生效。",
+                    Kind::Integer,
+                ),
+                (
                     "run_timeout_seconds",
-                    "运行超时（秒）",
-                    "0.001–86400",
+                    "任务总执行时限（秒）",
+                    "0 默认不限时，支持跨天；正数显式限时，最多 315360000 秒。保留手动停止、工具与连接超时。",
                     Kind::Number,
                 ),
                 (
                     "queue_timeout_seconds",
                     "排队超时（秒）",
-                    "0.001–86400",
+                    "0 默认不限时；正数显式限制等待，最多 315360000 秒",
                     Kind::Number,
                 ),
                 (
@@ -2273,11 +2322,6 @@ impl Waku {
             Section::Sources => {
                 content = content.child(self.render_deerflow_skill_sources(theme, cx))
             }
-            Section::Legacy => {
-                content = content
-                    .child(self.render_deerflow_legacy_agent(theme, cx))
-                    .child(self.render_deerflow_legacy_history(theme, cx))
-            }
             Section::Overview => {
                 let mut group = df_group(theme)
                     .child(df_label(
@@ -2407,6 +2451,9 @@ impl Waku {
                             theme,
                             cx,
                             move |this, _, cx| {
+                                if !this.deerflow_commit_names(cx) {
+                                    return;
+                                }
                                 this.deerflow_settings.selected_model = index;
                                 this.deerflow_rebind(cx);
                                 cx.notify();
@@ -2492,25 +2539,12 @@ impl Waku {
                         },
                     ));
                 }
-                if !state.pending_model_names.is_empty() {
-                    actions = actions.child(df_button(
-                        "df-model-name-commit",
-                        "确认名称",
-                        !editable || invalid,
-                        false,
-                        theme,
-                        cx,
-                        |this, _, cx| {
-                            this.deerflow_commit_names(cx);
-                        },
-                    ));
-                }
                 content = content.child(
                     df_group(theme).child(picker).child(actions).child(
                         div()
                             .text_size(sp(12.5))
                             .text_color(theme.text_tertiary)
-                            .child("名称在确认或保存时统一更新引用；密钥留空保留已有值。更换 provider 或 API 地址会清除旧凭据及原 provider 扩展。测试连接发送一次文本请求；Agent 能力测试最多两次请求，检查流式、工具调用及 usage，不执行工具。"),
+                            .child("名称在切换模型或保存时自动更新草稿引用，无需单独确认；密钥留空保留已有值。更换 provider 或 API 地址会清除旧凭据及原 provider 扩展。测试连接发送一次文本请求；Agent 能力测试最多两次请求，检查流式、工具调用及 usage，不执行工具。"),
                     ),
                 );
             }
@@ -4230,6 +4264,38 @@ mod model_name_tests {
         assert_eq!(swapped["default_model"], "gpt4");
         assert_eq!(swapped["runtime"]["model_name"], "gpt");
     }
+    #[test]
+    fn pending_model_and_role_names_project_together_without_changing_the_saved_document() {
+        let saved = document();
+        let editor = roles::RoleEditor {
+            selected: roles::RoleKey {
+                collection: "custom_agents",
+                name: "writer".into(),
+            },
+            pending_name: Some("author".into()),
+            ..Default::default()
+        };
+        let project = |name: &str| {
+            document_with_model_names(&saved, &HashMap::from([(1, name.into())]))
+                .and_then(|doc| editor.projected(&doc))
+        };
+        assert!(project("gpt").is_err());
+        assert_eq!(saved, document());
+        let projected = project(" gpt5 ").unwrap();
+        assert_eq!(projected["runtime"]["model_name"], "gpt5");
+        assert_eq!(
+            projected["subagents"]["custom_agents"]["author"]["model"],
+            "gpt5"
+        );
+        assert!(
+            projected["subagents"]["custom_agents"]
+                .get("writer")
+                .is_none()
+        );
+        assert_eq!(projected["models"][1]["original_name"], "gpt4");
+        assert_eq!(saved, document());
+    }
+
     #[test]
     fn renaming_and_deleting_cover_builtin_and_custom_subagents() {
         let mut saved =

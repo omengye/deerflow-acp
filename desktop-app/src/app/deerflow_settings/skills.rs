@@ -1,28 +1,10 @@
 //! Cached projections and bounded pages for the Go skill management service.
 //! All requests use the parent's background executor and generation guard.
+pub(super) use super::skills_contract::{Head, PageNav, Target, digest};
 use super::*;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 pub(super) const PAGE_SIZE: usize = 20;
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub(super) struct Target {
-    pub(super) source_id: String,
-    pub(super) source_identity: String,
-    pub(super) name: String,
-    pub(super) scope: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub(super) workspace: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub(super) struct Head {
-    pub(super) version: String,
-    pub(super) state_version: u64,
-    pub(super) exists: bool,
-    pub(super) enabled: bool,
-    pub(super) managed: bool,
-}
 
 #[derive(Clone, Debug, Deserialize)]
 struct CatalogSkill {
@@ -94,13 +76,6 @@ impl CatalogSkill {
     }
 }
 
-pub(super) fn digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-}
-
 #[derive(Clone, Debug, Deserialize)]
 struct CatalogPage {
     skills: Vec<CatalogSkill>,
@@ -116,74 +91,6 @@ struct CatalogDetail {
     catalog_version: u64,
 }
 
-// Keep one displayed page and a bounded cursor stack, not an ever-growing
-// collection of rows built on each frame. Navigation commits only on success.
-#[derive(Default)]
-pub(super) struct PageNav {
-    query: Value,
-    cursor: String,
-    previous: Vec<String>,
-    next: String,
-    cursor_field: String,
-}
-
-impl PageNav {
-    pub(super) fn accept(
-        &mut self,
-        request: &Value,
-        next: &str,
-        field: &str,
-    ) -> anyhow::Result<()> {
-        anyhow::ensure!(next.len() <= 2048, "分页游标过长");
-        let cursor = request[field].as_str().unwrap_or("");
-        let mut query = request.clone();
-        query
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("分页请求无效"))?
-            .remove(field);
-        if cursor.is_empty() {
-            self.previous.clear();
-        } else {
-            anyhow::ensure!(
-                query == self.query && field == self.cursor_field,
-                "分页条件已变化，请刷新"
-            );
-            if cursor == self.next && cursor != self.cursor {
-                anyhow::ensure!(
-                    self.previous.len() < 1000,
-                    "分页数量达到上限，请缩小筛选范围"
-                );
-                self.previous.push(self.cursor.clone());
-            } else if self.previous.last().is_some_and(|value| value == cursor) {
-                self.previous.pop();
-            } else {
-                anyhow::ensure!(cursor == self.cursor, "分页游标已变化，请刷新");
-            }
-        }
-        self.query = query;
-        self.cursor = cursor.to_owned();
-        self.next = next.to_owned();
-        self.cursor_field = field.to_owned();
-        Ok(())
-    }
-
-    fn request(&self, next: bool) -> Option<Value> {
-        let cursor = if next {
-            &self.next
-        } else {
-            self.previous.last()?
-        };
-        if next && cursor.is_empty() {
-            return None;
-        }
-        let mut request = self.query.clone();
-        if !cursor.is_empty() {
-            request[&self.cursor_field] = json!(cursor);
-        }
-        Some(request)
-    }
-}
-
 #[derive(Default)]
 pub(super) struct SkillBrowser {
     pub(super) behavior: Option<behavior::BehaviorView>,
@@ -193,6 +100,7 @@ pub(super) struct SkillBrowser {
     pub(super) discovery: discovery::DiscoveryBrowser,
     pub(super) feedback: feedback::FeedbackBrowser,
     pub(super) missing: missing::MissingBrowser,
+    pub(super) learning: learning_state::LearningBrowser,
     catalog: Option<CatalogPage>,
     catalog_nav: PageNav,
     selected: Option<CatalogDetail>,
@@ -203,6 +111,7 @@ pub(super) struct SkillBrowser {
     retry: Option<Value>,
     retry_service: Option<Value>,
     rollback: Option<Value>,
+    learning_acknowledgment: bool,
 }
 
 pub(super) fn is_skill_operation(request: &Value) -> bool {
@@ -219,26 +128,33 @@ pub(super) fn service_identity(status: &Value) -> Value {
 }
 
 fn mutation(request: &Value) -> bool {
-    matches!(
-        request["operation"].as_str(),
-        Some(
-            "skill.set_enabled"
-                | "skill.generation.enqueue"
-                | "skill.generation.cancel"
-                | "skill.feedback.submit"
-                | "skill.missing.submit"
-                | "skill.export.retry"
-                | "proposal.approve"
-                | "proposal.reject"
-                | "proposal.rollback"
+    learning_state::mutation(request)
+        || matches!(
+            request["operation"].as_str(),
+            Some(
+                "skill.set_enabled"
+                    | "skill.generation.enqueue"
+                    | "skill.generation.cancel"
+                    | "skill.feedback.submit"
+                    | "skill.missing.submit"
+                    | "skill.export.retry"
+                    | "proposal.approve"
+                    | "proposal.reject"
+                    | "proposal.rollback"
+            )
         )
-    )
 }
 
 impl SkillBrowser {
+    pub(super) fn set_learning_session(&mut self, session: Option<&str>) {
+        self.learning.set_session(session);
+        self.learning.invalidate();
+        self.learning_acknowledgment = false;
+    }
+
     pub(super) fn can_begin_at(&self, request: &Value, status: &Value) -> bool {
         self.can_begin(request)
-            && (!mutation(request)
+            && (!(mutation(request) || self.learning.is_reconciliation(request))
                 || self
                     .retry_service
                     .as_ref()
@@ -257,11 +173,32 @@ impl SkillBrowser {
     }
 
     pub(super) fn can_begin(&self, request: &Value) -> bool {
-        !mutation(request)
-            || self.retry.as_ref().map_or_else(
-                || self.missing.can_begin(request),
-                |original| original == request,
-            )
+        self.learning.can_begin(request)
+            && (request["operation"] != "skill.learning.creation_retry.prepare"
+                || self
+                    .generation
+                    .creation_retry_previous()
+                    .is_some_and(|(id, _)| request["retry"]["previous_generation_id"] == id))
+            && (self.is_original_retry(request)
+                || request["operation"] != "skill.learning.creation_retry.enqueue"
+                || self
+                    .generation
+                    .creation_retry_previous()
+                    .is_some_and(|(id, _)| request["retry"]["previous_generation_id"] == id))
+            && (self.is_original_retry(request)
+                || !learning_state::review_mutation(request)
+                || request["operation"] != "skill.learning.pattern.adjudicate"
+                || self.selected.as_ref().is_some_and(|detail| {
+                    !self.catalog_stale
+                        && request["review"]["target"] == json!(detail.skill.target)
+                        && request["review"]["expected_head"] == json!(detail.skill.head)
+                        && request["review"]["overlay_base"] == detail.skill.overlay_base
+                }))
+            && (!mutation(request)
+                || self.retry.as_ref().map_or_else(
+                    || self.missing.can_begin(request),
+                    |original| original == request,
+                ))
     }
 
     pub(super) fn begin(&mut self, request: &Value) {
@@ -269,6 +206,10 @@ impl SkillBrowser {
         self.generation.begin(request);
         self.feedback.begin(request);
         self.missing.begin(request);
+        self.learning.begin(request);
+        if learning_state::sources_changed(request) {
+            self.revoke_learning_sources();
+        }
         if mutation(request) {
             self.retry = Some(request.clone());
         }
@@ -281,6 +222,14 @@ impl SkillBrowser {
         self.invalidate();
     }
 
+    fn revoke_learning_sources(&mut self) {
+        self.generation.invalidate_learning_sources();
+        self.discovery.invalidate();
+        self.behavior = None;
+        self.behavior_inspector.invalidate();
+        self.review_stale = true;
+    }
+
     pub(super) fn invalidate(&mut self) {
         self.behavior = None;
         self.behavior_inspector.invalidate();
@@ -289,10 +238,15 @@ impl SkillBrowser {
         self.discovery.invalidate();
         self.feedback.invalidate();
         self.missing.invalidate();
+        self.learning.invalidate();
+        self.learning_acknowledgment = false;
         self.catalog_stale = true;
         self.review_stale = true;
         self.selected = None;
         self.rollback = None;
+        if self.learning.pending_sources_changed() {
+            self.revoke_learning_sources();
+        }
     }
 
     fn backend_failed(&mut self, request: &Value, code: &str) {
@@ -314,6 +268,7 @@ impl SkillBrowser {
             self.retry_service = None;
             self.feedback.definitive_failure(request);
             self.missing.definitive_failure(request);
+            self.learning.definitive_failure(request);
         }
     }
 
@@ -397,6 +352,7 @@ impl SkillBrowser {
         if let Some(request) = self.retry.take() {
             self.feedback.definitive_failure(&request);
             self.missing.definitive_failure(&request);
+            self.learning.definitive_failure(&request);
         }
         self.invalidate();
     }
@@ -458,6 +414,47 @@ impl SkillBrowser {
             self.retry_service = None;
         }
     }
+
+    pub(super) fn accept_learning(&mut self, request: &Value, data: Value) -> anyhow::Result<bool> {
+        let before = self.learning.control.clone();
+        self.learning.accept(request, data)?;
+        if learning_state::mutation(request) {
+            self.generation_mutation_completed(request);
+            self.learning_acknowledgment = false;
+        }
+        let sources_changed =
+            learning_state::sources_changed(request) || before != self.learning.control;
+        if sources_changed {
+            self.revoke_learning_sources();
+        }
+        Ok(sources_changed)
+    }
+
+    pub(super) fn learning_adjudication_request(&self, relation: &str) -> Option<Value> {
+        let detail = self.selected.as_ref()?;
+        if self.catalog_stale || !detail.skill.head.exists || !detail.skill.head.enabled {
+            return None;
+        }
+        self.learning.adjudication_request(
+            json!(detail.skill.target),
+            json!(detail.skill.head),
+            detail.skill.overlay_base.clone(),
+            relation,
+        )
+    }
+
+    pub(super) fn learning_target_caption(&self) -> Option<String> {
+        let detail = self.selected.as_ref()?;
+        (!self.catalog_stale).then(|| {
+            format!(
+                "{} / {} · head {} · 状态版本 {}",
+                detail.skill.target.source_id,
+                detail.skill.target.name,
+                detail.skill.head.version,
+                detail.skill.head.state_version
+            )
+        })
+    }
 }
 
 pub(super) fn validate_proposal(
@@ -477,6 +474,105 @@ pub(super) fn validate_proposal(
 }
 
 impl Waku {
+    pub(super) fn render_deerflow_skill_pending(
+        &self,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let state = &self.deerflow_settings;
+        let browser = &state.skill_browser;
+        let Some(request) = &browser.retry else {
+            return div().into_any_element();
+        };
+        let unavailable = state.busy() || state.applying() || state.status["running"] != true;
+        let learning = learning_state::mutation(request);
+        let review = learning_state::review_mutation(request);
+        let mut group = df_group(theme).child(df_label(
+            "操作结果待确认",
+            if review {
+                format!("原会话 {}\n操作 {}\n原控制条件 {}\n人工控制与显式创建重试保存请求键回执。只可向原服务数据目录重发完整原请求；不能改目标、版本或请求键。回执是原操作结果，不代表当前状态。",
+                    request["session_id"].as_str().unwrap_or(""), request["operation"].as_str().unwrap_or(""),
+                    if request["operation"] == "skill.learning.creation_retry.enqueue" { &request["retry"] } else { &request["review"] })
+            } else if learning {
+                format!("原会话 {}\n操作 {}\n授权条件 {}\n学习操作没有请求键回执，不能把重发当作安全核对。原请求结果未明时，禁止新修改；当前状态核对仅限原服务数据目录。",
+                    request["session_id"].as_str().unwrap_or(""), request["operation"].as_str().unwrap_or(""),
+                    if request["operation"] == "skill.learning.control.set" { request["control"].to_string() } else { request["expected_state_version"].to_string() })
+            } else {
+                "保留了原请求和版本条件。重试使用同一请求键；状态冲突时请刷新核对结果。".to_owned()
+            }, theme));
+        if learning {
+            if review {
+                let retry = request.clone();
+                group = group.child(df_button(
+                    "df-learning-review-retry",
+                    "核对 / 重试原人工操作",
+                    unavailable || !browser.can_begin_at(&retry, &state.status),
+                    false,
+                    theme,
+                    cx,
+                    move |this, _, cx| this.deerflow_request("manage", retry.clone(), cx),
+                ));
+            } else if let Some(query) = browser.learning.reconciliation_request() {
+                group = group.child(df_button(
+                    "df-learning-reconcile",
+                    "核对原会话当前状态",
+                    unavailable || !browser.can_begin_at(&query, &state.status),
+                    false,
+                    theme,
+                    cx,
+                    move |this, _, cx| this.deerflow_request("manage", query.clone(), cx),
+                ));
+            } else {
+                group = group.child(df_label("任务边界结果无法通过查询确认",
+                    "当前服务没有 episode.start 的幂等回执或当前边界查询。不要重发同一操作；结束待确认状态只恢复界面操作，不证明原请求失败，也不新增边界。", theme));
+            }
+            if let Some(result) = &browser.learning.reconciliation {
+                group = group.child(df_label("当前状态核对", result.clone(), theme));
+            }
+            group = group.child(df_button("df-learning-end-unresolved",
+                if browser.learning_acknowledgment { "确认结束待确认状态（不重发）" } else { "我已核对，结束待确认状态" },
+                unavailable, browser.learning_acknowledgment, theme, cx, |this, _, cx| {
+                    if this.deerflow_settings.skill_browser.learning_acknowledgment {
+                        this.deerflow_settings.skill_browser.abandon_retry();
+                        this.deerflow_settings.confirm_manage = None;
+                        this.deerflow_settings.notice = Some("已结束界面的待确认状态，没有重发、撤销或证明原操作失败。请刷新当前会话设置后继续。".into());
+                    } else {
+                        this.deerflow_settings.skill_browser.learning_acknowledgment = true;
+                    }
+                    cx.notify();
+                }));
+        } else {
+            let retry = request.clone();
+            group = group
+                .child(df_button(
+                    "df-skill-retry",
+                    "重试原操作",
+                    unavailable || !browser.can_begin_at(&retry, &state.status),
+                    false,
+                    theme,
+                    cx,
+                    move |this, _, cx| this.deerflow_request("manage", retry.clone(), cx),
+                ))
+                .child(df_button(
+                    "df-skill-dismiss-retry",
+                    "结束重试并刷新",
+                    unavailable,
+                    false,
+                    theme,
+                    cx,
+                    |this, _, cx| {
+                        this.deerflow_settings.skill_browser.abandon_retry();
+                        this.deerflow_request(
+                            "manage",
+                            json!({"operation":"skill.list", "limit":PAGE_SIZE}),
+                            cx,
+                        );
+                    },
+                ));
+        }
+        group.into_any_element()
+    }
+
     pub(super) fn deerflow_prepare_skill_rollback(
         &mut self,
         revision: Value,
@@ -659,7 +755,15 @@ impl Waku {
             let missing = request["operation"]
                 .as_str()
                 .is_some_and(|op| op.starts_with("skill.missing."));
+            let learning = learning_state::is_operation(request);
             let message = match code {
+                "conflict" if learning => {
+                    "学习授权或作业版本已变化，请刷新后核对；本次修改未覆盖新状态。"
+                }
+                "permission_denied" if learning => {
+                    "当前会话、工作区共享或学习授权不可用，请刷新贡献设置。"
+                }
+                "not_found" if learning => "会话或学习来源已不存在，请刷新当前会话。",
                 "conflict" if missing => {
                     "报告已被更新，请刷新当前报告后重试；本次修改未覆盖新状态。"
                 }
@@ -681,6 +785,20 @@ impl Waku {
         let data = envelope["data"].clone();
         let operation = request["operation"].as_str().unwrap_or("");
         let result = match operation {
+            op if op.starts_with("skill.learning.") => {
+                let result = self
+                    .deerflow_settings
+                    .skill_browser
+                    .accept_learning(request, data);
+                if result.as_ref().is_ok_and(|changed| *changed) {
+                    self.deerflow_settings.proposals.clear();
+                    self.deerflow_settings.proposal = None;
+                    self.deerflow_settings
+                        .proposal_diff
+                        .update(cx, |input, cx| input.set_content(String::new(), cx));
+                }
+                result.map(|_| ())
+            }
             "skill.discovery.status" | "skill.discovery.list" => self
                 .deerflow_settings
                 .skill_browser
@@ -805,6 +923,9 @@ impl Waku {
                     "反馈操作已确认。刷新当前反馈核对修订及归因；已启用的自动发现和发布观察可使用有效证据。"
                 }
                 "skill.missing.submit" => "缺失技能报告操作已确认。刷新当前报告核对修订。",
+                "skill.learning.control.set" => "学习贡献操作已确认；请刷新历史和待审核提案核对当前来源。",
+                "skill.learning.episode.start" => "新任务边界操作已确认，只影响之后的真实输入。",
+                "skill.learning.cancel" => "学习作业取消已确认；已发生的维护用量保留。",
                 _ => "技能状态已刷新。",
             }
             .into(),
@@ -883,42 +1004,6 @@ impl Waku {
                     .text_color(theme.text_tertiary)
                     .child("名称精确匹配；留空查询全部。"),
             );
-        if let Some(request) = &browser.retry {
-            let request = request.clone();
-            group = group
-                .child(df_label(
-                    "操作结果待确认",
-                    "保留了原请求和版本条件。重试使用同一请求键；状态冲突时请刷新核对结果。",
-                    theme,
-                ))
-                .child(df_button(
-                    "df-skill-retry",
-                    "重试原操作",
-                    unavailable,
-                    false,
-                    theme,
-                    cx,
-                    move |this, _, cx| {
-                        this.deerflow_request("manage", request.clone(), cx);
-                    },
-                ))
-                .child(df_button(
-                    "df-skill-dismiss-retry",
-                    "结束重试并刷新",
-                    unavailable,
-                    false,
-                    theme,
-                    cx,
-                    |this, _, cx| {
-                        this.deerflow_settings.skill_browser.abandon_retry();
-                        this.deerflow_request(
-                            "manage",
-                            json!({"operation":"skill.list","limit":PAGE_SIZE}),
-                            cx,
-                        );
-                    },
-                ));
-        }
         if browser.catalog_stale {
             group = group.child(df_label(
                 "目录需要刷新",
@@ -931,7 +1016,7 @@ impl Waku {
                 format!(
                     "目录版本 {} · 第 {} 页",
                     page.catalog_version,
-                    browser.catalog_nav.previous.len() + 1
+                    browser.catalog_nav.page_number()
                 ),
                 format!(
                     "本页 {} 项 · {} 个已配置来源",
@@ -1174,6 +1259,10 @@ impl Waku {
         row.into_any_element()
     }
 }
+
+#[cfg(test)]
+#[path = "skills_learning_tests.rs"]
+mod learning_transport_tests;
 
 fn text(value: &Value) -> String {
     value.as_str().unwrap_or("—").to_owned()

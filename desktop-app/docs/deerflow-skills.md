@@ -238,6 +238,51 @@ clears that binding. This is a local service identity check, not a multi-user
 authorization mechanism. Desktop interaction and packaged delivery remain
 separate acceptance gates.
 
+## Learning source inspection
+
+The native setting `discovery.experience_review_drafts_enabled` separately permits
+automatic review-only proposals from one source-verified observed task. It defaults
+off, requires the complete automatic learning/generation chain, and is not a manual
+authoring workflow. Users do not select a target, start a new learning episode or
+enqueue generation to make these proposals. The system performs that work; the
+user only approves or rejects the resulting candidate when human review applies.
+
+Discovery rows label immutable `review_draft=true` candidates as system-generated
+and human-review-only, without adding an evidence vote. Auto-patch cannot adopt
+them even after a passing evaluation. Full-threshold existing managed candidates
+still follow the independently enabled guarded auto-patch path; new skills always
+require approval. Settings save/launch/effective projections consume the new gate,
+and render continues to read cached, bounded data only.
+
+The native learning-source view has an explicit read action on an experience or
+one selected member of a current pattern. The authenticated local MANAGE request
+is `skill.learning.source.get` with the native session ID and fixed
+`source={kind,id,expected_revision,scope,experience_id}`. It grants no ACP/model
+capability, model work, independent vote, review or publication authority. Historical
+matches cannot silently rebase to a newer pattern through this view.
+
+The service reconstructs the selected member's original bounded extraction view
+and checks current contribution, captured input/frontier, settled tree, tool
+receipts, actual skill reads and saved input/result/job identities. Workspace
+inspection also requires the acting session and all pattern members' current
+shared consent in the same workspace. Private retained sources remain inspectable
+when paid learning is off; contribution withdrawal or deletion removes them.
+
+Responses contain only the experience's cited redacted references, at most 32
+entries and 512 KiB. Local observations, real-user input, lead-agent answer and
+actual skill versions are distinct. External/MCP/unknown tools expose argument
+shape only, never their result body. Hidden reasoning, delegated text, binary
+attachments and raw errors are not part of this API. `checked_at_read` means the
+selected member was checked then; quality remains unassessed and the cached view
+cannot certify continuing authorization, full pattern/match evidence or causality.
+
+The UI caches one preformatted detail, refreshed by explicit keyboard-native
+controls. A new selection/read, page/scope/session/service change, source-changing
+mutation or failed transport clears it; late responses cannot fill another
+selection. Read failures create no pending mutation or replay receipt. Rendering
+performs no I/O, and there is no new watcher or polling loop. Isolated state and
+transport checks do not replace desktop type/build, daemon or visual acceptance.
+
 ## Source configuration
 
 The cached settings draft has a separate `skill_sources` object, distinct from

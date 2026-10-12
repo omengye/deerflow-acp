@@ -10,6 +10,50 @@ const MAX_REPETITIONS: u64 = 3;
 const MAX_REPORT_BYTES: usize = 64 << 10;
 
 #[derive(Clone, Deserialize)]
+pub(super) struct Selection {
+    rule_version: String,
+    pub(super) target_name: String,
+    selected_name: String,
+    catalog_digest: String,
+}
+
+impl Selection {
+    pub(super) fn validate(&self) -> bool {
+        let name = |value: &str| {
+            !value.is_empty()
+                && value.len() <= 64
+                && !value.starts_with('-')
+                && !value.ends_with('-')
+                && !value.contains("--")
+                && value
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        };
+        self.rule_version == "skill-trigger-selection-v1"
+            && name(&self.target_name)
+            && (self.selected_name.is_empty() || name(&self.selected_name))
+            && digest(&self.catalog_digest)
+    }
+
+    fn target_selected(&self) -> bool {
+        self.selected_name == self.target_name
+    }
+
+    pub(super) fn detail(&self) -> String {
+        format!(
+            "仅元数据首次选择：{} · 目标 {} · 目录摘要 {}（SHA-256 前 16 位）；未加载正文、未执行工具，也不是质量确认。",
+            if self.selected_name.is_empty() {
+                "未选择技能"
+            } else {
+                &self.selected_name
+            },
+            self.target_name,
+            &self.catalog_digest[..16]
+        )
+    }
+}
+
+#[derive(Clone, Deserialize)]
 struct Comparison {
     case_id: String,
     kind: String,
@@ -22,6 +66,10 @@ struct Comparison {
     base_error_code: String,
     #[serde(default)]
     candidate_error_code: String,
+    #[serde(default)]
+    base_selection: Option<Selection>,
+    #[serde(default)]
+    candidate_selection: Option<Selection>,
 }
 
 #[derive(Deserialize)]
@@ -36,6 +84,10 @@ struct Report {
     state: String,
     targeted_cases: u64,
     regression_cases: u64,
+    #[serde(default)]
+    trigger_positive_cases: u64,
+    #[serde(default)]
+    trigger_negative_cases: u64,
     regressions: u64,
     improvements: u64,
     results: Vec<Comparison>,
@@ -136,7 +188,13 @@ impl BehaviorView {
             report.targeted_cases >= 1
                 && report.targeted_cases <= MAX_CASES as u64
                 && report.regression_cases <= MAX_CASES as u64
-                && report.targeted_cases + report.regression_cases <= MAX_CASES as u64
+                && report.trigger_positive_cases <= MAX_CASES as u64
+                && report.trigger_negative_cases <= MAX_CASES as u64
+                && report.targeted_cases
+                    + report.regression_cases
+                    + report.trigger_positive_cases
+                    + report.trigger_negative_cases
+                    <= MAX_CASES as u64
                 && !report.results.is_empty()
                 && report.results.len() <= MAX_CASES * MAX_REPETITIONS as usize
                 && [
@@ -157,7 +215,10 @@ impl BehaviorView {
         for result in &report.results {
             anyhow::ensure!(
                 bounded(&result.case_id, 128)
-                    && matches!(result.kind.as_str(), "targeted" | "regression")
+                    && matches!(
+                        result.kind.as_str(),
+                        "targeted" | "regression" | "trigger_positive" | "trigger_negative"
+                    )
                     && (1..=MAX_REPETITIONS).contains(&result.repetition)
                     && digest(&result.base_output_digest)
                     && digest(&result.candidate_output_digest)
@@ -167,6 +228,42 @@ impl BehaviorView {
                     && (!result.candidate_passed || result.candidate_error_code.is_empty()),
                 "行为样例缺少有效结果或输出摘要"
             );
+            let trigger = matches!(
+                result.kind.as_str(),
+                "trigger_positive" | "trigger_negative"
+            );
+            for (selection, passed, error) in [
+                (
+                    &result.base_selection,
+                    result.base_passed,
+                    &result.base_error_code,
+                ),
+                (
+                    &result.candidate_selection,
+                    result.candidate_passed,
+                    &result.candidate_error_code,
+                ),
+            ] {
+                if let Some(selection) = selection {
+                    let expected = result.kind == "trigger_positive";
+                    anyhow::ensure!(
+                        trigger
+                            && selection.validate()
+                            && proposal["target"]["name"]
+                                .as_str()
+                                .or_else(|| proposal["skill_name"].as_str())
+                                == Some(selection.target_name.as_str())
+                            && passed == (selection.target_selected() == expected)
+                            && error == if passed { "" } else { "assertion_failed" },
+                        "触发选择证据与宿主正负标签不一致"
+                    );
+                } else if trigger {
+                    anyhow::ensure!(
+                        !passed && !error.is_empty() && error != "assertion_failed",
+                        "触发断言缺少真实选择记录"
+                    );
+                }
+            }
             let previous = cases.entry(&result.case_id).or_insert((&result.kind, 0));
             anyhow::ensure!(
                 previous.0 == result.kind && result.repetition == previous.1 + 1,
@@ -175,7 +272,7 @@ impl BehaviorView {
             previous.1 = result.repetition;
             regressions += u64::from(result.base_passed && !result.candidate_passed);
             improvements += u64::from(!result.base_passed && result.candidate_passed);
-            if result.kind == "targeted" {
+            if result.kind != "regression" {
                 all_targeted_passed &= result.candidate_passed;
             }
         }
@@ -183,7 +280,27 @@ impl BehaviorView {
             .values()
             .filter(|(kind, _)| *kind == "targeted")
             .count() as u64;
-        let regression = cases.len() as u64 - targeted;
+        let regression = cases
+            .values()
+            .filter(|(kind, _)| *kind == "regression")
+            .count() as u64;
+        let positive = cases
+            .values()
+            .filter(|(kind, _)| *kind == "trigger_positive")
+            .count() as u64;
+        let negative = cases
+            .values()
+            .filter(|(kind, _)| *kind == "trigger_negative")
+            .count() as u64;
+        anyhow::ensure!(
+            positive == report.trigger_positive_cases
+                && negative == report.trigger_negative_cases
+                && ((positive == 0 && negative == 0)
+                    || (positive > 0
+                        && negative > 0
+                        && report.rule_version == "skill-behavior-comparison-v2")),
+            "触发评测需完整正例、负例与独立评分规则"
+        );
         let passed = targeted > 0 && all_targeted_passed && regressions == 0;
         anyhow::ensure!(
             targeted == report.targeted_cases
@@ -193,32 +310,41 @@ impl BehaviorView {
                 && passed == (report.state == "passed"),
             "行为评测汇总与逐样例结果不一致"
         );
-        let rows = report
-            .results
-            .iter()
-            .map(|result| {
-                (
-                    format!(
-                        "{} · {}样例 · 第 {} 次 · {}",
-                        result.case_id,
-                        if result.kind == "targeted" {
-                            "针对性"
-                        } else {
-                            "回归"
-                        },
-                        result.repetition,
-                        effect(result)
-                    ),
-                    format!(
-                        "基础：{} · 候选：{}\n输出 SHA-256 摘要：基础 {} · 候选 {}",
-                        outcome(result.base_passed, &result.base_error_code),
-                        outcome(result.candidate_passed, &result.candidate_error_code),
-                        &result.base_output_digest[..16],
-                        &result.candidate_output_digest[..16]
-                    ),
-                )
-            })
-            .collect();
+        let rows =
+            report
+                .results
+                .iter()
+                .map(|result| {
+                    (
+                        format!(
+                            "{} · {}样例 · 第 {} 次 · {}",
+                            result.case_id,
+                            match result.kind.as_str() {
+                                "targeted" => "针对性",
+                                "trigger_positive" => "触发正例",
+                                "trigger_negative" => "触发负例",
+                                _ => "回归",
+                            },
+                            result.repetition,
+                            effect(result)
+                        ),
+                        format!(
+                            "基础：{} · 候选：{}\n输出 SHA-256 摘要：基础 {} · 候选 {}{}",
+                            outcome(result.base_passed, &result.base_error_code),
+                            outcome(result.candidate_passed, &result.candidate_error_code),
+                            &result.base_output_digest[..16],
+                            &result.candidate_output_digest[..16],
+                            result.base_selection.as_ref().map_or(
+                                String::new(),
+                                |selection| format!("\n基础 {}", selection.detail())
+                            ) + &result.candidate_selection.as_ref().map_or(
+                                String::new(),
+                                |selection| format!("\n候选 {}", selection.detail())
+                            )
+                        ),
+                    )
+                })
+                .collect();
         Ok(Some(Self {
             proposal_id: proposal["id"].as_str().unwrap_or("").to_owned(),
             state_version: proposal["state_version"].as_u64().unwrap_or(0),
@@ -227,10 +353,12 @@ impl BehaviorView {
                 if passed { "通过" } else { "未通过" }
             ),
             summary: format!(
-                "套件 {} · 针对性样例 {} · 回归样例 {}\n共 {} 次基础/候选对照 · 改善 {} · 退化 {}",
+                "套件 {} · 针对性样例 {} · 回归样例 {}\n触发正例 {} · 触发负例 {}（仅元数据选择）\n共 {} 次基础/候选对照 · 改善 {} · 退化 {}",
                 report.suite_id,
                 targeted,
                 regression,
+                positive,
+                negative,
                 report.results.len(),
                 improvements,
                 regressions
@@ -270,7 +398,7 @@ impl BehaviorView {
             .child(df_label(self.title.clone(), self.summary.clone(), theme))
             .child(df_label("评测身份与评分规则", self.identity.clone(), theme))
             .child(df_label("评测用量", self.usage.clone(), theme))
-            .child(df_label("逐样例基础与候选对照", "样例使用可信 fixture 工具和独立上下文。输出摘要显示前 16 位；结果仅代表当前套件的覆盖范围，发布还需满足审核或自动补丁条件。", theme));
+            .child(df_label("逐样例基础与候选对照", "正文样例使用可信 fixture 工具；触发正负例只看名称/描述并记录首次 Skill 选择，不加载正文或执行工具。摘要显示前 16 位；结果仅代表当前宿主套件的覆盖范围，不等于真实任务质量通过。", theme));
         for (title, detail) in &self.rows {
             group = group.child(df_label(title.clone(), detail.clone(), theme));
         }
@@ -450,5 +578,73 @@ mod tests {
         deleted["evaluation"]["base_version"] = json!("");
         deleted["evaluation"]["behavior_report"]["base_version"] = json!("");
         assert!(BehaviorView::parse(&deleted).is_err());
+    }
+
+    fn trigger_proposal() -> Value {
+        let mut value = proposal();
+        value["skill_name"] = json!("json-check");
+        let report = &mut value["evaluation"]["behavior_report"];
+        report["rule_version"] = json!("skill-behavior-comparison-v2");
+        report["trigger_positive_cases"] = json!(1);
+        report["trigger_negative_cases"] = json!(1);
+        report["improvements"] = json!(3);
+        for (kind, base, selected) in [
+            ("trigger_positive", false, "json-check"),
+            ("trigger_negative", true, ""),
+        ] {
+            let mut row = comparison(kind, kind, 1, base, true);
+            if !base {
+                row["base_error_code"] = json!("assertion_failed");
+            }
+            row["base_selection"] = json!({"rule_version":"skill-trigger-selection-v1","target_name":"json-check","selected_name":"","catalog_digest":"a".repeat(64)});
+            row["candidate_selection"] = json!({"rule_version":"skill-trigger-selection-v1","target_name":"json-check","selected_name":selected,"catalog_digest":"b".repeat(64)});
+            report["results"].as_array_mut().unwrap().push(row);
+        }
+        value
+    }
+
+    #[test]
+    fn skill_trigger_report_caches_positive_negative_and_nonexecution_evidence() {
+        let value = trigger_proposal();
+        let view = BehaviorView::parse(&value).unwrap().unwrap();
+        assert!(view.summary.contains("触发正例 1 · 触发负例 1"));
+        assert!(view.rows[3].0.contains("触发正例"));
+        assert!(view.rows[4].0.contains("触发负例"));
+        assert!(view.rows[3].1.contains("未加载正文、未执行工具"));
+        assert!(view.rows[3].1.contains("不是质量确认"));
+    }
+
+    #[test]
+    fn skill_trigger_report_rejects_forged_coverage_labels_or_selection_identity() {
+        for path in [
+            "/evaluation/behavior_report/trigger_positive_cases",
+            "/evaluation/behavior_report/trigger_negative_cases",
+        ] {
+            let mut changed = trigger_proposal();
+            *changed.pointer_mut(path).unwrap() = json!(0);
+            assert!(BehaviorView::parse(&changed).is_err(), "{path}");
+        }
+        for (field, value) in [
+            ("target_name", json!("different-target")),
+            ("selected_name", json!("csv-check")),
+            ("rule_version", json!("quality-confirmed")),
+            ("catalog_digest", json!("bad")),
+        ] {
+            let mut changed = trigger_proposal();
+            changed["evaluation"]["behavior_report"]["results"][3]["candidate_selection"][field] =
+                value;
+            assert!(BehaviorView::parse(&changed).is_err(), "{field}");
+        }
+        let mut changed = trigger_proposal();
+        changed["evaluation"]["behavior_report"]["results"][4]["candidate_selection"]["selected_name"] =
+            json!("json-check");
+        assert!(BehaviorView::parse(&changed).is_err());
+        changed = trigger_proposal();
+        changed["evaluation"]["behavior_report"]["results"][3]["base_selection"] = Value::Null;
+        assert!(BehaviorView::parse(&changed).is_err());
+        changed = trigger_proposal();
+        changed["evaluation"]["behavior_report"]["rule_version"] =
+            json!("skill-behavior-comparison-v1");
+        assert!(BehaviorView::parse(&changed).is_err());
     }
 }

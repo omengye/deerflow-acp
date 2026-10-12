@@ -290,6 +290,35 @@ impl Waku {
                 self.record_deerflow_approval(session_id, mode);
                 self.send_pending_deerflow_approval(session_id, runtime.driver.clone(), cx);
             }
+            DriverEvent::DeerFlowModelsChanged {
+                models,
+                model,
+                reasoning_effort,
+            } => {
+                runtime.deerflow_options_pending = false;
+                if let Some(probe) = self
+                    .probes
+                    .iter_mut()
+                    .find(|probe| probe.provider == ProviderKind::DeerFlow)
+                {
+                    probe.models = models;
+                }
+                if let Some(session) = self.state.session_mut(session_id) {
+                    session.model = model;
+                    session.reasoning_effort = reasoning_effort;
+                }
+                if self.state.selected_session == Some(session_id) {
+                    self.remember_selected_model_traits();
+                    self.state.last_reasoning_effort = self
+                        .state
+                        .session_mut(session_id)
+                        .and_then(|session| session.reasoning_effort.clone());
+                }
+                if allow_queue_drain {
+                    self.pending_queue_drains.push(session_id);
+                }
+                self.state.mark_session_dirty(session_id);
+            }
             DriverEvent::AgentPresetSelected(agent_preset) => {
                 if let Some(session) = self.state.session_mut(session_id) {
                     session.agent_preset = agent_preset;
@@ -329,6 +358,9 @@ impl Waku {
                 }
             }
             DriverEvent::TurnStarted => {
+                if runtime.cancel_drain.is_pending() {
+                    return true;
+                }
                 runtime.last_driver_error = None;
                 if let Some(session) = self.state.session_mut(session_id) {
                     if session.active_turn_id().is_some() {
@@ -626,6 +658,9 @@ impl Waku {
                 }
             }
             DriverEvent::TurnFinished { success, summary } => {
+                if runtime.cancel_drain.finish() && allow_queue_drain {
+                    self.pending_queue_drains.push(session_id);
+                }
                 self.settle_foreground_work(
                     session_id,
                     if success {
@@ -635,7 +670,7 @@ impl Waku {
                     },
                 );
                 let previous_kinds = self.snapshot_selected_transcript_rows(session_id);
-                runtime.last_driver_error = None;
+                let driver_error = runtime.last_driver_error.take();
                 // A settled turn moved the account's rate-limit needles; ask
                 // that provider's plan meter to refresh once its backoff
                 // allows.
@@ -692,13 +727,15 @@ impl Waku {
                     if needs_fallback {
                         session.push_message(
                             MessageRole::Assistant,
-                            summary.unwrap_or_else(|| {
-                                if success {
-                                    tr!("session.turn_completed")
-                                } else {
-                                    tr!("session.stopped_before_response")
-                                }
-                            }),
+                            turn_finish_summary(success, summary, driver_error).unwrap_or_else(
+                                || {
+                                    if success {
+                                        tr!("session.turn_completed")
+                                    } else {
+                                        tr!("session.stopped_before_response")
+                                    }
+                                },
+                            ),
                         );
                     }
                 }
@@ -992,6 +1029,14 @@ pub(super) fn compact_driver_error(error: &str) -> String {
         compact.push('…');
     }
     compact
+}
+
+pub(super) fn turn_finish_summary(
+    success: bool,
+    summary: Option<String>,
+    driver_error: Option<String>,
+) -> Option<String> {
+    summary.or_else(|| (!success).then_some(driver_error).flatten())
 }
 
 /// Coalesce every adjacent delta of one kind while retaining provider order.

@@ -987,6 +987,42 @@ pub(crate) fn parse_deerflow_models(options: &[SessionConfigOption]) -> Vec<Prov
         return Vec::new();
     };
     let mut models = crate::driver::parse_acp_config_models(model_option);
+    let metadata = serde_json::to_value(model_option).unwrap_or_default();
+    if let Some(capabilities) = metadata.pointer("/_meta/deerflow/reasoningEfforts") {
+        for model in &mut models {
+            if let Some(efforts) = capabilities.get(&model.id).and_then(Value::as_array)
+                && !efforts.is_empty()
+            {
+                model
+                    .reasoning_efforts
+                    .push(ProviderModelOption::new("default", "Default"));
+                model.reasoning_efforts.extend(
+                    efforts.iter().filter_map(Value::as_str).map(|value| {
+                        ProviderModelOption::new(value, reasoning_effort_label(value))
+                    }),
+                );
+                model.default_reasoning_effort = Some("default".into());
+            }
+        }
+    }
+    if let Some(option) = options.iter().find(|option| {
+        option.id.to_string() == "reasoning_effort"
+            || (option.category == Some(SessionConfigOptionCategory::ThoughtLevel)
+                && option.id.to_string() != "thinking_enabled")
+    }) {
+        for model in models.iter_mut().filter(|model| model.is_default) {
+            model.reasoning_efforts = crate::driver::parse_acp_config_models(option)
+                .into_iter()
+                .map(|choice| ProviderModelOption::new(choice.id, choice.name))
+                .collect();
+            model.default_reasoning_effort = model
+                .reasoning_efforts
+                .iter()
+                .find(|choice| choice.id == "default")
+                .map(|choice| choice.id.clone());
+        }
+        return models;
+    }
     if let Some(thinking) = options
         .iter()
         .find(|option| option.id.to_string() == "thinking_enabled")
@@ -1759,6 +1795,40 @@ fn deduplicate(models: Vec<ProviderModel>) -> Vec<ProviderModel> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_reasoning_catalog_is_scoped_to_each_model() {
+        let options: Vec<SessionConfigOption> = serde_json::from_value(json!([
+            {"id":"model","name":"Model","type":"select","currentValue":"a","options":[
+                {"value":"a","name":"A"},{"value":"b","name":"B"},{"value":"c","name":"C"}
+            ],"_meta":{"deerflow":{"reasoningEfforts":{"a":["low","high"],"b":[],"c":["low"]}}}},
+            {"id":"reasoning_effort","name":"Reasoning","category":"thought_level","type":"select","currentValue":"high","options":[
+                {"value":"default","name":"Default"},{"value":"low","name":"Low"},{"value":"high","name":"High"}
+            ]}
+        ])).unwrap();
+        let models = parse_deerflow_models(&options);
+        assert_eq!(
+            models[0]
+                .reasoning_efforts
+                .iter()
+                .map(|option| option.id.as_str())
+                .collect::<Vec<_>>(),
+            ["default", "low", "high"]
+        );
+        assert!(models[1].reasoning_efforts.is_empty());
+        assert_eq!(
+            models[2]
+                .reasoning_efforts
+                .iter()
+                .map(|option| option.id.as_str())
+                .collect::<Vec<_>>(),
+            ["default", "low"]
+        );
+        assert_eq!(
+            models[0].default_reasoning_effort.as_deref(),
+            Some("default")
+        );
+    }
+
     #[test]
     fn deerflow_catalog_exposes_its_actual_thinking_switch() {
         let options: Vec<SessionConfigOption> = serde_json::from_value(json!([

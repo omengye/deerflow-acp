@@ -140,7 +140,7 @@ impl RoleEditor {
         }
         let mut fields = Vec::new();
         if key.custom() {
-            fields.push(Field::new(NAME_PATH, "角色名称", "1–64 个英文、数字、下划线或连字符，首字符为英文或数字；确认或保存时更新所有委派引用", Kind::Text));
+            fields.push(Field::new(NAME_PATH, "角色名称", "1–64 个英文、数字、下划线或连字符，首字符为英文或数字；切换角色或保存时自动更新草稿中的委派引用", Kind::Text));
         }
         let mut add = |path: &str, label: &str, hint: &str, kind| {
             fields.push(Field::new(
@@ -191,7 +191,7 @@ impl RoleEditor {
         add(
             "thinking_enabled",
             "Thinking",
-            "继承 / 开启 / 关闭；仅 Ark 和 Claude 支持显式设置",
+            "继承 / 开启 / 关闭；仅 Claude 支持显式设置",
             Kind::OptionalBool,
         );
         add(
@@ -249,7 +249,7 @@ impl RoleEditor {
         add(
             "timeout_seconds",
             "角色超时（秒）",
-            "留空继承全局设置；0.001–86400，不能扩大父预算",
+            "留空继承全局设置，0 不单独限时；支持跨天，不能扩大父预算",
             Kind::OptionalNumber,
         );
         fields
@@ -424,41 +424,14 @@ fn create_role(document: &Value) -> Result<(Value, RoleKey), String> {
     ))
 }
 
-pub(super) fn import_role(document: &Value, name: &str, role: &Value) -> Result<Value, String> {
-    if !valid_name(name) || BUILTINS.contains(&name) {
-        return Err("旧角色名称无效或与内置角色重名。".into());
-    }
-    let fields = role.as_object().ok_or("旧角色预览格式无效。")?;
-    if fields.keys().any(|key| !KEYS.contains(&key.as_str())) {
-        return Err("旧角色预览包含当前未支持的设置。".into());
-    }
-    let count: usize = ["agents", "custom_agents"]
-        .iter()
-        .map(|key| {
-            document["subagents"][*key]
-                .as_object()
-                .map_or(0, |roles| roles.len())
-        })
-        .sum();
-    if count >= 64 {
-        return Err("最多支持 64 个角色配置（含内置覆盖）。".into());
-    }
-    if ["agents", "custom_agents"]
-        .iter()
-        .any(|key| document["subagents"][*key].get(name).is_some())
-    {
-        return Err("当前草稿已有同名角色，导入不会覆盖；请先调整角色名称。".into());
-    }
-    let mut updated = document.clone();
-    updated["subagents"]["custom_agents"]
-        .as_object_mut()
-        .ok_or("自定义角色列表格式错误。")?
-        .insert(name.to_owned(), role.clone());
-    Ok(updated)
-}
-
 impl Waku {
     pub(super) fn deerflow_role_mutation(&mut self, remove: bool, cx: &mut Context<Self>) {
+        if !self.deerflow_settings.can_edit()
+            || !self.deerflow_settings.errors.is_empty()
+            || !self.deerflow_commit_names(cx)
+        {
+            return;
+        }
         let state = &mut self.deerflow_settings;
         let key = state.roles.selected.clone();
         let path = if remove {
@@ -466,10 +439,7 @@ impl Waku {
         } else {
             NAME_PATH.into()
         };
-        if !state.can_edit_field(&path)
-            || !state.errors.is_empty()
-            || state.roles.pending_name.is_some()
-        {
+        if !state.can_edit_field(&path) {
             return;
         }
         let Some(document) = state.draft.as_ref() else {
@@ -536,7 +506,6 @@ impl Waku {
             );
         }
         let key = &state.roles.selected;
-        let pending = state.roles.pending_name.is_some();
         let invalid = !state.errors.is_empty();
         let mut group = df_group(theme).child(picker).child(
             div()
@@ -546,7 +515,7 @@ impl Waku {
                 .child(df_button(
                     "df-role-add",
                     "添加角色",
-                    !state.can_edit_field(NAME_PATH) || invalid || pending,
+                    !state.can_edit_field(NAME_PATH) || invalid,
                     false,
                     theme,
                     cx,
@@ -561,7 +530,6 @@ impl Waku {
                     },
                     !state.can_edit_field(&format!("/subagents/{}", key.collection))
                         || invalid
-                        || pending
                         || state
                             .draft
                             .as_ref()
@@ -570,17 +538,6 @@ impl Waku {
                     theme,
                     cx,
                     |this, _, cx| this.deerflow_role_mutation(true, cx),
-                ))
-                .child(df_button(
-                    "df-role-rename",
-                    "确认名称",
-                    !state.can_edit_field(NAME_PATH) || invalid || !pending,
-                    false,
-                    theme,
-                    cx,
-                    |this, _, cx| {
-                        this.deerflow_commit_names(cx);
-                    },
                 )),
         );
         group = group.child(df_label("角色配置", "选择角色只查看草稿；修改内置角色会创建覆盖配置。保存并应用后对新任务生效，已有任务保持原角色快照。", theme));
@@ -718,6 +675,88 @@ mod tests {
             json!({"description":"", "system_prompt":""})
         );
         assert_eq!(remove_role(&created, &key).unwrap(), doc);
+    }
+
+    #[test]
+    fn deerflow_pending_role_rename_is_projected_before_add_or_remove() {
+        let doc = fixture();
+        let editor = RoleEditor {
+            selected: writer(),
+            pending_name: Some("author".into()),
+            ..Default::default()
+        };
+        let renamed = editor.projected(&doc).unwrap();
+        let (created, new_key) = create_role(&renamed).unwrap();
+        assert_eq!(
+            created["subagents"]["custom_agents"]["coordinator"]["delegate_to"],
+            json!(["author"])
+        );
+        assert!(
+            created["subagents"]["custom_agents"]
+                .get("writer")
+                .is_none()
+        );
+        assert_eq!(remove_role(&created, &new_key).unwrap(), renamed);
+        let renamed_key = RoleKey {
+            collection: "custom_agents",
+            name: "author".into(),
+        };
+        assert!(remove_role(&renamed, &renamed_key).is_err());
+        assert_eq!(doc, fixture());
+
+        let editor = RoleEditor {
+            selected: RoleKey {
+                collection: "custom_agents",
+                name: "coordinator".into(),
+            },
+            pending_name: Some("lead".into()),
+            ..Default::default()
+        };
+        let renamed = editor.projected(&doc).unwrap();
+        let removed = remove_role(
+            &renamed,
+            &RoleKey {
+                collection: "custom_agents",
+                name: "lead".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            removed["subagents"]["custom_agents"]
+                .as_object()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            removed["subagents"]["custom_agents"]["writer"],
+            doc["subagents"]["custom_agents"]["writer"]
+        );
+    }
+
+    #[test]
+    fn deerflow_invalid_pending_role_name_blocks_structural_changes_without_mutation() {
+        let doc = fixture();
+        for invalid in ["", "bash", "coordinator", "bad/name"] {
+            let editor = RoleEditor {
+                selected: writer(),
+                pending_name: Some(invalid.into()),
+                ..Default::default()
+            };
+            assert!(
+                editor
+                    .projected(&doc)
+                    .and_then(|draft| create_role(&draft))
+                    .is_err()
+            );
+            assert!(
+                editor
+                    .projected(&doc)
+                    .and_then(|draft| remove_role(&draft, &writer()))
+                    .is_err()
+            );
+            assert_eq!(doc, fixture());
+        }
     }
 
     #[test]
