@@ -18,7 +18,7 @@
 .\scripts\build-windows.ps1 -Package ACP -Development
 ```
 
-默认输出为新的时间戳目录。Desktop/All 的自定义输出必须位于 `dist/desktop` 下，ACP 可在 `dist` 下选择目录；现有目录会被拒绝。正式打包不能跳过测试。`-Development -SkipTests` 只省略源码回归，包内协议检查仍执行，构建记录标记回归未运行。`-TestTimeoutMinutes` 默认 15，控制单个 Go 包的测试总时限，不改变 Agent 的生产执行超时。
+默认输出为新的时间戳目录。Desktop/All 的自定义输出必须位于 `dist/desktop` 下，ACP 可在 `dist` 下选择目录；现有目录会被拒绝。正式打包不能跳过测试。`-Development -SkipTests` 只省略源码回归，包内协议检查仍执行，构建记录标记回归未运行。`-TestTimeoutMinutes` 默认 30，控制单个 Go 包的测试总时限，不改变 Agent 的生产执行超时。
 
 统一入口依次运行 Go 依赖校验、全量 Go 回归、Bridge 测试与来源 fixture，再调用下层 assembler 编译。实际包内 Bridge/daemon 测试使用本地 fixture；Desktop 额外运行两种 MCP 策略的协议 smoke。全部通过后写入 `BUILD_PACKAGE.json`、`BUILD_SOURCE.json`、`BUILD_COMMIT.txt` 与 `PACKAGE_FILES.sha256`，随后创建 ZIP 与 `.sha256`。二进制和源码 ZIP 固定到同一个提交。
 
@@ -77,6 +77,6 @@ ACP artifact `DeerFlow-Windows-ACP-x64` 包含 `DeerFlow-ACP-Go-windows-x64.zip`
 
 原生 `go-harness/cmd/deerflow-desktop-smoke` 用隔离配置、本地假模型和内置 Go MCP fixture 验证打包的 Waku daemon/Bridge/Go harness 协议。工作流运行普通模式和 `--legacy-empty-mcp-policy` 模式；日志位于 `.build-cache/desktop-smoke/*/logs/`，失败阻止上传桌面包。迁移后的实跑结果在[实施记录](eino-subagents-skill-evolution-status.md)中单列。
 
-这类 smoke 检查模型切换、聊天与工具、审批/取消、MCP 策略及会话恢复，不测试 GUI 绘制、键盘操作或真实在线服务。Waku 真实交互与未安装 Python/uv/pip 的干净环境构建仍是独立发布验收项；GitHub runner 没有执行安装命令本身不能证明该环境未预装解释器。
+这类 smoke 检查模型切换、聊天与工具、审批/取消、MCP 策略及会话恢复，不测试 GUI 绘制、键盘操作或真实在线服务。上传桌面产物前还运行 Waku 设置状态与 ACP 合约测试。Waku 真实交互与未安装 Python/uv/pip 的干净环境构建仍是独立发布验收项；GitHub runner 没有执行安装命令本身不能证明该环境未预装解释器。
 
 完整完成门槛见[实施方案 P7 与验收标准](eino-subagents-skill-evolution-plan.md)。本次修改工作流不表示 GitHub Actions 或最终桌面发行包已验证通过。

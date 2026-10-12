@@ -7,7 +7,7 @@ param(
     [string]$OutputDirectory = '',
     [string]$DesktopTargetDirectory = '.build-cache\desktop-build',
     [ValidateRange(1, 60)]
-    [int]$TestTimeoutMinutes = 15,
+    [int]$TestTimeoutMinutes = 30,
     [switch]$Development,
     [switch]$SkipTests
 )

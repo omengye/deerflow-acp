@@ -6,7 +6,7 @@ Rust Bridge 和 Waku 使用 Go 配置工具与 daemon。文件格式为 `config_
 
 | 配置 | Go 行为 |
 | --- | --- |
-| `models[].provider` | `openai`、`claude`、`ark` 的 Eino 模型适配器 |
+| `models[].provider` | `openai`、`claude` 的 Eino 模型适配器 |
 | `models[].api_key/base_url/model` | 各模型独立的服务端路由；支持完整标量 `$NAME`、`${NAME}`、`${NAME:-fallback}` 环境引用 |
 | `models[].supports_vision/context_window` | 图片输入准入及已知上下文窗口展示 |
 | `local_acp.model_name`、`default_model` | 初始模型选择，未指定时使用首个模型 |
@@ -39,4 +39,4 @@ Rust Bridge 和 Waku 使用 Go 配置工具与 daemon。文件格式为 `config_
 
 旧配置兼容读取仍识别有限的模型类名和历史字段，并仅映射到 Go 实现；不动态加载类或启动解释器。未知旧字段在无关保存时保留，转换需显式审阅。新模板不生成 `use`、旧 HTTP 服务参数、Python memory storage、goal continuation 或无消费者的模型能力字段。旧 `local_acp.goal_auto_continue=true` 会被拒绝。
 
-旧数据导入与完全收敛的剩余事项见[实施记录](eino-subagents-skill-evolution-status.md)，格式依据见[固定迁移基线](eino-legacy-migration-baseline.md)。现有历史技能源标识为保证检查点兼容保持稳定，不能仅为移除关键词而重命名。
+旧数据导入功能已于 2026-10-12 移除，包括桌面入口、旧 Agent 角色预览和只读历史归档接口；已有配置、技能源与归档文件不删除。历史实施记录见[实施记录](eino-subagents-skill-evolution-status.md)，格式依据见[固定迁移基线](eino-legacy-migration-baseline.md)。现有历史技能源标识为保证检查点兼容保持稳定，不能仅为移除关键词而重命名。

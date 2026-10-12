@@ -1,3 +1,10 @@
+# Superseded scope (2026-10-11)
+
+This is a historical release record. Runtime backup/restore and the state CLI
+have since been removed from the MVP; references to the old backup manual below
+describe that historical package only. See `mvp-closure-20261011.md` for current
+scope. Existing user data and backups are not deleted.
+
 # Windows x64 Release 记录
 
 日期为 2026-10-07，交付范围为本地单用户 Go/Eino harness、Rust ACP Bridge 和 Waku 桌面便携包。

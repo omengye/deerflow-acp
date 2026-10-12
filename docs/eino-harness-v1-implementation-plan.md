@@ -1,5 +1,7 @@
 # Go + Eino Harness 与 ACP 重构实施方案
 
+2026-10-10 更新：独立 Ark 适配器及其依赖已移除，当前模型请求统一使用流式传输；下文依赖基线为历史记录，现行约定见[模型流式审计](model-streaming-audit-20261010.md)。
+
 修订日期：2026-10-02。状态：本文保留最初 V1 迁移设计；进度、依赖落地差异与验证记录见 [实施状态](eino-harness-implementation-status.md)。当前子代理、技能自进化、设置清理及分支收敛范围以本节链接的后续方案为准。
 
 2026-10-01 后续方案：[子代理、技能自进化与分支收敛](eino-subagents-skill-evolution-plan.md)，定义自定义角色、统一并发、有限嵌套、自动结果投递、技能生成/评测/发布/回滚、Waku DeerFlow 设置页无效设置清理，以及旧 Python 运行时代码删除的实施与验收范围，状态为实施中；进展见 [实施记录](eino-subagents-skill-evolution-status.md)。

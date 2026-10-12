@@ -9,12 +9,14 @@
     "args": [],
     "description": "代码审阅 Agent",
     "env": {"REVIEWER_API_KEY": "$REVIEWER_API_KEY"},
-    "timeout_seconds": 600
+    "timeout_seconds": 0
   }
 }
 ```
 
 `command` 必须是已存在的绝对文件路径；`env` 中的 `$NAME` 在启动时从宿主进程环境解析，缺失即报错。普通模型凭据不会自动继承到子进程。可执行程序由宿主选择并信任；独立工作目录和精简环境不提供操作系统级隔离。外层委派仍须走当前会话工具权限。
+
+`timeout_seconds` 默认及零值均不添加任务总时限，可显式设置跨天时长。初始化和创建/加载会话使用独立的两分钟握手时限，该时限不会传递给 `session/prompt`。父任务的显式截止时间和手动取消仍生效；已有配置的正数时限不会被静默覆盖。
 
 工具接受 `{"agent":"reviewer","prompt":"..."}`。远端 `session/new` 成功后先把 remote session ID 持久化；每次发送 `session/prompt` 前再保存未决 prompt 身份。本地状态写入失败时不发送 prompt。远端成功返回后，只有外层工具回执提交才清除未决标记。同一父会话再次调用同名 Agent 时使用已保存的 ID 进行 `session/load`；配置变化会拒绝复用旧会话，避免以变化的权限和凭据继续。删除父会话后清理私有目录。取消或超时会发送 `session/cancel`，随后终止外部进程树。
 

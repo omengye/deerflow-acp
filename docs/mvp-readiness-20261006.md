@@ -1,4 +1,13 @@
+# Scope update (2026-10-11)
+
+This dated review is retained as evidence, not the current feature contract.
+Runtime backup/restore has been removed from MVP scope. Text attachment reads,
+local readiness and confirmed review-only learning setup are tracked in
+`mvp-closure-20261011.md`; old acceptance statements do not validate those changes.
+
 # Windows 本地 Agent MVP 评估
+
+2026-10-10 更新：独立 Ark 适配器已移除，当前模型请求统一使用流式传输；下文 Provider 范围保留评估当日状态，现行约定见[模型流式审计](model-streaming-audit-20261010.md)。
 
 评估日期为 2026-10-06。范围是当前工作树的 Go/Eino harness、ACP Bridge、Waku 桌面和 Windows x64 便携交付，不以历史规划文件中的功能列表代替实现验证。
 

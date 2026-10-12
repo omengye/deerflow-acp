@@ -45,7 +45,6 @@ $goDaemonBinary = Join-Path $goBinaryRoot "deerflow-acpd.exe"
 $goConfigBinary = Join-Path $goBinaryRoot "deerflow-config-go.exe"
 $goStdioBinary = Join-Path $goBinaryRoot "deerflow-acp-go.exe"
 $goSkillBinary = Join-Path $goBinaryRoot "deerflow-skill-go.exe"
-$goStateBinary = Join-Path $goBinaryRoot "deerflow-state-go.exe"
 $goWSLHelper = Join-Path $goBinaryRoot "deerflow-wsl-helper-linux-amd64"
 $cargoArguments = @("build", "--locked")
 if ($Configuration -eq "Release") { $cargoArguments += "--release" }
@@ -73,8 +72,6 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { throw "Go direct stdio agent build failed" }
         & go build -trimpath -p=2 -o $goSkillBinary ./cmd/deerflow-skill-go
         if ($LASTEXITCODE -ne 0) { throw "Go skill authoring tool build failed" }
-        & go build -trimpath -p=2 -o $goStateBinary ./cmd/deerflow-state-go
-        if ($LASTEXITCODE -ne 0) { throw "Go state backup tool build failed" }
         & (Join-Path $PSScriptRoot "build-wsl-helper.ps1") -OutputDirectory $goBinaryRoot
     } finally { Pop-Location }
 }
@@ -87,7 +84,6 @@ $binaries = @{
     "deerflow-config-go.exe" = $goConfigBinary
     "deerflow-acp-go.exe" = $goStdioBinary
     "deerflow-skill-go.exe" = $goSkillBinary
-    "deerflow-state-go.exe" = $goStateBinary
     "deerflow-wsl-helper-linux-amd64" = $goWSLHelper
     "deerflow-wsl-helper-linux-amd64.sha256" = "$goWSLHelper.sha256"
     "deerflow-wsl-helper-linux-amd64.json" = "$goWSLHelper.json"
@@ -118,8 +114,9 @@ New-Item -ItemType Directory -Path $packageResources | Out-Null
 foreach ($name in $binaries.Keys) { Copy-Item -LiteralPath $binaries[$name] -Destination (Join-Path $outputRoot $name) }
 Copy-Item -LiteralPath $desktopDefault -Destination (Join-Path $packageResources "default-config.yaml")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\go-native-tools.md") -Destination (Join-Path $packageResources "go-native-tools.md")
+Copy-Item -LiteralPath (Join-Path $repoRoot "docs\harness-reliability-20261012.md") -Destination (Join-Path $packageResources "harness-reliability-20261012.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\eino-three-iterations-20261004.md") -Destination (Join-Path $packageResources "eino-three-iterations.md")
-Copy-Item -LiteralPath (Join-Path $repoRoot "docs\go-runtime-backup.md") -Destination (Join-Path $packageResources "go-runtime-backup.md")
+Copy-Item -LiteralPath (Join-Path $repoRoot "docs\skill-business-suites.md") -Destination (Join-Path $packageResources "skill-business-suites.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "resources\skill-behavior") -Destination (Join-Path $packageResources "skill-behavior") -Recurse
 
 function Copy-BundledSkills([string]$Source, [string]$Destination) {

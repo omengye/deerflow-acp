@@ -1,0 +1,56 @@
+{
+  "version": "skill-behavior-v2",
+  "id": "copy-file-trigger-example",
+  "source_id": "managed-skills",
+  "name": "copy-file",
+  "cases": [
+    {
+      "id": "copy-input",
+      "kind": "targeted",
+      "prompt": "Read input.txt and copy its contents exactly to output.txt. Then reply done.",
+      "files": { "input.txt": "fixture content" },
+      "fixtures": [],
+      "assertions": [
+        { "id": "copied", "kind": "file_equals", "path": "output.txt", "expected": "fixture content" },
+        { "id": "answer", "kind": "output_equals", "expected": "done" }
+      ],
+      "repetitions": 1
+    },
+    {
+      "id": "copy-empty",
+      "kind": "regression",
+      "prompt": "Copy input.txt exactly to output.txt without adding content. Then reply done.",
+      "files": { "input.txt": "" },
+      "fixtures": [],
+      "assertions": [
+        { "id": "empty", "kind": "file_equals", "path": "output.txt", "expected": "" },
+        { "id": "answer", "kind": "output_equals", "expected": "done" }
+      ],
+      "repetitions": 1
+    },
+    {
+      "id": "copy-trigger",
+      "kind": "trigger_positive",
+      "prompt": "Duplicate this supplied plain-text file exactly into another local file.",
+      "files": {},
+      "fixtures": [],
+      "assertions": [ { "id": "chosen", "kind": "skill_selected", "count": 1 } ],
+      "repetitions": 1,
+      "trigger_skills": [
+        { "name": "summarize-text", "description": "Summarize long text, without copying files." }
+      ]
+    },
+    {
+      "id": "not-copy-trigger",
+      "kind": "trigger_negative",
+      "prompt": "Summarize this text in one sentence. Do not create or copy any files.",
+      "files": {},
+      "fixtures": [],
+      "assertions": [ { "id": "not-chosen", "kind": "skill_selected", "count": 0 } ],
+      "repetitions": 1,
+      "trigger_skills": [
+        { "name": "summarize-text", "description": "Summarize long text, without copying files." }
+      ]
+    }
+  ]
+}

@@ -4,6 +4,8 @@
 
 当前版本固定 Eino `v0.10.0-alpha.35`、Go `1.26.8`。子代理、技能审查发布和无 Python 源码迁移仍在实施中；完整范围及验收结果见[实施方案](docs/eino-subagents-skill-evolution-plan.md)和[实施记录](docs/eino-subagents-skill-evolution-status.md)。当前源码通过的测试不等同于新的桌面发行包已验收。
 
+2026-10-12 发布候选的验证、阻塞项与升级边界见[发版检查记录](docs/release-readiness-20261012.md)。GitHub Windows 构建成功前不视为可分发版本，协议 fixture 也不替代真实 GUI 和在线模型验收。
+
 ## 使用入口
 
 | 入口 | 用途 |
@@ -51,7 +53,7 @@ Waku 桌面发行构建使用 `-Configuration Release -CreateZip`，要求干净
 
 ## 配置与启动
 
-桌面首次启动会创建 `user-data`。在 DeerFlow 设置中填入模型 Provider、模型 ID、Base URL 和 API Key，保存并应用，然后创建会话。支持的 Provider 为 `openai`、`claude` 和 `ark`。
+桌面首次启动会创建 `user-data`。在 DeerFlow 设置中填入模型 Provider、模型 ID、Base URL 和 API Key，保存并应用，然后创建会话。支持的 Provider 为 `openai`（含兼容协议服务）和 `claude`，所有模型请求均使用流式传输。
 
 源码开发可从 [config.example.yaml](config.example.yaml) 复制配置；示例使用 OpenAI 兼容协议及 `DASHSCOPE_API_KEY` 环境变量。`models[].provider` 和 `sandbox.provider` 使用原生名称，工具按 `name` 选择。相对技能路径以配置文件所在目录解析。
 
@@ -79,7 +81,13 @@ ACP 客户端命令填写 Bridge 的绝对路径，使用相同的环境与 `--r
 
 ## 数据与升级
 
-桌面配置为 `user-data/config/config.yaml`，聊天与偏好位于 `user-data/desktop`，Go 状态位于 `user-data/data/go-harness`，daemon endpoint 位于 `user-data/runtime/acp-go`。升级使用新的程序目录并迁移用户数据；修改数据库前保留匹配备份。
+桌面配置为 `user-data/config/config.yaml`，聊天与偏好位于 `user-data/desktop`，Go 状态位于 `user-data/data/go-harness`，daemon endpoint 位于 `user-data/runtime/acp-go`。升级使用新的程序目录，关闭程序与服务后再迁移用户数据，不要直接编辑运行中的数据库。MVP 不提供运行数据备份/恢复命令；会话持久化、断点与回执核对、技能版本回滚仍保留。
+
+MVP 支持显式附加 UTF-8 TXT、Markdown、CSV、TSV、JSON、YAML 和 LOG 文件，每条消息最多 8 个、单文件 1 MiB、合计 4 MiB。服务保存会话私有快照，模型通过 `list_attachments` / `read_attachment` 分块读取，不会因附件获得任意宿主路径访问权。图片链路保留；PDF、Office、目录及 OCR 不在本版范围。
+
+默认不限制任务总执行时间、前台排队时间或原生子代理的累计执行时间，`run_timeout_seconds: 0` 表示不限时，可持续处理跨天任务；上下文自动压缩仍启用。工具调用、连接握手、后台租约和退出清理保留各自的超时与失效保护；模型请求仍可取消，不额外承诺所有 Provider 均有单次请求时限。已有配置中的显式时限不被静默覆盖，可在设置中改为 0；已有持久任务保留原预算，新请求使用新策略。持续运行需要主机与服务保持可用，这不等于断电后无条件自动完成。
+
+DeerFlow 常用设置提供本地能力就绪检查，不访问网络或消耗模型额度；模型和 OpenCLI 的实际连接能力需要另行主动验证。“自动起草，人工审核”需要用户确认、保存并应用，沿用现有模型与预算，关闭跨会话归并、新技能自动发现和自动发布。来源配置、聊天贡献和各阶段作业可在技能中心核对。实施与验收记录见 `docs/mvp-closure-20261011.md`。
 
 桌面服务诊断日志位于 `user-data/logs/deerflow-acpd-<pid>-<唯一标识>.jsonl`，设置概览显示当前日志路径。日志记录启动/退出阶段和错误分类，不记录配置、模型/工具内容或原始错误文本；每次启动独立保存并轮转。独立 daemon 可通过 `--log-dir` 或 `DEERFLOW_GO_LOG_DIR` 指定目录，详见[日志说明](go-harness/internal/diagnostics/README.md)。
 
@@ -89,7 +97,7 @@ ACP 客户端命令填写 Bridge 的绝对路径，使用相同的环境与 `--r
 
 ```powershell
 cd go-harness
-go test -p 2 ./... -timeout 15m
+go test -p 2 ./... -timeout 30m
 go build ./...
 ```
 

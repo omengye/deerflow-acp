@@ -1,3 +1,10 @@
+# Superseded scope (2026-10-11)
+
+This historical acceptance record predates removal of runtime backup/restore.
+The state CLI and dedicated backup manual mentioned below are no longer built
+or shipped. Business suite guidance is now in `skill-business-suites.md`; current
+MVP scope is in `mvp-closure-20261011.md`.
+
 # Eino harness 三轮迭代范围与验收
 
 起点：`6efe7f1b`。用户要求实施前三轮，提前固定范围，不持续扩大测试。

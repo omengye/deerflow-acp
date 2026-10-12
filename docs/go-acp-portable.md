@@ -3,8 +3,11 @@
 Aggregate task token spending is unlimited by default. Set host YAML
 `local_acp.max_run_tokens` to a positive value to opt into a shared cost budget;
 `0` disables it. Direct Go executables also accept `--max-tokens`. Per-request
-output caps, execution timeouts, cancellation and concurrency limits remain
-enforced. Iteration, model-call and tool-call quotas are disabled by default.
+output caps, tool timeouts, cancellation and concurrency limits remain enforced.
+Task, native child-role and foreground queue deadlines default to `0` (unlimited),
+so multi-day work is not cut off by an implicit lifetime limit. Explicit positive
+deadlines remain supported; existing configured and persisted limits are not
+silently overwritten. Iteration, model-call and tool-call quotas are disabled by default.
 Tasks run until the agent finishes or an explicit resource policy stops them.
 To opt into count quotas, set `local_acp.max_iterations`,
 `local_acp.max_model_calls` and `local_acp.max_tool_calls` in the host YAML and
@@ -24,7 +27,7 @@ Set `summarization.enabled: false` to opt out. Complete tool output remains in
 private snapshots; bounded previews and recent complete exchanges enter model
 context. Existing paused tasks retain their original immutable budget policy.
 
-This package contains five local executables:
+This package contains four Windows executables and an optional Linux WSL helper:
 
 - `deerflow-acp` is the stdio Bridge for ACP clients. It discovers and starts
   the sibling `deerflow-acpd` when needed. Add `.exe` to these names on Windows.
@@ -32,8 +35,8 @@ This package contains five local executables:
   authenticated loopback IPC.
 - `deerflow-acp-go` runs the Go ACP agent directly over stdio without a daemon.
 - `deerflow-skill-go` initializes, validates and packages native skill content.
-- `deerflow-state-go` backs up, verifies and restores offline runtime state.
-  See [backup and restore](go-runtime-backup.md). Restore always uses a new directory.
+- Runtime backup/restore is not included. Session persistence, execution recovery
+  and skill version rollback remain supported.
 
 The Bridge starts the Eino Go daemon from `--daemon PATH`, then
 `DEER_FLOW_ACP_DAEMON`, or the sibling `deerflow-acpd` file, in that order.
@@ -52,7 +55,7 @@ execution does not require WSL.
 Configure a model before starting the Bridge. For an OpenAI-compatible model,
 set `DEERFLOW_MODEL`, `DEERFLOW_MODEL_API_KEY`, and optionally
 `DEERFLOW_MODEL_BASE_URL`. `DEERFLOW_MODEL_PROVIDER` defaults to `openai`; `claude`
-and `ark` are also supported. Set `DEERFLOW_GO_DATA_DIR` to a private directory
+is also supported. Set `DEERFLOW_GO_DATA_DIR` to a private directory
 dedicated to this Go implementation. Keep it separate from Python DeerFlow
 state. The Bridge and daemon must use the same dedicated `--runtime-dir`.
 

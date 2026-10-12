@@ -78,20 +78,34 @@ tools:
 | `image_search` | DuckDuckGo 图片搜索，失败时使用 Bing；返回原图和缩略图 URL，支持尺寸、类型、布局过滤 |
 | `ls` | 两层目录列表，有界分页和目录版本校验 |
 | `read_file` | UTF-8 文本、行范围、字节分页和文件内容版本校验；单次最多 1 MiB，文件最多 16 MiB |
+| `list_attachments` | 列出当前会话已接受的文件附件，每页最多 32 项；不遍历宿主路径 |
+| `read_attachment` | 根据不透明附件 ID 分块读取会话私有 UTF-8 快照，每次最多 4096 字节；不接受路径，重启后仍可读取 |
 | `glob` | 支持 `**` 的路径搜索；默认最多 200 个结果 |
 | `grep` | RE2 正则或字面量搜索、大小写选项、glob 过滤；默认最多 100 条 |
-| `write_file` | 原子写入、追加；总内容最多 512 KiB |
-| `str_replace` | 默认要求唯一匹配，可显式 `replace_all` |
+| `write_file` | 原子写入、追加；已有文件必须传入 `expected_version`；总内容最多 512 KiB |
+| `str_replace` | 必须传入 `expected_version`；默认要求唯一匹配，可显式 `replace_all` |
 | `move_path` | 工作区内移动、重命名；显式覆盖文件，不隐式覆盖目录 |
 | `delete_path` | 删除文件、符号链接、空目录；显式递归删除；禁止删除工作区根 |
 | `host_opencli` | Go 参数数组调用已安装的 OpenCLI，带站点白名单、权限、输出上限和进程回收 |
 | `bash` | 复用 Go shell 执行器；Windows 默认采用 PowerShell 语法，WSL/Docker 可显式配置 |
 
 文件工具接受工作区相对路径、工作区内的绝对路径及 `/mnt/acp-workspace/...`。
+文本附件单文件最多 1 MiB，每条消息最多 8 个、合计 4 MiB；支持 TXT、Markdown、CSV、TSV、JSON、YAML、LOG，不支持 PDF、Office、目录或 OCR。附件快照与工作区文件工具是两条独立授权路径，附件不授予任意宿主目录访问权。
 所有文件操作使用固定的 `os.Root`，无法通过 `..` 或符号链接父目录越出工作区。
 搜索跳过 `.git` 和符号链接，最多遍历 2000 个条目；`grep` 跳过二进制和超过
 512 KiB 的文件，扫描总字节上限 16 MiB。返回截断标记和跳过文件数。
 SDK 原有的 `list_directory/search_files/edit_file/execute` 工具仍可用。
+
+默认与配置版 `read_file` 均返回含 `version`、`content` 的 JSON，版本对应完整文件。
+覆盖、追加和 `edit_file/str_replace` 必须使用最近读取的 `version` 作为
+`expected_version`；不传或传 `"absent"` 只允许创建新文件。冲突时不写入，必须重新
+读取再提交，已批准的旧操作也不能覆盖中途发生的修改。该检查协调同一进程内的
+原生写入，无法锁住外部编辑器、shell 或 MCP 写入；移动、删除尚不要求内容版本。
+
+标准 SDK/ACP 的主代理另有 `task_note`、`history_search`、`history_read`，无需加入
+上述 `tools` 配置；仍受工具策略控制。笔记按会话持久化，历史检索仅覆盖本会话可见
+事件，不开放隐藏推理或跨会话内容。重复观察保护、笔记上限和恢复兼容性见
+[harness 可靠性说明](harness-reliability-20261012.md)。
 
 Windows 的 PowerShell `execute` 只向模型提供 `script/timeout_seconds` 参数，
 例如 `{"script":"& 'curl.exe' '-s' 'https://example.com'"}`。该后端不接受
