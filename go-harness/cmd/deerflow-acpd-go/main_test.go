@@ -415,8 +415,12 @@ func TestConfigDaemonPublishesBridgeIdentity(t *testing.T) {
 		}
 	})
 	ep := p.endpoint(t, runtimeDir)
-	if ep.ConfigPath != configPath {
-		t.Fatalf("Bridge config identity=%q want %q", ep.ConfigPath, configPath)
+	canonicalConfig, err := filepath.EvalSymlinks(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.ConfigPath != canonicalConfig {
+		t.Fatalf("Bridge config identity=%q want %q", ep.ConfigPath, canonicalConfig)
 	}
 	status := manageDaemon(t, ep, "daemon.status")
 	var revision string

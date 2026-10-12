@@ -20,6 +20,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 type assetFixture struct {
@@ -32,7 +33,7 @@ type assetFixture struct {
 
 func newAssetFixture(t *testing.T) *assetFixture {
 	t.Helper()
-	root := t.TempDir()
+	root := testutil.CanonicalTempDir(t)
 	cwd := filepath.Join(root, "workspace")
 	if err := os.Mkdir(cwd, 0700); err != nil {
 		t.Fatal(err)

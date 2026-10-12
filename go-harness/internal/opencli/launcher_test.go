@@ -51,11 +51,15 @@ func TestOpenCLIEnvironmentOverride(t *testing.T) {
 	t.Setenv("OPENCLI_BIN", exe)
 	t.Setenv("MODEL_API_KEY", "do-not-inherit")
 	t.Setenv("OPENCLI_CONFIG_DIR", t.TempDir())
+	canonicalExe, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
 	plan, err := Resolve("missing-configured-path")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Executable != exe || plan.Environment["OPENCLI_CONFIG_DIR"] == "" {
+	if plan.Executable != canonicalExe || plan.Environment["OPENCLI_CONFIG_DIR"] == "" {
 		t.Fatal("host override ignored")
 	}
 	if _, ok := plan.Environment["MODEL_API_KEY"]; ok {

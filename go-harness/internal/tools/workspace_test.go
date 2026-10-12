@@ -9,6 +9,7 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func TestWorkspaceIOAndTraversal(t *testing.T) {
@@ -38,7 +39,7 @@ func TestWorkspaceIOAndTraversal(t *testing.T) {
 }
 
 func TestRunKeepsPinnedWorkspaceDirectory(t *testing.T) {
-	base := t.TempDir()
+	base := testutil.CanonicalTempDir(t)
 	cwd := filepath.Join(base, "workspace")
 	if err := os.Mkdir(cwd, 0700); err != nil {
 		t.Fatal(err)
@@ -104,7 +105,7 @@ func TestWorkspaceSymlinkEscape(t *testing.T) {
 	}
 }
 func TestPlanModeOmitsWriteTools(t *testing.T) {
-	tools, cleanup, err := WorkspaceFactory(context.Background(), harness.RunRequest{Session: harness.Session{CWD: t.TempDir(), Mode: "plan"}})
+	tools, cleanup, err := WorkspaceFactory(context.Background(), harness.RunRequest{Session: harness.Session{CWD: testutil.CanonicalTempDir(t), Mode: "plan"}})
 	if err != nil {
 		t.Fatal(err)
 	}

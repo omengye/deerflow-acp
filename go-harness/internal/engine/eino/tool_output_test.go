@@ -12,6 +12,7 @@ import (
 	einosession "github.com/cloudwego/eino/adk/session"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 	"github.com/omengye/deerflow-acp/go-harness/internal/tools"
 )
 
@@ -61,7 +62,7 @@ func (s *capturedToolOutputs) ReadToolOutput(_ context.Context, x harness.Sessio
 }
 
 func TestLargeWorkspaceReadStaysBoundedThroughNativeCompaction(t *testing.T) {
-	cwd := t.TempDir()
+	cwd := testutil.CanonicalTempDir(t)
 	content := strings.Repeat("A large workspace file with durable details.\n", 3500)
 	if err := os.WriteFile(filepath.Join(cwd, "big.txt"), []byte(content), 0600); err != nil {
 		t.Fatal(err)

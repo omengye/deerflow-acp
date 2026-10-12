@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 const fixture = `config_version: eino-harness-v1
@@ -82,7 +84,7 @@ tools:
 
 func setup(t *testing.T) Options {
 	t.Helper()
-	root := t.TempDir()
+	root := testutil.CanonicalTempDir(t)
 	resources := filepath.Join(root, "resources")
 	if err := os.MkdirAll(resources, 0700); err != nil {
 		t.Fatal(err)

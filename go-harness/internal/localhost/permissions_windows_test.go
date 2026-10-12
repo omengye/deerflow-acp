@@ -2,8 +2,8 @@ package localhost
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -33,8 +33,24 @@ func TestEndpointProtectedDACL(t *testing.T) {
 		if err != nil || acl == nil || acl.AceCount != 2 {
 			t.Fatalf("unexpected ACL on %s: %v", name, err)
 		}
-		if s := sd.String(); !strings.Contains(s, user.User.Sid.String()) || !strings.Contains(s, ";;;SY)") {
-			t.Fatalf("missing user/SYSTEM access: %s", s)
+		// SDDL renders the built-in Administrator SID as LA on CI runners.
+		// Compare the actual ACEs, not that account-dependent string spelling.
+		var hasUser, hasSystem bool
+		for i := uint32(0); i < uint32(acl.AceCount); i++ {
+			var ace *windows.ACCESS_ALLOWED_ACE
+			if err := windows.GetAce(acl, i, &ace); err != nil {
+				t.Fatal(err)
+			}
+			const fileAllAccess = 0x1f01ff // FILE_ALL_ACCESS, the SDDL FA grant.
+			if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Mask != fileAllAccess {
+				t.Fatalf("unexpected access entry on %s: %+v", name, ace)
+			}
+			sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+			hasUser = hasUser || sid.Equals(user.User.Sid)
+			hasSystem = hasSystem || sid.IsWellKnown(windows.WinLocalSystemSid)
+		}
+		if !hasUser || !hasSystem {
+			t.Fatalf("missing user/SYSTEM access: %s", sd.String())
 		}
 	}
 }

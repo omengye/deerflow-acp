@@ -118,7 +118,11 @@ func TestLoadConfigPathsAndArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Deerflow.Workspace != root || !filepath.IsAbs(c.State.Path) {
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Deerflow.Workspace != canonicalRoot || !filepath.IsAbs(c.State.Path) {
 		t.Fatal("paths not based on TOML")
 	}
 	if !c.Buzz.Acknowledgement.Enabled || c.Buzz.Acknowledgement.Emoji != "👀" || c.Buzz.Acknowledgement.Timeout != 3 {

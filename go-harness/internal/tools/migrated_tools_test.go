@@ -18,11 +18,12 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/opencli"
 	"github.com/omengye/deerflow-acp/go-harness/internal/sandbox"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func TestMigratedWorkspaceOperationsAndBoundaries(t *testing.T) {
 	ctx := context.Background()
-	cwd := t.TempDir()
+	cwd := testutil.CanonicalTempDir(t)
 	configs := []harness.BuiltinToolConfig{}
 	for _, name := range []string{"ls", "read_file", "glob", "grep", "write_file", "str_replace", "move_path", "delete_path"} {
 		configs = append(configs, harness.BuiltinToolConfig{Name: name})
@@ -107,7 +108,7 @@ func TestMigratedWorkspaceOperationsAndBoundaries(t *testing.T) {
 }
 
 func TestMigratedWorkspaceSymlinkMutationBoundary(t *testing.T) {
-	cwd, outside := t.TempDir(), t.TempDir()
+	cwd, outside := testutil.CanonicalTempDir(t), t.TempDir()
 	sentinel := filepath.Join(outside, "keep.txt")
 	os.WriteFile(sentinel, []byte("keep"), 0600)
 	if err := os.Symlink(outside, filepath.Join(cwd, "link")); err != nil {
@@ -135,7 +136,7 @@ func TestMigratedWorkspaceSymlinkMutationBoundary(t *testing.T) {
 }
 
 func TestWorkspacePreMutationRejectionsCarryEvidence(t *testing.T) {
-	cwd := t.TempDir()
+	cwd := testutil.CanonicalTempDir(t)
 	if err := os.WriteFile(filepath.Join(cwd, "existing.txt"), []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
 	}

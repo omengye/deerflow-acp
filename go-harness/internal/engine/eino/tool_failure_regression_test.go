@@ -21,6 +21,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	nativeMCP "github.com/omengye/deerflow-acp/go-harness/internal/mcp"
 	"github.com/omengye/deerflow-acp/go-harness/internal/sandbox"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 	nativeTools "github.com/omengye/deerflow-acp/go-harness/internal/tools"
 )
 
@@ -117,7 +118,7 @@ func TestToolFailureRegressionMCP(t *testing.T) {
 func TestToolFailureRegressionReadOnly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	found, cleanup, err := nativeTools.WorkspaceFactory(ctx, harness.RunRequest{Session: harness.Session{CWD: t.TempDir()}})
+	found, cleanup, err := nativeTools.WorkspaceFactory(ctx, harness.RunRequest{Session: harness.Session{CWD: testutil.CanonicalTempDir(t)}})
 	if err != nil {
 		t.Fatal(err)
 	}

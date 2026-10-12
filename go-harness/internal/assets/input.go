@@ -303,6 +303,10 @@ func openWorkspaceFile(cwd, path string) (*os.File, error) {
 	if !filepath.IsAbs(path) {
 		return nil, invalid("local resource path must be absolute")
 	}
+	path, err = resourcePathSpelling(path)
+	if err != nil {
+		return nil, invalid("local resource path cannot be resolved")
+	}
 	relative, err := filepath.Rel(cwd, path)
 	if err != nil || !filepath.IsLocal(relative) {
 		return nil, invalid("resource must stay inside the session workspace")

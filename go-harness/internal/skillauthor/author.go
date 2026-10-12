@@ -175,6 +175,10 @@ func packageSkill(ctx context.Context, directory, output string, write func(cont
 	if err != nil {
 		return report, err
 	}
+	source, err = filepath.EvalSymlinks(source)
+	if err != nil {
+		return report, err
+	}
 	output, err = filepath.Abs(output)
 	if err != nil {
 		return report, err

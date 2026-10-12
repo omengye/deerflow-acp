@@ -20,11 +20,12 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func skillFixture(t *testing.T) (string, Config) {
 	t.Helper()
-	workspace := t.TempDir()
+	workspace := testutil.CanonicalTempDir(t)
 	root := filepath.Join(workspace, "skills")
 	pkg := filepath.Join(root, "research")
 	if err := os.MkdirAll(pkg, 0700); err != nil {

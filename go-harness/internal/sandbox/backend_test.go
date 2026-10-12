@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func TestCommandHelper(t *testing.T) {
@@ -150,7 +151,7 @@ func TestPowerShellArgvRejectedBeforeProcessStart(t *testing.T) {
 
 func TestLocalCWDExitArgumentsAndCredentialEnvironment(t *testing.T) {
 	t.Setenv("DEERFLOW_SANDBOX_HOST_SECRET", "must-not-inherit")
-	cwd := t.TempDir()
+	cwd := testutil.CanonicalTempDir(t)
 	b := newTestBackend(t, testConfig(t), cwd)
 	r := helperRequest(t, "echo")
 	r.Args = append(r.Args, `space value`, `quotes" and $(literal); &`, "中文")
@@ -246,7 +247,7 @@ func TestTimeoutAndLifetimeCancellation(t *testing.T) {
 func TestProcessTreeCancellationAndCloseJoin(t *testing.T) {
 	for _, mode := range []string{"tree", "orphan"} {
 		t.Run(mode, func(t *testing.T) {
-			cwd := t.TempDir()
+			cwd := testutil.CanonicalTempDir(t)
 			b := newTestBackend(t, testConfig(t), cwd)
 			s := launchTask(t, b, helperRequest(t, mode))
 			deadline := time.Now().Add(8 * time.Second)

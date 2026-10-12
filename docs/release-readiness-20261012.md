@@ -48,13 +48,12 @@ databases, installed packages, logs and build caches are not source inputs.
 
 ## Blocking and remaining checks
 
-The new all-module local regression is NOT green. It reproduced 40-second
-deadline failures in mixed foreground/background role restart and automatic
-wakeup tests. Concurrent local Rust compilation was present; that observation
-does not establish the cause or excuse failures. Do not increase product
-timeouts, weaken assertions or skip tests to make a release pass. Earlier
-targeted successes and the 2026-10-11 baseline green run do not replace a
-complete passing run of this candidate.
+The initial all-module local regression failed with 40-second deadlines in
+mixed foreground/background role restart and automatic wakeup tests. The first
+Windows Actions candidate also failed. Neither run is release evidence. After
+the Windows fixes described below, a complete serial local Windows regression
+passes, including those mixed-role tests, without changing product timeouts or
+weakening workspace checks. Clean-checkout Actions packaging is still required.
 
 The Windows workflow must run Go regression, Rust Bridge tests, source identity
 checks, both desktop protocol smoke modes, packaged Bridge verification,
@@ -67,6 +66,68 @@ that actually has no Python/uv/pip installed remain unverified. Stock hosted
 runner execution and no interpreter installation step do not prove the latter.
 Do not promote the candidate to a stable release merely because compilation or
 fixture-based protocol tests pass.
+
+## Windows CI correction and local revalidation
+
+The failed Windows run used an 8.3 user-directory alias (`RUNNER~1`) in TEMP.
+`filepath.EvalSymlinks` expanded that alias, exposing two separate problems:
+
+- Internal test fixtures bypassed session attachment but supplied raw temporary
+  paths where the production contract requires a canonical host workspace.
+  Shared canonical fixtures now preserve that contract. Assertions about
+  published configuration, session and executable identities use the canonical
+  values, including the Buzz TOML workspace expectation.
+- Real attachment paths, OpenCLI managed-shim package paths and skill archive
+  source/output comparisons mixed long and short spellings. These entry points
+  now normalize consistently. Attachment spelling expansion does not follow
+  symlinks, and `os.Root` still confines the final open. The strict saved-CWD
+  comparison, directory identity checks and scoped skill authority are unchanged.
+
+A separate Windows DACL assertion depended on SDDL printing a numeric SID.
+Hosted Administrator accounts may print `LA` instead. The test now checks the
+actual allowed ACEs, full-access masks and user/System SIDs; production ACL
+creation is unchanged.
+
+Local results for the corrected source:
+
+- Reproduced all user-reported failures before editing by setting process-local
+  TEMP/TMP to a real 8.3 alias. No system environment or installed configuration
+  was changed.
+- The 12 affected packages pass their complete suites under that alias.
+- `GOMAXPROCS=2 CGO_ENABLED=0 go test -mod=readonly -count=1 -p=1 -json
+  -timeout=30m ./...` passes: 34 tested packages, 3110 passing test/subtest events,
+  zero failures, from 18:21 to 18:57 China time. This is an uncached full run,
+  not a targeted-test substitute. Module verification also passes.
+- Seven affected/security/streaming packages pass `-race`; the originally
+  reported cases pass three repeated iterations. Buzz unit tests, `go vet` and
+  full race tests pass with the same short TEMP/TMP.
+- Build-entrypoint checks, 28 source-identity fixtures, 30 packaging fixtures
+  and workflow `actionlint` validation pass.
+- Rust Bridge release tests pass (17 unit and 2 process tests). Rebuilt native
+  Bridge/Go binaries pass all four Bridge integration tests plus Buzz's native
+  permission allow/deny integration. These checks cover the four Bridge cases
+  skipped during the generic Go run.
+- Desktop release tests pass: 50 ACP contracts (3 authenticated external-agent
+  tests remain ignored) and 144 settings tests, including both startup/failure
+  configuration-state assertions. Local Rust is 1.95.0; Actions uses its pinned
+  1.96.0 toolchain, so local success does not replace that gate.
+- An isolated development assembly passes both desktop protocol smoke modes
+  (91 and 89 recorded checkpoints, no cleanup errors). All 107 recorded mock
+  model requests use streaming. This assembly uses rebuilt Go/Bridge binaries
+  and cached desktop binaries; it is explicitly not a distributable source-
+  matched archive. Actions must rebuild the clean commit and both smoke modes.
+
+The full Go run records 18 environment-dependent skips. They include unavailable
+symlink privileges, real Docker/WSL/online services and separately configured
+Rust Bridge integration. Short-path attachment and archive tests ran; the
+OpenCLI and workspace normalization alias assertions ran before their symlink
+sections skipped. Skips are not successes, and no privilege or security check
+was disabled to eliminate them. New Windows-specific regression tests explicitly
+exercise real aliases, outside resources and archive-output containment.
+
+All model transport remains streaming by default; no model-call implementation
+or user configuration changed in this correction. Live desktop executables,
+configuration, session databases and in-flight tasks were not modified.
 
 ## Upgrade boundaries
 
@@ -84,6 +145,9 @@ These directories are intentionally ignored and must not enter source archives:
 - `.build-cache/harness-runtime-update-20261012-161609/`: binary smoke, streaming
   checks, configuration validation and live migration verification.
 - `.build-cache/harness-continuity-final-race-extended.log`: targeted race tests.
+- `.build-cache/windows-ci-fix-20261012/`: before/after reproduction, complete
+  short-TEMP JSON test log and result/count manifests, affected-package tests,
+  race tests, Buzz validation and subsequent local build diagnostics.
 
 The GitHub run result and artifact identity must be checked after dispatch;
 they are not predeclared in this document.

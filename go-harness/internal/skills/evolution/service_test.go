@@ -13,6 +13,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 type validatorFunc func(context.Context, ValidationInput) (Report, error)
@@ -37,7 +38,7 @@ type fixture struct {
 
 func newFixture(t *testing.T, validator Validator) *fixture {
 	t.Helper()
-	ws := t.TempDir()
+	ws := testutil.CanonicalTempDir(t)
 	root := filepath.Join(ws, "skills")
 	if err := os.MkdirAll(filepath.Join(root, "research"), 0700); err != nil {
 		t.Fatal(err)
@@ -266,7 +267,7 @@ func TestProposalSecurityValidationAndSourceIsolation(t *testing.T) {
 	p := f.submit(t, f.request(t, "scoped", "Candidate"))
 	cfg := f.cfg
 	cfg.Sources = append([]harness.SkillSource(nil), cfg.Sources...)
-	ws := t.TempDir()
+	ws := testutil.CanonicalTempDir(t)
 	cfg.Sources[0].Workspace = ws
 	cfg.Sources[0].Root = ws
 	r, err := skills.NewRegistry(context.Background(), cfg, f.db.DB())

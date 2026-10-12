@@ -10,11 +10,12 @@ import (
 	"testing"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func TestSkillLearningMatchingAccessUsesRuntimeVisibilityAndTransaction(t *testing.T) {
 	ctx := context.Background()
-	ws, other, global := t.TempDir(), t.TempDir(), t.TempDir()
+	ws, other, global := testutil.CanonicalTempDir(t), testutil.CanonicalTempDir(t), t.TempDir()
 	local, foreign := filepath.Join(ws, "skills"), filepath.Join(other, "skills")
 	for _, root := range []string{local, foreign, global} {
 		writeSkill(t, root, "same-name", "Compare full JSON content")
@@ -107,7 +108,7 @@ func TestSkillLearningMatchingNewCapabilityTargetUsesHostScopeAndProtectsNames(t
 	for _, mode := range []string{"workspace", "global", "global-denied", "foreign", "builtin", "none", "selected", "collision", "disabled", "tombstone", "global-collision"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
-			ws, other, global := t.TempDir(), t.TempDir(), t.TempDir()
+			ws, other, global := testutil.CanonicalTempDir(t), testutil.CanonicalTempDir(t), t.TempDir()
 			local, foreign := filepath.Join(ws, "skills"), filepath.Join(other, "skills")
 			for _, root := range []string{local, foreign, global} {
 				writeSkill(t, root, "structured-json-audit", "An existing reusable procedure")
@@ -180,7 +181,7 @@ func TestSkillLearningMatchingAccessRejectsDuplicateOversizedAndCorruptBodies(t 
 	ctx := context.Background()
 	for _, mode := range []string{"duplicate", "oversized", "corrupt", "oversized-metadata", "immutable"} {
 		t.Run(mode, func(t *testing.T) {
-			ws := t.TempDir()
+			ws := testutil.CanonicalTempDir(t)
 			root, second := filepath.Join(ws, "skills"), filepath.Join(ws, "second")
 			body := "Read complete structured text"
 			if mode == "oversized" {
@@ -240,7 +241,7 @@ func TestSkillLearningMatchingAccessRejectsDuplicateOversizedAndCorruptBodies(t 
 
 func TestSkillLearningMatchingBodyGrantCannotBeForgedOrReusedAcrossTransactions(t *testing.T) {
 	ctx := context.Background()
-	ws := t.TempDir()
+	ws := testutil.CanonicalTempDir(t)
 	root := filepath.Join(ws, "skills")
 	writeSkill(t, root, "sample", "Authorized instruction")
 	r, db := registry(t, harness.SkillsConfig{Sources: []harness.SkillSource{{ID: "project", Root: root, Scope: harness.SkillScopeWorkspace, Workspace: ws}}})
@@ -285,7 +286,7 @@ func TestSkillLearningMatchingBodyGrantCannotBeForgedOrReusedAcrossTransactions(
 
 func TestSkillLearningMatchingAccessPinsBuiltinOverlayAndABAHead(t *testing.T) {
 	ctx := context.Background()
-	ws := t.TempDir()
+	ws := testutil.CanonicalTempDir(t)
 	root := filepath.Join(ws, "skills")
 	writeSkill(t, root, "sample", "Original builtin instruction")
 	r, db := registry(t, harness.SkillsConfig{Sources: []harness.SkillSource{{ID: "project", Root: root, Workspace: ws, Scope: harness.SkillScopeWorkspace}}, BuiltinSources: []string{"project"}})

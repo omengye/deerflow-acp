@@ -10,6 +10,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func TestHistoryPagesPinSnapshotAndSession(t *testing.T) {
@@ -23,11 +24,11 @@ func TestHistoryPagesPinSnapshotAndSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	x, err := s.CreateSession(ctx, t.TempDir(), "test")
+	x, err := s.CreateSession(ctx, testutil.CanonicalTempDir(t), "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := s.CreateSession(ctx, t.TempDir(), "test")
+	other, err := s.CreateSession(ctx, testutil.CanonicalTempDir(t), "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestHistoryPagesBoundBytesWithoutSkippingLargeEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	x, err := s.CreateSession(ctx, t.TempDir(), "test")
+	x, err := s.CreateSession(ctx, testutil.CanonicalTempDir(t), "test")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -386,7 +386,7 @@ func TestLocalManagementStatusListAndDrain(t *testing.T) {
 		t.Fatal(err)
 	}
 	listed := value.(map[string]any)["sessions"].([]map[string]any)
-	if len(listed) != 1 || listed[0]["session_id"] != session.ID || listed[0]["phase"] != "attached" || listed[0]["cwd"] != workspace || listed[0]["cleanup_eligible"] != false {
+	if len(listed) != 1 || listed[0]["session_id"] != session.ID || listed[0]["phase"] != "attached" || listed[0]["cwd"] != session.CWD || listed[0]["cleanup_eligible"] != false {
 		t.Fatalf("session inventory: %+v", listed)
 	}
 	value, err = c.ManageLocal(ctx, localManagementRequest("daemon.drain"))

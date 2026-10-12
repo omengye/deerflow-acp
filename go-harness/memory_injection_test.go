@@ -18,6 +18,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func TestEinoMemoryInjectionUsesAttachedScopeAndCurrentHead(t *testing.T) {
@@ -54,7 +55,7 @@ func TestEinoMemoryInjectionUsesAttachedScopeAndCurrentHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	workspace := t.TempDir()
+	workspace := testutil.CanonicalTempDir(t)
 	a, err := c.NewSession(ctx, workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +146,7 @@ func TestReadOnlyMemorySearchToolKeepsSessionScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	workspace := t.TempDir()
+	workspace := testutil.CanonicalTempDir(t)
 	a, err := c.NewSession(ctx, workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +196,7 @@ func TestMemoryExtensionResumePinsSelectedFactsAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workspace := t.TempDir()
+	workspace := testutil.CanonicalTempDir(t)
 	scope, err := memory.NewScope(memory.SessionScope, workspace, "s", "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -261,7 +262,7 @@ func TestDesktopMemoryPolicyScopesInjectionAndTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workspace := t.TempDir()
+	workspace := testutil.CanonicalTempDir(t)
 	for _, item := range []struct {
 		kind      memory.ScopeKind
 		sessionID string

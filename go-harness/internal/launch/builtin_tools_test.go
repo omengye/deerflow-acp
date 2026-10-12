@@ -6,11 +6,12 @@ import (
 	"testing"
 
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func TestNativeToolConfigurationWithoutPythonUses(t *testing.T) {
 	t.Setenv("FIXTURE_SEARCH_KEY", "fixture-secret")
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	raw := `models:
   - name: primary
     provider: openai

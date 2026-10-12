@@ -21,6 +21,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 const fixtureSecret = "mcp-private-fixture-token-29418"
@@ -155,7 +156,7 @@ func invoke(t *testing.T, tt tool.InvokableTool, value string) string {
 
 func TestRealMCPImageUsesEnhancedResultWithoutBase64Text(t *testing.T) {
 	cfg := processConfig(t, "picture")
-	cwd := t.TempDir()
+	cwd := testutil.CanonicalTempDir(t)
 	m := testManager(t, harness.MCPPolicy{AllowedCommands: []string{cfg.Command}})
 	if err := m.Bind(context.Background(), "owner", "image-session", cwd, []harness.MCPServer{cfg}); err != nil {
 		t.Fatal(err)
@@ -193,7 +194,7 @@ func TestMCPBinaryResultGuardRejectsUnsupportedAndOversizedContent(t *testing.T)
 func TestStdioLifecycleEnvironmentAndStaleTools(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "host-provider-secret-must-not-inherit")
 	cfg := processConfig(t, "one")
-	cwd := t.TempDir()
+	cwd := testutil.CanonicalTempDir(t)
 	cfg.Env["HARNESS_MCP_CWD"] = cwd
 	m := testManager(t, harness.MCPPolicy{AllowedCommands: []string{cfg.Command}})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -249,7 +250,7 @@ func TestStdioLifecycleEnvironmentAndStaleTools(t *testing.T) {
 
 func TestAtomicReplacementAndFailedCandidate(t *testing.T) {
 	cfg := processConfig(t, "one")
-	cwd := t.TempDir()
+	cwd := testutil.CanonicalTempDir(t)
 	// Spawning the fixture process can exceed 300 ms under a full package run.
 	// Keep the stalled candidate bounded while allowing ordinary startup time.
 	m := testManager(t, harness.MCPPolicy{AllowedCommands: []string{cfg.Command}, ConnectTimeout: 3 * time.Second})
@@ -314,7 +315,7 @@ func TestStdioCallCancellationAndNoReplay(t *testing.T) {
 
 func TestPolicyAndCredentialMetadata(t *testing.T) {
 	cfg := processConfig(t, "one")
-	cwd := t.TempDir()
+	cwd := testutil.CanonicalTempDir(t)
 	m := testManager(t, harness.MCPPolicy{})
 	if err := m.Bind(context.Background(), "owner", "s", cwd, []harness.MCPServer{cfg}); !errors.Is(err, harness.ErrPermissionDenied) {
 		t.Fatal(err)
@@ -424,7 +425,7 @@ func TestReleaseOwnerCancelsPendingInitialization(t *testing.T) {
 	m := testManager(t, harness.MCPPolicy{AllowHTTP: true})
 	defer m.Close()
 	done := make(chan error, 1)
-	cwd := t.TempDir()
+	cwd := testutil.CanonicalTempDir(t)
 	go func() {
 		done <- m.Bind(context.Background(), "owner", "s", cwd, []harness.MCPServer{{Name: "slow", Transport: "http", URL: srv.URL}})
 	}()
@@ -616,7 +617,7 @@ func TestFailedProcessTerminationRetainsOwnershipUntilExit(t *testing.T) {
 
 func TestReleaseCancelsAtomicReplacementBeforePublication(t *testing.T) {
 	cfg := processConfig(t, "one")
-	cwd := t.TempDir()
+	cwd := testutil.CanonicalTempDir(t)
 	m := testManager(t, harness.MCPPolicy{AllowedCommands: []string{cfg.Command}})
 	if err := m.Bind(context.Background(), "owner", "s", cwd, []harness.MCPServer{cfg}); err != nil {
 		t.Fatal(err)

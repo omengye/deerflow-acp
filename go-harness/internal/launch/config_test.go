@@ -14,11 +14,12 @@ import (
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/sandbox"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func TestApplyConfigModelAndPortableSettings(t *testing.T) {
 	t.Setenv("FIXTURE_MODEL_KEY", "from-environment")
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	raw := `default_model: other
 api:
   model_name: other
@@ -81,7 +82,7 @@ models:
 }
 
 func TestApplyConfigPatchedOpenAIAndDistinctBackendRoutes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	raw := `default_model: deepseek
 models:
   - name: deepseek
@@ -135,7 +136,7 @@ models:
 }
 
 func TestApplyConfigRejectsUnsupportedHostBash(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	raw := "local_acp:\n  enable_bash: true\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 		t.Fatal(err)
@@ -148,7 +149,7 @@ func TestApplyConfigRejectsUnsupportedHostBash(t *testing.T) {
 }
 
 func TestApplyConfigClientMCPWithoutGoAllowFlagsIsDenied(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	raw := "local_acp:\n  accept_client_mcp_servers: true\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 		t.Fatal(err)
@@ -164,7 +165,7 @@ func TestApplyConfigClientMCPWithoutGoAllowFlagsIsDenied(t *testing.T) {
 }
 
 func TestApplyConfigDesktopHostCommandGates(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	config := func(enable, host bool, provider string) {
 		t.Helper()
 		raw := fmt.Sprintf(`local_acp:
@@ -246,7 +247,7 @@ func TestApplyConfigDesktopHostCommandRuns(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("desktop's implicit PowerShell mapping is Windows-only")
 	}
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	raw := `local_acp:
   enable_bash: true
 sandbox:
@@ -287,7 +288,7 @@ models:
 }
 
 func TestApplyConfigToolPolicyIntersectsHostBoundary(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	raw := `local_acp:
   tool_allowlist: [" read_file ", "task", "read_file", ""]
   tool_denylist: ["task", " write_file ", "write_file"]
@@ -330,7 +331,7 @@ models:
 }
 
 func TestApplyConfigPermissionModes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	for _, tc := range []struct {
 		value string
 		want  harness.PermissionMode
@@ -361,7 +362,7 @@ func TestApplyConfigPermissionModes(t *testing.T) {
 }
 
 func TestApplyConfigDoesNotCarryCredentialsAcrossBackendOverride(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	raw := `local_acp:
   model_name: selected
 models:
@@ -415,7 +416,7 @@ func TestApplyConfigRejectsInvalidRetention(t *testing.T) {
 		"closed_session_retention_days: -1",
 		"session_cleanup_interval_seconds: 30",
 	} {
-		path := filepath.Join(t.TempDir(), "config.yaml")
+		path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 		raw := "local_acp:\n  " + field + "\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
 		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 			t.Fatal(err)
@@ -488,7 +489,7 @@ func TestApplyConfigRejectsInvalidPortableBounds(t *testing.T) {
 		"queue_timeout_seconds: -1", "queue_timeout_seconds: 315360001", "queue_timeout_seconds: .nan",
 		"prompt_overlay_file: missing.md",
 	} {
-		path := filepath.Join(t.TempDir(), "config.yaml")
+		path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 		raw := "local_acp:\n  " + local + "\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
 		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 			t.Fatal(err)
@@ -588,7 +589,7 @@ models:
 }
 
 func TestApplyConfigDisabledMemoryAndExplicitExtraction(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	if err := os.WriteFile(path, []byte("memory:\n  enabled: false\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +605,7 @@ func TestApplyConfigDisabledMemoryAndExplicitExtraction(t *testing.T) {
 }
 
 func TestApplyConfigMapsDesktopMemoryPolicy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	raw := `local_acp:
   memory_scope: session
 memory:
@@ -641,7 +642,7 @@ func TestApplyConfigRejectsUnsupportedMemoryPolicy(t *testing.T) {
 		{"tool without retrieval", "memory:\n  mode: tool\n  backend_config:\n    retrieval_enabled: false\n", "requires memory.retrieval_enabled=true"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.yaml")
+			path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 			if err := os.WriteFile(path, []byte(tc.body+model), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -655,7 +656,7 @@ func TestApplyConfigRejectsUnsupportedMemoryPolicy(t *testing.T) {
 }
 
 func TestApplyConfigPreservesGlobalScopeWhenMemoryDisabled(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	raw := "local_acp:\n  memory_scope: global\nmemory:\n  enabled: false\nmodels:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 		t.Fatal(err)
@@ -674,7 +675,7 @@ func TestApplyConfigRejectsUnsupportedSummarization(t *testing.T) {
 		"  enabled: true\n  trigger: {type: messages, value: 12}\n  keep: {type: messages, value: 20}\n",
 		"  enabled: true\n  trigger: {type: messages, value: 80}\n  keep: {type: tokens, value: 1000}\n",
 	} {
-		path := filepath.Join(t.TempDir(), "config.yaml")
+		path := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 		raw := "summarization:\n" + yamlBody + "models:\n  - name: one\n    use: langchain_openai:ChatOpenAI\n    model: one\n"
 		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 			t.Fatal(err)

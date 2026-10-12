@@ -57,6 +57,10 @@ func Resolve(configured string) (Launcher, error) {
 			}
 			packageRoot = filepath.Join(filepath.Dir(string(match[1])), "node_modules", "@jackwener", "opencli")
 		}
+		packageRoot, err = filepath.EvalSymlinks(packageRoot)
+		if err != nil {
+			return Launcher{}, errors.New("OpenCLI npm package directory cannot be found")
+		}
 		// Run the npm bin directly with Node, so %, &, quotes and newlines in
 		// model arguments stay literal argv, even on Windows.
 		manifest, err := readSmall(filepath.Join(packageRoot, "package.json"))

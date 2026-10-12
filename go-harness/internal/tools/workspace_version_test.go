@@ -11,6 +11,7 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func versionTools(t *testing.T, cwd string, migrated bool) map[string]tool.InvokableTool {
@@ -48,7 +49,7 @@ func versionCall(t *testing.T, tools map[string]tool.InvokableTool, name string,
 func TestVersionedWorkspaceConflictsAndFreshRead(t *testing.T) {
 	for _, migrated := range []bool{false, true} {
 		t.Run(map[bool]string{false: "default", true: "configured"}[migrated], func(t *testing.T) {
-			cwd := t.TempDir()
+			cwd := testutil.CanonicalTempDir(t)
 			tools := versionTools(t, cwd, migrated)
 			out, err := versionCall(t, tools, "write_file", map[string]any{"path": "note", "content": "first"})
 			if err != nil {
@@ -101,7 +102,7 @@ func TestVersionedWorkspaceConflictsAndFreshRead(t *testing.T) {
 }
 
 func TestVersionedWorkspaceConcurrentFactories(t *testing.T) {
-	cwd := t.TempDir()
+	cwd := testutil.CanonicalTempDir(t)
 	if err := os.WriteFile(filepath.Join(cwd, "note"), []byte("base"), 0600); err != nil {
 		t.Fatal(err)
 	}
