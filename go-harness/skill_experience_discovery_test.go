@@ -174,10 +174,11 @@ func sdkExperienceDiscoveryLoopbackOptions(t *testing.T, newCapability, reviewDr
 			t.Fatal(err)
 		}
 	}
-	deadline = time.Now().Add(12 * time.Second)
 	var proposal string
-	for time.Now().Before(deadline) {
-		_ = c.store.DB().QueryRow(`SELECT id FROM df_skill_proposals WHERE status='pending_review' LIMIT 1`).Scan(&proposal)
+	// Extraction, consolidation, matching and generation share durable workers.
+	// Use the existing scenario deadline, not a shorter competing wall clock.
+	for ctx.Err() == nil {
+		_ = c.store.DB().QueryRowContext(ctx, `SELECT id FROM df_skill_proposals WHERE status='pending_review' LIMIT 1`).Scan(&proposal)
 		if proposal != "" {
 			break
 		}
@@ -186,7 +187,9 @@ func sdkExperienceDiscoveryLoopbackOptions(t *testing.T, newCapability, reviewDr
 	if proposal == "" || calls.Load() != 1 {
 		var codes string
 		_ = c.store.DB().QueryRow(`SELECT group_concat(job_kind||':'||state||':'||error_code) FROM df_skill_maintenance_jobs`).Scan(&codes)
-		t.Fatal("SDK did not create one pending review", proposal, calls.Load(), codes)
+		var inputs string
+		_ = c.store.DB().QueryRow(`SELECT group_concat(state||':'||reason) FROM df_learning_match_inputs`).Scan(&inputs)
+		t.Fatal("SDK did not create one pending review", proposal, calls.Load(), codes, inputs, ctx.Err())
 	}
 	if reviewDrafts {
 		page, err := c.ListSkillDiscoveries(ctx, harness.SkillQuery{Limit: 10})

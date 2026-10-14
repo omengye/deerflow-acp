@@ -112,7 +112,7 @@ func TestSkillLearningMatchingSDKLifecycleSharedDispatcherAndBudget(t *testing.T
 			deadline := time.Now().Add(10 * time.Second)
 			for time.Now().Before(deadline) {
 				_ = c.store.DB().QueryRow(`SELECT j.state,j.error_code FROM df_learning_matches m JOIN df_skill_maintenance_jobs j ON j.id=m.job_id WHERE m.session_id=?`, x.ID).Scan(&jobState, &jobCode)
-				if jobState == "completed" || jobState == "failed" {
+				if jobState == "completed" || jobState == "failed" || mode == "learning-cap" && jobState == "queued" {
 					break
 				}
 				time.Sleep(20 * time.Millisecond)
@@ -121,8 +121,10 @@ func TestSkillLearningMatchingSDKLifecycleSharedDispatcherAndBudget(t *testing.T
 			want, wantCalls := 1, int32(1)
 			if mode == "learning-cap" {
 				want, wantCalls = 0, 0
-				if jobCode != "budget_exhausted" {
-					t.Fatal("matching bypassed shared learning cap", jobState, jobCode)
+				var attempts int
+				var deadlineNS int64
+				if err := c.store.DB().QueryRow(`SELECT j.attempts,j.deadline_ns FROM df_learning_matches m JOIN df_skill_maintenance_jobs j ON j.id=m.job_id WHERE m.session_id=?`, x.ID).Scan(&attempts, &deadlineNS); err != nil || jobState != "queued" || jobCode != "" || attempts != 0 || deadlineNS != 0 {
+					t.Fatal("matching must wait for shared learning quota without a claim", jobState, jobCode, attempts, deadlineNS, err)
 				}
 			}
 			if err != nil || len(page.Matches) != want || matcher.calls.Load() != wantCalls || extractor.calls.Load() != 1 || consolidator.calls.Load() != 1 {

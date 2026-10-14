@@ -460,13 +460,17 @@ func TestSkillLearningConsolidationSharesExtractionSublimitWithoutRefund(t *test
 	s.Store.Learning = l
 	consolidateExtract(t, s, x, "Procedure consumed the only learning call")
 	consolidateQueued(t, s)
-	if worked, err := l.RunOne(ctx); err != nil || !worked {
-		t.Fatal(worked, err)
+	for range 2 {
+		if worked, err := l.RunOne(ctx); err != nil || worked {
+			t.Fatal("quota-deferred consolidation was claimed", worked, err)
+		}
 	}
-	var code string
+	var state, code string
+	var attempts int
+	var deadlineNS int64
 	var charged int
-	if err = s.Store.db.QueryRow(`SELECT error_code FROM df_skill_maintenance_jobs WHERE job_kind='experience_consolidate'`).Scan(&code); err != nil || code != "budget_exhausted" {
-		t.Fatal("consolidation bypassed extraction sublimit", code, err)
+	if err = s.Store.db.QueryRow(`SELECT state,error_code,attempts,deadline_ns FROM df_skill_maintenance_jobs WHERE job_kind='experience_consolidate'`).Scan(&state, &code, &attempts, &deadlineNS); err != nil || state != "queued" || code != "" || attempts != 0 || deadlineNS != 0 || len(model.seen) != 0 {
+		t.Fatal("consolidation did not defer intact at the extraction sublimit", state, code, attempts, deadlineNS, len(model.seen), err)
 	}
 	if err = s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_maintenance_calls`).Scan(&charged); err != nil || charged != 1 {
 		t.Fatal("denied call dispatched or previous receipt refunded", charged, err)

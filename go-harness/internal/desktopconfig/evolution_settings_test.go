@@ -195,7 +195,7 @@ func TestEvolutionSnapshotRejectsMalformedObjects(t *testing.T) {
 	}
 }
 
-func TestEvolutionTemplatesHaveOnlyNativeReviewDefaults(t *testing.T) {
+func TestEvolutionTemplatesHaveNativeProfileDefaults(t *testing.T) {
 	for _, path := range []string{"config.example.yaml", "resources/default-config.yaml", "resources/desktop-default-config.yaml", "desktop-app/resources/deerflow/default-config.yaml"} {
 		t.Run(path, func(t *testing.T) {
 			raw, err := readYAML(filepath.Join("..", "..", "..", filepath.FromSlash(path)))
@@ -210,8 +210,16 @@ func TestEvolutionTemplatesHaveOnlyNativeReviewDefaults(t *testing.T) {
 			if err := configschema.ValidateEvolutionDraft(projection, nil); err != nil {
 				t.Fatal(err)
 			}
-			if readObject(projection, "auto_patch")["experience_patterns_enabled"] != false || readObject(review, "auto_patch")["experience_patterns_enabled"] != false {
-				t.Fatal("packaged template enabled learning automatic publication")
+			desktop := isDesktopTemplate(path)
+			wantMode := "review"
+			if desktop {
+				wantMode = "auto_patch"
+			}
+			if projection["mode"] != wantMode || readObject(projection, "auto_patch")["experience_patterns_enabled"] != desktop || readObject(review, "auto_patch")["experience_patterns_enabled"] != desktop {
+				t.Fatal("template automatic maintenance differs from its desktop/ACP policy")
+			}
+			if projection["security_fail_closed"] != true || readObject(projection, "discovery")["experience_new_skills_enabled"] != false || readObject(projection, "learning")["cross_session_enabled"] != false {
+				t.Fatal("template widened publication or sharing authority")
 			}
 			review["enabled"] = true
 			encoded, err := yaml.Marshal(review)

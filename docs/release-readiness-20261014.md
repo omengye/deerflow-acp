@@ -144,3 +144,67 @@ first-publication/manual-exception skill policy.
 
 Local logs are intentionally ignored under `.build-cache/mvp-review-20261014/`.
 They must not be included in source archives.
+
+## Failed Candidate And Local Windows Revalidation
+
+The Windows desktop run
+[38505623555](https://github.com/omengye/deerflow-acp/actions/runs/38505623555)
+for `9219387e` failed the SDK regression gate and produced no verified desktop
+package. The separate Go workflow also exposed outdated assertions in the
+runtime learning and desktop-template tests. The earlier focused check did not
+cover these assertions and must not be cited as full release validation.
+
+Local Windows execution reproduced all three deterministic failures:
+
+- Learning-cap tests expected a claimed, terminal `budget_exhausted` job, but
+  the approved scheduler defers an unclaimed job until quota is available.
+  Updated assertions require queued state, zero attempts, no deadline, no model
+  call, no output and no refund of earlier calls. Per-call hard budget tests are
+  unchanged and remain in the complete regression.
+- The common template test still required learning auto-publication to be off
+  in desktop templates. It now distinguishes desktop `auto_patch` from ACP
+  `review`, while checking fail-closed security, no automatic new-skill discovery
+  and no cross-session sharing.
+- A Windows SDK discovery fixture sometimes exhausted a separate 12-second
+  polling timer before its durable background pipeline completed. It now uses
+  the existing 30-second scenario context and includes match-state diagnostics
+  on failure. Product deadlines, retries, worker leases and assertions about
+  exactly one generated pending-review candidate are unchanged.
+
+Only these four test files changed; no runtime policy was relaxed. Before any
+push or new Actions dispatch, the local Windows delivery entry point ran with
+`-Package Desktop -Development` and without `-SkipTests`. Development mode avoids
+claiming that uncommitted test changes are a clean source archive; it does not
+skip the regression, compilation or package checks.
+
+Verified on 2026-10-14, Asia/Shanghai:
+
+- Complete uncached normal Go regression passed from 12:34:46 to 13:15:24:
+  43 discovered packages, 34 tested packages, 1332 top-level tests in 72 batches,
+  3165 passing test/subtest events, zero failures and 19 explicit skips.
+- The four affected top-level tests passed both ordinary and race runs across
+  SDK, desktopconfig and runtime. The race run took 45.263, 13.002 and 8.662
+  seconds respectively; no race was reported. This was not a full race rerun.
+- Desktop Release contracts passed: 146 settings tests, 51 ACP tests and three
+  artifact-transfer tests. Three authenticated external-agent ACP cases remain
+  ignored rather than counted as success.
+- Rust Bridge passed 17 unit and two process tests. Dependency verification,
+  source identity checks, build entrypoint checks, 388 test-runner fixtures and
+  30 packaging failure/archive/checksum/environment checks passed.
+- The local Release package passed both desktop protocol smoke modes, with no
+  cleanup errors, and all four actual bundled Bridge/daemon integration cases.
+  Those four cases were skipped in the generic Go run and covered here.
+- All 84 local package manifest entries match; the package contains no
+  `user-data`. The output is a development directory, not a clean-source ZIP.
+
+The remaining generic Go skips require symlink privileges, real Docker/WSL,
+online services or installed OpenCLI. They are not implicit successes. No real
+model calls, new business-skill evaluation suite, visual test or live application
+replacement was performed. Local Rust remains 1.95.0; Actions independently
+uses pinned Rust 1.96.0. Logs are under the ignored
+`.build-cache/windows-mvp-fix-20261014/` and
+`.build-cache/go-tests/20261014-123446-360-normal-382510bd/` directories.
+
+After committing these test corrections, push and dispatch the unchanged Windows
+workflow for the new commit. Its eventual result must still be checked; the
+failed `9219387e` run is not retroactively successful.
