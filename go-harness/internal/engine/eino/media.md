@@ -20,6 +20,13 @@ boundary. Input normalization belongs to the runtime's asset service.
   bytes. Repeated identical references reuse the encoded value. Each image also
   obeys the harness's 20 MiB image limit.
 
+OpenAI-compatible Chat Completions receives image-bearing tool results as a
+text tool response followed by a synthetic user message containing the actual
+image parts and their tool-call ID. All parallel tool responses precede these
+image messages. This provider-only projection avoids gateways treating tool
+image Base64 as ordinary text; native history, receipts and asset references are
+unchanged. Anthropic and injected model adapters keep their native format.
+
 ## Files, tools and usage
 
 Ordinary files and HTTP(S) resource links become bounded metadata references in

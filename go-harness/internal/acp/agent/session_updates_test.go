@@ -22,6 +22,29 @@ func TestAutomaticExecutionNotificationErrorsArePublic(t *testing.T) {
 	}
 }
 
+func TestContextLimitErrorsArePublicWithoutProviderDetails(t *testing.T) {
+	err := errors.Join(harness.ErrContextLimit, errors.New("provider credential=fixture-secret in private/workspace"))
+	for _, public := range []error{mapError(err), executionUpdateError(err)} {
+		var rpc *protocol.Error
+		if !errors.As(public, &rpc) {
+			t.Fatalf("missing public error: %v", public)
+		}
+		encoded, marshalErr := json.Marshal(rpc)
+		if marshalErr != nil || rpc.Code != -32024 || rpc.Message == "Internal error" || strings.Contains(string(encoded), "fixture-secret") || strings.Contains(string(encoded), "private/workspace") {
+			t.Fatalf("unsafe context diagnostic: %s %v", encoded, marshalErr)
+		}
+		data, ok := rpc.Data.(map[string]any)
+		if !ok || data["kind"] != "context_limit" || data["automaticReplay"] != false {
+			t.Fatalf("missing context recovery guidance: %+v", rpc)
+		}
+	}
+	// A context error never overrides an outstanding tool reconciliation gate.
+	rpc := executionUpdateError(errors.Join(harness.ErrContextLimit, harness.ErrReconciliationRequired))
+	if rpc.Code == -32024 {
+		t.Fatal("context error hid unresolved tool effects")
+	}
+}
+
 func TestMCPResourceErrorsArePublicAndDoNotExposePrivateDetails(t *testing.T) {
 	for _, test := range []struct {
 		name  string

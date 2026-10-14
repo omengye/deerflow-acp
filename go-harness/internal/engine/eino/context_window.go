@@ -2,13 +2,29 @@ package eino
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"unicode"
 
+	openaiapi "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
+
+func classifyModelContextError(err error) error {
+	var api *openaiapi.APIError
+	if errors.Is(err, harness.ErrContextLimit) || !errors.As(err, &api) || api.HTTPStatusCode != 400 {
+		return err
+	}
+	code, _ := api.Code.(string)
+	message := strings.ToLower(strings.TrimSpace(api.Message))
+	if code == "context_length_exceeded" || strings.HasPrefix(message, "the input token count exceeds the maximum number of tokens allowed") || strings.HasPrefix(message, "this model's maximum context length is") {
+		return fmt.Errorf("%w: %w", harness.ErrContextLimit, err)
+	}
+	return err
+}
 
 // Estimates remain estimates; reported provider usage is authoritative at settlement.
 // Count CJK runes separately so Chinese text is not treated as four-byte English.

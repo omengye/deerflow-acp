@@ -133,6 +133,8 @@ func mapError(err error) error {
 		return receiptRecoveryError(false)
 	case errors.Is(err, harness.ErrReceiptConflict):
 		return receiptRecoveryError(true)
+	case errors.Is(err, harness.ErrContextLimit):
+		return &protocol.Error{Code: -32024, Message: "模型输入超过上下文上限。请减少本次输入或图片，或在新会话中仅带入必要摘要后重试。若已有工具执行完成，请先检查其结果，避免重复操作。", Data: map[string]any{"kind": "context_limit", "automaticReplay": false}}
 	case errors.Is(err, harness.ErrTaskTreeStopped):
 		return &protocol.Error{Code: executionConflictCode, Message: "This execution has been stopped. Read its current state before continuing.", Data: map[string]any{"kind": "execution_stopped", "getMethod": getExecutionMethod, "automaticReplay": false}}
 	case errors.Is(err, harness.ErrBusy):

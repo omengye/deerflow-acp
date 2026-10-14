@@ -3,13 +3,63 @@ package eino
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	openaiapi "github.com/cloudwego/eino-ext/components/model/openai"
 	einosession "github.com/cloudwego/eino/adk/session"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
+
+func TestProviderContextLimitClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     error
+		context bool
+	}{
+		{"local", harness.ErrContextLimit, true},
+		{"code", &openaiapi.APIError{HTTPStatusCode: 400, Code: "context_length_exceeded", Message: "private diagnostic"}, true},
+		{"gemini", &openaiapi.APIError{HTTPStatusCode: 400, Message: "The input token count exceeds the maximum number of tokens allowed (1048576)."}, true},
+		{"openai", &openaiapi.APIError{HTTPStatusCode: 400, Message: "This model's maximum context length is 8192 tokens."}, true},
+		{"other_400", &openaiapi.APIError{HTTPStatusCode: 400, Message: "Invalid tool schema"}, false},
+		{"rate_limit", &openaiapi.APIError{HTTPStatusCode: 429, Code: "context_length_exceeded"}, false},
+		{"untyped", errors.New("The input token count exceeds the maximum number of tokens allowed"), false},
+		{"cancelled", context.Canceled, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, role := range []bool{false, true} {
+				got := (&trackedModel{role: role}).modelError(fmt.Errorf("provider: %w", tc.err))
+				if errors.Is(got, harness.ErrContextLimit) != tc.context || !errors.Is(got, tc.err) {
+					t.Fatalf("role=%t classification=%v", role, got)
+				}
+			}
+		})
+	}
+	if got := classifyModelContextError(nil); got != nil {
+		t.Fatalf("nil error became %v", got)
+	}
+}
+
+func TestProviderContextLimitHTTPIsNotRetried(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"message":"The input token count exceeds the maximum number of tokens allowed (1048576).","type":"invalid_request_error"}}`)
+	}))
+	defer server.Close()
+	e := newTestEngine(t, Config{Provider: "openai", Model: "test-model", BaseURL: server.URL, APIKey: "fixture"})
+	_, err := e.Run(context.Background(), request("provider-window"), nil, nil)
+	if !errors.Is(err, harness.ErrContextLimit) || calls.Load() != 1 {
+		t.Fatalf("provider calls=%d error=%v", calls.Load(), err)
+	}
+}
 
 func TestContextWindowRejectsBeforeProviderAdmission(t *testing.T) {
 	fake := &scriptedModel{stream: func(context.Context, int, []*schema.Message) (*schema.StreamReader[*schema.Message], error) {

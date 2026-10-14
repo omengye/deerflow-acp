@@ -51,7 +51,11 @@ func (m *outputTokenModel) Generate(ctx context.Context, input []*schema.Message
 }
 
 func (m *outputTokenModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	return m.inner.Stream(ctx, input, m.options(opts)...)
+	if m.provider == "" || m.provider == "openai" || m.provider == "openai-compatible" {
+		input = openAIToolImageMessages(input)
+	}
+	stream, err := m.inner.Stream(ctx, input, m.options(opts)...)
+	return stream, classifyModelContextError(err)
 }
 
 func (m *outputTokenModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {

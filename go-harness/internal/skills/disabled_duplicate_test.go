@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func TestDisabledSameScopeDuplicateDoesNotBlockSelection(t *testing.T) {
@@ -14,7 +15,7 @@ func TestDisabledSameScopeDuplicateDoesNotBlockSelection(t *testing.T) {
 		for _, active := range []string{"a", "b", "both", "neither"} {
 			t.Run(string(scope)+"/"+active, func(t *testing.T) {
 				ctx := context.Background()
-				ws := t.TempDir()
+				ws := testutil.CanonicalTempDir(t)
 				cfg := harness.SkillsConfig{}
 				for _, id := range []string{"a", "b"} {
 					root := t.TempDir()
