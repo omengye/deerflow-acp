@@ -4,9 +4,38 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
+
+type heartbeatSQLiteError int
+
+func (e heartbeatSQLiteError) Error() string { return fmt.Sprintf("SQLite code %d", e) }
+func (e heartbeatSQLiteError) Code() int     { return int(e) }
+
+func TestHeartbeatCancellationClassificationPreservesStorageFailures(t *testing.T) {
+	for _, item := range []struct {
+		name                   string
+		workErr, checkErr, err error
+		want                   bool
+	}{
+		{"context-cancelled", context.Canceled, context.Canceled, context.Canceled, true},
+		{"sqlite-interrupt", context.Canceled, context.Canceled, fmt.Errorf("renewal: %w", heartbeatSQLiteError(9)), true},
+		{"job-deadline", context.DeadlineExceeded, context.DeadlineExceeded, heartbeatSQLiteError(9), true},
+		{"live-interrupt", nil, nil, heartbeatSQLiteError(9), false},
+		{"renewal-timeout", nil, context.DeadlineExceeded, heartbeatSQLiteError(9), false},
+		{"renewal-expired-before-stop", context.Canceled, context.DeadlineExceeded, heartbeatSQLiteError(9), false},
+		{"storage-failure-after-stop", context.Canceled, context.Canceled, heartbeatSQLiteError(10), false},
+		{"unrelated-error", context.Canceled, context.Canceled, errors.New("disk failure"), false},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			if got := heartbeatStoppedByWork(item.workErr, item.checkErr, item.err); got != item.want {
+				t.Fatalf("stopped=%v, want %v", got, item.want)
+			}
+		})
+	}
+}
 
 func TestSuccessfulHandlerCanStopAnInFlightHeartbeat(t *testing.T) {
 	for _, heartbeatTimeout := range []bool{false, true} {

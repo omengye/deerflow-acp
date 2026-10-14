@@ -4,7 +4,20 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	sqlite3 "modernc.org/sqlite/lib"
 )
+
+func heartbeatStoppedByWork(workErr, checkErr, err error) bool {
+	if workErr == nil || checkErr != workErr {
+		return false
+	}
+	// SQLite may return SQLITE_INTERRUPT instead of wrapping ctx.Err(). Only
+	// accept it when the renewal inherited the worker's cancellation/deadline.
+	// An independent renewal timeout or another storage error still fails closed.
+	var code interface{ Code() int }
+	return errors.Is(err, workErr) || errors.As(err, &code) && code.Code() == sqlite3.SQLITE_INTERRUPT
+}
 
 // Handler receives a host-owned claim, with the broker and fixed job deadline
 // in its context. It must check producer input identity and source authority
@@ -40,12 +53,13 @@ func (s *Store) RunKinds(ctx context.Context, kinds []JobKind, handler Handler) 
 			case <-ticker.C:
 				check, stop := context.WithTimeout(work, 2*time.Second)
 				err := s.Heartbeat(check, claim)
+				checkErr := check.Err()
 				stop()
 				if err != nil {
 					// RunKinds cancels work after the handler joins. An in-flight
 					// renewal interrupted by that shutdown is not a storage fault.
 					// A renewal's own deadline while work is live still fails closed.
-					if work.Err() != nil && errors.Is(err, work.Err()) {
+					if heartbeatStoppedByWork(work.Err(), checkErr, err) {
 						done <- nil
 						return
 					}
