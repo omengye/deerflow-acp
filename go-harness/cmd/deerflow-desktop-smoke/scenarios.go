@@ -17,8 +17,8 @@ func (s *smoke) startupRecovery() obj {
 	var raw map[string]any
 	must(yaml.Unmarshal([]byte(read(s.config)), &raw))
 	settings := raw["skills"].(map[string]any)
-	settings["managed_sources"] = []any{obj{"id": "managed-evolution", "root": "../skills/evolved", "scope": "global"}}
-	settings["export_root"] = "../skills-exports"
+	settings["managed_sources"] = []any{obj{"id": "managed-evolution", "root": "../skills/smoke-recovery-evolved", "scope": "global"}}
+	settings["export_root"] = "../skills-exports/smoke-recovery"
 	write := func() []byte {
 		body, err := yaml.Marshal(raw)
 		must(err)
@@ -26,10 +26,10 @@ func (s *smoke) startupRecovery() obj {
 		return body
 	}
 	before := write()
-	need(!exists(filepath.Join(s.root, "user-data/skills/evolved")), "managed fixture already exists")
+	need(!exists(filepath.Join(s.root, "user-data/skills/smoke-recovery-evolved")), "managed fixture already exists")
 	document := s.waku.deerflow("snapshot")
 	need(bytes.Equal(before, []byte(read(s.config))), "bootstrap changed copied configuration")
-	need(exists(filepath.Join(s.root, "user-data/skills/evolved")) && exists(filepath.Join(s.root, "user-data/skills-exports")), "portable managed stores not initialized")
+	need(exists(filepath.Join(s.root, "user-data/skills/smoke-recovery-evolved")) && exists(filepath.Join(s.root, "user-data/skills-exports/smoke-recovery")), "portable managed stores not initialized")
 	need(exists(filepath.Join(s.root, "user-data/skills/public/bootstrap/SKILL.md")), "store provisioning lost initial bundled skills")
 	s.log("Copied configuration initializes missing portable Skills stores", obj{})
 
@@ -90,7 +90,7 @@ func (s *smoke) startupRecovery() obj {
 	must(os.Rename(backup, daemon))
 	must(os.Remove(marker))
 	s.log("Configuration saves during automatic startup and survives its failure", obj{})
-	object(document["skill_sources"])["managed"] = []any{obj{"id": "managed-evolution", "root": "../skills/evolved", "scope": "global", "workspace": ""}}
+	object(document["skill_sources"])["managed"] = []any{obj{"id": "managed-evolution", "root": "../skills/smoke-recovery-evolved", "scope": "global", "workspace": ""}}
 	document["skills_enabled"] = true
 	document = s.waku.deerflow("save", document)
 	s.log("Failed startup returns promptly and configuration can be repaired", obj{"elapsed_ms": time.Since(started).Milliseconds()})

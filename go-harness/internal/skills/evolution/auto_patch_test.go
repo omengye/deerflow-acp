@@ -35,7 +35,35 @@ func TestAutoPatchPublicationObservationAndRollback(t *testing.T) {
 	if err = f.service.ConfigureAutoPatch(options); err != nil {
 		t.Fatal(err)
 	}
+	status, err := f.service.AutoPatchStatus(ctx)
+	if err != nil || status.Readiness == nil || status.Readiness.State != "ready" || status.Readiness.EligibleTargets != 1 || !status.Readiness.NewSkillsRequireReview {
+		t.Fatalf("host readiness: %+v %v", status, err)
+	}
 	base := f.head(t)
+	unchanged := queueGeneration(t, f.fixture, "auto-patch-no-improvement")
+	generationRun(t, f.service)
+	unchangedJob, err := f.service.GetGeneration(ctx, unchanged.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.service.RunAutoPatch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	unimproved, err := f.service.Get(ctx, unchangedJob.ProposalID)
+	if err != nil || unimproved.Status != "pending_review" {
+		t.Fatal("passing variants mistaken for improvement", unimproved, err)
+	}
+	attention := true
+	pageBefore, err := f.service.QueryProposals(ctx, harness.SkillQuery{Limit: 1, Status: "pending_review", NeedsAttention: &attention})
+	if err != nil || len(pageBefore.Proposals) != 1 || pageBefore.Proposals[0].Disposition.Reason != "improvement_or_metadata_requires_review" {
+		t.Fatal(pageBefore, err)
+	}
+	if _, err = f.service.Reject(ctx, unimproved.ID, review(unimproved)); err != nil {
+		t.Fatal(err)
+	}
+	e.result = func(in harness.SkillBehaviorInput) (bool, error) {
+		return in.Variant != "base" || in.Case.Kind != "targeted", nil
+	}
 	job := queueGeneration(t, f.fixture, "auto-patch")
 	generationRun(t, f.service)
 	generated, err := f.service.GetGeneration(ctx, job.ID)
@@ -116,9 +144,8 @@ func TestAutoPatchPublicationObservationAndRollback(t *testing.T) {
 	}
 	configureGeneration(t, f.service, g)
 	configureBehavior(t, f.service, e, suite)
-	if err = f.service.ConfigureAutoPatch(options); err != nil {
-		t.Fatal(err)
-	}
+	// Disabling new automatic publication must not disable non-paid safety
+	// observation of an already adopted version.
 	if err = f.service.RunAutoPatch(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -138,6 +165,9 @@ func TestAutoPatchPublicationObservationAndRollback(t *testing.T) {
 		t.Fatalf("monitor history=%+v %v", page, err)
 	}
 	// Terminal observations remain immutable even after the observation window.
+	if err = f.service.ConfigureAutoPatch(options); err != nil {
+		t.Fatal(err)
+	}
 	f.service.autoPatch.now = func() time.Time { return time.Now().Add(73 * time.Hour) }
 	if err = f.service.RunAutoPatch(ctx); err != nil {
 		t.Fatal(err)

@@ -1,5 +1,8 @@
-# Eino Go harness configuration. Model keys are resolved from the environment.
-# Commands, OpenCLI, subagents and paid skill generation require explicit opt-in.
+# Ready-to-use desktop profile. Configure the model endpoint, ID and API key.
+# Local commands and subagents are enabled; this is not an isolated sandbox.
+# Skill maintenance uses the default model and the bounded budget below.
+# Trusted bundled assessments are initialized locally; no model calls at setup.
+# Search credentials, proxies and machine-specific paths are not bundled.
 config_version: eino-harness-v1
 
 local_acp:
@@ -14,22 +17,22 @@ local_acp:
   # Total output per request, including reasoning. Field selection is per route.
   max_output_tokens: 4096
   model_name: null
-  max_active_connections: 16
+  max_active_connections: 15
   max_active_runs: 2
   # No default task/queue wall-clock limit; individual calls remain bounded.
   queue_timeout_seconds: 0
   run_timeout_seconds: 0
   permission_mode: dangerous
-  memory_scope: workspace
-  enable_bash: false
+  memory_scope: global
+  enable_bash: true
   tool_allowlist: null
   tool_denylist: []
   accept_client_mcp_servers: false
   client_mcp_allowed_commands: []
-  # Desktop histories are retained until explicitly deleted.
-  session_cleanup_enabled: false
-  inactive_session_retention_days: 30
-  closed_session_retention_days: 30
+  # Clean inactive/closed backend sessions after five days.
+  session_cleanup_enabled: true
+  inactive_session_retention_days: 5
+  closed_session_retention_days: 5
   session_cleanup_interval_seconds: 3600
 
 models:
@@ -44,18 +47,19 @@ models:
 default_model: openai
 
 subagents:
-  enabled: false
+  enabled: true
   max_concurrent: 2
   # Native roles inherit parent limits; 0 adds no role time limit.
   timeout_seconds: 0
   max_turns: null
+  max_depth: 3
   agents: {}
   custom_agents: {}
 
 sandbox:
   provider: local
-  allow_host_bash: false
-  allow_host_tools: false
+  allow_host_bash: true
+  allow_host_tools: true
 
 # Host-owned connections are configured separately from client MCP permissions.
 # Empty by default. Recipes and credentials stay in this host file; restart to apply.
@@ -66,6 +70,11 @@ skills:
   enabled: true
   path: ../skills
   extensions_file: ./extensions_config.json
+  export_root: ../skills-exports
+  managed_sources:
+    - id: managed-evolution
+      root: ../skills/evolved
+      scope: global
 
 summarization:
   # Trigger automatically follows the selected model's configured context_window.
@@ -80,72 +89,73 @@ memory:
   retrieval_enabled: true
 
 skill_evolution:
-  # Manual candidates, optional operator generation, and user-approved publication.
+  # Automatic maintenance for covered existing managed skills; new skills need review.
   # Null/empty model names inherit default_model; named overrides are optional.
-  enabled: false
-  mode: review
+  enabled: true
+  mode: auto_patch
   allow_builtin_overlays: false
   moderation_model_name: null
   evaluation_model_name: null
   generation_model_name: null
   security_fail_closed: true
   validation:
-    # 0 uses the native defaults: 60 seconds, 131072 bytes, 1024 tokens.
-    timeout_seconds: 0
-    max_input_bytes: 0
-    max_output_tokens: 0
+    timeout_seconds: 60
+    max_input_bytes: 65536
+    max_output_tokens: 1024
   generation:
     # Explicit requests and enabled discovery workers share this generation gate.
-    enabled: false
-    # 0 uses 60 seconds, 131072 bytes, 8192 output tokens.
-    timeout_seconds: 0
-    max_input_bytes: 0
-    max_output_tokens: 0
+    enabled: true
+    timeout_seconds: 60
+    max_input_bytes: 65536
+    max_output_tokens: 4096
   learning:
     # Separate shadow extraction/consolidation/matching opt-ins. No publication.
     # generation.enabled is not required; a positive shared budget is required.
-    enabled: false
+    enabled: true
     extraction_model_name: null
-    consolidation_enabled: false
+    consolidation_enabled: true
     consolidation_model_name: null
     cross_session_enabled: false
-    matching_enabled: false
+    matching_enabled: true
     matching_model_name: null
     idle_seconds: 300
     timeout_seconds: 60
     max_input_bytes: 131072
     max_output_tokens: 4096
     # Sublimits inside budget below, not additional spending authority.
-    max_daily_model_calls: 10
-    max_daily_tokens: 50000
+    max_daily_model_calls: 50
+    max_daily_tokens: 1000000
     external_context_policy: hints_only
   # Explicit native opt-in; legacy discovery.enabled does not enable this.
   discovery:
-    operator_corrections_enabled: false
-    missing_reports_enabled: false
-    successful_workflows_enabled: false
-    experience_patterns_enabled: false
+    operator_corrections_enabled: true
+    missing_reports_enabled: true
+    successful_workflows_enabled: true
+    experience_patterns_enabled: true
     experience_new_skills_enabled: false
     # Automatically draft from one observed task; drafts always need human approval.
-    experience_review_drafts_enabled: false
+    experience_review_drafts_enabled: true
     # Set an authorized non-builtin source before enabling a new-skill trigger.
-    new_skill_source_id: ""
+    new_skill_source_id: managed-evolution
     repeat_threshold: 2
     repeat_window_days: 30
-    cooldown_hours: 24
-    max_daily_proposals: 5
-    max_pending_proposals: 20
+    cooldown_hours: 1
+    max_daily_proposals: 10
+    max_pending_proposals: 5
   # Used only when mode=auto_patch and generation/behavior are enabled.
   auto_patch:
-    experience_patterns_enabled: false
+    experience_patterns_enabled: true
     max_changed_lines: 40
     max_daily_publications: 2
     observation_hours: 72
     min_observations: 3
     rollback_failure_threshold: 2
   behavior:
-    enabled: false
-    suite_path: ""
+    # Provisioned by the configuration service, never by a candidate skill.
+    # This suite covers managed-evolution/searxng-web-search only; other targets
+    # remain review-only. A fresh profile does not install a personal search skill.
+    enabled: true
+    suite_path: ./skill-behavior/searxng-web-search.json
     timeout_seconds: 60
     max_steps: 6
     max_input_bytes: 131072
@@ -153,46 +163,32 @@ skill_evolution:
   budget:
     # Shared UTC-day maintenance quota for learning, generation and reviews.
     # All values must be positive; restart does not reset existing charges.
-    max_daily_model_calls: 30
-    max_daily_tokens: 100000
-    max_job_seconds: 300
-    workers: 1
+    max_daily_model_calls: 1000
+    max_daily_tokens: 6000000
+    max_job_seconds: 600
+    workers: 5
 
-# Groups are descriptive metadata; tool_allowlist/tool_denylist control access.
+# Native tool settings; tool_allowlist/tool_denylist control access.
 tools:
   - name: web_search
-    group: web
-    api_key: ${BRAVE_API_KEY:-}
     max_results: 5
   - name: web_fetch
-    group: web
     timeout: 10
   - name: image_search
-    group: web
     max_results: 5
   - name: ls
-    group: file:read
   - name: read_file
-    group: file:read
   - name: glob
-    group: file:read
     max_results: 200
   - name: grep
-    group: file:read
     max_results: 100
   - name: write_file
-    group: file:write
   - name: str_replace
-    group: file:write
   - name: move_path
-    group: file:write
   - name: delete_path
-    group: file:write
   # This tool also requires sandbox.allow_host_tools=true and an installed CLI.
   - name: host_opencli
-    group: host:opencli
     executable: opencli
     timeout: 120
     allowed_sites: [web, twitter, xiaohongshu, xiaoyuzhou, weixin, douyin, bilibili]
   - name: bash
-    group: bash

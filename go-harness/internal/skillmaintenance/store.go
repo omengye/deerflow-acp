@@ -339,7 +339,17 @@ func (s *Store) ClaimKinds(ctx context.Context, kinds []JobKind) (Claim, bool, e
 	}
 	// Cover the existing global pending cap, including experience-backed skill
 	// generation, so busy sources cannot hide ready work later in the queue.
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM df_skill_maintenance_jobs WHERE `+filter+` AND state IN ('queued','retry') AND retry_ns<=? AND attempts<? ORDER BY CASE WHEN owner_kind='skill' THEN 0 ELSE 1 END,rowid LIMIT 100`, append(append([]any{}, args...), now.UnixNano(), maxAttempts)...)
+	// Advance downstream work first, with every fifth claim serving FIFO so
+	// newly arriving verification cannot starve extraction indefinitely.
+	var claims int64
+	if err = tx.QueryRowContext(ctx, `SELECT claims FROM df_skill_maintenance_scheduler WHERE id=1`).Scan(&claims); err != nil {
+		return Claim{}, false, err
+	}
+	order := `CASE job_kind WHEN 'skill_behavior' THEN 0 WHEN 'skill_generation' THEN 1 WHEN 'skill_match' THEN 2 WHEN 'experience_consolidate' THEN 3 ELSE 4 END,rowid`
+	if claims%5 == 4 {
+		order = "rowid"
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM df_skill_maintenance_jobs WHERE `+filter+` AND state IN ('queued','retry') AND retry_ns<=? AND attempts<? ORDER BY `+order+` LIMIT 100`, append(append([]any{}, args...), now.UnixNano(), maxAttempts)...)
 	if err != nil {
 		return Claim{}, false, err
 	}
@@ -362,7 +372,7 @@ func (s *Store) ClaimKinds(ctx context.Context, kinds []JobKind) (Claim, bool, e
 			return Claim{}, false, err
 		}
 		if active >= candidate.Policy.Workers {
-			return Claim{}, false, tx.Commit()
+			continue
 		}
 		if s.ready != nil {
 			ready, err := s.ready(ctx, tx, candidate)
@@ -387,6 +397,9 @@ func (s *Store) ClaimKinds(ctx context.Context, kinds []JobKind) (Claim, bool, e
 	lease := min(now.Add(leaseDuration).UnixNano(), j.Deadline.UnixNano())
 	_, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET state='running',state_version=?,attempts=?,token=?,lease_ns=?,deadline_ns=?,retry_ns=0,error_code='' WHERE id=?`, j.StateVersion, j.Attempts, claim.token, lease, j.Deadline.UnixNano(), j.ID)
 	if err != nil {
+		return Claim{}, false, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_scheduler SET claims=(claims+1)%5 WHERE id=1`); err != nil {
 		return Claim{}, false, err
 	}
 	return claim, true, tx.Commit()

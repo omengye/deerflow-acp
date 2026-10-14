@@ -114,6 +114,7 @@ func mapError(err error) error {
 		return nil
 	}
 	var p *protocol.Error
+	var skillConflict *harness.SkillNameConflictError
 	if errors.As(err, &p) {
 		return err
 	}
@@ -150,6 +151,8 @@ func mapError(err error) error {
 		return rpcError(protocol.InvalidParams, "Session is not attached to this connection")
 	case errors.Is(err, harness.ErrNotFound):
 		return rpcError(protocol.InvalidParams, "Requested session or tool receipt was not found")
+	case errors.As(err, &skillConflict):
+		return &protocol.Error{Code: protocol.InvalidParams, Message: "存在重复启用的同名技能，暂时无法继续。请打开技能中心，对照技能名称和来源，仅保留需要的一份启用，再重新发送消息。无需删除聊天记录。", Data: map[string]any{"kind": "skill_name_conflict", "skillName": skillConflict.Name, "sources": []string{skillConflict.FirstSource, skillConflict.SecondSource}, "automaticReplay": false}}
 	case errors.Is(err, harness.ErrInvalidInput):
 		return rpcError(protocol.InvalidParams, "Invalid request parameters")
 	}

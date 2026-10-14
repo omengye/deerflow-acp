@@ -50,6 +50,12 @@ func (s *Service) autoPatchBatch(ctx context.Context, monitor bool) error {
 			p, err = s.Get(ctx, id)
 			if err == nil {
 				_, err = s.Approve(context.WithValue(ctx, autoPatchContextKey{}, true), id, Review{ExpectedStateVersion: p.StateVersion, Actor: "auto_patch", Note: "Automatically published a bounded patch after content and behavioral evaluation."})
+				var decision autoPatchDecisionError
+				if errors.As(err, &decision) {
+					combined = errors.Join(combined, s.saveAutoPatchDecision(ctx, p, decision.reason))
+				} else if errors.Is(err, harness.ErrSkillValidation) {
+					combined = errors.Join(combined, s.saveAutoPatchDecision(ctx, p, "validation_requires_review"))
+				}
 			}
 		}
 		if err != nil && !errors.Is(err, errAutoPatchReview) && !errors.Is(err, harness.ErrSkillConflict) && !errors.Is(err, harness.ErrPermissionDenied) && !errors.Is(err, harness.ErrNotFound) {
@@ -70,11 +76,8 @@ func (s *Service) autoPatchBatch(ctx context.Context, monitor bool) error {
 }
 
 func (s *Service) RunAutoPatch(ctx context.Context) error {
-	if s.autoPatch == nil {
-		return nil
-	}
 	err := s.autoPatchBatch(ctx, true)
-	if ctx.Err() == nil {
+	if ctx.Err() == nil && s.autoPatch != nil {
 		err = errors.Join(err, s.autoPatchBatch(ctx, false))
 	}
 	code := ""
@@ -86,23 +89,31 @@ func (s *Service) RunAutoPatch(ctx context.Context) error {
 }
 
 func (s *Service) StartAutoPatch() error {
-	a := s.autoPatch
-	if a == nil {
-		return nil
+	lifecycle := &s.observationMonitor
+	if s.autoPatch != nil {
+		lifecycle = &s.autoPatch.lifecycle
+	} else {
+		var observing bool
+		if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM df_skill_auto_patch_observations WHERE status='observing')`).Scan(&observing); err != nil {
+			return err
+		}
+		if !observing {
+			return nil
+		}
 	}
-	a.lifecycle.mu.Lock()
-	defer a.lifecycle.mu.Unlock()
-	if a.lifecycle.closed {
+	lifecycle.mu.Lock()
+	defer lifecycle.mu.Unlock()
+	if lifecycle.closed {
 		return invalid("auto_patch worker is closed")
 	}
-	if a.lifecycle.done != nil {
+	if lifecycle.done != nil {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	a.lifecycle.cancel = cancel
-	a.lifecycle.done = make(chan struct{})
+	lifecycle.cancel = cancel
+	lifecycle.done = make(chan struct{})
 	go func() {
-		defer close(a.lifecycle.done)
+		defer close(lifecycle.done)
 		warned := false
 		for {
 			step, stop := context.WithTimeout(ctx, 5*time.Second)
@@ -128,17 +139,17 @@ func (s *Service) StartAutoPatch() error {
 }
 
 func (s *Service) closeAutoPatch() {
-	a := s.autoPatch
-	if a == nil {
-		return
+	lifecycle := &s.observationMonitor
+	if s.autoPatch != nil {
+		lifecycle = &s.autoPatch.lifecycle
 	}
-	a.lifecycle.mu.Lock()
-	a.lifecycle.closed = true
-	if a.lifecycle.cancel != nil {
-		a.lifecycle.cancel()
+	lifecycle.mu.Lock()
+	lifecycle.closed = true
+	if lifecycle.cancel != nil {
+		lifecycle.cancel()
 	}
-	done := a.lifecycle.done
-	a.lifecycle.mu.Unlock()
+	done := lifecycle.done
+	lifecycle.mu.Unlock()
 	if done != nil {
 		<-done
 	}

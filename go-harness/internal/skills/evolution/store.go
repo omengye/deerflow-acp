@@ -27,6 +27,7 @@ type Service struct {
 	discovery            *discoveryHost
 	behavior             *behaviorHost
 	autoPatch            *autoPatchHost
+	observationMonitor   collectorLifecycle
 	experienceSource     *learning.Store
 	maintenanceProducers map[skillmaintenance.JobKind]maintenanceProducer
 }

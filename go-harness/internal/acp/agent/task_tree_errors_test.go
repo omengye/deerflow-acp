@@ -26,3 +26,18 @@ func TestTaskTreeStopErrorPreservesReconciliation(t *testing.T) {
 		}
 	}
 }
+
+func TestSkillNameConflictHasActionableRecovery(t *testing.T) {
+	conflict := &harness.SkillNameConflictError{Name: "sample", FirstSource: "custom", SecondSource: "managed"}
+	var rpc *protocol.Error
+	if !errors.As(mapError(conflict), &rpc) || rpc.Message == "Invalid request parameters" {
+		t.Fatal("skill conflict lost recovery guidance", rpc)
+	}
+	data := rpc.Data.(map[string]any)
+	if data["kind"] != "skill_name_conflict" || data["skillName"] != "sample" || data["automaticReplay"] != false {
+		t.Fatal(data)
+	}
+	if !errors.As(mapError(errors.Join(conflict, harness.ErrReconciliationRequired)), &rpc) || rpc.Code != -32010 {
+		t.Fatal("skill guidance must not hide uncertain effects", rpc)
+	}
+}

@@ -1,0 +1,121 @@
+{
+  "id": "searxng-results-contract-v1",
+  "source_id": "managed-evolution",
+  "cases": [
+    {
+      "kind": "targeted",
+      "assertions": [
+        {
+          "kind": "file_equals",
+          "id": "distinct-ranked-sources",
+          "path": "results.tsv",
+          "expected": "Aurora 2.4 release notes\thttps://project.example/releases/2.4\tAurora 2.4 was released on 2026-09-18.\nAurora support notice\thttps://support.example/aurora-2.4\tAurora 2.4 support starts on 2026-09-19."
+        },
+        {
+          "kind": "tool_calls",
+          "id": "one-search",
+          "tool": "searxng_search",
+          "count": 1
+        },
+        {
+          "kind": "output_equals",
+          "id": "answer",
+          "expected": "done"
+        }
+      ],
+      "repetitions": 1,
+      "files": {},
+      "fixtures": [
+        {
+          "parameters": {
+            "q": {
+              "type": "string",
+              "required": true,
+              "description": "Exact search query"
+            },
+            "format": {
+              "type": "string",
+              "required": true,
+              "description": "Response format: json"
+            }
+          },
+          "name": "searxng_search",
+          "exchanges": [
+            {
+              "output": "{\"results\":[{\"title\":\"Aurora preview\",\"content\":\"Preview; release date not confirmed.\",\"score\":0.2,\"engines\":[\"engine-a\"],\"url\":\"https://project.example/releases/2.4\"},{\"title\":\"Aurora 2.4 release notes\",\"content\":\"Aurora 2.4 was released on 2026-09-18.\",\"score\":0.9,\"engines\":[\"engine-a\",\"engine-b\"],\"url\":\"https://project.example/releases/2.4\"},{\"title\":\"Aurora support notice\",\"content\":\"Aurora 2.4 support starts on 2026-09-19.\",\"score\":0.6,\"engines\":[\"engine-b\"],\"url\":\"https://support.example/aurora-2.4\"}],\"number_of_results\":3,\"query\":\"Aurora 2.4 release date\"}",
+              "arguments": {
+                "q": "Aurora 2.4 release date",
+                "format": "json"
+              }
+            }
+          ],
+          "description": "Search the configured SearXNG instance; the host injects authentication headers. Returns original JSON results. This fixture does not make network requests."
+        }
+      ],
+      "prompt": "Search for the exact query Aurora 2.4 release date using searxng_search with JSON format. Write results.tsv containing the two best distinct result URLs, highest score first. Each row must contain source title, URL and content separated by tabs. Preserve source text exactly; for duplicate URLs keep the highest-scored result. Do not include a header or trailing newline. Then reply done. Authentication is supplied by the adapter internally.",
+      "id": "rank-and-deduplicate"
+    },
+    {
+      "kind": "regression",
+      "assertions": [
+        {
+          "kind": "file_equals",
+          "id": "no-invented-date",
+          "path": "answer.txt",
+          "expected": "NO_VERIFIED_RESULT"
+        },
+        {
+          "kind": "tool_calls",
+          "id": "bounded-retry",
+          "tool": "searxng_search",
+          "count": 2
+        },
+        {
+          "kind": "output_equals",
+          "id": "answer",
+          "expected": "done"
+        }
+      ],
+      "repetitions": 1,
+      "files": {},
+      "fixtures": [
+        {
+          "parameters": {
+            "q": {
+              "type": "string",
+              "required": true,
+              "description": "Exact search query"
+            },
+            "format": {
+              "type": "string",
+              "required": true,
+              "description": "Response format: json"
+            }
+          },
+          "name": "searxng_search",
+          "exchanges": [
+            {
+              "output": "{\"query\":\"Nebula Q9 release date\",\"results\":[],\"suggestions\":[\"Nebula Q9\"],\"number_of_results\":0}",
+              "arguments": {
+                "q": "Nebula Q9 release date",
+                "format": "json"
+              }
+            },
+            {
+              "output": "{\"query\":\"Nebula Q9\",\"results\":[],\"suggestions\":[],\"number_of_results\":0}",
+              "arguments": {
+                "q": "Nebula Q9",
+                "format": "json"
+              }
+            }
+          ],
+          "description": "Search the configured SearXNG instance; authentication is injected internally. Returns original JSON search responses. This fixture does not make network requests."
+        }
+      ],
+      "prompt": "Find the confirmed release date for the exact query Nebula Q9 release date using searxng_search with JSON format. If no results are returned, retry once using the first suggested query with JSON format. Write answer.txt: use the verified date if supported by a result; otherwise write exactly NO_VERIFIED_RESULT. Do not add a newline. Then reply done. Authentication is supplied by the adapter internally.",
+      "id": "empty-results-no-fabrication"
+    }
+  ],
+  "name": "searxng-web-search",
+  "version": "skill-behavior-v1"
+}

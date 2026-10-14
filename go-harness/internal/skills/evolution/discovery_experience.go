@@ -110,8 +110,11 @@ func (s *Service) considerExperience(ctx context.Context, id string) error {
 		if observation.Head != nil && (head != *observation.Head || !skills.SameOverlayBase(overlay, observation.OverlayBase)) {
 			return harness.ErrSkillConflict
 		}
-		eligible, err := s.discoveryCapacityTx(ctx, tx, target, now)
-		if err != nil || !eligible {
+		var capacity bool
+		// Keep cheap daily/cooldown exclusions before rebuilding source trees.
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT reservations FROM df_skill_discovery_days WHERE day=?),0)<?
+ AND COALESCE((SELECT until_ns FROM df_skill_discovery_cooldowns WHERE source_key=? AND name=?),0)<=?`,
+			now.Format("2006-01-02"), o.MaxDailyProposals, target.SourceIdentity, target.Name, now.UnixNano()).Scan(&capacity); err != nil || !capacity {
 			return err
 		}
 		// A hint may only exclude work. Avoid rebuilding a whole historical
@@ -170,6 +173,23 @@ func (s *Service) considerExperience(ctx context.Context, id string) error {
 		if len(refs) == 0 || len(refs) < o.RepeatThreshold && !o.ExperienceReviewDraftsEnabled {
 			return nil
 		}
+		// Replacement and admission share one transaction. If capacity is still
+		// unavailable, leave the old draft exactly as it was, including its CAS.
+		if _, err = tx.ExecContext(ctx, `SAVEPOINT draft_successor`); err != nil {
+			return err
+		}
+		previous, err := s.supersedeReviewDraftTx(ctx, tx, target, head, p, refs, now)
+		if err != nil {
+			return err
+		}
+		eligible, err := s.discoveryCapacityTx(ctx, tx, target, now)
+		if err != nil {
+			return err
+		}
+		if !eligible {
+			_, err = tx.ExecContext(ctx, `ROLLBACK TO draft_successor; RELEASE draft_successor`)
+			return err
+		}
 		d := discoverySnapshot{Kind: "experience_pattern", ID: "sd_" + rand.Text(), Target: target, Base: head, OverlayBase: overlay, Options: o, CreatedAt: now, Evidence: refs, EpisodeDedup: true, HostAdjudicated: p.Manual, ReviewDraft: len(refs) < o.RepeatThreshold}
 		payload, err := json.Marshal(d)
 		if err != nil || len(payload) > 32<<10 {
@@ -198,6 +218,11 @@ func (s *Service) considerExperience(ctx context.Context, id string) error {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO df_skill_discoveries(id,source_key,name,job_id,payload,payload_sha,created_ns) VALUES(?,?,?,?,?,?,?)`, d.ID, target.SourceIdentity, target.Name, r.job.ID, payload, hash(payload), now.UnixNano()); err != nil {
 			return err
 		}
+		if previous != "" {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO df_skill_discovery_successors(previous_proposal_id,discovery_id) VALUES(?,?)`, previous, d.ID); err != nil {
+				return err
+			}
+		}
 		if err = s.experienceSource.BindPromotionTx(ctx, tx, r.job.ID, id, refs[0].Experience.PatternID); err != nil {
 			return err
 		}
@@ -211,6 +236,47 @@ func (s *Service) considerExperience(ctx context.Context, id string) error {
 		}
 		return reserveDiscoveryCapacityTx(ctx, tx, d)
 	})
+}
+
+func (s *Service) supersedeReviewDraftTx(ctx context.Context, tx *sql.Tx, target harness.SkillTarget, head harness.SkillHead, promotion learning.Promotion, refs []harness.SkillDiscoveryEvidence, now time.Time) (string, error) {
+	if promotion.Manual || promotion.Relation == "new_capability" || len(refs) < s.discovery.options.RepeatThreshold {
+		return "", nil
+	}
+	var id, discoveryID, jobID string
+	err := tx.QueryRowContext(ctx, `SELECT p.id,d.id,g.job_id FROM df_skill_proposals p
+ JOIN df_skill_generation_inputs g ON g.proposal_id=p.id JOIN df_skill_discoveries d ON d.job_id=g.job_id
+ WHERE p.source_key=? AND p.name=? AND p.status='pending_review'
+ AND json_extract(CAST(d.payload AS TEXT),'$.review_draft')=1 ORDER BY p.id LIMIT 1`, target.SourceIdentity, target.Name).Scan(&id, &discoveryID, &jobID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	d, boundJob, sha, err := readDiscovery(ctx, tx, discoveryID)
+	if err != nil {
+		return "", err
+	}
+	r, err := readGeneration(ctx, tx, jobID)
+	if err != nil {
+		return "", err
+	}
+	old, err := readProposal(ctx, tx, id)
+	if err != nil {
+		return "", err
+	}
+	if d.kind() != "experience_pattern" || !d.ReviewDraft || d.HostAdjudicated || !d.Base.Exists || d.Base != head || d.Target != target || len(d.Evidence) == 0 || d.Evidence[0].Experience == nil || refs[0].Experience == nil ||
+		d.Evidence[0].Experience.PatternID != refs[0].Experience.PatternID || d.Evidence[0].Experience.PatternRevision >= refs[0].Experience.PatternRevision ||
+		boundJob != jobID || r.job.State != "completed" || r.input.DiscoveryDigest != sha || r.input.DiscoveryID != discoveryID || r.proposal != id || r.candidate != old.CandidateVersion || old.Base != head || old.Target != target {
+		return "", nil
+	}
+	previous := old.StateVersion
+	old.Status, old.StateVersion, old.UpdatedAt = "stale", old.StateVersion+1, now
+	old.Error = "Superseded by a fresh-evidence successor; original evidence and charges remain consumed."
+	if err = updateProposal(ctx, tx, old, previous); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func experiencePromotionTx(ctx context.Context, tx *sql.Tx, source *learning.Store, id string, options harness.SkillDiscoveryOptions, from, until time.Time) (learning.Promotion, error) {

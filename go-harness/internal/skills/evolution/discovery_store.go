@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS df_skill_discoveries(
  id TEXT PRIMARY KEY,source_key TEXT NOT NULL,name TEXT NOT NULL,job_id TEXT NOT NULL UNIQUE REFERENCES df_skill_maintenance_jobs(id),
  payload BLOB NOT NULL,payload_sha TEXT NOT NULL,created_ns INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS df_skill_discoveries_source ON df_skill_discoveries(source_key,name,id);
+CREATE TABLE IF NOT EXISTS df_skill_discovery_successors(
+ previous_proposal_id TEXT PRIMARY KEY REFERENCES df_skill_proposals(id),
+ discovery_id TEXT NOT NULL UNIQUE REFERENCES df_skill_discoveries(id));
 CREATE TABLE IF NOT EXISTS df_skill_discovery_consumed(root_digest TEXT PRIMARY KEY,discovery_id TEXT NOT NULL REFERENCES df_skill_discoveries(id));
 CREATE TABLE IF NOT EXISTS df_skill_discovery_episode_consumed(digest TEXT PRIMARY KEY,discovery_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS df_skill_discovery_episode_roots(root_id TEXT PRIMARY KEY,episode_key TEXT NOT NULL);

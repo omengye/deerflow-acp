@@ -3,7 +3,9 @@ package eino
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"net"
+	"os"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
@@ -19,7 +21,7 @@ func toolFailureCode(err error) string {
 	if errors.Is(err, context.Canceled) {
 		return "cancelled"
 	}
-	if errors.Is(err, harness.ErrPermissionDenied) {
+	if errors.Is(err, harness.ErrPermissionDenied) || errors.Is(err, fs.ErrPermission) {
 		return "permission"
 	}
 	var quota *budget.LimitError
@@ -32,6 +34,13 @@ func toolFailureCode(err error) string {
 		case "network", "permission", "quota", "rate_limit", "remote":
 			return classified.Code
 		}
+	}
+	// PathError and LinkError implement net.Error too; that interface alone
+	// does not establish a network failure for filesystem operations.
+	var pathError *fs.PathError
+	var linkError *os.LinkError
+	if errors.As(err, &pathError) || errors.As(err, &linkError) {
+		return "unknown"
 	}
 	var network net.Error
 	if errors.As(err, &network) {

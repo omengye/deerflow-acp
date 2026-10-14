@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -16,12 +17,21 @@ import (
 
 type autoPatchHost struct {
 	options   harness.SkillAutoPatchOptions
+	builtin   []string
 	lifecycle collectorLifecycle
 	now       func() time.Time
 }
 type autoPatchContextKey struct{}
 
 var errAutoPatchReview = errors.New("candidate requires operator review")
+
+type autoPatchDecisionError struct{ reason string }
+
+func (e autoPatchDecisionError) Error() string {
+	return fmt.Sprintf("%s: %s", errAutoPatchReview, e.reason)
+}
+func (e autoPatchDecisionError) Unwrap() error { return errAutoPatchReview }
+func autoPatchDecision(reason string) error    { return autoPatchDecisionError{reason: reason} }
 
 func validAutoPatchOptions(o harness.SkillAutoPatchOptions) bool {
 	return o.MaxChangedLines >= 1 && o.MaxChangedLines <= 200 && o.MaxDailyPublications >= 1 && o.MaxDailyPublications <= 20 && o.ObservationHours >= 1 && o.ObservationHours <= 720 && o.MinObservations >= 1 && o.MinObservations <= 100 && o.RollbackFailureThreshold >= 1 && o.RollbackFailureThreshold <= 100
@@ -38,6 +48,11 @@ INSERT OR IGNORE INTO df_skill_auto_patch_scan VALUES(1,'','','');`)
 	if err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS df_skill_auto_patch_decisions(
+ proposal_id TEXT PRIMARY KEY REFERENCES df_skill_proposals(id),state_version INTEGER NOT NULL,
+ policy_identity TEXT NOT NULL,reason TEXT NOT NULL);`); err != nil {
+		return err
+	}
 	return migrateAutoPatchEvidence(ctx, tx)
 }
 
@@ -48,7 +63,11 @@ func (s *Service) ConfigureAutoPatch(options harness.SkillAutoPatchOptions) erro
 	if options.ExperiencePatternsEnabled && (s.experienceSource == nil || !s.experienceSource.PromotionEnabled() || s.discovery == nil || !s.discovery.options.ExperiencePatternsEnabled) {
 		return invalid("learning auto_patch requires enabled experience discovery and host learning authority")
 	}
-	s.autoPatch = &autoPatchHost{options: options, now: time.Now}
+	builtin, err := s.registry.BuiltinSources()
+	if err != nil {
+		return err
+	}
+	s.autoPatch = &autoPatchHost{options: options, builtin: builtin, now: time.Now}
 	return nil
 }
 
@@ -101,23 +120,28 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 	}
 	learningCandidate := p.Trigger.Type == "experience_pattern"
 	a := s.autoPatch
+	if a != nil && slices.Contains(a.builtin, p.Target.SourceID) {
+		return autoPatchDecision("scope_or_coverage_requires_review")
+	}
 	if learningCandidate && (a == nil || !a.options.ExperiencePatternsEnabled || s.discovery == nil || !s.discovery.options.ExperiencePatternsEnabled) {
-		return errAutoPatchReview
+		return autoPatchDecision("learning_authorization_required")
 	}
 	if a == nil || !p.Base.Exists || !p.Base.Enabled || !p.Base.Managed || p.OverlayBase != nil || p.Origin != "automatic" || p.Action != "edit" && p.Action != "patch" || !slices.Equal(p.ChangedFiles, []string{"SKILL.md"}) || p.Evaluation.Security != "passed" || p.Evaluation.Behavior != "passed" || p.Evaluation.BehaviorReport == nil || p.Evaluation.BehaviorReport.Regressions != 0 || p.Evaluation.BehaviorReport.TargetedCases < 1 || p.Evaluation.BehaviorReport.RegressionCases < 1 {
-		return errAutoPatchReview
+		return autoPatchDecision("scope_or_coverage_requires_review")
 	}
-	if learningCandidate && !learningAutoPatchContentAllowed(input.BaseFiles["SKILL.md"], input.CandidateFiles["SKILL.md"], *p.Evaluation.BehaviorReport) {
-		return errAutoPatchReview
+	// All automatic origins need actual improvement, not merely two passing
+	// variants. Metadata rewrites use the same stricter trigger comparison.
+	if !learningAutoPatchContentAllowed(input.BaseFiles["SKILL.md"], input.CandidateFiles["SKILL.md"], *p.Evaluation.BehaviorReport) {
+		return autoPatchDecision("improvement_or_metadata_requires_review")
 	}
 	changed := changedTextLines(input.BaseFiles["SKILL.md"], input.CandidateFiles["SKILL.md"], a.options.MaxChangedLines)
 	if changed < 1 || changed > a.options.MaxChangedLines {
-		return errAutoPatchReview
+		return autoPatchDecision("change_size_requires_review")
 	}
 	var jobID string
 	if err := tx.SQL().QueryRowContext(ctx, `SELECT job_id FROM df_skill_generation_inputs WHERE proposal_id=?`, p.ID).Scan(&jobID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return errAutoPatchReview
+			return autoPatchDecision("generation_binding_requires_review")
 		}
 		return err
 	}
@@ -126,13 +150,13 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 		return err
 	}
 	if r.job.State != "completed" || r.proposal != p.ID || r.candidate != p.CandidateVersion || r.input.Target != p.Target || r.input.Request.Base != p.Base {
-		return errAutoPatchReview
+		return autoPatchDecision("generation_binding_requires_review")
 	}
 	if err = s.generation.checkSource(r); err != nil {
-		return err
+		return autoPatchDecision("source_authorization_required")
 	}
 	if err = s.generation.checkConfiguration(r); err != nil {
-		return errAutoPatchReview
+		return autoPatchDecision("configuration_requires_review")
 	}
 	if r.input.DiscoveryID != "" {
 		d, _, _, err := readDiscovery(ctx, tx.SQL(), r.input.DiscoveryID)
@@ -141,17 +165,20 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 		}
 		if (d.kind() == "experience_pattern") != learningCandidate || learningCandidate && (d.Options != s.discovery.options ||
 			d.HostAdjudicated || d.ReviewDraft || len(d.Evidence) < d.Options.RepeatThreshold || d.Evidence[0].Experience == nil || strings.HasPrefix(d.Evidence[0].Experience.MatchID, "ladj_")) {
-			return errAutoPatchReview
+			if d.ReviewDraft {
+				return autoPatchDecision("waiting_evidence")
+			}
+			return autoPatchDecision("evidence_requires_review")
 		}
 	} else if learningCandidate {
-		return errAutoPatchReview
+		return autoPatchDecision("evidence_requires_review")
 	}
 	var count int
 	if err = tx.SQL().QueryRowContext(ctx, `SELECT count(*) FROM df_skill_auto_patch_observations WHERE source_key=? AND name=? AND status='observing'`, p.Target.SourceIdentity, p.Target.Name).Scan(&count); err != nil {
 		return err
 	}
 	if count > 0 {
-		return errAutoPatchReview
+		return autoPatchDecision("waiting_observation")
 	}
 	now := a.now().UTC()
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
@@ -159,7 +186,7 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 		return err
 	}
 	if count >= a.options.MaxDailyPublications {
-		return errAutoPatchReview
+		return autoPatchDecision("waiting_quota")
 	}
 	return nil
 }

@@ -96,10 +96,15 @@ func (r *Registry) Snapshot(ctx context.Context, selection harness.SkillSelectio
 			e := snapshotEntry{ref: harness.SkillRef{SourceID: s.config.ID, SourceIdentity: s.identity, Name: name, Version: version, Hash: version}, meta: fm, files: files, scope: s.config.Scope, enabled: enabled != 0}
 			if previous, ok := chosen[name]; ok {
 				if previous.scope == e.scope {
-					err = invalid("duplicate skill names in the same selected scope")
-					break
+					if previous.enabled && e.enabled {
+						err = &harness.SkillNameConflictError{Name: name, FirstSource: previous.ref.SourceID, SecondSource: e.ref.SourceID}
+						break
+					}
+					if previous.enabled || !e.enabled {
+						continue
+					}
 				}
-				if previous.scope == harness.SkillScopeWorkspace {
+				if previous.scope != e.scope && previous.scope == harness.SkillScopeWorkspace {
 					continue
 				}
 			}

@@ -184,6 +184,9 @@ func TestSkillEvolutionManagementInvalidFieldsAndRejection(t *testing.T) {
 		{"operation": "proposal.approve", "proposal_id": p.ID, "expected_base_sha256": "bad"},
 		{"operation": "proposal.list", "limit": 1.5},
 		{"operation": "proposal.list", "status": "anything"},
+		{"operation": "proposal.list", "status": "pending_review", "needs_attention": "true"},
+		{"operation": "proposal.list", "status": "pending_review", "needs_attention": nil},
+		{"operation": "proposal.list", "needs_attention": true},
 		{"operation": "proposal.rollback", "name": "research", "version": true},
 		{"operation": "proposal.rollback", "source_id": "project", "name": "research", "version": 1, "expected_head": nil},
 	} {
@@ -191,6 +194,12 @@ func TestSkillEvolutionManagementInvalidFieldsAndRejection(t *testing.T) {
 		var known *localhost.ManagementError
 		if !errors.As(err, &known) || known.Code != "invalid_request" {
 			t.Fatalf("request %+v: %v", fields, err)
+		}
+	}
+	for _, attention := range []bool{true, false} {
+		result, err := skillManagementCall(t, c, map[string]any{"operation": "proposal.list", "status": "pending_review", "needs_attention": attention, "limit": 1})
+		if err != nil {
+			t.Fatal("attention projection route", result, err)
 		}
 	}
 	for range 2 {

@@ -111,7 +111,11 @@ func (s *Service) QueryDiscoveries(ctx context.Context, q harness.SkillQuery) (h
 		if r.input.DiscoveryID != id || r.input.DiscoveryDigest != digest || r.input.Target != d.Target || r.input.Request.Base != d.Base {
 			return page, invalid("discovery generation binding is inconsistent")
 		}
-		page.Discoveries = append(page.Discoveries, harness.SkillDiscovery{ID: id, Target: d.Target, Base: d.Base, GenerationID: job, CreatedAt: d.CreatedAt, Attribution: "unassessed", Kind: d.kind(), Evidence: d.Evidence, State: r.job.State, ProposalID: r.proposal, HostAdjudicated: d.HostAdjudicated, ReviewDraft: d.ReviewDraft, CreationRetry: d.CreationRetry})
+		var previous string
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT previous_proposal_id FROM df_skill_discovery_successors WHERE discovery_id=?),'')`, id).Scan(&previous); err != nil {
+			return page, err
+		}
+		page.Discoveries = append(page.Discoveries, harness.SkillDiscovery{ID: id, Target: d.Target, Base: d.Base, GenerationID: job, CreatedAt: d.CreatedAt, Attribution: "unassessed", Kind: d.kind(), Evidence: d.Evidence, State: r.job.State, ProposalID: r.proposal, HostAdjudicated: d.HostAdjudicated, ReviewDraft: d.ReviewDraft, CreationRetry: d.CreationRetry, PreviousProposalID: previous})
 		cursor.Key = id
 	}
 	return page, tx.Commit()

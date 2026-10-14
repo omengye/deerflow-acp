@@ -204,6 +204,16 @@ func (s *smoke) configure() obj {
 	}
 	object(document["memory"])["enabled"] = true
 	object(document["skill_evolution"])["enabled"] = false
+	// The package may opt in to learning/discovery. The isolated smoke must
+	// disable their dependent gates too, without changing the user's config.
+	for _, section := range []string{"learning", "generation", "discovery", "behavior", "auto_patch"} {
+		settings := object(object(document["skill_evolution"])[section])
+		for key := range settings {
+			if key == "enabled" || strings.HasSuffix(key, "_enabled") {
+				settings[key] = false
+			}
+		}
+	}
 	document["skills_enabled"] = true
 	object(document["subagents"])["enabled"] = false
 	need(w.deerflow("validate", document)["valid"] == true, "no-key validation failed")

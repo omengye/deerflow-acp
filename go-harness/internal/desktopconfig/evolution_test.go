@@ -57,7 +57,7 @@ func TestReviewConfigValidateSaveAndReload(t *testing.T) {
 }
 
 func TestReviewConfigRejectsIneffectiveSettingsWithoutWriting(t *testing.T) {
-	for _, mode := range []string{"unknown-model", "automatic", "discovery", "fail-open", "skills-disabled", "missing-custom", "file-custom", "missing-builtin"} {
+	for _, mode := range []string{"unknown-model", "automatic", "discovery", "fail-open", "skills-disabled", "missing-external-custom", "file-custom", "missing-builtin"} {
 		t.Run(mode, func(t *testing.T) {
 			options, doc := reviewDocument(t)
 			review := readObject(doc, "skill_evolution")
@@ -74,15 +74,17 @@ func TestReviewConfigRejectsIneffectiveSettingsWithoutWriting(t *testing.T) {
 				doc["skills_enabled"] = false
 			case "missing-builtin":
 				review["allow_builtin_overlays"] = true
-			case "missing-custom", "file-custom":
+			case "missing-external-custom":
+				// Portable custom stores are repaired automatically; external
+				// import roots still require an explicitly prepared directory.
+				readObject(doc, "skill_sources")["import_path"] = t.TempDir()
+			case "file-custom":
 				path := filepath.Join(str(readObject(doc, "paths"), "skills", ""), "custom")
 				if err := os.Remove(path); err != nil {
 					t.Fatal(err)
 				}
-				if mode == "file-custom" {
-					if err := os.WriteFile(path, []byte("not a directory"), 0600); err != nil {
-						t.Fatal(err)
-					}
+				if err := os.WriteFile(path, []byte("not a directory"), 0600); err != nil {
+					t.Fatal(err)
 				}
 			}
 			before, err := os.ReadFile(options.Config)

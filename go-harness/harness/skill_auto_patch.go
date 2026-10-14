@@ -17,13 +17,29 @@ type SkillAutoPatchOptions struct {
 }
 
 type SkillAutoPatchStatus struct {
-	Enabled        bool                   `json:"enabled"`
-	Running        bool                   `json:"running"`
-	Options        *SkillAutoPatchOptions `json:"options,omitempty"`
-	Today          string                 `json:"today"`
-	PublishedToday int64                  `json:"published_today"`
-	Observing      int64                  `json:"observing"`
-	LastErrorCode  string                 `json:"last_error_code,omitempty"`
+	Enabled        bool                     `json:"enabled"`
+	Running        bool                     `json:"running"`
+	Options        *SkillAutoPatchOptions   `json:"options,omitempty"`
+	Today          string                   `json:"today"`
+	PublishedToday int64                    `json:"published_today"`
+	Observing      int64                    `json:"observing"`
+	LastErrorCode  string                   `json:"last_error_code,omitempty"`
+	Readiness      *SkillAutoPatchReadiness `json:"readiness,omitempty"`
+}
+
+// Readiness is a host observation, never a grant to publish a candidate.
+type SkillAutoPatchReadiness struct {
+	State                  string   `json:"state"`
+	CatalogVersion         int64    `json:"catalog_version"`
+	PolicyIdentity         string   `json:"policy_identity"`
+	Installed              int64    `json:"installed"`
+	EligibleTargets        int64    `json:"eligible_targets"`
+	MissingSuite           int64    `json:"missing_suite"`
+	PendingReview          int64    `json:"pending_review"`
+	NeedsAttention         int64    `json:"needs_attention"`
+	WaitingCandidates      int64    `json:"waiting_candidates"`
+	NewSkillsRequireReview bool     `json:"new_skills_require_review"`
+	Reasons                []string `json:"reasons"`
 }
 
 // Counts are independent root/version assessments during the observation

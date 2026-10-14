@@ -172,10 +172,15 @@ func (a *MatchAccess) InventoryTx(ctx context.Context, tx *sql.Tx, workspace str
 			e := MatchSkill{Target: target, Head: harness.SkillHead{Version: version, Enabled: enabled}, Description: fm.Description, Builtin: s.builtin}
 			if prior, ok := chosen[name]; ok {
 				if prior.Target.Scope == e.Target.Scope {
-					err = invalid("duplicate skill names in the same matching scope")
-					break
+					if prior.Head.Enabled && e.Head.Enabled {
+						err = &harness.SkillNameConflictError{Name: name, FirstSource: prior.Target.SourceID, SecondSource: e.Target.SourceID}
+						break
+					}
+					if prior.Head.Enabled || !e.Head.Enabled {
+						continue
+					}
 				}
-				if prior.Target.Scope == harness.SkillScopeWorkspace {
+				if prior.Target.Scope != e.Target.Scope && prior.Target.Scope == harness.SkillScopeWorkspace {
 					continue
 				}
 			}

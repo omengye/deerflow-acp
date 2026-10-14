@@ -95,6 +95,11 @@ func (s *service) init() error {
 			return err
 		}
 	}
+	locker, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer locker.Unlock()
 	if _, err := os.Stat(s.config); errors.Is(err, os.ErrNotExist) {
 		data, err := readYAML(filepath.Join(s.resources, "default-config.yaml"))
 		if err != nil {
@@ -103,6 +108,9 @@ func (s *service) init() error {
 		skills := object(data, "skills")
 		skills["path"] = "../skills"
 		skills["extensions_file"] = "./extensions_config.json"
+		if err := s.initializeDefaultBehaviorSuite(data); err != nil {
+			return err
+		}
 		if err := writeYAMLAtomic(s.config, data); err != nil {
 			return err
 		}
@@ -111,6 +119,9 @@ func (s *service) init() error {
 	}
 	data, err := readYAML(s.config)
 	if err != nil {
+		return err
+	}
+	if err := s.initializeDefaultBehaviorSuite(data); err != nil {
 		return err
 	}
 	paths := s.paths(data)

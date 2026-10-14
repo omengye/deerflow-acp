@@ -41,6 +41,19 @@ Waku's “任务与工具核对” panel queries and reviews receipts on the own
 connection. Review requires a reviewer, actual verification notes and explicit
 `completed`/`no_effect` choice, followed by confirmation. It never replays a call.
 
+The desktop shows a direct “确认工具结果” button above the DeerFlow conversation
+only when that session is known to need receipt review. It is hidden for normal
+sessions and after a fresh first-page query confirms no uncertain receipts remain.
+The management panel retains its manual receipt browser. The direct button
+opens a dedicated recovery panel and queries uncertain receipts
+without sending a prompt. Recovery errors are shown as plain-language guidance
+instead of a JSON-RPC dump. The panel explains common failures and what to check;
+technical evidence remains available for inspection and copying. A permission
+error is not proof of no effect. Users can keep the session paused when the
+outcome is unknown or only partial. After a confirmed review the panel refreshes
+the first uncertain page; only an empty first page clears its recovery warning.
+It never automatically resends the blocked message or changes filesystem permissions.
+
 This private query returns harness receipt records, not standard ACP content
 blocks. Results from `view_image` or `present_files` may contain a stable
 `deerflow-asset:` URI and internal `asset` metadata (session, digest and size)

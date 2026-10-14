@@ -17,6 +17,10 @@ func (s *Service) AutoPatchStatus(ctx context.Context) (harness.SkillAutoPatchSt
 		a.lifecycle.mu.Lock()
 		r.Running = a.lifecycle.done != nil && !a.lifecycle.closed
 		a.lifecycle.mu.Unlock()
+	} else {
+		s.observationMonitor.mu.Lock()
+		r.Running = s.observationMonitor.done != nil && !s.observationMonitor.closed
+		s.observationMonitor.mu.Unlock()
 	}
 	_, where, args, _, err := s.querySources(harness.SkillQuery{Limit: 1}, "auto-patch-status")
 	if err != nil {
@@ -32,6 +36,9 @@ func (s *Service) AutoPatchStatus(ctx context.Context) (harness.SkillAutoPatchSt
 		return r, err
 	}
 	err = s.db.QueryRowContext(ctx, `SELECT last_error_code FROM df_skill_auto_patch_scan WHERE id=1`).Scan(&r.LastErrorCode)
+	if err == nil {
+		r.Readiness, err = s.autoPatchReadiness(ctx)
+	}
 	return r, err
 }
 

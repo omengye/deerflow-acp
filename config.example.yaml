@@ -161,41 +161,28 @@ skill_evolution:
     max_job_seconds: 300
     workers: 1
 
-# Groups are descriptive metadata; tool_allowlist/tool_denylist control access.
+# Native tool settings; tool_allowlist/tool_denylist control access.
 tools:
   - name: web_search
-    group: web
     api_key: ${BRAVE_API_KEY:-}
     max_results: 5
   - name: web_fetch
-    group: web
     timeout: 10
   - name: image_search
-    group: web
     max_results: 5
   - name: ls
-    group: file:read
   - name: read_file
-    group: file:read
   - name: glob
-    group: file:read
     max_results: 200
   - name: grep
-    group: file:read
     max_results: 100
   - name: write_file
-    group: file:write
   - name: str_replace
-    group: file:write
   - name: move_path
-    group: file:write
   - name: delete_path
-    group: file:write
   # This tool also requires sandbox.allow_host_tools=true and an installed CLI.
   - name: host_opencli
-    group: host:opencli
     executable: opencli
     timeout: 120
     allowed_sites: [web, twitter, xiaohongshu, xiaoyuzhou, weixin, douyin, bilibili]
   - name: bash
-    group: bash

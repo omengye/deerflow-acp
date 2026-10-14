@@ -28,7 +28,10 @@ func (s *Service) monitorAutoPatch(ctx context.Context, id string) error {
 		if tx.Target() != o.Target {
 			return harness.ErrPermissionDenied
 		}
-		now := s.autoPatch.now().UTC()
+		now := time.Now().UTC()
+		if s.autoPatch != nil {
+			now = s.autoPatch.now().UTC()
+		}
 		if now.Before(o.StartedAt) {
 			return invalid("auto_patch observation clock moved backwards")
 		}

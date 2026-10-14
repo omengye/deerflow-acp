@@ -155,6 +155,12 @@ func (s service) snapshot() (map[string]any, error) {
 		return nil, err
 	}
 	evolution = redact(evolution, "").(map[string]any)
+	nativeEvolutionMode := evolution["mode"] == "review" || evolution["mode"] == "auto_patch"
+	evolutionMigrationRequired := len(ignoredEvolution) > 0 || !nativeEvolutionMode || evolution["security_fail_closed"] != true
+	evolutionTargetMode := evolution["mode"]
+	if evolutionMigrationRequired {
+		evolutionTargetMode = "review"
+	}
 
 	return map[string]any{
 		"config_migration": map[string]any{
@@ -177,9 +183,9 @@ func (s service) snapshot() (map[string]any, error) {
 		"skill_evolution":               evolution,
 		"skill_evolution_migration_ack": "",
 		"skill_evolution_migration": map[string]any{
-			"required":        len(ignoredEvolution) > 0 || evolution["mode"] != "review" || evolution["security_fail_closed"] != true,
+			"required":        evolutionMigrationRequired,
 			"source_revision": configRevision, "removed_paths": ignoredEvolution,
-			"target_mode": "review", "security_fail_closed": true,
+			"target_mode": evolutionTargetMode, "security_fail_closed": true,
 		},
 		"paths": map[string]any{"config": s.config, "extensions": paths.extensions, "skills": paths.skills, "user_data": s.userData},
 	}, nil

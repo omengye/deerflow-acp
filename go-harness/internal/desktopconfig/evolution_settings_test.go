@@ -204,7 +204,7 @@ func TestEvolutionTemplatesHaveOnlyNativeReviewDefaults(t *testing.T) {
 			}
 			review := readObject(raw, "skill_evolution")
 			projection, ignored, err := configschema.ProjectEvolution(review)
-			if err != nil || len(ignored) != 0 || projection["enabled"] != false {
+			if err != nil || len(ignored) != 0 || projection["enabled"] != isDesktopTemplate(path) {
 				t.Fatal("template contains unsupported settings", ignored, err)
 			}
 			if err := configschema.ValidateEvolutionDraft(projection, nil); err != nil {
@@ -219,7 +219,11 @@ func TestEvolutionTemplatesHaveOnlyNativeReviewDefaults(t *testing.T) {
 				t.Fatal(err)
 			}
 			settings, err := evolution.DecodeReviewConfig(encoded, map[string]bool{"first": true, "second": true}, "first")
-			if err != nil || settings.ModerationModel != "first" || settings.EvaluationModel != "first" || settings.GenerationModel != "" || settings.Validation.TimeoutSeconds != 60 || settings.Validation.MaxInputBytes != 131072 || settings.Validation.MaxOutputTokens != 1024 {
+			wantGeneration, wantInputBytes := "", 131072
+			if isDesktopTemplate(path) {
+				wantGeneration, wantInputBytes = "first", 65536
+			}
+			if err != nil || settings.ModerationModel != "first" || settings.EvaluationModel != "first" || settings.GenerationModel != wantGeneration || settings.Validation.TimeoutSeconds != 60 || settings.Validation.MaxInputBytes != wantInputBytes || settings.Validation.MaxOutputTokens != 1024 {
 				t.Fatal("template cannot enable native defaults", err)
 			}
 		})

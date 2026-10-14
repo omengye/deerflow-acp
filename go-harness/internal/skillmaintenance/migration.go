@@ -39,7 +39,9 @@ func migrateJobOwners(ctx context.Context, tx *sql.Tx) error {
 	}
 	_, err = tx.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS df_skill_maintenance_owner_request
  ON df_skill_maintenance_jobs(job_kind,owner_kind,owner_key,owner_request_key) WHERE owner_kind IN ('workspace','user');
-CREATE INDEX IF NOT EXISTS df_skill_maintenance_kind_queue ON df_skill_maintenance_jobs(job_kind,state,retry_ns);`)
+CREATE INDEX IF NOT EXISTS df_skill_maintenance_kind_queue ON df_skill_maintenance_jobs(job_kind,state,retry_ns);
+CREATE TABLE IF NOT EXISTS df_skill_maintenance_scheduler(id INTEGER PRIMARY KEY CHECK(id=1),claims INTEGER NOT NULL);
+INSERT OR IGNORE INTO df_skill_maintenance_scheduler VALUES(1,0);`)
 	return err
 }
 

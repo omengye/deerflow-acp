@@ -18,6 +18,15 @@ func TestProposalPagesBindFiltersAndConfiguredSourceIdentity(t *testing.T) {
 	third := f.submit(t, f.request(t, "three", "Candidate three"))
 	want := map[string]bool{first.ID: true, second.ID: true, third.ID: true}
 	query := harness.SkillQuery{Limit: 1, Status: "pending_review"}
+	status, err := f.service.AutoPatchStatus(ctx)
+	if err != nil || status.Readiness == nil || status.Readiness.NeedsAttention != 3 || status.Readiness.WaitingCandidates != 0 {
+		t.Fatal("attention count must cover all pages", status, err)
+	}
+	onlyWaiting := false
+	waiting, err := f.service.QueryProposals(ctx, harness.SkillQuery{Limit: 1, Status: "pending_review", NeedsAttention: &onlyWaiting})
+	if err != nil || len(waiting.Proposals) != 0 {
+		t.Fatal(waiting, err)
+	}
 	var cursor string
 	for range 4 {
 		page, err := f.service.QueryProposals(ctx, query)
@@ -25,6 +34,9 @@ func TestProposalPagesBindFiltersAndConfiguredSourceIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, p := range page.Proposals {
+			if p.Disposition == nil || !p.Disposition.NeedsAttention || p.Disposition.Reason != "manual_review" {
+				t.Fatal(p)
+			}
 			if !want[p.ID] || p.Diff != "" {
 				t.Fatalf("unexpected list record %+v", p)
 			}
@@ -39,6 +51,11 @@ func TestProposalPagesBindFiltersAndConfiguredSourceIdentity(t *testing.T) {
 	if len(want) != 0 || cursor == "" {
 		t.Fatalf("missing records: %v", want)
 	}
+	query.NeedsAttention = &onlyWaiting
+	if _, err := f.service.QueryProposals(ctx, query); !errors.Is(err, harness.ErrInvalidInput) {
+		t.Fatal("changed attention filter accepted cursor", err)
+	}
+	query.NeedsAttention = nil
 	query.Status = "rejected"
 	if _, err := f.service.QueryProposals(ctx, query); !errors.Is(err, harness.ErrInvalidInput) {
 		t.Fatalf("changed filters accepted cursor: %v", err)
@@ -74,6 +91,10 @@ func TestProposalPagesBindFiltersAndConfiguredSourceIdentity(t *testing.T) {
 	list, err := f.service.QueryProposals(ctx, harness.SkillQuery{Limit: 100})
 	if err != nil || len(list.Proposals) != 0 {
 		t.Fatalf("old source leaked candidates: %+v %v", list, err)
+	}
+	status, err = f.service.AutoPatchStatus(ctx)
+	if err != nil || status.Readiness.NeedsAttention != 0 {
+		t.Fatal("revoked source leaked attention", status, err)
 	}
 	history, err := f.service.QueryHistory(ctx, harness.SkillQuery{Limit: 100})
 	if err != nil || len(history.Publications) != 0 {

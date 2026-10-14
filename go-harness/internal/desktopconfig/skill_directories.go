@@ -31,6 +31,11 @@ func (s service) initializePortableSkillDirectories(data map[string]any) []strin
 			diagnostics = append(diagnostics, fmt.Sprintf("%s: cannot initialize portable directory: %v", field, err))
 		}
 	}
+	// Older profiles have only skills.path, without managed_sources. Provision
+	// their writable source even before evolution is enabled in Settings.
+	// This runs after bundled skills are copied so an empty custom directory
+	// cannot cause copyInitialSkills to skip the initial import.
+	create("skills.path/custom", filepath.Join(s.paths(data).skills, "custom"), "skills")
 	for i, item := range list(settings, "managed_sources") {
 		if source, ok := item.(map[string]any); ok {
 			create(fmt.Sprintf("skills.managed_sources.%d.root", i), str(source, "root", ""), "skills")

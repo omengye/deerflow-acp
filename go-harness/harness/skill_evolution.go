@@ -50,6 +50,7 @@ type SkillHistoryPage struct {
 type SkillQuery struct {
 	SourceID, Name, Status, Cursor string
 	Limit                          int
+	NeedsAttention                 *bool
 }
 
 type SkillTrigger struct {
@@ -86,6 +87,13 @@ type SkillProposal struct {
 	BehaviorJobID     string                  `json:"behavior_job_id,omitempty"`
 	Error             string                  `json:"error,omitempty"`
 	ValidationFailure *SkillValidationFailure `json:"validation_failure,omitempty"`
+	// Read-only host projection; never authorizes publication or changes status.
+	Disposition *SkillProposalDisposition `json:"disposition,omitempty"`
+}
+
+type SkillProposalDisposition struct {
+	NeedsAttention bool   `json:"needs_attention"`
+	Reason         string `json:"reason"`
 }
 
 // SkillValidationReport is produced by the host's configured validator, never by the model

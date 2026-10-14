@@ -72,19 +72,20 @@ type SkillWorkflowReceipt struct {
 }
 
 type SkillDiscovery struct {
-	ID              string                               `json:"id"`
-	Target          SkillTarget                          `json:"target"`
-	Base            SkillHead                            `json:"base"`
-	GenerationID    string                               `json:"generation_id"`
-	CreatedAt       time.Time                            `json:"created_at"`
-	Attribution     string                               `json:"attribution"`
-	Kind            string                               `json:"kind"`
-	Evidence        []SkillDiscoveryEvidence             `json:"evidence"`
-	State           string                               `json:"state"`
-	ProposalID      string                               `json:"proposal_id,omitempty"`
-	HostAdjudicated bool                                 `json:"host_adjudicated,omitempty"`
-	ReviewDraft     bool                                 `json:"review_draft,omitempty"`
-	CreationRetry   *SkillLearningNewSkillRetryReference `json:"creation_retry,omitempty"`
+	ID                 string                               `json:"id"`
+	Target             SkillTarget                          `json:"target"`
+	Base               SkillHead                            `json:"base"`
+	GenerationID       string                               `json:"generation_id"`
+	CreatedAt          time.Time                            `json:"created_at"`
+	Attribution        string                               `json:"attribution"`
+	Kind               string                               `json:"kind"`
+	Evidence           []SkillDiscoveryEvidence             `json:"evidence"`
+	State              string                               `json:"state"`
+	ProposalID         string                               `json:"proposal_id,omitempty"`
+	HostAdjudicated    bool                                 `json:"host_adjudicated,omitempty"`
+	ReviewDraft        bool                                 `json:"review_draft,omitempty"`
+	CreationRetry      *SkillLearningNewSkillRetryReference `json:"creation_retry,omitempty"`
+	PreviousProposalID string                               `json:"previous_proposal_id,omitempty"`
 }
 
 type SkillDiscoveryPage struct {

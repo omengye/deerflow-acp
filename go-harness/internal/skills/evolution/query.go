@@ -48,6 +48,12 @@ func (s *Service) querySources(q harness.SkillQuery, kind string) (map[string]ha
 		Sources      []harness.SkillTarget
 		Name, Status string
 	}{sources, q.Name, q.Status})
+	if q.NeedsAttention != nil {
+		if kind != "proposals" {
+			return nil, "", nil, cursor, invalid("attention filter is only supported for proposals")
+		}
+		cursor.Filter = encodedHash([]any{cursor.Filter, *q.NeedsAttention, s.autoPatchPolicyIdentity()})
+	}
 	if q.Cursor != "" {
 		var saved pageCursor
 		data, err := base64.RawURLEncoding.DecodeString(q.Cursor)
@@ -86,6 +92,9 @@ func checkTarget(allowed map[string]harness.SkillTarget, target harness.SkillTar
 
 func (s *Service) QueryProposals(ctx context.Context, q harness.SkillQuery) (harness.SkillProposalPage, error) {
 	page := harness.SkillProposalPage{Proposals: make([]Proposal, 0)}
+	if q.NeedsAttention != nil && q.Status != "pending_review" {
+		return page, invalid("attention filter requires pending_review")
+	}
 	allowed, where, args, cursor, err := s.querySources(q, "proposals")
 	if err != nil {
 		return page, err
@@ -96,6 +105,12 @@ func (s *Service) QueryProposals(ctx context.Context, q harness.SkillQuery) (har
 		where += " AND status=?"
 		args = append(args, q.Status)
 	}
+	if q.NeedsAttention != nil {
+		expression, parameters := s.proposalReasonSQL()
+		where += " AND ((" + expression + ") NOT IN ('waiting_evidence','automatic_checks','waiting_observation','waiting_quota'))=?"
+		args = append(args, parameters...)
+		args = append(args, *q.NeedsAttention)
+	}
 	args = append(args, q.Limit+1)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -105,7 +120,7 @@ func (s *Service) QueryProposals(ctx context.Context, q harness.SkillQuery) (har
 	if err = tx.QueryRowContext(ctx, `SELECT revision FROM df_skill_catalog WHERE id=1`).Scan(&page.CatalogVersion); err != nil {
 		return page, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM df_skill_proposals WHERE `+where+` ORDER BY id LIMIT ?`, args...)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM df_skill_proposals p WHERE `+where+` ORDER BY id LIMIT ?`, args...)
 	if err != nil {
 		return page, err
 	}
@@ -136,6 +151,12 @@ func (s *Service) QueryProposals(ctx context.Context, q harness.SkillQuery) (har
 		}
 		if !checkTarget(allowed, p.Target) {
 			return page, harness.ErrPermissionDenied
+		}
+		if p.Status == "pending_review" {
+			p.Disposition, err = s.proposalDispositionTx(ctx, tx, id)
+			if err != nil {
+				return page, err
+			}
 		}
 		p.Diff = "" // Detail is fetched explicitly; do not duplicate full candidate text in lists.
 		data, err := json.Marshal(p)

@@ -103,6 +103,13 @@ func managementProposalQuery(fields map[string]json.RawMessage) (harness.SkillQu
 		return q, managementInvalid("limit must be 1..100")
 	}
 	q.Limit = int(limit)
+	if raw, ok := fields["needs_attention"]; ok {
+		var value bool
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &value) != nil {
+			return q, managementInvalid("invalid needs_attention")
+		}
+		q.NeedsAttention = &value
+	}
 	return q, nil
 }
 
@@ -133,6 +140,8 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 		allowed := []string{"source_id", "name", "status", "cursor", "limit"}
 		if request.Operation == "proposal.history" {
 			allowed = append(allowed, "revision_cursor")
+		} else {
+			allowed = append(allowed, "needs_attention")
 		}
 		if err := proposalFields(request, allowed...); err != nil {
 			return nil, err

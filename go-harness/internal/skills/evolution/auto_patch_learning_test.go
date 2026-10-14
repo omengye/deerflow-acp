@@ -2,6 +2,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -74,7 +75,7 @@ func TestSkillLearningAutoPatchRequiresIndependentHostGrant(t *testing.T) {
 	if err := f.service.ConfigureAutoPatch(o); err != nil {
 		t.Fatal("existing auto_patch unexpectedly requires learning", err)
 	}
-	if err := f.service.guardAutoPatch(context.WithValue(context.Background(), autoPatchContextKey{}, true), nil, Proposal{Trigger: Trigger{Type: "experience_pattern"}}, ValidationInput{}); err != errAutoPatchReview {
+	if err := f.service.guardAutoPatch(context.WithValue(context.Background(), autoPatchContextKey{}, true), nil, Proposal{Trigger: Trigger{Type: "experience_pattern"}}, ValidationInput{}); !errors.Is(err, errAutoPatchReview) {
 		t.Fatal("old auto_patch grant admitted learned candidate", err)
 	}
 }
@@ -104,7 +105,7 @@ func TestSkillLearningAutoPatchRetainsManualPackageBoundaries(t *testing.T) {
 			case "no-behavior":
 				p.Evaluation.Behavior, p.Evaluation.BehaviorReport = "not_run", nil
 			}
-			if err := f.service.guardAutoPatch(context.WithValue(context.Background(), autoPatchContextKey{}, true), nil, p, ValidationInput{}); err != errAutoPatchReview {
+			if err := f.service.guardAutoPatch(context.WithValue(context.Background(), autoPatchContextKey{}, true), nil, p, ValidationInput{}); !errors.Is(err, errAutoPatchReview) {
 				t.Fatal("learning publication bypassed manual boundary", mode, err)
 			}
 		})

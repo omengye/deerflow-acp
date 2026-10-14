@@ -13,6 +13,9 @@ import (
 // the same session. Missing or invalid metadata goes to the normal admission
 // guard; this scheduling hint cannot authorize model work or publication.
 func (s *Store) ReadyTx(ctx context.Context, tx *sql.Tx, job skillmaintenance.Job) (bool, error) {
+	if ready, err := s.budgetReadyTx(ctx, tx, job); err != nil || !ready {
+		return ready, err
+	}
 	var episodes string
 	var args []any
 	switch job.Request.Kind {
