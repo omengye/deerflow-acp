@@ -324,6 +324,16 @@ fn branch_picker_pins_selection_and_filters_by_name() {
 }
 
 #[test]
+fn receipt_recovery_instructions_survive_compaction() {
+    let raw = "Uncertain tool effects require review.: {\n\"automaticReplay\": false,\n\"kind\": \"reconciliation_required\",\n\"listMethod\": \"_deerflow/tool_receipts/list\",\n\"reconcileMethod\": \"_deerflow/tool_receipts/reconcile\"\n}\nmore diagnostics";
+    let message = compact_driver_error(raw);
+    assert!(message.contains("确认工具结果"));
+    assert!(message.contains("暂时无法确认"));
+    assert!(!message.contains("listMethod"));
+    assert_eq!(compact_driver_error(&message), message);
+}
+
+#[test]
 fn driver_errors_are_bounded_before_rendering() {
     let error = (0..20)
         .map(|line| format!("provider diagnostic line {line}"))

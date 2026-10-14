@@ -1945,7 +1945,16 @@ mod tests {
         let settings: AppSettings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
 
         assert_eq!(settings.theme, ThemePreference::Dark);
-        assert_eq!(settings.language, AppLanguage::System);
+        assert_eq!(settings.language, AppLanguage::SimplifiedChinese);
+        for (saved, expected) in [
+            ("english", AppLanguage::English),
+            ("system", AppLanguage::System),
+            ("japanese", AppLanguage::Japanese),
+        ] {
+            let explicit: AppSettings =
+                serde_json::from_value(serde_json::json!({"language": saved})).unwrap();
+            assert_eq!(explicit.language, expected);
+        }
         assert!(!settings.analytics_enabled);
     }
 

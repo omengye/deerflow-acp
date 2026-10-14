@@ -379,6 +379,15 @@ impl SkillBrowser {
                     "发布修订无效"
                 );
             } else {
+                if !row["disposition"].is_null() {
+                    anyhow::ensure!(
+                        row["disposition"]["needs_attention"].is_boolean()
+                            && row["disposition"]["reason"]
+                                .as_str()
+                                .is_some_and(|r| !r.is_empty() && r.len() <= 128),
+                        "候选处理状态无效"
+                    );
+                }
                 anyhow::ensure!(
                     row["id"].as_str().is_some_and(|v| !v.is_empty())
                         && row["state_version"].as_u64().is_some_and(|v| v > 0),
@@ -454,6 +463,25 @@ impl SkillBrowser {
                 detail.skill.head.state_version
             )
         })
+    }
+}
+
+pub(super) fn proposal_disposition_label(proposal: &Value) -> &str {
+    match proposal["disposition"]["reason"].as_str() {
+        Some("waiting_evidence") => "等待独立证据 · 可自愿提前审核",
+        Some("automatic_checks") => "后台检查中",
+        Some("waiting_observation") => "等待当前版本观察结束",
+        Some("waiting_quota") => "等待自动采用额度",
+        Some("learning_authorization_required") => "需要经验来源授权",
+        Some("scope_or_coverage_requires_review") => "范围或可信覆盖需要确认",
+        Some("improvement_or_metadata_requires_review") => "改善不足或元数据超范围",
+        Some("change_size_requires_review") => "修改规模超出自动采用范围",
+        Some("configuration_requires_review") => "配置已变化，请核对后重新生成",
+        Some("source_authorization_required") => "来源授权需要确认",
+        Some("validation_requires_review") => "验证不完整或已失效，请核对；不能绕过检查",
+        Some("manual_review") => "需要人工确认",
+        Some(_) => "需要核对生成或来源证据",
+        None => "尚无宿主分类，请刷新核对",
     }
 }
 
@@ -1011,8 +1039,15 @@ impl Waku {
                 theme,
             ));
         }
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .flex_1()
+            .flex_basis(px(290.0))
+            .min_w(px(0.0));
         if let Some(page) = &browser.catalog {
-            group = group.child(df_label(
+            list = list.child(df_label(
                 format!(
                     "目录版本 {} · 第 {} 页",
                     page.catalog_version,
@@ -1035,7 +1070,7 @@ impl Waku {
                 } else {
                     "已停用"
                 };
-                group = group.child(df_button(
+                list = list.child(df_button(
                     SharedString::from(format!("df-skill-{key}")),
                     format!(
                         "{} / {} · {status}",
@@ -1058,7 +1093,7 @@ impl Waku {
                     },
                 ));
             }
-            group = group.child(self.render_skill_page_nav(
+            list = list.child(self.render_skill_page_nav(
                 "catalog",
                 &browser.catalog_nav,
                 unavailable || browser.catalog_stale,
@@ -1066,13 +1101,33 @@ impl Waku {
                 cx,
             ));
         } else {
-            group = group.child(df_label(
+            list = list.child(df_label(
                 "尚未加载技能目录",
                 "启动服务后点击刷新，读取当前服务的已发布技能。",
                 theme,
             ));
         }
+        let header = group;
+        let mut group = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .flex_grow(2.0)
+            .flex_basis(px(440.0))
+            .min_w(px(0.0));
         if let Some(detail) = &browser.selected {
+            group = group.child(df_button(
+                "df-skill-detail-close",
+                "返回列表／收起详情",
+                unavailable,
+                false,
+                theme,
+                cx,
+                |this, _, cx| {
+                    this.deerflow_settings.skill_browser.selected = None;
+                    cx.notify();
+                },
+            ));
             let skill = &detail.skill;
             let disabled = unavailable || state.dirty || browser.mutations_pending();
             group = group.child(df_label(
@@ -1108,6 +1163,14 @@ impl Waku {
                 ));
             }
             let mut actions = div().flex().flex_wrap().gap(px(6.0));
+            let history_source = skill.target.source_id.clone();
+            let history_name = skill.target.name.clone();
+            actions = actions.child(df_button("df-skill-history", "此技能版本历史", unavailable, false, theme, cx, move |this, _, cx| {
+                this.deerflow_settings.skill_center_tab = presentation::SkillCenterTab::History;
+                this.deerflow_settings.show_more = false;
+                this.deerflow_rebind(cx);
+                this.deerflow_request("manage", json!({"operation":"proposal.history","source_id":history_source,"name":history_name,"limit":20}), cx);
+            }));
             let target = serde_json::to_value(&skill.target).unwrap();
             actions = actions.child(df_button(
                 "df-skill-refresh",
@@ -1227,8 +1290,19 @@ impl Waku {
                     ));
                 }
             }
+        } else {
+            group = group.child(df_label("选择一个技能查看详情", "SQLite 中的已发布版本是当前生效内容；外部目录只是导入来源，导出失败不影响已发布技能。", theme));
         }
-        group.into_any_element()
+        header
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(20.0))
+                    .child(list)
+                    .child(group),
+            )
+            .into_any_element()
     }
 
     pub(super) fn render_skill_page_nav(

@@ -22,6 +22,8 @@ struct Record {
     review_draft: bool,
     #[serde(default)]
     creation_retry: Option<CreationRetry>,
+    #[serde(default)]
+    previous_proposal_id: String,
 }
 
 #[derive(Deserialize)]
@@ -246,6 +248,16 @@ impl DiscoveryBrowser {
                             retry.retry_number, retry.previous_generation_id, retry.evidence_reservation_id)));
                     }
                     let mut roots = std::collections::HashSet::new();
+                    if !record.previous_proposal_id.is_empty() {
+                        anyhow::ensure!(
+                            bounded(&record.previous_proposal_id, 131)
+                                && record.previous_proposal_id.starts_with("p_")
+                                && !record.review_draft
+                                && record.base.exists,
+                            "草案后继引用无效"
+                        );
+                        evidence.push(("证据成熟后继候选".into(), format!("替代旧草案 {}。使用新的未消费独立证据；旧草案不直接发布，旧费用及消费记录保留。", record.previous_proposal_id)));
+                    }
                     for item in record.evidence {
                         anyhow::ensure!(
                             bounded(&item.root_id, 256) && roots.insert(item.root_id.clone()),

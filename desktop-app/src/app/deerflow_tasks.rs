@@ -358,6 +358,8 @@ pub(super) struct TaskBrowser {
     child_active_count: usize,
     pub(super) runtime_view: runtime_view::RuntimeView,
     show_management: bool,
+    show_receipts: bool,
+    pub(super) recovery_required: bool,
     uncached_live: bool,
     uncached_detached: bool,
     partial_view: bool,
@@ -403,6 +405,8 @@ impl Default for TaskBrowser {
             child_active_count: 0,
             runtime_view: Default::default(),
             show_management: false,
+            show_receipts: false,
+            recovery_required: false,
             uncached_live: false,
             uncached_detached: false,
             partial_view: false,
@@ -686,6 +690,9 @@ impl TaskBrowser {
                     *uncertain_only,
                     page,
                 )?;
+                if *uncertain_only && cursor.as_ref().is_none_or(String::is_empty) {
+                    self.recovery_required = !self.receipts.is_empty();
+                }
             }
             (Action::ReceiptReconcile { review }, Response::Reconciled { receipt }) => {
                 self.receipts
@@ -1160,7 +1167,9 @@ impl Waku {
                     browser.connection = connection_id;
                     browser.session = session_id;
                     browser.capabilities = capabilities;
-                    if browser.capabilities.tree {
+                    if browser.show_receipts && browser.capabilities.tool_receipts {
+                        browser.next = Some(receipts::list_action(None, true));
+                    } else if browser.capabilities.tree {
                         browser.next = Some(browser.list_action(None));
                     }
                 }
@@ -1238,10 +1247,11 @@ impl Waku {
             }
             // Review forms need a pinned version while they are visible.
             // Returning to the overview must resume live status refresh.
-            let reviewing = browser.show_management
-                && (browser.receipts.review.is_some()
-                    || browser.confirmation.is_some()
-                    || !browser.previews.is_empty());
+            let reviewing = browser.show_receipts
+                || browser.show_management
+                    && (browser.receipts.review.is_some()
+                        || browser.confirmation.is_some()
+                        || !browser.previews.is_empty());
             if let Some(action) = browser.next.take() {
                 requests.push((*session, action));
             } else if browser.refresh_needed && !reviewing {
@@ -1286,6 +1296,7 @@ impl Waku {
             .entry(id)
             .or_default()
             .sync_runtime(session);
+        self.deerflow_tasks.entry(id).or_default().show_receipts = false;
         self.open_right_panel_surface(RightPanelSurface::DeerFlowTasks, cx);
         if let Some(browser) = self.deerflow_tasks.get(&id) {
             if browser.pending.is_none()
@@ -1311,17 +1322,43 @@ impl Waku {
             .map(|b| b.child_active_count)
             .unwrap_or(0);
         Some(
-            task_button(
-                "deerflow-task-tree-chip",
-                format!("运行状态 · {count} 个子 Agent"),
-                false,
-                cx,
-                |this, _, cx| this.open_deerflow_tasks(cx),
-            )
-            .into_any_element(),
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(6.0))
+                .child(task_button(
+                    "deerflow-task-tree-chip",
+                    format!("运行状态 · {count} 个子 Agent"),
+                    false,
+                    cx,
+                    |this, _, cx| this.open_deerflow_tasks(cx),
+                ))
+                .when(
+                    self.deerflow_tasks
+                        .get(&session.id)
+                        .is_some_and(|b| b.recovery_required),
+                    |element| {
+                        element.child(task_button(
+                            "deerflow-receipt-recovery-chip",
+                            "确认工具结果",
+                            false,
+                            cx,
+                            |this, _, cx| this.open_deerflow_receipts(cx),
+                        ))
+                    },
+                )
+                .into_any_element(),
         )
     }
     pub(super) fn render_deerflow_runtime(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self
+            .state
+            .selected_session
+            .and_then(|session| self.deerflow_tasks.get(&session))
+            .is_some_and(|browser| browser.show_receipts)
+        {
+            return self.render_deerflow_receipt_recovery(cx);
+        }
         let management = self
             .state
             .selected_session
@@ -2095,6 +2132,80 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+    #[test]
+    fn receipt_recovery_only_clears_after_a_fresh_empty_first_page() {
+        use waku_protocol::deerflow_tasks::ReceiptPage;
+        let mut b = browser();
+        b.capabilities.tool_receipts = true;
+        b.recovery_required = true;
+        let command = b.begin(receipts::list_action(None, false)).unwrap();
+        b.accept(
+            &command,
+            Response::Receipts(ReceiptPage {
+                receipts: vec![],
+                next_cursor: String::new(),
+                has_more: false,
+                consistency: "live_keyset".into(),
+            }),
+        )
+        .unwrap();
+        assert!(
+            b.recovery_required,
+            "all-records view cannot clear a recovery warning"
+        );
+        let command = b.begin(receipts::list_action(None, true)).unwrap();
+        b.accept(
+            &command,
+            Response::Receipts(ReceiptPage {
+                receipts: vec![],
+                next_cursor: String::new(),
+                has_more: false,
+                consistency: "live_keyset".into(),
+            }),
+        )
+        .unwrap();
+        assert!(!b.recovery_required);
+        assert!(
+            b.next.is_none(),
+            "reading receipts must not resume or replay anything"
+        );
+    }
+    #[test]
+    fn receipt_recovery_is_hidden_until_needed_and_is_session_scoped() {
+        use waku_protocol::deerflow_tasks::ReceiptPage;
+        let mut b = browser();
+        let other = browser();
+        b.capabilities.tool_receipts = true;
+        assert!(!b.recovery_required);
+        let command = b.begin(receipts::list_action(None, true)).unwrap();
+        let receipt = serde_json::from_value(json!({
+            "sessionId": "session", "runId": "run", "toolCallId": "call",
+            "toolName": "delete_path", "argumentsDigest": "a".repeat(64),
+            "argumentsSummary": "{path:string}", "configVersion": 1,
+            "state": "uncertain", "version": 3
+        }))
+        .unwrap();
+        b.accept(
+            &command,
+            Response::Receipts(ReceiptPage {
+                receipts: vec![receipt],
+                next_cursor: String::new(),
+                has_more: false,
+                consistency: "live_keyset".into(),
+            }),
+        )
+        .unwrap();
+        assert!(b.recovery_required);
+        assert!(
+            !other.recovery_required,
+            "another session must not inherit the warning"
+        );
+        b.disconnect();
+        assert!(
+            b.recovery_required,
+            "disconnecting does not resolve uncertain effects"
+        );
     }
     fn page(nodes: Vec<Node>, cursor: &str) -> Response {
         Response::Page(Page {

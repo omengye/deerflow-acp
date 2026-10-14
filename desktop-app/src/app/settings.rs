@@ -40,28 +40,28 @@ const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 12] = [
         "settings.deerflow_tools_keywords",
     ),
     (
-        SettingsPage::DeerFlowAdvanced,
-        "settings.deerflow_advanced",
-        "icons/settings.svg",
-        "settings.deerflow_advanced_keywords",
-    ),
-    (
         SettingsPage::DeerFlowSkillCenter,
         "settings.deerflow_skill_center",
         "icons/package.svg",
         "settings.skills_keywords",
     ),
     (
-        SettingsPage::General,
-        "settings.general",
-        "icons/settings.svg",
-        "settings.general_keywords",
-    ),
-    (
         SettingsPage::Appearance,
         "settings.appearance",
         "icons/appearance.svg",
         "settings.appearance_keywords",
+    ),
+    (
+        SettingsPage::DeerFlowAdvanced,
+        "settings.deerflow_advanced",
+        "icons/settings.svg",
+        "settings.deerflow_advanced_keywords",
+    ),
+    (
+        SettingsPage::General,
+        "settings.general",
+        "icons/settings.svg",
+        "settings.general_keywords",
     ),
     (
         SettingsPage::Providers,
@@ -410,6 +410,7 @@ impl Waku {
             .w_full()
             .max_w(px(match page {
                 SettingsPage::Usage => SETTINGS_USAGE_MAX_WIDTH,
+                SettingsPage::DeerFlowSkillCenter => 1120.0,
                 _ => SETTINGS_CONTENT_MAX_WIDTH,
             }))
             .mx_auto()

@@ -66,7 +66,7 @@ impl AppLanguage {
 
 impl Default for AppLanguage {
     fn default() -> Self {
-        Self::System
+        Self::SimplifiedChinese
     }
 }
 
@@ -132,8 +132,17 @@ mod tests {
     }
 
     #[test]
-    fn system_is_the_default_persisted_preference_and_resolves_to_a_shipped_locale() {
-        assert_eq!(AppLanguage::default(), AppLanguage::System);
+    fn simplified_chinese_is_default_and_explicit_system_preference_is_preserved() {
+        assert_eq!(AppLanguage::default(), AppLanguage::SimplifiedChinese);
+        assert_eq!(AppLanguage::default().locale(), "zh-CN");
+        assert_eq!(
+            serde_json::to_string(&AppLanguage::default()).unwrap(),
+            r#""simplified-chinese""#
+        );
+        assert_eq!(
+            serde_json::from_str::<AppLanguage>(r#""system""#).unwrap(),
+            AppLanguage::System
+        );
         assert_eq!(
             serde_json::to_string(&AppLanguage::System).unwrap(),
             r#""system""#

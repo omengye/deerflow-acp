@@ -1060,7 +1060,7 @@ settings.deerflow: 常用
 settings.deerflow_models: 模型
 settings.deerflow_tools: 工具与权限
 settings.deerflow_advanced: 高级
-settings.deerflow_skill_center: 技能中心
+settings.deerflow_skill_center: 技能
 settings.deerflow_models_keywords: 模型 model provider api 地址 密钥 图片 上下文
 settings.deerflow_tools_keywords: 工具 tool 权限 审批 命令 powershell bash opencli mcp 网页 代理 proxy
 settings.deerflow_advanced_keywords: 高级 advanced 子代理 角色 记忆 技能 维护 预算 额度 超时 服务 日志 诊断 数据 来源 导入

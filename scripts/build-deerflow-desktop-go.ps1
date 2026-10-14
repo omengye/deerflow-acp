@@ -151,7 +151,22 @@ Desktop MCP servers: user-data/config/client-mcp-servers.json
 Go harness state: user-data/data/go-harness
 Go daemon endpoint: user-data/runtime/acp-go
 
-The first launch creates user-data. Set a model and API key in DeerFlow Settings.
+The first launch uses Simplified Chinese and creates user-data. Set the model
+endpoint, model ID and API key in Settings; maintenance inherits this model.
+The desktop profile enables local commands, subagents, global memory and skill
+learning/generation using the selected model. Local commands are not isolated.
+Skill maintenance may use paid model calls, capped at 1000 calls / 6000000 tokens
+per UTC day (learning shares that budget, capped at 50 calls / 1000000 tokens).
+Covered existing managed SKILL.md patches may publish automatically: at most
+40 changed lines and 2 publications per day, after actual improvement and
+regression checks. The host initializes the bundled SearXNG assessment; it does
+not install a personal skill, search endpoint or credential. Uncovered skills,
+new skills and executable support changes still require review. A fresh profile
+can therefore show partial automation until eligible managed skills exist.
+No startup model calls are made for this setup. Inactive/closed backend sessions are
+cleaned after five days. Adjust these defaults in Settings if needed.
+No personal credentials or proxies are bundled. Brave web search requires its
+own optional API key; it cannot use the model API key.
 Models use provider=openai/claude; sandbox uses provider=local. Native tools are
 selected by name without Python class paths. See resources/go-native-tools.md.
 Optional host_opencli calls an installed OpenCLI/Node.js; browser commands need

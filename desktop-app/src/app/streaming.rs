@@ -783,6 +783,16 @@ impl Waku {
                 }
             }
             DriverEvent::Error(error) => {
+                if waku_protocol::deerflow_tasks::needs_receipt_review(&error)
+                    && self.state.sessions.iter().any(|session| {
+                        session.id == session_id && session.provider == ProviderKind::DeerFlow
+                    })
+                {
+                    self.deerflow_tasks
+                        .entry(session_id)
+                        .or_default()
+                        .recovery_required = true;
+                }
                 let error = compact_driver_error(&error);
                 runtime.last_driver_error = Some(error.clone());
                 if self.state.selected_session == Some(session_id) {
@@ -1011,6 +1021,11 @@ pub(super) fn stream_delta_text(event: &DriverEvent, kind: StreamDeltaKind) -> O
 }
 
 pub(super) fn compact_driver_error(error: &str) -> String {
+    // Older daemons return a JSON error whose instructions were cut off by the
+    // generic six-line limit. Normalize before truncating.
+    if waku_protocol::deerflow_tasks::needs_receipt_review(error) {
+        return waku_protocol::deerflow_tasks::RECEIPT_REVIEW_MESSAGE.to_owned();
+    }
     const MAX_LINES: usize = 6;
     const MAX_CHARS: usize = 800;
 

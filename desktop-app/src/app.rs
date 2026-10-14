@@ -237,6 +237,7 @@ impl SettingsPage {
                 | Self::DeerFlowModels
                 | Self::DeerFlowTools
                 | Self::DeerFlowAdvanced
+                | Self::DeerFlowSkillCenter
                 | Self::Appearance
         )
     }

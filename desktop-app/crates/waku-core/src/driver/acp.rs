@@ -2342,12 +2342,12 @@ fn finish_prompt(
     let response = match result {
         Ok(response) => response,
         Err(error) => {
-            let mut message = error.to_string();
-            if message.contains("reconciliation_required")
-                || message.contains("Uncertain tool effects require review")
-            {
-                message.push_str("\n打开对话上方的「运行状态」，进入「任务详情与管理」读取待核对回执，核实实际结果后填写说明并提交核对；然后发送新消息继续。核对不会重新执行工具。");
-            }
+            let message = error.to_string();
+            let message = if waku_protocol::deerflow_tasks::needs_receipt_review(&message) {
+                waku_protocol::deerflow_tasks::RECEIPT_REVIEW_MESSAGE.to_owned()
+            } else {
+                message
+            };
             let _ = events.send(DriverEvent::Error(message));
             let _ = events.send(DriverEvent::TurnFinished {
                 success: false,
@@ -4467,6 +4467,29 @@ mod tests {
                 summary: None
             }
         ));
+    }
+
+    #[test]
+    fn receipt_recovery_error_replaces_rpc_dump_with_actionable_guidance() {
+        let (events, event_rx) = crossbeam_channel::unbounded();
+        let error =
+            agent_client_protocol::Error::new(-32010, "Uncertain tool effects require review")
+                .data(json!({
+                    "kind": "reconciliation_required",
+                    "automaticReplay": false,
+                    "listMethod": "_deerflow/tool_receipts/list"
+                }));
+        assert!(!finish_prompt(Err(error), None, &events));
+        let DriverEvent::Error(message) = event_rx.try_recv().unwrap() else {
+            panic!("expected recovery message");
+        };
+        assert_eq!(message, waku_protocol::deerflow_tasks::RECEIPT_REVIEW_MESSAGE);
+        assert!(!message.contains("listMethod"));
+        assert!(matches!(
+            event_rx.try_recv().unwrap(),
+            DriverEvent::TurnFinished { success: false, .. }
+        ));
+        assert!(event_rx.try_recv().is_err());
     }
 
     #[test]

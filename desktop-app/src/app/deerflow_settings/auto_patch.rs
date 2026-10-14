@@ -55,6 +55,66 @@ struct Status {
     observing: u64,
     #[serde(default)]
     last_error_code: String,
+    #[serde(default)]
+    readiness: Option<Readiness>,
+}
+
+#[derive(Deserialize)]
+struct Readiness {
+    state: String,
+    catalog_version: u64,
+    policy_identity: String,
+    installed: u64,
+    eligible_targets: u64,
+    missing_suite: u64,
+    pending_review: u64,
+    #[serde(default)]
+    needs_attention: Option<u64>,
+    #[serde(default)]
+    waiting_candidates: Option<u64>,
+    new_skills_require_review: bool,
+    reasons: Vec<String>,
+}
+
+impl Readiness {
+    fn summary(&self) -> anyhow::Result<String> {
+        anyhow::ensure!(
+            matches!(self.state.as_str(), "disabled" | "partial" | "ready")
+                && digest(&self.policy_identity)
+                && self.eligible_targets <= self.installed
+                && self.missing_suite <= self.installed
+                && self.pending_review <= i64::MAX as u64
+                && self.needs_attention.is_some() == self.waiting_candidates.is_some()
+                && self
+                    .needs_attention
+                    .zip(self.waiting_candidates)
+                    .is_none_or(|(a, w)| a <= self.pending_review && w == self.pending_review - a)
+                && self.reasons.len() <= 8,
+            "维护就绪回执无效"
+        );
+        let state = match self.state.as_str() {
+            "ready" => "已就绪",
+            "partial" => "部分可用",
+            _ => "自动采用未启用",
+        };
+        Ok(format!(
+            "后台状态：{state} · 目录版本 {}\n{} / {} 个安装目标具备自动补丁基础条件 · {} 个受管目标缺少可信覆盖\n当前授权来源共有 {} 个待审候选。{}{}候选仍须通过本次证据、评测、预算及版本检查。",
+            self.catalog_version,
+            self.eligible_targets,
+            self.installed,
+            self.missing_suite,
+            self.pending_review,
+            self.needs_attention
+                .zip(self.waiting_candidates)
+                .map(|(a, w)| format!("需处理 {a} 个，后台检查或等待 {w} 个。 "))
+                .unwrap_or_default(),
+            if self.new_skills_require_review {
+                "新技能仍需确认；"
+            } else {
+                ""
+            }
+        ))
+    }
 }
 
 #[derive(Deserialize)]
@@ -131,6 +191,8 @@ impl LearningSource {
 #[derive(Default)]
 pub(super) struct AutoPatchBrowser {
     status: Option<(String, String)>,
+    pub(super) readiness_label: Option<String>,
+    pub(super) needs_attention: Option<u64>,
     rows: Vec<(String, String)>,
     loaded: bool,
     nav: PageNav,
@@ -160,6 +222,20 @@ impl AutoPatchBrowser {
                 if let Some(options) = &status.options {
                     options.validate()?;
                 }
+                let readiness = status
+                    .readiness
+                    .as_ref()
+                    .map(Readiness::summary)
+                    .transpose()?;
+                self.needs_attention = status.readiness.as_ref().and_then(|r| r.needs_attention);
+                self.readiness_label = status.readiness.as_ref().map(|r| {
+                    match r.state.as_str() {
+                        "ready" => "自动维护 · 已就绪",
+                        "partial" => "自动维护 · 部分可用",
+                        _ => "自动采用未启用",
+                    }
+                    .to_owned()
+                });
                 self.status = Some((
                     format!(
                         "自动发布{} · 维护任务{}",
@@ -175,7 +251,7 @@ impl AutoPatchBrowser {
                         }
                     ),
                     format!(
-                        "UTC {} 已发布 {} 次 · 观察记录 {} 项\n{}{}{}",
+                        "UTC {} 已发布 {} 次 · 观察记录 {} 项\n{}{}{}\n{}",
                         status.today,
                         status.published_today,
                         status.observing,
@@ -185,7 +261,7 @@ impl AutoPatchBrowser {
                             .map(Options::summary)
                             .unwrap_or_else(|| "当前未配置自动补丁参数".into()),
                         if !status.running && status.observing > 0 {
-                            "\n维护已暂停，历史观察记录保留；重新启用自动补丁后继续处理。"
+                            "\n当前后台未运行观察维护；历史记录保留，请检查服务状态。"
                         } else {
                             ""
                         },
@@ -193,7 +269,10 @@ impl AutoPatchBrowser {
                             String::new()
                         } else {
                             format!("\n最近错误：{}", status.last_error_code)
-                        }
+                        },
+                        readiness.unwrap_or_else(|| {
+                            "当前服务尚未提供目标覆盖回执；不能确认自动维护就绪。".into()
+                        })
                     ),
                 ));
             }

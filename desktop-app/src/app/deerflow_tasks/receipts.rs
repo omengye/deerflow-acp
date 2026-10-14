@@ -21,6 +21,8 @@ pub(super) fn list_action(cursor: Option<String>, uncertain_only: bool) -> Actio
 struct CachedReceipt {
     receipt: ToolReceipt,
     evidence: SharedString,
+    summary: SharedString,
+    guidance: &'static str,
 }
 pub(super) struct ReviewInputs {
     index: usize,
@@ -28,6 +30,7 @@ pub(super) struct ReviewInputs {
     note: Entity<TextInput>,
     evidence: Entity<TextInput>,
     confirmation: Option<ReceiptReconciliation>,
+    show_evidence: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -37,6 +40,139 @@ pub(super) struct ReceiptBrowser {
     rows: Vec<CachedReceipt>,
     uncertain_only: bool,
     pub(super) review: Option<ReviewInputs>,
+}
+
+fn receipt_summary(receipt: &ToolReceipt) -> String {
+    let operation = match receipt.tool_name.as_str() {
+        "delete_path" => "删除文件或目录",
+        "write_file" => "写入文件",
+        "str_replace" => "修改文件",
+        "move_path" => "移动文件或目录",
+        "execute" => "执行命令",
+        _ => &receipt.tool_name,
+    };
+    let state = match receipt.state.as_str() {
+        "uncertain" => "需要你确认结果",
+        "completed" => "已完成",
+        "failed" => "执行失败",
+        "no_effect" => "未产生效果",
+        "not_executed" => "未执行",
+        "pending" => "等待执行",
+        "started" => "已开始执行",
+        _ => "未知状态",
+    };
+    let cause = if receipt.error.contains("Access is denied")
+        || receipt.error.to_lowercase().contains("permission denied")
+    {
+        "访问被拒绝，可能没有所需权限。报错本身不能证明操作完全没有产生效果。".to_owned()
+    } else if receipt.error.contains("context canceled") {
+        "操作被中断，可能已经完成了部分工作。".to_owned()
+    } else if receipt.error.is_empty() {
+        "请根据实际文件或目标服务的记录确认结果。".to_owned()
+    } else {
+        format!(
+            "工具报告：{}",
+            receipt.error.chars().take(400).collect::<String>()
+        )
+    };
+    let detail = if receipt.error.contains("Access is denied")
+        || receipt.error.to_lowercase().contains("permission denied")
+    {
+        format!(
+            "\n原始错误：{}",
+            receipt.error.chars().take(400).collect::<String>()
+        )
+    } else {
+        String::new()
+    };
+    format!("{operation} · {state}\n{cause}{detail}")
+}
+
+fn receipt_guidance(tool: &str) -> &'static str {
+    match tool {
+        "delete_path" => {
+            "请检查原目标是否还在。删除目录时还要检查内部文件是否被部分删除；仅凭目录仍在，不能认定完全没有变化。"
+        }
+        "write_file" | "str_replace" => {
+            "请打开目标文件，对照预期内容及操作前版本，确认是否写入成功或只写入了一部分。"
+        }
+        "move_path" => "请同时检查原位置和目标位置，确认文件是否移动成功。",
+        _ => "请检查操作对应的文件、应用或网站记录。命令报错或没有输出，并不代表它没有产生效果。",
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    fn receipt() -> ToolReceipt {
+        serde_json::from_value(serde_json::json!({
+            "sessionId": "session", "runId": "run", "toolCallId": "call",
+            "toolName": "delete_path", "argumentsDigest": "a".repeat(64),
+            "argumentsSummary": "{path:string}", "configVersion": 1,
+            "state": "uncertain", "version": 3,
+            "error": "removeat server_key: Access is denied."
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn receipt_recovery_explains_permission_without_claiming_no_effect() {
+        let summary = receipt_summary(&receipt());
+        assert!(summary.contains("删除文件或目录"));
+        assert!(summary.contains("server_key"));
+        assert!(summary.contains("不能证明"));
+        assert!(!summary.contains("network"));
+        assert!(receipt_guidance("delete_path").contains("部分删除"));
+    }
+
+    #[test]
+    fn receipt_recovery_preserves_evidence_and_rejects_stale_reviews() {
+        let mut browser = ReceiptBrowser::default();
+        let r = receipt();
+        browser
+            .accept_page(
+                "session",
+                None,
+                4,
+                true,
+                ReceiptPage {
+                    receipts: vec![r.clone()],
+                    next_cursor: String::new(),
+                    has_more: false,
+                    consistency: "live_keyset".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(browser.rows[0].receipt.error, r.error);
+        assert!(browser.rows[0].evidence.contains("server_key"));
+        assert!(!browser.is_empty());
+        let review = ReceiptReconciliation {
+            run_id: "run".into(),
+            tool_call_id: "call".into(),
+            expected_version: 3,
+            outcome: ReceiptOutcome::NoEffect,
+            reviewer: "operator".into(),
+            note: "Checked original target".into(),
+        };
+        assert!(browser.accept_review("session", &review, r).is_err());
+        assert!(!browser.is_empty());
+        let mut reviewed = receipt();
+        reviewed.state = "no_effect".into();
+        reviewed.version = 4;
+        reviewed.review = Some(serde_json::json!({
+            "reviewer": "operator", "note": "Checked original target", "outcome": "no_effect"
+        }));
+        browser.accept_review("session", &review, reviewed).unwrap();
+        assert!(
+            browser.page.is_none(),
+            "a new first-page query must establish completion"
+        );
+        assert!(
+            !browser.is_empty(),
+            "missing data is not an empty successful query"
+        );
+    }
 }
 
 fn validate(receipt: &ToolReceipt, session: &str) -> anyhow::Result<SharedString> {
@@ -68,6 +204,11 @@ fn validate(receipt: &ToolReceipt, session: &str) -> anyhow::Result<SharedString
 }
 
 impl ReceiptBrowser {
+    pub(super) fn is_empty(&self) -> bool {
+        self.page
+            .as_ref()
+            .is_some_and(|page| page.receipts.is_empty())
+    }
     pub(super) fn clear(&mut self) {
         *self = Self::default();
     }
@@ -113,6 +254,8 @@ impl ReceiptBrowser {
             rows.push(CachedReceipt {
                 receipt: receipt.clone(),
                 evidence: validate(receipt, session)?,
+                summary: receipt_summary(receipt).into(),
+                guidance: receipt_guidance(&receipt.tool_name),
             });
             previous = Some(id);
         }
@@ -152,6 +295,70 @@ impl ReceiptBrowser {
 }
 
 impl Waku {
+    pub(super) fn open_deerflow_receipts(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self
+            .selected_session()
+            .filter(|s| s.provider == ProviderKind::DeerFlow)
+        else {
+            return;
+        };
+        let id = session.id;
+        let has_cursor = session.provider_cursor.is_some();
+        let browser = self.deerflow_tasks.entry(id).or_default();
+        browser.show_receipts = true;
+        browser.next = Some(list_action(None, true));
+        self.open_right_panel_surface(RightPanelSurface::DeerFlowTasks, cx);
+        if has_cursor && !self.runtimes.contains_key(&id) {
+            self.start_goal_runtime(id, cx);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn render_deerflow_receipt_recovery(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::current(cx);
+        let Some(session) = self.selected_session() else {
+            return task_text("请选择需要恢复的对话", theme).into_any_element();
+        };
+        let id = session.id;
+        let mut panel = div()
+            .id("df-receipt-recovery")
+            .tab_group()
+            .size_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .p(px(12.0))
+            .child(task_button(
+                "df-receipt-back",
+                "返回运行状态",
+                false,
+                cx,
+                |this, _, cx| this.open_deerflow_tasks(cx),
+            ));
+        if let Some(browser) = self.deerflow_tasks.get(&id) {
+            if browser.connection.is_empty() {
+                panel = panel
+                    .child(task_text(
+                        "需要连接原对话才能读取操作记录。新对话请先发送第一条消息。",
+                        theme,
+                    ))
+                    .child(task_button(
+                        "df-receipt-connect",
+                        "连接原对话",
+                        self.goal_runtime_starts.contains(&id) || session.provider_cursor.is_none(),
+                        cx,
+                        |this, _, cx| this.open_deerflow_receipts(cx),
+                    ));
+            }
+            if let Some(error) = &browser.error {
+                panel = panel.child(task_text(error.clone(), theme));
+            }
+            panel = panel.child(self.render_deerflow_receipts(id, browser, cx));
+        }
+        panel.into_any_element()
+    }
+
     fn open_receipt_review(
         &mut self,
         session: Uuid,
@@ -198,6 +405,7 @@ impl Waku {
             note,
             evidence,
             confirmation: None,
+            show_evidence: false,
             _subscriptions: subscriptions,
         });
         cx.notify();
@@ -249,11 +457,19 @@ impl Waku {
             || browser.connection.is_empty()
             || !browser.capabilities.tool_receipts;
         let mut panel = div().id("df-tool-receipts").tab_group().flex().flex_col().gap(px(8.0))
-            .child(task_text("工具结果核对", theme))
-            .child(task_text("结果不确定的调用需要先核实实际效果。核对只保存说明和结论，不重新执行工具；全部核对完成后可发送新消息。", theme))
+            .child(task_text("确认工具结果", theme))
+            .child(task_text("上一次操作出错或中断后，可能已经产生了效果。为避免重复操作，需要先确认实际结果。", theme))
+            .child(task_text("1. 查看下方操作及原因。\n2. 检查对应文件、应用或网站，再填写你看到的结果。\n3. 确认完成后，重新发送消息继续。这里不会重试任何工具。", theme))
             .child(div().flex().flex_wrap().gap(px(6.0))
-                .child(task_button("df-receipts-load", "读取待核对回执", disabled, cx, move |this, _, cx| this.request_deerflow_task(session, list_action(None, true), cx)))
-                .child(task_button("df-receipts-all", "查看全部工具回执", disabled, cx, move |this, _, cx| this.request_deerflow_task(session, list_action(None, false), cx))));
+                .child(task_button("df-receipts-load", "刷新待确认操作", disabled, cx, move |this, _, cx| this.request_deerflow_task(session, list_action(None, true), cx)))
+                .child(task_button("df-receipts-all", "查看全部操作记录", disabled, cx, move |this, _, cx| this.request_deerflow_task(session, list_action(None, false), cx))));
+        if browser.pending.is_some()
+            || browser.next.is_some()
+                && !browser.connection.is_empty()
+                && browser.capabilities.tool_receipts
+        {
+            panel = panel.child(task_text("正在读取或保存，请稍候…", theme));
+        }
         if !browser.capabilities.tool_receipts && !browser.connection.is_empty() {
             panel = panel.child(task_text(
                 "当前服务未提供分页回执核对能力，请升级 Go harness。",
@@ -264,9 +480,15 @@ impl Waku {
             if page.receipts.is_empty() {
                 panel = panel.child(task_text(
                     if browser.receipts.uncertain_only {
-                        "当前没有待核对回执。"
+                        if browser.pending.is_some() || browser.next.is_some() || browser.error.is_some() {
+                            "请等待查询完成；如果读取失败，请重新连接或刷新后再确认是否可以继续。"
+                        } else if browser.recovery_required {
+                            "本页没有更多操作。请点击「刷新待确认操作」检查是否还有未处理的项目。"
+                        } else {
+                            "没有待确认的操作。你可以回到输入框，重新发送消息继续；不会自动重发之前的消息，也不会修复文件权限等原始问题。"
+                        }
                     } else {
-                        "当前没有工具回执。"
+                        "当前没有操作记录。"
                     },
                     theme,
                 ));
@@ -277,20 +499,10 @@ impl Waku {
                     .flex()
                     .flex_col()
                     .gap(px(4.0))
-                    .child(task_text(
-                        format!(
-                            "{} · {} · v{}\nrun: {}\ncall: {}",
-                            row.receipt.tool_name,
-                            row.receipt.state,
-                            row.receipt.version,
-                            row.receipt.run_id,
-                            row.receipt.tool_call_id
-                        ),
-                        theme,
-                    ))
+                    .child(task_text(row.summary.clone(), theme))
                     .child(task_button(
                         SharedString::from(format!("df-receipt-copy-{index}")),
-                        "复制完整证据",
+                        "复制技术详情",
                         false,
                         cx,
                         move |_, _, cx| {
@@ -300,7 +512,7 @@ impl Waku {
                 if row.receipt.state == "uncertain" {
                     item = item.child(task_button(
                         SharedString::from(format!("df-receipt-review-{index}")),
-                        "查看并核对此调用…",
+                        "检查并确认结果…",
                         disabled,
                         cx,
                         move |this, window, cx| {
@@ -317,7 +529,7 @@ impl Waku {
                 );
                 panel = panel.child(task_button(
                     "df-receipts-next",
-                    "下一页回执",
+                    "下一页操作",
                     disabled,
                     cx,
                     move |this, _, cx| this.request_deerflow_task(session, action.clone(), cx),
@@ -325,9 +537,19 @@ impl Waku {
             }
         }
         if let Some(inputs) = &browser.receipts.review {
-            if browser.receipts.rows.get(inputs.index).is_some() {
+            if let Some(row) = browser.receipts.rows.get(inputs.index) {
                 panel = panel
-                    .child(
+                    .child(task_text(row.summary.clone(), theme))
+                    .child(task_text(row.guidance, theme))
+                    .child(task_text("已完成：实际结果符合预期。\n完全没有变化：已核实该操作没有产生任何效果。\n只完成一部分或无法判断：暂时不要提交，保留暂停状态。确认不会修复权限或重新执行操作。", theme))
+                    .child(task_button("df-receipt-toggle-details", if inputs.show_evidence { "收起技术详情" } else { "展开技术详情（错误与执行证据）" }, false, cx, move |this, _, cx| {
+                        if let Some(review) = this.deerflow_tasks.get_mut(&session).and_then(|b| b.receipts.review.as_mut()) {
+                            review.show_evidence = !review.show_evidence;
+                        }
+                        cx.notify();
+                    }));
+                if inputs.show_evidence {
+                    panel = panel.child(
                         div()
                             .id("df-receipt-evidence")
                             .h(px(180.0))
@@ -336,13 +558,18 @@ impl Waku {
                             .border_1()
                             .border_color(theme.border)
                             .child(inputs.evidence.clone()),
-                    )
+                    );
+                }
+                panel = panel
                     .child(task_text("核对人", theme))
                     .child(TextField::new(
                         "df-receipt-reviewer",
                         inputs.reviewer.clone(),
                     ))
-                    .child(task_text("实际核实说明（必填）", theme))
+                    .child(task_text(
+                        "你检查了哪里、看到了什么？（必填，不要填写密码或密钥）",
+                        theme,
+                    ))
                     .child(
                         div()
                             .id("df-receipt-note")
@@ -372,7 +599,7 @@ impl Waku {
                         ))
                         .child(task_button(
                             "df-receipt-submit",
-                            "提交这份核对",
+                            "确认保存结果（不会重试操作）",
                             disabled,
                             cx,
                             move |this, _, cx| {
@@ -399,7 +626,7 @@ impl Waku {
                     panel = panel
                         .child(task_button(
                             "df-receipt-completed",
-                            "记录已确认完成…",
+                            "我已检查，操作已完成…",
                             disabled,
                             cx,
                             move |this, _, cx| {
@@ -408,7 +635,7 @@ impl Waku {
                         ))
                         .child(task_button(
                             "df-receipt-no-effect",
-                            "记录已确认未产生效果…",
+                            "我已检查，完全没有变化…",
                             disabled,
                             cx,
                             move |this, _, cx| {
@@ -418,7 +645,7 @@ impl Waku {
                 }
                 panel = panel.child(task_button(
                     "df-receipt-cancel",
-                    "取消核对",
+                    "暂时无法确认，保持暂停",
                     disabled,
                     cx,
                     move |this, _, cx| {

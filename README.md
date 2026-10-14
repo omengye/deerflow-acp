@@ -2,9 +2,9 @@
 
 本分支以 [CloudWeGo Eino](https://github.com/cloudwego/eino) 为唯一 Agent 运行时，提供 Go SDK、ACP stdio、本地 daemon 和 Waku 桌面。Waku 与 ACP Bridge 使用 Rust，模型和工具由 Go harness 执行。本轮不提供 HTTP 服务。
 
-当前版本固定 Eino `v0.10.0-alpha.35`、Go `1.26.8`。子代理、技能审查发布和无 Python 源码迁移仍在实施中；完整范围及验收结果见[实施方案](docs/eino-subagents-skill-evolution-plan.md)和[实施记录](docs/eino-subagents-skill-evolution-status.md)。当前源码通过的测试不等同于新的桌面发行包已验收。
+当前版本固定 Eino `v0.10.0-alpha.35`、Go `1.26.8`。已实现子代理、技能审查发布和原生 Go 交付；完整范围及验收结果见[实施方案](docs/eino-subagents-skill-evolution-plan.md)和[实施记录](docs/eino-subagents-skill-evolution-status.md)。当前源码通过的测试不等同于新的桌面发行包已验收。
 
-2026-10-12 发布候选的验证、阻塞项与升级边界见[发版检查记录](docs/release-readiness-20261012.md)。GitHub Windows 构建成功前不视为可分发版本，协议 fixture 也不替代真实 GUI 和在线模型验收。
+当前 Windows 单用户桌面 MVP 的范围与检查结果见[2026-10-14 发版检查记录](docs/release-readiness-20261014.md)。新技能首次发布和超出自动维护范围的变更需要人工审核，符合条件的已有技能小补丁自动发布；不以新技能全自动发布作为本版目标。GitHub Windows 构建成功前不视为已验证的分发包，协议 fixture 也不替代真实 GUI 和在线模型验收。此前的[发版检查记录](docs/release-readiness-20261012.md)保留历史证据。
 
 ## 使用入口
 
@@ -29,7 +29,7 @@ Windows MVP 统一交付入口支持桌面、独立 ACP 或全部包，并在归
 # -Package ACP 或 -Package All
 ```
 
-正式 ZIP 要求干净、已提交的工作树；未提交开发构建使用 `-Development`，仅输出目录。GitHub Actions 的 **Build Windows MVP** 可以选择包类型；现有桌面和 ACP Release 工作流复用同一检查流程。当前 MVP 判断及验收边界见[评估记录](docs/mvp-readiness-20261006.md)，完整命令和产物见[Windows 构建说明](docs/windows-desktop-actions.md)。
+正式 ZIP 要求干净、已提交的工作树；未提交开发构建使用 `-Development`，仅输出目录。GitHub Actions 的 **Build Windows MVP** 可以选择包类型；现有桌面和 ACP Release 工作流复用同一检查流程。当前 MVP 判断及验收边界见[发版检查记录](docs/release-readiness-20261014.md)，完整命令和产物见[Windows 构建说明](docs/windows-desktop-actions.md)。
 
 需要 Git、Go 和 Rust。Windows 桌面还需要 MSVC、Windows SDK、CMake 与 shader 编译器，详见[桌面构建说明](docs/windows-desktop-actions.md)。项目构建和运行不使用 Python、uv 或 pip。
 
@@ -53,7 +53,9 @@ Waku 桌面发行构建使用 `-Configuration Release -CreateZip`，要求干净
 
 ## 配置与启动
 
-桌面首次启动会创建 `user-data`。在 DeerFlow 设置中填入模型 Provider、模型 ID、Base URL 和 API Key，保存并应用，然后创建会话。支持的 Provider 为 `openai`（含兼容协议服务）和 `claude`，所有模型请求均使用流式传输。
+桌面首次启动使用简体中文并创建 `user-data`。在 DeerFlow 设置中填入模型 Provider、模型 ID、Base URL 和 API Key，保存并应用，然后创建会话。支持的 Provider 为 `openai`（含兼容协议服务）和 `claude`，所有模型请求均使用流式传输。记忆、子代理及技能自动维护已预配置，维护模型默认继承所选模型，无需逐项填写；升级不覆盖已有语言和配置。
+
+新桌面配置默认允许本地命令和宿主工具，并使用 `dangerous` 权限模式，不是隔离沙箱。技能维护可能产生模型费用，每 UTC 日共享上限为 1000 次调用、600 万 Token，学习子额度为 50 次、100 万 Token；单维护任务 600 秒，并发 5。额度是上限而非固定消耗，也不等同于服务商货币账单。使用前应确认这些权限和费用符合预期，可在设置中调整或关闭新维护。搜索服务密钥和 OpenCLI 浏览器依赖为可选配置，不影响基本聊天。
 
 源码开发可从 [config.example.yaml](config.example.yaml) 复制配置；示例使用 OpenAI 兼容协议及 `DASHSCOPE_API_KEY` 环境变量。`models[].provider` 和 `sandbox.provider` 使用原生名称，工具按 `name` 选择。相对技能路径以配置文件所在目录解析。
 
@@ -74,10 +76,12 @@ ACP 客户端命令填写 Bridge 的绝对路径，使用相同的环境与 `--r
 - 会话持久化、流式响应、模型选择、工具权限、中断恢复、工具回执及效果核对。
 - 前后台子代理、角色配置、独立模型与工具/技能范围、共享根任务预算、嵌套等待及结果续跑；桌面[运行状态面板](docs/desktop-runtime-status.md)展示 Todo 和 Agent 执行状态，任务管理保留在详情中。MCP 资源重建及桌面真实交互仍待完成验收。
 - Go 原生网页搜索/抓取/图片搜索、文件工具、命令执行和 `host_opencli`。[工具配置说明](docs/go-native-tools.md)列出支持参数。OpenCLI 需要用户安装 OpenCLI/Node.js，浏览器命令还需要其浏览器桥接。
-- 技能安装、启停、不可变版本、候选、审查和发布/回滚；生成作业使用独立预算，真实读取、人工反馈及缺失报告持久保存。可选的重复纠正、缺失报告和成功工具流程发现会生成候选。可选[行为评测](go-harness/internal/skills/evolution/behavior.md)由 Eino 在隔离工作区执行基础版与候选版，Go 检查实际产物并保存对照报告。默认人工审核；`auto_patch` 仅自动发布通过审查与行为评测的已有托管技能小补丁，观察期按当前可信质量反馈决定通过或回滚。新建、删除及支持文件改动保留人工审核。Waku 已接入配置、证据、作业、审查和观察列表；自动功能默认关闭，真实模型效果及桌面交互由实际使用验收。
+- 技能安装、启停、不可变版本、候选、审查和发布/回滚；维护使用有界共享预算，真实读取、人工反馈及缺失报告持久保存。重复纠正、缺失报告和成功工具流程发现可生成候选。[行为评测](go-harness/internal/skills/evolution/behavior.md)由 Eino 在隔离工作区执行基础版与候选版，Go 检查实际产物并保存对照报告。新桌面配置使用 `auto_patch`，仅自动发布通过审查、证明实际改善且无回归的已有受管技能小补丁；当前默认最多修改 40 行、每天发布 2 次。新技能首次发布、删除及支持文件等超范围改动保留人工审核。设置中的技能中心提供“我的技能 / 进化记录 / 需要处理 / 自动化设置”，后台等待不计为人工待办。
 - Waku 设置按配置工具与运行 daemon 的能力显示，保存与应用状态分别处理；字段清理范围见[设置审计](docs/eino-waku-settings-audit.md)。
 
-随包 YAML 配置默认关闭命令执行、OpenCLI、子代理、付费技能生成、重复纠正自动选择和行为评测，使用前需显式启用。无配置文件的 SDK/ACP 默认值见 Go harness 文档。Go daemon 缺失时启动报错；没有 Python 后端回退。
+桌面首次初始化自动写入可信 SearXNG 评测文件，但不安装个人技能、搜索地址或凭证。该套件只覆盖 `managed-evolution/searxng-web-search`；其他技能首次人工发布后仍需接入各自的可信评测，才可能自动维护。系统支持[多技能评测注册表](docs/skill-behavior-registry.md)，未覆盖时显示部分可用并保留审核，不假定所有技能已就绪。发布后观察仅采用现有可信反馈；关闭新自动发布后，服务仍可继续处理已有观察。
+
+上述自动化默认值仅适用于新桌面配置。独立 ACP 的 `resources/default-config.yaml` 和源码 `config.example.yaml` 保持显式启用策略；无配置文件的 SDK/ACP 默认值见 Go harness 文档。Go daemon 缺失时启动报错；没有 Python 后端回退。
 
 ## 数据与升级
 
@@ -87,7 +91,7 @@ MVP 支持显式附加 UTF-8 TXT、Markdown、CSV、TSV、JSON、YAML 和 LOG �
 
 默认不限制任务总执行时间、前台排队时间或原生子代理的累计执行时间，`run_timeout_seconds: 0` 表示不限时，可持续处理跨天任务；上下文自动压缩仍启用。工具调用、连接握手、后台租约和退出清理保留各自的超时与失效保护；模型请求仍可取消，不额外承诺所有 Provider 均有单次请求时限。已有配置中的显式时限不被静默覆盖，可在设置中改为 0；已有持久任务保留原预算，新请求使用新策略。持续运行需要主机与服务保持可用，这不等于断电后无条件自动完成。
 
-DeerFlow 常用设置提供本地能力就绪检查，不访问网络或消耗模型额度；模型和 OpenCLI 的实际连接能力需要另行主动验证。“自动起草，人工审核”需要用户确认、保存并应用，沿用现有模型与预算，关闭跨会话归并、新技能自动发现和自动发布。来源配置、聊天贡献和各阶段作业可在技能中心核对。实施与验收记录见 `docs/mvp-closure-20261011.md`。
+DeerFlow 常用设置提供本地能力就绪检查，不访问网络或消耗模型额度；模型和 OpenCLI 的实际连接能力需要另行主动验证。已有配置切换维护方式仍须保存并应用，不静默增加预算、扩展来源或开启跨会话共享。来源配置、聊天贡献和各阶段作业可在技能中心核对。当前实施范围见[技能自动维护说明](docs/skill-autonomy-ui-plan-20261013.md)，此前验收记录保留在 `docs/mvp-closure-20261011.md`。
 
 桌面服务诊断日志位于 `user-data/logs/deerflow-acpd-<pid>-<唯一标识>.jsonl`，设置概览显示当前日志路径。日志记录启动/退出阶段和错误分类，不记录配置、模型/工具内容或原始错误文本；每次启动独立保存并轮转。独立 daemon 可通过 `--log-dir` 或 `DEERFLOW_GO_LOG_DIR` 指定目录，详见[日志说明](go-harness/internal/diagnostics/README.md)。
 

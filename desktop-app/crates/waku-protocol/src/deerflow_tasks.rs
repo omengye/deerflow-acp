@@ -383,6 +383,14 @@ pub struct ReceiptPage {
     pub consistency: String,
 }
 
+pub const RECEIPT_REVIEW_MESSAGE: &str = "需要确认上一次操作的结果，才能继续对话。\n某个工具执行出错或被中断，系统暂时无法确认它是否已完成。为避免重复删除、写入或发送，已暂停后续操作。\n点击对话上方的「确认工具结果」，查看原因并确认实际结果。确认不会重试工具；完成后请重新发送消息。\n如果无法确认，请选择「暂时无法确认」，不要猜测。";
+
+pub fn needs_receipt_review(message: &str) -> bool {
+    message.starts_with("需要确认上一次操作的结果")
+        || message.contains("reconciliation_required")
+        || message.contains("Uncertain tool effects require review")
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolReceipt {

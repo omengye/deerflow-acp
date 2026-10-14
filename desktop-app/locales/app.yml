@@ -2191,7 +2191,7 @@ settings.deerflow_tools:
 settings.deerflow_advanced:
   en: Advanced
 settings.deerflow_skill_center:
-  en: Skill Center
+  en: Skills
 settings.deerflow_models_keywords:
   en: models provider api endpoint key vision context
 settings.deerflow_tools_keywords:

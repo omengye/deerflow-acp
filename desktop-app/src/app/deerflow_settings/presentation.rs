@@ -7,8 +7,8 @@ pub(super) enum SkillCenterTab {
     Catalog,
     Review,
     Generation,
-    Learning,
     History,
+    Automation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,24 +17,37 @@ pub(super) enum EvolutionMode {
     Manual,
     Discover,
     ReviewLearning,
+    Automatic,
 }
 
 impl EvolutionMode {
     fn label(self) -> &'static str {
         match self {
-            Self::Off => "关闭",
+            Self::Off => "关闭新维护",
             Self::Manual => "手动改进，审核发布",
             Self::Discover => "自动发现，审核发布",
-            Self::ReviewLearning => "自动起草，人工审核",
+            Self::ReviewLearning => "审核后采用",
+            Self::Automatic => "自动维护（推荐）",
         }
     }
 
     fn description(self) -> &'static str {
         match self {
-            Self::Off => "关闭新的生成、学习、发现、评测和经验自动补丁工作；保留模型、来源、额度和历史。选择仅修改草稿，保存并应用后生效。",
-            Self::Manual => "手动提交和生成候选，发布需人工审核；关闭自动发现、学习和经验自动补丁。模型、来源、额度和行为评测参数保留，保存并应用后生效。",
-            Self::Discover => "通过纠正、缺失报告和成功流程自动发现候选，发布需人工审核；关闭经验学习和经验自动补丁。模型、来源、额度和行为评测参数保留，保存并应用后生效。",
-            Self::ReviewLearning => "提取、归并和匹配经验，为已有技能自动起草；发布需人工审核，可能消耗维护模型额度。不回填旧聊天。另行配置的发现规则以高级设置为准；切换此方式时不启用跨会话共享、新技能发现或自动发布。选择仅修改草稿，保存并应用后生效。",
+            Self::Off => {
+                "关闭新的生成、学习、发现、评测和经验自动补丁工作；保留模型、来源、额度和历史。选择仅修改草稿，保存并应用后生效。"
+            }
+            Self::Manual => {
+                "手动提交和生成候选，发布需人工审核；关闭自动发现、学习和经验自动补丁。模型、来源、额度和行为评测参数保留，保存并应用后生效。"
+            }
+            Self::Discover => {
+                "通过纠正、缺失报告和成功流程自动发现候选，发布需人工审核；关闭经验学习和经验自动补丁。模型、来源、额度和行为评测参数保留，保存并应用后生效。"
+            }
+            Self::ReviewLearning => {
+                "提取、归并和匹配经验，为已有技能自动起草；发布需人工审核，可能消耗维护模型额度。不回填旧聊天。另行配置的发现规则以高级设置为准；切换此方式时不启用跨会话共享、新技能发现或自动发布。选择仅修改草稿，保存并应用后生效。"
+            }
+            Self::Automatic => {
+                "授权已配置来源中符合条件的已有受管技能自动采用小补丁，并执行安全、质量和可信行为评测。首次使用已预置维护模型继承、额度和宿主测试套件，无需逐项设置；没有对应覆盖的技能不会自动发布。单任务草案等待新证据，新技能、内置覆盖和超范围改动仍需确认。不扩大来源、跨会话共享或维护额度；保存并应用后生效。"
+            }
         }
     }
 }
@@ -59,7 +72,7 @@ const EVOLUTION_PATHS: &[&str] = &[
 
 fn mode_paths(mode: EvolutionMode) -> &'static [&'static str] {
     match mode {
-        EvolutionMode::Off => EVOLUTION_PATHS,
+        EvolutionMode::Off | EvolutionMode::Automatic => EVOLUTION_PATHS,
         EvolutionMode::Manual | EvolutionMode::Discover | EvolutionMode::ReviewLearning => {
             &EVOLUTION_PATHS[..14]
         }
@@ -71,7 +84,18 @@ pub(super) fn evolution_mode(doc: &Value) -> Option<EvolutionMode> {
     if e["enabled"] == false {
         return Some(EvolutionMode::Off);
     }
-    if e["enabled"] != true || e["mode"] != "review" || e["generation"]["enabled"] != true {
+    if e["enabled"] != true || e["generation"]["enabled"] != true {
+        return None;
+    }
+    if e["mode"] == "auto_patch" {
+        return (EVOLUTION_PATHS[6..11]
+            .iter()
+            .all(|path| doc.pointer(path) == Some(&json!(true)))
+            && e["auto_patch"]["experience_patterns_enabled"] == true
+            && e["behavior"]["enabled"] == true)
+            .then_some(EvolutionMode::Automatic);
+    }
+    if e["mode"] != "review" {
         return None;
     }
     // Extra correction/report/workflow triggers do not change the review-draft
@@ -113,6 +137,13 @@ fn set_evolution_mode(doc: &mut Value, mode: EvolutionMode) {
     if mode == EvolutionMode::Off {
         for path in &EVOLUTION_PATHS[2..] {
             set_value(doc, path, json!(false));
+        }
+        return;
+    }
+    if mode == EvolutionMode::Automatic {
+        set_value(doc, EVOLUTION_PATHS[1], json!("auto_patch"));
+        for index in [2, 6, 7, 8, 9, 10, 13, 14] {
+            set_value(doc, EVOLUTION_PATHS[index], json!(true));
         }
         return;
     }
@@ -224,6 +255,20 @@ pub(super) fn common_fields(doc: &Value) -> Vec<Field> {
     fields
 }
 
+fn model_field_visible(key: &str, advanced: bool) -> bool {
+    advanced
+        || matches!(
+            key,
+            "name"
+                | "display_name"
+                | "provider"
+                | "model"
+                | "base_url"
+                | "api_key"
+                | "clear_api_key"
+        )
+}
+
 pub(super) fn visible_field(state: &DeerFlowSettings, field: &Field) -> bool {
     if state.search_target.as_deref() == Some(&field.path) || state.errors.contains_key(&field.path)
     {
@@ -231,18 +276,7 @@ pub(super) fn visible_field(state: &DeerFlowSettings, field: &Field) -> bool {
     }
     let key = field.path.rsplit('/').next().unwrap_or("");
     match state.section {
-        Section::Models => {
-            state.advanced
-                || matches!(
-                    key,
-                    "display_name"
-                        | "provider"
-                        | "model"
-                        | "base_url"
-                        | "api_key"
-                        | "clear_api_key"
-                )
-        }
+        Section::Models => model_field_visible(key, state.advanced),
         Section::Tools => {
             state.advanced
                 || matches!(
@@ -668,7 +702,11 @@ pub(super) fn page_for_section(section: Section) -> SettingsPage {
 impl Waku {
     fn deerflow_select_evolution_mode(&mut self, mode: EvolutionMode, cx: &mut Context<Self>) {
         let state = &mut self.deerflow_settings;
-        if !state.can_edit() || !mode_paths(mode).iter().all(|path| state.can_edit_field(path)) {
+        if !state.can_edit()
+            || !mode_paths(mode)
+                .iter()
+                .all(|path| state.can_edit_field(path))
+        {
             return;
         }
         let Some(doc) = state.draft.as_mut() else {
@@ -893,15 +931,14 @@ impl Waku {
             .anchor_scroll(state.field_anchors.get("/skill_evolution/enabled").cloned())
             .child(df_label(
                 "技能改进方式",
-                "选中项高亮；切换仅修改草稿，保存并应用后生效。生成和审查可能产生模型费用；新版本发布需人工审核。",
+                "切换仅修改草稿，保存并应用后授权生效。自动维护只采用通过可信评测的已有技能小改动，不增加额度或权限。",
                 theme,
             ));
         let mut choices = div().flex().flex_wrap().gap(px(6.0));
         for mode in [
-            EvolutionMode::Off,
-            EvolutionMode::Manual,
-            EvolutionMode::Discover,
+            EvolutionMode::Automatic,
             EvolutionMode::ReviewLearning,
+            EvolutionMode::Off,
         ] {
             let selected = current == Some(mode);
             let editable = state.can_edit()
@@ -959,6 +996,11 @@ impl Waku {
             |this, _, cx| this.open_deerflow_skill_center(cx),
         ));
         div()
+            .child(df_group(theme).child(df_label(
+                "首次使用只需配置模型",
+                "在“模型”中填写服务地址、模型 ID 和密钥并保存应用，即可开始使用。新配置已预置记忆、子代理、技能学习、自动维护及预算；维护调用可能产生费用，可随时暂停。可信评测覆盖外的技能和新技能仍需审核；搜索密钥及浏览器依赖为可选配置，不影响基本聊天。已有配置保持原样。",
+                theme,
+            )))
             .child(self.render_deerflow_readiness(theme, cx))
             .child(
                 group
@@ -1029,7 +1071,10 @@ impl Waku {
     ) -> AnyElement {
         let state = &self.deerflow_settings;
         let mut body = div();
-        if state.section == Section::Skills {
+        if state.section == Section::Skills
+            || state.section == Section::SkillCenter
+                && state.skill_center_tab == SkillCenterTab::Automation
+        {
             for &(key, label) in SKILL_GROUPS {
                 let selected = state
                     .search_target
@@ -1106,27 +1151,42 @@ impl Waku {
     ) -> AnyElement {
         let state = &self.deerflow_settings;
         let mut body = div();
+        body = body.child(df_label(
+            state
+                .skill_browser
+                .auto_patch
+                .readiness_label
+                .as_deref()
+                .unwrap_or("维护状态尚未加载"),
+            if state.dirty || state.needs_apply {
+                "配置有尚未应用的修改；实际维护状态以后台回执为准。"
+            } else {
+                "查看当前技能与进化结果。新技能和超范围改动仍需确认；正常等待不作为故障。"
+            },
+            theme,
+        ));
         let mut tabs = div().mt(px(12.0)).flex().flex_wrap().gap(px(6.0));
         for (tab, label) in [
             (SkillCenterTab::Catalog, "我的技能"),
-            (SkillCenterTab::Review, "待审核"),
-            (SkillCenterTab::Generation, "生成记录"),
-            (SkillCenterTab::Learning, "学习来源"),
-            (SkillCenterTab::History, "发布历史"),
+            (SkillCenterTab::History, "进化记录"),
+            (SkillCenterTab::Review, "需要处理"),
+            (SkillCenterTab::Automation, "自动化设置"),
         ] {
             tabs = tabs.child(df_button(
                 SharedString::from(format!("df-center-{label}")),
                 if tab == SkillCenterTab::Review {
-                    let count = state
-                        .proposals
-                        .iter()
-                        .filter(|proposal| proposal["status"] == "pending_review")
-                        .count();
-                    if count > 0 {
-                        format!("待审核 · 本页 {count}")
-                    } else {
-                        label.to_owned()
-                    }
+                    state
+                        .skill_browser
+                        .auto_patch
+                        .needs_attention
+                        .map(|count| {
+                            if count > 0 {
+                                format!("需要处理 · {count}")
+                            } else {
+                                label.to_owned()
+                            }
+                        })
+                        .unwrap_or_else(|| "需要处理 · 未加载".into())
                 } else {
                     label.to_owned()
                 },
@@ -1138,6 +1198,8 @@ impl Waku {
                     this.deerflow_settings.skill_center_tab = tab;
                     this.deerflow_settings.show_more = false;
                     this.settings_scroll.set_offset(gpui::Point::default());
+                    this.deerflow_rebind(cx);
+                    this.deerflow_queue_skill_center(cx);
                     cx.notify();
                 },
             ));
@@ -1162,20 +1224,20 @@ impl Waku {
                 ))
                 .child(df_button(
                     "df-center-rules",
-                    "维护设置",
+                    "自动化设置",
                     state.busy(),
                     false,
                     theme,
                     cx,
                     |this, _, cx| {
-                        this.open_settings_page(SettingsPage::DeerFlowAdvanced, cx);
-                        this.deerflow_select_section(Section::Skills, cx);
+                        this.deerflow_settings.skill_center_tab = SkillCenterTab::Automation;
+                        this.deerflow_rebind(cx);
+                        cx.notify();
                     },
                 )),
         );
         body = body.child(self.render_deerflow_skill_pending(theme, cx));
         match state.skill_center_tab {
-            SkillCenterTab::Learning => body = body.child(self.render_deerflow_learning(theme, cx)),
             SkillCenterTab::Catalog => {
                 body = body
                     .child(self.render_deerflow_skill_catalog(theme, cx))
@@ -1229,6 +1291,37 @@ impl Waku {
                 body = body
                     .child(self.render_deerflow_proposals(theme, cx))
                     .child(self.render_deerflow_auto_patch(theme, cx))
+                    .child(df_button(
+                        "df-center-activity-details",
+                        if state.show_more {
+                            "收起学习与生成详情"
+                        } else {
+                            "学习与生成详情"
+                        },
+                        state.busy(),
+                        state.show_more,
+                        theme,
+                        cx,
+                        |this, _, cx| {
+                            this.deerflow_settings.show_more = !this.deerflow_settings.show_more;
+                            cx.notify();
+                        },
+                    ));
+                if state.show_more {
+                    body = body
+                        .child(self.render_deerflow_generation(theme, cx))
+                        .child(self.render_deerflow_discovery(theme, cx))
+                        .child(self.render_deerflow_learning(theme, cx));
+                }
+            }
+            SkillCenterTab::Automation => {
+                let doc = state.draft.as_ref().unwrap_or(&Value::Null);
+                let e = &doc["skill_evolution"];
+                body = body.child(self.render_deerflow_common(theme, cx))
+                    .child(df_group(theme).child(df_label("额度（编辑草稿）", format!("维护每日 {} 次 / {} Token · 学习每日 {} 次 / {} Token（包含于总额度）\n并发上限 {} · 单作业 {} 秒。实际生效配置以保存并应用回执为准；额度按 UTC 日重置。",
+                        e["budget"]["max_daily_model_calls"], e["budget"]["max_daily_tokens"], e["learning"]["max_daily_model_calls"], e["learning"]["max_daily_tokens"], e["budget"]["workers"], e["budget"]["max_job_seconds"]), theme)))
+                    .child(self.render_deerflow_auto_patch(theme, cx))
+                    .child(self.render_deerflow_form_fields(theme, cx));
             }
         }
         body.into_any_element()
@@ -1249,7 +1342,7 @@ fn learning_setup_hint(doc: &Value) -> String {
             .iter()
             .all(|key| e["learning"][key].as_u64().is_some_and(|n| n > 0));
     format!(
-        "草稿检查：技能系统 {}；维护与学习额度 {}。\n先确认模型和可维护的技能来源，再保存并应用。此方式只改进已匹配的现有技能；只有内置技能、来源不可维护或没有匹配时，不保证产生草稿。\n在技能中心“学习来源”核对运行阶段、聊天贡献、作业等待或失败原因；草稿在“审核”中批准或驳回。未出现提案不等于故障，也不代表任务已完成。",
+        "草稿检查：技能系统 {}；维护与学习额度 {}。\n先确认模型和可维护的技能来源，再保存并应用。此方式只改进已匹配的现有技能；只有内置技能、来源不可维护或没有匹配时，不保证产生草稿。\n在“进化记录 > 学习与生成详情”核对运行阶段、聊天贡献、等待或失败原因；需要人工决策的候选进入“需要处理”。未出现提案不等于故障，也不代表任务已完成。",
         if doc["skills_enabled"] == true {
             "已启用"
         } else {
@@ -1280,6 +1373,80 @@ fn skill_group(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_maintenance_preserves_budget_sources_and_consent() {
+        let mut doc = json!({"skill_sources":{"managed":[{"id":"chosen"}]}, "skill_evolution":{
+            "enabled":true,"mode":"review","generation":{},"learning":{"max_daily_model_calls":50,"cross_session_enabled":false},
+            "discovery":{"experience_new_skills_enabled":false,"repeat_threshold":2},
+            "auto_patch":{},"behavior":{"suite_path":"trusted-registry.json"},"budget":{"max_daily_model_calls":1000}
+        }});
+        let old = doc.clone();
+        set_evolution_mode(&mut doc, EvolutionMode::Automatic);
+        assert_eq!(evolution_mode(&doc), Some(EvolutionMode::Automatic));
+        assert_eq!(doc["skill_sources"], old["skill_sources"]);
+        assert_eq!(
+            doc["skill_evolution"]["budget"],
+            old["skill_evolution"]["budget"]
+        );
+        assert_eq!(
+            doc["skill_evolution"]["learning"]["max_daily_model_calls"],
+            50
+        );
+        assert_eq!(
+            doc["skill_evolution"]["learning"]["cross_session_enabled"],
+            false
+        );
+        assert_eq!(
+            doc["skill_evolution"]["discovery"]["experience_new_skills_enabled"],
+            false
+        );
+        assert_eq!(
+            doc["skill_evolution"]["behavior"]["suite_path"],
+            "trusted-registry.json"
+        );
+        let same = doc.clone();
+        assert!(!select_evolution_mode(&mut doc, EvolutionMode::Automatic));
+        assert_eq!(doc, same);
+        set_evolution_mode(&mut doc, EvolutionMode::ReviewLearning);
+        assert_eq!(evolution_mode(&doc), Some(EvolutionMode::ReviewLearning));
+        assert_eq!(
+            doc["skill_evolution"]["auto_patch"]["experience_patterns_enabled"],
+            false
+        );
+    }
+
+    #[test]
+    fn model_config_name_is_visible_without_more_parameters() {
+        for key in [
+            "name",
+            "display_name",
+            "provider",
+            "model",
+            "base_url",
+            "api_key",
+            "clear_api_key",
+        ] {
+            assert!(
+                model_field_visible(key, false),
+                "{key} should be visible by default"
+            );
+            assert!(model_field_visible(key, true));
+        }
+        for key in [
+            "description",
+            "supports_vision",
+            "context_window",
+            "reasoning_efforts",
+            "output_token_parameter",
+        ] {
+            assert!(
+                !model_field_visible(key, false),
+                "{key} should remain advanced"
+            );
+            assert!(model_field_visible(key, true));
+        }
+    }
 
     fn evolution_document() -> Value {
         json!({"skill_evolution": {
@@ -1401,8 +1568,7 @@ mod tests {
         original["skill_evolution"]["budget"] = json!({"max_daily_model_calls":3});
         original["skill_evolution"]["learning"]["max_daily_tokens"] = json!(123);
         original["skill_evolution"]["discovery"]["new_skill_source_id"] = json!("keep-source");
-        original["skill_evolution"]["behavior"] =
-            json!({"enabled":true,"suite_path":"keep-suite"});
+        original["skill_evolution"]["behavior"] = json!({"enabled":true,"suite_path":"keep-suite"});
         for mode in [
             EvolutionMode::Off,
             EvolutionMode::Manual,

@@ -220,6 +220,7 @@ pub(super) struct DeerFlowSettings {
     pub(super) search_key: Option<String>,
     pub(super) search_catalogue: Vec<presentation::SearchTarget>,
     skill_center_tab: presentation::SkillCenterTab,
+    skill_center_loads: std::collections::VecDeque<Value>,
     show_more: bool,
     readiness: Option<Value>,
     selected_mcp: usize,
@@ -311,6 +312,7 @@ impl DeerFlowSettings {
             search_key: None,
             search_catalogue: Vec::new(),
             skill_center_tab: presentation::SkillCenterTab::default(),
+            skill_center_loads: Default::default(),
             show_more: false,
             readiness: None,
             selected_mcp: 0,
@@ -719,6 +721,40 @@ impl Waku {
             self.deerflow_request("snapshot", json!({}), cx);
         }
         self.deerflow_status(cx);
+        if self.deerflow_settings.section == Section::SkillCenter {
+            self.deerflow_queue_skill_center(cx);
+        }
+    }
+
+    fn deerflow_queue_skill_center(&mut self, cx: &mut Context<Self>) {
+        use presentation::SkillCenterTab;
+        let state = &mut self.deerflow_settings;
+        state.skill_center_loads.clear();
+        state.skill_center_loads.push_back(json!({"operation":"skill.auto_patch.status"}));
+        let query = match state.skill_center_tab {
+            SkillCenterTab::Catalog => Some(json!({"operation":"skill.list","limit":20})),
+            SkillCenterTab::Review => Some(json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":20})),
+            SkillCenterTab::History => Some(json!({"operation":"proposal.history","limit":20})),
+            _ => None,
+        };
+        if let Some(query) = query { state.skill_center_loads.push_back(query); }
+        if state.skill_center_tab == SkillCenterTab::History {
+            state.skill_center_loads.push_back(json!({"operation":"skill.auto_patch.list","limit":20}));
+        }
+        self.deerflow_flush_skill_center(cx);
+    }
+
+    // Entry and response callbacks only; render never schedules I/O.
+    fn deerflow_flush_skill_center(&mut self, cx: &mut Context<Self>) {
+        let state = &mut self.deerflow_settings;
+        if self.settings_page != Some(SettingsPage::DeerFlowSkillCenter) {
+            state.skill_center_loads.clear();
+            return;
+        }
+        if state.busy() || state.applying() || state.status["running"] != true { return; }
+        if let Some(request) = state.skill_center_loads.pop_front() {
+            self.deerflow_request("manage", request, cx);
+        }
     }
 
     fn deerflow_freeze_inputs(&mut self, cx: &mut Context<Self>) {
@@ -757,9 +793,13 @@ impl Waku {
         });
     }
 
-    fn deerflow_request(&mut self, operation: &str, input: Value, cx: &mut Context<Self>) {
+    fn deerflow_request(&mut self, operation: &str, mut input: Value, cx: &mut Context<Self>) {
         if self.deerflow_settings.busy() {
             return;
+        }
+        if operation == "manage" && input["operation"] == "proposal.list"
+            && self.deerflow_settings.skill_browser.auto_patch.needs_attention.is_none() {
+            if let Some(fields) = input.as_object_mut() { fields.remove("needs_attention"); }
         }
         if operation == "manage"
             && (input["operation"]
@@ -944,6 +984,7 @@ impl Waku {
                     && this.deerflow_settings.edit_generation == edits;
                 match result {
                     Err(error) => {
+                        this.deerflow_settings.skill_center_loads.clear();
                         if structured_manage {
                             this.deerflow_settings
                                 .skill_browser
@@ -1013,6 +1054,9 @@ impl Waku {
                             } else {
                                 this.deerflow_managed(&management_request, data, cx);
                             }
+                            if matches!(management_request["operation"].as_str(), Some("proposal.approve" | "proposal.reject" | "proposal.rollback" | "skill.set_enabled")) {
+                                this.deerflow_settings.skill_center_loads.push_back(json!({"operation":"skill.auto_patch.status"}));
+                            }
                         }
                         "check-readiness" => {
                             this.deerflow_settings.readiness = Some(data);
@@ -1059,6 +1103,11 @@ impl Waku {
                     this.deerflow_settings.exit_requested = false;
                     this.deerflow_settings.exit_after_save = false;
                     cx.quit();
+                }
+                if this.deerflow_settings.error.is_none() {
+                    this.deerflow_flush_skill_center(cx);
+                } else {
+                    this.deerflow_settings.skill_center_loads.clear();
                 }
                 cx.notify();
             });
@@ -1215,6 +1264,9 @@ impl Waku {
                     }
                 }
                 this.deerflow_freeze_inputs(cx);
+                if this.deerflow_settings.error.is_none() {
+                    this.deerflow_flush_skill_center(cx);
+                }
                 cx.notify();
             });
         })
@@ -1581,6 +1633,10 @@ impl Waku {
 }
 
 fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
+    if state.section == Section::SkillCenter
+        && state.skill_center_tab == presentation::SkillCenterTab::Automation {
+        return evolution::fields();
+    }
     fields_for_section(state, state.section)
 }
 
@@ -3591,19 +3647,20 @@ impl Waku {
             if history_only {
                 "发布历史"
             } else {
-                "待审核候选"
+                "需要你确认的候选"
             },
             if history_only {
                 "查看已发布修订，核对后可恢复历史版本。"
             } else {
-                "查看候选差异和评测报告，再批准或拒绝。"
+                "仅默认展示宿主判断需要决策的候选。等待证据、观察期、额度或后台检查不计入角标；可展开查看但不能绕过验证。"
             },
             theme,
         ));
         let query = if history_only {
             json!({"operation":"proposal.history","limit":20})
         } else {
-            json!({"operation":"proposal.list","status":"pending_review","limit":20})
+            if state.show_more { json!({"operation":"proposal.list","status":"pending_review","limit":20}) }
+            else { json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":20}) }
         };
         group = group.child(df_button(
             "df-review-refresh",
@@ -3615,7 +3672,17 @@ impl Waku {
             move |this, _, cx| this.deerflow_request("manage", query.clone(), cx),
         ));
         if !history_only {
+            group = group.child(df_button("df-review-waiting", if state.show_more { "收起后台等待候选" } else { "查看后台等待与证据草案" }, unavailable, state.show_more, theme, cx, |this, _, cx| {
+                this.deerflow_settings.show_more = !this.deerflow_settings.show_more;
+                let query = if this.deerflow_settings.show_more { json!({"operation":"proposal.list","status":"pending_review","limit":20}) }
+                    else { json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":20}) };
+                this.deerflow_request("manage", query, cx);
+                cx.notify();
+            }));
+            let mut visible = 0;
             for proposal in &state.proposals {
+                if proposal["disposition"]["needs_attention"] == false && !state.show_more { continue; }
+                visible += 1;
                 let id = proposal["id"].as_str().unwrap_or("").to_owned();
                 let title = format!(
                     "{} / {} · {} · {}",
@@ -3624,7 +3691,7 @@ impl Waku {
                         .unwrap_or("未知来源"),
                     proposal["skill_name"].as_str().unwrap_or("技能"),
                     proposal["action"].as_str().unwrap_or(""),
-                    proposal["status"].as_str().unwrap_or("")
+                    skills::proposal_disposition_label(proposal)
                 );
                 group = group.child(df_button(
                     SharedString::from(format!("df-proposal-{id}")),
@@ -3646,6 +3713,11 @@ impl Waku {
                         );
                     },
                 ));
+            }
+            if visible == 0 {
+                group = group.child(df_label(
+                    if state.skill_browser.auto_patch.needs_attention.is_none() { "处理状态尚未确认" } else { "本页没有需要决策的候选" },
+                    "后台等待不占用你的处理清单。未加载、服务不可达或旧服务缺少分类时，不能将未知数量视为零；总数以宿主角标为准。", theme));
             }
             group = group.child(self.render_skill_page_nav(
                 "proposals",
