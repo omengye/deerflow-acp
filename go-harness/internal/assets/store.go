@@ -106,6 +106,7 @@ func NewStoreWithArtifactLimit(ctx context.Context, path string, db *sql.DB, max
 	s := &Store{db: db, root: root, path: path, lock: lock, staged: make(map[string]*Prepared), maxArtifactBytes: maxArtifactBytes}
 	_, err = db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS harness_assets (id TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES harness_sessions(id),workspace TEXT NOT NULL,path TEXT UNIQUE NOT NULL,metadata BLOB NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS harness_document_text (asset_id TEXT PRIMARY KEY REFERENCES harness_assets(id) ON DELETE CASCADE,sha256 TEXT NOT NULL,version INTEGER NOT NULL,text TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS harness_assets_session ON harness_assets(session_id);
 CREATE TABLE IF NOT EXISTS harness_input_assets (input_id TEXT NOT NULL REFERENCES harness_inputs(id),asset_id TEXT NOT NULL REFERENCES harness_assets(id),PRIMARY KEY(input_id,asset_id));
 CREATE TABLE IF NOT EXISTS harness_artifacts (session_id TEXT NOT NULL REFERENCES harness_sessions(id),run_id TEXT NOT NULL REFERENCES harness_runs(id),tool_call_id TEXT NOT NULL,asset_id TEXT NOT NULL REFERENCES harness_assets(id),PRIMARY KEY(run_id,tool_call_id,asset_id));

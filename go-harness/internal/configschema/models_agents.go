@@ -1,6 +1,7 @@
 package configschema
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -20,6 +21,8 @@ func modelAgentFields() []Field {
 		{Path: "/models/*/base_url", Type: "string", Default: ""},
 		{Path: "/models/*/output_token_parameter", Type: "string", Default: "auto", Enum: []string{"auto", "max_tokens", "max_completion_tokens"}},
 		{Path: "/models/*/supports_vision", Type: "boolean", Default: false},
+		{Path: "/models/*/thinking_parameter", Type: "string", Default: "", Enum: []string{"", "unsupported", "enable_thinking", "thinking_type", "reasoning_effort", "claude"}},
+		numeric("models/*", "thinking_budget_tokens", "integer", 0, 0, (1<<30)-1),
 		{Path: "/models/*/reasoning_efforts", Type: "reasoning_efforts", Nullable: true, Default: nil},
 		numeric("models/*", "context_window", "integer", 0, 0, 1<<30),
 		{Path: "/models/*/clear_api_key", Type: "boolean", Default: false},
@@ -145,7 +148,7 @@ func ValidateModelDraft(model map[string]any) error {
 	}
 	for _, field := range Describe().Fields {
 		if key, ok := strings.CutPrefix(field.Path, "/models/*/"); ok {
-			if key == "reasoning_efforts" || key == "output_token_parameter" {
+			if key == "reasoning_efforts" || key == "output_token_parameter" || key == "thinking_parameter" || key == "thinking_budget_tokens" {
 				continue // Older desktop drafts preserve these optional settings.
 			}
 			if _, exists := model[key]; !exists {
@@ -181,5 +184,29 @@ func validateModelReasoning(model map[string]any) error {
 			efforts = append(efforts, text)
 		}
 	}
-	return harness.ValidateReasoningEfforts(provider, efforts)
+	if err := harness.ValidateReasoningEfforts(provider, efforts); err != nil {
+		return err
+	}
+	thinkingParameter, _ := model["thinking_parameter"].(string)
+	budget := 0
+	if value := model["thinking_budget_tokens"]; value != nil {
+		switch value := value.(type) {
+		case int:
+			budget = value
+		case int64:
+			budget = int(value)
+		case uint64:
+			budget = int(value)
+		case float64:
+			budget = int(value)
+		case json.Number:
+			number, err := value.Int64()
+			if err != nil {
+				return fmt.Errorf("thinking_budget_tokens: %w", err)
+			}
+			budget = int(number)
+		}
+	}
+	// The configuration loader validates against the actual host output limit.
+	return (harness.ThinkingConfig{Parameter: thinkingParameter, BudgetTokens: budget}).Validate(provider, efforts, 1<<30)
 }

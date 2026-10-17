@@ -409,6 +409,10 @@ pub struct ProviderModel {
     pub is_default: bool,
     #[serde(default)]
     pub reasoning_efforts: Vec<ProviderModelOption>,
+    #[serde(default)]
+    pub thinking_modes: Vec<ProviderModelOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_availability: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_reasoning_effort: Option<String>,
     #[serde(default)]
@@ -508,6 +512,8 @@ impl ProviderModel {
             sub_provider: None,
             is_default: false,
             reasoning_efforts: Vec::new(),
+            thinking_modes: Vec::new(),
+            thinking_availability: None,
             default_reasoning_effort: None,
             service_tiers: Vec::new(),
             default_service_tier: None,
@@ -976,6 +982,8 @@ pub struct AgentSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
     /// Selected context window, when the provider exposes more than one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1056,6 +1064,7 @@ impl AgentSession {
             model: None,
             runtime_mode: RuntimeMode::FullAccess,
             reasoning_effort: None,
+            thinking_mode: None,
             service_tier: None,
             context_window: None,
             agent_preset: None,
@@ -1093,6 +1102,7 @@ impl AgentSession {
             model: self.model.clone(),
             runtime_mode: RuntimeMode::default(),
             reasoning_effort: None,
+            thinking_mode: None,
             service_tier: None,
             context_window: None,
             agent_preset: None,
@@ -1878,6 +1888,7 @@ pub enum DriverEvent {
         models: Vec<ProviderModel>,
         model: Option<String>,
         reasoning_effort: Option<String>,
+        thinking_mode: Option<String>,
     },
     /// A provider-owned, automatically generated session title. `None`
     /// clears that fallback but never overwrites a user-owned title.

@@ -26,6 +26,8 @@ func ReasoningEffortAllowed(efforts []string, effort string) bool {
 }
 
 const (
+	// Global adds no session grant or restriction to the host's tool policy.
+	ApprovalGlobal       = "global"
 	ApprovalAsk          = "ask"
 	ApprovalAllowAlways  = "allow_always"
 	ApprovalRejectAlways = "reject_always"

@@ -27,7 +27,12 @@ func proposalManagementError(err error) error {
 		return err
 	}
 	code, message := "operation_failed", "skill management operation failed"
+	var publicationConflict *skills.PublicationConflict
 	switch {
+	case errors.As(err, &publicationConflict):
+		code, message = publicationConflict.Code, publicationConflict.Error()
+	case errors.Is(err, harness.ErrReconciliationRequired):
+		code, message = "publication_reconciliation_required", "Approved publication has not completed; inspect its durable result before retrying."
 	case errors.Is(err, harness.ErrSkillConflict), errors.Is(err, skills.ErrPublicationConflict), errors.Is(err, skillmaintenance.ErrConflict):
 		code, message = "conflict", "Skill state changed; refresh the current record before retrying."
 	case errors.Is(err, harness.ErrSkillValidation):
@@ -123,6 +128,22 @@ func proposalProjection(p harness.SkillProposal) map[string]any {
 	if p.Base.Exists {
 		result["base_sha256"] = p.Base.Version
 	}
+	state, code, retry := "not_approved", p.PublicationError, false
+	if p.Approval != nil {
+		switch p.Status {
+		case "published":
+			state = "published"
+		case "publishing":
+			state, retry = "needs_reconciliation", true
+		case "pending_review":
+			state, retry = "approved_pending", true
+		default:
+			state = "blocked"
+		}
+	} else if p.Status == "published" || p.Status == "publishing" {
+		state = p.Status
+	}
+	result["publication"] = map[string]any{"state": state, "error_code": code, "retryable": retry}
 	return result
 }
 
@@ -136,6 +157,53 @@ func proposalProjections(proposals []harness.SkillProposal) []map[string]any {
 
 func (c *Client) managementProposals(ctx context.Context, request localhost.ManagementRequest) (any, error) {
 	switch request.Operation {
+	case "proposal.publish_retry":
+		if err := proposalFields(request, "proposal_id", "expected_approval_version"); err != nil {
+			return nil, err
+		}
+		id, err := managementID(request.Fields, "proposal_id")
+		if err != nil {
+			return nil, err
+		}
+		state, err := optionalProposalInteger(request.Fields, "expected_approval_version", 0)
+		if err != nil || state < 1 {
+			return nil, managementInvalid("publication retry requires the original approval version")
+		}
+		p, err := c.evolution.RetryPublication(ctx, id, state)
+		if err != nil {
+			if p.ID == id && p.Approval != nil && p.Approval.Review.ExpectedStateVersion == state {
+				mapped := proposalManagementError(err).(*localhost.ManagementError)
+				projection := proposalProjection(p)
+				projection["diff"] = ""
+				mapped.Details = map[string]any{"proposal": projection}
+				return nil, mapped
+			}
+			return nil, err
+		}
+		_, _, catalog, err := c.evolution.Head(ctx, p.Target.SourceID, p.SkillName)
+		return map[string]any{"proposal": proposalProjection(p), "catalog_version": catalog}, err
+	case "proposal.source_review":
+		if err := proposalFields(request, "proposal_id", "expected_state_version", "request_key"); err != nil {
+			return nil, err
+		}
+		id, err := managementID(request.Fields, "proposal_id")
+		if err != nil {
+			return nil, err
+		}
+		state, err := optionalProposalInteger(request.Fields, "expected_state_version", 0)
+		if err != nil || state < 1 {
+			return nil, managementInvalid("source review requires an observed state version")
+		}
+		key, err := managementID(request.Fields, "request_key")
+		if err != nil {
+			return nil, err
+		}
+		p, err := c.evolution.ReviewSource(ctx, id, state, key)
+		if err != nil {
+			return nil, err
+		}
+		_, _, catalog, err := c.evolution.Head(ctx, p.Target.SourceID, p.SkillName)
+		return map[string]any{"proposal": proposalProjection(p), "catalog_version": catalog}, err
 	case "proposal.list", "proposal.history":
 		allowed := []string{"source_id", "name", "status", "cursor", "limit"}
 		if request.Operation == "proposal.history" {
@@ -209,8 +277,12 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 		}
 		// Legacy duplicate reviews can recover the original state version. The
 		// application service still verifies actor, note and idempotency digest.
-		if _, explicit := request.Fields["expected_state_version"]; !explicit && (p.Status == "published" || p.Status == "rejected") {
-			state--
+		if _, explicit := request.Fields["expected_state_version"]; !explicit {
+			if p.Approval != nil && request.Operation == "proposal.approve" {
+				state = p.Approval.Review.ExpectedStateVersion
+			} else if p.Status == "published" || p.Status == "publishing" || p.Status == "rejected" {
+				state--
+			}
 		}
 		base, err := optionalProposalString(request.Fields, "expected_base_sha256", 64)
 		if err != nil {
@@ -235,6 +307,13 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 			p, err = c.evolution.Reject(ctx, id, review)
 		}
 		if err != nil {
+			if request.Operation == "proposal.approve" && p.ID == id && p.Approval != nil && p.Approval.Review == review {
+				mapped := proposalManagementError(err).(*localhost.ManagementError)
+				projection := proposalProjection(p)
+				projection["diff"] = ""
+				mapped.Details = map[string]any{"proposal": projection}
+				return nil, mapped
+			}
 			return nil, err
 		}
 		_, _, catalog, err := c.evolution.Head(ctx, p.Target.SourceID, p.SkillName)

@@ -36,9 +36,10 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
             models,
             model,
             reasoning_effort,
+            thinking_mode,
         } => (
             "deerflowModelsChanged",
-            json!({"models": models, "model": model, "reasoningEffort": reasoning_effort}),
+            json!({"models": models, "model": model, "reasoningEffort": reasoning_effort, "thinkingMode": thinking_mode}),
         ),
         DriverEvent::AutoTitleUpdated(title) => ("autoTitleUpdated", serde_json::to_value(title)?),
         DriverEvent::AvailableCommands(commands) => {
@@ -147,6 +148,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
             models: serde_json::from_value(payload["models"].clone())?,
             model: serde_json::from_value(payload["model"].clone())?,
             reasoning_effort: serde_json::from_value(payload["reasoningEffort"].clone())?,
+            thinking_mode: serde_json::from_value(payload["thinkingMode"].clone())?,
         },
         "autoTitleUpdated" => DriverEvent::AutoTitleUpdated(serde_json::from_value(payload)?),
         "availableCommands" => DriverEvent::AvailableCommands(serde_json::from_value(payload)?),
@@ -312,11 +314,12 @@ mod tests {
             models: vec![crate::model::ProviderModel::new("a", "A")],
             model: Some("a".into()),
             reasoning_effort: Some("high".into()),
+            thinking_mode: Some("off".into()),
         };
         let wire = event_to_wire(event).unwrap();
         assert!(
-            matches!(event_from_wire(wire).unwrap(), DriverEvent::DeerFlowModelsChanged { models, model, reasoning_effort }
-            if models.len() == 1 && model.as_deref() == Some("a") && reasoning_effort.as_deref() == Some("high"))
+            matches!(event_from_wire(wire).unwrap(), DriverEvent::DeerFlowModelsChanged { models, model, reasoning_effort, thinking_mode }
+            if models.len() == 1 && model.as_deref() == Some("a") && reasoning_effort.as_deref() == Some("high") && thinking_mode.as_deref() == Some("off"))
         );
     }
 

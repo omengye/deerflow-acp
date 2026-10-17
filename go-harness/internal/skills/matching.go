@@ -260,14 +260,11 @@ func (a *MatchAccess) BodyTx(ctx context.Context, tx *sql.Tx, inventory MatchInv
 		return "", invalid("matching SKILL.md exceeds bounds")
 	}
 	f := files[index]
-	var data []byte
-	var sha string
-	var size int64
-	err = tx.QueryRowContext(ctx, `SELECT data,hash,size FROM df_skill_files WHERE source_key=? AND name=? AND version=? AND path='SKILL.md' AND length(data)<=?`, e.Target.SourceIdentity, e.Target.Name, e.Head.Version, MaxMatchBodyBytes).Scan(&data, &sha, &size)
+	data, err := ReadStoredFile(ctx, tx, e.Target.SourceIdentity, e.Target.Name, e.Head.Version, "SKILL.md", MaxMatchBodyBytes)
 	if err != nil {
 		return "", err
 	}
-	if sha != f.Hash || size != f.Bytes || int64(len(data)) != size || digest(data) != sha {
+	if int64(len(data)) != f.Bytes || digest(data) != f.Hash {
 		return "", invalid("matching immutable body failed integrity verification")
 	}
 	fm, body, err := parse(data)

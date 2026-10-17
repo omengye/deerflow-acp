@@ -131,11 +131,21 @@ func (s *Service) Load(ctx context.Context, owner, id, cwd string, replay bool, 
 	if err = s.bindResources(ctx, owner, x, servers); err != nil {
 		return x, err
 	}
-	if !harness.ReasoningEffortAllowed(s.Settings.ModelReasoningEfforts[x.Model], x.ReasoningEffort) {
+	invalidEffort := !harness.ReasoningEffortAllowed(s.Settings.ModelReasoningEfforts[x.Model], x.ReasoningEffort)
+	invalidThinking := s.Settings.ModelThinking[x.Model].ValidateSelection(x.ThinkingMode, x.ReasoningEffort) != nil
+	if invalidEffort && s.Settings.ModelThinking[x.Model].Parameter == "reasoning_effort" && x.ThinkingMode == "on" {
+		invalidThinking = true
+	}
+	if invalidEffort || invalidThinking {
 		if err = s.Store.requireNoWaitingExecution(ctx, id); err != nil {
 			return x, err
 		}
-		x.ReasoningEffort = ""
+		if invalidEffort {
+			x.ReasoningEffort = ""
+		}
+		if invalidThinking {
+			x.ThinkingMode = ""
+		}
 		x.ConfigVersion++
 		if err = s.Store.SaveConfig(ctx, x); err != nil {
 			return x, err
@@ -229,6 +239,9 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 	}
 	if err = ctx.Err(); err != nil {
 		return harness.RunResult{}, err
+	}
+	if handled, err := s.goalCommand(ctx, id, input, emit); handled {
+		return harness.RunResult{StopReason: "end_turn"}, err
 	}
 	if s.Engine == nil {
 		return harness.RunResult{}, fmt.Errorf("model engine is not configured")
@@ -355,7 +368,7 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 			return harness.RejectOnce, err
 		}
 		decision, cached := s.configuredPermission(x, p)
-		if !cached {
+		if !cached && !harness.ExplicitSkillEditApproval(p) {
 			s.mu.Lock()
 			decision, cached = s.decisions[key]
 			s.mu.Unlock()
@@ -380,7 +393,7 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 		if saveErr := s.Store.Decide(persistCtx, p.ID, decision); saveErr != nil {
 			return harness.RejectOnce, saveErr
 		}
-		if decision == harness.AllowAlways || decision == harness.RejectAlways {
+		if !harness.ExplicitSkillEditApproval(p) && (decision == harness.AllowAlways || decision == harness.RejectAlways) {
 			s.mu.Lock()
 			s.decisions[key] = decision
 			s.mu.Unlock()

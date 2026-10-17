@@ -245,10 +245,7 @@ impl RuntimeView {
                 .join(" · ")
                 .into()
         };
-        if self.agent_rows != rows {
-            self.agent_list.splice(0..self.agent_rows.len(), rows.len());
-            self.agent_rows = rows;
-        }
+        sync_task_rows(&self.agent_list, &mut self.agent_rows, rows);
     }
 }
 
@@ -394,6 +391,16 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(ids, ["new-live", "old-live", "new-wait", "new-done"]);
         assert!(view.agent_summary.contains("2 执行 · 1 等待"));
+        view.agent_list.scroll_to(gpui::ListOffset {
+            item_ix: 2,
+            offset_in_item: px(17.0),
+        });
+        view.rebuild_agents(&nodes);
+        assert_eq!(view.agent_list.logical_scroll_top().item_ix, 2);
+        assert_eq!(
+            view.agent_list.logical_scroll_top().offset_in_item,
+            px(17.0)
+        );
         nodes
             .get_mut(&("old".into(), "old-live".into()))
             .unwrap()
@@ -401,6 +408,11 @@ mod tests {
             .status = "completed".into();
         view.rebuild_agents(&nodes);
         assert!(!view.agent_rows.iter().any(|key| key.1 == "old-live"));
+        assert_eq!(view.agent_list.logical_scroll_top().item_ix, 1);
+        assert_eq!(
+            view.agent_list.logical_scroll_top().offset_in_item,
+            px(17.0)
+        );
     }
 }
 
@@ -505,7 +517,7 @@ impl Waku {
                         "刷新状态"
                     },
                     self.goal_runtime_starts.contains(&session_id)
-                        || browser.is_some_and(|browser| browser.pending.is_some()),
+                        || browser.is_some_and(|browser| browser.controls_busy()),
                     cx,
                     |this, _, cx| this.open_deerflow_tasks(cx),
                 ))
@@ -523,18 +535,21 @@ impl Waku {
                     },
                 )),
         );
-        panel = panel.child(task_text(
-            if disconnected {
-                "运行状态未连接；Todo 来自当前对话记录。"
-            } else if browser.is_some_and(|browser| !browser.capabilities.tree) {
-                "Todo 实时更新 · 当前服务未提供 Agent 状态"
-            } else if browser.is_some_and(|browser| browser.stale) {
-                "正在同步 · Agent 列表为上次缓存状态"
-            } else {
-                "Todo 实时更新 · Agent 状态每 5 秒刷新"
-            },
-            theme,
-        ));
+        panel = panel.child(
+            task_text(
+                if disconnected {
+                    "运行状态未连接；Todo 来自当前对话记录。"
+                } else if browser.is_some_and(|browser| !browser.capabilities.tree) {
+                    "Todo 实时更新 · 当前服务未提供 Agent 状态"
+                } else {
+                    browser.map_or("正在读取任务状态…", TaskBrowser::sync_status)
+                },
+                theme,
+            )
+            .h(px(18.0))
+            .flex_none()
+            .truncate(),
+        );
         if let Some(error) = browser.and_then(|browser| browser.error.as_ref()) {
             panel = panel.child(task_text(error.clone(), theme));
         }
@@ -736,7 +751,7 @@ impl Waku {
                         task_button(
                             SharedString::from(format!("df-runtime-agent-{}-{}", key.0, key.1)),
                             cached.title.clone(),
-                            browser.pending.is_some() || browser.connection.is_empty(),
+                            browser.controls_busy() || browser.connection.is_empty(),
                             cx,
                             move |this, _, cx| {
                                 this.deerflow_tasks

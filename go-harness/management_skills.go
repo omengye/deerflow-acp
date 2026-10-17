@@ -31,6 +31,36 @@ func managementSkillObject(fields map[string]json.RawMessage, key string, dst an
 	return nil
 }
 
+func (c *Client) managementSkillEdits(ctx context.Context, request localhost.ManagementRequest) (any, error) {
+	fields := []string{"target"}
+	if request.Operation == "skill.edits.reconcile" {
+		fields = append(fields, "edit_id", "expected_head", "action")
+	}
+	if err := proposalFields(request, fields...); err != nil {
+		return nil, err
+	}
+	var target harness.SkillTarget
+	if err := managementSkillObject(request.Fields, "target", &target, "source_id", "source_identity", "name", "scope"); err != nil {
+		return nil, err
+	}
+	if request.Operation == "skill.edits.list" {
+		return c.skills.HostEdits(ctx, target)
+	}
+	var head harness.SkillHead
+	if err := managementSkillObject(request.Fields, "expected_head", &head, "version", "state_version", "exists", "enabled", "managed"); err != nil {
+		return nil, err
+	}
+	id, err := managementID(request.Fields, "edit_id")
+	if err != nil {
+		return nil, err
+	}
+	action, err := managementID(request.Fields, "action")
+	if err != nil {
+		return nil, err
+	}
+	return c.skills.ReconcileEdit(ctx, target, id, head, action, "desktop")
+}
+
 func (c *Client) managementSkills(ctx context.Context, request localhost.ManagementRequest) (any, error) {
 	if request.Operation == "skill.list" {
 		if err := proposalFields(request, "source_id", "name", "status", "cursor", "limit"); err != nil {
@@ -85,4 +115,37 @@ func (c *Client) managementSkills(ctx context.Context, request localhost.Managem
 		return nil, err
 	}
 	return c.skills.RetryExportChecked(ctx, harness.SkillExportRetry{Target: target, Expected: head, ExpectedToken: token, RequestKey: key, Actor: "desktop"})
+}
+
+func (c *Client) managementSkillPublications(ctx context.Context, request localhost.ManagementRequest) (any, error) {
+	fields := []string{"target"}
+	if request.Operation == "skill.publications.reconcile" {
+		fields = append(fields, "publication_id", "expected_head", "action")
+	}
+	if err := proposalFields(request, fields...); err != nil {
+		return nil, err
+	}
+	var target harness.SkillTarget
+	if err := managementSkillObject(request.Fields, "target", &target, "source_id", "source_identity", "name", "scope"); err != nil {
+		return nil, err
+	}
+	if request.Operation == "skill.publications.list" {
+		return c.skills.HostFilePublications(ctx, target)
+	}
+	var head harness.SkillHead
+	if err := managementSkillObject(request.Fields, "expected_head", &head, "version", "state_version", "exists", "enabled", "managed"); err != nil {
+		return nil, err
+	}
+	id, err := managementID(request.Fields, "publication_id")
+	if err != nil {
+		return nil, err
+	}
+	action, err := managementID(request.Fields, "action")
+	if err != nil {
+		return nil, err
+	}
+	if err = c.skills.ReconcilePublication(ctx, target, id, head, action, "desktop"); err != nil {
+		return nil, err
+	}
+	return c.skills.GetCatalogSkill(ctx, target)
 }

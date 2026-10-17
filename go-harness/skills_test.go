@@ -85,7 +85,6 @@ func TestSkillsPublishedProfileSurvivesSDKReopenAndDeletion(t *testing.T) {
 		return harness.RunResult{}, nil
 	})
 	cfg.Skills.Install = []harness.SkillInstall{{SourceID: "project", Directory: "research", Enabled: true}}
-	cfg.Skills.BuiltinSources = []string{"project"}
 	c, err := Open(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -109,80 +108,92 @@ func TestSkillsPublishedProfileSurvivesSDKReopenAndDeletion(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		version, err := tx.Stage(candidate)
-		if err == nil {
-			_, err = tx.Publish(version, head, false)
+		v, err := tx.Stage(candidate)
+		if err != nil {
+			return err
 		}
+		_, err = tx.Publish(v, head, true)
 		return err
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	refs := original.Refs()
 	if err = c.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// Remove just the temporary fixture file: a published install must be
-	// reconstructed from SQLite even when its old import no longer exists.
-	if err = os.Remove(filepath.Join(cfg.Skills.Sources[0].Root, "research", "SKILL.md")); err != nil {
-		t.Fatal(err)
-	}
+	c = nil
 	c, err = Open(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	records, err := c.ListSkills(ctx, selection)
-	if err != nil || len(records) != 1 || records[0].Ref.Version != candidate.Version() || records[0].Enabled {
-		t.Fatalf("SDK restart overwrote release or enablement: %+v %v", records, err)
+	fresh, err := c.skills.Snapshot(ctx, selection)
+	if err != nil || len(fresh.Refs()) != 1 || fresh.Refs()[0].Version != candidate.Version() {
+		t.Fatal("restart did not use published files", err)
 	}
-	if !records[0].Builtin || !records[0].Managed || records[0].OverlayBase == nil || *records[0].OverlayBase != refs[0] {
-		t.Fatalf("SDK lost builtin overlay identity: %+v", records)
+	if err = c.Close(); err != nil {
+		t.Fatal(err)
 	}
-	observations, err := c.ListSkillImportObservations(ctx, selection)
-	if err != nil || len(observations) != 1 || observations[0].Status != "missing" || observations[0].ImportedVersion != refs[0].Version {
-		t.Fatalf("SDK did not observe missing source at startup: %+v %v", observations, err)
+	c = nil
+	sourceFile := filepath.Join(cfg.Skills.Sources[0].Root, "research", "SKILL.md")
+	if err = os.Remove(sourceFile); err != nil {
+		t.Fatal(err)
 	}
-	restored, err := c.skills.Restore(ctx, selection, refs)
+	cfg.Skills.Install = nil // Missing bindings must be rechecked even without discovery.
+	c, err = Open(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := c.QuerySkillCatalog(ctx, harness.SkillQuery{Limit: 10})
+	if err != nil || len(page.Skills) != 1 || page.Skills[0].SourceStatus != "unavailable" {
+		t.Fatal("missing directory advertised as ready", page, err)
+	}
+	fresh, err = c.skills.Snapshot(ctx, selection)
+	if err != nil || len(fresh.Refs()) != 0 {
+		t.Fatal("missing files used cached release", err)
+	}
+	restored, err := c.skills.Restore(ctx, selection, original.Refs())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if old, err := restored.ReadFile(ctx, "research", "guide.txt"); err != nil || string(old) != "PINNED_REFERENCE" {
-		t.Fatalf("old checkpoint lost support file: %q %v", old, err)
+		t.Fatal("explicit historical checkpoint lost support file", err)
 	}
-	if err = c.DeleteSkill(ctx, "project", "research"); err != nil {
-		t.Fatal(err)
-	}
-	if err = c.Close(); err != nil {
-		t.Fatal(err)
-	}
-	cfg.Skills.Install = nil // Discovery no longer lists the missing package.
-	c, err = Open(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	records, err = c.ListSkills(ctx, selection)
-	if err != nil || len(records) != 0 {
-		t.Fatalf("SDK restart resurrected deleted publication: %+v %v", records, err)
-	}
-	observations, err = c.ListSkillImportObservations(ctx, selection)
-	if err != nil || len(observations) != 1 || observations[0].Status != "missing" {
-		t.Fatalf("SDK lost tombstone source observation: %+v %v", observations, err)
-	}
-	if err = os.WriteFile(filepath.Join(cfg.Skills.Sources[0].Root, "research", "SKILL.md"), []byte("---\nname: research\ndescription: Changed upstream\n---\nReplacement source instructions.\n"), 0600); err != nil {
+	if err = os.WriteFile(sourceFile, candidate.Files()["SKILL.md"], 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err = c.RefreshSkillImports(ctx); err != nil {
 		t.Fatal(err)
 	}
-	observations, err = c.ListSkillImportObservations(ctx, selection)
-	if err != nil || len(observations) != 1 || observations[0].Status != "changed" {
-		t.Fatalf("SDK refresh: %+v %v", observations, err)
+	if err = c.DeleteSkill(ctx, "project", "research"); err != nil {
+		t.Fatal(err)
 	}
-	if head, err := c.GetSkillHead(ctx, "project", "research"); err != nil || head.Exists {
-		t.Fatalf("source refresh restored deleted publication: %+v %v", head, err)
+	if _, err = os.Stat(sourceFile); !os.IsNotExist(err) {
+		t.Fatal("delete did not remove authoritative files", err)
+	}
+	if err = c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	c = nil
+	c, err = Open(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records, err := c.ListSkills(ctx, selection); err != nil || len(records) != 0 {
+		t.Fatal("deleted source resurrected", err)
+	}
+	if err = os.MkdirAll(filepath.Dir(sourceFile), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(sourceFile, candidate.Files()["SKILL.md"], 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.RefreshSkillImports(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if head, err := c.GetSkillHead(ctx, "project", "research"); err != nil || !head.Exists || head.Enabled {
+		t.Fatal("restored files not indexed with durable disabled state", head, err)
 	}
 }
-
 func TestSDKSkillsUseNativeProgressiveLoadingAndPersistentInstall(t *testing.T) {
 	workspace, cfg := skillFixture(t)
 	var calls atomic.Int32

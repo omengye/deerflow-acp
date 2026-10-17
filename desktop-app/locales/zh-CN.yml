@@ -673,7 +673,7 @@ errors.provider_no_session_id: "%{provider} 未返回会话 ID"
 errors.provider_rejected_prompt_detail: "%{provider} 拒绝了消息：%{error}"
 errors.stop_provider: "无法停止 %{provider}：%{error}"
 errors.switch_provider_model: "无法切换 %{provider} 模型：%{error}"
-errors.change_provider_thinking: "无法更改 %{provider} 的思考强度：%{error}"
+errors.change_provider_thinking: "无法更改 %{provider} 的推理强度：%{error}"
 errors.open_provider_session: "无法打开 %{provider} 会话：%{error}"
 errors.select_model: "无法选择模型：%{error}"
 errors.read_provider_event_stream: "无法读取 %{provider} 事件流：%{error}"
@@ -1058,6 +1058,8 @@ usage_error.curl_no_status: curl 未返回 HTTP 状态行
 
 settings.deerflow: 常用
 settings.deerflow_models: 模型
+settings.channels: 渠道
+settings.channels_keywords: 渠道 微信 登录 扫码 插件 channel wechat plugin login
 settings.deerflow_tools: 工具与权限
 settings.deerflow_advanced: 高级
 settings.deerflow_skill_center: 技能

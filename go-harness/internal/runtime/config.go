@@ -13,6 +13,7 @@ import (
 type ConfigSettings struct {
 	Models                []harness.ConfigValue
 	ModelReasoningEfforts map[string][]string
+	ModelThinking         map[string]harness.ThinkingConfig
 	EnableSubagents       bool
 	DefaultSubagents      bool
 }
@@ -43,11 +44,31 @@ func (s *Service) ConfigOptions(x harness.Session) []harness.ConfigOption {
 		// Optional discovery metadata avoids creating one probe session per model.
 		// The live thought_level option remains authoritative for setting values.
 		capabilities := make(map[string][]string, len(models))
+		thinking := make(map[string]bool, len(models))
 		for _, model := range models {
 			capabilities[model.Value] = append([]string{}, s.Settings.ModelReasoningEfforts[model.Value]...)
+			thinking[model.Value] = s.Settings.ModelThinking[model.Value].SupportsSwitch()
 		}
-		option.Meta = map[string]any{"deerflow": map[string]any{"reasoningEfforts": capabilities}}
+		option.Meta = map[string]any{"deerflow": map[string]any{"reasoningEfforts": capabilities, "thinkingModes": thinking}}
+		availability := map[string]string{}
+		for _, model := range option.Options {
+			availability[model.Value] = s.Settings.ModelThinking[model.Value].Availability()
+		}
+		option.Meta["deerflow"].(map[string]any)["thinkingAvailability"] = availability
 		options = append(options, option)
+	}
+	if s.Settings.ModelThinking[x.Model].SupportsSwitch() {
+		current := x.ThinkingMode
+		if current == "" {
+			current = "default"
+		}
+		description := "Enable or disable thinking independently of reasoning effort. Model default removes the override."
+		if s.Settings.ModelThinking[x.Model].Parameter == "reasoning_effort" {
+			description = "This endpoint shares reasoning_effort for mode and effort. Select an explicit effort before turning thinking on; off sends none without discarding the saved effort."
+		}
+		options = append(options, harness.ConfigOption{ID: "thinking_enabled", Name: "Thinking mode", Description: description, Type: "select", CurrentValue: current, Options: []harness.ConfigValue{
+			{Value: "default", Name: "Model default"}, {Value: "on", Name: "On"}, {Value: "off", Name: "Off"},
+		}})
 	}
 	if efforts := s.Settings.ModelReasoningEfforts[x.Model]; len(efforts) > 0 {
 		choices := []harness.ConfigValue{{Value: "default", Name: "Default", Description: "Use the model provider's default reasoning settings."}}
@@ -65,6 +86,7 @@ func (s *Service) ConfigOptions(x harness.Session) []harness.ConfigOption {
 		approval = harness.ApprovalAsk
 	}
 	options = append(options, harness.ConfigOption{ID: "approval", Name: "Tool approval", Type: "select", CurrentValue: approval, Options: []harness.ConfigValue{
+		{Value: harness.ApprovalGlobal, Name: "Follow global policy", Description: "Inherit the host tool classification; restricted tools still require approval."},
 		{Value: harness.ApprovalAsk, Name: "Ask before restricted tools"},
 		{Value: harness.ApprovalAllowAlways, Name: "Allow tools in this session", Description: "Explicitly authorize tool requests; server startup policy and plan mode still apply."},
 		{Value: harness.ApprovalRejectAlways, Name: "Reject restricted tools"},
@@ -111,8 +133,19 @@ func (s *Service) SetConfigOption(ctx context.Context, owner, id, key, value str
 	switch key {
 	case "model":
 		x.Model = value
+		if !harness.ThinkingModeAllowed(s.Settings.ModelThinking[value], x.ThinkingMode) {
+			x.ThinkingMode = ""
+		}
 		if !harness.ReasoningEffortAllowed(s.Settings.ModelReasoningEfforts[value], x.ReasoningEffort) {
 			x.ReasoningEffort = ""
+		}
+		if err := s.Settings.ModelThinking[value].ValidateSelection(x.ThinkingMode, x.ReasoningEffort); err != nil {
+			x.ThinkingMode = ""
+		}
+	case "thinking_enabled":
+		x.ThinkingMode = value
+		if value == "default" {
+			x.ThinkingMode = ""
 		}
 	case "reasoning_effort":
 		x.ReasoningEffort = value
@@ -123,6 +156,9 @@ func (s *Service) SetConfigOption(ctx context.Context, owner, id, key, value str
 		x.ApprovalMode = value
 	case "subagent":
 		x.Subagents = value == "on"
+	}
+	if err := s.Settings.ModelThinking[x.Model].ValidateSelection(x.ThinkingMode, x.ReasoningEffort); err != nil {
+		return nil, fmt.Errorf("%w: %v", harness.ErrInvalidInput, err)
 	}
 	x.ConfigVersion++
 	if err = s.Store.SaveConfig(ctx, x); err != nil {
@@ -151,13 +187,20 @@ func (s *Service) clearDecisions(owner, id string) {
 func configuredPermission(x harness.Session, p harness.PermissionRequest) (harness.PermissionDecision, bool) {
 	if x.Mode == "plan" || x.ApprovalMode == harness.ApprovalReadOnly {
 		switch p.ToolName {
-		case "read_file", "read_tool_output", "read_attachment", "list_attachments", "list_directory", "search_files", "skill", "read_skill_file", "view_image", "search_memory", "task_status", "task_wait":
+		case "read_file", "read_tool_output", "read_attachment", "analyze_attachment", "list_attachments", "list_directory", "search_files", "skill", "skill_inspect", "read_skill_file", "view_image", "search_memory", "task_status", "task_wait":
 			return harness.AllowOnce, true
 		default:
 			return harness.RejectOnce, true
 		}
 	}
+	if harness.ExplicitSkillEditApproval(p) && x.ApprovalMode != harness.ApprovalRejectAlways {
+		return "", false
+	}
 	switch x.ApprovalMode {
+	case harness.ApprovalGlobal:
+		// The host classifier already admitted unrestricted tools. Remaining
+		// requests still need a human decision, not a blanket session grant.
+		return "", false
 	case harness.ApprovalAllowAlways:
 		return harness.AllowOnce, true
 	case harness.ApprovalRejectAlways:
@@ -168,6 +211,9 @@ func configuredPermission(x harness.Session, p harness.PermissionRequest) (harne
 
 func (s *Service) configuredPermission(x harness.Session, p harness.PermissionRequest) (harness.PermissionDecision, bool) {
 	if x.Mode == "plan" || x.ApprovalMode == harness.ApprovalReadOnly {
+		return configuredPermission(x, p)
+	}
+	if harness.ExplicitSkillEditApproval(p) {
 		return configuredPermission(x, p)
 	}
 	if !s.PermissionMode.RequiresPermission(p.ToolName) {
@@ -193,7 +239,7 @@ func (s *Store) SaveConfig(ctx context.Context, x harness.Session) error {
 	if n == 0 {
 		return harness.ErrNotFound
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO harness_session_configs(session_id,approval_mode,subagents,version,reasoning_effort) VALUES(?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET approval_mode=excluded.approval_mode,subagents=excluded.subagents,version=excluded.version,reasoning_effort=excluded.reasoning_effort`, x.ID, x.ApprovalMode, x.Subagents, x.ConfigVersion, x.ReasoningEffort)
+	_, err = tx.ExecContext(ctx, `INSERT INTO harness_session_configs(session_id,approval_mode,subagents,version,reasoning_effort,thinking_mode) VALUES(?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET approval_mode=excluded.approval_mode,subagents=excluded.subagents,version=excluded.version,reasoning_effort=excluded.reasoning_effort,thinking_mode=excluded.thinking_mode`, x.ID, x.ApprovalMode, x.Subagents, x.ConfigVersion, x.ReasoningEffort, x.ThinkingMode)
 	if err != nil {
 		return err
 	}

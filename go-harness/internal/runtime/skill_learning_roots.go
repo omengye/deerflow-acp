@@ -88,7 +88,7 @@ func (s *Store) LearningRootObservationsTx(ctx context.Context, tx *sql.Tx, root
 		if _, err = time.Parse(time.RFC3339Nano, m.Ended); err != nil {
 			return nil, harness.ErrInvalidInput
 		}
-		child, err := scanSession(tx.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,c.approval_mode,c.subagents,c.version,c.reasoning_effort FROM harness_sessions s JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, m.Session))
+		child, err := scanSession(tx.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,c.approval_mode,c.subagents,c.version,c.reasoning_effort,c.thinking_mode FROM harness_sessions s JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, m.Session))
 		if err != nil {
 			return nil, err
 		}

@@ -27,7 +27,7 @@ Set `summarization.enabled: false` to opt out. Complete tool output remains in
 private snapshots; bounded previews and recent complete exchanges enter model
 context. Existing paused tasks retain their original immutable budget policy.
 
-This package contains four Windows executables and an optional Linux WSL helper:
+This package contains five executables and, on Windows, an optional Linux WSL helper:
 
 - `deerflow-acp` is the stdio Bridge for ACP clients. It discovers and starts
   the sibling `deerflow-acpd` when needed. Add `.exe` to these names on Windows.
@@ -35,6 +35,9 @@ This package contains four Windows executables and an optional Linux WSL helper:
   authenticated loopback IPC.
 - `deerflow-acp-go` runs the Go ACP agent directly over stdio without a daemon.
 - `deerflow-skill-go` initializes, validates and packages native skill content.
+- `deerflow-control-go` manages durable schedules and WeChat iLink through the
+  authenticated local daemon endpoint. It also provides passive document preview.
+  Use the same `--runtime-dir` as the Bridge; see `deerflow-capabilities.md`.
 - Runtime backup/restore is not included. Session persistence, execution recovery
   and skill version rollback remain supported.
 

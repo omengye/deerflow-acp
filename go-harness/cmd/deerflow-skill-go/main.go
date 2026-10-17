@@ -23,6 +23,7 @@ func run(args []string) (any, error) {
 	name := flags.String("name", "", "new skill name")
 	description := flags.String("description", "", "trigger description")
 	output := flags.String("output", "", "new .skill archive outside the input directory")
+	mode := flags.String("mode", "evolution", "validate mode: evolution (default) or installed (structure only; never runs scripts)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return nil, err
 	}
@@ -30,6 +31,9 @@ func run(args []string) (any, error) {
 		return nil, errors.New("--path is required; unexpected positional arguments")
 	}
 	ctx := context.Background()
+	if *mode != "evolution" && (*mode != "installed" || args[0] != "validate") {
+		return nil, errors.New("--mode installed is supported only for validate")
+	}
 	switch args[0] {
 	case "init":
 		if *output != "" {
@@ -39,7 +43,10 @@ func run(args []string) (any, error) {
 		return map[string]any{"path": created, "complete": false}, err
 	case "validate":
 		if *name != "" || *description != "" || *output != "" {
-			return nil, errors.New("validate accepts only --path")
+			return nil, errors.New("validate accepts only --path and --mode")
+		}
+		if *mode == "installed" {
+			return skillauthor.ValidateInstalled(ctx, *path)
 		}
 		return skillauthor.Validate(ctx, *path)
 	case "package":

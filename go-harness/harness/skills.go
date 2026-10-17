@@ -45,14 +45,17 @@ type SkillLimits struct {
 }
 
 type SkillsConfig struct {
-	Sources []SkillSource
-	Limits  SkillLimits
-	// BuiltinSources identifies immutable distribution sources. Reviewed changes
-	// become managed SQLite overlays with retained import provenance. This policy
-	// is separate from source identity so existing pinned refs remain valid.
+	Sources     []SkillSource
+	Limits      SkillLimits
+	Diagnostics []SkillFinding `json:"diagnostics,omitempty"`
+	// SnapshotRoot stores immutable historical/candidate file objects. It never
+	// supplies a current installation; each ordinary run verifies source files.
+	SnapshotRoot string `json:"snapshotRoot,omitempty"`
+	// BuiltinSources identifies read-only distribution directories. Editing one
+	// requires an explicit custom copy/binding, never a hidden database overlay.
 	BuiltinSources []string `json:"builtinSources,omitempty"`
-	// ManagedSources are explicitly registered SQLite-only sources. Their root
-	// binds identity/scope; files under it are never imported as live skills.
+	// ManagedSources are authoring destinations. New publications create real
+	// packages under Root; legacy database-only versions require migration.
 	ManagedSources []string `json:"managedSources,omitempty"`
 	// ExportRoot is an explicit existing directory for rebuildable managed
 	// publication views. Export failures do not roll back a published skill.

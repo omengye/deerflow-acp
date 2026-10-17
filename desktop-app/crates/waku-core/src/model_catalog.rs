@@ -1005,6 +1005,46 @@ pub(crate) fn parse_deerflow_models(options: &[SessionConfigOption]) -> Vec<Prov
             }
         }
     }
+    if let Some(capabilities) = metadata.pointer("/_meta/deerflow/thinkingModes") {
+        for model in &mut models {
+            if capabilities.get(&model.id).and_then(Value::as_bool) == Some(true) {
+                model.thinking_modes = vec![
+                    ProviderModelOption::new("default", "Model default"),
+                    ProviderModelOption::new("on", "On"),
+                    ProviderModelOption::new("off", "Off"),
+                ];
+            }
+        }
+    }
+    if let Some(capabilities) = metadata.pointer("/_meta/deerflow/thinkingAvailability") {
+        for model in &mut models {
+            model.thinking_availability = capabilities
+                .get(&model.id)
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+    }
+    if let Some(thinking) = options
+        .iter()
+        .find(|option| option.id.to_string() == "thinking_enabled")
+    {
+        for model in models.iter_mut().filter(|model| model.is_default) {
+            model.thinking_modes = match &thinking.kind {
+                SessionConfigKind::Boolean(_) => vec![
+                    ProviderModelOption::new("on", "On"),
+                    ProviderModelOption::new("off", "Off"),
+                ],
+                _ => crate::driver::parse_acp_config_models(thinking)
+                    .into_iter()
+                    .map(|choice| ProviderModelOption::new(choice.id, choice.name))
+                    .collect(),
+            };
+        }
+    } else {
+        for model in models.iter_mut().filter(|model| model.is_default) {
+            model.thinking_modes.clear();
+        }
+    }
     if let Some(option) = options.iter().find(|option| {
         option.id.to_string() == "reasoning_effort"
             || (option.category == Some(SessionConfigOptionCategory::ThoughtLevel)
@@ -1022,31 +1062,6 @@ pub(crate) fn parse_deerflow_models(options: &[SessionConfigOption]) -> Vec<Prov
                 .map(|choice| choice.id.clone());
         }
         return models;
-    }
-    if let Some(thinking) = options
-        .iter()
-        .find(|option| option.id.to_string() == "thinking_enabled")
-    {
-        let default = match &thinking.kind {
-            SessionConfigKind::Select(select) => match select.current_value.0.as_ref() {
-                "on" => Some("on"),
-                "off" => Some("off"),
-                _ => None,
-            },
-            SessionConfigKind::Boolean(toggle) => {
-                Some(if toggle.current_value { "on" } else { "off" })
-            }
-            _ => None,
-        };
-        if let Some(default) = default {
-            for model in &mut models {
-                model.reasoning_efforts = vec![
-                    ProviderModelOption::new("on", "On"),
-                    ProviderModelOption::new("off", "Off"),
-                ];
-                model.default_reasoning_effort = Some(default.to_owned());
-            }
-        }
     }
     models
 }
@@ -1830,6 +1845,40 @@ mod tests {
     }
 
     #[test]
+    fn deerflow_catalog_keeps_thinking_and_effort_capabilities_separate() {
+        let options: Vec<SessionConfigOption> = serde_json::from_value(json!([
+            {"id":"model","name":"Model","type":"select","currentValue":"a","options":[
+                {"value":"a","name":"A"},{"value":"b","name":"B"},{"value":"c","name":"C"}
+            ],"_meta":{"deerflow":{"reasoningEfforts":{"a":["high"],"b":[],"c":["low"]},"thinkingModes":{"a":true,"b":true,"c":false},"thinkingAvailability":{"a":"configured","b":"unconfigured","c":"unsupported"}}}},
+            {"id":"reasoning_effort","name":"Reasoning","category":"thought_level","type":"select","currentValue":"high","options":[
+                {"value":"default","name":"Default"},{"value":"high","name":"High"}
+            ]},
+            {"id":"thinking_enabled","name":"Thinking","type":"select","currentValue":"off","options":[
+                {"value":"default","name":"Default"},{"value":"on","name":"On"},{"value":"off","name":"Off"}
+            ]}
+        ])).unwrap();
+        let models = parse_deerflow_models(&options);
+        assert_eq!(models[0].thinking_modes.len(), 3);
+        assert_eq!(models[0].reasoning_efforts.len(), 2);
+        assert_eq!(models[1].thinking_modes.len(), 3);
+        assert!(models[1].reasoning_efforts.is_empty());
+        assert!(models[2].thinking_modes.is_empty());
+        assert_eq!(models[2].reasoning_efforts.len(), 2);
+        assert_eq!(
+            models[0].thinking_availability.as_deref(),
+            Some("configured")
+        );
+        assert_eq!(
+            models[1].thinking_availability.as_deref(),
+            Some("unconfigured")
+        );
+        assert_eq!(
+            models[2].thinking_availability.as_deref(),
+            Some("unsupported")
+        );
+    }
+
+    #[test]
     fn deerflow_catalog_exposes_its_actual_thinking_switch() {
         let options: Vec<SessionConfigOption> = serde_json::from_value(json!([
             {"id":"model","name":"Model","type":"select","currentValue":"local-a","options":[
@@ -1842,10 +1891,11 @@ mod tests {
         let models = parse_deerflow_models(&options);
         assert_eq!(models.len(), 2);
         assert!(models[0].is_default);
-        assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("off"));
+        assert!(models[0].reasoning_efforts.is_empty());
+        assert!(models[1].thinking_modes.is_empty());
         assert_eq!(
-            models[1]
-                .reasoning_efforts
+            models[0]
+                .thinking_modes
                 .iter()
                 .map(|option| option.id.as_str())
                 .collect::<Vec<_>>(),

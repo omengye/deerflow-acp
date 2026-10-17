@@ -104,6 +104,7 @@ impl DeepSeekDriver {
             mode,
             model,
             reasoning_effort,
+            thinking_mode: _,
             service_tier,
             context_window: _,
             agent_preset,
@@ -169,6 +170,7 @@ impl DeepSeekDriver {
             mode,
             model,
             reasoning_effort,
+            thinking_mode: None,
             service_tier,
             context_window: None,
         };

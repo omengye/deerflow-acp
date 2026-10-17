@@ -23,7 +23,12 @@ func TestManagedImportObservationsSurviveRestartAndDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := publicationHead(t, r)
-	managed := publishCandidate(t, r, candidate(t, r, "Reviewed managed content"), base)
+	files := map[string][]byte{"SKILL.md": []byte(skillText("research", "Reviewed managed content")), "removed.txt": []byte("original reference")}
+	c, err := r.PrepareCandidate("research", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managed := publishCandidate(t, r, c, base)
 	var catalog int64
 	if err := db.DB().QueryRow(`SELECT revision FROM df_skill_catalog`).Scan(&catalog); err != nil {
 		t.Fatal(err)
@@ -34,7 +39,7 @@ func TestManagedImportObservationsSurviveRestartAndDeletion(t *testing.T) {
 			t.Fatal(err)
 		}
 		items, err := r.ListImportObservations(ctx, selection)
-		if err != nil || len(items) != 1 || items[0].Status != status || items[0].ImportedVersion != base.Version {
+		if err != nil || len(items) != 1 || items[0].Status != status || items[0].ImportedVersion != managed.Version {
 			t.Fatalf("observation: %+v %v", items, err)
 		}
 		if head := publicationHead(t, r); head != managed {
@@ -66,7 +71,6 @@ func TestManagedImportObservationsSurviveRestartAndDeletion(t *testing.T) {
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
 	}
-	var err error
 	r, err = NewRegistry(ctx, cfg, db.DB())
 	if err != nil {
 		t.Fatal(err)
@@ -82,14 +86,8 @@ func TestManagedImportObservationsSurviveRestartAndDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("missing")
-	if err = r.Delete(ctx, "project", "research"); err != nil {
-		t.Fatal(err)
-	}
-	managed = publicationHead(t, r)
-	catalog++
-	check("missing")
-	if visible, err := r.List(ctx, selection); err != nil || len(visible) != 0 {
-		t.Fatalf("tombstone reappeared: %+v %v", visible, err)
+	if visible := snapshot(t, r, selection); len(visible.Refs()) != 0 {
+		t.Fatal("missing directory loaded cached publication")
 	}
 	// Scope filtering applies to reports even when no installed head exists.
 	if hidden, err := r.ListImportObservations(ctx, harness.SkillSelection{Workspace: t.TempDir()}); err != nil || len(hidden) != 0 {
@@ -155,7 +153,7 @@ func TestManagedImportObservationFailuresAndBounds(t *testing.T) {
 	if _, err = db.DB().Exec(`DROP TRIGGER observation_failure`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.DB().Exec(`UPDATE df_skill_files SET data='corrupt' WHERE version=?`, before.Version); err != nil {
+	if _, err = db.DB().Exec(`UPDATE df_skill_files SET data='corrupt' WHERE version=?`, managed.Version); err != nil {
 		t.Fatal(err)
 	}
 	if err = r.ObserveImports(ctx); err == nil {
@@ -189,13 +187,18 @@ func TestManagedImportObservationConcurrentPublication(t *testing.T) {
 	})
 	wg.Wait()
 	close(errorsSeen)
+	conflicts := 0
 	for err := range errorsSeen {
+		if errors.Is(err, ErrPublicationConflict) {
+			conflicts++
+			continue
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	items, err := r.ListImportObservations(ctx, selection)
-	if err != nil || len(items) != 1 || items[0].Status != "changed" || publicationHead(t, r).Version != next.Version() {
+	if err != nil || len(items) != 1 || items[0].Status != "changed" || publicationHead(t, r).Version == next.Version() || conflicts != 1 {
 		t.Fatalf("concurrent observation/publication: %+v %v", items, err)
 	}
 }

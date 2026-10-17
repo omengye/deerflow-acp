@@ -150,8 +150,8 @@ func (r *Registry) catalogCommand(ctx context.Context, target harness.SkillTarge
 	return result, err
 }
 
-// RefreshCatalogImport observes one saved managed import. The filesystem read
-// is outside SQL; observeImport rechecks the original import identity on save.
+// RefreshCatalogImport indexes the bound directory under the observed head.
+// It never republishes a historical database version into that directory.
 func (r *Registry) RefreshCatalogImport(ctx context.Context, target harness.SkillTarget, expected harness.SkillHead) (harness.SkillCatalogDetail, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -172,18 +172,12 @@ func (r *Registry) RefreshCatalogImport(ctx context.Context, target harness.Skil
 		if h != expected {
 			return harness.ErrSkillConflict
 		}
-		if !h.Managed {
-			return harness.ErrNotFound
+		if err = p.tx.QueryRowContext(ctx, `SELECT last_import_version,import_directory FROM df_skill_control WHERE source_key=? AND name=?`, s.identity, target.Name).Scan(&origin.version, &origin.directory); err != nil {
+			return err
 		}
-		return p.tx.QueryRowContext(ctx, `SELECT last_import_version,import_directory FROM df_skill_control WHERE source_key=? AND name=?`, s.identity, target.Name).Scan(&origin.version, &origin.directory)
+		return r.refreshSource(p, origin.directory, nil)
 	})
 	if err != nil {
-		return result, err
-	}
-	if origin.version == "" || origin.directory == "" {
-		return result, harness.ErrNotFound
-	}
-	if err = r.observeImport(ctx, s, origin); err != nil {
 		return result, err
 	}
 	tx, err := r.db.BeginTx(ctx, nil)

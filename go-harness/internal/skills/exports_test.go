@@ -81,13 +81,6 @@ func exportState(t *testing.T, r *Registry, selection harness.SkillSelection, st
 func TestManagedSourceExportRebuildAndTombstone(t *testing.T) {
 	r, db, cfg, selection := managedExportFixture(t)
 	ctx := context.Background()
-	writeSkill(t, cfg.Sources[0].Root, "research", "Unreviewed source bytes")
-	if _, err := r.Install(ctx, "project", "research"); !errors.Is(err, harness.ErrPermissionDenied) {
-		t.Fatalf("managed source imported disk: %v", err)
-	}
-	if err := r.InstallConfigured(ctx, "project", "research", true); !errors.Is(err, harness.ErrPermissionDenied) {
-		t.Fatalf("managed source imported startup profile: %v", err)
-	}
 	if current := snapshot(t, r, selection); len(current.Refs()) != 0 {
 		t.Fatal("unreviewed disk package became active")
 	}
@@ -105,8 +98,8 @@ func TestManagedSourceExportRebuildAndTombstone(t *testing.T) {
 	if data, err := os.ReadFile(viewFile); err != nil || string(data) != skillText("research", "Approved generated skill") {
 		t.Fatalf("exported bytes: %q %v", data, err)
 	}
-	if data, err := os.ReadFile(filepath.Join(cfg.Sources[0].Root, "research", "SKILL.md")); err != nil || string(data) != skillText("research", "Unreviewed source bytes") {
-		t.Fatalf("export wrote import path: %q %v", data, err)
+	if data, err := os.ReadFile(filepath.Join(cfg.Sources[0].Root, "research", "SKILL.md")); err != nil || string(data) != skillText("research", "Approved generated skill") {
+		t.Fatalf("publication did not write authoritative path: %q %v", data, err)
 	}
 	// A restart checks complete views and retains their paths when unchanged.
 	if err := r.Close(); err != nil {
@@ -228,7 +221,7 @@ func TestManagedExportFailureDoesNotUndoPublicationAndRetryIsDurable(t *testing.
 func TestManagedExportQueueSharesPublicationTransaction(t *testing.T) {
 	r, db, selection := publicationFixture(t)
 	ctx := context.Background()
-	cfg := harness.SkillsConfig{Sources: []harness.SkillSource{r.sources["project"].config}, BuiltinSources: []string{"project"}, ExportRoot: t.TempDir()}
+	cfg := harness.SkillsConfig{Sources: []harness.SkillSource{r.sources["project"].config}, ExportRoot: t.TempDir()}
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
 	}

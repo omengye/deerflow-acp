@@ -286,6 +286,11 @@ func validatedModels(incoming, existing []any) ([]any, map[string]bool, error) {
 		if parameter, present := model["output_token_parameter"]; present {
 			raw["output_token_parameter"] = parameter
 		}
+		for _, key := range []string{"thinking_parameter", "thinking_budget_tokens"} {
+			if value, present := model[key]; present {
+				raw[key] = value
+			}
+		}
 		if efforts, present := model["reasoning_efforts"]; present {
 			if efforts == nil {
 				delete(raw, "reasoning_efforts")

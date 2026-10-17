@@ -52,7 +52,9 @@ CREATE INDEX IF NOT EXISTS df_skill_proposals_status ON df_skill_proposals(statu
 CREATE TABLE IF NOT EXISTS df_skill_publications (
  source_key TEXT NOT NULL,name TEXT NOT NULL,revision INTEGER NOT NULL,
  request_key TEXT NOT NULL,request_sha TEXT NOT NULL,payload BLOB NOT NULL,
- PRIMARY KEY(source_key,name,revision),UNIQUE(source_key,name,request_key));`)
+ PRIMARY KEY(source_key,name,revision),UNIQUE(source_key,name,request_key));
+CREATE TABLE IF NOT EXISTS df_skill_approvals (
+ proposal_id TEXT PRIMARY KEY,payload BLOB NOT NULL,payload_sha TEXT NOT NULL);`)
 	if err != nil {
 		return nil, err
 	}
@@ -138,6 +140,20 @@ func readProposal(ctx context.Context, db rowReader, id string) (Proposal, error
 		}
 	} else if encodedHash(p.Evaluation) != encodedHash(Report{}) || (p.Status != "validating" && p.Status != "rejected") {
 		return Proposal{}, errors.New("skill evaluation is missing its digest")
+	}
+	p.FilePublicationPending = p.Status == "publishing"
+	p.Approval = nil
+	var approvalData []byte
+	var approvalHash string
+	err = db.QueryRowContext(ctx, `SELECT payload,payload_sha FROM df_skill_approvals WHERE proposal_id=?`, id).Scan(&approvalData, &approvalHash)
+	if err == nil {
+		var approval harness.SkillApproval
+		if hash(approvalData) != approvalHash || json.Unmarshal(approvalData, &approval) != nil || approval.ProposalID != p.ID || approval.Target != p.Target || approval.Base != p.Base || approval.CandidateVersion != p.CandidateVersion || approval.EvaluationDigest != p.EvaluationDigest || approval.Review.ExpectedStateVersion < 1 || approval.Review.ExpectedStateVersion > p.StateVersion || approval.Review.Actor == "" || approval.CreatedAt.IsZero() {
+			return Proposal{}, errors.New("skill approval identity is inconsistent")
+		}
+		p.Approval = &approval
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return Proposal{}, err
 	}
 	return p, nil
 }

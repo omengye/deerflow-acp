@@ -2186,6 +2186,10 @@ settings.deerflow:
   en: Essentials
 settings.deerflow_models:
   en: Models
+settings.channels:
+  en: Channels
+settings.channels_keywords:
+  en: channels wechat plugins login QR messaging
 settings.deerflow_tools:
   en: Tools and permissions
 settings.deerflow_advanced:

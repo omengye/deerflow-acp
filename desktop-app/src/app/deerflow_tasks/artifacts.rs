@@ -3,6 +3,7 @@
 use super::*;
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use waku_protocol::deerflow_tasks::{Artifact, ArtifactChunk};
@@ -184,6 +185,47 @@ async fn save_file(
 }
 
 impl Waku {
+    pub(super) fn preview_saved_deerflow_artifact(
+        &mut self,
+        session: Uuid,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(browser) = self.deerflow_tasks.get_mut(&session) else {
+            return;
+        };
+        if browser.saved_artifact.as_ref() != Some(&path) {
+            return;
+        }
+        browser.artifact_preview_generation += 1;
+        let generation = browser.artifact_preview_generation;
+        let connection = browser.connection.clone();
+        browser.artifact_preview = Some("正在读取纯文本预览…".into());
+        let task = cx
+            .background_executor()
+            .spawn(async move { passive_preview(&path) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(browser) = this.deerflow_tasks.get_mut(&session) else {
+                    return;
+                };
+                if browser.artifact_preview_generation != generation
+                    || browser.connection != connection
+                {
+                    return;
+                }
+                browser.artifact_preview = Some(match result {
+                    Ok(text) => text.into(),
+                    Err(error) => format!("无法预览：{error}").into(),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub(super) fn save_deerflow_task_artifact(
         &mut self,
         session: Uuid,
@@ -196,7 +238,7 @@ impl Waku {
             return;
         };
         if browser.stale
-            || browser.pending.is_some()
+            || browser.controls_busy()
             || browser.transfer.is_some()
             || browser.save_selecting
             || !browser.capabilities.artifact_read
@@ -252,7 +294,7 @@ impl Waku {
         let Some(browser) = self.deerflow_tasks.get_mut(&session) else {
             return;
         };
-        if browser.pending.is_some()
+        if browser.controls_busy()
             || browser.stale
             || browser.connection != binding.connection
             || browser.session != binding.session
@@ -286,6 +328,8 @@ impl Waku {
         });
         browser.artifact_notice = Some("正在读取产物…".into());
         browser.saved_artifact = None;
+        browser.artifact_preview = None;
+        browser.artifact_preview_generation += 1;
         cx.background_executor()
             .spawn(async move {
                 let result = save_file(binding, destination, receiver, &progress, cancelled)
@@ -354,9 +398,91 @@ impl Waku {
     }
 }
 
+fn passive_preview(path: &std::path::Path) -> anyhow::Result<String> {
+    // Passive text only: never open HTML/SVG in a privileged browser origin.
+    let extension = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(extension.as_str(), "pdf" | "docx" | "xlsx") {
+        let executable = std::env::current_exe()?.with_file_name(if cfg!(windows) {
+            "deerflow-control-go.exe"
+        } else {
+            "deerflow-control-go"
+        });
+        let mut command = std::process::Command::new(executable);
+        command
+            .arg("--preview-file")
+            .arg(path)
+            .stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let output = command.output()?;
+        anyhow::ensure!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .take(1000)
+                .collect::<String>()
+        );
+        anyhow::ensure!(output.stdout.len() <= 64 * 1024, "预览响应超过限制");
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        let text = value["text"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("预览响应无效"))?;
+        anyhow::ensure!(text.len() <= 8192, "预览内容超过限制");
+        let mut text = text
+            .chars()
+            .filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
+            .collect::<String>();
+        if value["truncated"].as_bool() == Some(true) {
+            text.push_str("\n[仅预览前 8 KiB；完整内容请打开已保存文件]");
+        }
+        return Ok(text);
+    }
+    anyhow::ensure!(
+        matches!(
+            extension.as_str(),
+            "txt" | "md" | "markdown" | "csv" | "tsv" | "json" | "yaml" | "yml" | "log"
+        ),
+        "此格式不支持纯文本预览"
+    );
+    let file = std::fs::File::open(path)?;
+    anyhow::ensure!(file.metadata()?.is_file(), "预览目标必须是文件");
+    let mut bytes = Vec::new();
+    file.take(8193).read_to_end(&mut bytes)?;
+    let truncated = bytes.len() > 8192;
+    bytes.truncate(8192);
+    let mut text = String::from_utf8_lossy(&bytes)
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
+        .collect::<String>();
+    if truncated {
+        text.push_str("\n[仅预览前 8 KiB；完整内容请打开已保存文件]");
+    }
+    Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deerflow_artifact_preview_is_passive_and_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.md");
+        std::fs::write(&path, "<script>not executed</script>\n".repeat(2000)).unwrap();
+        let text = passive_preview(&path).unwrap();
+        assert!(text.contains("仅预览前 8 KiB"));
+        assert!(text.len() < 8500);
+        let html = dir.path().join("active.html");
+        std::fs::write(&html, "<script>bad()</script>").unwrap();
+        assert!(passive_preview(&html).is_err());
+    }
     #[test]
     fn deerflow_artifact_accepts_host_sizes_above_legacy_limit() {
         let total = 600 * 1024 * 1024;

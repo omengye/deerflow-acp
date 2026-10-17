@@ -39,6 +39,8 @@ pub(crate) struct Endpoint {
     pub(crate) pid: u32,
     pub(crate) build_id: String,
     pub(crate) config_path: String,
+    #[serde(default)]
+    pub(crate) instance_id: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -783,25 +785,42 @@ fn management_request(endpoint: &Endpoint, request: &[u8]) -> Result<String> {
     if request.len() > MANAGEMENT_REQUEST_LIMIT {
         return Err("management request exceeds the 64 KiB limit".into());
     }
-    let value: serde_json::Value = serde_json::from_slice(request)
+    let mut value: serde_json::Value = serde_json::from_slice(request)
         .map_err(|error| format!("invalid management request JSON: {error}"))?;
     if !value.is_object() {
         return Err("management request must be a JSON object".into());
+    }
+    if !endpoint.instance_id.is_empty() {
+        if let Some(expected) = value.get("expected_instance_id")
+            && expected.as_str() != Some(endpoint.instance_id.as_str())
+        {
+            return Err("daemon instance changed; no operation was sent".into());
+        }
+        value["expected_instance_id"] = endpoint.instance_id.clone().into();
+    }
+    let request = serde_json::to_vec(&value)?;
+    if request.len() > MANAGEMENT_REQUEST_LIMIT {
+        return Err("management request exceeds the 64 KiB limit".into());
     }
 
     let (mut stream, _) = connect_command(endpoint, "MANAGE")
         .map_err(|error| format!("failed to connect to DeerFlow ACP daemon: {error}"))?;
     stream.set_read_timeout(Some(MANAGEMENT_TIMEOUT))?;
     stream.set_write_timeout(Some(MANAGEMENT_TIMEOUT))?;
-    stream.write_all(request)?;
+    stream.write_all(&request)?;
     stream.write_all(b"\n")?;
     stream.flush()?;
     let response = read_line(&mut stream, MANAGEMENT_RESPONSE_LIMIT)?;
     if response.is_empty() {
         return Err("daemon returned an empty management response".into());
     }
-    serde_json::from_str::<serde_json::Value>(&response)
+    let envelope = serde_json::from_str::<serde_json::Value>(&response)
         .map_err(|error| format!("daemon returned invalid management JSON: {error}"))?;
+    if !endpoint.instance_id.is_empty()
+        && envelope["runtime"]["instance_id"].as_str() != Some(endpoint.instance_id.as_str())
+    {
+        return Err("management response came from a different daemon instance".into());
+    }
     Ok(response)
 }
 
@@ -1117,11 +1136,12 @@ mod process_tests {
             let request = read_line(&mut stream, MANAGEMENT_REQUEST_LIMIT).unwrap();
             assert_eq!(
                 serde_json::from_str::<serde_json::Value>(&request).unwrap(),
-                serde_json::json!({"operation": "proposal.list"})
+                serde_json::json!({"operation": "proposal.list", "expected_instance_id": "instance-one"})
             );
             let response = serde_json::json!({
                 "ok": true,
                 "data": {"diff": "x".repeat(128 * 1024)},
+                "runtime": {"instance_id": "instance-one"},
             });
             writeln!(stream, "{response}").unwrap();
         });
@@ -1132,8 +1152,18 @@ mod process_tests {
             pid: 1,
             build_id: "test".into(),
             config_path: "config.yaml".into(),
+            instance_id: "instance-one".into(),
         };
 
+        assert!(
+            management_request(
+                &endpoint,
+                br#"{"operation":"proposal.list","expected_instance_id":"other-instance"}"#,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("no operation was sent")
+        );
         let response = management_request(&endpoint, br#"{"operation":"proposal.list"}"#).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(parsed["data"]["diff"].as_str().unwrap().len(), 128 * 1024);

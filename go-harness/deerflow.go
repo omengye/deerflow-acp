@@ -24,7 +24,9 @@ import (
 	acpclient "github.com/omengye/deerflow-acp/go-harness/internal/acp/client"
 	agentregistry "github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
+	"github.com/omengye/deerflow-acp/go-harness/internal/automation"
 	budgetledger "github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/channels"
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/learning"
 	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
@@ -45,6 +47,8 @@ type Config struct {
 	BaseURL          string
 	Model            string
 	Instruction      string
+	GoalAutoContinue bool
+	WeChat           WeChatConfig
 	// OutputTokenParameter controls only the default route's wire field.
 	// Budget.MaxOutputTokens remains the single per-request output budget.
 	OutputTokenParameter harness.OutputTokenParameter
@@ -66,6 +70,7 @@ type Config struct {
 	// ModelReasoningEfforts allowlists the effort levels supported by each
 	// configured model. Missing/empty entries do not expose an ACP selector.
 	ModelReasoningEfforts map[string][]string
+	ModelThinking         map[string]harness.ThinkingConfig
 	DisableSubagents      bool
 	// Subagents defines host-owned builtin overrides and custom roles. Runtime
 	// model references are resolved by the configuration loader before Open.
@@ -169,25 +174,30 @@ type Config struct {
 }
 
 type Client struct {
-	service    *hr.Service
-	store      *sqlite.Store
-	mcp        *mcp.Manager
-	skills     *skills.Registry
-	evolution  *evolution.Service
-	learning   *learning.Store
-	assets     *assets.Store
-	budgets    *budgetledger.Ledger
-	background *backgroundHost
-	retention  harness.RetentionPolicy
-	lock       *flock.Flock
-	owner      string
-	mu         sync.Mutex
-	manageMu   sync.Mutex
-	closed     bool
-	agents     map[*agent.Agent]struct{}
-	operations sync.WaitGroup
-	closeDone  chan struct{}
-	closeErr   error
+	scheduler        *automation.Scheduler
+	channels         *channels.Manager
+	service          *hr.Service
+	store            *sqlite.Store
+	mcp              *mcp.Manager
+	skills           *skills.Registry
+	evolution        *evolution.Service
+	learning         *learning.Store
+	assets           *assets.Store
+	budgets          *budgetledger.Ledger
+	background       *backgroundHost
+	retention        harness.RetentionPolicy
+	lock             *flock.Flock
+	owner            string
+	dataDir          string
+	skillSelection   harness.SkillSelection
+	skillReadAllowed bool
+	mu               sync.Mutex
+	manageMu         sync.Mutex
+	closed           bool
+	agents           map[*agent.Agent]struct{}
+	operations       sync.WaitGroup
+	closeDone        chan struct{}
+	closeErr         error
 }
 
 func Open(ctx context.Context, cfg Config) (client *Client, err error) {
@@ -278,6 +288,20 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	}
 	cfg.Media.VisionModels = slices.Clone(cfg.Media.VisionModels)
 	cfg.ModelRoutes = maps.Clone(cfg.ModelRoutes)
+	cfg.ModelThinking = maps.Clone(cfg.ModelThinking)
+	thinkingOutputLimit := harness.DefaultBudgetLimits().MaxOutputTokens
+	if cfg.Budget != nil {
+		thinkingOutputLimit = cfg.Budget.MaxOutputTokens
+	}
+	for name, thinking := range cfg.ModelThinking {
+		provider := cfg.Provider
+		if route, ok := cfg.ModelRoutes[name]; ok {
+			provider = route.Provider
+		}
+		if err := thinking.Validate(provider, cfg.ModelReasoningEfforts[name], thinkingOutputLimit); err != nil {
+			return nil, fmt.Errorf("model %q: %w", name, err)
+		}
+	}
 	cfg.ModelReasoningEfforts = maps.Clone(cfg.ModelReasoningEfforts)
 	for name, efforts := range cfg.ModelReasoningEfforts {
 		provider := cfg.Provider
@@ -290,6 +314,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		cfg.ModelReasoningEfforts[name] = slices.Clone(efforts)
 	}
 	cfg.ACPAgents = maps.Clone(cfg.ACPAgents)
+	cfg.WeChat.AllowedUsers = slices.Clone(cfg.WeChat.AllowedUsers)
 	for name, agent := range cfg.ACPAgents {
 		agent.Args = slices.Clone(agent.Args)
 		agent.Env = maps.Clone(agent.Env)
@@ -441,6 +466,12 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if len(cfg.Skills.Install) > 128 {
 		return nil, fmt.Errorf("too many configured skill installations")
 	}
+	if err = registry.RecoverEdits(ctx); err != nil {
+		return nil, fmt.Errorf("recover installed skill edits: %w", err)
+	}
+	if err = registry.RecoverPublications(ctx); err != nil {
+		return nil, fmt.Errorf("recover file publications: %w", err)
+	}
 	for _, install := range cfg.Skills.Install {
 		if err = registry.InstallConfigured(ctx, install.SourceID, install.Directory, install.Enabled); err != nil {
 			return nil, fmt.Errorf("install configured skill %s/%s: %w", install.SourceID, install.Directory, err)
@@ -448,6 +479,9 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	}
 	if err = registry.ObserveImports(ctx); err != nil {
 		return nil, fmt.Errorf("observe managed skill imports: %w", err)
+	}
+	if err = registry.RefreshAllSources(ctx); err != nil {
+		return nil, fmt.Errorf("refresh authoritative skill sources: %w", err)
 	}
 	if err = registry.ReconcileExports(ctx, false); err != nil {
 		return nil, fmt.Errorf("restore managed skill exports: %w", err)
@@ -558,6 +592,9 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if err = validateSkillProposalSources(cfg, registry); err != nil {
 		return nil, err
 	}
+	if err = skillEvolution.RecoverApprovals(ctx); err != nil {
+		return nil, fmt.Errorf("recover approved skill publications: %w", err)
+	}
 	cfg.skillEvolution = skillEvolution
 	assetStore, err := assets.NewStoreWithArtifactLimit(ctx, filepath.Join(cfg.DataDir, "assets"), store.DB(), cfg.MaxArtifactBytes)
 	if err != nil {
@@ -601,7 +638,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		if admissionErr != nil {
 			return nil, admissionErr
 		}
-		engine, err = einoengine.New(ctx, einoengine.Config{Delegations: delegations, Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, OutputTokenParameter: cfg.OutputTokenParameter, ModelRoutes: cfg.ModelRoutes, ModelReasoningEfforts: cfg.ModelReasoningEfforts, Models: cfg.Models, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, Subagents: cfg.Subagents, ToolPolicy: cfg.ToolPolicy, PermissionMode: cfg.PermissionMode, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, ModelImageImporter: assetStore, ToolOutputStore: assetStore, TaskContextStore: business, Compaction: cfg.Compaction, ContextWindows: contextWindows})
+		engine, err = einoengine.New(ctx, einoengine.Config{Delegations: delegations, Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, OutputTokenParameter: cfg.OutputTokenParameter, ModelRoutes: cfg.ModelRoutes, ModelReasoningEfforts: cfg.ModelReasoningEfforts, ModelThinking: cfg.ModelThinking, Models: cfg.Models, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, Subagents: cfg.Subagents, ToolPolicy: cfg.ToolPolicy, PermissionMode: cfg.PermissionMode, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, ModelImageImporter: assetStore, ToolOutputStore: assetStore, TaskContextStore: business, GoalStore: business, GoalAutoContinue: cfg.GoalAutoContinue, Compaction: cfg.Compaction, ContextWindows: contextWindows})
 		if err != nil {
 			return nil, err
 		}
@@ -626,7 +663,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	service.MemoryGlobalID = cfg.memoryGlobalID
 	service.Resources = manager
 	service.Media, service.Assets = cfg.Media, assetStore
-	service.Settings = hr.ConfigSettings{Models: append([]harness.ConfigValue(nil), cfg.Models...), ModelReasoningEfforts: cfg.ModelReasoningEfforts, EnableSubagents: !cfg.DisableSubagents, DefaultSubagents: !cfg.DisableSubagents}
+	service.Settings = hr.ConfigSettings{Models: append([]harness.ConfigValue(nil), cfg.Models...), ModelReasoningEfforts: cfg.ModelReasoningEfforts, ModelThinking: cfg.ModelThinking, EnableSubagents: !cfg.DisableSubagents, DefaultSubagents: !cfg.DisableSubagents}
 	if native, ok := engine.(*einoengine.Engine); ok && cfg.Engine == nil {
 		background, err = newBackgroundHost(ctx, cfg, store, service, native, ledger, assetStore, manager, cfg.BackgroundWorkers)
 		if err != nil {
@@ -658,8 +695,20 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if err = learningStore.Start(); err != nil {
 		return nil, err
 	}
-	return &Client{service: service, store: store, mcp: manager, skills: registry, evolution: skillEvolution, learning: learningStore, assets: assetStore, budgets: ledger, background: background, retention: cfg.Retention, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}, nil
+	client = &Client{service: service, store: store, mcp: manager, skills: registry, evolution: skillEvolution, learning: learningStore, assets: assetStore, budgets: ledger, background: background, retention: cfg.Retention, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}
+	client.dataDir, client.skillSelection = cfg.DataDir, cfg.SkillSelection
+	if cfg.SkillSelection.Names != nil {
+		client.skillSelection.Names = append([]string{}, cfg.SkillSelection.Names...)
+	}
+	client.skillReadAllowed = cfg.ToolPolicy.Allows("skill") || cfg.ToolPolicy.Allows("read_skill_file")
+	if err = client.startAutomation(ctx, cfg); err != nil {
+		return nil, err
+	}
+	return client, nil
 }
+
+// DataDirectory identifies the canonical state directory owned by this client.
+func (c *Client) DataDirectory() string { return c.dataDir }
 
 func (c *Client) operation() (func(), error) {
 	c.mu.Lock()
@@ -812,6 +861,18 @@ func (c *Client) Close() error {
 		agents = append(agents, a)
 	}
 	c.mu.Unlock()
+	if c.scheduler != nil {
+		c.scheduler.Stop()
+	}
+	if c.channels != nil {
+		c.channels.Stop()
+	}
+	if c.scheduler != nil {
+		c.scheduler.Close()
+	}
+	if c.channels != nil {
+		c.channels.Close()
+	}
 	for _, a := range agents {
 		_ = a.Close()
 	}

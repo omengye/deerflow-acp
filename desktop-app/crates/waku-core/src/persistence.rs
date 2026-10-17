@@ -1245,6 +1245,7 @@ impl StateStore {
         session.provider_cursor = stored.provider_cursor;
         session.runtime_mode = stored.runtime_mode;
         session.reasoning_effort = stored.reasoning_effort;
+        session.thinking_mode = stored.thinking_mode;
         session.service_tier = stored.service_tier;
         session.context_window = stored.context_window;
         session.context_usage = stored.context_usage;
@@ -1528,6 +1529,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         // Hydration replaces these; the list never reads them.
         runtime_mode: RuntimeMode::default(),
         reasoning_effort: None,
+        thinking_mode: None,
         service_tier: None,
         context_window: None,
         agent_preset: None,
@@ -2547,6 +2549,7 @@ mod tests {
         state.sessions[0].model = Some("gpt-5.6-luna".into());
         state.last_model = Some("gpt-5.6-luna".into());
         state.sessions[0].reasoning_effort = Some("xhigh".into());
+        state.sessions[0].thinking_mode = Some("off".into());
         state.last_reasoning_effort = Some("xhigh".into());
         state.sessions[0].service_tier = Some("fast".into());
         state.last_service_tier = Some("fast".into());
@@ -2608,6 +2611,7 @@ mod tests {
         assert_eq!(restored.sessions[0].model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(restored.last_model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(restored.last_reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(restored.sessions[0].thinking_mode.as_deref(), Some("off"));
         assert_eq!(restored.last_service_tier.as_deref(), Some("fast"));
         assert_eq!(
             restored.sessions[0].reasoning_effort.as_deref(),

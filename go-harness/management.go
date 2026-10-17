@@ -118,12 +118,20 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 		return nil, err
 	}
 	defer done()
+	// Channel instances serialize their own mutations; provider long-polls must
+	// not hold the global management lock used by unrelated desktop settings.
+	if strings.HasPrefix(request.Operation, "channel.") {
+		value, err := c.managementChannel(ctx, request)
+		return value, channelManagementError(err)
+	}
 	c.manageMu.Lock()
 	defer c.manageMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	switch request.Operation {
+	case "schedule.create", "schedule.list", "schedule.status", "schedule.pause", "schedule.history", "schedule.ack", "schedule.delete", "wechat.status", "wechat.history", "wechat.login.start", "wechat.login.poll", "wechat.logout", "wechat.review":
+		return c.managementAutomation(ctx, request)
 	case "skill.learning.status", "skill.learning.control.get", "skill.learning.control.set", "skill.learning.episode.start", "skill.learning.lineage.link", "skill.learning.experiences", "skill.learning.patterns", "skill.learning.matches", "skill.learning.workspace.patterns", "skill.learning.workspace.matches", "skill.learning.jobs", "skill.learning.cancel", "skill.learning.pattern.ignore", "skill.learning.pattern.adjudicate", "skill.learning.creation_retry.prepare", "skill.learning.creation_retry.enqueue", "skill.learning.source.get":
 		value, err := c.managementLearning(ctx, request)
 		return value, proposalManagementError(err)
@@ -164,13 +172,22 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 	case "skill.signals.list", "skill.signals.get", "skill.collector.status", "skill.collector.jobs", "skill.collector.retry":
 		data, err := c.managementSignals(ctx, request)
 		return data, proposalManagementError(err)
+	case "skill.verify":
+		data, err := c.managementSkillVerify(ctx, request)
+		return data, proposalManagementError(err)
 	case "skill.list", "skill.get", "skill.set_enabled", "skill.imports.refresh", "skill.export.retry":
 		data, err := c.managementSkills(ctx, request)
+		return data, proposalManagementError(err)
+	case "skill.edits.list", "skill.edits.reconcile":
+		data, err := c.managementSkillEdits(ctx, request)
+		return data, proposalManagementError(err)
+	case "skill.publications.list", "skill.publications.reconcile":
+		data, err := c.managementSkillPublications(ctx, request)
 		return data, proposalManagementError(err)
 	case "proposal.behavior", "proposal.behavior.receipts":
 		data, err := c.managementBehavior(ctx, request)
 		return data, proposalManagementError(err)
-	case "proposal.list", "proposal.get", "proposal.approve", "proposal.reject", "proposal.history", "proposal.rollback":
+	case "proposal.list", "proposal.get", "proposal.approve", "proposal.reject", "proposal.history", "proposal.rollback", "proposal.source_review", "proposal.publish_retry":
 		data, err := c.managementProposals(ctx, request)
 		return data, proposalManagementError(err)
 	case "daemon.status", "daemon.drain", "daemon.resume":

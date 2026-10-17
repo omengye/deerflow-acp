@@ -235,6 +235,13 @@ func (s *Service) QueryHistory(ctx context.Context, q harness.SkillQuery) (harne
 	if err != nil {
 		return page, err
 	}
+	for i := range page.Publications {
+		p := &page.Publications[i]
+		p.FileStatus, err = skills.FilePublicationStatus(ctx, tx, p.Target.SourceIdentity, p.Name, p.Head.StateVersion)
+		if err != nil {
+			return page, err
+		}
+	}
 	return page, tx.Commit()
 }
 

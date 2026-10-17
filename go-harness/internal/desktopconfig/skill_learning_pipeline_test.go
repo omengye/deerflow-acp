@@ -430,8 +430,8 @@ func skillLearningSettingsNativePipeline(t *testing.T, automatic, newCapability 
 			t.Fatal("approval or saved opt-out regenerated or evaluated a skill", stage, provider.Counts())
 		}
 	}
-	if data, err := os.ReadFile(filepath.Join(imported, "SKILL.md")); err != nil || string(data) != string(original) {
-		t.Fatal("saved evolution overwrote imported files", err)
+	if data, err := os.ReadFile(filepath.Join(imported, "SKILL.md")); err != nil || newCapability && string(data) != string(original) || !newCapability && string(data) == string(original) {
+		t.Fatal("saved evolution did not publish to the intended authoritative directory", err)
 	}
 }
 

@@ -170,8 +170,8 @@ func TestImmutableVersionsProgressiveLoadingAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Actual database close/reopen; original source contents are now unavailable.
-	if err = os.Remove(filepath.Join(root, "research", "SKILL.md")); err != nil {
-		t.Fatal(err)
+	if _, err = os.Stat(filepath.Join(root, "research", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatal("delete did not remove the authoritative source", err)
 	}
 	db, err = store.Open(dbPath)
 	if err != nil {
@@ -375,8 +375,11 @@ func TestLimitsAndAtomicInstallRollback(t *testing.T) {
 	if _, err := r.Install(ctx, "src", "limited"); err == nil {
 		t.Fatal("failure injection did not fail")
 	}
-	if refs := snapshot(t, r, harness.SkillSelection{IncludeGlobal: true}).Refs(); refs[0].Version != first.Ref.Version {
-		t.Fatal("failed version was published")
+	if _, err := r.Snapshot(ctx, harness.SkillSelection{IncludeGlobal: true}); err == nil {
+		t.Fatal("failed index update silently used cached content")
+	}
+	if old, err := r.Restore(ctx, harness.SkillSelection{IncludeGlobal: true}, []harness.SkillRef{first.Ref}); err != nil || len(old.Refs()) != 1 {
+		t.Fatal("historical version lost", err)
 	}
 	var count int
 	if err := db.DB().QueryRow(`SELECT COUNT(*) FROM df_skill_versions`).Scan(&count); err != nil || count != 1 {
@@ -393,8 +396,11 @@ func TestLimitsAndAtomicInstallRollback(t *testing.T) {
 	if _, err := r.Install(ctx, "src", "limited"); !errors.Is(err, harness.ErrInvalidInput) {
 		t.Fatal("retained version bound", err)
 	}
-	if refs := snapshot(t, r, harness.SkillSelection{IncludeGlobal: true}).Refs(); refs[0].Version != second.Ref.Version {
-		t.Fatal("limit failure modified active version")
+	if _, err := r.Snapshot(ctx, harness.SkillSelection{IncludeGlobal: true}); err == nil {
+		t.Fatal("version limit silently used stale content")
+	}
+	if _, err := r.Restore(ctx, harness.SkillSelection{IncludeGlobal: true}, []harness.SkillRef{second.Ref}); err != nil {
+		t.Fatal(err)
 	}
 	for _, limits := range []harness.SkillLimits{{MaxFileBytes: 10}, {MaxSkillBytes: 10}, {MaxTotalBytes: 10}, {MaxFilesPerSkill: 1}} {
 		t.Run("byte-and-file-limit", func(t *testing.T) {
@@ -425,9 +431,9 @@ func TestMetadataOnlyAndIntegrityCheck(t *testing.T) {
 	if _, err := snap.Get(ctx, "check"); err == nil {
 		t.Fatal("content integrity mismatch accepted")
 	}
-	// Snapshot selection itself also loads metadata only, not the file blobs.
-	if _, err := r.Snapshot(ctx, harness.SkillSelection{IncludeGlobal: true}); err != nil {
-		t.Fatal(err)
+	// A new turn reindexes real files and must fail closed on corrupt history.
+	if _, err := r.Snapshot(ctx, harness.SkillSelection{IncludeGlobal: true}); err == nil {
+		t.Fatal("new snapshot ignored corrupt retained object index")
 	}
 }
 

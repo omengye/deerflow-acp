@@ -818,6 +818,7 @@ impl Waku {
             next(),
         ));
         for (page, label_key, icon, keywords) in [
+            (SettingsPage::Channels, "settings.channels", "icons/server.svg", "channels wechat plugins login 渠道 微信 插件 登录"),
             (
                 SettingsPage::DeerFlow,
                 "settings.deerflow",
@@ -1407,13 +1408,13 @@ impl Waku {
         .detach();
     }
 
-    fn import_provider_session(
+    pub(super) fn import_provider_session(
         &mut self,
         summary: ProviderSessionSummary,
         history: ProviderSessionHistory,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Uuid {
         if let Some(session_id) = self
             .state
             .sessions
@@ -1431,7 +1432,7 @@ impl Waku {
             self.select_session(session_id, cx);
             let focus = self.composer_focus(cx);
             window.focus(&focus, cx);
-            return;
+            return session_id;
         }
 
         let project_id = if let Some(project) = self
@@ -1478,6 +1479,7 @@ impl Waku {
         self.select_session(session_id, cx);
         let focus = self.composer_focus(cx);
         window.focus(&focus, cx);
+        session_id
     }
 
     fn load_command_palette_provider_session(

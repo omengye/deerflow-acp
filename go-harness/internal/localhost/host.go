@@ -24,6 +24,7 @@ type Config struct {
 	RuntimeDir string
 	BuildID    string
 	ConfigPath string
+	DataDir    string
 	// MaxConnections limits accepted ACP streams, not concurrent model runs.
 	// Control commands never consume these slots, even when every ACP is idle.
 	MaxConnections    int
@@ -42,7 +43,10 @@ type ManagementRequest struct {
 	ActiveConnections int
 }
 
-type ManagementError struct{ Code, Message string }
+type ManagementError struct {
+	Code, Message string
+	Details       any // Only explicitly sanitized operator projections belong here.
+}
 
 func (e *ManagementError) Error() string { return e.Message }
 
@@ -129,7 +133,13 @@ func (h *Host) Start(ctx context.Context) (Endpoint, error) {
 		_ = lock.Close()
 		return Endpoint{}, err
 	}
-	ep := Endpoint{Host: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port, Token: token, PID: os.Getpid(), BuildID: h.cfg.BuildID, ConfigPath: h.cfg.ConfigPath}
+	instanceID, err := newToken()
+	if err != nil {
+		_ = listener.Close()
+		_ = lock.Close()
+		return Endpoint{}, err
+	}
+	ep := Endpoint{Host: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port, Token: token, PID: os.Getpid(), BuildID: h.cfg.BuildID, ConfigPath: h.cfg.ConfigPath, InstanceID: instanceID, DataDir: h.cfg.DataDir}
 	if err = publishEndpoint(dir, ep); err != nil {
 		_ = listener.Close()
 		_ = lock.Close()
@@ -323,7 +333,17 @@ func (h *Host) manage(reader *bufio.Reader, out io.Writer) {
 	}
 	h.mu.Lock()
 	active := h.active
+	ep := h.endpoint
 	h.mu.Unlock()
+	runtime := map[string]any{"instance_id": ep.InstanceID, "pid": ep.PID, "build_id": ep.BuildID, "config_path": ep.ConfigPath, "data_dir": ep.DataDir}
+	if raw, exists := request["expected_instance_id"]; exists {
+		var expected string
+		if json.Unmarshal(raw, &expected) != nil || expected == "" || expected != ep.InstanceID {
+			_ = json.NewEncoder(out).Encode(map[string]any{"ok": false, "code": "instance_mismatch", "error": "The running daemon changed; inspect its identity before retrying.", "runtime": runtime})
+			return
+		}
+		delete(request, "expected_instance_id")
+	}
 	ctx, cancel := context.WithTimeout(h.ctx, h.cfg.ManagementTimeout)
 	defer cancel()
 	data, err := h.cfg.Manage(ctx, ManagementRequest{Operation: operation, Fields: request, ActiveConnections: active})
@@ -333,8 +353,12 @@ func (h *Host) manage(reader *bufio.Reader, out io.Writer) {
 		if errors.As(err, &known) {
 			code, message = known.Code, known.Message
 		}
-		_ = json.NewEncoder(out).Encode(map[string]any{"ok": false, "error": message, "code": code})
+		envelope := map[string]any{"ok": false, "error": message, "code": code, "runtime": runtime}
+		if known != nil && known.Details != nil {
+			envelope["data"] = known.Details
+		}
+		_ = json.NewEncoder(out).Encode(envelope)
 		return
 	}
-	_ = json.NewEncoder(out).Encode(map[string]any{"ok": true, "data": data})
+	_ = json.NewEncoder(out).Encode(map[string]any{"ok": true, "data": data, "runtime": runtime})
 }

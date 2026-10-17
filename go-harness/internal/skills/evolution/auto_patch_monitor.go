@@ -39,6 +39,11 @@ func (s *Service) monitorAutoPatch(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
+		if pending, e := skills.PublicationPending(ctx, tx.SQL(), o.Target.SourceIdentity, o.Target.Name); e != nil {
+			return e
+		} else if pending {
+			return nil
+		}
 		o.UpdatedAt = now
 		if err = refreshAutoPatchLearningSource(ctx, tx.SQL(), &o); err != nil {
 			return err

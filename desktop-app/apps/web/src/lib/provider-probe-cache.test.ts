@@ -25,6 +25,7 @@ const probe: ProviderProbeResult = {
     id: 'gpt-5',
     name: 'GPT-5',
     is_default: true,
+    thinking_modes: [],
     reasoning_efforts: [],
     service_tiers: [],
     context_windows: [],

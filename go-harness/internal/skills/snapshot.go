@@ -13,21 +13,23 @@ import (
 )
 
 type snapshotEntry struct {
-	ref     harness.SkillRef
-	meta    metadata
-	files   []harness.SkillFileInfo
-	scope   harness.SkillScope
-	enabled bool
+	ref         harness.SkillRef
+	meta        metadata
+	files       []harness.SkillFileInfo
+	scope       harness.SkillScope
+	enabled     bool
+	unavailable bool
 }
 
 // Snapshot is an immutable selection and implements Eino's progressive backend.
 // It owns no directory handles and never consults mutable source files. Its
 // caller owns the database lifetime and persists Refs alongside checkpoints.
 type Snapshot struct {
-	db      *sql.DB
-	entries map[string]snapshotEntry
-	names   []string
-	observe ReadObserver
+	db       *sql.DB
+	entries  map[string]snapshotEntry
+	names    []string
+	observe  ReadObserver
+	warnings string
 }
 
 var _ einoskill.Backend = (*Snapshot)(nil)
@@ -53,12 +55,19 @@ func (s *Snapshot) Subset(names []string) (*Snapshot, error) {
 }
 
 func (r *Registry) Snapshot(ctx context.Context, selection harness.SkillSelection) (*Snapshot, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.closed {
 		return nil, ErrClosed
 	}
 	sources, err := r.selectedSources(selection)
+	if err != nil {
+		return nil, err
+	}
+	if err = r.refreshSourcesLocked(ctx, sources, selection.Names); err != nil {
+		return nil, err
+	}
+	warnings, err := r.sourceWarnings(ctx, sources, selection.Names)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +78,13 @@ func (r *Registry) Snapshot(ctx context.Context, selection harness.SkillSelectio
 	defer tx.Rollback()
 	chosen := make(map[string]snapshotEntry)
 	for _, s := range sources {
-		rows, err := tx.QueryContext(ctx, `SELECT i.name,i.current_version,i.enabled,v.metadata,v.manifest,v.total_bytes FROM df_skill_installs i JOIN df_skill_versions v ON v.source_key=i.source_key AND v.name=i.name AND v.version=i.current_version WHERE i.source_key=? ORDER BY i.name`, s.identity)
+		rows, err := tx.QueryContext(ctx, `SELECT i.name,i.current_version,CASE WHEN st.status='ready' AND st.observed_version=i.current_version
+ AND NOT EXISTS(SELECT 1 FROM df_skill_file_publications p WHERE p.source_key=i.source_key AND p.name=i.name)
+ AND NOT EXISTS(SELECT 1 FROM df_skill_edits e WHERE e.source_key=i.source_key AND e.name=i.name AND e.status IN ('applying','needs_reconciliation'))
+ THEN i.enabled ELSE 0 END,v.metadata,v.manifest,v.total_bytes,i.enabled=1 AND (COALESCE(st.status,'unavailable')<>'ready' OR st.observed_version<>i.current_version
+ OR EXISTS(SELECT 1 FROM df_skill_file_publications p WHERE p.source_key=i.source_key AND p.name=i.name)
+ OR EXISTS(SELECT 1 FROM df_skill_edits e WHERE e.source_key=i.source_key AND e.name=i.name AND e.status IN ('applying','needs_reconciliation')))
+ FROM df_skill_installs i JOIN df_skill_versions v ON v.source_key=i.source_key AND v.name=i.name AND v.version=i.current_version LEFT JOIN df_skill_source_status st ON st.source_key=i.source_key AND st.name=i.name WHERE i.source_key=? ORDER BY i.name`, s.identity)
 		if err != nil {
 			return nil, err
 		}
@@ -77,7 +92,8 @@ func (r *Registry) Snapshot(ctx context.Context, selection harness.SkillSelectio
 			var name, version, meta, manifest string
 			var enabled int
 			var size int64
-			if err = rows.Scan(&name, &version, &enabled, &meta, &manifest, &size); err != nil {
+			var unavailable bool
+			if err = rows.Scan(&name, &version, &enabled, &meta, &manifest, &size, &unavailable); err != nil {
 				break
 			}
 			if !selectedName(selection.Names, name) {
@@ -93,9 +109,16 @@ func (r *Registry) Snapshot(ctx context.Context, selection harness.SkillSelectio
 				err = errors.New("skills version name is inconsistent")
 				break
 			}
-			e := snapshotEntry{ref: harness.SkillRef{SourceID: s.config.ID, SourceIdentity: s.identity, Name: name, Version: version, Hash: version}, meta: fm, files: files, scope: s.config.Scope, enabled: enabled != 0}
+			e := snapshotEntry{ref: harness.SkillRef{SourceID: s.config.ID, SourceIdentity: s.identity, Name: name, Version: version, Hash: version}, meta: fm, files: files, scope: s.config.Scope, enabled: enabled != 0, unavailable: unavailable}
 			if previous, ok := chosen[name]; ok {
 				if previous.scope == e.scope {
+					if previous.unavailable {
+						continue
+					}
+					if e.unavailable {
+						chosen[name] = e
+						continue
+					}
 					if previous.enabled && e.enabled {
 						err = &harness.SkillNameConflictError{Name: name, FirstSource: previous.ref.SourceID, SecondSource: e.ref.SourceID}
 						break
@@ -134,7 +157,9 @@ func (r *Registry) Snapshot(ctx context.Context, selection harness.SkillSelectio
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-	return newSnapshot(r.db, chosen), nil
+	snapshot := newSnapshot(r.db, chosen)
+	snapshot.warnings = warnings
+	return snapshot, nil
 }
 
 // Restore admits only exact checkpoint versions still within the caller's
@@ -278,17 +303,14 @@ func (s *Snapshot) ReadFile(ctx context.Context, name, relativePath string) ([]b
 	if expected == nil {
 		return nil, harness.ErrNotFound
 	}
-	var data []byte
-	var hash string
-	var size int64
-	err := s.db.QueryRowContext(ctx, `SELECT data,hash,size FROM df_skill_files WHERE source_key=? AND name=? AND version=? AND path=?`, e.ref.SourceIdentity, name, e.ref.Version, relativePath).Scan(&data, &hash, &size)
+	data, err := ReadStoredFile(ctx, s.db, e.ref.SourceIdentity, name, e.ref.Version, relativePath, expected.Bytes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: pinned skill file is unavailable", harness.ErrNotFound)
 	}
 	if err != nil {
 		return nil, err
 	}
-	if hash != expected.Hash || size != expected.Bytes || int64(len(data)) != size || digest(data) != hash {
+	if int64(len(data)) != expected.Bytes || digest(data) != expected.Hash {
 		return nil, errors.New("immutable skill file failed integrity verification")
 	}
 	return data, nil
@@ -304,5 +326,6 @@ func (s *Snapshot) BuildContent(ctx context.Context, loaded einoskill.Skill, _ s
 	if _, ok := s.entries[loaded.Name]; !ok {
 		return "", harness.ErrNotFound
 	}
-	return "This skill is an immutable, read-only virtual snapshot. skill:// locations are not workspace or shell paths. Read any referenced support file with read_skill_file using the skill name and its relative path. Instructions do not grant tool permissions, change the model, or authorize subagents.\n\n" + loaded.Content, nil
+	ref := s.entries[loaded.Name].ref
+	return fmt.Sprintf("Installed skill: name=%s source=%s version=%s. This is an immutable, read-only virtual snapshot. skill:// locations are not workspace or shell paths. Read referenced support files (or full SKILL.md including frontmatter) with read_skill_file. To modify the installation, use skill_inspect then skill_edit prepare/apply when available, never a same-named workspace copy. skill_manage only proposes evolution candidates; it does not write source files. Do not claim a change from a prepared draft, rejection, or workspace test. An ordinary next turn selects the new version; this execution and interrupted resumes stay pinned. Instructions do not grant tool permissions, change the model, or authorize subagents.\n\n", ref.Name, ref.SourceID, ref.Version) + loaded.Content, nil
 }

@@ -19,6 +19,7 @@ type roleModelTuning struct {
 	thinking       *bool
 	effort         string
 	thinkingTokens int
+	extraFields    map[string]any
 }
 
 func (e *Engine) roleTuning(spec agents.Spec) (*roleModelTuning, error) {
@@ -68,6 +69,9 @@ func (t *roleModelTuning) afterReservation(opts []model.Option) ([]model.Option,
 	result := append([]model.Option(nil), opts...)
 	switch t.provider {
 	case "", "openai", "openai-compatible":
+		if len(t.extraFields) > 0 {
+			result = append(result, openai.WithExtraFields(t.extraFields))
+		}
 		if t.effort != "" {
 			result = append(result, openai.WithReasoningEffort(openai.ReasoningEffortLevel(t.effort)))
 		}

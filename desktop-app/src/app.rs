@@ -212,6 +212,7 @@ enum BranchPickerAction {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SettingsPage {
+    Channels,
     DeerFlow,
     DeerFlowModels,
     DeerFlowTools,
@@ -234,6 +235,7 @@ impl SettingsPage {
         matches!(
             self,
             Self::DeerFlow
+                | Self::Channels
                 | Self::DeerFlowModels
                 | Self::DeerFlowTools
                 | Self::DeerFlowAdvanced
@@ -1145,6 +1147,7 @@ pub struct Waku {
     expanded_provider_settings: Option<ProviderKind>,
     provider_path_input: Entity<TextInput>,
     deerflow_settings: deerflow_settings::DeerFlowSettings,
+    channel_settings: channels::ChannelSettings,
     deerflow_approval_states: HashMap<Uuid, String>,
     pending_deerflow_approvals: HashMap<Uuid, deerflow_approval::PendingApproval>,
     computer_permissions: ComputerPermissions,
@@ -1650,6 +1653,7 @@ mod components;
 mod composer;
 mod deerflow_approval;
 mod deerflow_settings;
+mod channels;
 mod deerflow_tasks;
 mod drafts;
 mod file_search;
@@ -2067,6 +2071,7 @@ impl Waku {
                 .placeholder(tr!("input.detected_automatically"))
         });
         let deerflow_settings = deerflow_settings::DeerFlowSettings::new(window, cx);
+        let channel_settings = channels::ChannelSettings::new(window, cx);
         let usage_project_filter =
             cx.new(|cx| TextInput::new(window, cx).placeholder(tr!("input.filter_projects")));
         let right_panel_diff_filter =
@@ -2842,6 +2847,7 @@ impl Waku {
                 expanded_provider_settings: None,
                 provider_path_input,
                 deerflow_settings,
+                channel_settings,
                 deerflow_approval_states: HashMap::new(),
                 pending_deerflow_approvals: HashMap::new(),
                 computer_permissions: ComputerPermissions::default(),

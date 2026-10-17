@@ -475,13 +475,17 @@ func TestConfigDaemonAdvertisesAndRoutesDistinctModels(t *testing.T) {
 	type hit struct {
 		backend string
 		authOK  bool
+		body    map[string]any
 	}
 	hits := make(chan hit, 2)
 	newBackend := func(name, key string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = io.Copy(io.Discard, r.Body)
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
 			_ = r.Body.Close()
-			hits <- hit{backend: name, authOK: r.Header.Get("Authorization") == "Bearer "+key}
+			hits <- hit{backend: name, authOK: r.Header.Get("Authorization") == "Bearer "+key, body: body}
 			w.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"route-ok\"},\"finish_reason\":null}]}\n\n")
 			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
@@ -503,6 +507,8 @@ models:
   - name: second
     use: deerflow.models.patched_openai:PatchedChatOpenAI
     model: second-model
+    thinking_parameter: enable_thinking
+    reasoning_efforts: [low, high]
     api_key: second-fixture-key
     base_url: %s/v1
 `, first.URL, second.URL)
@@ -528,6 +534,23 @@ models:
 	})
 	ep := p.endpoint(t, runtimeDir)
 	client := acpClient(t, ep)
+	if bridge := os.Getenv("DEERFLOW_TEST_BRIDGE"); bridge != "" {
+		proxy := exec.Command(bridge, "--no-auto-start", "--config", configPath, "--runtime-dir", runtimeDir)
+		in, err := proxy.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := proxy.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := proxy.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = in.Close(); _ = proxy.Process.Kill(); _ = proxy.Wait() })
+		client = &rpcClient{in: in, out: json.NewDecoder(out)}
+		client.success(t, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}})
+	}
 	created := client.success(t, "session/new", map[string]any{"cwd": workspace, "mcpServers": []any{}})
 	if bytes.Contains(created, []byte("first-fixture-key")) || bytes.Contains(created, []byte("second-fixture-key")) {
 		t.Fatal("ACP session/new exposed a model credential")
@@ -578,6 +601,32 @@ models:
 	}
 	if invalid := client.request(t, "session/set_config_option", map[string]any{"sessionId": session.ID, "configId": "model", "value": "unconfigured-model"}); len(invalid.Error) == 0 {
 		t.Fatal("ACP accepted an unconfigured model route")
+	}
+	client.success(t, "session/set_config_option", map[string]any{"sessionId": session.ID, "configId": "reasoning_effort", "value": "high"})
+	for _, mode := range []string{"on", "off", "on", "default"} {
+		raw := client.success(t, "session/set_config_option", map[string]any{"sessionId": session.ID, "configId": "thinking_enabled", "value": mode})
+		if err := json.Unmarshal(raw, &selection); err != nil {
+			t.Fatal(err)
+		}
+		for _, option := range selection.ConfigOptions {
+			if option.ID == "reasoning_effort" && option.CurrentValue != "high" {
+				t.Fatal("switch discarded effort")
+			}
+		}
+		client.success(t, "session/prompt", map[string]any{"sessionId": session.ID, "prompt": []any{map[string]string{"type": "text", "text": "Say hello again."}}})
+		select {
+		case got := <-hits:
+			var wantThinking, wantEffort any
+			if mode != "default" {
+				wantThinking = mode == "on"
+			}
+			wantEffort = "high"
+			if got.backend != "second" || !got.authOK || got.body["enable_thinking"] != wantThinking || got.body["reasoning_effort"] != wantEffort {
+				t.Fatalf("%s: thinking=%v effort=%v backend=%s", mode, got.body["enable_thinking"], got.body["reasoning_effort"], got.backend)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("thinking mode request did not reach model")
+		}
 	}
 	conn, _, line := connectCommand(t, ep, "STOP")
 	_ = conn.Close()

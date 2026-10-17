@@ -8,6 +8,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
+	"github.com/omengye/deerflow-acp/go-harness/internal/launch"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
 
@@ -46,6 +47,11 @@ func (s service) snapshot() (map[string]any, error) {
 		return nil, err
 	}
 	skillSourceDiagnostics = append(skillSourceDiagnostics, s.skillDirectoryDiagnostics...)
+	if configured, inspectErr := launch.InspectConfiguredSkills(s.config, data); inspectErr == nil {
+		for _, diagnostic := range configured.Diagnostics {
+			skillSourceDiagnostics = append(skillSourceDiagnostics, diagnostic.Path+": "+diagnostic.Message)
+		}
+	}
 	if boolValue(readObject(data, "skills"), "enabled", true) {
 		settings := readObject(data, "skills")
 		if _, err := skills.ResolveManagedSources(s.config, settings["managed_sources"], settings["export_root"]); err != nil {
@@ -192,6 +198,10 @@ func (s service) snapshot() (map[string]any, error) {
 }
 
 func modelDocument(raw map[string]any) map[string]any {
+	thinkingBudget := any(0)
+	if value := raw["thinking_budget_tokens"]; value != nil {
+		thinkingBudget = value
+	}
 	contextWindow := any(0)
 	if value := raw["context_window"]; value != nil {
 		contextWindow = value
@@ -209,7 +219,9 @@ func modelDocument(raw map[string]any) map[string]any {
 		"base_url":               str(raw, "base_url", ""),
 		"output_token_parameter": str(raw, "output_token_parameter", "auto"),
 		"supports_vision":        boolValue(raw, "supports_vision", false), "context_window": contextWindow,
-		"reasoning_efforts": raw["reasoning_efforts"],
+		"reasoning_efforts":      raw["reasoning_efforts"],
+		"thinking_parameter":     str(raw, "thinking_parameter", ""),
+		"thinking_budget_tokens": thinkingBudget,
 	}
 }
 

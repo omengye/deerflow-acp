@@ -514,10 +514,12 @@ fn expected_type(path: &str) -> Option<&'static str> {
         | "/models/*/model"
         | "/models/*/api_key"
         | "/models/*/output_token_parameter"
+        | "/models/*/thinking_parameter"
         | "/models/*/base_url" => Some("string"),
         "/models" => Some("model_catalog"),
         "/models/*/reasoning_efforts" => Some("reasoning_efforts"),
         "/models/*/context_window"
+        | "/models/*/thinking_budget_tokens"
         | "/subagents/max_turns"
         | "/subagents/max_concurrent"
         | "/subagents/max_depth"
@@ -604,11 +606,19 @@ mod tests {
         for (path, kind) in [
             ("/runtime/max_output_tokens", "integer"),
             ("/models/*/output_token_parameter", "string"),
+            ("/models/*/thinking_parameter", "string"),
+            ("/models/*/thinking_budget_tokens", "integer"),
         ] {
             let field = json!({"path":path,"type":kind,"apply":"restart","operations":["validate","save"],"hash":"output-v1"});
-            doc["config_schema"]["fields"].as_array_mut().unwrap().push(field.clone());
+            doc["config_schema"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .push(field.clone());
             assert!(!Capabilities::read(&doc, &applied).allows(path));
-            applied["config_schema"]["fields"].as_array_mut().unwrap().push(field);
+            applied["config_schema"]["fields"]
+                .as_array_mut()
+                .unwrap()
+                .push(field);
             assert!(Capabilities::read(&doc, &applied).allows(path));
         }
     }

@@ -70,7 +70,7 @@ func skillManagementCall(t *testing.T, c *Client, fields map[string]any) (any, e
 }
 
 func TestSkillEvolutionSDKAndAuthenticatedManagement(t *testing.T) {
-	c, cfg := skillEvolutionClient(t, true)
+	c, cfg := skillEvolutionClient(t)
 	ctx := context.Background()
 	p := submitSkillEdit(t, c, "edit-one", "Reviewed next steps")
 	host, err := localhost.New(localhost.Config{RuntimeDir: t.TempDir(), Manage: c.ManageLocal, ServeACP: func(context.Context, io.ReadCloser, io.WriteCloser) error { return nil }})
@@ -113,8 +113,8 @@ func TestSkillEvolutionSDKAndAuthenticatedManagement(t *testing.T) {
 		t.Fatalf("detail: %s", response)
 	}
 	var projected harness.SkillProposal
-	if json.Unmarshal(response["data"], &projected) != nil || projected.OverlayBase == nil || p.OverlayBase == nil || *projected.OverlayBase != *p.OverlayBase {
-		t.Fatalf("MANAGE lost overlay identity: %s", response)
+	if json.Unmarshal(response["data"], &projected) != nil || projected.OverlayBase != nil || projected.Target != p.Target {
+		t.Fatalf("MANAGE lost file source identity: %s", response)
 	}
 	response = call(map[string]any{"operation": "proposal.approve", "proposal_id": p.ID, "expected_state_version": p.StateVersion + 1})
 	if string(response["ok"]) != "false" || string(response["code"]) != `"conflict"` {
@@ -138,8 +138,8 @@ func TestSkillEvolutionSDKAndAuthenticatedManagement(t *testing.T) {
 	if string(response["ok"]) != "true" || json.Unmarshal(response["data"], &history) != nil || len(history.Revisions) != 2 || len(history.Proposals) != 1 || history.Proposals[0].Diff != "" {
 		t.Fatalf("history: %s", response)
 	}
-	if history.Revisions[0].OverlayBase != nil || history.Revisions[1].OverlayBase == nil || *history.Revisions[1].OverlayBase != *p.OverlayBase || history.Proposals[0].OverlayBase == nil || *history.Proposals[0].OverlayBase != *p.OverlayBase {
-		t.Fatalf("MANAGE history lost overlay identity: %s", response)
+	if history.Revisions[0].OverlayBase != nil || history.Revisions[1].OverlayBase != nil || history.Proposals[0].Target != p.Target {
+		t.Fatalf("MANAGE history changed file source identity: %s", response)
 	}
 	rollback := map[string]any{"operation": "proposal.rollback", "source_id": "project", "name": "research", "version": 1, "expected_head": head, "request_key": "restore-original"}
 	for range 2 {

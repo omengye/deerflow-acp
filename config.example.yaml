@@ -3,6 +3,9 @@
 config_version: eino-harness-v1
 
 local_acp:
+  # Optional: /goal objectives work without auto-continuation. When enabled,
+  # at most 3 native continuations share the original budget and permissions.
+  # goal_auto_continue: true
   # Maximum size per output artifact in MiB; positive integer, restart required.
   max_artifact_size_mib: 500
   # Optional call/iteration quotas; 0 disables. Run deadlines still apply.
@@ -32,8 +35,23 @@ local_acp:
   closed_session_retention_days: 30
   session_cleanup_interval_seconds: 3600
 
+# Legacy iLink settings, imported once into the channel store. New installations
+# use Settings > Channels or channel.* management; never put bot tokens in YAML.
+# See docs/channel-plugins.md. New channels inherit global tool permissions.
+wechat:
+  enabled: false
+  workspace: ""
+  allowed_users: []
+  approval: read_only
+
 models:
   - name: qwen3.6-plus
+  # Opt in only after verifying this model's endpoint supports both on and off.
+  # thinking_parameter: enable_thinking
+  # Other contracts: thinking_type, reasoning_effort (none to disable), claude.
+  # unsupported declares no switching; omitted means capability is unknown.
+  # reasoning_effort requires an explicit session effort before thinking=on.
+  # thinking_budget_tokens: 1024 # Claude only; must be below max_output_tokens.
     display_name: Qwen 3.6 Plus
     provider: openai
     model: qwen3.6-plus

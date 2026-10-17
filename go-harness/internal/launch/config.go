@@ -46,10 +46,13 @@ type modelDocument struct {
 	SupportsVision       bool                         `yaml:"supports_vision"`
 	ContextWindow        int                          `yaml:"context_window"`
 	ReasoningEfforts     []string                     `yaml:"reasoning_efforts"`
+	ThinkingParameter    string                       `yaml:"thinking_parameter"`
+	ThinkingBudgetTokens int                          `yaml:"thinking_budget_tokens"`
 	OutputTokenParameter harness.OutputTokenParameter `yaml:"output_token_parameter"`
 }
 
 type runtimeDocument struct {
+	WeChat         deerflow.WeChatConfig       `yaml:"wechat"`
 	SkillEvolution yaml.Node                   `yaml:"skill_evolution"`
 	Subagents      yaml.Node                   `yaml:"subagents"`
 	ACPAgents      map[string]any              `yaml:"acp_agents"`
@@ -270,9 +273,8 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	if err := applyBuiltinTools(abs, source, cfg); err != nil {
 		return result, err
 	}
-	if source.LocalACP.GoalAutoContinue {
-		return result, fmt.Errorf("local_acp.goal_auto_continue has no Go equivalent")
-	}
+	cfg.GoalAutoContinue = source.LocalACP.GoalAutoContinue
+	cfg.WeChat = source.WeChat
 	runTimeout := 0.0
 	if source.API.ChatRequestTimeout != nil {
 		runTimeout = *source.API.ChatRequestTimeout
@@ -522,6 +524,11 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	usedChoices := map[string]bool{cfg.Model: true}
 	cfg.ModelRoutes = nil
 	cfg.ModelReasoningEfforts = make(map[string][]string)
+	cfg.ModelThinking = make(map[string]harness.ThinkingConfig)
+	thinkingOutputLimit := harness.DefaultBudgetLimits().MaxOutputTokens
+	if cfg.Budget != nil {
+		thinkingOutputLimit = cfg.Budget.MaxOutputTokens
+	}
 	if configuredRoutes {
 		cfg.ModelRoutes = make(map[string]harness.ModelRoute)
 		seenNames := make(map[string]bool, len(source.Models))
@@ -571,6 +578,11 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 			return result, fmt.Errorf("model %q: %w", option.Name, err)
 		}
 		cfg.ModelReasoningEfforts[choice] = append([]string(nil), option.ReasoningEfforts...)
+		thinking := harness.ThinkingConfig{Parameter: option.ThinkingParameter, BudgetTokens: option.ThinkingBudgetTokens}
+		if err := thinking.Validate(optionProvider, option.ReasoningEfforts, thinkingOutputLimit); err != nil {
+			return result, fmt.Errorf("model %q: %w", option.Name, err)
+		}
+		cfg.ModelThinking[choice] = thinking
 		if option.ContextWindow < 0 || option.ContextWindow > 1<<30 {
 			return result, fmt.Errorf("invalid context_window for model %q", option.Name)
 		}
@@ -966,33 +978,22 @@ func configuredSkillStates(configPath string, source runtimeDocument) (map[strin
 }
 
 func configuredSkillName(path string) string {
+	name, _ := inspectSkillDocument(path)
+	return name
+}
+
+func inspectSkillDocument(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("cannot read SKILL.md")
 	}
 	defer file.Close()
-	// Allow for CRLF expansion of the registry's 16 KiB normalized header.
-	data, err := io.ReadAll(io.LimitReader(file, 32<<10+1))
-	if err != nil {
-		return ""
+	data, err := io.ReadAll(io.LimitReader(file, 1<<20+1))
+	if err != nil || len(data) > 1<<20 {
+		return "", fmt.Errorf("SKILL.md is unreadable or exceeds 1 MiB")
 	}
-	// Windows portable packages check out SKILL.md with CRLF. The registry
-	// accepts either form, so discovery must use the same normalized view.
-	text := strings.ReplaceAll(string(data), "\r\n", "\n")
-	if !strings.HasPrefix(text, "---\n") {
-		return ""
-	}
-	ending := strings.Index(text[4:], "\n---\n")
-	if ending < 0 {
-		return ""
-	}
-	var metadata struct {
-		Name string `yaml:"name"`
-	}
-	if yaml.Unmarshal([]byte(text[4:4+ending]), &metadata) != nil {
-		return ""
-	}
-	return metadata.Name
+	name, _, err := skills.ParseSkillDescription(data)
+	return name, err
 }
 
 func applyConfiguredSkills(configPath string, source runtimeDocument, cfg *deerflow.Config, explicit map[string]bool) error {
@@ -1050,6 +1051,9 @@ func applyConfiguredSkills(configPath string, source runtimeDocument, cfg *deerf
 			if walkErr != nil {
 				return walkErr
 			}
+			if entry.IsDir() && (entry.Name() == ".deerflow-edit-stage" || entry.Name() == ".deerflow-edit-backups" || entry.Name() == ".deerflow-publication-backups" || entry.Name() == ".deerflow-publication-stage" || entry.Name() == ".deerflow-exports") {
+				return filepath.SkipDir
+			}
 			entries++
 			if entries > 4096 {
 				return fmt.Errorf("skills %s exceeds 4096 directory entries", category)
@@ -1058,10 +1062,15 @@ func applyConfiguredSkills(configPath string, source runtimeDocument, cfg *deerf
 				return nil
 			}
 			dir := filepath.Dir(path)
-			name := configuredSkillName(path)
-			if name == "" || filepath.Base(dir) != name {
-				// Python can load packages whose directory differs from their name;
-				// Go's immutable Skills registry intentionally rejects them.
+			name, parseErr := inspectSkillDocument(path)
+			if parseErr != nil || filepath.Base(dir) != name {
+				message := "skill name must match its installation directory"
+				if parseErr != nil {
+					message = parseErr.Error()
+				}
+				if len(config.Diagnostics) < 128 {
+					config.Diagnostics = append(config.Diagnostics, harness.SkillFinding{Code: "invalid_skill_document", Path: path, Message: message})
+				}
 				return nil
 			}
 			rel, err := filepath.Rel(categoryRoot, dir)

@@ -54,6 +54,32 @@ func validRelative(s string) bool {
 
 func (r *Registry) readPackage(ctx context.Context, s *source, dir string) (skillPackage, error) {
 	p := skillPackage{files: make(map[string][]byte)}
+	if err := validateSourceRoot(s); err != nil {
+		return p, err
+	}
+	return r.readRootedPackage(ctx, s, dir, p)
+}
+
+func validateSourceRoot(s *source) error {
+	if s.config.Root != "" {
+		if err := noSymlinkPath(s.config.Root); err != nil {
+			return denied("configured source root is unavailable")
+		}
+		current, err := os.OpenRoot(s.config.Root)
+		if err != nil {
+			return err
+		}
+		a, ea := current.Stat(".")
+		b, eb := s.root.Stat(".")
+		_ = current.Close()
+		if ea != nil || eb != nil || !os.SameFile(a, b) {
+			return denied("configured source root identity changed; reopen the registry")
+		}
+	}
+	return nil
+}
+
+func (r *Registry) readRootedPackage(ctx context.Context, s *source, dir string, p skillPackage) (skillPackage, error) {
 	if dir != "." && !validRelative(dir) {
 		return p, invalid("installation directory must be a safe relative path")
 	}
@@ -183,7 +209,8 @@ func parse(data []byte) (metadata, string, error) {
 	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
 		return result, "", invalid("SKILL.md must be UTF-8 text without NUL")
 	}
-	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	// Normalize the parsing view only; manifests retain the original bytes.
+	text := strings.ReplaceAll(strings.TrimPrefix(string(data), "\ufeff"), "\r\n", "\n")
 	if !strings.HasPrefix(text, "---\n") {
 		return result, "", invalid("SKILL.md must begin with a YAML frontmatter delimiter")
 	}

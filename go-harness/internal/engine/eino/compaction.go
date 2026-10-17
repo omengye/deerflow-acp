@@ -95,7 +95,7 @@ func finalizeCompaction(original []*schema.Message, summary *schema.Message, kee
 	// could never compact. Never retain a tool result without its call.
 	activeUser := -1
 	for i := len(original) - 1; i >= systemEnd; i-- {
-		if original[i] != nil && original[i].Role == schema.User && !isOutputContinuation(original[i]) {
+		if original[i] != nil && original[i].Role == schema.User && !isOutputContinuation(original[i]) && !isGoalContinuation(original[i]) {
 			activeUser = i
 			break
 		}

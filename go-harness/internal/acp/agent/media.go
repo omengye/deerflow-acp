@@ -54,19 +54,27 @@ func decodePrompt(raw json.RawMessage) (promptRequest, error) {
 			if err != nil {
 				return invalid()
 			}
-			resource, err := strictObject(block["resource"], "uri", "mimeType", "text", "_meta")
+			resource, err := strictObject(block["resource"], "uri", "mimeType", "text", "blob", "_meta")
 			if err != nil {
 				return invalid()
 			}
-			var uri, text, mime string
-			if json.Unmarshal(resource["uri"], &uri) != nil || json.Unmarshal(resource["text"], &text) != nil || json.Unmarshal(resource["mimeType"], &mime) != nil || mime != "text/plain" {
+			var uri, text, blob, mime string
+			_, hasText := resource["text"]
+			_, hasBlob := resource["blob"]
+			if hasText == hasBlob || json.Unmarshal(resource["uri"], &uri) != nil || json.Unmarshal(resource["mimeType"], &mime) != nil {
+				return invalid()
+			}
+			if hasText && (json.Unmarshal(resource["text"], &text) != nil || mime != "text/plain") {
+				return invalid()
+			}
+			if hasBlob && (json.Unmarshal(resource["blob"], &blob) != nil || blob == "") {
 				return invalid()
 			}
 			u, err := url.Parse(uri)
 			if err != nil || u.Scheme != "attachment" || u.Host != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !strings.HasPrefix(u.Path, "/") || len(uri) > 2048 {
 				return invalid()
 			}
-			req.Prompt = append(req.Prompt, harness.Content{Type: "attachment", Name: strings.TrimPrefix(u.Path, "/"), Text: text})
+			req.Prompt = append(req.Prompt, harness.Content{Type: "attachment", Name: strings.TrimPrefix(u.Path, "/"), Text: text, Data: blob, MimeType: mime})
 			continue
 		case "text":
 			allowed = append(allowed, "text")

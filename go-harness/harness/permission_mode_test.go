@@ -2,7 +2,7 @@ package harness
 
 import "testing"
 
-func TestPermissionModeMatchesLocalACPClassification(t *testing.T) {
+func TestPermissionModeToolClassification(t *testing.T) {
 	for _, tc := range []struct {
 		name                string
 		off, dangerous, all bool
@@ -12,8 +12,18 @@ func TestPermissionModeMatchesLocalACPClassification(t *testing.T) {
 		{"search_files", false, false, true},
 		{"task", false, false, true},
 		{"write_todos", false, true, true},
-		{"skill", false, true, true},
+		{"skill", false, false, true},
+		{"skill_inspect", false, false, true},
+		{"list_directory", false, false, true},
+		{"read_skill_file", false, false, true},
+		{"skill_edit", false, true, true},
+		{"skill_manage", false, true, true},
+		{"mcp/custom/skill", false, true, true},
+		{"mcp/custom/skill_inspect", false, true, true},
+		{"mcp/custom/list_directory", false, true, true},
+		{"skill_execute", false, true, true},
 		{"web_search", false, true, true},
+		{"bash", false, true, true},
 		{"execute_command", false, true, true},
 	} {
 		for _, mode := range []struct {

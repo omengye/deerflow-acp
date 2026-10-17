@@ -113,6 +113,7 @@ func run(args []string) (err error) {
 	// Also covers host construction/start failure. Client.Close is idempotent.
 	defer func() { err = errors.Join(err, client.Close()) }()
 	hostCfg.BuildID, hostCfg.ServeACP, hostCfg.Cleanup = buildID, client.ServeACP, client.Close
+	hostCfg.DataDir = client.DataDirectory()
 	hostCfg.Manage = func(ctx context.Context, request localhost.ManagementRequest) (any, error) {
 		data, err := client.ManageLocal(ctx, request)
 		if err == nil && (request.Operation == "daemon.status" || request.Operation == "daemon.drain" || request.Operation == "daemon.resume") {

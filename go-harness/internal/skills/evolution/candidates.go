@@ -194,6 +194,7 @@ func (s *Service) submit(ctx context.Context, request Request, validate bool) (P
 	var p Proposal
 	existing := false
 	queued := false
+	var preflightErr error
 	err = s.registry.WithPublication(ctx, request.SourceID, request.Name, func(tx *skills.PublicationTx) error {
 		if candidate != nil {
 			if err := s.guardSubmittedCredentials(ctx, tx, candidate); err != nil {
@@ -225,6 +226,15 @@ func (s *Service) submit(ctx context.Context, request Request, validate bool) (P
 		}
 		if (request.Action == "create") == head.Exists {
 			return invalid("candidate action does not match the installed base")
+		}
+		if request.Action == "create" {
+			if err = tx.GuardCreate(); err != nil {
+				return err
+			}
+			_, preflightErr = tx.CheckCreateTarget(candidateVersion)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 		}
 		var baseFiles map[string][]byte
 		if head.Exists {
@@ -264,6 +274,15 @@ func (s *Service) submit(ctx context.Context, request Request, validate bool) (P
 				return err
 			}
 		}
+		if preflightErr != nil {
+			p.Status, p.Error, p.PublicationError = "stale", "The target directory could not accept this candidate; review its current complete package.", "publication_conflict"
+			var conflict *skills.PublicationConflict
+			if errors.As(preflightErr, &conflict) {
+				p.PublicationError = conflict.Code
+			}
+			p.Evaluation = Report{BaseVersion: p.Base.Version, CandidateVersion: p.CandidateVersion, Security: "unavailable", Behavior: "not_run"}
+			p.EvaluationDigest = encodedHash(p.Evaluation)
+		}
 		data, err := json.Marshal(p)
 		if err != nil {
 			return err
@@ -280,9 +299,15 @@ func (s *Service) submit(ctx context.Context, request Request, validate bool) (P
 		if err = s.attachGenerationProposal(ctx, tx, p); err != nil {
 			return err
 		}
+		if preflightErr != nil {
+			return nil
+		}
 		queued, err = s.queueBehaviorManual(ctx, tx, &p)
 		return err
 	})
+	if err == nil && preflightErr != nil {
+		return p, preflightErr
+	}
 	if err != nil || existing || !validate || queued {
 		return p, err
 	}

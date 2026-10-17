@@ -11,6 +11,7 @@ const model: ProviderModel = {
   id: 'test-model',
   name: 'Test Model',
   is_default: true,
+  thinking_modes: [],
   reasoning_efforts: [
     { id: 'low', label: 'Low' },
     { id: 'high', label: 'High' },

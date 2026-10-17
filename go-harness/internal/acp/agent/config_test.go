@@ -134,6 +134,28 @@ func TestConfigurationMetadataPersistsAcrossRuntimeRestart(t *testing.T) {
 	}
 }
 
+func TestGlobalApprovalCanBeSelectedAndResumedThroughACP(t *testing.T) {
+	f := newFixture(t, engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	}))
+	c := connect(t, f.service)
+	c.initialize(t)
+	sid := c.newSession(t, f.cwd)
+	c.configure(t, sid, "approval", harness.ApprovalGlobal)
+	_ = c.in.Close()
+	select {
+	case <-c.finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("disconnect incomplete")
+	}
+	next := connect(t, f.service)
+	next.initialize(t)
+	id := next.request(t, "session/resume", map[string]any{"sessionId": sid, "cwd": f.cwd, "mcpServers": []any{}})
+	if values := configValues(t, next.success(t, id)); values["approval"] != harness.ApprovalGlobal {
+		t.Fatalf("global policy lost on resume: %v", values)
+	}
+}
+
 func TestConfigurationConflictsCancelAndCachedPermissionReset(t *testing.T) {
 	f := newFixture(t, engineFunc(func(ctx context.Context, _ harness.RunRequest, emit harness.EventHandler, permission harness.PermissionHandler) (harness.RunResult, error) {
 		decision, err := callTestPermission(ctx, emit, permission, harness.PermissionRequest{ToolCallID: "call", ToolName: "write_file", Arguments: json.RawMessage(`{"path":"x"}`)})

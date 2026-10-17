@@ -24,8 +24,8 @@ func (m PermissionMode) Validate() error {
 	}
 }
 
-// RequiresPermission follows the Python local ACP tool classifier. Session
-// approval choices apply only after this deployment-level classification.
+// RequiresPermission classifies tools for the deployment-level policy. Session
+// approval choices apply only after this classification.
 func (m PermissionMode) RequiresPermission(name string) bool {
 	name = strings.ToLower(name)
 	switch m {
@@ -33,6 +33,9 @@ func (m PermissionMode) RequiresPermission(name string) bool {
 		return false
 	case PermissionModeDangerous:
 		switch name {
+		case "skill", "skill_inspect", "list_directory":
+			// Exact built-in names only; skill execution/editing is a separate tool.
+			return false
 		case "ask_clarification", "list_uploaded_files", "list_attachments", "memory_search", "task", "tool_search", "task_note":
 			return false
 		}

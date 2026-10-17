@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/documents"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
@@ -31,6 +32,7 @@ func (s *Store) Prepare(ctx context.Context, x harness.Session, input []harness.
 	var imageCount int
 	var imageBytes int64
 	var textCount, textBytes int
+	var documentBytes int
 	hasContent := false
 	for _, content := range input {
 		if err = ctx.Err(); err != nil {
@@ -42,9 +44,27 @@ func (s *Store) Prepare(ctx context.Context, x harness.Session, input []harness.
 		switch content.Type {
 		case "attachment":
 			textCount++
+			if content.Data != "" {
+				mediaType := documents.MIME(content.Name)
+				if content.Asset != nil || content.URI != "" || content.Text != "" || mediaType == "" || normalizeMIME(content.MimeType) != mediaType || !validAttachmentName(content.Name) || textCount > harness.MaxTextAttachments || len(content.Data) > base64.StdEncoding.EncodedLen(documents.MaxBytes) {
+					return nil, invalid("invalid PDF/DOCX/XLSX attachment; limit 8 files, 8 MiB each")
+				}
+				data, decodeErr := base64.StdEncoding.Strict().DecodeString(content.Data)
+				documentBytes += len(data)
+				if decodeErr != nil || strings.ContainsAny(content.Data, "\r\n\t ") || len(data) == 0 || len(data) > documents.MaxBytes || documentBytes > 16<<20 {
+					return nil, invalid("document attachments exceed 8 MiB each or 16 MiB total, or invalid base64")
+				}
+				ref, snapshotErr := p.snapshot(ctx, bytes.NewReader(data), content.Name, mediaType, harness.AssetFile, documents.MaxBytes)
+				if snapshotErr != nil {
+					return nil, snapshotErr
+				}
+				p.Input = append(p.Input, assetContent(ref, "Untrusted document; use read_attachment for extracted text or analyze_attachment for table statistics. PDF requires host Poppler; no OCR or formula evaluation."))
+				hasContent = true
+				continue
+			}
 			textBytes += len(content.Text)
 			if content.Asset != nil || content.URI != "" || content.Data != "" || !validTextAttachment(content.Name, content.Text) || textCount > harness.MaxTextAttachments || textBytes > harness.MaxTextAttachmentTotal {
-				return nil, invalid("attach at most 8 UTF-8 text files, 1 MiB each and 4 MiB total; PDF, Office, directories and binary files are unsupported")
+				return nil, invalid("attach at most 8 files; UTF-8 text limit 1 MiB each, 4 MiB total; send PDF/DOCX/XLSX as embedded blobs")
 			}
 			ref, snapshotErr := p.snapshot(ctx, strings.NewReader(content.Text), content.Name, "text/plain", harness.AssetFile, harness.MaxTextAttachmentBytes)
 			if snapshotErr != nil {

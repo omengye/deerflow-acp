@@ -2690,10 +2690,12 @@ impl Waku {
                 );
             }
         }
+        let thinking_mode = session.thinking_mode.clone();
         SessionOptions {
             mode: session.runtime_mode,
             model,
             reasoning_effort,
+            thinking_mode,
             service_tier,
             context_window,
         }
@@ -2822,6 +2824,7 @@ impl Waku {
             mode,
             model,
             reasoning_effort,
+            thinking_mode,
             service_tier,
             context_window,
         } = self.session_options(&session);
@@ -2834,6 +2837,7 @@ impl Waku {
                 mode,
                 model,
                 reasoning_effort,
+                thinking_mode,
                 service_tier,
                 context_window,
                 agent_preset,
@@ -3297,7 +3301,9 @@ impl Waku {
             let position = runtime.cancel_drain.queue_followup();
             if let Some(session) = self.state.session_mut(session_id) {
                 let position = position.min(session.queued_messages.len());
-                session.queued_messages.insert(position, submission.into_queued_message());
+                session
+                    .queued_messages
+                    .insert(position, submission.into_queued_message());
             }
             self.save();
             cx.notify();

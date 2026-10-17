@@ -45,6 +45,7 @@ type Session struct {
 	Mode            string    `json:"mode"`
 	Model           string    `json:"model"`
 	ReasoningEffort string    `json:"reasoningEffort,omitempty"`
+	ThinkingMode    string    `json:"thinkingMode,omitempty"`
 	ApprovalMode    string    `json:"approvalMode"`
 	Subagents       bool      `json:"subagents"`
 	ConfigVersion   int64     `json:"configVersion"`

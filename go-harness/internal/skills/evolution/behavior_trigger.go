@@ -6,6 +6,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillbehavior"
+	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
 
 func validateTriggerResult(r harness.SkillBehaviorResult, in harness.SkillBehaviorInput) error {
@@ -65,14 +66,9 @@ func validateTriggerCatalogTx(ctx context.Context, tx *sql.Tx, target harness.Sk
 	}
 	in.Files = map[string][]byte{}
 	if in.Version != "" {
-		var data []byte
-		var digest string
-		var size int64
-		if err := tx.QueryRowContext(ctx, `SELECT data,hash,size FROM df_skill_files WHERE source_key=? AND name=? AND version=? AND path='SKILL.md'`, target.SourceIdentity, target.Name, in.Version).Scan(&data, &digest, &size); err != nil {
+		data, err := skills.ReadStoredFile(ctx, tx, target.SourceIdentity, target.Name, in.Version, "SKILL.md", 512<<10)
+		if err != nil {
 			return err
-		}
-		if len(data) > 512<<10 || int64(len(data)) != size || hash(data) != digest {
-			return invalid("trigger variant file failed integrity verification")
 		}
 		in.Files["SKILL.md"] = data
 	}

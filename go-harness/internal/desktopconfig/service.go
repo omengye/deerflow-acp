@@ -141,6 +141,7 @@ func (s *service) init() error {
 	// Populate import skills before creating writable stores beneath skills:
 	// copyInitialSkills deliberately preserves an existing non-empty directory.
 	s.skillDirectoryDiagnostics = s.initializePortableSkillDirectories(data)
+	s.skillDirectoryDiagnostics = append(s.skillDirectoryDiagnostics, bundledSkillDiagnostics(filepath.Join(s.resources, "skills", "public"), filepath.Join(paths.skills, "public"))...)
 	return nil
 }
 

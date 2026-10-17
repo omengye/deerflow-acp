@@ -53,25 +53,30 @@ func validateSkillProposalSources(cfg Config, registry *skills.Registry) error {
 }
 
 type skillManageInput struct {
-	Action        string  `json:"action" jsonschema:"required,enum=create,enum=edit,enum=patch,enum=write_file,enum=remove_file,enum=delete,enum=get,description=Propose a candidate change or get your own proposal. Publication always requires separate operator review."`
-	Source        string  `json:"source,omitempty" jsonschema:"description=One of the explicitly authorized source IDs in the tool description. Can be omitted when only one source is available."`
-	Name          string  `json:"name,omitempty" jsonschema:"description=Skill name for a candidate mutation"`
-	ProposalID    string  `json:"proposal_id,omitempty" jsonschema:"description=Your own proposal ID for action get"`
-	Reason        string  `json:"reason,omitempty" jsonschema:"description=The reusable problem and requirements this change must solve. Review models evaluate this together with the candidate; preserve unmet requirements when revising."`
-	Content       *string `json:"content,omitempty" jsonschema:"description=Complete SKILL.md content for create/edit or support file text for write_file"`
-	Path          string  `json:"path,omitempty" jsonschema:"description=Canonical relative support-file path for write_file/remove_file; never SKILL.md"`
-	Find          *string `json:"find,omitempty" jsonschema:"description=Exact nonempty SKILL.md text for patch"`
-	Replace       *string `json:"replace,omitempty" jsonschema:"description=Replacement text for patch; can be empty"`
-	ExpectedCount *int    `json:"expected_count,omitempty" jsonschema:"description=Optional exact total occurrence count for patch; without it replace the first match"`
+	Action        string            `json:"action" jsonschema:"required,enum=create,enum=edit,enum=patch,enum=write_file,enum=remove_file,enum=delete,enum=get,description=Propose a candidate change or get your own proposal. The host publishes under current automatic or operator-review policy; a candidate is not an installation."`
+	Source        string            `json:"source,omitempty" jsonschema:"description=For an existing skill, omit to use its pinned source. An explicit source must match that skill. For create, choose an authorized destination when several are available."`
+	Name          string            `json:"name,omitempty" jsonschema:"description=Skill name for a candidate mutation"`
+	ProposalID    string            `json:"proposal_id,omitempty" jsonschema:"description=Your own proposal ID for action get"`
+	Reason        string            `json:"reason,omitempty" jsonschema:"description=The reusable problem and requirements this change must solve. Review models evaluate this together with the candidate; preserve unmet requirements when revising."`
+	Content       *string           `json:"content,omitempty" jsonschema:"description=Complete SKILL.md content for create/edit or support file text for write_file"`
+	Files         map[string]string `json:"files,omitempty" jsonschema:"description=Complete UTF-8 file package for create/edit, including SKILL.md and all support files. Cannot be mixed with content/path/patch fields. Never write a draft into the final installation directory."`
+	Path          string            `json:"path,omitempty" jsonschema:"description=Canonical relative support-file path for write_file/remove_file; never SKILL.md"`
+	Find          *string           `json:"find,omitempty" jsonschema:"description=Exact nonempty SKILL.md text for patch"`
+	Replace       *string           `json:"replace,omitempty" jsonschema:"description=Replacement text for patch; can be empty"`
+	ExpectedCount *int              `json:"expected_count,omitempty" jsonschema:"description=Optional exact total occurrence count for patch; without it replace the first match"`
 }
 
 type skillManageTool struct {
-	info    *schema.ToolInfo
-	service *evolution.Service
-	run     harness.RunRequest
-	targets []harness.SkillTarget
-	refs    []harness.SkillRef
-	builtin []string
+	info        *schema.ToolInfo
+	service     *evolution.Service
+	run         harness.RunRequest
+	targets     []harness.SkillTarget
+	refs        []harness.SkillRef
+	builtin     []string
+	registry    *skills.Registry
+	selection   harness.SkillSelection
+	dataDir     string
+	readAllowed bool
 }
 
 func newSkillManageTool(ctx context.Context, cfg Config, registry *skills.Registry, req harness.RunRequest, refs []harness.SkillRef) (tool.BaseTool, error) {
@@ -116,7 +121,8 @@ func newSkillManageTool(ctx context.Context, cfg Config, registry *skills.Regist
 	if err != nil {
 		return nil, err
 	}
-	return &skillManageTool{info: info, service: cfg.skillEvolution, run: req, targets: targets, refs: slices.Clone(refs), builtin: builtin}, nil
+	info.Desc += " Read skill-creator before authoring. Keep drafts outside installation roots and submit the complete files map. get requires a returned proposal_id; it is not a skill lookup. Never edit harness.db, registry tables or runtime state with SQL or shell commands, including after a tool failure. Only published=true establishes publication; availability_verified=true establishes next-turn body loading, not script execution."
+	return &skillManageTool{info: info, service: cfg.skillEvolution, run: req, targets: targets, refs: slices.Clone(refs), builtin: builtin, registry: registry, selection: cfg.SkillSelection, dataDir: cfg.DataDir, readAllowed: cfg.ToolPolicy.Allows("skill") || cfg.ToolPolicy.Allows("read_skill_file")}, nil
 }
 
 func (t *skillManageTool) Info(context.Context) (*schema.ToolInfo, error) { return t.info, nil }
@@ -180,6 +186,10 @@ func skillManageResult(p harness.SkillProposal) string {
 	if feedback.Failure != nil {
 		message, code, stage, retryable = feedback.Message, feedback.Failure.Code, feedback.Failure.Stage, feedback.Failure.Retryable
 	}
+	if p.PublicationError != "" {
+		code, stage, retryable = p.PublicationError, "publication", false
+		feedback.NextAction = "Publication is blocked. Preserve the source directory and use the operator's current-source review workflow; never overwrite files to match an old approval."
+	}
 	data, _ := json.Marshal(map[string]any{
 		"ok": true, "proposal_id": p.ID, "status": p.Status, "action": p.Action,
 		"name": p.SkillName, "source": p.Target.SourceID, "state_version": p.StateVersion,
@@ -187,14 +197,71 @@ func skillManageResult(p harness.SkillProposal) string {
 		"security": p.Evaluation.Security, "quality": feedback.Quality, "behavior": p.Evaluation.Behavior,
 		"model_checks": feedback.Checks, "error": message, "error_code": code, "failure_stage": stage,
 		"retryable": retryable, "next_action": feedback.NextAction, "review_note": p.ReviewNote,
-		"requires_operator_review": p.Status == "pending_review", "live_skill_changed": false,
+		"requires_operator_review": p.Status == "pending_review" && p.Approval == nil, "live_skill_changed": false,
+		"approval_recorded": p.Approval != nil, "published": p.Status == "published",
+		"file_publication_pending": p.FilePublicationPending,
+		"source_identity":          p.Target.SourceIdentity, "availability_verified": false,
 	})
+	return string(data)
+}
+
+func (t *skillManageTool) result(ctx context.Context, p harness.SkillProposal, role *agents.Invocation) string {
+	var result map[string]any
+	_ = json.Unmarshal([]byte(skillManageResult(p)), &result)
+	result["data_dir"], result["session_id"] = t.dataDir, t.run.Session.ID
+	result["availability_scope"], result["execution_checked"] = "next_turn", false
+	roleCanRead := role == nil || slices.Contains(role.Spec.Skills, p.SkillName) && (role.Spec.Tools.Allows("skill") || role.Spec.Tools.Allows("read_skill_file"))
+	if t.readAllowed && roleCanRead && p.Status == "published" && !p.FilePublicationPending && p.Action != "delete" {
+		selection := t.selection
+		selection.Workspace = t.run.Session.CWD
+		if snapshot, err := t.registry.Snapshot(ctx, selection); err == nil {
+			for _, ref := range snapshot.Refs() {
+				if ref.Name == p.SkillName && ref.SourceIdentity == p.Target.SourceIdentity && ref.Version == p.CandidateVersion {
+					if _, err := snapshot.Get(ctx, ref.Name); err == nil {
+						result["availability_verified"] = true
+					}
+				}
+			}
+		}
+	}
+	data, _ := json.Marshal(result)
 	return string(data)
 }
 
 func skillManageFailure(code, message string) (string, error) {
 	data, _ := json.Marshal(map[string]any{"ok": false, "code": code, "error": message, "live_skill_changed": false})
-	return string(data), nil
+	return string(data), harness.MarkToolNotExecuted(&skillToolRejection{message: message, result: string(data)})
+}
+
+// Eino may discard the value accompanying an error. Keep the bounded rejection
+// available to the middleware without turning a rejected mutation into success.
+type skillToolRejection struct{ message, result string }
+
+func (e *skillToolRejection) Error() string      { return e.message }
+func (e *skillToolRejection) ToolResult() string { return e.result }
+
+func (t *skillManageTool) mutationTarget(input skillManageInput, role *agents.Invocation) (harness.SkillTarget, string) {
+	if input.Action == "create" {
+		target, err := t.target(input.Source)
+		if err != nil {
+			return harness.SkillTarget{}, "Choose an explicitly authorized candidate source for the new skill."
+		}
+		return target, ""
+	}
+	for _, ref := range t.refs {
+		if ref.Name != input.Name || role != nil && !slices.Contains(role.Spec.Skills, ref.Name) {
+			continue
+		}
+		if input.Source != "" && input.Source != ref.SourceID {
+			return harness.SkillTarget{}, "Source mismatch: this visible skill belongs to " + ref.SourceID + "; do not switch to a new-skill destination."
+		}
+		target, err := t.target(ref.SourceID)
+		if err == nil && target.SourceIdentity == ref.SourceIdentity {
+			return target, ""
+		}
+		return harness.SkillTarget{}, "The visible skill's source does not authorize candidate changes."
+	}
+	return harness.SkillTarget{}, "Existing skill is outside this agent's pinned visible skill set."
 }
 
 func (t *skillManageTool) owns(p harness.SkillProposal, author string, role *agents.Invocation) bool {
@@ -223,7 +290,10 @@ func (t *skillManageTool) InvokableRun(ctx context.Context, args string, _ ...to
 		return "", harness.MarkToolNotExecuted(err)
 	}
 	if input.Action == "get" {
-		if input.Name != "" || input.Source != "" || input.Content != nil || input.Path != "" || input.Find != nil || input.Replace != nil || input.ExpectedCount != nil || input.Reason != "" {
+		if strings.TrimSpace(input.ProposalID) == "" {
+			return skillManageFailure("invalid_request", "get requires the proposal_id returned by create/edit. It cannot discover or publish a directory. Submit a complete candidate, or ask the operator to inspect the running host; never write registry tables.")
+		}
+		if input.Name != "" || input.Source != "" || input.Content != nil || input.Files != nil || input.Path != "" || input.Find != nil || input.Replace != nil || input.ExpectedCount != nil || input.Reason != "" {
 			return skillManageFailure("invalid_request", "get accepts only proposal_id.")
 		}
 		p, err := t.service.Get(ctx, input.ProposalID)
@@ -233,7 +303,7 @@ func (t *skillManageTool) InvokableRun(ctx context.Context, args string, _ ...to
 			}
 			return skillManageFailure("not_found", "Proposal is not available to this agent.")
 		}
-		return skillManageResult(p), nil
+		return t.result(ctx, p, role), nil
 	}
 	switch input.Action {
 	case "create", "edit", "patch", "write_file", "remove_file", "delete":
@@ -243,9 +313,9 @@ func (t *skillManageTool) InvokableRun(ctx context.Context, args string, _ ...to
 	if input.ProposalID != "" || strings.TrimSpace(input.Reason) == "" {
 		return skillManageFailure("invalid_request", "A mutation requires a reason and cannot supply proposal_id.")
 	}
-	target, err := t.target(input.Source)
-	if err != nil {
-		return skillManageFailure("permission_denied", "Choose an explicitly authorized candidate source.")
+	target, targetError := t.mutationTarget(input, role)
+	if targetError != "" {
+		return skillManageFailure("permission_denied", targetError)
 	}
 	if input.Action == "create" && slices.Contains(t.builtin, target.SourceID) {
 		return skillManageFailure("permission_denied", "Builtin sources accept reviewed changes to visible imported skills. Create new skills in a custom source.")
@@ -258,7 +328,7 @@ func (t *skillManageTool) InvokableRun(ctx context.Context, args string, _ ...to
 		if !t.owns(prior, author, role) {
 			return skillManageFailure("permission_denied", "Proposal is outside this agent's current scope.")
 		}
-		return skillManageResult(prior), nil
+		return t.result(ctx, prior, role), nil
 	}
 	if !errors.Is(err, harness.ErrNotFound) {
 		if errors.Is(err, harness.ErrInvalidInput) {
@@ -287,9 +357,16 @@ func (t *skillManageTool) InvokableRun(ctx context.Context, args string, _ ...to
 			return skillManageFailure("conflict", "The live skill changed after this run began. Start a new run to review the current version.")
 		}
 	}
-	p, submitErr := t.service.Submit(ctx, harness.SkillProposalRequest{SourceID: target.SourceID, Name: input.Name, RequestKey: key, Action: input.Action, Base: base, Content: input.Content, Path: input.Path, Find: input.Find, Replace: input.Replace, ExpectedCount: input.ExpectedCount, Reason: input.Reason, Author: author, Origin: "manual_agent", Trigger: harness.SkillTrigger{Type: "explicit_agent_proposal", ThreadID: t.run.Session.ID, RunID: t.run.RunID, Summary: input.Reason}})
+	var files map[string][]byte
+	if input.Files != nil {
+		files = make(map[string][]byte, len(input.Files))
+		for path, content := range input.Files {
+			files[path] = []byte(content)
+		}
+	}
+	p, submitErr := t.service.Submit(ctx, harness.SkillProposalRequest{SourceID: target.SourceID, Name: input.Name, RequestKey: key, Action: input.Action, Base: base, Files: files, Content: input.Content, Path: input.Path, Find: input.Find, Replace: input.Replace, ExpectedCount: input.ExpectedCount, Reason: input.Reason, Author: author, Origin: "manual_agent", Trigger: harness.SkillTrigger{Type: "explicit_agent_proposal", ThreadID: t.run.Session.ID, RunID: t.run.RunID, Summary: input.Reason}})
 	if submitErr == nil {
-		return skillManageResult(p), nil
+		return t.result(ctx, p, role), nil
 	}
 	if p.ID != "" {
 		// A cancelled/competing validation may leave a known committed candidate.
@@ -298,11 +375,15 @@ func (t *skillManageTool) InvokableRun(ctx context.Context, args string, _ ...to
 		defer cancel()
 		saved, err := t.service.LookupRequest(check, target.SourceID, input.Name, key)
 		if err == nil && t.owns(saved, author, role) {
-			return skillManageResult(saved), nil
+			return t.result(ctx, saved, role), nil
 		}
 		if err != nil && !errors.Is(err, harness.ErrNotFound) {
 			return "", err
 		}
+	}
+	var conflict *skills.PublicationConflict
+	if errors.As(submitErr, &conflict) {
+		return skillManageFailure(conflict.Code, "The destination cannot accept this candidate. Preserve its files; inspect and submit the complete current package for review, or use a separate draft directory.")
 	}
 	if errors.Is(submitErr, harness.ErrSkillConflict) || errors.Is(submitErr, skills.ErrPublicationConflict) {
 		return skillManageFailure("conflict", "Candidate base changed; refresh before proposing another edit.")

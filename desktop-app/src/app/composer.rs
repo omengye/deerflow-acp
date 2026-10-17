@@ -8,6 +8,168 @@ const COMPUTER_USE_PREVIEW_HEIGHT: f32 = 172.0;
 const COMPUTER_USE_PREVIEW_RADIUS: f32 = 12.0;
 const COMPUTER_USE_PREVIEW_INNER_RADIUS: f32 = COMPUTER_USE_PREVIEW_RADIUS - 1.0;
 
+pub(super) fn composer_menu_chip(id: impl Into<gpui::ElementId>) -> MenuChip {
+    MenuChip::new(id)
+        .font(font(".SystemUIFont"))
+        .text_size(sp(12.5))
+        .line_height(sp(16.0))
+        .min_w_0()
+        .max_w_full()
+        .flex_shrink_0()
+}
+
+fn composer_controls(controls: impl IntoIterator<Item = AnyElement>) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(4.0))
+        .children(controls)
+}
+
+fn composer_toolbar(controls: Div, actions: impl IntoElement) -> Div {
+    div()
+        .mt(px(8.0))
+        .px(px(10.0))
+        .flex()
+        .items_end()
+        .gap(px(4.0))
+        .font(font(".SystemUIFont"))
+        .text_size(sp(12.5))
+        .line_height(sp(16.0))
+        .child(controls)
+        // Reserve action space; only the selectors may wrap on narrow panes.
+        .child(div().flex_none().child(actions))
+}
+
+#[cfg(test)]
+mod selector_tests {
+    use super::*;
+    use gpui::{FontStyle, TestAppContext, size};
+
+    struct ToolbarHarness {
+        model_disabled: bool,
+        oversized_model: bool,
+        queue_follow_up: bool,
+    }
+
+    impl Render for ToolbarHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let model_label = if self.oversized_model {
+                "long-model-name-with-a-provider-prefix-and-many-more-characters-than-the-pane"
+            } else {
+                "Gemini 3.8 Flash High"
+            };
+            let model = composer_menu_chip("test-model")
+                .label(model_label)
+                .disabled(self.model_disabled)
+                .relative()
+                .debug_selector(|| "model".into())
+                .child(
+                    canvas(
+                        |_, window, _| {
+                            let style = window.text_style();
+                            assert_eq!(style.font_family.as_str(), ".SystemUIFont");
+                            assert_eq!(style.font_weight, FontWeight::NORMAL);
+                            assert_eq!(style.font_style, FontStyle::Normal);
+                            assert_eq!(style.font_size, sp(12.5).into());
+                            assert_eq!(style.line_height, sp(16.0).into());
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                );
+            let model = if self.model_disabled {
+                div()
+                    .min_w_0()
+                    .max_w_full()
+                    .flex_shrink_0()
+                    .child(model)
+                    .into_any_element()
+            } else {
+                model.into_any_element()
+            };
+            let controls = composer_controls([
+                model,
+                composer_menu_chip("test-thinking")
+                    .label("思考模式：跟随模型默认")
+                    .caret(false)
+                    .debug_selector(|| "thinking".into())
+                    .into_any_element(),
+                composer_menu_chip("test-access")
+                    .label("Ask · 操作前确认 · 待同步")
+                    .debug_selector(|| "access".into())
+                    .into_any_element(),
+            ])
+            .debug_selector(|| "controls".into());
+            let actions = div()
+                .flex()
+                .gap(px(6.0))
+                .child(div().size(px(26.0)).debug_selector(|| "send".into()))
+                .when(self.queue_follow_up, |row| row.child(div().size(px(26.0))))
+                .debug_selector(|| "actions".into());
+            div()
+                .w_full()
+                .child(composer_toolbar(controls, actions).debug_selector(|| "toolbar".into()))
+        }
+    }
+
+    #[gpui::test]
+    fn selectors_wrap_without_hiding_actions(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, _| {
+            window.set_rem_size(px(14.0));
+            ToolbarHarness {
+                model_disabled: false,
+                oversized_model: false,
+                queue_follow_up: false,
+            }
+        });
+        for font_size in [14.0, 18.0] {
+            for width in [720.0, 500.0, 320.0] {
+                for model_disabled in [false, true] {
+                    for oversized_model in [false, true] {
+                        for queue_follow_up in [false, true] {
+                            view.update(cx, |view, cx| {
+                                view.model_disabled = model_disabled;
+                                view.oversized_model = oversized_model;
+                                view.queue_follow_up = queue_follow_up;
+                                cx.notify();
+                            });
+                            cx.update(|window, _| window.set_rem_size(px(font_size)));
+                            cx.simulate_resize(size(px(width), px(400.0)));
+                            cx.run_until_parked();
+                            let toolbar = cx.debug_bounds("toolbar").unwrap();
+                            let controls = cx.debug_bounds("controls").unwrap();
+                            let actions = cx.debug_bounds("actions").unwrap();
+                            let send = cx.debug_bounds("send").unwrap();
+                            assert_eq!(send.size, size(px(26.0), px(26.0)));
+                            assert_eq!(actions.right(), toolbar.right() - px(10.0));
+                            assert_eq!(actions.bottom(), controls.bottom());
+                            assert!(controls.right() + px(4.0) <= actions.left());
+                            for selector in ["model", "thinking", "access"] {
+                                let chip = cx.debug_bounds(selector).unwrap();
+                                assert_eq!(chip.size.height, px(26.0));
+                                assert!(chip.left() >= controls.left(), "{selector}: {chip:?}");
+                                assert!(chip.right() <= controls.right(), "{selector}: {chip:?}");
+                                assert!(chip.bottom() <= controls.bottom());
+                            }
+                            if font_size == 14.0 && width == 720.0 && !oversized_model {
+                                assert_eq!(controls.size.height, px(26.0));
+                            }
+                            if width == 320.0 || oversized_model {
+                                assert!(controls.size.height > px(26.0));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct ComputerUsePreviewDrag {
     cursor_offset: Cell<gpui::Point<Pixels>>,
 }
@@ -60,6 +222,20 @@ impl Waku {
             return Some(self.render_computer_permission(permission, cx));
         }
         let permission = self.selected_runtime()?.pending_permission.as_ref()?;
+        if self
+            .selected_session()
+            .is_some_and(|session| session.provider == ProviderKind::DeerFlow)
+        {
+            return Some(
+                div().px(px(20.0)).pb(px(8.0)).child(
+                    div()
+                        .w_full()
+                        .max_w(px(CONTENT_MAX_WIDTH))
+                        .mx_auto()
+                        .child(self.render_deerflow_permission_card(permission, "composer", cx)),
+                ),
+            );
+        }
         let theme = Theme::current(cx);
         let request_id = permission.request_id.clone();
         let mut buttons = div().flex().items_center().gap(px(8.0)).mt(px(10.0));
@@ -862,9 +1038,12 @@ impl Waku {
             };
             return div()
                 .id("composer-provider-model-disabled-wrapper")
-                .tooltip(Tooltip::text(reason))
+                .min_w_0()
+                .max_w_full()
+                .flex_shrink_0()
+                .tooltip(Tooltip::text(format!("{selected_model_name}\n{reason}")))
                 .child(
-                    MenuChip::new("composer-provider-model-disabled")
+                    composer_menu_chip("composer-provider-model-disabled")
                         .provider(
                             &theme,
                             provider,
@@ -991,17 +1170,18 @@ impl Waku {
         // panel behind it is where the fix lives. Icon plus wording carry the
         // state on their own, so the warning tint is never the only signal.
         let trigger = if no_providers {
-            MenuChip::new("composer-provider-model")
+            composer_menu_chip("composer-provider-model")
                 .icon("icons/alert.svg", theme.warning)
                 .label(tr!("models.no_providers"))
         } else {
-            MenuChip::new("composer-provider-model")
+            composer_menu_chip("composer-provider-model")
                 .provider(
                     &theme,
                     provider,
                     provider_color(&theme, provider).opacity(0.9),
                 )
-                .label(selected_model_name)
+                .label(selected_model_name.clone())
+                .tooltip(Tooltip::text(selected_model_name))
         };
 
         popover(
@@ -1502,6 +1682,89 @@ impl Waku {
         self.choose_model(kind, model_id, cx);
     }
 
+    pub(super) fn render_thinking_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let session = self.selected_session()?;
+        if session.provider != ProviderKind::DeerFlow {
+            return None;
+        }
+        let metadata = self.model_metadata_for_session(session);
+        let modes = metadata
+            .map(|model| model.thinking_modes.clone())
+            .unwrap_or_default();
+        let pending = self
+            .runtimes
+            .get(&session.id)
+            .is_some_and(|runtime| runtime.deerflow_options_pending);
+        let selected = session
+            .thinking_mode
+            .clone()
+            .unwrap_or_else(|| "default".into());
+        let label = if pending {
+            "思考模式：设置中"
+        } else if modes.is_empty() {
+            match metadata.and_then(|model| model.thinking_availability.as_deref()) {
+                Some("unconfigured") => "思考模式：未配置",
+                Some("unsupported") => "思考模式：不支持切换",
+                _ => "思考模式：能力未知",
+            }
+        } else {
+            match selected.as_str() {
+                "on" => "思考模式：开启",
+                "off" => "思考模式：关闭",
+                _ => "思考模式：跟随模型默认",
+            }
+        };
+        let disabled = pending
+            || modes.is_empty()
+            || session.is_busy()
+            || self.submission_preparations.contains(&session.id)
+            || self.goal_runtime_starts.contains(&session.id);
+        if disabled {
+            return Some(
+                composer_menu_chip("thinking-mode")
+                    .label(label)
+                    .disabled(true)
+                    .caret(false)
+                    .into_any_element(),
+            );
+        }
+        let handle = self.menu_handle("thinking-mode", cx);
+        let weak = cx.entity().downgrade();
+        Some(
+            dropdown_menu(
+                composer_menu_chip("thinking-mode")
+                    .label(label)
+                    .disabled(disabled)
+                    .caret(false)
+                    .selected(handle.is_open()),
+                "thinking-mode-menu",
+                &handle,
+                MenuAlign::AboveLeft,
+                move |_| {
+                    modes
+                        .iter()
+                        .map(|option| {
+                            let mode = option.id.clone();
+                            let weak = weak.clone();
+                            let label = match mode.as_str() {
+                                "on" => "开启思考",
+                                "off" => "关闭思考",
+                                _ => "跟随模型默认",
+                            };
+                            MenuItem::new(label, move |_, cx| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.set_thinking_mode(mode.clone(), cx)
+                                });
+                            })
+                            .selected(selected == option.id)
+                        })
+                        .collect()
+                },
+            )
+            .into_any_element(),
+        )
+    }
+
     pub(super) fn render_model_traits_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = Theme::current(cx);
         let session = self.selected_session()?;
@@ -1636,14 +1899,18 @@ impl Waku {
             .get(&session.id)
             .is_some_and(|runtime| runtime.deerflow_options_pending);
         Some(dropdown_menu(
-            MenuChip::new("model-traits")
+            composer_menu_chip("model-traits")
                 .when(fast, |trigger| {
                     trigger.icon("icons/zap.svg", theme.text_secondary)
                 })
                 .label(if pending {
                     "...".to_owned()
                 } else {
-                    trigger_label
+                    if session.provider == ProviderKind::DeerFlow {
+                        format!("{}：{}", tr!("models.reasoning"), trigger_label)
+                    } else {
+                        trigger_label
+                    }
                 })
                 .disabled(
                     pending || (session.provider == ProviderKind::DeerFlow && session.is_busy()),
@@ -1751,7 +2018,7 @@ impl Waku {
         let weak = cx.entity().downgrade();
         let handle = self.menu_handle("runtime-mode", cx);
         dropdown_menu(
-            MenuChip::new("runtime-mode")
+            composer_menu_chip("runtime-mode")
                 .icon(selected_mode.icon(), theme.text_tertiary)
                 .label(selected_mode.label())
                 .caret(false)
@@ -1845,7 +2112,7 @@ impl Waku {
                 });
             }
         });
-        let trigger = MenuChip::new("agent-preset")
+        let trigger = composer_menu_chip("agent-preset")
             .icon("icons/bot.svg", theme.text_tertiary)
             .label(selected_label)
             .caret(false)
@@ -1958,7 +2225,10 @@ impl Waku {
         Some(
             div()
                 .id("composer-goal")
-                .h(px(24.0))
+                .h(px(26.0))
+                .min_w_0()
+                .max_w_full()
+                .flex_shrink_0()
                 .px(px(7.0))
                 .rounded(px(6.0))
                 .flex()
@@ -1966,10 +2236,10 @@ impl Waku {
                 .gap(px(6.0))
                 .cursor_default()
                 .text_size(sp(12.5))
-                .line_height(sp(14.0))
+                .line_height(sp(16.0))
                 .text_color(color)
                 .child(icon("icons/target.svg", 10.5, color))
-                .child(div().max_w(px(220.0)).truncate().child(label))
+                .child(div().min_w_0().max_w(px(220.0)).truncate().child(label))
                 .hover(|element| element.bg(theme.overlay))
                 .tooltip(Tooltip::text(objective))
                 .on_click(move |_, _, cx| {
@@ -2866,46 +3136,68 @@ impl Waku {
                     card.child(self.render_composer_attachments(cx))
                 })
                 .child(div().pt(px(2.0)).child(self.composer.clone()))
-                .child(
-                    div()
-                        .mt(px(8.0))
-                        .px(px(10.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .text_size(sp(12.5))
-                        .line_height(sp(14.0))
-                        .child(self.render_provider_model_control(cx))
+                .child(composer_toolbar(
+                    composer_controls([self.render_provider_model_control(cx)])
+                        .children(self.render_thinking_control(cx))
                         .children(self.render_model_traits_control(cx))
                         .children(self.render_agent_preset_control(cx))
                         .child(self.render_access_control(cx))
-                        .children(self.render_goal_control(cx))
-                        .child(div().flex_1())
-                        .child(match submit_action {
-                            ComposerSubmitAction::Preparing => div()
-                                .id("send-or-stop")
-                                .w(px(26.0))
-                                .h(px(26.0))
-                                .rounded_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_default()
-                                .bg(theme.overlay_strong)
-                                .child(motion::spin(icon(
-                                    "icons/loader-circle.svg",
-                                    15.0,
-                                    theme.text_secondary,
-                                )))
-                                .tooltip(Tooltip::text(tr!("composer.preparing_task"))),
-                            ComposerSubmitAction::Stop => div()
-                                .id("working-actions")
-                                .flex()
-                                .items_center()
-                                .gap(px(6.0))
-                                .child(
+                        .children(self.render_goal_control(cx)),
+                    match submit_action {
+                        ComposerSubmitAction::Preparing => div()
+                            .id("send-or-stop")
+                            .w(px(26.0))
+                            .h(px(26.0))
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_default()
+                            .bg(theme.overlay_strong)
+                            .child(motion::spin(icon(
+                                "icons/loader-circle.svg",
+                                15.0,
+                                theme.text_secondary,
+                            )))
+                            .tooltip(Tooltip::text(tr!("composer.preparing_task"))),
+                        ComposerSubmitAction::Stop => div()
+                            .id("working-actions")
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .id("send-or-stop")
+                                    .w(px(26.0))
+                                    .h(px(26.0))
+                                    .rounded_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_default()
+                                    .bg(theme.overlay_strong)
+                                    .hover(|element| element.bg(theme.danger_soft))
+                                    .active(|element| element.opacity(0.8))
+                                    .when(escape_stop_armed, |element| {
+                                        element.child(
+                                            div()
+                                                .text_size(sp(12.5))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(theme.text)
+                                                .child("Esc"),
+                                        )
+                                    })
+                                    .when(!escape_stop_armed, |element| {
+                                        element.child(icon("icons/stop.svg", 18.0, theme.text))
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.cancel_turn(cx);
+                                    })),
+                            )
+                            .when(can_send, |element| {
+                                element.child(
                                     div()
-                                        .id("send-or-stop")
+                                        .id("queue-follow-up")
                                         .w(px(26.0))
                                         .h(px(26.0))
                                         .rounded_full()
@@ -2913,102 +3205,68 @@ impl Waku {
                                         .items_center()
                                         .justify_center()
                                         .cursor_default()
-                                        .bg(theme.overlay_strong)
-                                        .hover(|element| element.bg(theme.danger_soft))
-                                        .active(|element| element.opacity(0.8))
-                                        .when(escape_stop_armed, |element| {
-                                            element.child(
-                                                div()
-                                                    .text_size(sp(12.5))
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .text_color(theme.text)
-                                                    .child("Esc"),
-                                            )
-                                        })
-                                        .when(!escape_stop_armed, |element| {
-                                            element.child(icon("icons/stop.svg", 18.0, theme.text))
-                                        })
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.cancel_turn(cx);
-                                        })),
-                                )
-                                .when(can_send, |element| {
-                                    element.child(
-                                        div()
-                                            .id("queue-follow-up")
-                                            .w(px(26.0))
-                                            .h(px(26.0))
-                                            .rounded_full()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .cursor_default()
-                                            .bg(theme.inverse)
-                                            .hover(|element| element.opacity(0.9))
-                                            .active(|element| element.opacity(0.8))
-                                            .child(icon(
-                                                "icons/arrow-up.svg",
-                                                16.0,
-                                                theme.on_inverse,
-                                            ))
-                                            .tooltip(Tooltip::text(tr!("composer.queue_followup")))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                let prompt =
-                                                    this.composer.read(cx).content(cx).to_owned();
-                                                if let Some(submission) =
-                                                    this.submission_with_attachments(&prompt, cx)
-                                                {
-                                                    this.composer
-                                                        .update(cx, |input, cx| input.clear(cx));
-                                                    this.submit_composer_submission(submission, cx);
-                                                }
-                                            })),
-                                    )
-                                }),
-                            ComposerSubmitAction::Send => div()
-                                .id("send-or-stop")
-                                .w(px(26.0))
-                                .h(px(26.0))
-                                .rounded_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .bg(if can_send {
-                                    theme.inverse
-                                } else {
-                                    theme.overlay_strong
-                                })
-                                .when(can_send, |element| {
-                                    element
-                                        .cursor_default()
+                                        .bg(theme.inverse)
                                         .hover(|element| element.opacity(0.9))
                                         .active(|element| element.opacity(0.8))
-                                })
-                                .child(icon(
-                                    "icons/arrow-up.svg",
-                                    16.0,
-                                    if can_send {
-                                        theme.on_inverse
-                                    } else {
-                                        theme.text_ghost
-                                    },
-                                ))
-                                // Says why the button is dead, for the case
-                                // the draft is ready and the machine is not.
-                                .when(no_providers, |element| {
-                                    element.tooltip(Tooltip::text(tr!("composer.no_providers")))
-                                })
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    let prompt = this.composer.read(cx).content(cx).to_owned();
-                                    if let Some(submission) =
-                                        this.submission_with_attachments(&prompt, cx)
-                                    {
-                                        this.composer.update(cx, |input, cx| input.clear(cx));
-                                        this.submit_composer_submission(submission, cx);
-                                    }
-                                })),
-                        }),
-                ),
+                                        .child(icon("icons/arrow-up.svg", 16.0, theme.on_inverse))
+                                        .tooltip(Tooltip::text(tr!("composer.queue_followup")))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let prompt =
+                                                this.composer.read(cx).content(cx).to_owned();
+                                            if let Some(submission) =
+                                                this.submission_with_attachments(&prompt, cx)
+                                            {
+                                                this.composer
+                                                    .update(cx, |input, cx| input.clear(cx));
+                                                this.submit_composer_submission(submission, cx);
+                                            }
+                                        })),
+                                )
+                            }),
+                        ComposerSubmitAction::Send => div()
+                            .id("send-or-stop")
+                            .w(px(26.0))
+                            .h(px(26.0))
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(if can_send {
+                                theme.inverse
+                            } else {
+                                theme.overlay_strong
+                            })
+                            .when(can_send, |element| {
+                                element
+                                    .cursor_default()
+                                    .hover(|element| element.opacity(0.9))
+                                    .active(|element| element.opacity(0.8))
+                            })
+                            .child(icon(
+                                "icons/arrow-up.svg",
+                                16.0,
+                                if can_send {
+                                    theme.on_inverse
+                                } else {
+                                    theme.text_ghost
+                                },
+                            ))
+                            // Says why the button is dead, for the case
+                            // the draft is ready and the machine is not.
+                            .when(no_providers, |element| {
+                                element.tooltip(Tooltip::text(tr!("composer.no_providers")))
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let prompt = this.composer.read(cx).content(cx).to_owned();
+                                if let Some(submission) =
+                                    this.submission_with_attachments(&prompt, cx)
+                                {
+                                    this.composer.update(cx, |input, cx| input.clear(cx));
+                                    this.submit_composer_submission(submission, cx);
+                                }
+                            })),
+                    },
+                )),
         )
     }
 

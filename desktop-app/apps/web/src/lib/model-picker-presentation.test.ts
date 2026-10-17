@@ -10,6 +10,7 @@ const model = (id: string): ProviderModel => ({
   id,
   name: id,
   is_default: false,
+  thinking_modes: [],
   reasoning_efforts: [],
   service_tiers: [],
   context_windows: [],

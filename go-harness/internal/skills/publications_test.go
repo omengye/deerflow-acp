@@ -3,7 +3,6 @@ package skills
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -81,11 +80,7 @@ func TestPublicationPointerSnapshotRestartAndTombstone(t *testing.T) {
 		t.Fatalf("active snapshot changed: %q %v", old, err)
 	}
 	cfg := harness.SkillsConfig{Sources: []harness.SkillSource{r.sources["project"].config}}
-	// No old package file is required after publishing; the source root remains
-	// configured to authorize access to the same persisted identity.
-	if err = os.Remove(filepath.Join(cfg.Sources[0].Root, "research", "SKILL.md")); err != nil {
-		t.Fatal(err)
-	}
+	// Restart verifies the actual published directory, not a hidden pointer.
 	if err = r.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -128,11 +123,11 @@ func TestPublicationPointerSnapshotRestartAndTombstone(t *testing.T) {
 	if err = reopened.InstallConfigured(ctx, "project", "research", true); err != nil {
 		t.Fatal(err)
 	}
-	if got := publicationHead(t, reopened); got != current || len(snapshot(t, reopened, selection).Refs()) != 0 {
-		t.Fatalf("startup resurrected deleted skill: %+v", got)
+	if got := publicationHead(t, reopened); !got.Exists || got.Enabled || got.Version == current.Version || len(snapshot(t, reopened, selection).Refs()) != 0 {
+		t.Fatalf("recreated files were not indexed with durable disabled state: %+v", got)
 	}
-	if _, err = reopened.Install(ctx, "project", "research"); !errors.Is(err, ErrManagedSkill) {
-		t.Fatalf("ordinary import silently replaced managed skill: %v", err)
+	if _, err = reopened.Install(ctx, "project", "research"); err != nil {
+		t.Fatalf("explicit source import failed: %v", err)
 	}
 	if _, err = reopened.Restore(ctx, selection, original.Refs()); err != nil {
 		t.Fatalf("delete lost pinned historical version: %v", err)

@@ -20,7 +20,13 @@ const SETTINGS_SEARCH_CONTEXT: &str = "SettingsSidebar > TextInput";
 
 /// The sidebar's rows in display order, each with the keyword haystack the
 /// search field filters against.
-const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 12] = [
+const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 13] = [
+    (
+        SettingsPage::Channels,
+        "settings.channels",
+        "icons/server.svg",
+        "settings.channels_keywords",
+    ),
     (
         SettingsPage::DeerFlow,
         "settings.deerflow",
@@ -425,6 +431,7 @@ impl Waku {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(match page {
+                        SettingsPage::Channels => tr!("settings.channels"),
                         SettingsPage::DeerFlow => tr!("settings.deerflow"),
                         SettingsPage::DeerFlowModels => tr!("settings.deerflow_models"),
                         SettingsPage::DeerFlowTools => tr!("settings.deerflow_tools"),
@@ -440,6 +447,7 @@ impl Waku {
                     }),
             )
             .child(match page {
+                SettingsPage::Channels => self.render_channels(cx),
                 SettingsPage::DeerFlow
                 | SettingsPage::DeerFlowModels
                 | SettingsPage::DeerFlowTools
@@ -1998,6 +2006,7 @@ impl Waku {
                     session.provider = fallback;
                     session.model = None;
                     session.reasoning_effort = None;
+                    session.thinking_mode = None;
                     session.service_tier = None;
                     session.context_window = None;
                 }

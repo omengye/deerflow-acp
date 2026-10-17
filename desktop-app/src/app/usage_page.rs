@@ -48,6 +48,9 @@ impl Waku {
         // also masks the token again when the Daemon row is reselected.
         self.daemon_token_revealed = false;
         self.settings_page = Some(page);
+        if page == SettingsPage::Channels {
+            self.enter_channels(cx);
+        }
         if page.is_deerflow() {
             self.deerflow_route_page(page, cx);
             self.ensure_deerflow_settings(cx);

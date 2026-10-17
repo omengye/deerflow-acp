@@ -48,15 +48,14 @@ func (c *Client) ListSkills(ctx context.Context, selection harness.SkillSelectio
 	return c.skills.List(ctx, selection)
 }
 
-// RefreshSkillImports records source differences for managed imports without
-// replacing their publication pointers. Open also does this once at startup.
+// RefreshSkillImports reindexes all bound directories without writing files.
 func (c *Client) RefreshSkillImports(ctx context.Context) error {
 	done, err := c.operation()
 	if err != nil {
 		return err
 	}
 	defer done()
-	return c.skills.ObserveImports(ctx)
+	return c.skills.RefreshAllSources(ctx)
 }
 
 // ListSkillImportObservations includes managed tombstones. It returns the last

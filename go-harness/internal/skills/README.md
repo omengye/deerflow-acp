@@ -1,5 +1,14 @@
 # Immutable skill registry
 
+> Current authority contract (2026-10-15): the bound source directory, not a
+> database overlay, defines the current skill. New turns/startup/explicit refresh
+> reindex files; invalid or missing sources do not fall back to history. New
+> bodies live in content-addressed files. Publication/rollback writes the real
+> directory, with a durable journal and explicit recovery. Builtins are read-only.
+> See `../../../docs/skill-direct-edit-20261015.md` for the current protocol and
+> migration rules. Historical descriptions of managed SQL overlays and advisory
+> import-only refresh below describe the old design and are superseded.
+
 This package provides an explicit local-source registry and an Eino
 `adk/middlewares/skill.Backend`. It uses independent `df_skill_*` tables in the
 caller's SQLite database. It owns its source-directory handles, never the DB.

@@ -190,6 +190,7 @@ impl AcpDriver {
             mode,
             model,
             reasoning_effort,
+            thinking_mode,
             service_tier,
             context_window,
             agent_preset: _,
@@ -260,6 +261,7 @@ impl AcpDriver {
                     connection_access,
                     model,
                     reasoning_effort,
+                    thinking_mode,
                     service_tier,
                     context_window,
                     resume_session_id,
@@ -446,6 +448,7 @@ async fn run_sdk_connection(
     access: Arc<Mutex<AcpAccessState>>,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    thinking_mode: Option<String>,
     service_tier: Option<String>,
     context_window: Option<String>,
     resume_session_id: Option<String>,
@@ -686,6 +689,7 @@ async fn run_sdk_connection(
 
             let mut current_model = model;
             let mut current_effort = reasoning_effort;
+            let mut current_thinking = thinking_mode;
             let mut current_tier = service_tier;
             let mut current_window = context_window;
             stream_state.lock().deerflow_config_options = config_options.clone();
@@ -696,6 +700,7 @@ async fn run_sdk_connection(
                 config_options.as_deref(),
                 current_model.as_deref(),
                 current_effort.as_deref(),
+                current_thinking.as_deref(),
                 current_tier.as_deref(),
                 current_window.as_deref(),
                 &events,
@@ -874,6 +879,7 @@ async fn run_sdk_connection(
                         {
                             current_model = options.model;
                             current_effort = options.reasoning_effort;
+                            current_thinking = options.thinking_mode;
                             current_tier = options.service_tier;
                             current_window = options.context_window;
                             model_options_ready = apply_model(
@@ -883,6 +889,7 @@ async fn run_sdk_connection(
                                 config_options.as_deref(),
                                 current_model.as_deref(),
                                 current_effort.as_deref(),
+                                current_thinking.as_deref(),
                                 current_tier.as_deref(),
                                 current_window.as_deref(),
                                 &events,
@@ -924,7 +931,7 @@ fn deerflow_approval(
         return Ok("off".into());
     };
     match session_config_current_value(option) {
-        Some(mode @ ("ask" | "allow_always" | "reject_always" | "read_only")) => {
+        Some(mode @ ("global" | "ask" | "allow_always" | "reject_always" | "read_only")) => {
             Ok(mode.to_owned())
         }
         _ => Err(approval_error(
@@ -1608,6 +1615,7 @@ async fn apply_model(
     config_options: Option<&[SessionConfigOption]>,
     model: Option<&str>,
     reasoning_effort: Option<&str>,
+    thinking_mode: Option<&str>,
     service_tier: Option<&str>,
     context_window: Option<&str>,
     events: &DriverEventSender,
@@ -1625,6 +1633,7 @@ async fn apply_model(
             options.as_deref().or(config_options),
             model,
             reasoning_effort,
+            thinking_mode,
         )
         .await;
         let mut state = stream_state.lock();
@@ -1667,6 +1676,7 @@ async fn apply_deerflow_model(
     session_id: &SessionId,
     config_options: Option<&[SessionConfigOption]>,
     model: Option<&str>,
+    effort: Option<&str>,
     thinking: Option<&str>,
 ) -> agent_client_protocol::Result<Vec<SessionConfigOption>> {
     let mut options = config_options.unwrap_or_default().to_vec();
@@ -1686,9 +1696,30 @@ async fn apply_deerflow_model(
             .await?;
         options = response.config_options;
     }
+    // Release an explicit on override before resetting effort. Shared-parameter
+    // endpoints cannot acknowledge on + an unknown provider-default effort.
+    if let Some(mode @ ("off" | "default")) = thinking
+        && deerflow_thinking_mode(&options).as_deref() == Some("on")
+    {
+        let value = deerflow_thinking_value(&options, mode)?;
+        options = connection
+            .send_request(SetSessionConfigOptionRequest::new(
+                session_id.clone(),
+                "thinking_enabled",
+                value,
+            ))
+            .block_task()
+            .await?
+            .config_options;
+        if deerflow_thinking_mode(&options).as_deref() != Some(mode) {
+            return Err(approval_error(
+                "The agent did not confirm the requested thinking mode",
+            ));
+        }
+    }
     if let Some(option) = deerflow_effort_option(&options) {
         let values = session_config_select_values(option);
-        let requested = thinking.or_else(|| model_changed.then_some("default"));
+        let requested = effort.or_else(|| model_changed.then_some("default"));
         if let Some(requested) = requested {
             let value = if values.contains(&requested) {
                 requested
@@ -1718,25 +1749,48 @@ async fn apply_deerflow_model(
                 }
             }
         }
-        return Ok(options);
     }
-    // An agent with no advertised options may be an older DeerFlow server.
-    // When options are present, only send the switch if the agent exposes it.
-    let supports_thinking = options.is_empty()
-        || options
-            .iter()
-            .any(|option| option.id.to_string() == "thinking_enabled");
-    if let Some(thinking) = thinking.filter(|value| !value.is_empty() && supports_thinking) {
-        let value = deerflow_thinking_value(&options, thinking)?;
-        let response = connection
-            .send_request(SetSessionConfigOptionRequest::new(
-                session_id.clone(),
-                "thinking_enabled",
-                value,
-            ))
-            .block_task()
-            .await?;
-        options = response.config_options;
+    let thinking_option = options
+        .iter()
+        .find(|option| option.id.to_string() == "thinking_enabled");
+    // Only old clients encode on/off in effort. Keep that path separate from levels.
+    let requested = thinking.or_else(|| {
+        deerflow_effort_option(&options)
+            .is_none()
+            .then_some(effort.filter(|value| matches!(*value, "on" | "off")))
+            .flatten()
+    });
+    if let Some(requested) = requested.filter(|value| !value.is_empty()) {
+        if thinking.is_some() && thinking_option.is_none() && requested != "default" {
+            return Err(approval_error(
+                "This model or daemon does not support a thinking switch",
+            ));
+        }
+        // Legacy effort=on/off is only a hint when the model has no switch.
+        // Explicit thinking requests are rejected above instead of ignored.
+        if thinking_option.is_some() || options.is_empty() {
+            let current = deerflow_thinking_mode(&options);
+            if current.as_deref() != Some(requested) {
+                let value = deerflow_thinking_value(&options, requested)?;
+                let response = connection
+                    .send_request(SetSessionConfigOptionRequest::new(
+                        session_id.clone(),
+                        "thinking_enabled",
+                        value,
+                    ))
+                    .block_task()
+                    .await?;
+                options = response.config_options;
+                // Legacy servers may omit all configuration metadata.
+                if (thinking.is_some() || !options.is_empty())
+                    && deerflow_thinking_mode(&options).as_deref() != Some(requested)
+                {
+                    return Err(approval_error(
+                        "The agent did not confirm the requested thinking mode",
+                    ));
+                }
+            }
+        }
     }
     let models = crate::model_catalog::parse_deerflow_models(&options);
     if !models.is_empty() {
@@ -1764,29 +1818,45 @@ fn report_deerflow_models(options: &[SessionConfigOption], events: &impl DriverE
         .map(|model| model.id.clone());
     let reasoning_effort = deerflow_effort_option(options)
         .and_then(session_config_current_value)
-        .map(str::to_owned)
-        .or_else(|| {
-            options
-                .iter()
-                .find(|option| option.id.to_string() == "thinking_enabled")
-                .and_then(|option| match &option.kind {
-                    SessionConfigKind::Boolean(toggle) => {
-                        Some(if toggle.current_value { "on" } else { "off" }.to_owned())
-                    }
-                    _ => session_config_current_value(option).map(str::to_owned),
-                })
-        });
+        .map(str::to_owned);
+    let thinking_mode = deerflow_thinking_mode(options);
     let _ = events.send(DriverEvent::DeerFlowModelsChanged {
         models,
         model,
         reasoning_effort,
+        thinking_mode,
     });
+}
+
+fn deerflow_thinking_mode(options: &[SessionConfigOption]) -> Option<String> {
+    options
+        .iter()
+        .find(|option| option.id.to_string() == "thinking_enabled")
+        .and_then(|option| match &option.kind {
+            SessionConfigKind::Boolean(toggle) => {
+                Some(if toggle.current_value { "on" } else { "off" }.to_owned())
+            }
+            _ => session_config_current_value(option).map(str::to_owned),
+        })
 }
 
 fn deerflow_thinking_value(
     options: &[SessionConfigOption],
     requested: &str,
 ) -> agent_client_protocol::Result<SessionConfigOptionValue> {
+    if requested == "default" {
+        if options.iter().any(|option| {
+            option.id.to_string() == "thinking_enabled"
+                && session_config_select_values(option).contains(&"default")
+        }) {
+            return Ok(SessionConfigOptionValue::value_id(
+                agent_client_protocol::schema::v1::SessionConfigValueId::new("default"),
+            ));
+        }
+        return Err(approval_error(
+            "The agent does not support the default thinking mode",
+        ));
+    }
     let enabled = match requested {
         "on" => true,
         "off" => false,
@@ -2185,7 +2255,7 @@ fn deerflow_text_attachments(
         .filter(|a| !a.is_image)
         .collect::<Vec<_>>();
     if files.len() > 8 {
-        return Err(image_attachment_error("Attach at most 8 text files."));
+        return Err(image_attachment_error("Attach at most 8 files."));
     }
     let roots = [data_root.join("attachments"), data_root.join("blobs")]
         .into_iter()
@@ -2193,20 +2263,28 @@ fn deerflow_text_attachments(
         .collect::<Vec<_>>();
     let mut result = Vec::new();
     let mut total = 0;
+    let mut document_total = 0;
     for attachment in files {
         let extension = Path::new(&attachment.name)
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
+        let document_mime = match extension.as_str() {
+            "pdf" => Some("application/pdf"),
+            "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            _ => None,
+        };
         if attachment.is_dir
             || !matches!(
                 extension.as_str(),
                 "txt" | "md" | "markdown" | "csv" | "tsv" | "json" | "yaml" | "yml" | "log"
+                    | "pdf" | "docx" | "xlsx"
             )
         {
             return Err(image_attachment_error(
-                "Only UTF-8 TXT, Markdown, CSV, TSV, JSON, YAML and LOG attachments are supported. PDF, Office and directories are not supported.",
+                "Supported files: UTF-8 text, PDF, DOCX and XLSX. Directories and other binary formats are not supported.",
             ));
         }
         if attachment.name.len() > 255
@@ -2220,31 +2298,60 @@ fn deerflow_text_attachments(
                 .is_none_or(|s| s.trim().is_empty())
         {
             return Err(image_attachment_error(
-                "Invalid stored text attachment. Attach it again.",
+                "Invalid stored attachment. Attach it again.",
             ));
         }
         let path = attachment.path.canonicalize().map_err(|_| {
-            image_attachment_error("Text attachment is unavailable. Attach it again.")
+            image_attachment_error("Attachment is unavailable. Attach it again.")
         })?;
         if !roots.iter().any(|root| path.starts_with(root)) {
             return Err(image_attachment_error(
-                "Text attachment is outside the desktop attachment store.",
+                "Attachment is outside the desktop attachment store.",
             ));
         }
         let file = std::fs::File::open(path)
-            .map_err(|_| image_attachment_error("Could not open text attachment."))?;
+            .map_err(|_| image_attachment_error("Could not open attachment."))?;
         let metadata = file
             .metadata()
-            .map_err(|_| image_attachment_error("Could not inspect text attachment."))?;
-        if !metadata.is_file() || metadata.len() > 1024 * 1024 {
+            .map_err(|_| image_attachment_error("Could not inspect attachment."))?;
+        let limit: u64 = if document_mime.is_some() {
+            8 * 1024 * 1024
+        } else {
+            1024 * 1024
+        };
+        if !metadata.is_file() || metadata.len() > limit {
             return Err(image_attachment_error(
-                "Each text attachment must be a regular file no larger than 1 MiB.",
+                "Attachments must be regular files: text up to 1 MiB; PDF/DOCX/XLSX up to 8 MiB.",
             ));
         }
         let mut bytes = Vec::new();
-        file.take(1024 * 1024 + 1)
+        file.take(limit + 1)
             .read_to_end(&mut bytes)
-            .map_err(|_| image_attachment_error("Could not read text attachment."))?;
+            .map_err(|_| image_attachment_error("Could not read attachment."))?;
+        if bytes.len() > limit as usize {
+            return Err(image_attachment_error(
+                "Attachment grew beyond its size limit.",
+            ));
+        }
+        let mut uri = url::Url::parse("attachment:///").expect("fixed attachment URI");
+        uri.path_segments_mut()
+            .expect("hierarchical attachment URI")
+            .clear()
+            .push(&attachment.name);
+        if let Some(mime) = document_mime {
+            document_total += bytes.len();
+            if document_total > 16 * 1024 * 1024 {
+                return Err(image_attachment_error("Documents exceed 16 MiB per message."));
+            }
+            result.push(
+                serde_json::from_value(json!({"type":"resource", "resource":{
+                    "uri":uri.as_str(), "mimeType":mime,
+                    "blob":base64::engine::general_purpose::STANDARD.encode(bytes)
+                }}))
+                .map_err(|_| image_attachment_error("Could not encode document attachment."))?,
+            );
+            continue;
+        }
         total += bytes.len();
         if bytes.len() > 1024 * 1024 || total > 4 * 1024 * 1024 {
             return Err(image_attachment_error(
@@ -2261,11 +2368,6 @@ fn deerflow_text_attachments(
                 "Binary content is not a supported text attachment.",
             ));
         }
-        let mut uri = url::Url::parse("attachment:///").expect("fixed attachment URI");
-        uri.path_segments_mut()
-            .expect("hierarchical attachment URI")
-            .clear()
-            .push(&attachment.name);
         result.push(
             serde_json::from_value(json!({"type":"resource", "resource":{
                 "uri":uri.as_str(), "mimeType":"text/plain", "text":text
@@ -3306,8 +3408,15 @@ mod tests {
             Client
                 .builder()
                 .connect_with(agent, async move |connection| {
-                    apply_deerflow_model(&connection, &SessionId::new("s"), None, None, Some("off"))
-                        .await
+                    apply_deerflow_model(
+                        &connection,
+                        &SessionId::new("s"),
+                        None,
+                        None,
+                        Some("off"),
+                        None,
+                    )
+                    .await
                 }),
         )
         .unwrap();
@@ -3322,6 +3431,7 @@ mod tests {
             "id":config_id, "name":"Tool approvals", "type":"select",
             "currentValue":mode,
             "options":[
+                {"value":"global", "name":"Follow global policy"},
                 {"value":"ask", "name":"Ask"},
                 {"value":"allow_always", "name":"Allow"},
                 {"value":"reject_always", "name":"Reject"},
@@ -3442,7 +3552,7 @@ mod tests {
                         .await?,
                         "allow_always"
                     );
-                    for stored in ["ask", "allow_always", "reject_always"] {
+                    for stored in ["global", "ask", "allow_always", "reject_always", "read_only"] {
                         assert_eq!(
                             initialize_deerflow_approval(
                                 &connection,
@@ -3709,6 +3819,7 @@ mod tests {
                     None,
                     Some("missing"),
                     Some("on"),
+                    None,
                 )
                 .await
             },
@@ -3731,6 +3842,153 @@ mod tests {
                 {"value":"default","name":"Default"},{"value":"low","name":"Low"},{"value":"high","name":"High"}
             ]}
         ])).unwrap()
+    }
+
+    #[test]
+    fn deerflow_thinking_and_effort_are_independent_and_confirmed() {
+        use agent_client_protocol::schema::v1::SetSessionConfigOptionResponse;
+        fn options(effort: &str, mode: &str) -> Vec<SessionConfigOption> {
+            let mut options = session_reasoning_options("a", effort);
+            options.push(serde_json::from_value(json!({
+                "id":"thinking_enabled", "name":"Thinking", "type":"select", "currentValue":mode,
+                "options":[{"value":"default","name":"Default"},{"value":"on","name":"On"},{"value":"off","name":"Off"}]
+            })).unwrap());
+            options
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let captured = calls.clone();
+        let state = Arc::new(Mutex::new(("default".to_owned(), "default".to_owned())));
+        let agent = Agent.builder().on_receive_request(
+            async move |request: SetSessionConfigOptionRequest,
+                        responder: Responder<SetSessionConfigOptionResponse>,
+                        _connection| {
+                let id = request.config_id.to_string();
+                let value = request.value.as_value_id().unwrap().to_string();
+                captured.lock().push((id.clone(), value.clone()));
+                let mut state = state.lock();
+                if id == "effort-id" {
+                    state.0 = value;
+                } else {
+                    state.1 = value;
+                }
+                responder.respond(SetSessionConfigOptionResponse::new(options(
+                    &state.0, &state.1,
+                )))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        smol::block_on(Client.builder().connect_with(agent, async move |connection| {
+            let mut current = options("default", "default");
+            for mode in ["on", "off", "on", "default"] {
+                current = apply_deerflow_model(&connection, &SessionId::new("s"), Some(&current), Some("a"), Some("high"), Some(mode)).await?;
+                assert_eq!(deerflow_thinking_mode(&current).as_deref(), Some(mode));
+                assert_eq!(session_config_current_value(deerflow_effort_option(&current).unwrap()), Some("high"));
+                let (events, rx) = crossbeam_channel::unbounded();
+                report_deerflow_models(&current, &events);
+                assert!(matches!(rx.recv().unwrap(), DriverEvent::DeerFlowModelsChanged { thinking_mode, reasoning_effort, .. }
+                    if thinking_mode.as_deref() == Some(mode) && reasoning_effort.as_deref() == Some("high")));
+            }
+            Ok(())
+        })).unwrap();
+        assert_eq!(
+            *calls.lock(),
+            [
+                ("effort-id".into(), "high".into()),
+                ("thinking_enabled".into(), "on".into()),
+                ("thinking_enabled".into(), "off".into()),
+                ("thinking_enabled".into(), "on".into()),
+                ("thinking_enabled".into(), "default".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn deerflow_clears_thinking_before_resetting_shared_effort() {
+        use agent_client_protocol::schema::v1::SetSessionConfigOptionResponse;
+        fn options(mode: &str, effort: &str) -> Vec<SessionConfigOption> {
+            let mut options = session_reasoning_options("a", effort);
+            options.push(serde_json::from_value(json!({
+                "id":"thinking_enabled","name":"Thinking","type":"select","currentValue":mode,
+                "options":[{"value":"default","name":"Default"},{"value":"on","name":"On"},{"value":"off","name":"Off"}]
+            })).unwrap());
+            options
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let captured = calls.clone();
+        let agent = Agent.builder().on_receive_request(
+            async move |request: SetSessionConfigOptionRequest,
+                        responder: Responder<SetSessionConfigOptionResponse>,
+                        _connection| {
+                let id = request.config_id.to_string();
+                captured.lock().push(id.clone());
+                responder.respond(SetSessionConfigOptionResponse::new(options(
+                    "default",
+                    if id == "thinking_enabled" {
+                        "high"
+                    } else {
+                        "default"
+                    },
+                )))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        smol::block_on(
+            Client
+                .builder()
+                .connect_with(agent, async move |connection| {
+                    let result = apply_deerflow_model(
+                        &connection,
+                        &SessionId::new("s"),
+                        Some(&options("on", "high")),
+                        Some("a"),
+                        Some("default"),
+                        Some("default"),
+                    )
+                    .await?;
+                    assert_eq!(deerflow_thinking_mode(&result).as_deref(), Some("default"));
+                    Ok(())
+                }),
+        )
+        .unwrap();
+        assert_eq!(*calls.lock(), ["thinking_enabled", "effort-id"]);
+    }
+
+    #[test]
+    fn deerflow_thinking_rejects_missing_or_unconfirmed_capability() {
+        use agent_client_protocol::schema::v1::SetSessionConfigOptionResponse;
+        let initial: Vec<SessionConfigOption> = serde_json::from_value(json!([
+            {"id":"model","name":"Model","type":"select","currentValue":"a","options":[{"value":"a","name":"A"}]},
+            {"id":"thinking_enabled","name":"Thinking","type":"select","currentValue":"on","options":[{"value":"on","name":"On"},{"value":"off","name":"Off"}]}
+        ])).unwrap();
+        let unchanged = initial.clone();
+        let agent = Agent.builder().on_receive_request(
+            async move |_request: SetSessionConfigOptionRequest,
+                        responder: Responder<SetSessionConfigOptionResponse>,
+                        _connection| {
+                responder.respond(SetSessionConfigOptionResponse::new(unchanged.clone()))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        smol::block_on(
+            Client
+                .builder()
+                .connect_with(agent, async move |connection| {
+                    for options in [&initial[..], &initial[..1], &[]] {
+                        let result = apply_deerflow_model(
+                            &connection,
+                            &SessionId::new("s"),
+                            Some(options),
+                            None,
+                            None,
+                            Some("off"),
+                        )
+                        .await;
+                        assert!(result.is_err(), "unconfirmed mode was accepted");
+                    }
+                    Ok(())
+                }),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -3766,6 +4024,7 @@ mod tests {
                         Some(&session_reasoning_options("a", "default")),
                         Some("b"),
                         Some("high"),
+                        None,
                     )
                     .await?;
                     assert_eq!(
@@ -3778,7 +4037,8 @@ mod tests {
                             &SessionId::new("s"),
                             Some(&selected),
                             Some("b"),
-                            Some("xhigh")
+                            Some("xhigh"),
+                            None
                         )
                         .await
                         .is_err()
@@ -3789,7 +4049,8 @@ mod tests {
                             &SessionId::new("s"),
                             Some(&selected),
                             Some("b"),
-                            Some("low")
+                            Some("low"),
+                            None
                         )
                         .await
                         .is_err()
@@ -3800,6 +4061,7 @@ mod tests {
                         Some(&selected),
                         Some("b"),
                         Some("default"),
+                        None,
                     )
                     .await?;
                     assert_eq!(
@@ -3876,12 +4138,64 @@ mod tests {
                         Some(&approval_options_with_id("approval", "ask")),
                         Some("smoke-local"),
                         Some("off"),
+                        None,
                     )
                     .await
                 }),
         )
         .unwrap();
         assert_eq!(*calls.lock(), ["model"]);
+    }
+
+    #[test]
+    fn deerflow_legacy_thinking_hint_does_not_block_an_unchanged_model() {
+        use agent_client_protocol::schema::v1::SetSessionConfigOptionResponse;
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let captured = calls.clone();
+        let agent = Agent.builder().on_receive_request(
+            async move |request: SetSessionConfigOptionRequest,
+                        responder: Responder<SetSessionConfigOptionResponse>,
+                        _connection| {
+                captured.lock().push(request.config_id.to_string());
+                responder.respond_with_internal_error("No configuration change expected")
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        smol::block_on(
+            Client
+                .builder()
+                .connect_with(agent, async move |connection| {
+                    let options = session_reasoning_options("a", "default")[..1].to_vec();
+                    for hint in ["on", "off"] {
+                        for model in [None, Some("a")] {
+                            apply_deerflow_model(
+                                &connection,
+                                &SessionId::new("s"),
+                                Some(&options),
+                                model,
+                                Some(hint),
+                                None,
+                            )
+                            .await?;
+                            assert!(
+                                apply_deerflow_model(
+                                    &connection,
+                                    &SessionId::new("s"),
+                                    Some(&options),
+                                    model,
+                                    None,
+                                    Some(hint),
+                                )
+                                .await
+                                .is_err()
+                            );
+                        }
+                    }
+                    Ok(())
+                }),
+        )
+        .unwrap();
+        assert!(calls.lock().is_empty());
     }
 
     #[test]
@@ -3958,15 +4272,25 @@ mod tests {
     #[test]
     fn deerflow_text_resources_are_explicit_bounded_utf8_snapshots() {
         let root = std::env::temp_dir().join(format!("deerflow-acp-text-{}", uuid::Uuid::new_v4()));
-        let mut file = stored_image_attachment(&root, "notes #1%25.csv", "key,value\n你好,42\n".as_bytes());
+        let mut file =
+            stored_image_attachment(&root, "notes #1%25.csv", "key,value\n你好,42\n".as_bytes());
         file.is_image = false;
-        let content = deerflow_prompt_content("Read the CSV".into(), &[file.clone()], &root).unwrap();
+        let content =
+            deerflow_prompt_content("Read the CSV".into(), &[file.clone()], &root).unwrap();
         let block = serde_json::to_value(&content[1]).unwrap();
         assert_eq!(block["type"], "resource");
         assert_eq!(block["resource"]["text"], "key,value\n你好,42\n");
-        assert_eq!(block["resource"]["uri"], "attachment:///notes%20%231%2525.csv");
+        assert_eq!(
+            block["resource"]["uri"],
+            "attachment:///notes%20%231%2525.csv"
+        );
         assert_eq!(block["resource"]["mimeType"], "text/plain");
-        assert_eq!(deerflow_prompt_content(format!("@{}", file.path.display()), &[], &root).unwrap().len(), 1);
+        assert_eq!(
+            deerflow_prompt_content(format!("@{}", file.path.display()), &[], &root)
+                .unwrap()
+                .len(),
+            1
+        );
         let original = file.clone();
         file.blob_reference = None;
         assert!(deerflow_prompt_content(String::new(), &[file], &root).is_err());
@@ -3974,7 +4298,11 @@ mod tests {
         file.path = root.join("outside.txt");
         std::fs::write(&file.path, "outside").unwrap();
         assert!(deerflow_prompt_content(String::new(), &[file], &root).is_err());
-        for (name, data) in [("bad.pdf", b"%PDF".as_slice()), ("bad.txt", b"\xff"), ("nul.txt", b"a\0b")] {
+        for (name, data) in [
+            ("bad.exe", b"MZ".as_slice()),
+            ("bad.txt", b"\xff"),
+            ("nul.txt", b"a\0b"),
+        ] {
             let mut file = stored_image_attachment(&root, name, data);
             file.is_image = false;
             assert!(deerflow_prompt_content(String::new(), &[file], &root).is_err());
@@ -3982,8 +4310,35 @@ mod tests {
         assert!(deerflow_prompt_content(String::new(), &vec![original.clone(); 9], &root).is_err());
         std::fs::write(&original.path, vec![b'x'; 1024 * 1024]).unwrap();
         assert!(deerflow_prompt_content(String::new(), &vec![original.clone(); 5], &root).is_err());
-        std::fs::File::create(&original.path).unwrap().set_len(1024 * 1024 + 1).unwrap();
+        std::fs::File::create(&original.path)
+            .unwrap()
+            .set_len(1024 * 1024 + 1)
+            .unwrap();
         assert!(deerflow_prompt_content(String::new(), &[original], &root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deerflow_document_resources_use_bounded_base64_blobs() {
+        let root = std::env::temp_dir().join(format!("deerflow-acp-documents-{}", uuid::Uuid::new_v4()));
+        for name in ["report.pdf", "report.docx", "report.xlsx"] {
+            let mut file = stored_image_attachment(&root, name, b"fixture bytes");
+            file.is_image = false;
+            let blocks = deerflow_prompt_content(String::new(), &[file.clone()], &root).unwrap();
+            let wire = serde_json::to_value(&blocks[1]).unwrap();
+            assert!(wire["resource"]["text"].is_null());
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD
+                    .decode(wire["resource"]["blob"].as_str().unwrap())
+                    .unwrap(),
+                b"fixture bytes"
+            );
+            std::fs::File::create(&file.path)
+                .unwrap()
+                .set_len(8 * 1024 * 1024 + 1)
+                .unwrap();
+            assert!(deerflow_prompt_content(String::new(), &[file], &root).is_err());
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4483,7 +4838,10 @@ mod tests {
         let DriverEvent::Error(message) = event_rx.try_recv().unwrap() else {
             panic!("expected recovery message");
         };
-        assert_eq!(message, waku_protocol::deerflow_tasks::RECEIPT_REVIEW_MESSAGE);
+        assert_eq!(
+            message,
+            waku_protocol::deerflow_tasks::RECEIPT_REVIEW_MESSAGE
+        );
         assert!(!message.contains("listMethod"));
         assert!(matches!(
             event_rx.try_recv().unwrap(),
@@ -4661,6 +5019,7 @@ mod tests {
                 mode: RuntimeMode::FullAccess,
                 model: Some("grok-4.5".into()),
                 reasoning_effort: None,
+                thinking_mode: None,
                 service_tier: None,
                 context_window: None,
                 agent_preset: None,
@@ -4714,6 +5073,7 @@ mod tests {
                 mode: RuntimeMode::FullAccess,
                 model: Some("cursor-grok-4.6-xhigh".into()),
                 reasoning_effort: None,
+                thinking_mode: None,
                 service_tier: None,
                 context_window: None,
                 agent_preset: None,
@@ -4772,6 +5132,7 @@ mod tests {
                 mode: RuntimeMode::FullAccess,
                 model: None,
                 reasoning_effort: None,
+                thinking_mode: None,
                 service_tier: None,
                 context_window: None,
                 agent_preset: None,

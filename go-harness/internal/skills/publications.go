@@ -140,19 +140,22 @@ func (r *Registry) PublicationSources() ([]harness.SkillTarget, error) {
 }
 
 type PublicationTx struct {
-	tx     *sql.Tx
-	source *source
-	name   string
-	limits harness.SkillLimits
-	target PublicationTarget
-	ctx    context.Context
-	export *exportTarget
+	tx          *sql.Tx
+	source      *source
+	name        string
+	limits      harness.SkillLimits
+	target      PublicationTarget
+	ctx         context.Context
+	export      *exportTarget
+	editID      string
+	registry    *Registry
+	publication *filePublication
 }
 
 func (p *PublicationTx) Target() PublicationTarget { return p.target }
 
-// SQL lets the evolution service commit proposal, evaluation, release history
-// and observation records in the exact transaction changing the skill head.
+// SQL commits proposal, evaluation, history and the file-publication journal
+// atomically. Files are verified before a second transaction changes the head.
 // Callers must not retain it, commit it or reenter Registry methods from f.
 func (p *PublicationTx) SQL() *sql.Tx { return p.tx }
 
@@ -173,6 +176,10 @@ func (r *Registry) WithPublication(ctx context.Context, sourceID, name string, f
 }
 
 func (r *Registry) withPublication(ctx context.Context, s *source, name string, f func(*PublicationTx) error) error {
+	return r.withEditPublication(ctx, s, name, "", f)
+}
+
+func (r *Registry) withEditPublication(ctx context.Context, s *source, name, editID string, f func(*PublicationTx) error) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -182,12 +189,18 @@ func (r *Registry) withPublication(ctx context.Context, s *source, name string, 
 	if _, err = tx.ExecContext(ctx, `UPDATE df_skill_catalog SET revision=revision WHERE id=1`); err != nil {
 		return err
 	}
-	p := &PublicationTx{tx: tx, source: s, name: name, limits: r.limits, ctx: ctx, export: r.export,
+	p := &PublicationTx{tx: tx, source: s, name: name, limits: r.limits, ctx: ctx, export: r.export, editID: editID, registry: r,
 		target: PublicationTarget{SourceID: s.config.ID, SourceIdentity: s.identity, Name: name, Scope: s.config.Scope, Workspace: s.config.Workspace}}
 	if err = f(p); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if p.publication != nil {
+		return r.finishPublication(ctx, s, *p.publication)
+	}
+	return nil
 }
 
 func (p *PublicationTx) Current() (SkillHead, error) {
@@ -262,7 +275,13 @@ func (p *PublicationTx) stagePackage(pkg skillPackage) (string, error) {
 		return "", err
 	}
 	for _, f := range pkg.manifest {
-		if _, err := p.tx.ExecContext(p.ctx, `INSERT INTO df_skill_files VALUES(?,?,?,?,?,?,?)`, p.source.identity, p.name, version, f.Path, f.Hash, f.Bytes, pkg.files[f.Path]); err != nil {
+		if err := p.registry.storeObject(pkg.files[f.Path]); err != nil {
+			return "", err
+		}
+		if _, err := p.tx.ExecContext(p.ctx, `INSERT INTO df_skill_files VALUES(?,?,?,?,?,?,?)`, p.source.identity, p.name, version, f.Path, f.Hash, f.Bytes, []byte{}); err != nil {
+			return "", err
+		}
+		if _, err := p.tx.ExecContext(p.ctx, `INSERT INTO df_skill_file_objects VALUES(?,?,?,?)`, p.source.identity, p.name, version, f.Path); err != nil {
 			return "", err
 		}
 	}
@@ -290,13 +309,11 @@ func (p *PublicationTx) ReadVersion(version string) (*Candidate, error) {
 	}
 	files := make(map[string][]byte, len(entries))
 	for _, f := range entries {
-		var data []byte
-		var sha string
-		var n int64
-		if err = p.tx.QueryRowContext(p.ctx, `SELECT hash,size,data FROM df_skill_files WHERE source_key=? AND name=? AND version=? AND path=?`, p.source.identity, p.name, version, f.Path).Scan(&sha, &n, &data); err != nil {
+		data, err := ReadStoredFile(p.ctx, p.tx, p.source.identity, p.name, version, f.Path, p.limits.MaxFileBytes)
+		if err != nil {
 			return nil, err
 		}
-		if n != f.Bytes || int64(len(data)) != n || sha != f.Hash || digest(data) != sha {
+		if int64(len(data)) != f.Bytes || digest(data) != f.Hash {
 			return nil, errors.New("skill publication file digest differs from manifest")
 		}
 		files[f.Path] = data
@@ -320,9 +337,9 @@ func (p *PublicationTx) ReadVersion(version string) (*Candidate, error) {
 	return &Candidate{pkg: pkg}, nil
 }
 
-// Publish changes one installed pointer and durable managed/tombstone state.
-// An empty version records deletion, retaining all historical content. Review,
-// proposal CAS and audit insertion belong to the caller in this transaction.
+// Publish admits a durable file publication; the head changes only after the
+// bound directory is installed and verified. An empty version removes that
+// directory into a backup. History remains available for explicit restore.
 func (p *PublicationTx) Publish(version string, expected SkillHead, enabled bool) (SkillHead, error) {
 	h, err := p.Current()
 	if err != nil {
@@ -336,13 +353,20 @@ func (p *PublicationTx) Publish(version string, expected SkillHead, enabled bool
 			return h, err
 		}
 	}
-	if err = p.retainOverlay(); err != nil {
-		return h, err
-	}
-	return p.moveHead(h, version, enabled, true, "", "")
+	return p.preparePublication(version, h, enabled)
 }
 
 func (p *PublicationTx) moveHead(old SkillHead, version string, enabled, managed bool, imported, dir string) (SkillHead, error) {
+	if pending, err := editPending(p.ctx, p.tx, p.source.identity, p.name, p.editID); err != nil {
+		return old, err
+	} else if pending {
+		return old, harness.ErrReconciliationRequired
+	}
+	if pending, err := publicationPending(p.ctx, p.tx, p.source.identity, p.name); err != nil {
+		return old, err
+	} else if pending {
+		return old, harness.ErrReconciliationRequired
+	}
 	if version == "" && enabled {
 		return old, invalid("deleted skill cannot be enabled")
 	}

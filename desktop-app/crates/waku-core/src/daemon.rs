@@ -792,6 +792,7 @@ impl Backend for WakuBackend {
                     mode: decode_enum(&options.mode)?,
                     model: options.model,
                     reasoning_effort: options.reasoning_effort,
+                    thinking_mode: options.thinking_mode,
                     service_tier: options.service_tier,
                     context_window: options.context_window,
                     agent_preset: options.agent_preset,
@@ -960,6 +961,7 @@ fn merge_stale_session_metadata(existing: &mut AgentSession, incoming: AgentSess
         existing.model = incoming.model;
         existing.runtime_mode = incoming.runtime_mode;
         existing.reasoning_effort = incoming.reasoning_effort;
+        existing.thinking_mode = incoming.thinking_mode;
         existing.service_tier = incoming.service_tier;
         existing.context_window = incoming.context_window;
         existing.agent_preset = incoming.agent_preset;
@@ -1423,6 +1425,7 @@ impl WakuBackend {
                 mode: source.runtime_mode,
                 model: source.model.clone(),
                 reasoning_effort: source.reasoning_effort.clone(),
+                thinking_mode: source.thinking_mode.clone(),
                 service_tier: source.service_tier.clone(),
                 context_window: source.context_window.clone(),
                 agent_preset: source.agent_preset.clone(),
@@ -1619,6 +1622,7 @@ impl WakuBackend {
                 mode: source.runtime_mode,
                 model: source.model.clone(),
                 reasoning_effort: source.reasoning_effort.clone(),
+                thinking_mode: source.thinking_mode.clone(),
                 service_tier: source.service_tier.clone(),
                 context_window: source.context_window.clone(),
                 agent_preset: source.agent_preset.clone(),
@@ -1881,6 +1885,7 @@ fn handle_driver_command(
                     mode: decode_enum(&options.mode)?,
                     model: options.model,
                     reasoning_effort: options.reasoning_effort,
+                    thinking_mode: options.thinking_mode,
                     service_tier: options.service_tier,
                     context_window: options.context_window,
                 }),
@@ -1980,9 +1985,10 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
             models,
             model,
             reasoning_effort,
+            thinking_mode,
         } => (
             "deerflowModelsChanged",
-            json!({"models": models, "model": model, "reasoningEffort": reasoning_effort}),
+            json!({"models": models, "model": model, "reasoningEffort": reasoning_effort, "thinkingMode": thinking_mode}),
         ),
         DriverEvent::AutoTitleUpdated(title) => ("autoTitleUpdated", serde_json::to_value(title)?),
         DriverEvent::AvailableCommands(commands) => {
@@ -2091,6 +2097,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
             models: serde_json::from_value(payload["models"].clone())?,
             model: serde_json::from_value(payload["model"].clone())?,
             reasoning_effort: serde_json::from_value(payload["reasoningEffort"].clone())?,
+            thinking_mode: serde_json::from_value(payload["thinkingMode"].clone())?,
         },
         "autoTitleUpdated" => DriverEvent::AutoTitleUpdated(serde_json::from_value(payload)?),
         "availableCommands" => DriverEvent::AvailableCommands(serde_json::from_value(payload)?),

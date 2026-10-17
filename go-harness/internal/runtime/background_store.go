@@ -286,6 +286,7 @@ func (s *BackgroundExecutionStore) BindTx(ctx context.Context, tx *sql.Tx, bindi
 
 	child := spec.Parent
 	child.ReasoningEffort = "" // Role recipes, not the root selector, own child tuning.
+	child.ThinkingMode = ""
 	child.ID, child.Subagents, child.Title = binding.ChildSessionID, spec.AllowsDelegation(), ""
 	if spec.Role != nil {
 		child.Model = spec.Role.Model
@@ -497,7 +498,7 @@ func (s *BackgroundExecutionStore) Load(ctx context.Context, binding background.
 }
 
 func backgroundChildPolicy(ctx context.Context, q receiptQuery, binding background.Binding, spec BackgroundExecutionSpec) (harness.Session, error) {
-	child, err := scanSession(q.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,c.approval_mode,c.subagents,c.version,c.reasoning_effort FROM harness_sessions s JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, binding.ChildSessionID))
+	child, err := scanSession(q.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,c.approval_mode,c.subagents,c.version,c.reasoning_effort,c.thinking_mode FROM harness_sessions s JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, binding.ChildSessionID))
 	if err != nil {
 		return child, err
 	}

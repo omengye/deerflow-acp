@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ func (r *Registry) QueryCatalog(ctx context.Context, q harness.SkillQuery) (harn
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	page := harness.SkillCatalogPage{Skills: []harness.SkillCatalogEntry{}, Sources: []harness.SkillCatalogSource{}}
+	page.Diagnostics = append([]harness.SkillFinding(nil), r.diagnostics...)
 	if r.closed {
 		return page, ErrClosed
 	}
@@ -158,7 +160,7 @@ func encodeCatalogCursor(c catalogCursor) string {
 }
 
 func (r *Registry) catalogTx(ctx context.Context, tx *sql.Tx, s *source, name string) *PublicationTx {
-	return &PublicationTx{tx: tx, source: s, name: name, limits: r.limits, target: sourceTarget(s, name), ctx: ctx, export: r.export}
+	return &PublicationTx{tx: tx, source: s, name: name, limits: r.limits, target: sourceTarget(s, name), ctx: ctx, export: r.export, registry: r}
 }
 
 func (p *PublicationTx) catalogEntry() (harness.SkillCatalogEntry, error) {
@@ -170,6 +172,27 @@ func (p *PublicationTx) catalogEntry() (harness.SkillCatalogEntry, error) {
 	}
 	if entry.Head.StateVersion == 0 {
 		return entry, harness.ErrNotFound
+	}
+	var dir string
+	err = p.tx.QueryRowContext(p.ctx, `SELECT directory,status,error_code FROM df_skill_source_status WHERE source_key=? AND name=?`, p.source.identity, p.name).Scan(&dir, &entry.SourceStatus, &entry.SourceError)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return entry, err
+	}
+	if dir != "" {
+		entry.SourceDirectory = filepath.Join(p.source.config.Root, filepath.FromSlash(dir))
+	}
+	if entry.SourceStatus == "" {
+		entry.SourceStatus = "not_observed"
+	}
+	if pending, e := publicationPending(p.ctx, p.tx, p.source.identity, p.name); e != nil {
+		return entry, e
+	} else if pending {
+		entry.SourceStatus, entry.SourceError = "unavailable", "publication_reconciliation_required"
+	}
+	if pending, e := editPending(p.ctx, p.tx, p.source.identity, p.name, ""); e != nil {
+		return entry, e
+	} else if pending {
+		entry.SourceStatus, entry.SourceError = "unavailable", "edit_reconciliation_required"
 	}
 	var overlay string
 	err = p.tx.QueryRowContext(p.ctx, `SELECT base_version FROM df_skill_overlays WHERE source_key=? AND name=?`, p.source.identity, p.name).Scan(&overlay)
@@ -199,7 +222,7 @@ func (p *PublicationTx) catalogEntry() (harness.SkillCatalogEntry, error) {
 		}
 		entry.Record = &harness.SkillRecord{Ref: harness.SkillRef{SourceID: p.target.SourceID, SourceIdentity: p.target.SourceIdentity, Name: p.name, Version: entry.Head.Version, Hash: entry.Head.Version}, Description: fm.Description, Scope: p.target.Scope, Workspace: p.target.Workspace, Enabled: entry.Head.Enabled, FileCount: len(files), TotalBytes: size, InstalledAt: at, Findings: fm.Findings, Builtin: entry.Builtin, Managed: entry.Head.Managed, StateVersion: entry.Head.StateVersion, OverlayBase: entry.OverlayBase}
 	}
-	if err = p.tx.QueryRowContext(p.ctx, `SELECT managed=1 AND last_import_version<>'' AND import_directory<>'' FROM df_skill_control WHERE source_key=? AND name=?`, p.source.identity, p.name).Scan(&entry.CanRefreshImport); err != nil {
+	if err = p.tx.QueryRowContext(p.ctx, `SELECT import_directory<>'' FROM df_skill_control WHERE source_key=? AND name=?`, p.source.identity, p.name).Scan(&entry.CanRefreshImport); err != nil {
 		return entry, err
 	}
 	if entry.CanRefreshImport {
@@ -217,6 +240,9 @@ func (p *PublicationTx) catalogEntry() (harness.SkillCatalogEntry, error) {
 		item, err := readExport(p.tx.QueryRowContext(p.ctx, `SELECT `+exportColumns+` FROM df_skill_exports WHERE source_key=? AND name=? AND export_key=?`, p.source.identity, p.name, p.export.key), p.source, p.export.key)
 		if err == nil {
 			if item.state.Head != entry.Head {
+				if pending, e := readFilePublication(p.ctx, p.tx, p.source.identity, p.name); e == nil && pending.Base == entry.Head && pending.Next == item.state.Head {
+					return entry, nil // Predicted export belongs to an incomplete file commit.
+				}
 				return entry, errors.New("catalog export head is inconsistent")
 			}
 			entry.Export = &item.state

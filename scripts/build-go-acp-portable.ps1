@@ -42,6 +42,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Go stdio agent build failed" }
     & go build -trimpath -p=2 -o (Join-Path $outputRoot "deerflow-skill-go.exe") ./cmd/deerflow-skill-go
     if ($LASTEXITCODE -ne 0) { throw "Go skill authoring tool build failed" }
+    & go build -trimpath -p=2 -o (Join-Path $outputRoot "deerflow-control-go.exe") ./cmd/deerflow-control-go
+    if ($LASTEXITCODE -ne 0) { throw "Go local control tool build failed" }
+    & go build -trimpath -p=2 -o (Join-Path $outputRoot "deerflow-channel-wechat.exe") ./cmd/deerflow-channel-wechat
+    if ($LASTEXITCODE -ne 0) { throw "Go WeChat channel plugin build failed" }
     & (Join-Path $PSScriptRoot "build-wsl-helper.ps1") -OutputDirectory $outputRoot
 }
 finally {
@@ -52,8 +56,10 @@ Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\go-acp-portable.md") -Destination (Join-Path $outputRoot "README.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\harness-reliability-20261012.md") -Destination (Join-Path $outputRoot "harness-reliability-20261012.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\skill-business-suites.md") -Destination (Join-Path $outputRoot "skill-business-suites.md")
+Copy-Item -LiteralPath (Join-Path $repoRoot "docs\deerflow-capabilities.md") -Destination (Join-Path $outputRoot "deerflow-capabilities.md")
+Copy-Item -LiteralPath (Join-Path $repoRoot "docs\channel-plugins.md") -Destination (Join-Path $outputRoot "channel-plugins.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "resources\skill-behavior") -Destination (Join-Path $outputRoot "skill-behavior") -Recurse
-foreach ($binary in @("deerflow-acp.exe", "deerflow-acpd.exe", "deerflow-acp-go.exe", "deerflow-skill-go.exe", "deerflow-wsl-helper-linux-amd64")) {
+foreach ($binary in @("deerflow-acp.exe", "deerflow-acpd.exe", "deerflow-acp-go.exe", "deerflow-skill-go.exe", "deerflow-control-go.exe", "deerflow-channel-wechat.exe", "deerflow-wsl-helper-linux-amd64")) {
     if ((Get-Item -LiteralPath (Join-Path $outputRoot $binary)).Length -eq 0) {
         throw "Package binary is empty: $binary"
     }

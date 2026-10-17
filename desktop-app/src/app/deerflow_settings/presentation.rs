@@ -207,6 +207,74 @@ const SKILL_GROUPS: &[(&str, &str)] = &[
     ("auto_patch", "受限自动补丁"),
 ];
 
+// Only the outer page mounts form fields. Child pages supply their non-form
+// content so GPUI never shares interaction state between duplicate field IDs.
+pub(super) fn compose_settings_content(
+    section: Section,
+    tab: SkillCenterTab,
+    content: Div,
+    form_fields: impl FnOnce() -> AnyElement,
+) -> Div {
+    match (section, tab) {
+        (Section::Common, _) => div().child(form_fields()).child(content),
+        (Section::SkillCenter, tab) if tab != SkillCenterTab::Automation => content,
+        _ => content.child(form_fields()),
+    }
+}
+
+impl DeerFlowSettings {
+    fn skill_group_selected(&self, key: &str) -> bool {
+        self.search_target
+            .as_deref()
+            .is_some_and(|path| skill_group(path) == key)
+    }
+
+    fn toggle_skill_group(&mut self, key: &str) {
+        self.search_target = if self.skill_group_selected(key) {
+            None
+        } else {
+            Some(format!("/skill_evolution/{key}"))
+        };
+    }
+}
+
+fn render_skill_groups<E: 'static>(
+    state: &DeerFlowSettings,
+    theme: Theme,
+    cx: &mut Context<E>,
+    toggle: impl Fn(&mut E, &'static str, &mut Context<E>) + Copy + 'static,
+    render_field: impl Fn(&Field, &mut Context<E>) -> AnyElement,
+) -> Div {
+    let mut body = div();
+    for &(key, label) in SKILL_GROUPS {
+        let selected = state.skill_group_selected(key);
+        let mut group = df_group(theme).child(
+            df_button(
+                SharedString::from(format!("df-skill-options-{key}")),
+                format!("{} {label}", if selected { "▾" } else { "▸" }),
+                // Disclosure is read-only; field editors retain their own gates.
+                false,
+                selected,
+                theme,
+                cx,
+                move |this, _, cx| toggle(this, key, cx),
+            )
+            .debug_selector(|| format!("df-skill-options-{key}"))
+            .w_full()
+            .justify_start(),
+        );
+        for field in &state.fields {
+            if skill_group(&field.path) == key
+                && (selected || state.errors.contains_key(&field.path))
+            {
+                group = group.child(render_field(field, cx));
+            }
+        }
+        body = body.child(group);
+    }
+    body
+}
+
 pub(super) fn common_fields(doc: &Value) -> Vec<Field> {
     let mut fields = vec![
         Field::new(
@@ -391,10 +459,22 @@ const SEARCH_TARGETS: &[SearchSeed] = &[
         "max_tokens max_completion_tokens 输出 兼容 参数"
     ),
     target!(
-        "思考强度",
+        "推理强度",
         "/models/*/reasoning_efforts",
         Models,
         "reasoning effort 思考 推理 强度"
+    ),
+    target!(
+        "思考模式接口",
+        "/models/*/thinking_parameter",
+        Models,
+        "thinking 思考 开启 关闭 接口"
+    ),
+    target!(
+        "思考预算",
+        "/models/*/thinking_budget_tokens",
+        Models,
+        "thinking Claude 思考 预算"
     ),
     target!(
         "上下文窗口",
@@ -1075,40 +1155,16 @@ impl Waku {
             || state.section == Section::SkillCenter
                 && state.skill_center_tab == SkillCenterTab::Automation
         {
-            for &(key, label) in SKILL_GROUPS {
-                let selected = state
-                    .search_target
-                    .as_deref()
-                    .is_some_and(|path| skill_group(path) == key);
-                let mut group = df_group(theme).child(
-                    df_button(
-                        SharedString::from(format!("df-skill-options-{key}")),
-                        format!("{} {label}", if selected { "▾" } else { "▸" }),
-                        state.busy(),
-                        selected,
-                        theme,
-                        cx,
-                        move |this, _, cx| {
-                            this.deerflow_settings.search_target = if selected {
-                                None
-                            } else {
-                                Some(format!("/skill_evolution/{key}"))
-                            };
-                            cx.notify();
-                        },
-                    )
-                    .w_full()
-                    .justify_start(),
-                );
-                for field in &state.fields {
-                    if skill_group(&field.path) == key
-                        && (selected || state.errors.contains_key(&field.path))
-                    {
-                        group = group.child(self.render_deerflow_field(field, theme, cx));
-                    }
-                }
-                body = body.child(group);
-            }
+            body = render_skill_groups(
+                state,
+                theme,
+                cx,
+                |this: &mut Self, key, cx| {
+                    this.deerflow_settings.toggle_skill_group(key);
+                    cx.notify();
+                },
+                |field, cx| self.render_deerflow_field(field, theme, cx),
+            );
         } else if !state.fields.is_empty() {
             let mut group = df_group(theme);
             for field in &state.fields {
@@ -1320,8 +1376,7 @@ impl Waku {
                 body = body.child(self.render_deerflow_common(theme, cx))
                     .child(df_group(theme).child(df_label("额度（编辑草稿）", format!("维护每日 {} 次 / {} Token · 学习每日 {} 次 / {} Token（包含于总额度）\n并发上限 {} · 单作业 {} 秒。实际生效配置以保存并应用回执为准；额度按 UTC 日重置。",
                         e["budget"]["max_daily_model_calls"], e["budget"]["max_daily_tokens"], e["learning"]["max_daily_model_calls"], e["learning"]["max_daily_tokens"], e["budget"]["workers"], e["budget"]["max_job_seconds"]), theme)))
-                    .child(self.render_deerflow_auto_patch(theme, cx))
-                    .child(self.render_deerflow_form_fields(theme, cx));
+                    .child(self.render_deerflow_auto_patch(theme, cx));
             }
         }
         body.into_any_element()
@@ -1369,6 +1424,10 @@ fn skill_group(path: &str) -> &str {
         "general"
     }
 }
+
+#[cfg(test)]
+#[path = "presentation_interaction_tests.rs"]
+mod interaction_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1438,6 +1497,8 @@ mod tests {
             "supports_vision",
             "context_window",
             "reasoning_efforts",
+            "thinking_parameter",
+            "thinking_budget_tokens",
             "output_token_parameter",
         ] {
             assert!(

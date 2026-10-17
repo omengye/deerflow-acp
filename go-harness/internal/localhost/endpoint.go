@@ -24,6 +24,8 @@ type Endpoint struct {
 	PID        int    `json:"pid"`
 	BuildID    string `json:"build_id"`
 	ConfigPath string `json:"config_path"`
+	InstanceID string `json:"instance_id,omitempty"`
+	DataDir    string `json:"data_dir,omitempty"`
 }
 
 // DefaultRuntimeDir intentionally differs from the Python runtime directory.

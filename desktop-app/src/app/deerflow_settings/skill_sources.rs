@@ -183,8 +183,8 @@ impl Waku {
             .filter_map(Value::as_str)
         {
             group = group.child(df_label(
+                "技能来源诊断（原文件与配置已保留）",
                 path,
-                "原配置中的旧字段保留；当前 Go 来源设置不读取此项",
                 theme,
             ));
         }

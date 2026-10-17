@@ -27,12 +27,18 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 	if err != nil {
 		return Proposal{}, err
 	}
+	if err = s.recordApproval(ctx, id, review); err != nil {
+		return Proposal{}, err
+	}
 	var result Proposal
 	var outcome error
 	err = s.withProposal(ctx, id, func(tx *skills.PublicationTx, p *Proposal) error {
-		if p.Status == "published" {
+		if p.Status == "published" || p.Status == "publishing" {
 			_, err := publicationByKey(ctx, tx, "approve/"+id, encodedHash(review))
 			result = *p
+			if err == nil && p.Status == "publishing" {
+				err = tx.ResumeFilePublication()
+			}
 			return err
 		}
 		if p.StateVersion != review.ExpectedStateVersion || p.Status != "pending_review" {
@@ -105,6 +111,7 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 			p.Status = "stale"
 			p.UpdatedAt = time.Now().UTC()
 			p.Error = "The reviewed base is no longer current."
+			p.PublicationError = "base_changed"
 			if err = updateProposal(ctx, tx.SQL(), *p, review.ExpectedStateVersion); err != nil {
 				return err
 			}
@@ -121,6 +128,24 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 		}
 		next, err := tx.Publish(p.CandidateVersion, p.Base, enabled)
 		if err != nil {
+			if errors.Is(err, skills.ErrPublicationConflict) {
+				p.StateVersion++
+				p.Status = "stale"
+				p.UpdatedAt = time.Now().UTC()
+				p.Error = "Source files or an admitted publication changed the reviewed baseline."
+				p.PublicationError = "publication_conflict"
+				var conflict *skills.PublicationConflict
+				if errors.As(err, &conflict) {
+					p.PublicationError = conflict.Code
+					p.Error = conflict.Error()
+				}
+				if e := updateProposal(ctx, tx.SQL(), *p, review.ExpectedStateVersion); e != nil {
+					return e
+				}
+				result = *p
+				outcome = ErrConflict
+				return nil
+			}
 			return err
 		}
 		publication := Publication{Action: p.Action, Target: p.Target, Name: p.SkillName, ContentVersion: p.CandidateVersion, Enabled: enabled, Deleted: p.Action == "delete", Previous: head, Head: next, ProposalID: p.ID, Actor: review.Actor, Note: review.Note, CreatedAt: time.Now().UTC()}
@@ -129,16 +154,23 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 		if err != nil {
 			return err
 		}
+		if err = tx.BindPublicationProposal(p.ID); err != nil {
+			return err
+		}
 		if err = s.attachAutoPatchObservation(ctx, tx, publication, *p); err != nil {
 			return err
 		}
 		p.StateVersion++
-		p.Status = "published"
+		p.Status = "publishing"
+		p.FilePublicationPending = true
 		p.PublishedRevision = publication.Revision
 		p.UpdatedAt = publication.CreatedAt
 		p.ReviewedAt = &publication.CreatedAt
 		p.ReviewedBy = review.Actor
 		p.ReviewNote = review.Note
+		if p.Approval != nil {
+			p.ReviewedAt = &p.Approval.CreatedAt
+		}
 		if err = updateProposal(ctx, tx.SQL(), *p, review.ExpectedStateVersion); err != nil {
 			return err
 		}
@@ -147,6 +179,22 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 	})
 	if err == nil {
 		err = outcome
+	}
+	if result.ID != "" && (result.Status == "publishing" || result.Status == "published") {
+		fresh, e := s.Get(ctx, result.ID)
+		if e == nil {
+			result = fresh
+		} else if err == nil {
+			err = e
+		}
+	}
+	if err != nil {
+		// Read durable state, not a value from a transaction that may have rolled back.
+		check, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if fresh, e := s.Get(check, id); e == nil {
+			result = fresh
+		}
 	}
 	return result, err
 }
@@ -163,6 +211,9 @@ func (s *Service) Reject(ctx context.Context, id string, review Review) (Proposa
 			return nil
 		}
 		if p.StateVersion != review.ExpectedStateVersion || p.Status != "pending_review" && p.Status != "validating" {
+			return ErrConflict
+		}
+		if p.Approval != nil {
 			return ErrConflict
 		}
 		if err := s.cancelBehaviorManual(ctx, tx.SQL(), *p); err != nil {
@@ -271,7 +322,17 @@ func (s *Service) Rollback(ctx context.Context, request Rollback) (Publication, 
 		prior, err := publicationByKey(ctx, tx, "rollback/"+request.RequestKey, encodedHash(request))
 		if err == nil {
 			result = prior
-			return nil
+			status, e := skills.FilePublicationStatus(ctx, tx.SQL(), prior.Target.SourceIdentity, prior.Name, prior.Head.StateVersion)
+			if e != nil {
+				return e
+			}
+			if status == "aborted" {
+				return ErrConflict
+			}
+			if status != "pending" {
+				return nil
+			}
+			return tx.ResumeFilePublication()
 		}
 		if !errors.Is(err, harness.ErrNotFound) {
 			return err
@@ -279,6 +340,13 @@ func (s *Service) Rollback(ctx context.Context, request Rollback) (Publication, 
 		target, err := readPublication(ctx, tx, request.Revision)
 		if err != nil {
 			return err
+		}
+		status, err := skills.FilePublicationStatus(ctx, tx.SQL(), target.Target.SourceIdentity, target.Name, target.Head.StateVersion)
+		if err != nil {
+			return err
+		}
+		if status == "pending" || status == "aborted" {
+			return ErrConflict
 		}
 		current, err := tx.Current()
 		if err != nil {
@@ -299,6 +367,14 @@ func (s *Service) Rollback(ctx context.Context, request Rollback) (Publication, 
 		result, err = insertPublication(ctx, tx, result, "rollback/"+request.RequestKey, encodedHash(request))
 		return err
 	})
+	if result.Revision > 0 {
+		status, e := skills.FilePublicationStatus(ctx, s.db, result.Target.SourceIdentity, result.Name, result.Head.StateVersion)
+		if e == nil {
+			result.FileStatus = status
+		} else if err == nil {
+			err = e
+		}
+	}
 	return result, err
 }
 
@@ -326,7 +402,19 @@ func (s *Service) History(ctx context.Context, sourceID, name string, after int6
 			}
 			result = append(result, p)
 		}
-		return rows.Err()
+		if err = rows.Err(); err != nil {
+			return err
+		}
+		if err = rows.Close(); err != nil {
+			return err
+		}
+		for i := range result {
+			result[i].FileStatus, err = skills.FilePublicationStatus(ctx, tx.SQL(), result[i].Target.SourceIdentity, result[i].Name, result[i].Head.StateVersion)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	return result, err
 }

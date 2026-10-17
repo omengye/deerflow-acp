@@ -292,6 +292,8 @@ pub struct WireDriverStartOptions {
     pub mode: String,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_mode: Option<String>,
     pub service_tier: Option<String>,
     pub context_window: Option<String>,
     pub agent_preset: Option<String>,
@@ -305,6 +307,8 @@ pub struct WireSessionOptions {
     pub mode: String,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_mode: Option<String>,
     pub service_tier: Option<String>,
     pub context_window: Option<String>,
 }
@@ -521,6 +525,19 @@ mod base64_bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thinking_mode_is_independent_and_optional_on_the_wire() {
+        let legacy = serde_json::json!({"mode":"ask", "model":"fixture", "reasoningEffort":"high", "serviceTier":null, "contextWindow":null});
+        let mut options: WireSessionOptions = serde_json::from_value(legacy).unwrap();
+        assert!(options.thinking_mode.is_none());
+        options.thinking_mode = Some("off".into());
+        let value = serde_json::to_value(&options).unwrap();
+        assert_eq!(value["thinkingMode"], "off");
+        assert_eq!(value["reasoningEffort"], "high");
+        let decoded: WireSessionOptions = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.thinking_mode.as_deref(), Some("off"));
+    }
 
     #[test]
     fn binary_payloads_use_base64_json_strings() {

@@ -83,6 +83,10 @@ func (s *Store) purgeSession(ctx context.Context, id string, automatic bool) (bo
 	// Delete leaf rows before their parents. Optional subsystems create tables
 	// only when configured; every query here has a fixed, audited table name.
 	steps := []struct{ table, query string }{
+		{"harness_goals", `DELETE FROM harness_goals WHERE session_id=?`},
+		{"harness_goal_runs", `DELETE FROM harness_goal_runs WHERE session_id=?`},
+		{"harness_wechat_threads", `DELETE FROM harness_wechat_threads WHERE session_id=?`},
+		{"harness_channel_threads", `DELETE FROM harness_channel_threads WHERE session_id=?`},
 		{"harness_task_notes", `DELETE FROM harness_task_notes WHERE session_id=?`},
 		{"memory_facts_fts", `DELETE FROM memory_facts_fts WHERE scope_key IN (SELECT key FROM memory_scopes WHERE kind='session' AND subject=?)`},
 		{"memory_fts_state", `DELETE FROM memory_fts_state WHERE scope_key IN (SELECT key FROM memory_scopes WHERE kind='session' AND subject=?)`},

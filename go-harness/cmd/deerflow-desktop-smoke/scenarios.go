@@ -279,10 +279,10 @@ func (s *smoke) skill(session, runtime string) {
 	s.prompt(session, runtime, marker+": Load the bootstrap skill then report completion.")
 	count := 0
 	finished := object(s.waku.event(runtime, "turnFinished", nil, func(p obj) { count++; s.respond(session, runtime, p, "allow_once") }))
-	need(finished["success"] == true && count == 1, "bundled skill turn/permission failed: %v, %d", finished, count)
+	need(finished["success"] == true && count == 0, "read-only skill unexpectedly required approval: %v, %d", finished, count)
 	result := toolResult(s.fake.since(start), id)
 	need(result != nil && strings.Contains(messageText(result), "Bootstrap Soul"), "bundled skill body missing from model")
-	s.log("Bundled skill loaded through Waku and Go ACP", obj{"name": "bootstrap"})
+	s.log("Bundled skill loaded through Waku and Go ACP without approval", obj{"name": "bootstrap", "permission_count": count})
 }
 func (s *smoke) startApproval(session string, cursor any) (string, any) {
 	runtime := uuid()

@@ -294,7 +294,8 @@ pub struct MenuChip {
 impl MenuChip {
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
-            base: div().id(id),
+            // Set text defaults here so Styled overrides survive render.
+            base: div().id(id).text_size(sp(13.0)).line_height(sp(16.0)),
             icon: None,
             badge: None,
             label: SharedString::default(),
@@ -374,6 +375,8 @@ impl InteractiveElement for MenuChip {
     }
 }
 
+impl StatefulInteractiveElement for MenuChip {}
+
 impl ParentElement for MenuChip {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
         self.base.extend(elements);
@@ -393,8 +396,6 @@ impl RenderOnce for MenuChip {
             .flex()
             .items_center()
             .gap(px(6.0))
-            .text_size(sp(13.0))
-            .line_height(sp(16.0))
             .cursor_default()
             .focus_visible(|style| style.border_1().border_color(theme.accent))
             .when(self.outlined, |element| {
@@ -521,6 +522,31 @@ impl RenderOnce for ProjectNameSelector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn menu_chip_preserves_text_style_overrides(cx: &mut gpui::TestAppContext) {
+        struct Harness;
+
+        impl gpui::Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                MenuChip::new("custom-chip")
+                    .w(px(200.0))
+                    .text_size(sp(12.5))
+                    .line_height(sp(18.0))
+                    .child(canvas(
+                        |_, window, _| {
+                            let text = window.text_style();
+                            assert_eq!(text.font_size, sp(12.5).into());
+                            assert_eq!(text.line_height, sp(18.0).into());
+                        },
+                        |_, _, _, _| {},
+                    ))
+            }
+        }
+
+        let (_, cx) = cx.add_window_view(|_, _| Harness);
+        cx.run_until_parked();
+    }
 
     #[test]
     fn nested_scroll_chains_only_after_reaching_a_boundary() {

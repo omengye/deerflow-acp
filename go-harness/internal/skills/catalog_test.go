@@ -141,7 +141,7 @@ func TestCatalogEnablementDurableIdempotentAndImportRefresh(t *testing.T) {
 	}
 	writeSkill(t, root, "research", "modified outside publication")
 	observed, err := r.RefreshCatalogImport(ctx, entry.Target, enabled.AppliedHead)
-	if err != nil || observed.Skill.Import == nil || observed.Skill.Import.Status != "changed" || observed.Skill.Head != enabled.AppliedHead {
+	if err != nil || observed.Skill.SourceStatus != "ready" || observed.Skill.Head.Version == enabled.AppliedHead.Version || !observed.Skill.Head.Enabled {
 		t.Fatalf("observation: %+v %v", observed, err)
 	}
 	if _, err := r.RefreshCatalogImport(ctx, entry.Target, request.Expected); !errors.Is(err, harness.ErrSkillConflict) {
@@ -159,20 +159,15 @@ func TestCatalogEnablementDurableIdempotentAndImportRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := catalogItem(t, r2, "project", "research")
-	if after.Head != enabled.AppliedHead || after.OverlayBase != nil || !after.Builtin {
-		t.Fatalf("startup changed durable enablement or overlay provenance: %+v", after)
+	if after.Head.Version == enabled.AppliedHead.Version || !after.Head.Enabled || after.OverlayBase != nil || !after.Builtin {
+		t.Fatalf("startup failed to observe files or changed durable enablement: %+v", after)
 	}
 	replay, err = r2.SetEnabledChecked(ctx, request)
-	if err != nil || !replay.Replayed || replay.AppliedHead != result.AppliedHead || replay.Skill.Head != enabled.AppliedHead {
+	if err != nil || !replay.Replayed || replay.AppliedHead != result.AppliedHead || replay.Skill.Head != after.Head {
 		t.Fatalf("restart lost audit: %+v %v", replay, err)
 	}
-	if err = r2.Delete(ctx, "project", "research"); err != nil {
-		t.Fatal(err)
-	}
-	tombstone := catalogItem(t, r2, "project", "research")
-	observed, err = r2.RefreshCatalogImport(ctx, entry.Target, tombstone.Head)
-	if err != nil || observed.Skill.Record != nil || observed.Skill.Import == nil || observed.Skill.Head.Exists {
-		t.Fatalf("tombstone observation: %+v %v", observed, err)
+	if err = r2.Delete(ctx, "project", "research"); !errors.Is(err, harness.ErrPermissionDenied) {
+		t.Fatal("builtin delete allowed", err)
 	}
 }
 

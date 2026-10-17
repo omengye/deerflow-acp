@@ -21,7 +21,9 @@ func (a *BackgroundInteractionAttempt) ResolvePolicyPermission(ctx context.Conte
 		if err != nil {
 			return err
 		}
-		if req.Session.Mode != "plan" && req.Session.ApprovalMode != harness.ApprovalReadOnly && !a.store.PermissionMode.RequiresPermission(p.ToolName) {
+		if p.ToolName == "skill_edit" {
+			decision, handled = harness.RejectOnce, true
+		} else if req.Session.Mode != "plan" && req.Session.ApprovalMode != harness.ApprovalReadOnly && !a.store.PermissionMode.RequiresPermission(p.ToolName) {
 			decision, handled = harness.AllowOnce, true
 		} else {
 			decision, handled = configuredPermission(req.Session, p)

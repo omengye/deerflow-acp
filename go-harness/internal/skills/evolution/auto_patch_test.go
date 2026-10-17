@@ -77,6 +77,13 @@ func TestAutoPatchPublicationObservationAndRollback(t *testing.T) {
 	if err != nil || proposal.Status != "published" || proposal.ReviewedBy != "auto_patch" {
 		t.Fatalf("not automatically published: %+v %v", proposal, err)
 	}
+	if proposal.Approval == nil || proposal.Approval.Review.Actor != "auto_patch" || proposal.Approval.CandidateVersion != proposal.CandidateVersion {
+		t.Fatal("automatic publication must retain policy approval without human review")
+	}
+	retried, err := f.service.RetryPublication(ctx, proposal.ID, proposal.Approval.Review.ExpectedStateVersion)
+	if err != nil || retried.ReviewedBy != "auto_patch" || *retried.Approval != *proposal.Approval || retried.PublishedRevision != proposal.PublishedRevision {
+		t.Fatal("operator retry replaced the automatic decision", err)
+	}
 	o, err := readAutoPatchObservation(ctx, f.db.DB(), proposal.ID)
 	if err != nil || o.Status != "observing" || o.BaselineRevision != 2 || f.head(t) != o.Head {
 		t.Fatalf("publication and observation not atomic: %+v %v", o, err)

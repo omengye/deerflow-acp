@@ -18,9 +18,10 @@ mod learning;
 mod learning_state;
 mod mcp_editor;
 mod memory_management;
-mod readiness;
 mod missing;
 pub(super) mod presentation;
+mod readiness;
+mod publication_state;
 mod roles;
 mod settings_contract;
 mod skill_sources;
@@ -730,16 +731,24 @@ impl Waku {
         use presentation::SkillCenterTab;
         let state = &mut self.deerflow_settings;
         state.skill_center_loads.clear();
-        state.skill_center_loads.push_back(json!({"operation":"skill.auto_patch.status"}));
+        state
+            .skill_center_loads
+            .push_back(json!({"operation":"skill.auto_patch.status"}));
         let query = match state.skill_center_tab {
             SkillCenterTab::Catalog => Some(json!({"operation":"skill.list","limit":20})),
-            SkillCenterTab::Review => Some(json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":20})),
+            SkillCenterTab::Review => Some(
+                json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":20}),
+            ),
             SkillCenterTab::History => Some(json!({"operation":"proposal.history","limit":20})),
             _ => None,
         };
-        if let Some(query) = query { state.skill_center_loads.push_back(query); }
+        if let Some(query) = query {
+            state.skill_center_loads.push_back(query);
+        }
         if state.skill_center_tab == SkillCenterTab::History {
-            state.skill_center_loads.push_back(json!({"operation":"skill.auto_patch.list","limit":20}));
+            state
+                .skill_center_loads
+                .push_back(json!({"operation":"skill.auto_patch.list","limit":20}));
         }
         self.deerflow_flush_skill_center(cx);
     }
@@ -751,7 +760,9 @@ impl Waku {
             state.skill_center_loads.clear();
             return;
         }
-        if state.busy() || state.applying() || state.status["running"] != true { return; }
+        if state.busy() || state.applying() || state.status["running"] != true {
+            return;
+        }
         if let Some(request) = state.skill_center_loads.pop_front() {
             self.deerflow_request("manage", request, cx);
         }
@@ -797,9 +808,18 @@ impl Waku {
         if self.deerflow_settings.busy() {
             return;
         }
-        if operation == "manage" && input["operation"] == "proposal.list"
-            && self.deerflow_settings.skill_browser.auto_patch.needs_attention.is_none() {
-            if let Some(fields) = input.as_object_mut() { fields.remove("needs_attention"); }
+        if operation == "manage"
+            && input["operation"] == "proposal.list"
+            && self
+                .deerflow_settings
+                .skill_browser
+                .auto_patch
+                .needs_attention
+                .is_none()
+        {
+            if let Some(fields) = input.as_object_mut() {
+                fields.remove("needs_attention");
+            }
         }
         if operation == "manage"
             && (input["operation"]
@@ -1054,7 +1074,7 @@ impl Waku {
                             } else {
                                 this.deerflow_managed(&management_request, data, cx);
                             }
-                            if matches!(management_request["operation"].as_str(), Some("proposal.approve" | "proposal.reject" | "proposal.rollback" | "skill.set_enabled")) {
+                            if matches!(management_request["operation"].as_str(), Some("proposal.approve" | "proposal.publish_retry" | "proposal.reject" | "proposal.rollback" | "skill.set_enabled")) {
                                 this.deerflow_settings.skill_center_loads.push_back(json!({"operation":"skill.auto_patch.status"}));
                             }
                         }
@@ -1634,7 +1654,8 @@ impl Waku {
 
 fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
     if state.section == Section::SkillCenter
-        && state.skill_center_tab == presentation::SkillCenterTab::Automation {
+        && state.skill_center_tab == presentation::SkillCenterTab::Automation
+    {
         return evolution::fields();
     }
     fields_for_section(state, state.section)
@@ -1692,14 +1713,33 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
             );
             add(
                 format!("{root}/reasoning_efforts"),
-                "支持的思考强度",
-                "每行一个档位，如 low、medium、high；OpenAI 兼容可加 xhigh 或 max。仅填写模型实际支持的值；留空不显示会话选择器。Claude 暂不支持此参数。",
+                "支持的推理强度",
+                "配置会话选择器的可选档位，每行一个，如 low、medium、high；仅填写模型实际支持的值，不填 on/off。留空不显示强度选择器。本应用尚未接入 Claude 的 output_config.effort，并非 Claude 官方不支持。",
                 Kind::Names,
+            );
+            add(
+                format!("{root}/thinking_parameter"),
+                "思考模式接口（高级）",
+                "独立于推理强度。仅声明实际支持开关的接口；共用 reasoning_effort 的接口关闭发送 none，开启前须明确选择强度，不能将默认或低档当成关闭。",
+                Kind::Choice(&[
+                    ("", "未配置能力"),
+                    ("unsupported", "已确认不支持切换"),
+                    ("enable_thinking", "enable_thinking 布尔值"),
+                    ("thinking_type", "thinking.type enabled / disabled"),
+                    ("reasoning_effort", "reasoning_effort 档位 / none"),
+                    ("claude", "Claude 手动思考 enabled / disabled（旧式预算）"),
+                ]),
+            );
+            add(
+                format!("{root}/thinking_budget_tokens"),
+                "思考预算（Claude）",
+                "仅适用于支持手动 enabled / disabled 的 Claude 模型；不是推理强度。0 使用 1024，非零值至少 1024，且必须小于输出上限；不适用于仅支持 adaptive 的模型。",
+                Kind::Integer,
             );
             add(
                 format!("{root}/output_token_parameter"),
                 "输出上限参数（高级）",
-                "通常选自动；腾讯 Copilot 使用 max_tokens，其余 OpenAI 兼容默认使用 max_completion_tokens。未知网关请按实测覆盖，与思考强度无关。",
+                "通常选自动；腾讯 Copilot 使用 max_tokens，其余 OpenAI 兼容默认使用 max_completion_tokens。未知网关请按实测覆盖，与推理强度无关。",
                 Kind::Choice(&[
                     ("auto", "自动选择"),
                     ("max_tokens", "max_tokens"),
@@ -1968,14 +2008,14 @@ fn df_label(label: impl Into<SharedString>, hint: impl Into<SharedString>, theme
                 .child(hint),
         )
 }
-fn df_button(
+pub(super) fn df_button<E: 'static>(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     disabled: bool,
     selected: bool,
     theme: Theme,
-    cx: &mut Context<Waku>,
-    action: impl Fn(&mut Waku, &mut Window, &mut Context<Waku>) + 'static,
+    cx: &mut Context<E>,
+    action: impl Fn(&mut E, &mut Window, &mut Context<E>) + 'static,
 ) -> Stateful<Div> {
     let label: SharedString = label.into();
     let button = div()
@@ -2284,7 +2324,14 @@ impl Waku {
                     ),
             );
         }
-        if let Some((description, request)) = &state.confirm_manage {
+        let inline_source_confirmation = state.section == Section::SkillCenter
+            && state.skill_center_tab == presentation::SkillCenterTab::Review
+            && state.proposal.as_ref().is_some_and(|proposal| {
+                state.confirm_manage.as_ref().is_some_and(|(_, request)| {
+                    publication_state::source_confirmation(proposal, request)
+                })
+            });
+        if let Some((description, request)) = state.confirm_manage.as_ref().filter(|_| !inline_source_confirmation) {
             let request = request.clone();
             body = body.child(
                 df_group(theme)
@@ -2367,9 +2414,7 @@ impl Waku {
         }
         match state.section {
             Section::Common => {
-                content = content
-                    .child(self.render_deerflow_form_fields(theme, cx))
-                    .child(self.render_deerflow_common(theme, cx))
+                content = content.child(self.render_deerflow_common(theme, cx))
             }
             Section::SkillCenter => {
                 content = content.child(self.render_deerflow_skill_center(theme, cx))
@@ -2635,9 +2680,12 @@ impl Waku {
             }
             _ => {}
         }
-        if state.section != Section::Common {
-            content = content.child(self.render_deerflow_form_fields(theme, cx));
-        }
+        content = presentation::compose_settings_content(
+            state.section,
+            state.skill_center_tab,
+            content,
+            || self.render_deerflow_form_fields(theme, cx),
+        );
         body = body.child(self.render_deerflow_panel(content, theme, cx));
         body.into_any_element()
     }
@@ -3331,10 +3379,26 @@ impl Waku {
                 self.deerflow_settings.skill_browser.behavior = behavior;
                 self.deerflow_settings.skill_browser.review_stale = false;
             }
-            "proposal.approve" | "proposal.reject" | "proposal.rollback" => {
+            "proposal.source_review" => {
+                self.deerflow_settings.skill_browser.complete_mutation(request);
+                self.deerflow_settings.skill_browser.source_review_feedback = None;
+                let proposal = &data["proposal"];
+                self.deerflow_settings.proposal = Some(proposal.clone());
+                self.deerflow_settings.proposal_diff.update(cx, |input, cx| {
+                    input.set_content(proposal["diff"].as_str().unwrap_or("").to_owned(), cx);
+                });
+                self.deerflow_request("manage", json!({"operation":"proposal.get","proposal_id":proposal["id"]}), cx);
+                self.deerflow_settings.notice = Some("已基于当前目录提交新的候选；需检查新的审核结果并确认发布，旧批准不会转移。".into());
+            }
+            "proposal.approve" | "proposal.publish_retry" | "proposal.reject" | "proposal.rollback" => {
                 self.deerflow_settings
                     .skill_browser
                     .complete_mutation(request);
+                if matches!(operation, "proposal.approve" | "proposal.publish_retry") && data["proposal"]["status"] != "published" {
+                    self.deerflow_settings.proposal = Some(data["proposal"].clone());
+                    self.deerflow_settings.notice = Some(publication_state::notice(&data["proposal"]).into());
+                    return;
+                }
                 self.deerflow_settings.proposal = None;
                 self.deerflow_request(
                     "manage",
@@ -3343,7 +3407,7 @@ impl Waku {
                 );
                 self.deerflow_settings.notice = Some(
                     match operation {
-                        "proposal.approve" => "提案已批准并发布。",
+                        "proposal.approve" | "proposal.publish_retry" => publication_state::notice(&data["proposal"]),
                         "proposal.reject" => "提案已拒绝。",
                         _ => "技能版本已回滚，并创建了新修订记录。",
                     }
@@ -3659,8 +3723,11 @@ impl Waku {
         let query = if history_only {
             json!({"operation":"proposal.history","limit":20})
         } else {
-            if state.show_more { json!({"operation":"proposal.list","status":"pending_review","limit":20}) }
-            else { json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":20}) }
+            if state.show_more {
+                json!({"operation":"proposal.list","limit":20})
+            } else {
+                json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":20})
+            }
         };
         group = group.child(df_button(
             "df-review-refresh",
@@ -3672,16 +3739,18 @@ impl Waku {
             move |this, _, cx| this.deerflow_request("manage", query.clone(), cx),
         ));
         if !history_only {
-            group = group.child(df_button("df-review-waiting", if state.show_more { "收起后台等待候选" } else { "查看后台等待与证据草案" }, unavailable, state.show_more, theme, cx, |this, _, cx| {
+            group = group.child(df_button("df-review-waiting", if state.show_more { "仅查看待确认候选" } else { "查看全部候选与发布失败" }, unavailable, state.show_more, theme, cx, |this, _, cx| {
                 this.deerflow_settings.show_more = !this.deerflow_settings.show_more;
-                let query = if this.deerflow_settings.show_more { json!({"operation":"proposal.list","status":"pending_review","limit":20}) }
+                let query = if this.deerflow_settings.show_more { json!({"operation":"proposal.list","limit":20}) }
                     else { json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":20}) };
                 this.deerflow_request("manage", query, cx);
                 cx.notify();
             }));
             let mut visible = 0;
             for proposal in &state.proposals {
-                if proposal["disposition"]["needs_attention"] == false && !state.show_more { continue; }
+                if proposal["disposition"]["needs_attention"] == false && !state.show_more {
+                    continue;
+                }
                 visible += 1;
                 let id = proposal["id"].as_str().unwrap_or("").to_owned();
                 let title = format!(
@@ -3764,13 +3833,47 @@ impl Waku {
                     || state.skill_browser.review_stale
                     || state.skill_browser.mutations_pending()
                     || observed_state.as_u64().is_none_or(|v| v == 0);
-                let approve_disabled =
-                    disabled || proposal["status"].as_str() != Some("pending_review");
-                let reject_disabled = disabled
-                    || !matches!(
-                        proposal["status"].as_str(),
-                        Some("pending_review" | "validating")
-                    );
+                let (can_approve, can_reject) = publication_state::review_actions(proposal);
+                let approve_disabled = disabled || !can_approve;
+                let reject_disabled = disabled || !can_reject;
+                group = group.child(df_label("当前提案状态", publication_state::review_hint(proposal), theme));
+                if let Some((feedback_id, message)) = &state.skill_browser.source_review_feedback {
+                    if feedback_id == &id {
+                        group = group.child(df_label("本次目录审核未完成", message.clone(), theme));
+                    }
+                }
+                let refresh_id = id.clone();
+                group = group.child(df_button("df-proposal-refresh-detail", "刷新此提案", unavailable, false, theme, cx,
+                    move |this, _, cx| {
+                        this.deerflow_request("manage", json!({"operation":"proposal.get","proposal_id":refresh_id}), cx);
+                    }));
+                if !proposal["approval"].is_null() {
+                    group = group.child(df_label("批准与发布", publication_state::notice(proposal), theme));
+                }
+                if let Some(retry) = publication_state::retry_request(proposal) {
+                    group = group.child(df_button("df-proposal-resume", "重试原发布", disabled, false, theme, cx,
+                        move |this, _, cx| { this.deerflow_request("manage", retry.clone(), cx); }));
+                }
+                if publication_state::can_review_source(proposal) {
+                    let source_review = json!({"operation":"proposal.source_review","proposal_id":proposal["id"],
+                        "expected_state_version":observed_state,"request_key":Uuid::new_v4().to_string()});
+                    group = group.child(df_button("df-proposal-source-review", "审核当前目录版本…", disabled, false, theme, cx,
+                        move |this, _, cx| {
+                            this.deerflow_settings.confirm_manage = Some(("读取当前完整技能目录并创建新候选，重新执行内容检查，可能使用审核模型额度；不会覆盖文件或转移旧批准。".into(), source_review.clone()));
+                            cx.notify();
+                        }));
+                }
+                if let Some((description, request)) = state.confirm_manage.as_ref().filter(|(_, request)| publication_state::source_confirmation(proposal, request)) {
+                    let request = request.clone();
+                    group = group.child(df_group(theme)
+                        .child(df_label("创建新的审核候选？", description.clone(), theme))
+                        .child(df_label("此处确认的是送审，不是发布", "点击下方“确认读取并送审”才会提交请求。检查通过后需在新候选上确认发布；旧提案保持不可发布。", theme))
+                        .child(div().flex().flex_wrap().gap(px(6.0))
+                            .child(df_button("df-source-review-confirm", "确认读取并送审", disabled, false, theme, cx,
+                                move |this, _, cx| { this.deerflow_request("manage", request.clone(), cx); }))
+                            .child(df_button("df-source-review-cancel", "取消本次送审", unavailable, false, theme, cx,
+                                |this, _, cx| { this.deerflow_settings.confirm_manage = None; cx.notify(); }))));
+                }
                 group = group.child(div().flex().flex_none().flex_wrap().gap(px(6.0))
                 .child(df_button("df-proposal-approve", "确认发布", approve_disabled, false, theme, cx,
                     move |this, _, cx| {

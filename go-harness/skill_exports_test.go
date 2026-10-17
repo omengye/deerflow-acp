@@ -3,7 +3,6 @@ package deerflow
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +13,11 @@ import (
 
 func TestSkillManagedSourceSDKReviewExportAndRecovery(t *testing.T) {
 	workspace, cfg := skillFixture(t)
+	// A create publication requires an absent authoritative target, rather
+	// than hiding a pre-existing directory behind a database-only install.
+	if err := os.Rename(filepath.Join(cfg.Skills.Sources[0].Root, "research"), filepath.Join(workspace, "unbound-source")); err != nil {
+		t.Fatal(err)
+	}
 	cfg.Engine = engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
 		return harness.RunResult{}, nil
 	})
@@ -130,7 +134,7 @@ func TestSkillManagedSourceSDKReviewExportAndRecovery(t *testing.T) {
 	if err != nil || json.Unmarshal(data, &manifest) != nil || manifest.Head.Exists || manifest.Head.Enabled {
 		t.Fatalf("deleted view: %s %v", data, err)
 	}
-	if _, err := c.InstallSkill(ctx, "project", "research"); !errors.Is(err, harness.ErrPermissionDenied) {
-		t.Fatalf("disk recreated deleted managed skill: %v", err)
+	if _, err := c.InstallSkill(ctx, "project", "research"); err == nil {
+		t.Fatal("missing deleted directory loaded cached content")
 	}
 }

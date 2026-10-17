@@ -12,6 +12,7 @@ bridge/target/
 desktop/target/
 .deerflow-config/
 .build-cache/
+/.config-backups/
 .eggs/
 *.egg-info/
 pip-wheel-metadata/

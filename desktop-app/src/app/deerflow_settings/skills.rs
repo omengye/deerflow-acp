@@ -106,6 +106,7 @@ pub(super) struct SkillBrowser {
     selected: Option<CatalogDetail>,
     pub(super) catalog_stale: bool,
     pub(super) review_stale: bool,
+    pub(super) source_review_feedback: Option<(String, String)>,
     pub(super) proposal_nav: PageNav,
     pub(super) history_nav: PageNav,
     retry: Option<Value>,
@@ -141,6 +142,8 @@ fn mutation(request: &Value) -> bool {
                     | "proposal.approve"
                     | "proposal.reject"
                     | "proposal.rollback"
+                    | "proposal.source_review"
+                    | "proposal.publish_retry"
             )
         )
 }
@@ -202,6 +205,9 @@ impl SkillBrowser {
     }
 
     pub(super) fn begin(&mut self, request: &Value) {
+        if request["operation"] == "proposal.source_review" {
+            self.source_review_feedback = None;
+        }
         self.behavior_inspector.begin(request);
         self.generation.begin(request);
         self.feedback.begin(request);
@@ -216,6 +222,7 @@ impl SkillBrowser {
     }
 
     pub(super) fn transport_failed(&mut self, request: &Value) {
+        self.record_source_review_failure(request, "transport_unknown");
         if mutation(request) {
             self.retry = Some(request.clone());
         }
@@ -250,6 +257,7 @@ impl SkillBrowser {
     }
 
     fn backend_failed(&mut self, request: &Value, code: &str) {
+        self.record_source_review_failure(request, code);
         self.invalidate();
         if self.retry.as_ref() == Some(request)
             && matches!(
@@ -262,6 +270,11 @@ impl SkillBrowser {
                     | "unsupported_operation"
                     | "validation_failed"
                     | "resource_limit"
+                    | "target_content_differs"
+                    | "source_invalid_or_unavailable"
+                    | "source_unavailable"
+                    | "source_changed_while_reading"
+                    | "source_credentials_require_local_handling"
             )
         {
             self.retry = None;
@@ -345,6 +358,14 @@ impl SkillBrowser {
 
     pub(super) fn mutations_pending(&self) -> bool {
         self.retry.is_some()
+    }
+
+    fn record_source_review_failure(&mut self, request: &Value, code: &str) {
+        if request["operation"] == "proposal.source_review" {
+            if let Some(id) = request["proposal_id"].as_str() {
+                self.source_review_feedback = Some((id.to_owned(), publication_state::source_review_error(code).into()));
+            }
+        }
     }
 
     pub(super) fn abandon_retry(&mut self) {
@@ -467,6 +488,19 @@ impl SkillBrowser {
 }
 
 pub(super) fn proposal_disposition_label(proposal: &Value) -> &str {
+    match proposal["publication"]["state"].as_str() {
+        Some("blocked") => return "已批准 · 发布被阻止",
+        Some("approved_pending") => return "已批准 · 待发布",
+        Some("needs_reconciliation" | "publishing") => return "已批准 · 发布待恢复",
+        Some("published") => return "已发布",
+        _ => {}
+    }
+    match proposal["status"].as_str() {
+        Some("stale") => return "状态冲突 · 未发布",
+        Some("failed") => return "处理失败 · 未发布",
+        Some("rejected") => return "已拒绝",
+        _ => {}
+    }
     match proposal["disposition"]["reason"].as_str() {
         Some("waiting_evidence") => "等待独立证据 · 可自愿提前审核",
         Some("automatic_checks") => "后台检查中",
@@ -763,6 +797,28 @@ impl Waku {
         if envelope["ok"] != true {
             self.deerflow_settings.confirm_manage = None;
             let code = envelope["code"].as_str().unwrap_or("");
+            let saved = &envelope["data"]["proposal"];
+            let approval_version = if request["operation"] == "proposal.publish_retry" {
+                &request["expected_approval_version"]
+            } else {
+                &request["expected_state_version"]
+            };
+            if matches!(request["operation"].as_str(), Some("proposal.approve" | "proposal.publish_retry"))
+                && saved["id"] == request["proposal_id"]
+                && saved["state_version"].as_u64().is_some_and(|v| v > 0)
+                && saved["approval"]["review"]["ExpectedStateVersion"] == *approval_version
+                && saved["publication"]["state"].is_string()
+            {
+                let mut updated = saved.clone();
+                if let Some(old) = &self.deerflow_settings.proposal {
+                    if old["id"] == saved["id"] { updated["diff"] = old["diff"].clone(); }
+                }
+                self.deerflow_settings.skill_browser.complete_mutation(request);
+                self.deerflow_settings.notice = Some(publication_state::notice(&updated).into());
+                self.deerflow_settings.proposal = Some(updated);
+                self.deerflow_request("manage", json!({"operation":"proposal.get","proposal_id":saved["id"]}), cx);
+                return;
+            }
             if request["operation"] == "proposal.behavior" && code == "not_found" {
                 match self
                     .deerflow_settings
@@ -803,6 +859,10 @@ impl Waku {
                     "当前服务不支持此技能管理操作，请使用配套的 Eino Go 服务。"
                 }
                 "not_found" => "技能或提案已不存在，请刷新目录。",
+                "target_content_differs" => "目标目录与候选不一致。保留全部文件，基于当前目录创建新的审核版本。",
+                "source_invalid_or_unavailable" | "source_unavailable" => "源目录无法安全读取或结构无效；未覆盖任何文件。",
+                "source_changed_while_reading" => "读取期间源文件发生变化，请待编辑完成后重新核对。",
+                "source_credentials_require_local_handling" => "目录含疑似凭据，未发送给审核模型，也未修改文件。请将凭据改为外部环境配置后重新审核；不要直接删除原配置。",
                 _ => envelope["error"]
                     .as_str()
                     .unwrap_or("技能管理失败，请刷新状态后重试。"),
@@ -1365,15 +1425,26 @@ fn validate_review_result(request: &Value, data: &Value) -> anyhow::Result<()> {
                 && data["revision"]["version"].as_u64().is_some_and(|v| v > 0),
             "回滚结果与请求不一致"
         );
+    } else if request["operation"] == "proposal.source_review" {
+        anyhow::ensure!(data["proposal"]["id"].as_str().is_some_and(|id| !id.is_empty())
+            && data["proposal"]["action"] == "create"
+            && data["proposal"]["state_version"].as_u64().is_some_and(|v| v > 0), "目录审核结果无效");
     } else {
-        let expected_status = if request["operation"] == "proposal.approve" {
+        let publishing = matches!(request["operation"].as_str(), Some("proposal.approve" | "proposal.publish_retry"));
+        if request["operation"] == "proposal.publish_retry" {
+            anyhow::ensure!(data["proposal"]["approval"]["review"]["ExpectedStateVersion"] == request["expected_approval_version"], "发布重试结果与原批准不一致");
+        }
+        let expected_status = if publishing {
             "published"
         } else {
             "rejected"
         };
         anyhow::ensure!(
             data["proposal"]["id"] == request["proposal_id"]
-                && data["proposal"]["status"] == expected_status
+                && (data["proposal"]["status"] == expected_status
+                    || (publishing
+                        && data["proposal"]["status"] == "publishing"
+                        && data["proposal"]["file_publication_pending"] == true))
                 && data["proposal"]["state_version"]
                     .as_u64()
                     .is_some_and(|v| v > 0),
@@ -1386,6 +1457,45 @@ fn validate_review_result(request: &Value, data: &Value) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_review_failure_stays_local_without_enabling_old_proposal() {
+        let request = json!({"operation":"proposal.source_review","proposal_id":"p_old","expected_state_version":3,"request_key":"one"});
+        let mut browser = SkillBrowser::default();
+        browser.begin(&request);
+        browser.backend_failed(&request, "source_credentials_require_local_handling");
+        assert!(!browser.mutations_pending());
+        assert!(browser.review_stale);
+        let (id, message) = browser.source_review_feedback.as_ref().unwrap();
+        assert_eq!(id, "p_old");
+        assert!(message.contains("未创建新候选"));
+        assert!(message.contains("凭据"));
+        browser.begin(&json!({"operation":"proposal.get","proposal_id":"p_old"}));
+        assert!(browser.source_review_feedback.is_some());
+        browser.begin(&request);
+        assert!(browser.source_review_feedback.is_none());
+        browser.transport_failed(&request);
+        assert!(browser.mutations_pending());
+        assert!(browser.source_review_feedback.as_ref().unwrap().1.contains("原请求"));
+    }
+
+    #[test]
+    fn publication_results_separate_pending_from_completed() {
+        let request = json!({"operation":"proposal.publish_retry","proposal_id":"p_one","expected_approval_version":2});
+        let mut result = json!({"catalog_version":5,"proposal":{"id":"p_one","status":"publishing","state_version":3,"file_publication_pending":true,"approval":{"review":{"ExpectedStateVersion":2}}}});
+        validate_review_result(&request, &result).unwrap();
+        result["proposal"]["file_publication_pending"] = json!(false);
+        assert!(validate_review_result(&request, &result).is_err());
+        result["proposal"]["status"] = json!("published");
+        validate_review_result(&request, &result).unwrap();
+        result["proposal"]["approval"]["review"]["ExpectedStateVersion"] = json!(3);
+        assert!(validate_review_result(&request, &result).is_err());
+        let source = json!({"operation":"proposal.source_review","proposal_id":"p_old"});
+        result["proposal"]["action"] = json!("create");
+        validate_review_result(&source, &result).unwrap();
+        assert!(mutation(&source));
+        assert!(mutation(&request));
+    }
 
     #[test]
     fn deerflow_generation_transport_failure_retains_original_mutation() {

@@ -315,8 +315,8 @@ func nativeLearningPipeline(t *testing.T, resolution bool) {
 				}
 			}
 			original, err := os.ReadFile(filepath.Join(workspace, "skills", "research", "SKILL.md"))
-			if err != nil || strings.Contains(string(original), nativeLearningInstruction) {
-				t.Fatal("evolution overwrote imported source files", err)
+			if err != nil || !strings.Contains(string(original), nativeLearningInstruction) {
+				t.Fatal("evolution did not publish to authoritative source files", err)
 			}
 		})
 	}

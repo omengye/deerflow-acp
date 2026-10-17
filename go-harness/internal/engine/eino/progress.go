@@ -84,7 +84,7 @@ func advanceProgress(s *progressState, messages []*schema.Message) {
 			start = i + 1
 			break
 		}
-		if m != nil && m.Role == schema.User && !isOutputContinuation(m) {
+		if m != nil && m.Role == schema.User && !isOutputContinuation(m) && !isGoalContinuation(m) {
 			start = i + 1
 			break
 		}

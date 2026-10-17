@@ -42,6 +42,9 @@ type Registry struct {
 	exportDone   chan struct{}
 	closeDone    chan struct{}
 	closeErr     error
+	objects      *os.Root
+	objectsPath  string
+	diagnostics  []harness.SkillFinding
 }
 
 // NewRegistry owns source directory handles, but never owns or closes db.
@@ -58,6 +61,7 @@ func NewRegistry(ctx context.Context, config harness.SkillsConfig, db *sql.DB) (
 		return nil, invalid("too many configured sources")
 	}
 	r := &Registry{db: db, sources: make(map[string]*source), limits: limits, closeDone: make(chan struct{})}
+	r.diagnostics = append([]harness.SkillFinding(nil), config.Diagnostics...)
 	for _, cfg := range config.Sources {
 		if !validName(cfg.ID) || r.sources[cfg.ID] != nil {
 			_ = r.Close()
@@ -99,6 +103,14 @@ func NewRegistry(ctx context.Context, config harness.SkillsConfig, db *sql.DB) (
 		return nil, invalid("managed sources require an explicit export root")
 	}
 	if err = r.migrate(ctx); err != nil {
+		_ = r.Close()
+		return nil, err
+	}
+	if err = r.migrateEdits(ctx); err != nil {
+		_ = r.Close()
+		return nil, err
+	}
+	if err = r.openObjects(ctx, config.SnapshotRoot); err != nil {
 		_ = r.Close()
 		return nil, err
 	}
@@ -237,6 +249,9 @@ func (r *Registry) Close() error {
 	if r.export != nil {
 		err = errors.Join(err, r.export.root.Close())
 	}
+	if r.objects != nil {
+		err = errors.Join(err, r.objects.Close())
+	}
 	r.closeErr = err
 	close(r.closeDone)
 	return err
@@ -260,24 +275,39 @@ func (r *Registry) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS df_skill_import_observations(source_key TEXT NOT NULL,name TEXT NOT NULL,import_version TEXT NOT NULL,import_directory TEXT NOT NULL,checked_at_ns INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(source_key,name))`,
 		`CREATE TABLE IF NOT EXISTS df_skill_exports(source_key TEXT NOT NULL,name TEXT NOT NULL,export_key TEXT NOT NULL,state_version INTEGER NOT NULL,head TEXT NOT NULL,status TEXT NOT NULL,view_directory TEXT NOT NULL,attempts INTEGER NOT NULL,error_code TEXT NOT NULL,updated_at TEXT NOT NULL,retry_after_ns INTEGER NOT NULL,PRIMARY KEY(source_key,name,export_key))`,
 		`CREATE TABLE IF NOT EXISTS df_skill_management_requests(source_key TEXT NOT NULL,name TEXT NOT NULL,request_key TEXT NOT NULL,operation TEXT NOT NULL,intent_hash TEXT NOT NULL,intent TEXT NOT NULL,applied_head TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(source_key,name,request_key))`,
+		`CREATE TABLE IF NOT EXISTS df_skill_object_root(id INTEGER PRIMARY KEY CHECK(id=1),directory TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS df_skill_file_objects(source_key TEXT NOT NULL,name TEXT NOT NULL,version TEXT NOT NULL,path TEXT NOT NULL,PRIMARY KEY(source_key,name,version,path))`,
+		`CREATE TABLE IF NOT EXISTS df_skill_source_status(source_key TEXT NOT NULL,name TEXT NOT NULL,directory TEXT NOT NULL,status TEXT NOT NULL,observed_version TEXT NOT NULL,error_code TEXT NOT NULL,PRIMARY KEY(source_key,name))`,
+		`CREATE TABLE IF NOT EXISTS df_skill_file_publications(source_key TEXT NOT NULL,name TEXT NOT NULL,payload BLOB NOT NULL,payload_sha TEXT NOT NULL,PRIMARY KEY(source_key,name))`,
+		`CREATE TABLE IF NOT EXISTS df_skill_file_publication_results(source_key TEXT NOT NULL,name TEXT NOT NULL,state_version INTEGER NOT NULL,status TEXT NOT NULL,actor TEXT NOT NULL,PRIMARY KEY(source_key,name,state_version))`,
+		`CREATE TABLE IF NOT EXISTS df_skill_creation_guards(source_key TEXT NOT NULL,name TEXT NOT NULL,PRIMARY KEY(source_key,name))`,
 	} {
 		if _, err = tx.ExecContext(ctx, q); err != nil {
 			return fmt.Errorf("skills schema: %w", err)
 		}
 	}
+	var proposals bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='df_skill_proposals')`).Scan(&proposals); err != nil {
+		return err
+	}
+	if proposals {
+		_, err = tx.ExecContext(ctx, `INSERT INTO df_skill_creation_guards SELECT source_key,name FROM df_skill_proposals WHERE json_extract(CAST(payload AS TEXT),'$.action')='create' AND status<>'published' ON CONFLICT DO NOTHING`)
+		if err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
-// Install copies one source-relative directory into an immutable SQL version.
+// Install binds and indexes one authoritative source-relative directory.
 // New installations are disabled; replacing an installation preserves its flag.
 // Old versions remain available for pinned checkpoints until explicit future GC.
 func (r *Registry) Install(ctx context.Context, sourceID, relativeDir string) (harness.SkillRecord, error) {
 	return r.install(ctx, sourceID, relativeDir, nil)
 }
 
-// InstallConfigured applies a startup import only while the installation is
-// externally managed. Published versions, enablement and tombstones survive
-// restart, including when the old source directory has disappeared.
+// InstallConfigured refreshes files on every startup. Explicit host enablement
+// survives; historical content never overrides a missing or modified source.
 func (r *Registry) InstallConfigured(ctx context.Context, sourceID, relativeDir string, enabled bool) error {
 	_, err := r.install(ctx, sourceID, relativeDir, &enabled)
 	return err
@@ -293,58 +323,15 @@ func (r *Registry) install(ctx context.Context, sourceID, relativeDir string, st
 	if s == nil {
 		return harness.SkillRecord{}, denied("source is not configured")
 	}
-	if s.managed {
-		return harness.SkillRecord{}, denied("managed sources accept reviewed publications, never filesystem imports")
-	}
 	if relativeDir != "." && !validRelative(relativeDir) {
 		return harness.SkillRecord{}, invalid("installation directory must be a safe relative path")
 	}
-	if startupEnabled != nil {
-		var managed bool
-		if err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_control WHERE source_key=? AND import_directory=? AND managed=1)`, s.identity, relativeDir).Scan(&managed); err != nil {
+	if startupEnabled == nil {
+		if _, err := r.readPackage(ctx, s, relativeDir); err != nil {
 			return harness.SkillRecord{}, err
 		}
-		if managed {
-			return harness.SkillRecord{}, nil
-		}
 	}
-	p, err := r.readPackage(ctx, s, relativeDir)
-	if err != nil {
-		return harness.SkillRecord{}, err
-	}
-	var head SkillHead
-	err = r.withPublication(ctx, s, p.meta.Name, func(tx *PublicationTx) error {
-		var err error
-		head, err = tx.Current()
-		if err != nil {
-			return err
-		}
-		if head.Managed {
-			if startupEnabled != nil {
-				return nil
-			}
-			return ErrManagedSkill
-		}
-		version, err := tx.stagePackage(p)
-		if err != nil {
-			return err
-		}
-		enabled := head.Enabled
-		if startupEnabled != nil {
-			enabled = *startupEnabled
-		}
-		if head.Version != version || head.Enabled != enabled {
-			head, err = tx.moveHead(head, version, enabled, false, version, relativeDir)
-			return err
-		}
-		// Record the first configured directory after upgrading a legacy DB.
-		_, err = tx.tx.ExecContext(ctx, `UPDATE df_skill_control SET last_import_version=?,import_directory=? WHERE source_key=? AND name=?`, version, relativeDir, s.identity, p.meta.Name)
-		return err
-	})
-	if err != nil {
-		return harness.SkillRecord{}, err
-	}
-	return harness.SkillRecord{Ref: harness.SkillRef{SourceID: sourceID, SourceIdentity: s.identity, Name: p.meta.Name, Version: head.Version, Hash: head.Version}, Description: p.meta.Description, Scope: s.config.Scope, Workspace: s.config.Workspace, Enabled: head.Enabled, FileCount: len(p.files), TotalBytes: p.bytes, InstalledAt: time.Now().UTC(), Findings: p.meta.Findings, Builtin: s.builtin, Managed: head.Managed, StateVersion: head.StateVersion}, nil
+	return r.installAuthoritative(ctx, s, relativeDir, startupEnabled)
 }
 
 func (r *Registry) SetEnabled(ctx context.Context, sourceID, name string, enabled bool) error {
@@ -372,7 +359,7 @@ func (r *Registry) Delete(ctx context.Context, sourceID, name string) error {
 		if !h.Exists {
 			return harness.ErrNotFound
 		}
-		_, err = tx.moveHead(h, "", false, h.Managed, "", "")
+		_, err = tx.Publish("", h, false)
 		return err
 	})
 }

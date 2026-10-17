@@ -20,7 +20,7 @@ fn approval_value(mode: RuntimeMode) -> Option<&'static str> {
 fn approval_runtime_mode(value: &str) -> Option<RuntimeMode> {
     match value {
         "allow_always" | "off" => Some(RuntimeMode::FullAccess),
-        "ask" | "reject_always" | "read_only" => Some(RuntimeMode::Ask),
+        "global" | "ask" | "reject_always" | "read_only" => Some(RuntimeMode::Ask),
         _ => None,
     }
 }
@@ -182,6 +182,7 @@ impl Waku {
         let disabled = confirmed == Some("off");
         let rejecting = confirmed == Some("reject_always");
         let read_only = confirmed == Some("read_only");
+        let global = confirmed == Some("global");
         let label = if pending {
             "切换权限中…".to_owned()
         } else {
@@ -189,6 +190,7 @@ impl Waku {
                 Some("off") => "Full Access · 服务关闭审批",
                 Some("reject_always") => "拒绝受控操作",
                 Some("read_only") => "只读 · 仅允许本地查看",
+                Some("global") => "继承全局工具策略",
                 Some("ask") => "Ask · 操作前确认",
                 Some("allow_always") => "Full Access",
                 _ if session.runtime_mode == RuntimeMode::Ask => "Ask · 操作前确认",
@@ -207,9 +209,10 @@ impl Waku {
             .and_then(approval_runtime_mode)
             .unwrap_or(session.runtime_mode);
         dropdown_menu(
-            MenuChip::new("deerflow-tool-approval")
+            super::composer::composer_menu_chip("deerflow-tool-approval")
                 .icon(selected_mode.icon(), theme.text_tertiary)
-                .label(label)
+                .label(label.clone())
+                .tooltip(Tooltip::text(label))
                 .selected(handle.is_open()),
             "deerflow-tool-approval-menu",
             &handle,
@@ -228,7 +231,13 @@ impl Waku {
                         MenuItem::new(label, move |_, cx| {
                             let _ = weak.update(cx, |this, cx| this.set_runtime_mode(mode, cx));
                         })
-                        .selected(!disabled && !rejecting && !read_only && selected_mode == mode)
+                        .selected(
+                            !disabled
+                                && !rejecting
+                                && !read_only
+                                && !global
+                                && selected_mode == mode,
+                        )
                         .disabled(busy || pending || disabled),
                     );
                 }
@@ -250,5 +259,15 @@ impl Waku {
                 items
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_approval_is_not_full_access() {
+        assert_eq!(approval_runtime_mode("global"), Some(RuntimeMode::Ask));
     }
 }

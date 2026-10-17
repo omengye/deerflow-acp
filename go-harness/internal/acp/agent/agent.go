@@ -186,6 +186,10 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		a.capabilities = req.ClientCapabilities
 		httpMCP, sseMCP := a.service.MCPCapabilities()
 		response := map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": a.service.ImageInputEnabled(), "audio": false, "embeddedContext": a.service.Assets != nil}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}, "delete": map[string]any{}}}, "_meta": map[string]any{"deerflow": map[string]any{"toolReceipts": receiptCapabilities(), "history": map[string]any{"version": 1, "listMethod": historyListMethod}, "artifacts": map[string]any{"version": 1, "listMethod": listArtifactsMethod}}}}
+		response["_meta"].(map[string]any)["deerflow"].(map[string]any)["goals"] = map[string]any{"version": 1, "command": "/goal", "maxAutoContinuations": 3}
+		if a.service.Assets != nil {
+			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["documents"] = map[string]any{"version": 1, "formats": []string{"pdf", "docx", "xlsx", "csv", "tsv"}, "maxDocumentBytes": 8 << 20, "maxDocumentTotalBytes": 16 << 20, "pdfDependency": "pdftotext", "ocr": false}
+		}
 		if a.service.Memory != nil {
 			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["memory"] = memoryCapabilities(a.service.MemoryUserID != "", a.service.MemoryGlobalID != "")
 		}

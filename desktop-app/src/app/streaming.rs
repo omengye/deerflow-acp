@@ -294,6 +294,7 @@ impl Waku {
                 models,
                 model,
                 reasoning_effort,
+                thinking_mode,
             } => {
                 runtime.deerflow_options_pending = false;
                 if let Some(probe) = self
@@ -306,6 +307,7 @@ impl Waku {
                 if let Some(session) = self.state.session_mut(session_id) {
                     session.model = model;
                     session.reasoning_effort = reasoning_effort;
+                    session.thinking_mode = thinking_mode;
                 }
                 if self.state.selected_session == Some(session_id) {
                     self.remember_selected_model_traits();

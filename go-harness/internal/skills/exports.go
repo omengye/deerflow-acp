@@ -71,6 +71,11 @@ func (r *Registry) ReconcileExports(ctx context.Context, retryFailed bool) error
 				return errors.New("skill export target is inconsistent")
 			}
 			err = r.withPublication(ctx, s, name, func(tx *PublicationTx) error {
+				if pending, e := publicationPending(ctx, tx.SQL(), s.identity, name); e != nil {
+					return e
+				} else if pending {
+					return nil
+				}
 				head, err := tx.Current()
 				if err != nil {
 					return err

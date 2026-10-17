@@ -46,13 +46,17 @@ cp -- "$repo_root/bridge/target/$profile/deerflow-acp" "$output_root/deerflow-ac
   go build -trimpath -p=2 -o "$output_root/deerflow-acpd" ./cmd/deerflow-acpd-go
   go build -trimpath -p=2 -o "$output_root/deerflow-acp-go" ./cmd/deerflow-acp-go
   go build -trimpath -p=2 -o "$output_root/deerflow-skill-go" ./cmd/deerflow-skill-go
+  go build -trimpath -p=2 -o "$output_root/deerflow-control-go" ./cmd/deerflow-control-go
+  go build -trimpath -p=2 -o "$output_root/deerflow-channel-wechat" ./cmd/deerflow-channel-wechat
 )
 cp -- "$repo_root/LICENSE" "$output_root/LICENSE.txt"
 cp -- "$repo_root/docs/go-acp-portable.md" "$output_root/README.md"
 cp -- "$repo_root/docs/harness-reliability-20261012.md" "$output_root/harness-reliability-20261012.md"
 cp -- "$repo_root/docs/skill-business-suites.md" "$output_root/skill-business-suites.md"
+cp -- "$repo_root/docs/deerflow-capabilities.md" "$output_root/deerflow-capabilities.md"
+cp -- "$repo_root/docs/channel-plugins.md" "$output_root/channel-plugins.md"
 cp -r -- "$repo_root/resources/skill-behavior" "$output_root/skill-behavior"
-for binary in deerflow-acp deerflow-acpd deerflow-acp-go deerflow-skill-go; do
+for binary in deerflow-acp deerflow-acpd deerflow-acp-go deerflow-skill-go deerflow-control-go deerflow-channel-wechat; do
   if [[ ! -s "$output_root/$binary" || ! -x "$output_root/$binary" ]]; then
     echo "Package binary is missing, empty, or not executable: $binary" >&2
     exit 1

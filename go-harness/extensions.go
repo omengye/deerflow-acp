@@ -381,6 +381,15 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		if injectMemory(cfg) {
 			out.InstructionAppend = memoryInstruction(state.Memory)
 		}
+		if len(state.Skills) > 0 {
+			out.InstructionAppend += "\n\nHost skill snapshot for THIS execution (earlier skill/tool outputs in conversation history are historical, not the current installation). Reload the skill and referenced files through the skill tools before relying on earlier skill content. The bound source directory determines each ordinary new turn; explicit resume retains this snapshot:\n"
+			for _, ref := range state.Skills {
+				out.InstructionAppend += fmt.Sprintf("- %s source=%s version=%s\n", ref.Name, ref.SourceID, ref.Version)
+			}
+		}
+		if warnings := snapshot.SourceWarnings(); warnings != "" {
+			out.InstructionAppend += "\n\nHost skill availability (do not substitute historical database contents):\n" + warnings
+		}
 		if memoryStore != nil && cfg.MemoryExtraction {
 			out.PostRunFactory = memoryPostRunFactory(memoryStore, req, cfg.MemoryUserID, cfg.MemoryScope, state.Memory)
 		}
@@ -413,6 +422,13 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		}
 		if len(state.Skills) > 0 {
 			out.Tools = append(out.Tools, snapshot.ReadFileTool())
+			if req.RootBudgetID == "" || req.RootBudgetID == req.RunID {
+				installed, toolErr := newInstalledSkillTools(registry, req, state.Skills, !readOnly && cfg.ToolPolicy.Allows("skill_edit"))
+				if toolErr != nil {
+					return out, toolErr
+				}
+				out.Tools = append(out.Tools, installed...)
+			}
 		}
 		if !readOnly && len(cfg.SkillProposalSources) > 0 && cfg.ToolPolicy.Allows("skill_manage") {
 			manage, toolErr := newSkillManageTool(ctx, cfg, registry, req, state.Skills)
@@ -421,6 +437,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			}
 			if manage != nil {
 				out.Tools = append(out.Tools, manage)
+				out.InstructionAppend += "\n\nSkill authoring: read the current skill-creator before creating or publishing skills. Check the tool's candidate restrictions before choosing dependencies. Submit complete packages with skill_manage; filesystem drafts belong outside live skill roots. Do not write registry databases or use shell/SQL as a fallback after rejection. Report draft, pending review, published and availability-verified states separately. Only host results can establish publication and next-turn availability; never infer them from a script exit code or printed success message."
 			}
 		}
 		out.ModelToolFactory = func(ctx context.Context, model string) ([]tool.BaseTool, error) {

@@ -19,6 +19,9 @@ func TestDeploymentPermissionPrecedesSessionApprovalChoice(t *testing.T) {
 		{harness.PermissionModeAll, harness.ApprovalRejectAlways, harness.RejectOnce, true},
 		{harness.PermissionModeAll, harness.ApprovalAllowAlways, harness.AllowOnce, true},
 		{harness.PermissionModeAll, harness.ApprovalAsk, "", false},
+		{harness.PermissionModeOff, harness.ApprovalGlobal, harness.AllowOnce, true},
+		{harness.PermissionModeDangerous, harness.ApprovalGlobal, harness.AllowOnce, true},
+		{harness.PermissionModeAll, harness.ApprovalGlobal, "", false},
 	} {
 		s := &Service{PermissionMode: tc.mode}
 		got, handled := s.configuredPermission(harness.Session{ApprovalMode: tc.approval}, request)
@@ -36,5 +39,23 @@ func TestDeploymentPermissionPrecedesSessionApprovalChoice(t *testing.T) {
 	got, handled := readOnly.configuredPermission(harness.Session{ApprovalMode: harness.ApprovalReadOnly}, harness.PermissionRequest{ToolName: "write_file"})
 	if !handled || got != harness.RejectOnce {
 		t.Fatalf("deployment off bypassed Go read-only mode: %s %t", got, handled)
+	}
+}
+
+func TestGlobalApprovalPreservesRestrictedToolsAndExplicitEdits(t *testing.T) {
+	for _, mode := range []harness.PermissionMode{harness.PermissionModeOff, harness.PermissionModeDangerous, harness.PermissionModeAll} {
+		s := &Service{PermissionMode: mode}
+		x := harness.Session{ApprovalMode: harness.ApprovalGlobal}
+		for _, name := range []string{"skill", "skill_inspect", "list_directory", "bash", "web_fetch", "write_file", "skill_edit"} {
+			got, handled := s.configuredPermission(x, harness.PermissionRequest{ToolName: name})
+			wantAllowed := name != "skill_edit" && !mode.RequiresPermission(name)
+			if handled != wantAllowed || (handled && got != harness.AllowOnce) {
+				t.Errorf("mode=%s tool=%s decision=%s handled=%t", mode, name, got, handled)
+			}
+		}
+		x.Mode = "plan"
+		if got, handled := s.configuredPermission(x, harness.PermissionRequest{ToolName: "bash"}); !handled || got != harness.RejectOnce {
+			t.Errorf("global policy bypassed plan mode: %s %s %t", mode, got, handled)
+		}
 	}
 }

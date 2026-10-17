@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -49,6 +51,10 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 			}
 			if mode == "managed-create" {
 				cfg.Skills.Install = nil
+				cfg.Skills.Sources[0].Root = filepath.Join(workspace, "generated")
+				if err := os.MkdirAll(cfg.Skills.Sources[0].Root, 0700); err != nil {
+					t.Fatal(err)
+				}
 				cfg.Skills.ManagedSources = []string{"project"}
 				cfg.Skills.ExportRoot = cfg.Skills.Sources[0].Root
 			}
@@ -151,7 +157,7 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 						args = `{"action":"create","source":"project","name":"unregistered","reason":"New reusable steps","content":"---\nname: unregistered\ndescription: New skill\n---\nFollow the steps."}`
 					}
 					if mode == "managed-create" {
-						data, _ := json.Marshal(map[string]string{"action": "create", "source": "project", "name": "research", "reason": "New reusable steps", "content": "---\nname: research\ndescription: New skill\n---\nFollow the reviewed steps."})
+						data, _ := json.Marshal(map[string]any{"action": "create", "source": "project", "name": "research", "reason": "New reusable steps", "files": map[string]string{"SKILL.md": "---\nname: research\ndescription: New skill\n---\nFollow the reviewed steps.", "assets/example.json": "{\"format\":\"markdown\"}"}})
 						args = string(data)
 					}
 					skillToolResponse(w, request.Stream, "skill_manage", args, "")
@@ -327,8 +333,12 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, receipt := range receipts {
-				if receipt.ToolName == "skill_manage" && receipt.State != harness.ReceiptCompleted {
-					t.Fatalf("candidate became uncertain: %+v", receipt)
+				want := harness.ReceiptCompleted
+				if mode == "builtin-create" || mode == "hidden-role-skill" {
+					want = harness.ReceiptNotExecuted
+				}
+				if receipt.ToolName == "skill_manage" && receipt.State != want {
+					t.Fatalf("candidate receipt=%s want=%s: %+v", receipt.State, want, receipt)
 				}
 			}
 		})

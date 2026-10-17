@@ -24,6 +24,7 @@ type toolMiddleware struct {
 	sink            *eventSink
 	permissions     harness.PermissionHandler
 	protected       map[string]bool
+	preparers       map[string]harness.ToolArgumentPreparer
 	policy          *harness.ToolPolicy
 	permissionMode  harness.PermissionMode
 	readOnly        bool
@@ -265,7 +266,7 @@ func (m *toolMiddleware) nativeDelegation(tc *adk.ToolContext) bool {
 }
 
 func (m *toolMiddleware) requiresPermission(name string) bool {
-	return m.protected[name] || (m.policy != nil && (m.readOnly || m.permissionMode.RequiresPermission(name)))
+	return name == "skill_edit" || m.protected[name] || (m.policy != nil && (m.readOnly || m.permissionMode.RequiresPermission(name)))
 }
 
 func (m *toolMiddleware) askPermission(ctx context.Context, request harness.PermissionRequest) (harness.PermissionDecision, error) {
@@ -346,6 +347,21 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 			return "", err
 		}
 		defer finish()
+		if prepare := m.preparers[tc.Name]; prepare != nil {
+			args, err = prepare.PrepareToolArguments(ctx, args)
+			if err != nil {
+				// Invalid native arguments may contain secrets. Never persist or
+				// request approval for the rejected raw payload.
+				failure := harness.MarkToolNotExecuted(errors.New("Installed skill request rejected before execution; inspect the visible skill and submit bounded non-secret edits. " + safePreparationError(err)))
+				if e := m.sink.emit(ctx, harness.RunEvent{Kind: "tool_start", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "pending", Arguments: json.RawMessage(`{}`)}); e != nil {
+					return "", e
+				}
+				if e := m.finish(ctx, tc, nil, failure); e != nil {
+					return "", e
+				}
+				return failedToolModelText("", failure), nil
+			}
+		}
 		if err := m.start(ctx, tc, args); err != nil {
 			if isPermissionInterrupt(err) {
 				return "", err
@@ -450,6 +466,9 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 		}
 		if tc.Name == "skill_manage" {
 			ctx = context.WithValue(ctx, skillReviewRuntimeKey{}, &skillReviewRuntime{budget: m.budget, io: m.io, sink: m.sink})
+		}
+		if tc.Name == "skill_edit" {
+			ctx = context.WithValue(ctx, confirmedToolKey{}, confirmedTool{tc.Name, args})
 		}
 		output, toolErr := next(ctx, args, opts...)
 		var settleErr error

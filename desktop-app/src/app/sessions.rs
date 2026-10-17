@@ -1,5 +1,18 @@
 use super::*;
 
+fn permission_response_allowed(
+    permission: Option<&PendingPermission>,
+    request_id: &str,
+    option_id: &str,
+) -> Option<bool> {
+    let permission = permission.filter(|permission| permission.request_id == request_id)?;
+    permission
+        .options
+        .iter()
+        .find(|option| option.id == option_id)
+        .map(|option| option.allow)
+}
+
 fn retain_runtime_after_cancel(provider: ProviderKind) -> bool {
     // Codex's app-server owns the Computer Use process tree, and Amp offers no
     // interrupt on its stream — stopping it means ending the process. Both
@@ -956,6 +969,17 @@ impl Waku {
         self.remember_selected_model_traits();
         let (reasoning_effort, service_tier, context_window) =
             self.state.model_traits_for(provider, &model);
+        let thinking_mode = self
+            .provider_probe(provider)
+            .and_then(|probe| probe.models.iter().find(|entry| entry.id == model))
+            .filter(|entry| {
+                provider == ProviderKind::DeerFlow
+                    && entry
+                        .thinking_modes
+                        .iter()
+                        .any(|option| option.id == "default")
+            })
+            .map(|_| "default".to_owned());
         if let Some(session) = self.selected_session_mut() {
             session.provider = provider;
             session.model = Some(model.clone());
@@ -963,6 +987,7 @@ impl Waku {
                 session.agent_preset = None;
             }
             session.reasoning_effort.clone_from(&reasoning_effort);
+            session.thinking_mode = thinking_mode;
             session.service_tier.clone_from(&service_tier);
             session.context_window.clone_from(&context_window);
             self.state.last_provider = provider;
@@ -1109,6 +1134,45 @@ impl Waku {
         }
     }
 
+    pub(super) fn set_thinking_mode(&mut self, mode: String, cx: &mut Context<Self>) {
+        if self.block_during_deerflow_approval(cx) {
+            return;
+        }
+        let Some(session) = self.selected_session() else {
+            return;
+        };
+        if session.provider != ProviderKind::DeerFlow {
+            return;
+        }
+        if session.is_busy()
+            || self.submission_preparations.contains(&session.id)
+            || self.goal_runtime_starts.contains(&session.id)
+            || self
+                .runtimes
+                .get(&session.id)
+                .is_some_and(|runtime| runtime.deerflow_options_pending)
+        {
+            self.show_toast("请等待当前操作结束后再切换思考模式。");
+            cx.notify();
+            return;
+        }
+        if !self
+            .model_metadata_for_session(session)
+            .is_some_and(|model| model.thinking_modes.iter().any(|option| option.id == mode))
+        {
+            self.show_toast("此模型或后台版本不支持该思考模式。");
+            cx.notify();
+            return;
+        }
+        if let Some(session) = self.selected_session_mut() {
+            let id = session.id;
+            session.thinking_mode = Some(mode);
+            self.apply_session_options(id, cx);
+            self.save();
+            cx.notify();
+        }
+    }
+
     pub(super) fn set_reasoning_effort(&mut self, effort: String, cx: &mut Context<Self>) {
         if self.block_during_deerflow_approval(cx) {
             return;
@@ -1116,10 +1180,14 @@ impl Waku {
         if self.selected_session().is_some_and(|session| {
             session.provider == ProviderKind::DeerFlow
                 && (session.is_busy()
+                    || self
+                        .runtimes
+                        .get(&session.id)
+                        .is_some_and(|runtime| runtime.deerflow_options_pending)
                     || self.submission_preparations.contains(&session.id)
                     || self.goal_runtime_starts.contains(&session.id))
         }) {
-            self.show_toast("请等待当前操作结束后再切换思考强度。");
+            self.show_toast("请等待当前操作结束后再切换推理强度。");
             cx.notify();
             return;
         }
@@ -1332,24 +1400,21 @@ impl Waku {
             .find(|session| session.id == session_id)
             .map(|session| session.provider.id());
         let decision = if let Some(runtime) = self.runtimes.get_mut(&session_id) {
-            let decision = runtime
-                .pending_permission
-                .as_ref()
-                .and_then(|permission| {
-                    permission
-                        .options
-                        .iter()
-                        .find(|option| option.id == option_id)
-                })
-                .map_or(
-                    "other",
-                    |option| if option.allow { "allow" } else { "deny" },
-                );
+            // Both surfaces share one request. A late click must not dismiss
+            // the next tool's approval or send a duplicate decision.
+            let Some(allow) = permission_response_allowed(
+                runtime.pending_permission.as_ref(),
+                &request_id,
+                &option_id,
+            ) else {
+                return;
+            };
+            let decision = if allow { "allow" } else { "deny" };
             runtime.driver.respond(request_id, option_id);
             runtime.pending_permission = None;
             Some(decision)
         } else {
-            None
+            return;
         };
         if let (Some(provider), Some(decision)) = (provider, decision) {
             self.analytics
@@ -1728,6 +1793,47 @@ impl Waku {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_response_requires_current_request_and_offered_option() {
+        let permission = PendingPermission {
+            request_id: "current-request".into(),
+            title: "write_file".into(),
+            detail: "report.md".into(),
+            options: vec![
+                waku_protocol::model::PermissionOption {
+                    id: "allow_once".into(),
+                    label: "Allow once".into(),
+                    allow: true,
+                },
+                waku_protocol::model::PermissionOption {
+                    id: "reject_once".into(),
+                    label: "Reject once".into(),
+                    allow: false,
+                },
+            ],
+        };
+        assert_eq!(
+            permission_response_allowed(Some(&permission), "current-request", "allow_once"),
+            Some(true)
+        );
+        assert_eq!(
+            permission_response_allowed(Some(&permission), "current-request", "reject_once"),
+            Some(false)
+        );
+        assert_eq!(
+            permission_response_allowed(Some(&permission), "previous-request", "allow_once"),
+            None
+        );
+        assert_eq!(
+            permission_response_allowed(Some(&permission), "current-request", "allow_always"),
+            None
+        );
+        assert_eq!(
+            permission_response_allowed(None, "current-request", "allow_once"),
+            None
+        );
+    }
 
     #[test]
     fn new_task_carries_the_current_tasks_access_mode() {

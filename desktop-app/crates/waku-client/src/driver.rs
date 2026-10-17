@@ -177,6 +177,7 @@ pub struct DriverStartOptions {
     pub mode: RuntimeMode,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub thinking_mode: Option<String>,
     pub service_tier: Option<String>,
     pub context_window: Option<String>,
     pub agent_preset: Option<String>,
@@ -189,6 +190,7 @@ pub struct SessionOptions {
     pub mode: RuntimeMode,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub thinking_mode: Option<String>,
     pub service_tier: Option<String>,
     pub context_window: Option<String>,
 }

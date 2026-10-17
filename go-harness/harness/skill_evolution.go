@@ -61,34 +61,49 @@ type SkillTrigger struct {
 }
 
 type SkillProposal struct {
-	ID                string                  `json:"id"`
-	Status            string                  `json:"status"`
-	StateVersion      int64                   `json:"state_version"`
-	Action            string                  `json:"action"`
-	SkillName         string                  `json:"skill_name"`
-	Target            SkillTarget             `json:"target"`
-	Base              SkillHead               `json:"base"`
-	OverlayBase       *SkillRef               `json:"overlay_base,omitempty"`
-	CandidateVersion  string                  `json:"candidate_sha256,omitempty"`
-	Reason            string                  `json:"reason"`
-	Trigger           SkillTrigger            `json:"trigger"`
-	Origin            string                  `json:"origin"`
-	Author            string                  `json:"author"`
-	ChangedFiles      []string                `json:"changed_files"`
-	Diff              string                  `json:"diff,omitempty"`
-	Evaluation        SkillValidationReport   `json:"evaluation"`
-	EvaluationDigest  string                  `json:"evaluation_sha256,omitempty"`
-	CreatedAt         time.Time               `json:"created_at"`
-	UpdatedAt         time.Time               `json:"updated_at"`
-	ReviewedAt        *time.Time              `json:"reviewed_at,omitempty"`
-	ReviewNote        string                  `json:"review_note,omitempty"`
-	ReviewedBy        string                  `json:"reviewed_by,omitempty"`
-	PublishedRevision int64                   `json:"published_revision,omitempty"`
-	BehaviorJobID     string                  `json:"behavior_job_id,omitempty"`
-	Error             string                  `json:"error,omitempty"`
-	ValidationFailure *SkillValidationFailure `json:"validation_failure,omitempty"`
+	Approval               *SkillApproval          `json:"approval,omitempty"`
+	PublicationError       string                  `json:"publication_error,omitempty"`
+	FilePublicationPending bool                    `json:"file_publication_pending,omitempty"`
+	ID                     string                  `json:"id"`
+	Status                 string                  `json:"status"`
+	StateVersion           int64                   `json:"state_version"`
+	Action                 string                  `json:"action"`
+	SkillName              string                  `json:"skill_name"`
+	Target                 SkillTarget             `json:"target"`
+	Base                   SkillHead               `json:"base"`
+	OverlayBase            *SkillRef               `json:"overlay_base,omitempty"`
+	CandidateVersion       string                  `json:"candidate_sha256,omitempty"`
+	Reason                 string                  `json:"reason"`
+	Trigger                SkillTrigger            `json:"trigger"`
+	Origin                 string                  `json:"origin"`
+	Author                 string                  `json:"author"`
+	ChangedFiles           []string                `json:"changed_files"`
+	Diff                   string                  `json:"diff,omitempty"`
+	Evaluation             SkillValidationReport   `json:"evaluation"`
+	EvaluationDigest       string                  `json:"evaluation_sha256,omitempty"`
+	CreatedAt              time.Time               `json:"created_at"`
+	UpdatedAt              time.Time               `json:"updated_at"`
+	ReviewedAt             *time.Time              `json:"reviewed_at,omitempty"`
+	ReviewNote             string                  `json:"review_note,omitempty"`
+	ReviewedBy             string                  `json:"reviewed_by,omitempty"`
+	PublishedRevision      int64                   `json:"published_revision,omitempty"`
+	BehaviorJobID          string                  `json:"behavior_job_id,omitempty"`
+	Error                  string                  `json:"error,omitempty"`
+	ValidationFailure      *SkillValidationFailure `json:"validation_failure,omitempty"`
 	// Read-only host projection; never authorizes publication or changes status.
 	Disposition *SkillProposalDisposition `json:"disposition,omitempty"`
+}
+
+// Approval is immutable evidence for one reviewed candidate, not proof that
+// publication completed or permission to adopt different source contents.
+type SkillApproval struct {
+	ProposalID       string      `json:"proposal_id"`
+	Target           SkillTarget `json:"target"`
+	Base             SkillHead   `json:"base"`
+	CandidateVersion string      `json:"candidate_version"`
+	EvaluationDigest string      `json:"evaluation_digest"`
+	Review           SkillReview `json:"review"`
+	CreatedAt        time.Time   `json:"created_at"`
 }
 
 type SkillProposalDisposition struct {
@@ -146,8 +161,9 @@ type SkillValidator interface {
 
 // Supply Files for a complete create/edit candidate, or use Content for a
 // SKILL.md create/edit while preserving existing support files. Patch is an
-// exact text replacement in SKILL.md. Support-file mutations never modify the
-// source directory and cannot replace SKILL.md. Nil differs from empty text.
+// exact text replacement in SKILL.md. Submitting never modifies the directory;
+// approved publication writes it. Support-file actions cannot replace SKILL.md.
+// Nil differs from empty text.
 type SkillProposalRequest struct {
 	SourceID, Name, RequestKey, Action, Reason, Author, Origin string
 	Base                                                       SkillHead
@@ -159,6 +175,7 @@ type SkillProposalRequest struct {
 }
 
 type SkillPublication struct {
+	FileStatus     string      `json:"file_status,omitempty"`
 	Action         string      `json:"action"`
 	Name           string      `json:"name"`
 	Target         SkillTarget `json:"target"`

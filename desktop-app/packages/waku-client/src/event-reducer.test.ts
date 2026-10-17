@@ -19,6 +19,17 @@ const SUBMISSION = {
   messageId: '20000000-0000-4000-8000-000000000002',
 }
 
+test('DeerFlow confirms thinking independently of the remembered effort', () => {
+  const session = apply(idleSession(), 'deerflowModelsChanged', {
+    model: 'fixture', reasoningEffort: 'high', thinkingMode: 'off', models: [],
+  })
+  expect(session.model).toBe('fixture')
+  expect(session.reasoning_effort).toBe('high')
+  expect(session.thinking_mode).toBe('off')
+  const legacy = apply(session, 'deerflowModelsChanged', { model: 'fixture', reasoningEffort: 'high' })
+  expect(legacy.thinking_mode).toBeNull()
+})
+
 describe('promptSubmitted', () => {
   test('a client following the runtime mirrors another client’s submission under its ids', () => {
     // The desktop stayed attached to the idle runtime after the first turn;

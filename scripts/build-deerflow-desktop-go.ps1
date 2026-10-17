@@ -45,6 +45,8 @@ $goDaemonBinary = Join-Path $goBinaryRoot "deerflow-acpd.exe"
 $goConfigBinary = Join-Path $goBinaryRoot "deerflow-config-go.exe"
 $goStdioBinary = Join-Path $goBinaryRoot "deerflow-acp-go.exe"
 $goSkillBinary = Join-Path $goBinaryRoot "deerflow-skill-go.exe"
+$goControlBinary = Join-Path $goBinaryRoot "deerflow-control-go.exe"
+$goWeChatBinary = Join-Path $goBinaryRoot "deerflow-channel-wechat.exe"
 $goWSLHelper = Join-Path $goBinaryRoot "deerflow-wsl-helper-linux-amd64"
 $cargoArguments = @("build", "--locked")
 if ($Configuration -eq "Release") { $cargoArguments += "--release" }
@@ -64,7 +66,7 @@ if (-not $SkipBuild) {
     New-Item -ItemType Directory -Path $goBinaryRoot -Force | Out-Null
     Push-Location (Join-Path $repoRoot "go-harness")
     try {
-        & go build -trimpath -p=2 -o $goDaemonBinary ./cmd/deerflow-acpd-go
+        & go build -trimpath -p=2 "-ldflags=-X main.buildID=deerflow-skills-$buildId" -o $goDaemonBinary ./cmd/deerflow-acpd-go
         if ($LASTEXITCODE -ne 0) { throw "Go ACP daemon build failed" }
         & go build -trimpath -p=2 -o $goConfigBinary ./cmd/deerflow-config-go
         if ($LASTEXITCODE -ne 0) { throw "Go desktop config build failed" }
@@ -72,6 +74,10 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { throw "Go direct stdio agent build failed" }
         & go build -trimpath -p=2 -o $goSkillBinary ./cmd/deerflow-skill-go
         if ($LASTEXITCODE -ne 0) { throw "Go skill authoring tool build failed" }
+        & go build -trimpath -p=2 -o $goControlBinary ./cmd/deerflow-control-go
+        if ($LASTEXITCODE -ne 0) { throw "Go local control tool build failed" }
+        & go build -trimpath -p=2 -o $goWeChatBinary ./cmd/deerflow-channel-wechat
+        if ($LASTEXITCODE -ne 0) { throw "Go WeChat channel plugin build failed" }
         & (Join-Path $PSScriptRoot "build-wsl-helper.ps1") -OutputDirectory $goBinaryRoot
     } finally { Pop-Location }
 }
@@ -84,6 +90,8 @@ $binaries = @{
     "deerflow-config-go.exe" = $goConfigBinary
     "deerflow-acp-go.exe" = $goStdioBinary
     "deerflow-skill-go.exe" = $goSkillBinary
+    "deerflow-control-go.exe" = $goControlBinary
+    "deerflow-channel-wechat.exe" = $goWeChatBinary
     "deerflow-wsl-helper-linux-amd64" = $goWSLHelper
     "deerflow-wsl-helper-linux-amd64.sha256" = "$goWSLHelper.sha256"
     "deerflow-wsl-helper-linux-amd64.json" = "$goWSLHelper.json"
@@ -117,6 +125,8 @@ Copy-Item -LiteralPath (Join-Path $repoRoot "docs\go-native-tools.md") -Destinat
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\harness-reliability-20261012.md") -Destination (Join-Path $packageResources "harness-reliability-20261012.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\eino-three-iterations-20261004.md") -Destination (Join-Path $packageResources "eino-three-iterations.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\skill-business-suites.md") -Destination (Join-Path $packageResources "skill-business-suites.md")
+Copy-Item -LiteralPath (Join-Path $repoRoot "docs\deerflow-capabilities.md") -Destination (Join-Path $packageResources "deerflow-capabilities.md")
+Copy-Item -LiteralPath (Join-Path $repoRoot "docs\channel-plugins.md") -Destination (Join-Path $packageResources "channel-plugins.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "resources\skill-behavior") -Destination (Join-Path $packageResources "skill-behavior") -Recurse
 
 function Copy-BundledSkills([string]$Source, [string]$Destination) {

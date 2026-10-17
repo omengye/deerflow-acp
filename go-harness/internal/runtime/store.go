@@ -42,7 +42,13 @@ CREATE TABLE IF NOT EXISTS harness_tool_reconciliations (run_id TEXT NOT NULL, t
 	if err != nil {
 		return nil, err
 	}
+	if err = migrateGoals(ctx, db); err != nil {
+		return nil, err
+	}
 	if err = migrateSessionRetention(ctx, db); err != nil {
+		return nil, err
+	}
+	if err = migrateSessionThinking(ctx, db); err != nil {
 		return nil, err
 	}
 	if err = migrateSessionReasoning(ctx, db); err != nil {
@@ -98,7 +104,7 @@ type scanner interface{ Scan(...any) error }
 func scanSession(row scanner) (harness.Session, error) {
 	var x harness.Session
 	var created, updated string
-	err := row.Scan(&x.ID, &x.CWD, &x.Title, &x.Mode, &x.Model, &created, &updated, &x.ApprovalMode, &x.Subagents, &x.ConfigVersion, &x.ReasoningEffort)
+	err := row.Scan(&x.ID, &x.CWD, &x.Title, &x.Mode, &x.Model, &created, &updated, &x.ApprovalMode, &x.Subagents, &x.ConfigVersion, &x.ReasoningEffort, &x.ThinkingMode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return x, harness.ErrNotFound
 	}
@@ -113,7 +119,7 @@ func scanSession(row scanner) (harness.Session, error) {
 	return x, err
 }
 func (s *Store) Session(ctx context.Context, id string) (harness.Session, error) {
-	return scanSession(s.db.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, id))
+	return scanSession(s.db.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,''),COALESCE(c.thinking_mode,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, id))
 }
 
 // ManagementSession resolves an existing foreground session without requiring
@@ -129,7 +135,7 @@ func (s *Store) List(ctx context.Context, cwd, cursor string, limit int) ([]harn
 	if err != nil {
 		return nil, err
 	}
-	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE (?='' OR s.cwd=?) AND s.id>?`
+	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,''),COALESCE(c.thinking_mode,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE (?='' OR s.cwd=?) AND s.id>?`
 	if children {
 		query += ` AND NOT EXISTS(SELECT 1 FROM harness_background_specs b WHERE b.child_session_id=s.id)`
 	}
@@ -160,7 +166,7 @@ func (s *Store) ListForManagement(ctx context.Context, limit int) ([]harness.Ses
 	if err != nil {
 		return nil, err
 	}
-	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id`
+	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,''),COALESCE(c.thinking_mode,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id`
 	if children {
 		query += ` WHERE NOT EXISTS(SELECT 1 FROM harness_background_specs b WHERE b.child_session_id=s.id)`
 	}

@@ -30,6 +30,7 @@ type Config struct {
 	OutputTokenParameter                          harness.OutputTokenParameter
 	ModelRoutes                                   map[string]harness.ModelRoute
 	ModelReasoningEfforts                         map[string][]string
+	ModelThinking                                 map[string]harness.ThinkingConfig
 	Models                                        []harness.ConfigValue
 	ChatModel                                     model.ToolCallingChatModel
 	Tools                                         []tool.BaseTool
@@ -51,6 +52,8 @@ type Config struct {
 	ModelImageImporter harness.ModelImageImporter
 	ToolOutputStore    harness.ToolOutputStore
 	TaskContextStore   harness.TaskContextStore
+	GoalStore          harness.GoalStore
+	GoalAutoContinue   bool
 	Compaction         harness.CompactionConfig
 	// ContextWindows contains configured model context sizes. A missing size
 	// suppresses ACP context occupancy rather than guessing from run budgets.
@@ -146,6 +149,19 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 	for _, route := range config.ModelRoutes {
 		if _, err := harness.ResolveOutputTokenParameter(route.Provider, route.BaseURL, route.OutputTokenParameter); err != nil {
 			return nil, err
+		}
+	}
+	config.ModelThinking = maps.Clone(config.ModelThinking)
+	for name, thinking := range config.ModelThinking {
+		provider := config.Provider
+		if route, ok := config.ModelRoutes[name]; ok {
+			provider = route.Provider
+		}
+		if err := thinking.Validate(provider, config.ModelReasoningEfforts[name], config.Budget.MaxOutputTokens); err != nil {
+			return nil, fmt.Errorf("model %q: %w", name, err)
+		}
+		if thinking.Parameter == "" {
+			delete(config.ModelThinking, name)
 		}
 	}
 	config.ModelReasoningEfforts = maps.Clone(config.ModelReasoningEfforts)

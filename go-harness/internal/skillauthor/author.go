@@ -148,6 +148,17 @@ func Validate(ctx context.Context, directory string) (Report, error) {
 	return report, err
 }
 
+// ValidateInstalled checks runtime installation compatibility, not autonomous
+// evolution policy. Existing scripts/credentials are allowed, never executed
+// or returned. Findings remain advisory and contain no file bodies.
+func ValidateInstalled(ctx context.Context, directory string) (Report, error) {
+	p, err := skills.ReadAuthoringPackage(ctx, directory)
+	if err != nil {
+		return Report{}, err
+	}
+	return Report{Name: p.Name, Description: p.Description, Version: p.Version, FileCount: len(p.Files), Bytes: p.Bytes, Behavior: "not_run", Findings: p.Findings}, nil
+}
+
 func Package(ctx context.Context, directory, output string) (Report, error) {
 	return packageSkill(ctx, directory, output, writeArchive)
 }

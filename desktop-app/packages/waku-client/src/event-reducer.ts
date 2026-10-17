@@ -84,6 +84,14 @@ export function reduceRuntimeEvent(
     case 'agentPresetSelected':
       session.agent_preset = typeof payload === 'string' ? payload : null
       break
+    case 'deerflowModelsChanged': {
+      const value = asRecord(payload)
+      if (!value) break
+      session.model = typeof value.model === 'string' ? value.model : null
+      session.reasoning_effort = typeof value.reasoningEffort === 'string' ? value.reasoningEffort : null
+      session.thinking_mode = typeof value.thinkingMode === 'string' ? value.thinkingMode : null
+      break
+    }
     case 'autoTitleUpdated':
       session.auto_title = typeof payload === 'string' && payload.trim() ? payload.trim() : null
       break

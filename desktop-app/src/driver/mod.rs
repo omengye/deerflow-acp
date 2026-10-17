@@ -32,6 +32,7 @@ pub(crate) fn start_remote(
             mode: waku_client::encode_enum(options.mode)?,
             model: options.model,
             reasoning_effort: options.reasoning_effort,
+            thinking_mode: options.thinking_mode,
             service_tier: options.service_tier,
             context_window: options.context_window,
             agent_preset: options.agent_preset,
@@ -363,6 +364,7 @@ impl DriverControl for RemoteDriverControl {
                 mode: waku_client::encode_enum(options.mode)?,
                 model: options.model,
                 reasoning_effort: options.reasoning_effort,
+                thinking_mode: options.thinking_mode,
                 service_tier: options.service_tier,
                 context_window: options.context_window,
             })

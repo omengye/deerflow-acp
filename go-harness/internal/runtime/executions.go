@@ -98,7 +98,8 @@ func executionConfigDigest(x harness.Session) string {
 		Subagents                      bool
 		Version                        int64
 		ReasoningEffort                string `json:",omitempty"`
-	}{x.ID, x.CWD, x.Model, x.Mode, x.ApprovalMode, x.Subagents, x.ConfigVersion, x.ReasoningEffort})
+		ThinkingMode                   string `json:",omitempty"`
+	}{x.ID, x.CWD, x.Model, x.Mode, x.ApprovalMode, x.Subagents, x.ConfigVersion, x.ReasoningEffort, x.ThinkingMode})
 	return executionDigest(data)
 }
 func executionDigest(data []byte) string { return fmt.Sprintf("%x", sha256.Sum256(data)) }
@@ -172,7 +173,7 @@ func (s *Store) BeginExecutionTx(ctx context.Context, tx *sql.Tx, req harness.Ru
 }
 
 func readExecutionSession(ctx context.Context, q executionQuery, id string) (harness.Session, error) {
-	return scanSession(q.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, id))
+	return scanSession(q.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,''),COALESCE(c.thinking_mode,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, id))
 }
 func executionAudit(ctx context.Context, tx *sql.Tx, lease ExecutionLease, kind string, value any) error {
 	data, err := json.Marshal(value)

@@ -12,6 +12,9 @@ type SkillCatalogEntry struct {
 	Import           *SkillImportObservation `json:"import_observation,omitempty"`
 	Export           *SkillExportState       `json:"export,omitempty"`
 	CanRefreshImport bool                    `json:"can_refresh_import"`
+	SourceDirectory  string                  `json:"source_directory,omitempty"`
+	SourceStatus     string                  `json:"source_status"`
+	SourceError      string                  `json:"source_error,omitempty"`
 }
 
 type SkillCatalogSource struct {
@@ -21,6 +24,7 @@ type SkillCatalogSource struct {
 }
 
 type SkillCatalogPage struct {
+	Diagnostics    []SkillFinding       `json:"diagnostics,omitempty"`
 	Skills         []SkillCatalogEntry  `json:"skills"`
 	Sources        []SkillCatalogSource `json:"sources"`
 	Next           string               `json:"next_cursor,omitempty"`
@@ -30,6 +34,18 @@ type SkillCatalogPage struct {
 type SkillCatalogDetail struct {
 	Skill          SkillCatalogEntry `json:"skill"`
 	CatalogVersion int64             `json:"catalog_version"`
+}
+
+type SkillFilePublication struct {
+	ID              string      `json:"id"`
+	Target          SkillTarget `json:"target"`
+	SourceDirectory string      `json:"source_directory"`
+	BackupRelative  string      `json:"backup_relative"`
+	Base            SkillHead   `json:"base"`
+	Next            SkillHead   `json:"next"`
+	Current         SkillHead   `json:"current"`
+	ProposalID      string      `json:"proposal_id,omitempty"`
+	Status          string      `json:"status"`
 }
 
 // SkillEnablement is an operator command, never a model tool. A stable key

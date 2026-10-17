@@ -109,6 +109,8 @@ func Describe() Schema {
 	schema.HostSettings = []HostSetting{{ConfigPath: "mcp.host_recipes", Apply: "restart", Edit: "host_yaml", Description: "Explicit host-owned MCP recipes for exact workspaces; credentials are excluded from desktop and execution snapshots."}}
 	schema.HostSettings = append(schema.HostSettings, HostSetting{ConfigPath: "local_acp.max_run_tokens", Apply: "restart", Edit: "host_yaml", Description: "Optional aggregate task token budget shared by all agents; 0 (default) disables. Context windows and per-request output caps are separate."})
 	schema.HostSettings = append(schema.HostSettings,
+		HostSetting{ConfigPath: "local_acp.goal_auto_continue", Apply: "restart", Edit: "host_yaml", Description: "Enable at most 3 evidence-based native goal continuations; /goal works without auto-continuation. Calls share the run budget."},
+		HostSetting{ConfigPath: "wechat", Apply: "migration", Edit: "channels", Description: "Legacy iLink configuration is imported once into the host channel store. Use Settings > Channels or channel.* management for independent enablement, workspace and login. Credentials never enter the configuration document."},
 		HostSetting{ConfigPath: "local_acp.max_artifact_size_mib", Apply: "restart", Edit: "host_yaml", Description: "Maximum size of each output artifact in MiB; positive integer, default 500. Applies to presentation and reads."},
 		HostSetting{ConfigPath: "local_acp.max_iterations", Apply: "restart", Edit: "host_yaml", Description: "Optional model/tool iterations per agent run; 0 (default) disables."},
 		HostSetting{ConfigPath: "local_acp.max_model_calls", Apply: "restart", Edit: "host_yaml", Description: "Optional model calls shared by the main and child agents; 0 (default) disables."},

@@ -27,7 +27,7 @@ auto_title?: string | null, project_id: string,
 /**
  * Local project checkout or an isolated Git worktree for this task.
  */
-workspace?: SessionWorkspace, provider: ProviderKind, model?: string | null, runtime_mode: RuntimeMode, reasoning_effort?: string | null, service_tier?: string | null,
+workspace?: SessionWorkspace, provider: ProviderKind, model?: string | null, runtime_mode: RuntimeMode, reasoning_effort?: string | null, thinking_mode?: string | null, service_tier?: string | null,
 /**
  * Selected context window, when the provider exposes more than one.
  */

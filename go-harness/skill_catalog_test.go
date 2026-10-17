@@ -87,11 +87,11 @@ func TestSkillCatalogAuthenticatedManagement(t *testing.T) {
 	disable["request_key"] = "stale-page"
 	call(disable, "conflict", nil)
 	call(map[string]any{"operation": "skill.imports.refresh", "target": entry.Target, "expected_head": applied.Skill.Head}, "", &detail)
-	if detail.Skill.Import == nil || detail.Skill.Import.Status != "unchanged" {
+	if detail.Skill.SourceStatus != "ready" || detail.Skill.Head != applied.Skill.Head {
 		t.Fatalf("refresh: %+v", detail)
 	}
 	call(map[string]any{"operation": "skill.list", "status": "disabled"}, "", &page)
-	if len(page.Skills) != 1 || page.Skills[0].Import == nil {
+	if len(page.Skills) != 1 || page.Skills[0].SourceStatus != "ready" {
 		t.Fatalf("disabled filter/observation: %+v", page)
 	}
 	if err = c.Close(); err != nil {
@@ -213,7 +213,7 @@ func TestSkillCatalogExportRetryManagement(t *testing.T) {
 }
 
 func TestSkillCatalogRollbackBindsObservedTarget(t *testing.T) {
-	c, _ := skillEvolutionClient(t, true)
+	c, _ := skillEvolutionClient(t)
 	ctx := context.Background()
 	p := submitSkillEdit(t, c, "target-rollback", "Reviewed publication")
 	if _, err := c.ApproveSkillProposal(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "operator"}); err != nil {

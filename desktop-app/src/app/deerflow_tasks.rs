@@ -1,6 +1,7 @@
 //! Durable Go task state belongs to the attached conversation, not a chat turn.
 //! Parsing, tree ordering and display strings are cached when responses arrive.
 use super::*;
+mod approvals;
 mod artifacts;
 mod receipts;
 pub(super) mod runtime_view;
@@ -16,6 +17,40 @@ const ARTIFACT_PAGE_SIZE: u32 = 32;
 const MAX_NODES: usize = 2048;
 const MAX_CACHE_BYTES: usize = 16 * 1024 * 1024;
 type Key = (String, String);
+
+fn sync_task_rows(list: &ListState, previous: &mut Vec<Key>, next: Vec<Key>) {
+    if *previous == next {
+        return;
+    }
+    let offset = list.logical_scroll_top();
+    let anchor = previous.get(offset.item_ix);
+    let anchored_index = anchor.and_then(|key| next.iter().position(|candidate| candidate == key));
+    let prefix = previous
+        .iter()
+        .zip(&next)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let suffix = previous[prefix..]
+        .iter()
+        .rev()
+        .zip(next[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    list.splice(
+        prefix..previous.len() - suffix,
+        next.len() - prefix - suffix,
+    );
+    // Keep the visible task and its pixel offset when other rows move around it.
+    list.scroll_to(gpui::ListOffset {
+        item_ix: anchored_index.unwrap_or_else(|| offset.item_ix.min(next.len().saturating_sub(1))),
+        offset_in_item: if anchored_index.is_some() {
+            offset.offset_in_item
+        } else {
+            px(0.0)
+        },
+    });
+    *previous = next;
+}
 
 fn bounded(value: &str, max: usize) -> bool {
     !value.is_empty() && value.len() <= max && !value.chars().any(char::is_control)
@@ -351,11 +386,13 @@ pub(super) struct TaskBrowser {
     capabilities: Capabilities,
     pending: Option<Command>,
     next: Option<Action>,
+    queued_action: Option<Action>,
     nodes: BTreeMap<Key, CachedNode>,
     task_index: HashMap<String, Key>,
     live_count: usize,
     detached_count: usize,
     child_active_count: usize,
+    approval_target: Option<Key>,
     pub(super) runtime_view: runtime_view::RuntimeView,
     show_management: bool,
     show_receipts: bool,
@@ -388,6 +425,8 @@ pub(super) struct TaskBrowser {
     save_selecting: bool,
     artifact_notice: Option<SharedString>,
     saved_artifact: Option<PathBuf>,
+    artifact_preview: Option<SharedString>,
+    artifact_preview_generation: u64,
     artifact_page: Option<ArtifactPage>,
 }
 impl Default for TaskBrowser {
@@ -398,11 +437,13 @@ impl Default for TaskBrowser {
             capabilities: Capabilities::default(),
             pending: None,
             next: None,
+            queued_action: None,
             nodes: BTreeMap::new(),
             task_index: HashMap::new(),
             live_count: 0,
             detached_count: 0,
             child_active_count: 0,
+            approval_target: None,
             runtime_view: Default::default(),
             show_management: false,
             show_receipts: false,
@@ -435,6 +476,8 @@ impl Default for TaskBrowser {
             save_selecting: false,
             artifact_notice: None,
             saved_artifact: None,
+            artifact_preview: None,
+            artifact_preview_generation: 0,
             artifact_page: None,
         }
     }
@@ -460,6 +503,7 @@ impl TaskBrowser {
         self.connection.clear();
         self.pending = None;
         self.next = None;
+        self.queued_action = None;
         self.stale = true;
         self.clear_detail();
         self.transfer = None;
@@ -481,10 +525,10 @@ impl TaskBrowser {
         self.uncached_live |= self.live_count > 0;
         self.uncached_detached |= self.detached_count > 0;
         self.nodes.clear();
-        self.rows.clear();
         self.seen.clear();
         self.collapsed.clear();
         self.selected = None;
+        self.stale = true;
         self.artifact_page = None;
         self.clear_detail();
         self.partial_view = true;
@@ -520,7 +564,11 @@ impl TaskBrowser {
         self.live_count = 0;
         self.detached_count = 0;
         self.child_active_count = 0;
+        self.approval_target = None;
         for (key, cached) in &self.nodes {
+            if approvals::needs_approval(&cached.node) && self.approval_target.is_none() {
+                self.approval_target = Some(key.clone());
+            }
             if !cached.node.task_id.is_empty() {
                 self.task_index
                     .insert(cached.node.task_id.clone(), key.clone());
@@ -579,9 +627,32 @@ impl TaskBrowser {
                 &mut rows,
             );
         }
-        self.rows = rows;
-        self.list.reset(self.rows.len());
+        sync_task_rows(&self.list, &mut self.rows, rows);
         self.runtime_view.rebuild_agents(&self.nodes);
+    }
+    fn refreshing(&self) -> bool {
+        self.loaded
+            && !self.stale
+            && self
+                .pending
+                .as_ref()
+                .is_some_and(|command| matches!(command.action, Action::List { .. }))
+    }
+    fn controls_busy(&self) -> bool {
+        self.queued_action.is_some() || self.pending.is_some() && !self.refreshing()
+    }
+    fn sync_status(&self) -> &'static str {
+        if self.connection.is_empty() {
+            "运行状态未连接"
+        } else if self.stale && self.loaded {
+            "缓存状态 · 请刷新后操作"
+        } else if !self.loaded {
+            "正在读取任务状态…"
+        } else if self.refreshing() {
+            "正在同步 · 保留当前内容"
+        } else {
+            "状态已同步 · 每 5 秒自动更新"
+        }
     }
     fn begin(&mut self, action: Action) -> Option<Command> {
         let supported = if matches!(
@@ -592,17 +663,29 @@ impl TaskBrowser {
         } else {
             self.capabilities.tree
         };
-        if self.connection.is_empty() || self.pending.is_some() || !supported {
+        if self.connection.is_empty() || !supported || self.queued_action.is_some() {
             return None;
         }
         if self.transfer.is_some() && !matches!(action, Action::ArtifactRead { .. }) {
             return None;
         }
+        if self.refreshing() && !matches!(action, Action::List { .. }) {
+            // The ACP driver is serial. Retain the explicit, version-bound
+            // action and send it after the harmless poll, never concurrently.
+            self.queued_action = Some(action);
+            self.confirmation = None;
+            return None;
+        }
+        if self.pending.is_some() {
+            return None;
+        }
+        if self.next.as_ref() == Some(&action) {
+            self.next = None;
+        }
         if matches!(&action,Action::List{cursor,..} if cursor.as_ref().is_none_or(String::is_empty))
         {
             self.seen.clear();
             self.traversing = true;
-            self.stale = true;
             self.partial_view = false;
         }
         let command = Command {
@@ -954,13 +1037,13 @@ impl TaskBrowser {
                     );
                 }
                 self.detail = Some(detail);
-                if !matches!(command.action, Action::BackgroundGet { .. }) {
-                    if let Some(node) = self.selected() {
-                        self.next = Some(Action::Get {
-                            root_id: node.node.root_id.clone(),
-                            node_id: node.node.id.clone(),
-                        });
-                    }
+                if matches!(command.action, Action::BackgroundGet { .. }) {
+                    self.next = self.current_permission_action();
+                } else if let Some(node) = self.selected() {
+                    self.next = Some(Action::Get {
+                        root_id: node.node.root_id.clone(),
+                        node_id: node.node.id.clone(),
+                    });
                 }
             }
             (
@@ -1118,6 +1201,7 @@ impl Waku {
             .or_default()
             .begin(action)
         else {
+            cx.notify();
             return;
         };
         cx.background_executor()
@@ -1153,7 +1237,6 @@ impl Waku {
                     browser.artifact_page = None;
                     if browser.session != session_id {
                         browser.nodes.clear();
-                        browser.rows.clear();
                         browser.selected = None;
                         browser.root_filter = None;
                         browser.uncached_live = false;
@@ -1162,6 +1245,7 @@ impl Waku {
                         browser.rebuild();
                     }
                     browser.pending = None;
+                    browser.queued_action = None;
                     browser.clear_detail();
                     browser.stale = true;
                     browser.connection = connection_id;
@@ -1183,6 +1267,7 @@ impl Waku {
                         transfer.fail(error.to_string());
                     }
                     browser.pending = None;
+                    browser.queued_action = None;
                     browser.stale = true;
                     browser.clear_detail();
                     browser.error = Some(error.to_string());
@@ -1197,6 +1282,7 @@ impl Waku {
                     return;
                 }
                 browser.pending = None;
+                browser.queued_action = None;
                 browser.next = None;
                 if let Some(transfer) = &browser.transfer {
                     transfer.fail(message.clone());
@@ -1241,18 +1327,19 @@ impl Waku {
         for (session, browser) in &mut self.deerflow_tasks {
             if browser.pending.is_some()
                 || browser.connection.is_empty()
-                || browser.transfer.is_some()
+                || browser.transfer.is_some() && browser.queued_action.is_none()
+                || browser.save_selecting
             {
                 continue;
             }
-            // Review forms need a pinned version while they are visible.
-            // Returning to the overview must resume live status refresh.
+            // The pinned decision card remains visible across all subpages.
             let reviewing = browser.show_receipts
-                || browser.show_management
-                    && (browser.receipts.review.is_some()
-                        || browser.confirmation.is_some()
-                        || !browser.previews.is_empty());
-            if let Some(action) = browser.next.take() {
+                || browser.confirmation.is_some()
+                || !browser.previews.is_empty()
+                || browser.show_management && browser.receipts.review.is_some();
+            if let Some(action) = browser.queued_action.take() {
+                requests.push((*session, action));
+            } else if let Some(action) = browser.next.take() {
                 requests.push((*session, action));
             } else if browser.refresh_needed && !reviewing {
                 browser.refresh_needed = false;
@@ -1280,7 +1367,7 @@ impl Waku {
             self.request_deerflow_task(session, action, cx);
         }
     }
-    fn open_deerflow_tasks(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn open_deerflow_tasks(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self
             .state
             .sessions
@@ -1351,6 +1438,18 @@ impl Waku {
         )
     }
     pub(super) fn render_deerflow_runtime(&self, cx: &mut Context<Self>) -> AnyElement {
+        // Decisions stay outside every scrolling subpage, including task details.
+        let attention = self.render_deerflow_attention(cx);
+        let body = self.render_deerflow_runtime_body(cx);
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .children(attention.map(|card| div().flex_none().px(px(12.0)).pt(px(12.0)).child(card)))
+            .child(div().flex_1().min_h_0().overflow_hidden().child(body))
+            .into_any_element()
+    }
+    fn render_deerflow_runtime_body(&self, cx: &mut Context<Self>) -> AnyElement {
         if self
             .state
             .selected_session
@@ -1419,8 +1518,7 @@ impl Waku {
                 ))
                 .into_any_element();
         };
-        let busy =
-            browser.pending.is_some() || browser.transfer.is_some() || browser.save_selecting;
+        let busy = browser.controls_busy() || browser.transfer.is_some() || browser.save_selecting;
         let unavailable = busy || browser.connection.is_empty() || !browser.capabilities.tree;
         let action = browser.list_action(None);
         panel = panel.child(
@@ -1449,12 +1547,12 @@ impl Waku {
         if let Some(error) = &browser.error {
             panel = panel.child(task_text(error.clone(), theme));
         }
-        if browser.stale {
-            panel = panel.child(task_text(
-                "显示的是已缓存状态；刷新后才能执行控制操作。",
-                theme,
-            ));
-        }
+        panel = panel.child(
+            task_text(browser.sync_status(), theme)
+                .h(px(18.0))
+                .flex_none()
+                .truncate(),
+        );
         if browser.has_more {
             let action = browser.list_action(Some(browser.cursor.clone()));
             panel = panel
@@ -1503,7 +1601,7 @@ impl Waku {
         let weak = cx.entity().downgrade();
         panel = panel.child(
             div()
-                .h(px(235.0))
+                .h(px((browser.rows.len() as f32 * 64.0).clamp(64.0, 192.0)))
                 .flex_none()
                 .border_1()
                 .border_color(theme.border)
@@ -1527,7 +1625,19 @@ impl Waku {
             .flex()
             .flex_col()
             .gap(px(8.0));
-        detail = detail.child(self.render_deerflow_receipts(session, browser, cx));
+        if browser.capabilities.tool_receipts {
+            detail = detail.child(task_button(
+                "df-task-review-results",
+                if browser.recovery_required {
+                    "有操作结果需要核对 · 打开核对页面"
+                } else {
+                    "查看操作记录 / 核对执行结果"
+                },
+                false,
+                cx,
+                |this, _, cx| this.open_deerflow_receipts(cx),
+            ));
+        }
         if let Some(cached) = browser.selected() {
             let node = &cached.node;
             let get = Action::Get {
@@ -1648,25 +1758,6 @@ impl Waku {
                     }
                 }
             }
-            if background_id(node).is_none()
-                && node.waiting.as_ref().is_some_and(|w| w.intent_count > 0)
-            {
-                detail = detail
-                    .child(task_text(
-                        "此角色的审批由当前对话处理，请查看对话输入区的待审批工具。",
-                        theme,
-                    ))
-                    .child(task_button(
-                        "df-task-chat-approval",
-                        "返回对话审批区",
-                        false,
-                        cx,
-                        |this, window, cx| {
-                            this.set_right_panel_visible(false, cx);
-                            this.focus_composer_action(&FocusComposer, window, cx);
-                        },
-                    ));
-            }
             detail = detail
                 .child(task_text("最终结果", theme))
                 .child(task_text(cached.result.clone(), theme));
@@ -1738,9 +1829,7 @@ impl Waku {
                 detail = detail.child(task_button(
                     SharedString::from(format!("df-task-save-artifact-{}", artifact.id)),
                     format!("另存为 {}（{} 字节）", artifact.name, artifact.size),
-                    unavailable
-                        || browser.stale
-                        || !browser.capabilities.artifact_read,
+                    unavailable || browser.stale || !browser.capabilities.artifact_read,
                     cx,
                     move |this, _, cx| {
                         this.save_deerflow_task_artifact(
@@ -1827,7 +1916,7 @@ impl Waku {
                     .child(task_button(
                         id,
                         cached.title.clone(),
-                        browser.pending.is_some(),
+                        browser.controls_busy(),
                         cx,
                         move |this, _, cx| this.request_deerflow_task(session, action.clone(), cx),
                     ))
@@ -1870,6 +1959,37 @@ impl Waku {
             ));
         }
         if let Some(path) = &browser.saved_artifact {
+            let extension = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if matches!(
+                extension.as_str(),
+                "txt"
+                    | "md"
+                    | "markdown"
+                    | "csv"
+                    | "tsv"
+                    | "json"
+                    | "yaml"
+                    | "yml"
+                    | "log"
+                    | "pdf"
+                    | "docx"
+                    | "xlsx"
+            ) {
+                let preview = path.to_string_lossy().into_owned();
+                group = group.child(task_button(
+                    "df-task-save-preview",
+                    "预览已保存产物",
+                    false,
+                    cx,
+                    move |this, _, cx| {
+                        this.preview_saved_deerflow_artifact(session, PathBuf::from(&preview), cx);
+                    },
+                ));
+            }
             let path = path.clone();
             group = group.child(task_button(
                 "df-task-save-reveal",
@@ -1877,6 +1997,22 @@ impl Waku {
                 false,
                 cx,
                 move |_, _, cx| crate::platform::reveal_in_file_manager(&path, cx),
+            ));
+        }
+        if let Some(preview) = &browser.artifact_preview {
+            group = group.child(task_text(preview.clone(), theme));
+            group = group.child(task_button(
+                "df-task-preview-close",
+                "关闭产物预览",
+                false,
+                cx,
+                move |this, _, cx| {
+                    if let Some(browser) = this.deerflow_tasks.get_mut(&session) {
+                        browser.artifact_preview_generation += 1;
+                        browser.artifact_preview = None;
+                    }
+                    cx.notify();
+                },
             ));
         }
         if let Some(detail) = &browser.detail {
@@ -1905,94 +2041,6 @@ impl Waku {
                         cx.notify();
                     },
                 ));
-            }
-            if let Some(interaction) = &detail.interaction
-                && browser.selected_allows("approve")
-            {
-                if let Some(intent) = interaction.inputs().get(browser.intent_index) {
-                    group = group.child(task_text(
-                        format!(
-                            "工具审批 {}/{} · {}",
-                            browser.intent_index + 1,
-                            interaction.inputs().len(),
-                            intent.tool_name
-                        ),
-                        theme,
-                    ));
-                    let action = Action::Permission {
-                        task_id: detail.id.clone(),
-                        interaction_id: interaction.id.clone(),
-                        task_version: interaction.task_version,
-                        intent_id: intent.id.clone(),
-                    };
-                    group = group.child(task_button(
-                        "df-task-permission-preview",
-                        "读取完整工具参数",
-                        unavailable || browser.stale || !browser.capabilities.permission,
-                        cx,
-                        move |this, _, cx| this.request_deerflow_task(session, action.clone(), cx),
-                    ));
-                    if let Some(preview) = browser.previews.get(&intent.id) {
-                        group = group.child(task_text(preview.text.clone(), theme));
-                        for (label, decision) in [
-                            ("允许此次调用", Decision::AllowOnce),
-                            ("拒绝此次调用", Decision::RejectOnce),
-                        ] {
-                            let intent_id = intent.id.clone();
-                            let selected = preview.decision.as_ref() == Some(&decision);
-                            group = group.child(task_button(
-                                SharedString::from(format!("df-task-decision-{label}")),
-                                format!("{}{}", if selected { "✓ " } else { "" }, label),
-                                unavailable || browser.stale,
-                                cx,
-                                move |this, _, cx| {
-                                    if let Some(p) = this
-                                        .deerflow_tasks
-                                        .get_mut(&session)
-                                        .and_then(|b| b.previews.get_mut(&intent_id))
-                                    {
-                                        p.decision = Some(decision.clone());
-                                        cx.notify();
-                                    }
-                                },
-                            ));
-                        }
-                    }
-                    for (label, index) in [
-                        ("上一项", browser.intent_index.checked_sub(1)),
-                        (
-                            "下一项",
-                            (browser.intent_index + 1 < interaction.inputs().len())
-                                .then_some(browser.intent_index + 1),
-                        ),
-                    ] {
-                        group = group.child(task_button(
-                            SharedString::from(format!("df-task-intent-{label}")),
-                            label,
-                            unavailable || index.is_none(),
-                            cx,
-                            move |this, _, cx| {
-                                if let Some(index) = index {
-                                    this.deerflow_tasks.get_mut(&session).unwrap().intent_index =
-                                        index;
-                                    cx.notify();
-                                }
-                            },
-                        ));
-                    }
-                    let action = browser.approval_action();
-                    group = group.child(task_button(
-                        "df-task-submit-approval",
-                        "提交已核对的全部工具决定",
-                        unavailable || action.is_none(),
-                        cx,
-                        move |this, _, cx| {
-                            if let Some(action) = &action {
-                                this.request_deerflow_task(session, action.clone(), cx);
-                            }
-                        },
-                    ));
-                }
             }
         }
         if let Some(detail) = &browser.detail
@@ -2040,28 +2088,6 @@ impl Waku {
                     cx.notify();
                 }));
             }
-        }
-        if let Some((message, action)) = &browser.confirmation {
-            let action = action.clone();
-            group = group
-                .child(task_text(message.clone(), theme))
-                .child(task_button(
-                    "df-task-confirm",
-                    "确认执行",
-                    unavailable || browser.stale,
-                    cx,
-                    move |this, _, cx| this.request_deerflow_task(session, action.clone(), cx),
-                ))
-                .child(task_button(
-                    "df-task-abandon",
-                    "返回",
-                    unavailable,
-                    cx,
-                    move |this, _, cx| {
-                        this.deerflow_tasks.get_mut(&session).unwrap().confirmation = None;
-                        cx.notify();
-                    },
-                ));
         }
         group.into_any_element()
     }
@@ -2111,12 +2137,12 @@ mod tests {
     use serde_json::{Value, json};
     use waku_protocol::deerflow_tasks::Page;
 
-    fn node(id: &str, parent: &str, mode: &str, depth: u32) -> Node {
+    pub(super) fn node(id: &str, parent: &str, mode: &str, depth: u32) -> Node {
         serde_json::from_value(json!({"id":id,"rootId":"run","rootSessionId":"session","parentId":parent,
             "invocationId":if mode=="root"{""}else{id},"taskId":if mode=="background"{"task"}else{""},"role":if mode=="root"{"lead"}else{"researcher"},"mode":mode,"depth":depth,
             "status":"running","version":4,"attempt":1,"allowedActions":["cancel_subtree"]})).unwrap()
     }
-    fn browser() -> TaskBrowser {
+    pub(super) fn browser() -> TaskBrowser {
         TaskBrowser {
             connection: "connection".into(),
             session: "session".into(),
@@ -2216,7 +2242,7 @@ mod tests {
             consistency: "live_keyset".into(),
         })
     }
-    fn load(browser: &mut TaskBrowser, nodes: Vec<Node>) {
+    pub(super) fn load(browser: &mut TaskBrowser, nodes: Vec<Node>) {
         let command = browser.begin(browser.list_action(None)).unwrap();
         browser.accept(&command, page(nodes, "")).unwrap();
     }
@@ -2224,7 +2250,7 @@ mod tests {
         serde_json::from_value(json!({"id":"task","sessionId":"session","rootSessionId":"session","childSessionId":"child","status":"waiting_input","version":4,
         "interaction":{"id":"batch","taskVersion":4,"kind":"permission","resumable":false,"waitingInputs":[{"id":"intent","kind":"tool_permission","version":1,"toolCallId":"call","toolName":"write_file","argumentsDigest":"a".repeat(64),"argumentsSummary":"path/content","configVersion":2}]}})).unwrap()
     }
-    fn approval_browser() -> TaskBrowser {
+    pub(super) fn approval_browser() -> TaskBrowser {
         let mut b = browser();
         load(
             &mut b,
@@ -2248,6 +2274,131 @@ mod tests {
         b.accept(&command, Response::Background(background()))
             .unwrap();
         b
+    }
+
+    #[test]
+    fn refresh_keeps_visible_rows_selection_and_scroll_position() {
+        let mut b = browser();
+        let nodes = vec![
+            node("root/run", "", "root", 0),
+            node("worker-a", "root/run", "foreground", 1),
+            node("worker-b", "root/run", "foreground", 1),
+        ];
+        load(&mut b, nodes.clone());
+        b.selected = Some(key(&nodes[2]));
+        b.list.scroll_to(gpui::ListOffset {
+            item_ix: 2,
+            offset_in_item: px(11.0),
+        });
+        let rows = b.rows.clone();
+        for _ in 0..3 {
+            let command = b.begin(b.list_action(None)).unwrap();
+            assert!(b.refreshing());
+            assert!(!b.stale);
+            assert!(!b.controls_busy());
+            assert_eq!(b.rows, rows);
+            assert_eq!(b.list.logical_scroll_top().item_ix, 2);
+            b.accept(&command, page(nodes.clone(), "")).unwrap();
+            assert!(!b.refreshing());
+            assert_eq!(b.list.logical_scroll_top().item_ix, 2);
+            assert_eq!(b.list.logical_scroll_top().offset_in_item, px(11.0));
+            assert_eq!(b.selected, Some(key(&nodes[2])));
+        }
+        let mut changed = nodes;
+        changed[2].status = "completed".into();
+        changed[2].version += 1;
+        load(&mut b, changed);
+        assert_eq!(b.list.logical_scroll_top().item_ix, 2);
+        assert_eq!(b.list.logical_scroll_top().offset_in_item, px(11.0));
+        assert_eq!(b.selected().unwrap().node.status, "completed");
+    }
+
+    #[test]
+    fn refresh_queues_an_explicit_action_without_overlapping_driver_requests() {
+        let mut b = browser();
+        let root = node("root/run", "", "root", 0);
+        load(&mut b, vec![root.clone()]);
+        let poll = b.begin(b.list_action(None)).unwrap();
+        let action = Action::Get {
+            root_id: "run".into(),
+            node_id: "root/run".into(),
+        };
+        assert!(b.begin(action.clone()).is_none());
+        assert_eq!(b.queued_action.as_ref(), Some(&action));
+        assert!(b.controls_busy());
+        assert!(b.accepts(&poll));
+        assert!(
+            b.begin(Action::Get {
+                root_id: "run".into(),
+                node_id: "different".into()
+            })
+            .is_none()
+        );
+        assert_eq!(b.queued_action.as_ref(), Some(&action));
+        b.accept(&poll, page(vec![root.clone()], "")).unwrap();
+        let action = b.queued_action.take().unwrap();
+        let command = b.begin(action).unwrap();
+        assert!(b.accept(&poll, page(vec![], "")).is_err());
+        assert!(b.begin(b.list_action(None)).is_none());
+        b.accept(&command, Response::Node(root)).unwrap();
+        assert_eq!(b.nodes.len(), 1);
+        assert_eq!(b.selected.as_ref().unwrap().1, "root/run");
+    }
+
+    #[test]
+    fn initial_load_and_reconnection_still_block_controls_until_fresh_data() {
+        let mut b = browser();
+        let initial = b.begin(b.list_action(None)).unwrap();
+        assert!(!b.refreshing());
+        assert!(b.controls_busy());
+        assert!(b.stale);
+        let root = node("root/run", "", "root", 0);
+        b.accept(&initial, page(vec![root.clone()], "")).unwrap();
+        b.begin(b.list_action(None)).unwrap();
+        b.begin(Action::Get {
+            root_id: "run".into(),
+            node_id: "root/run".into(),
+        });
+        assert!(b.queued_action.is_some());
+        b.disconnect();
+        assert!(b.queued_action.is_none());
+        b.connection = "new-connection".into();
+        let reconnect = b.begin(b.list_action(None)).unwrap();
+        assert!(!b.refreshing());
+        assert!(b.controls_busy());
+        assert!(b.stale);
+        b.accept(&reconnect, page(vec![root], "")).unwrap();
+        assert!(!b.stale);
+        assert!(!b.controls_busy());
+        b.drop_cached_nodes();
+        assert_eq!(b.list.item_count(), 0);
+        assert!(b.stale);
+    }
+
+    #[test]
+    fn keyed_rows_preserve_the_visible_task_when_inserted_removed_or_reordered() {
+        let row = |id: &str| ("run".to_owned(), id.to_owned());
+        let mut rows = vec![row("a"), row("b"), row("c")];
+        let list = ListState::new(rows.len(), ListAlignment::Top, px(100.0));
+        list.scroll_to(gpui::ListOffset {
+            item_ix: 1,
+            offset_in_item: px(9.0),
+        });
+        sync_task_rows(
+            &list,
+            &mut rows,
+            vec![row("new"), row("a"), row("b"), row("c")],
+        );
+        assert_eq!(list.logical_scroll_top().item_ix, 2);
+        assert_eq!(list.logical_scroll_top().offset_in_item, px(9.0));
+        sync_task_rows(&list, &mut rows, vec![row("b"), row("c"), row("a")]);
+        assert_eq!(list.logical_scroll_top().item_ix, 0);
+        assert_eq!(list.logical_scroll_top().offset_in_item, px(9.0));
+        sync_task_rows(&list, &mut rows, vec![row("c"), row("a")]);
+        assert_eq!(list.logical_scroll_top().item_ix, 0);
+        assert_eq!(list.logical_scroll_top().offset_in_item, px(0.0));
+        sync_task_rows(&list, &mut rows, vec![]);
+        assert_eq!(list.item_count(), 0);
     }
 
     #[test]
