@@ -186,9 +186,12 @@ func skillLearningSettingsNativePipeline(t *testing.T, automatic, newCapability 
 	}
 	wait := func(description string, ready func() bool) {
 		t.Helper()
-		until := time.Now().Add(20 * time.Second)
-		for ctx.Err() == nil && time.Now().Before(until) {
+		// Use the shared fixture deadline, not a shorter per-stage deadline
+		// that races the generation, evaluation and publication workers.
+		started := time.Now()
+		for ctx.Err() == nil {
 			if ready() {
+				t.Logf("%s settled in %s", description, time.Since(started))
 				return
 			}
 			time.Sleep(20 * time.Millisecond)

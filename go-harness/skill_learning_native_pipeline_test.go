@@ -109,9 +109,12 @@ func nativeLearningPipeline(t *testing.T, resolution bool) {
 			}
 			wait := func(description string, ready func() bool) {
 				t.Helper()
-				deadline := time.Now().Add(20 * time.Second)
-				for time.Now().Before(deadline) && ctx.Err() == nil {
+				// Share the fixture's bounded deadline across asynchronous stages;
+				// race instrumentation can consume most of a separate 20s window.
+				started := time.Now()
+				for ctx.Err() == nil {
 					if ready() {
+						t.Logf("%s settled in %s", description, time.Since(started))
 						return
 					}
 					time.Sleep(20 * time.Millisecond)
