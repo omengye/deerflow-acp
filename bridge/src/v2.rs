@@ -342,18 +342,35 @@ async fn serve_frontend(
                     let session_id = request.session_id.to_string();
                     let suppress = request.replay_from.is_none();
                     state.suppress_updates(&session_id, suppress);
-                    let load =
-                        v1::LoadSessionRequest::new(session_id.clone(), request.cwd.into_inner())
-                            .additional_directories(
-                                request
-                                    .additional_directories
-                                    .into_iter()
-                                    .map(schema_v2::AbsolutePath::into_inner)
-                                    .collect(),
-                            );
-                    let result = backend.send_request(load).block_task().await;
+                    let cwd = request.cwd.into_inner();
+                    let directories = request
+                        .additional_directories
+                        .into_iter()
+                        .map(schema_v2::AbsolutePath::into_inner)
+                        .collect();
+                    // Suppressing frontend events cannot prevent the daemon's
+                    // replay queue from overflowing. Skip replay at the source.
+                    let result = if suppress {
+                        backend
+                            .send_request(
+                                v1::ResumeSessionRequest::new(session_id.clone(), cwd)
+                                    .additional_directories(directories),
+                            )
+                            .block_task()
+                            .await
+                            .map(|_| ())
+                    } else {
+                        backend
+                            .send_request(
+                                v1::LoadSessionRequest::new(session_id.clone(), cwd)
+                                    .additional_directories(directories),
+                            )
+                            .block_task()
+                            .await
+                            .map(|_| ())
+                    };
                     state.suppress_updates(&session_id, false);
-                    let _response = result?;
+                    result?;
                     state.attach(&session_id);
                     responder.respond(schema_v2::ResumeSessionResponse::new())?;
                     send_ready(&state, &session_id)
