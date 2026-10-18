@@ -376,7 +376,7 @@ func (m *Manager) EnqueueNotificationTx(ctx context.Context, tx *sql.Tx, spec au
 		copyTarget.Account = auth.Account
 	}
 	target = &copyTarget
-	if auth.Account != target.Account || !allowed(cfg, auth, target.Sender) {
+	if auth.Account != target.Account || !allowed(cfg, auth, target.Sender) || cfg.Workspace != spec.Workspace {
 		return nil
 	}
 	var contextToken string

@@ -31,17 +31,24 @@ type Spec struct {
 	Approval     string              `json:"approval"`
 	NotifyWeChat string              `json:"notify_wechat,omitempty"`
 	Notify       *NotificationTarget `json:"notify,omitempty"`
+	Source       *Source             `json:"source,omitempty"`
 }
 type NotificationTarget struct {
 	Channel      string `json:"channel"`
 	Account      string `json:"account"`
 	Conversation string `json:"conversation"`
 	Sender       string `json:"sender"`
+	ReplyTo      string `json:"reply_to,omitempty"`
 }
 type Schedule struct {
-	Spec   Spec      `json:"spec"`
-	Paused bool      `json:"paused"`
-	Next   time.Time `json:"next"`
+	Spec        Spec        `json:"spec"`
+	Paused      bool        `json:"paused"`
+	Next        time.Time   `json:"next"`
+	Revision    int64       `json:"revision"`
+	PauseReason string      `json:"pause_reason"`
+	NextLocal   string      `json:"next_local"`
+	Active      bool        `json:"active"`
+	Last        *Occurrence `json:"last,omitempty"`
 }
 type Outcome struct {
 	SessionID string `json:"session_id"`
@@ -51,11 +58,12 @@ type Outcome struct {
 	Attention string `json:"attention,omitempty"`
 }
 type Occurrence struct {
-	ID         string    `json:"id"`
-	ScheduleID string    `json:"schedule_id"`
-	Due        time.Time `json:"due"`
-	Outcome    Outcome   `json:"outcome"`
-	Read       bool      `json:"read"`
+	ID           string    `json:"id"`
+	ScheduleID   string    `json:"schedule_id"`
+	Due          time.Time `json:"due"`
+	Outcome      Outcome   `json:"outcome"`
+	Read         bool      `json:"read"`
+	Notification string    `json:"notification,omitempty"`
 }
 type Runner func(context.Context, Spec, func(string) error) (Outcome, error)
 type Scheduler struct {
@@ -82,7 +90,10 @@ CREATE INDEX IF NOT EXISTS harness_schedule_due ON harness_schedules(paused,next
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `UPDATE harness_schedules SET paused=1 WHERE id IN (SELECT schedule_id FROM harness_schedule_occurrences WHERE status='running')`); err != nil {
+	if err = migrateSchedules(ctx, tx); err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE harness_schedules SET paused=1,pause_reason='interrupted',revision=revision+1 WHERE id IN (SELECT schedule_id FROM harness_schedule_occurrences WHERE status='running')`); err != nil {
 		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE harness_schedule_occurrences SET status='unknown',text='Daemon stopped before terminal receipt; review the linked session. This occurrence will not be replayed.' WHERE status='running'`); err != nil {
@@ -145,132 +156,170 @@ func (s Spec) Next(after time.Time) (time.Time, error) {
 }
 
 func (s *Scheduler) Create(ctx context.Context, spec Spec) (Schedule, error) {
+	return s.create(ctx, spec, "")
+}
+
+func (s *Scheduler) CreateIdempotent(ctx context.Context, spec Spec, key string) (Schedule, error) {
+	if key == "" || len(key) > 512 {
+		return Schedule{}, ErrInvalid
+	}
+	return s.create(ctx, spec, key)
+}
+
+func (s *Scheduler) create(ctx context.Context, spec Spec, key string) (Schedule, error) {
 	if spec.Notify != nil {
 		if spec.NotifyWeChat != "" {
-			return Schedule{}, errors.New("choose notify or notify_wechat, not both")
+			return Schedule{}, fmt.Errorf("%w: choose notify or notify_wechat, not both", ErrInvalid)
 		}
 		for _, v := range []string{spec.Notify.Channel, spec.Notify.Account, spec.Notify.Conversation, spec.Notify.Sender} {
 			if v == "" || len(v) > 512 {
-				return Schedule{}, errors.New("invalid channel notification target")
+				return Schedule{}, fmt.Errorf("%w: invalid channel notification target", ErrInvalid)
 			}
 		}
 	}
 	if spec.ID != "" || strings.TrimSpace(spec.Name) == "" || len(spec.Name) > 200 || !utf8.ValidString(spec.Name+spec.Prompt) || !filepath.IsAbs(spec.Workspace) || strings.TrimSpace(spec.Prompt) == "" || len(spec.Prompt) > 16384 || len(spec.NotifyWeChat) > 512 {
-		return Schedule{}, errors.New("name, absolute workspace and prompt are required")
+		return Schedule{}, fmt.Errorf("%w: name, absolute workspace and prompt are required", ErrInvalid)
 	}
 	if spec.Approval == "" {
-		spec.Approval = "read_only"
+		spec.Approval = "allow_always"
 	}
 	if spec.Approval != "read_only" && spec.Approval != "ask" && spec.Approval != "allow_always" {
-		return Schedule{}, errors.New("invalid approval mode")
+		return Schedule{}, fmt.Errorf("%w: invalid approval mode", ErrInvalid)
 	}
 	if spec.Timezone == "" {
 		spec.Timezone = "Asia/Shanghai"
 	}
-	next, err := spec.Next(time.Now())
+	canonical := spec
+	if spec.Source != nil {
+		source := *spec.Source
+		source.SessionID = "" // Message identity survives reconnect or a new session.
+		canonical.Source = &source
+	}
+	fingerprint, err := json.Marshal(canonical)
 	if err != nil {
 		return Schedule{}, err
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Schedule{}, err
+	}
+	defer tx.Rollback()
+	if key != "" {
+		var id string
+		var previous []byte
+		err = tx.QueryRowContext(ctx, `SELECT schedule_id,spec FROM harness_schedule_requests WHERE request_key=?`, key).Scan(&id, &previous)
+		if err == nil {
+			if string(previous) != string(fingerprint) {
+				return Schedule{}, fmt.Errorf("%w: request_id already used with different parameters", ErrConflict)
+			}
+			return scanSchedule(tx.QueryRowContext(ctx, scheduleSelect+` WHERE s.id=?`, id))
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Schedule{}, err
+		}
+	}
+	next, err := spec.Next(time.Now())
+	if err != nil {
+		return Schedule{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
 	if next.IsZero() {
-		return Schedule{}, errors.New("once timestamp must be in the future")
+		return Schedule{}, fmt.Errorf("%w: once timestamp must be in the future", ErrInvalid)
 	}
 	spec.ID = rand.Text()
 	body, err := json.Marshal(spec)
 	if err != nil {
 		return Schedule{}, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Schedule{}, err
-	}
-	defer tx.Rollback()
 	var count int
 	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM harness_schedules`).Scan(&count); err != nil {
 		return Schedule{}, err
 	}
 	if count >= 200 {
-		return Schedule{}, errors.New("schedule limit of 200 reached; delete an unused schedule")
+		return Schedule{}, fmt.Errorf("%w: schedule limit of 200 reached; delete an unused schedule", ErrInvalid)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO harness_schedules VALUES(?,?,0,?)`, spec.ID, body, next.UnixMilli())
+	_, err = tx.ExecContext(ctx, `INSERT INTO harness_schedules(id,spec,paused,next_ms) VALUES(?,?,0,?)`, spec.ID, body, next.UnixMilli())
+	if err == nil && key != "" {
+		_, err = tx.ExecContext(ctx, `INSERT INTO harness_schedule_requests(request_key,schedule_id,spec) VALUES(?,?,?)`, key, spec.ID, fingerprint)
+	}
 	if err == nil {
 		err = tx.Commit()
 	}
-	return Schedule{Spec: spec, Next: next}, err
+	return Schedule{Spec: spec, Next: next, Revision: 1, NextLocal: localTime(next, spec.Timezone)}, err
 }
 
 func (s *Scheduler) List(ctx context.Context) ([]Schedule, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT spec,paused,next_ms FROM harness_schedules ORDER BY id LIMIT 200`)
+	rows, err := s.db.QueryContext(ctx, scheduleSelect+` ORDER BY s.paused,s.next_ms,s.id LIMIT 200`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []Schedule{}
 	for rows.Next() {
-		var v Schedule
-		var raw []byte
-		var ms int64
-		if err = rows.Scan(&raw, &v.Paused, &ms); err != nil {
+		v, err := scanSchedule(rows)
+		if err != nil {
 			return nil, err
-		}
-		if err = json.Unmarshal(raw, &v.Spec); err != nil {
-			return nil, err
-		}
-		if ms != 0 {
-			v.Next = time.UnixMilli(ms).UTC()
 		}
 		out = append(out, v)
 	}
 	return out, rows.Err()
 }
-func (s *Scheduler) SetPaused(ctx context.Context, id string, paused bool) error {
+func (s *Scheduler) SetPaused(ctx context.Context, id string, paused bool, revision int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var raw []byte
-	if err := tx.QueryRowContext(ctx, `SELECT spec FROM harness_schedules WHERE id=?`, id).Scan(&raw); err != nil {
-		return err
-	}
-	var spec Spec
-	if err := json.Unmarshal(raw, &spec); err != nil {
+	v, err := checkedSchedule(ctx, tx, id, revision)
+	if err != nil {
 		return err
 	}
 	if paused {
-		if _, err := tx.ExecContext(ctx, `UPDATE harness_schedules SET paused=1 WHERE id=?`, id); err != nil {
+		if v.Paused {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE harness_schedules SET paused=1,pause_reason='manual',revision=revision+1 WHERE id=?`, id); err != nil {
 			return err
 		}
 		return tx.Commit()
 	}
-	var active bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_schedule_occurrences WHERE schedule_id=? AND status='running')`, id).Scan(&active); err != nil {
-		return err
+	if v.Active {
+		return ErrBusy
 	}
-	if active {
-		return errors.New("cannot resume while an occurrence is running")
+	if !v.Paused {
+		return nil
 	}
-	next, err := spec.Next(time.Now())
+	if v.Spec.Kind == "once" && v.Next.IsZero() {
+		return fmt.Errorf("%w: ended once schedules require an explicit future reschedule", ErrInvalid)
+	}
+	next, err := v.Spec.Next(time.Now())
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	if next.IsZero() {
-		return errors.New("expired once schedules cannot be replayed; create a new schedule")
+		return fmt.Errorf("%w: expired once schedules require a new future time", ErrInvalid)
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE harness_schedules SET paused=0,next_ms=? WHERE id=?`, next.UnixMilli(), id); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE harness_schedules SET paused=0,next_ms=?,pause_reason='',revision=revision+1 WHERE id=?`, next.UnixMilli(), id); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
-func (s *Scheduler) Delete(ctx context.Context, id string) error {
-	r, err := s.db.ExecContext(ctx, `DELETE FROM harness_schedules WHERE id=? AND NOT EXISTS(SELECT 1 FROM harness_schedule_occurrences WHERE schedule_id=? AND status='running')`, id, id)
+func (s *Scheduler) Delete(ctx context.Context, id string, revision int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	n, err := r.RowsAffected()
-	if err == nil && n != 1 {
-		return errors.New("schedule not found or an occurrence is running")
+	defer tx.Rollback()
+	v, err := checkedSchedule(ctx, tx, id, revision)
+	if err != nil {
+		return err
 	}
-	return err
+	if v.Active {
+		return ErrBusy
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM harness_schedules WHERE id=?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Scheduler) History(ctx context.Context, id string) ([]Occurrence, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,schedule_id,due_ms,status,session_id,text,is_read FROM harness_schedule_occurrences WHERE (?='' OR schedule_id=?) ORDER BY due_ms DESC,id DESC LIMIT 100`, id, id)
@@ -336,7 +385,7 @@ func (s *Scheduler) Status() any {
 		default:
 		}
 	}
-	return map[string]any{"error": s.lastError, "running": running, "notifications": "durable unread occurrences; optional channel delivery"}
+	return map[string]any{"error": s.lastError, "running": running, "reschedule_version": 1, "notifications": "durable unread occurrences; optional channel delivery"}
 }
 func (s *Scheduler) Close() {
 	s.once.Do(func() {
@@ -391,7 +440,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) error {
 	if _, err = tx.ExecContext(ctx, `INSERT INTO harness_schedule_occurrences(id,schedule_id,due_ms,status) VALUES(?,?,?,'running')`, occurrence, id, due); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE harness_schedules SET next_ms=?,paused=? WHERE id=?`, nextMS, nextMS == 0, id); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE harness_schedules SET next_ms=?,paused=?,pause_reason=CASE WHEN ?=0 THEN 'exhausted' ELSE '' END,revision=revision+1 WHERE id=?`, nextMS, nextMS == 0, nextMS, id); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -419,9 +468,12 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) error {
 	}
 	defer tx.Rollback()
 	if out.Status != "completed" {
-		if _, err = tx.ExecContext(persist, `UPDATE harness_schedules SET paused=1 WHERE id=?`, id); err != nil {
+		if _, err = tx.ExecContext(persist, `UPDATE harness_schedules SET paused=1,pause_reason='needs_attention' WHERE id=?`, id); err != nil {
 			return err
 		}
+	}
+	if _, err = tx.ExecContext(persist, `UPDATE harness_schedules SET revision=revision+1 WHERE id=?`, id); err != nil {
+		return err
 	}
 	if _, err = tx.ExecContext(persist, `UPDATE harness_schedule_occurrences SET status=?,session_id=?,text=? WHERE id=?`, out.Status, out.SessionID, out.Text, occurrence); err != nil {
 		return fmt.Errorf("persist occurrence: %w", err)

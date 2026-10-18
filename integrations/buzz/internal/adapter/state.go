@@ -58,7 +58,7 @@ func OpenState(path string) (*State, error) {
 			return nil, err
 		}
 	}
-	for _, column := range []struct{ table, name, definition string }{{"inbox_messages", "tags_json", "TEXT NOT NULL DEFAULT '[]'"}, {"inbox_messages", "acknowledgement_attempted", "INTEGER NOT NULL DEFAULT 0"}, {"sessions", "backend_id", "TEXT NOT NULL DEFAULT ''"}} {
+	for _, column := range []struct{ table, name, definition string }{{"inbox_messages", "tags_json", "TEXT NOT NULL DEFAULT '[]'"}, {"inbox_messages", "acknowledgement_attempted", "INTEGER NOT NULL DEFAULT 0"}, {"inbox_messages", "schedule_allowed", "INTEGER NOT NULL DEFAULT 0"}, {"sessions", "backend_id", "TEXT NOT NULL DEFAULT ''"}} {
 		rows, e := db.Query("PRAGMA table_info(" + column.table + ")")
 		if e != nil {
 			return nil, e
@@ -142,7 +142,7 @@ func (s *State) EnqueueAndAdvance(ctx context.Context, channel string, created i
 		if m.DM {
 			dm = 1
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO inbox_messages(message_key,conversation_key,channel_id,event_id,created_at,author_pubkey,kind,content,is_dm,tags_json) SELECT ?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM seeded_events WHERE event_id=?)`, m.ID, m.conversation(scope), m.Channel, m.ID, m.Created, m.Author, m.Kind, m.Content, dm, string(tags), m.ID); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO inbox_messages(message_key,conversation_key,channel_id,event_id,created_at,author_pubkey,kind,content,is_dm,tags_json,schedule_allowed) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM seeded_events WHERE event_id=?)`, m.ID, m.conversation(scope), m.Channel, m.ID, m.Created, m.Author, m.Kind, m.Content, dm, string(tags), m.ScheduleAllowed, m.ID); err != nil {
 			return err
 		}
 	}
@@ -168,7 +168,7 @@ func (s *State) Seed(ctx context.Context, channel string, created int64, message
 	return tx.Commit()
 }
 func (s *State) Pending() ([]Pending, error) {
-	rows, err := s.db.Query(`SELECT message_key,conversation_key,channel_id,event_id,created_at,author_pubkey,kind,content,is_dm,attempts,response_content,tags_json FROM inbox_messages WHERE status='pending' ORDER BY created_at,message_key LIMIT 100`)
+	rows, err := s.db.Query(`SELECT message_key,conversation_key,channel_id,event_id,created_at,author_pubkey,kind,content,is_dm,attempts,response_content,tags_json,schedule_allowed FROM inbox_messages WHERE status='pending' ORDER BY created_at,message_key LIMIT 100`)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +179,7 @@ func (s *State) Pending() ([]Pending, error) {
 		var dm int
 		var response sql.NullString
 		var tags string
-		if err = rows.Scan(&p.Key, &p.Conversation, &p.Channel, &p.ID, &p.Created, &p.Author, &p.Kind, &p.Content, &dm, &p.Attempts, &response, &tags); err != nil {
+		if err = rows.Scan(&p.Key, &p.Conversation, &p.Channel, &p.ID, &p.Created, &p.Author, &p.Kind, &p.Content, &dm, &p.Attempts, &response, &tags, &p.ScheduleAllowed); err != nil {
 			return nil, err
 		}
 		p.DM = dm != 0

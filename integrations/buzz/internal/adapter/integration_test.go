@@ -3,6 +3,7 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,15 +25,27 @@ func TestNativeReleaseBuzzIntegration(t *testing.T) {
 		t.Skip("set DEERFLOW_TEST_BRIDGE and DEERFLOW_TEST_GO_DAEMON")
 	}
 	var calls atomic.Int32
+	var scheduleHidden atomic.Bool
+	scheduleHidden.Store(true)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		body, _ := io.ReadAll(r.Body)
 		_ = r.Body.Close()
 		w.Header().Set("Content-Type", "text/event-stream")
-		if bytes.Contains(body, []byte("write-permission")) && !bytes.Contains(body, []byte(`"role":"tool"`)) {
+		if bytes.Contains(body, []byte("schedule-native-create")) && !bytes.Contains(body, []byte(`"role":"tool"`)) {
+			if !bytes.Contains(body, []byte(`"name":"schedule_manage"`)) || !bytes.Contains(body, []byte("supports native scheduled tasks")) {
+				t.Error("Buzz model did not receive scheduling tools/instructions")
+			}
+			args, _ := json.Marshal(map[string]any{"action": "create", "request_id": "buzz-create", "name": "Buzz integration", "prompt": "schedule-native-result", "timing": map[string]any{"kind": "once", "at": time.Now().Add(5 * time.Second).Format(time.RFC3339), "timezone": "Asia/Shanghai"}})
+			chunk, _ := json.Marshal(map[string]any{"id": "fixture", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"index": 0, "id": "schedule-test", "type": "function", "function": map[string]any{"name": "schedule_manage", "arguments": string(args)}}}}, "finish_reason": "tool_calls"}}})
+			fmt.Fprintf(w, "data: %s\n\n", chunk)
+		} else if bytes.Contains(body, []byte("write-permission")) && !bytes.Contains(body, []byte(`"role":"tool"`)) {
 			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"write-test\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"buzz-result.txt\\\",\\\"content\\\":\\\"approved\\\"}\"}}]},\"finish_reason\":null}]}\n\n")
 			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n")
 		} else {
+			if bytes.Contains(body, []byte("schedule-native-result")) && !bytes.Contains(body, []byte("schedule-native-create")) && bytes.Contains(body, []byte(`"name":"schedule_manage"`)) {
+				scheduleHidden.Store(false)
+			}
 			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Done.\"},\"finish_reason\":null}]}\n\n")
 			fmt.Fprint(w, "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
 		}
@@ -152,4 +165,64 @@ func TestNativeReleaseBuzzIntegration(t *testing.T) {
 			}
 		})
 	}
+	t.Run("schedules", func(t *testing.T) {
+		a, _ := offlineApp(t)
+		a.Config.Deerflow.Command = bridge
+		a.Config.Deerflow.Args = []string{"--protocol", "v2", "--no-auto-start", "--config", configPath, "--runtime-dir", runtimeDir}
+		a.Config.Deerflow.PermissionPolicy = "deny"
+		a.Config.Deerflow.ScheduleFullAccess = true
+		a.Config.Deerflow.Timeout = 10
+		a.Config.Deerflow.PromptTimeout = 30
+		client := NewACP(a.Config)
+		a.Agent = client
+		defer client.Close()
+		var replies []string
+		a.Buzz.runner = func(_ context.Context, args []string, input string, _ bool, _ io.Writer, _ int64) ([]byte, error) {
+			if args[0] == "reactions" {
+				return []byte(`{"accepted":true}`), nil
+			}
+			replies = append(replies, input)
+			return []byte(`{"accepted":true,"event_id":"` + strings.Repeat("c", 64) + `"}`), nil
+		}
+		m := testMessage(t, "d", 10)
+		m.Content = "schedule-native-create"
+		m.ScheduleAllowed = true
+		if err := a.State.EnqueueAndAdvance(context.Background(), m.Channel, 10, []Message{m}, "thread"); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.processPending(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		var items []struct {
+			Spec struct {
+				ID, Approval string
+				Source       struct{ Kind, Sender string }
+			}
+		}
+		if err := client.scheduleManage(context.Background(), map[string]any{"operation": "schedule.list"}, &items); err != nil || len(items) != 1 {
+			counts, _ := a.State.Counts()
+			var detail string
+			_ = a.State.db.QueryRow(`SELECT COALESCE(last_error,'') FROM inbox_messages WHERE message_key=?`, m.ID).Scan(&detail)
+			t.Fatal(items, err, replies, counts, detail)
+		}
+		if items[0].Spec.Approval != "allow_always" || items[0].Spec.Source.Kind != "buzz" || items[0].Spec.Source.Sender != m.Author {
+			t.Fatal(items)
+		}
+		deadline := time.Now().Add(25 * time.Second)
+		for time.Now().Before(deadline) && len(replies) < 2 {
+			if err := a.deliverSchedules(context.Background(), client); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if len(replies) != 2 || !strings.Contains(replies[1], "Scheduled task:") || !strings.Contains(replies[1], "Done.") || !scheduleHidden.Load() {
+			t.Fatal(replies, scheduleHidden.Load())
+		}
+		if err := a.deliverSchedules(context.Background(), client); err != nil {
+			t.Fatal(err)
+		}
+		if len(replies) != 2 {
+			t.Fatal("scheduled notification replayed")
+		}
+	})
 }

@@ -1059,6 +1059,8 @@ usage_error.curl_no_status: curl 未返回 HTTP 状态行
 settings.deerflow: 常用
 settings.deerflow_models: 模型
 settings.channels: 渠道
+settings.schedules: 定时任务
+settings.schedules_keywords: 定时 任务 时间 schedule cron timer tasks
 settings.channels_keywords: 渠道 微信 登录 扫码 插件 channel wechat plugin login
 settings.deerflow_tools: 工具与权限
 settings.deerflow_advanced: 高级

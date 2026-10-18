@@ -71,7 +71,7 @@ func TestScheduleDurableClaimCoalescingNotificationsAndPause(t *testing.T) {
 	if err = s.Acknowledge(ctx, history[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.SetPaused(ctx, schedule.Spec.ID, true); err != nil {
+	if err = s.SetPaused(ctx, schedule.Spec.ID, true, currentRevision(t, s, schedule.Spec.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.Tick(ctx, now.Add(time.Hour)); err != nil {
@@ -80,7 +80,7 @@ func TestScheduleDurableClaimCoalescingNotificationsAndPause(t *testing.T) {
 	if calls != 1 {
 		t.Fatal("paused schedule ran")
 	}
-	if err = s.SetPaused(ctx, schedule.Spec.ID, false); err != nil {
+	if err = s.SetPaused(ctx, schedule.Spec.ID, false, currentRevision(t, s, schedule.Spec.ID)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -157,7 +157,7 @@ func TestScheduleDeleteKeepsHistoryAndNotificationFailureStopsReplay(t *testing.
 	if calls != 1 {
 		t.Fatal("effect replayed")
 	}
-	if err = s.Delete(ctx, v.Spec.ID); err != nil {
+	if err = s.Delete(ctx, v.Spec.ID, currentRevision(t, s, v.Spec.ID)); err != nil {
 		t.Fatal(err)
 	}
 	h, err := s.History(ctx, v.Spec.ID)

@@ -12,9 +12,31 @@
 6. 运行 `./start.ps1 -Check`。此模式只验证身份、配置和本地可执行文件，执行本地 `--help`，不连接 relay、不启动 ACP、不打开或迁移数据库。
 7. 运行 `start.bat` 或 `./start.ps1`，保持窗口运行，使用 Ctrl+C 退出。启动后会更新配置的 profile、presence 和 status；`-Once` 也会执行任务并发送回复。
 
-`permission_policy` 默认 `deny`，工具权限请求会被取消，并回复中断原因。仅在明确限制发送者后才可设置 `allow_once`，此时允许一次工具审批；不支持自动选择 allow_always。
+`permission_policy` 默认 `deny`，普通工具权限请求会被取消，并回复中断原因。仅在明确限制发送者后才可设置 `allow_once`，此时允许一次工具审批；不支持自动选择 allow_always。只读定时任务查询和本地单独授权的定时任务管理使用下述独立策略。
 
 安装目录自带 `deerflow-acp.exe` 和 `deerflow-acpd.exe`。Buzz 应选择 Rust Bridge `deerflow-acp.exe`。直接运行 `deerflow-acp-go.exe` 使用 ACP v1，无法用于此适配器。启动检查会拒绝旧 Python Bridge。配置了 `desktop_root` 后会读取其 `user-data/config/config.yaml`，连接 `user-data/runtime/acp-go`，使用 `user-data/data/go-harness`，与桌面保持一致。
+
+## 通过对话管理定时任务
+
+升级桌面后台和此适配器后，在本地 `[deerflow]` 中设置
+`schedule_full_access = true`，允许受限发送者创建默认 Full Access 的长期任务。
+仅允许显式公钥白名单或已验证 owner，不能与 `allow_any_sender=true` 同用。
+`permission_policy=allow_once` 不会自动打开此授权。已经入队的旧消息不追溯升级权限。
+
+可直接对 Agent 说“每天九点检查项目并回复到这里”“列出我的定时任务”
+“把这个任务改为工作日八点”“暂停／恢复／删除这个任务”。任务使用同一个
+`desktop_root` 的数据库，立即出现在桌面设置的定时任务页面。成功回复依据工具
+实际返回的任务 ID、时区和下次执行时间；明确请求不额外要求重复确认。
+
+适配器通过受认证的本地管理通道绑定发送者、来源消息和工作区，不信任正文里
+伪造的公钥。会话按发送者隔离，即使同一频道中有多个授权用户也不共享工具历史。
+升级前的共享会话保留，但新消息会创建隔离会话。不同渠道的同一个人需要本地
+显式身份关联，不能仅凭姓名或工作区推断。
+
+保持后台与适配器运行。适配器定期续约本地授权；到点时续约过期或授权撤销会暂停
+任务，桌面保留原因和结果。修改配置后需重启适配器才生效。完成结果默认投递到
+创建任务的频道／私信，发送前先认领，确认丢失时标为未知且不自动重发，更不会
+重新执行任务。桌面卡片和历史分别显示执行结果与通知状态。
 
 ## 从旧 Python 适配迁移
 

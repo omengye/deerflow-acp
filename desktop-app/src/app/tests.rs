@@ -1901,6 +1901,7 @@ fn settings_search_filters_pages_for_arrow_cycling() {
         pages(""),
         vec![
             SettingsPage::Channels,
+            SettingsPage::Schedules,
             SettingsPage::DeerFlow,
             SettingsPage::DeerFlowModels,
             SettingsPage::DeerFlowTools,
@@ -1918,6 +1919,8 @@ fn settings_search_filters_pages_for_arrow_cycling() {
     assert!(!SettingsPage::Daemon.is_visible_in_navigation());
     assert!(SettingsPage::DeerFlowSkillCenter.is_visible_in_navigation());
     assert_eq!(pages("wechat"), vec![SettingsPage::Channels]);
+    assert_eq!(pages("schedule"), vec![SettingsPage::Schedules]);
+    assert_eq!(pages("定时"), vec![SettingsPage::Schedules]);
 }
 
 #[test]

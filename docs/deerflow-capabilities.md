@@ -88,10 +88,57 @@ For a portable desktop package, run commands from its directory with
 `DEERFLOW_GO_RUNTIME_DIR`, or `%LOCALAPPDATA%\DeerFlow\go-acp` on Windows.
 The control command must select the same runtime directory as the running daemon.
 
-These are host-management commands, not model tools. Do not expose the endpoint
-or CLI with arbitrary requests to untrusted remote users. Schedules use this CLI. Channel administration also has a native Settings > Channels page.
+These are host-management commands. Do not expose the endpoint or CLI with
+arbitrary requests to remote users. The Agent uses the separate, scoped
+`schedule_read` and `schedule_manage` tools for conversation-based scheduling.
+Settings > Scheduled tasks manages the same persisted schedules. Channel
+administration has a native Settings > Channels page.
 
 ## Durable schedules
+
+### Conversations, ownership and authorization
+
+Desktop, WeChat and Buzz share the native scheduling engine. Ask the Agent to
+create a reminder/recurrence, list tasks, change timing, pause/resume/delete, or
+read execution history. Success requires a persisted receipt with task ID,
+timezone, next fire and notification target, not an optimistic natural-language
+promise. The model receives native capability guidance and a clock/status tool.
+
+- `schedule_read`: `list`, `get`, `history`, `status`, `preview`.
+- `schedule_manage`: `create`, `reschedule`, `pause`, `resume`, `delete`.
+  Creation requires a stable `request_id`; retries within the source message
+  reuse the task, and changing parameters under the same key is rejected.
+- Workspace, source identity, recipients and Full Access grant are host-bound,
+  never model arguments. Read-only/plan mode cannot mutate schedules. Native
+  scheduled work and delegated/background agents cannot create more schedules.
+- Channel users see only their own tasks in their workspace, across conversations
+  and restarts. Local desktop settings remain administrative. Shared Buzz
+  channels now use sender-scoped Agent sessions; old shared sessions remain in
+  history but are not reused. A message admitted before authorization cannot
+  acquire a later grant merely by waiting in the inbox.
+- WeChat requires the existing local Full Access channel authorization. Buzz
+  additionally requires `[deerflow] schedule_full_access = true` and a restricted
+  sender allowlist (an attested owner is supported). `permission_policy=allow_once`
+  alone does not authorize persistent Full Access jobs. The adapter must remain
+  running to renew its local scheduling lease and deliver results; if the lease
+  expires at dispatch, the task pauses for attention. Revocation/account/workspace
+  changes invalidate old grants; reauthorization does not silently upgrade old
+  tasks. Existing legacy schedule permissions are preserved.
+- Notifications default to the source conversation. WeChat uses its existing
+  durable channel outbox; Buzz uses a claimed, acknowledged outbox. Unknown send
+  outcomes are quarantined rather than resent. Notification failure never reruns
+  the task. The desktop card/history and `schedule_read` show notification state
+  separately from execution state. Delete retains already-produced results.
+- Cross-channel identity is never inferred. A local administrator can explicitly
+  link source principals using `schedule.owner.link` with `sources` (each has
+  `kind`, `account`, `sender`, `workspace`) and an opaque local `owner` string.
+  An empty owner unlinks those principals. This is a local-only operation, not
+  an Agent tool; linked users still need current authorization to mutate tasks.
+
+No chat window needs to stay open. The daemon and relevant channel transport
+must remain running; there is no OS wakeup or promise of delivery after shutdown.
+
+### Local management
 
 Example `schedule-request.json`:
 
@@ -118,24 +165,53 @@ are bundled. Intervals must be 60 seconds to one year. At most 200 schedules exi
 ```json
 {"operation":"schedule.status"}
 {"operation":"schedule.list"}
-{"operation":"schedule.pause","id":"SCHEDULE_ID","paused":true}
-{"operation":"schedule.pause","id":"SCHEDULE_ID","paused":false}
+{"operation":"schedule.snapshot","id":"OPTIONAL_HISTORY_SCHEDULE_ID"}
+{"operation":"schedule.preview","timing":{"kind":"cron","cron":"0 9 * * 1-5","timezone":"Asia/Shanghai"}}
+{"operation":"schedule.reschedule","id":"SCHEDULE_ID","expected_revision":1,"timing":{"kind":"interval","every_seconds":3600,"timezone":"Asia/Shanghai"}}
+{"operation":"schedule.pause","id":"SCHEDULE_ID","expected_revision":2,"paused":true}
+{"operation":"schedule.pause","id":"SCHEDULE_ID","expected_revision":3,"paused":false}
 {"operation":"schedule.history","id":"SCHEDULE_ID"}
 {"operation":"schedule.history"}
 {"operation":"schedule.ack","id":"OCCURRENCE_ID"}
-{"operation":"schedule.delete","id":"SCHEDULE_ID"}
+{"operation":"schedule.delete","id":"SCHEDULE_ID","expected_revision":4}
 ```
 
 - Daemon must remain running; no Windows Task Scheduler or OS cron is installed.
 - Each occurrence gets an isolated normal session, saved before the first run.
   The worker serializes dispatch and uses the normal shared run queue. A single
   dispatch has an additional 30-minute ceiling. No desktop-owned session is stolen.
-- Default approval is `read_only`. `ask` can suspend for desktop approval.
-  `allow_always` is an explicit host authorization, never a model-selected value.
-  Existing host tool allow/deny policy still applies.
+- Newly created schedules default to Full Access (`approval: "allow_always"`).
+  Creating a schedule through the trusted host interface or an authorized Agent
+  scheduling tool authorizes its enabled
+  tools without ordinary per-call approval. Explicit `read_only` and `ask` are
+  respected; `ask` may suspend for desktop approval. Existing schedules are never
+  upgraded, including legacy omitted approval (read-only). Editing time does not
+  change permissions. Tool enable/deny rules and dedicated skill approval gates
+  still apply; Full Access does not imply filesystem isolation.
+- The native page displays cards, actual permissions, plan status, next planned
+  time with timezone offset, and recent execution/history with session links.
+  It supports time edits, pause/resume and deletion, not creation or run-now.
+  Saving takes effect once without a second confirmation; only deletion asks
+  for confirmation. Drafts survive refresh/navigation and cannot overwrite a
+  newer revision. Unavailable service is not presented as an empty task list.
+- `schedule.snapshot` returns bounded card/history summaries and scheduler
+  status (`reschedule_version: 1`). `schedule.list` retains complete specs.
+  `schedule.preview` validates without persisting; interval next-fire time is
+  recalculated at save/resume time. Paused tasks remain paused after a time edit.
+- Pause, delete and reschedule require the current `expected_revision` from a
+  fresh list/snapshot. Claim, completion and mutations advance this revision.
+  `conflict`, `busy`, `not_found`, and `invalid_request` distinguish failures.
+  The desktop also pins the daemon `expected_instance_id`. After a lost reply,
+  refresh and inspect rather than retrying blindly (intervals would reset again).
+- Claimed/running tasks cannot be edited or deleted. Pausing future recurrence
+  is permitted during execution. An ended single-run task can be explicitly
+  rearmed using `schedule.reschedule` with `rearm: true` and a future `once` time;
+  this preserves its ID and history and enables that new occurrence.
 - Durable claim and next-fire advancement happen before execution. Missed fires
   coalesce to one run, not an unbounded catch-up backlog. Pause affects future
-  fires, not the active run; use the linked session's task controls to cancel it.
+  fires, not the active run. An actively running session is owned by the worker;
+  the page never steals that lease. Session links become available after the
+  run completes or suspends for attention.
 - Failure, cancellation, waiting input or crash pauses the recurrence. A crash
   without a terminal receipt is `unknown`, never replayed. Inspect the session
   before explicitly resuming future fires. Expired once schedules cannot resume.

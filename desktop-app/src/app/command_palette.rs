@@ -818,6 +818,7 @@ impl Waku {
             next(),
         ));
         for (page, label_key, icon, keywords) in [
+            (SettingsPage::Schedules, "settings.schedules", "icons/hourglass.svg", "schedule cron timer tasks 定时 任务 时间"),
             (SettingsPage::Channels, "settings.channels", "icons/server.svg", "channels wechat plugins login 渠道 微信 插件 登录"),
             (
                 SettingsPage::DeerFlow,

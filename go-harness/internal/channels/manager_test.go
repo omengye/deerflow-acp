@@ -312,7 +312,7 @@ func TestNotificationUsesHostTransactionAndAccountFence(t *testing.T) {
 	if err := m.accept(ctx, i, i.auth, i.cfg, channelproto.Batch{Messages: []channelproto.Message{message("prior", "alice")}}); err != nil {
 		t.Fatal(err)
 	}
-	spec := automation.Spec{Name: "test", Notify: &automation.NotificationTarget{Channel: i.id, Account: "bot", Conversation: "alice", Sender: "alice"}}
+	spec := automation.Spec{Name: "test", Workspace: i.cfg.Workspace, Notify: &automation.NotificationTarget{Channel: i.id, Account: "bot", Conversation: "alice", Sender: "alice"}}
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -330,6 +330,22 @@ func TestNotificationUsesHostTransactionAndAccountFence(t *testing.T) {
 	spec.Notify.Account = "other"
 	if m.CanNotify(spec.Notify) {
 		t.Fatal("cross-account target allowed")
+	}
+	spec.Notify.Account = "bot"
+	spec.Workspace = t.TempDir()
+	tx, err = m.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = m.EnqueueNotificationTx(ctx, tx, spec, automation.Occurrence{ID: "wrong-workspace"}); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.db.QueryRow(`SELECT COUNT(*) FROM harness_channel_messages WHERE id='schedule-wrong-workspace'`).Scan(&n); err != nil || n != 0 {
+		t.Fatal("workspace change leaked notification", n, err)
 	}
 }
 func TestLoginRedactsCredentialsAndFencesOldAttempt(t *testing.T) {
@@ -481,7 +497,7 @@ func TestNotificationContextRequirementComesFromDescriptor(t *testing.T) {
 			t.Fatal(err)
 		}
 		id := []string{"no-context-required", "context-required"}[index]
-		spec := automation.Spec{Notify: &automation.NotificationTarget{Channel: i.id, Account: "bot", Conversation: "alice", Sender: "alice"}}
+		spec := automation.Spec{Workspace: i.cfg.Workspace, Notify: &automation.NotificationTarget{Channel: i.id, Account: "bot", Conversation: "alice", Sender: "alice"}}
 		if err = m.EnqueueNotificationTx(context.Background(), tx, spec, automation.Occurrence{ID: id}); err != nil {
 			tx.Rollback()
 			t.Fatal(err)

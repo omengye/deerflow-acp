@@ -37,7 +37,8 @@ explicit confirmation. Channels never implicitly grant `allow_always`. Native
 durable permission waits remain pending for desktop review instead of being
 rejected because no interactive channel approver exists. No approval is performed
 by a plugin. Legacy WeChat sender/approval policies are preserved until explicit
-re-binding; scheduled jobs retain their separate `read_only` default.
+re-binding. New scheduled jobs default to Full Access only after trusted local
+or channel scheduling authorization; legacy schedule grants remain unchanged.
 
 ### Channel Full Access
 

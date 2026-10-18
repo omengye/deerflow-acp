@@ -545,7 +545,7 @@ func eventError(e harness.RunEvent) string {
 // MCP tools always have a namespace; their readOnlyHint is not evidence.
 func failedStartedState(toolName string) harness.ReceiptState {
 	switch toolName {
-	case "read_file", "read_tool_output", "read_attachment", "analyze_attachment", "list_attachments", "list_directory", "search_files", "read_skill_file", "skill", "view_image", "search_memory":
+	case "read_file", "read_tool_output", "read_attachment", "analyze_attachment", "list_attachments", "list_directory", "search_files", "read_skill_file", "skill", "view_image", "search_memory", "schedule_read":
 		return harness.ReceiptNoEffect
 	default:
 		return harness.ReceiptUncertain

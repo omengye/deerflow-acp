@@ -46,10 +46,12 @@ type rpcPeer struct {
 	closed     sync.Once
 	onUpdate   func(json.RawMessage)
 	permission string
+	schedules  bool
 }
 
-func newPeer(reader io.ReadCloser, writer io.WriteCloser, permission string, onUpdate func(json.RawMessage)) *rpcPeer {
+func newPeer(reader io.ReadCloser, writer io.WriteCloser, permission string, onUpdate func(json.RawMessage), schedules ...bool) *rpcPeer {
 	p := &rpcPeer{reader: reader, writer: writer, pending: map[string]chan rpcResult{}, done: make(chan struct{}), onUpdate: onUpdate, permission: permission}
+	p.schedules = len(schedules) > 0 && schedules[0]
 	go p.read()
 	return p
 }
@@ -160,15 +162,28 @@ func (p *rpcPeer) read() {
 			reply := envelope{JSONRPC: "2.0", ID: m.ID}
 			if m.Method == "session/request_permission" {
 				var params struct {
-					Session string `json:"sessionId"`
+					Session  string `json:"sessionId"`
+					ToolCall struct {
+						Title string `json:"title"`
+					} `json:"toolCall"`
+					Subject struct {
+						Type     string `json:"type"`
+						ToolCall struct {
+							Title string `json:"title"`
+						} `json:"toolCall"`
+					} `json:"subject"`
 					Options []struct {
 						ID   string `json:"optionId"`
 						Kind string `json:"kind"`
 					} `json:"options"`
 				}
 				_ = json.Unmarshal(m.Params, &params)
+				toolName := params.ToolCall.Title
+				if params.Subject.Type == "tool_call" {
+					toolName = params.Subject.ToolCall.Title
+				}
 				outcome := map[string]any{"outcome": "cancelled"}
-				if p.permission == "allow_once" {
+				if p.permission == "allow_once" || toolName == "schedule_read" || p.schedules && toolName == "schedule_manage" {
 					for _, option := range params.Options {
 						if option.Kind == "allow_once" {
 							outcome = map[string]any{"outcome": "selected", "optionId": option.ID}
@@ -351,7 +366,7 @@ func (a *ACPClient) Open(ctx context.Context) error {
 		if turn != nil {
 			turn.apply(value.Update)
 		}
-	})
+	}, a.Config.Deerflow.ScheduleFullAccess && !a.Config.Buzz.AllowAnySender)
 	done := make(chan struct{})
 	a.mu.Lock()
 	a.peer = peer
@@ -469,6 +484,11 @@ func (a *ACPClient) Prompt(ctx context.Context, session string, blocks []map[str
 	a.turns[session] = turn
 	a.mu.Unlock()
 	defer func() { a.mu.Lock(); delete(a.turns, session); a.mu.Unlock() }()
+	if message, ok := ctx.Value(buzzScheduleMessageKey{}).(Pending); ok {
+		if err := a.bindSchedules(ctx, session, message); err != nil {
+			return "", &PromptError{Detail: "Trusted Buzz source binding failed; no prompt submitted"}
+		}
+	}
 	promptCtx := ctx
 	cancel := func() {}
 	if a.Config.Deerflow.PromptTimeout > 0 {

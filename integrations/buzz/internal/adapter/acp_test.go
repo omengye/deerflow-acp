@@ -81,8 +81,13 @@ func TestHelperProcess(t *testing.T) {
 			update(map[string]any{"sessionUpdate": "state_update", "state": "running"})
 			update(map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "m", "content": map[string]any{"type": "text", "text": "partial"}})
 			update(map[string]any{"sessionUpdate": "agent_message", "messageId": "m", "content": []map[string]any{{"type": "text", "text": "complete"}}})
-			if mode == "permission" {
-				_ = encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": "permission", "method": "session/request_permission", "params": map[string]any{"sessionId": "session", "options": []map[string]string{{"kind": "allow_always", "optionId": "always"}, {"kind": "allow_once", "optionId": "once"}}}})
+			if mode == "permission" || strings.HasPrefix(mode, "permission-v2-") {
+				params := map[string]any{"sessionId": "session", "options": []map[string]string{{"kind": "allow_always", "optionId": "always"}, {"kind": "allow_once", "optionId": "once"}}}
+				if strings.HasPrefix(mode, "permission-v2-") {
+					params["title"] = "schedule_manage"
+					params["subject"] = map[string]any{"type": "tool_call", "toolCall": map[string]string{"title": strings.TrimPrefix(mode, "permission-v2-")}}
+				}
+				_ = encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": "permission", "method": "session/request_permission", "params": params})
 				if !scanner.Scan() {
 					os.Exit(3)
 				}
@@ -175,6 +180,32 @@ func TestACPPermissionPolicy(t *testing.T) {
 			}
 			if e != nil || body != "selected:once" {
 				t.Fatal(body, e)
+			}
+		})
+	}
+}
+
+func TestACPV2SchedulePermissionUsesSubjectNotDisplayTitle(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		grant, allowed bool
+	}{
+		{"schedule_manage", true, true}, {"schedule_manage", false, false},
+		{"schedule_read", false, true}, {"write_file", true, false},
+	} {
+		t.Run(fmt.Sprint(tc.name, tc.grant), func(t *testing.T) {
+			a := fakeACP(t, "permission-v2-"+tc.name)
+			a.Config.Deerflow.ScheduleFullAccess = tc.grant
+			if err := a.Open(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			body, err := a.Prompt(context.Background(), "session", nil, nil)
+			if tc.allowed {
+				if err != nil || body != "selected:once" {
+					t.Fatal(body, err)
+				}
+			} else if err == nil {
+				t.Fatal("unauthorized approval", body)
 			}
 		})
 	}

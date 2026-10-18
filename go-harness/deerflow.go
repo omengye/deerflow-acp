@@ -628,6 +628,15 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			}
 			tools, err := background.ToolsForRun(ctx, req, out.State)
 			out.Tools = append(out.Tools, tools...)
+			if err != nil {
+				return out, err
+			}
+			schedules, instruction, err := client.scheduleTools(ctx, req)
+			if err != nil {
+				return out, err
+			}
+			out.Tools = append(out.Tools, schedules...)
+			out.InstructionAppend += instruction
 			state := append(json.RawMessage(nil), out.State...)
 			out.RoleToolFactory = func(ctx context.Context) ([]tool.BaseTool, error) {
 				return background.RoleToolsForRun(ctx, req, state)

@@ -2190,6 +2190,10 @@ settings.channels:
   en: Channels
 settings.channels_keywords:
   en: channels wechat plugins login QR messaging
+settings.schedules:
+  en: Scheduled tasks
+settings.schedules_keywords:
+  en: schedule cron timer tasks 定时 任务 时间
 settings.deerflow_tools:
   en: Tools and permissions
 settings.deerflow_advanced:

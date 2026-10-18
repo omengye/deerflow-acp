@@ -89,6 +89,27 @@ func TestFullAccessAdmissionRevocationAndRestart(t *testing.T) {
 	}
 }
 
+func TestScheduleGrantRequiresCurrentDispatchAndWorkspace(t *testing.T) {
+	ctx := context.Background()
+	m, i := fixture(t, nil)
+	if _, err := m.SetPermissions(ctx, i.id, i.revision, harness.ApprovalAllowAlways); err != nil {
+		t.Fatal(err)
+	}
+	d := Dispatch{i.id, i.auth.Account, "alice", "alice", i.cfg.Workspace, "message", i.revision}
+	source := m.ScheduleSource(d, "session")
+	if source.Grant == "" || !m.AuthorizeSchedule(source, true) {
+		t.Fatal(source)
+	}
+	d.Revision--
+	if m.ScheduleSource(d, "session").Grant != "" {
+		t.Fatal("stale dispatch acquired grant")
+	}
+	source.Workspace = t.TempDir()
+	if m.AuthorizeSchedule(source, true) {
+		t.Fatal("cross-workspace grant")
+	}
+}
+
 func TestChannelConfirmationScopeExpiryDigestAndSingleUse(t *testing.T) {
 	ctx := context.Background()
 	m, i := fixture(t, nil)

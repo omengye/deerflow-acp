@@ -51,6 +51,9 @@ impl Waku {
         if page == SettingsPage::Channels {
             self.enter_channels(cx);
         }
+        if page == SettingsPage::Schedules {
+            self.enter_schedules(cx);
+        }
         if page.is_deerflow() {
             self.deerflow_route_page(page, cx);
             self.ensure_deerflow_settings(cx);

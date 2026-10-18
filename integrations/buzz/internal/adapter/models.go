@@ -12,14 +12,15 @@ type Channel struct {
 	DM   bool
 }
 type Message struct {
-	ID      string     `json:"id"`
-	Author  string     `json:"pubkey"`
-	Created int64      `json:"created_at"`
-	Kind    int        `json:"kind"`
-	Content string     `json:"content"`
-	Tags    [][]string `json:"tags"`
-	Channel string     `json:"-"`
-	DM      bool       `json:"-"`
+	ID              string     `json:"id"`
+	Author          string     `json:"pubkey"`
+	Created         int64      `json:"created_at"`
+	Kind            int        `json:"kind"`
+	Content         string     `json:"content"`
+	Tags            [][]string `json:"tags"`
+	Channel         string     `json:"-"`
+	DM              bool       `json:"-"`
+	ScheduleAllowed bool       `json:"-"`
 }
 type Pending struct {
 	Message
@@ -58,7 +59,7 @@ func (m Message) mentions(pub string) bool {
 }
 func (m Message) conversation(scope string) string {
 	if m.DM || scope == "channel" {
-		return "channel:" + m.Channel
+		return "sender:" + m.Author + ":channel:" + m.Channel
 	}
 	root := ""
 	reply := false
@@ -89,7 +90,7 @@ func (m Message) conversation(scope string) string {
 	if root == "" {
 		root = m.ID
 	}
-	return "thread:" + m.Channel + ":" + root
+	return "sender:" + m.Author + ":thread:" + m.Channel + ":" + root
 }
 func (c Config) eligible(m Message) bool {
 	if m.Author == c.Buzz.AgentPubkey {

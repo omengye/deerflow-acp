@@ -113,6 +113,11 @@ func (a *App) Run(ctx context.Context, once bool) error {
 	if err := a.Agent.Open(ctx); err != nil {
 		return fmt.Errorf("initialize Go ACP v2: %w", err)
 	}
+	if client, ok := a.Agent.(*ACPClient); ok {
+		if err := client.refreshSchedules(ctx); err != nil {
+			return fmt.Errorf("register Buzz schedule source: %w", err)
+		}
+	}
 	observer, err := NewObserver(ctx, a.Config)
 	if err != nil {
 		return err
@@ -126,6 +131,11 @@ func (a *App) Run(ctx context.Context, once bool) error {
 		a.lifecycle(shutdown, false)
 	}()
 	if once {
+		if client, ok := a.Agent.(*ACPClient); ok && a.Config.Deerflow.ScheduleFullAccess {
+			if err := a.deliverSchedules(ctx, client); err != nil {
+				slog.Warn("Buzz scheduled result delivery pending; execution will not be replayed")
+			}
+		}
 		return a.Drain(ctx)
 	}
 	heartbeat, cancelHeartbeat := context.WithCancel(ctx)
@@ -134,10 +144,18 @@ func (a *App) Run(ctx context.Context, once bool) error {
 		defer close(heartbeatDone)
 		ticker := time.NewTicker(seconds(a.Config.Buzz.Lifecycle.Heartbeat))
 		defer ticker.Stop()
+		schedules := time.NewTicker(30 * time.Second)
+		defer schedules.Stop()
 		for {
 			select {
 			case <-heartbeat.Done():
 				return
+			case <-schedules.C:
+				if client, ok := a.Agent.(*ACPClient); ok {
+					if err := client.refreshSchedules(heartbeat); err != nil {
+						slog.Warn("Buzz scheduling authorization refresh failed")
+					}
+				}
 			case <-ticker.C:
 				if a.Config.Buzz.Lifecycle.Presence {
 					bounded, cancel := context.WithTimeout(heartbeat, 3*time.Second)
@@ -148,6 +166,25 @@ func (a *App) Run(ctx context.Context, once bool) error {
 		}
 	}()
 	defer func() { cancelHeartbeat(); <-heartbeatDone }()
+	// Delivery must not wait behind an arbitrarily long foreground model turn.
+	delivery, cancelDelivery := context.WithCancel(ctx)
+	deliveryDone := make(chan struct{})
+	go func() {
+		defer close(deliveryDone)
+		client, ok := a.Agent.(*ACPClient)
+		if !ok || !a.Config.Deerflow.ScheduleFullAccess {
+			return
+		}
+		for {
+			if err := a.deliverSchedules(delivery, client); err != nil && delivery.Err() == nil {
+				slog.Warn("Buzz scheduled result delivery pending; execution will not be replayed")
+			}
+			if sleep(delivery, seconds(a.Config.Adapter.PollInterval)) != nil {
+				return
+			}
+		}
+	}()
+	defer func() { cancelDelivery(); <-deliveryDone }()
 	for {
 		if err = a.Drain(ctx); err != nil {
 			if ctx.Err() != nil {
@@ -249,6 +286,7 @@ func (a *App) Drain(ctx context.Context) error {
 		for _, m := range messages {
 			cursor = max(cursor, m.Created)
 			if a.Config.eligible(m) {
+				m.ScheduleAllowed = a.Config.Deerflow.ScheduleFullAccess && !a.Config.Buzz.AllowAnySender
 				eligible = append(eligible, m)
 			}
 		}
@@ -334,6 +372,9 @@ func (a *App) acknowledge(ctx context.Context, message Pending) {
 }
 
 func (a *App) processMessage(ctx context.Context, message Pending) error {
+	// Old inbox rows may predate sender-scoped conversations. Never resume a
+	// shared channel session containing another sender's private tool results.
+	message.Conversation = message.Message.conversation(a.Config.Adapter.SessionScope)
 	response := message.Response
 	if response == nil {
 		if err := a.Agent.Open(ctx); err != nil {
@@ -385,7 +426,8 @@ func (a *App) processMessage(ctx context.Context, message Pending) error {
 				a.activity(ctx, a.Config.Buzz.Lifecycle.Working)
 				progress := NewProgress(ctx, a.Buzz, message)
 				a.Observer.Emit("turn_started", message.Channel, session, message.ID, map[string]any{"sourceEventId": message.ID})
-				body, err = a.Agent.Prompt(ctx, session, blocks, func(update map[string]any) {
+				promptCtx := context.WithValue(ctx, buzzScheduleMessageKey{}, message)
+				body, err = a.Agent.Prompt(promptCtx, session, blocks, func(update map[string]any) {
 					progress.Update(update)
 					a.Observer.Update(message.Channel, session, message.ID, update)
 				})

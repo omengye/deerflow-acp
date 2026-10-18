@@ -59,18 +59,19 @@ type Config struct {
 		} `toml:"lifecycle"`
 	} `toml:"buzz"`
 	Deerflow struct {
-		Command          string            `toml:"command"`
-		Args             []string          `toml:"args"`
-		Protocol         string            `toml:"protocol"`
-		Workspace        string            `toml:"workspace"`
-		DesktopRoot      string            `toml:"desktop_root"`
-		ConfigPath       string            `toml:"config_path"`
-		RuntimeDir       string            `toml:"runtime_dir"`
-		DataDir          string            `toml:"data_dir"`
-		Env              map[string]string `toml:"env"`
-		Timeout          float64           `toml:"timeout_seconds"`
-		PromptTimeout    float64           `toml:"prompt_timeout_seconds"`
-		PermissionPolicy string            `toml:"permission_policy"`
+		Command            string            `toml:"command"`
+		Args               []string          `toml:"args"`
+		Protocol           string            `toml:"protocol"`
+		Workspace          string            `toml:"workspace"`
+		DesktopRoot        string            `toml:"desktop_root"`
+		ConfigPath         string            `toml:"config_path"`
+		RuntimeDir         string            `toml:"runtime_dir"`
+		DataDir            string            `toml:"data_dir"`
+		Env                map[string]string `toml:"env"`
+		Timeout            float64           `toml:"timeout_seconds"`
+		PromptTimeout      float64           `toml:"prompt_timeout_seconds"`
+		PermissionPolicy   string            `toml:"permission_policy"`
+		ScheduleFullAccess bool              `toml:"schedule_full_access"`
 	} `toml:"deerflow"`
 	Adapter struct {
 		Replay        bool    `toml:"replay_existing"`
@@ -342,6 +343,9 @@ func (c *Config) Validate(secret, auth string) error {
 	}
 	if c.Deerflow.PermissionPolicy == "allow_once" && c.Buzz.AllowAnySender {
 		return errors.New("allow_once tool approval requires an explicit sender allowlist")
+	}
+	if c.Deerflow.ScheduleFullAccess && (c.Buzz.AllowAnySender || len(c.Buzz.AllowedPubkeys) == 0) {
+		return errors.New("schedule_full_access requires an explicit sender allowlist and allow_any_sender=false")
 	}
 	for _, file := range []string{c.Buzz.Command, c.Deerflow.Command} {
 		info, e := os.Stat(file)

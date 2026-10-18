@@ -45,9 +45,13 @@ args = []
 workspace = "D:/ACP/workspace"
 timeout_seconds = 120
 prompt_timeout_seconds = 0
-# deny cancels all tool permission requests. allow_once permits tools only when
-# callers are constrained by allowed_pubkeys / owner attestation.
+# deny cancels ordinary tool permission requests. allow_once permits them only
+# for allowed_pubkeys / owner attestation. Native schedule_read is read-only;
+# schedule_manage follows the separate local schedule_full_access grant.
 permission_policy = "deny"
+# Local authorization for persistent Full Access schedules. Independent of
+# one-off tool approval; requires explicit allowed_pubkeys, never public access.
+schedule_full_access = false
 # For a custom installation, omit desktop_root and set command, config_path,
 # runtime_dir and data_dir explicitly. Use the Rust deerflow-acp Bridge.
 # Never select deerflow-acp-go (its external wire protocol is v1).

@@ -133,7 +133,8 @@ func channelToolDescription(name string) string {
 		"web_fetch": "访问网页或网络接口", "web_search": "搜索网页",
 		"bash": "执行终端命令", "shell": "执行终端命令", "execute_command": "执行终端命令",
 		"ask_clarification": "请求补充信息", "task": "执行子任务",
-		"skill_edit": "修改已安装的 Skill",
+		"skill_edit":    "修改已安装的 Skill",
+		"schedule_read": "查询定时任务", "schedule_manage": "管理定时任务",
 	}
 	if label, ok := labels[name]; ok {
 		return name + "（" + label + "）"

@@ -242,7 +242,7 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 		if err != nil {
 			return nil, err
 		}
-		if info.Name == "read_skill_file" {
+		if info.Name == "read_skill_file" || info.Name == "schedule_read" || info.Name == "schedule_manage" {
 			continue
 		}
 		if info.Name == "view_image" && extensions.ModelToolFactory != nil {
@@ -422,6 +422,13 @@ type roleWork struct {
 // worker lease and restricts operations to this invocation's descendants.
 func CurrentRole(ctx context.Context) (agents.Invocation, bool, error) {
 	return CurrentRoleTx(ctx, nil)
+}
+
+// Includes the legacy general-purpose task agent, which has no named role.
+func IsDelegatedToolContext(ctx context.Context) bool {
+	_, delegated := ctx.Value(roleInvocationKey{}).(string)
+	_, role := ctx.Value(roleWorkKey{}).(roleWork)
+	return delegated || role
 }
 
 func CurrentRoleTx(ctx context.Context, tx *sql.Tx) (agents.Invocation, bool, error) {

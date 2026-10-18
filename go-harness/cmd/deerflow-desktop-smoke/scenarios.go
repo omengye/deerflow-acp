@@ -405,6 +405,7 @@ func (s *smoke) run() {
 	s.log("Local readiness uses saved revision without model requests", obj{})
 	w.deerflow("start")
 	state := s.settled()
+	s.schedules()
 	generation := state["applied_generation"]
 	a := s.acp("acp-before-apply")
 	s.route()

@@ -42,6 +42,15 @@ func (c *Client) unattendedWithEvents(ctx context.Context, existing, workspace, 
 		return out, nil, err
 	}
 	out.SessionID = x.ID
+	if _, scheduled := ctx.Value(scheduledRunKey{}).(bool); scheduled {
+		if err = c.bindScheduleSource(ctx, x.ID, automation.Source{Kind: "scheduled", Workspace: workspace}); err != nil {
+			return out, nil, err
+		}
+	} else if d, ok := channels.DispatchFromContext(ctx); ok {
+		if err = c.bindScheduleSource(ctx, x.ID, c.channels.ScheduleSource(d, x.ID)); err != nil {
+			return out, nil, err
+		}
+	}
 	if err = bind(x.ID); err != nil {
 		return out, nil, err
 	}
@@ -96,6 +105,12 @@ func (c *Client) unattendedWithEvents(ctx context.Context, existing, workspace, 
 func (c *Client) startAutomation(ctx context.Context, cfg Config) error {
 	var err error
 	c.scheduler, err = automation.New(ctx, c.store.DB(), func(ctx context.Context, spec automation.Spec, bind func(string) error) (automation.Outcome, error) {
+		ctx = context.WithValue(ctx, scheduledRunKey{}, true)
+		if spec.Source != nil {
+			if err := c.authorizeScheduleSource(ctx, *spec.Source, true); err != nil {
+				return automation.Outcome{}, err
+			}
+		}
 		return c.unattended(ctx, "", spec.Workspace, spec.Prompt, spec.Approval, bind)
 	})
 	if err != nil {
@@ -111,7 +126,7 @@ func (c *Client) startAutomation(ctx context.Context, cfg Config) error {
 	if err = c.channels.MigrateWeChat(ctx, channels.Config{Enabled: cfg.WeChat.Enabled, Workspace: cfg.WeChat.Workspace, LegacyAllowed: cfg.WeChat.AllowedUsers, LegacyApproval: cfg.WeChat.Approval}); err != nil {
 		return err
 	}
-	c.scheduler.NotifyTx = c.channels.EnqueueNotificationTx
+	c.scheduler.NotifyTx = c.enqueueScheduleNotification
 	c.scheduler.Start(context.Background())
 	c.channels.Start()
 	return nil
@@ -144,18 +159,27 @@ func decodeManagement(request localhost.ManagementRequest, out any, keys ...stri
 
 func (c *Client) managementAutomation(ctx context.Context, r localhost.ManagementRequest) (any, error) {
 	var in struct {
-		ID     string          `json:"id"`
-		Spec   automation.Spec `json:"spec"`
-		Paused bool            `json:"paused"`
-		Verify string          `json:"verify_code"`
+		ID       string            `json:"id"`
+		Spec     automation.Spec   `json:"spec"`
+		Paused   bool              `json:"paused"`
+		Verify   string            `json:"verify_code"`
+		Revision int64             `json:"expected_revision"`
+		Timing   automation.Timing `json:"timing"`
+		Rearm    bool              `json:"rearm"`
 	}
 	var keys []string
 	switch r.Operation {
 	case "schedule.create":
 		keys = []string{"spec"}
 	case "schedule.pause":
-		keys = []string{"id", "paused"}
-	case "schedule.history", "schedule.ack", "schedule.delete", "wechat.review":
+		keys = []string{"id", "paused", "expected_revision"}
+	case "schedule.delete":
+		keys = []string{"id", "expected_revision"}
+	case "schedule.reschedule":
+		keys = []string{"id", "expected_revision", "timing", "rearm"}
+	case "schedule.preview":
+		keys = []string{"timing"}
+	case "schedule.snapshot", "schedule.history", "schedule.ack", "wechat.review":
 		keys = []string{"id"}
 	case "wechat.login.poll":
 		keys = []string{"id", "verify_code"}
@@ -183,20 +207,47 @@ func (c *Client) managementAutomation(ctx context.Context, r localhost.Managemen
 		}
 		return v, nil
 	case "schedule.list":
-		return c.scheduler.List(ctx)
+		return c.scheduleList(ctx)
+	case "schedule.snapshot":
+		items, err := c.scheduleList(ctx)
+		if err != nil {
+			return nil, err
+		}
+		// Cards are bounded projections, not editable copies of task authority.
+		// Keep even 200 maximum-sized prompts plus history below the IPC limit.
+		for i := range items {
+			items[i].Spec.Prompt = scheduleSummary(items[i].Spec.Prompt)
+		}
+		var history []automation.Occurrence
+		if in.ID != "" {
+			history, err = c.scheduleHistory(ctx, in.ID)
+			if err != nil {
+				return nil, err
+			}
+			for i := range history {
+				history[i].Outcome.Text = scheduleSummary(history[i].Outcome.Text)
+			}
+		}
+		return map[string]any{"items": items, "status": c.scheduler.Status(), "history": history}, nil
+	case "schedule.preview":
+		v, err := in.Timing.Preview(time.Now())
+		return v, scheduleManagementError(err)
+	case "schedule.reschedule":
+		v, err := c.scheduler.Reschedule(ctx, in.ID, in.Revision, in.Timing, in.Rearm)
+		return v, scheduleManagementError(err)
 	case "schedule.status":
 		return c.scheduler.Status(), nil
 	case "schedule.pause":
 		if in.ID == "" || (string(r.Fields["paused"]) != "true" && string(r.Fields["paused"]) != "false") {
 			return nil, managementInvalid("id and paused are required")
 		}
-		return map[string]any{"id": in.ID, "paused": in.Paused}, c.scheduler.SetPaused(ctx, in.ID, in.Paused)
+		return map[string]any{"id": in.ID, "paused": in.Paused}, scheduleManagementError(c.scheduler.SetPaused(ctx, in.ID, in.Paused, in.Revision))
 	case "schedule.history":
-		return c.scheduler.History(ctx, in.ID)
+		return c.scheduleHistory(ctx, in.ID)
 	case "schedule.ack":
 		return map[string]bool{"acknowledged": true}, c.scheduler.Acknowledge(ctx, in.ID)
 	case "schedule.delete":
-		return map[string]bool{"deleted": true}, c.scheduler.Delete(ctx, in.ID)
+		return map[string]bool{"deleted": true}, scheduleManagementError(c.scheduler.Delete(ctx, in.ID, in.Revision))
 	case "wechat.status":
 		value, err := c.channels.Status(ctx, "wechat")
 		if data, ok := value.(map[string]any); ok {
@@ -239,4 +290,32 @@ func (c *Client) managementAutomation(ctx context.Context, r localhost.Managemen
 	default:
 		return nil, managementInvalid("unsupported automation operation")
 	}
+}
+
+func scheduleSummary(value string) string {
+	text := []rune(value)
+	if len(text) > 512 {
+		return string(text[:512]) + "..."
+	}
+	return value
+}
+
+func scheduleManagementError(err error) error {
+	if err == nil {
+		return nil
+	}
+	code := "operation_failed"
+	switch {
+	case errors.Is(err, automation.ErrConflict):
+		code = "conflict"
+	case errors.Is(err, automation.ErrBusy):
+		code = "busy"
+	case errors.Is(err, automation.ErrNotFound):
+		code = "not_found"
+	case errors.Is(err, automation.ErrInvalid):
+		code = "invalid_request"
+	default:
+		return err
+	}
+	return &localhost.ManagementError{Code: code, Message: err.Error()}
 }

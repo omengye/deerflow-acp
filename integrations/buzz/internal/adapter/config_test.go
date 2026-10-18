@@ -51,6 +51,8 @@ func TestConfigPolicies(t *testing.T) {
 		{"public deny", func(c *Config) { c.Buzz.AllowAnySender = true }, testSecret, "", true},
 		{"public allow", func(c *Config) { c.Buzz.AllowAnySender = true; c.Deerflow.PermissionPolicy = "allow_once" }, testSecret, "", false},
 		{"allow once", func(c *Config) { c.Deerflow.PermissionPolicy = "allow_once" }, testSecret, "", true},
+		{"schedule grant", func(c *Config) { c.Deerflow.ScheduleFullAccess = true }, testSecret, "", true},
+		{"public schedule grant", func(c *Config) { c.Deerflow.ScheduleFullAccess = true; c.Buzz.AllowAnySender = true }, testSecret, "", false},
 		{"allow always", func(c *Config) { c.Deerflow.PermissionPolicy = "allow_always" }, testSecret, "", false},
 		{"v1", func(c *Config) { c.Deerflow.Protocol = "v1" }, testSecret, "", false},
 		{"direct v1", func(c *Config) {

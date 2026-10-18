@@ -33,7 +33,7 @@ func (m PermissionMode) RequiresPermission(name string) bool {
 		return false
 	case PermissionModeDangerous:
 		switch name {
-		case "skill", "skill_inspect", "list_directory":
+		case "skill", "skill_inspect", "list_directory", "schedule_read":
 			// Exact built-in names only; skill execution/editing is a separate tool.
 			return false
 		case "ask_clarification", "list_uploaded_files", "list_attachments", "memory_search", "task", "tool_search", "task_note":

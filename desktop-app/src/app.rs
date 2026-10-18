@@ -213,6 +213,7 @@ enum BranchPickerAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SettingsPage {
     Channels,
+    Schedules,
     DeerFlow,
     DeerFlowModels,
     DeerFlowTools,
@@ -236,6 +237,7 @@ impl SettingsPage {
             self,
             Self::DeerFlow
                 | Self::Channels
+                | Self::Schedules
                 | Self::DeerFlowModels
                 | Self::DeerFlowTools
                 | Self::DeerFlowAdvanced
@@ -1148,6 +1150,7 @@ pub struct Waku {
     provider_path_input: Entity<TextInput>,
     deerflow_settings: deerflow_settings::DeerFlowSettings,
     channel_settings: channels::ChannelSettings,
+    schedule_settings: schedules::ScheduleSettings,
     deerflow_approval_states: HashMap<Uuid, String>,
     pending_deerflow_approvals: HashMap<Uuid, deerflow_approval::PendingApproval>,
     computer_permissions: ComputerPermissions,
@@ -1654,6 +1657,7 @@ mod composer;
 mod deerflow_approval;
 mod deerflow_settings;
 mod channels;
+mod schedules;
 mod deerflow_tasks;
 mod drafts;
 mod file_search;
@@ -2072,6 +2076,7 @@ impl Waku {
         });
         let deerflow_settings = deerflow_settings::DeerFlowSettings::new(window, cx);
         let channel_settings = channels::ChannelSettings::new(window, cx);
+        let schedule_settings = schedules::ScheduleSettings::new(window, cx);
         let usage_project_filter =
             cx.new(|cx| TextInput::new(window, cx).placeholder(tr!("input.filter_projects")));
         let right_panel_diff_filter =
@@ -2660,6 +2665,14 @@ impl Waku {
                 })
                 .detach();
             }
+            for input in [&schedule_settings.value, &schedule_settings.timezone] {
+                cx.subscribe(input, |this: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
+                        this.schedule_input_edited(cx);
+                    }
+                })
+                .detach();
+            }
             for (index, input) in deerflow_settings.generation_inputs.iter().enumerate() {
                 cx.subscribe(input, move |this: &mut Self, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Edited) {
@@ -2848,6 +2861,7 @@ impl Waku {
                 provider_path_input,
                 deerflow_settings,
                 channel_settings,
+                schedule_settings,
                 deerflow_approval_states: HashMap::new(),
                 pending_deerflow_approvals: HashMap::new(),
                 computer_permissions: ComputerPermissions::default(),
