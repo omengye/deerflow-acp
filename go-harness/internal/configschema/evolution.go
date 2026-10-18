@@ -21,11 +21,12 @@ func evolutionFields() []Field {
 		{Path: "/skill_evolution/generation_model_name", Type: "string", Nullable: true, Default: nil, MaxLength: 256},
 		{Path: "/skill_evolution/security_fail_closed", Type: "boolean", Default: true, MustBeTrue: true},
 		{Path: "/skill_evolution/validation", Type: "review_limits", Default: map[string]any{
-			"timeout_seconds": 0, "max_input_bytes": 0, "max_output_tokens": 0,
+			"timeout_seconds": 0, "max_input_bytes": 0, "max_output_tokens": 0, "response_format": "text",
 		}},
 		reviewLimit("timeout_seconds", 1, 300),
 		reviewLimit("max_input_bytes", 1024, 2<<20),
 		reviewLimit("max_output_tokens", 128, 8192),
+		{Path: "/skill_evolution/validation/response_format", Type: "string", Default: "text", Enum: []string{"text", "json_schema"}},
 		{Path: "/skill_evolution/generation", Type: "generation_settings", Default: map[string]any{
 			"enabled": false, "timeout_seconds": 0, "max_input_bytes": 0, "max_output_tokens": 0,
 		}},
@@ -200,6 +201,11 @@ func ValidateEvolutionDraft(document, dormant map[string]any) error {
 		}
 		for key := range known {
 			if _, exists := values[key]; !exists {
+				// Older desktop drafts predate this optional transport hint. Saving
+				// them preserves any on-disk choice, or the text default.
+				if group == "validation" && key == "response_format" {
+					continue
+				}
 				return fmt.Errorf("skill_evolution.%s.%s: missing setting", group, key)
 			}
 		}

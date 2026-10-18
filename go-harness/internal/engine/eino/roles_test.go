@@ -317,8 +317,9 @@ func TestConfiguredRoleNestedDelegationAndPermission(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Nested SQLite checkpoint reconstruction is slower with race instrumentation.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			// This checks durable correctness, not latency. Race-instrumented
+			// depth-three checkpoint decoding can exceed 30s on shared runners.
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			trace := map[string]int{}
 			result, err := s.Run(ctx, "owner", session.ID, []harness.Content{{Type: "text", Text: "delegate"}}, func(_ context.Context, e harness.RunEvent) error { trace[e.Kind]++; return nil }, approveReceiptTool)

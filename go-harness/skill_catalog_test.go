@@ -94,6 +94,10 @@ func TestSkillCatalogAuthenticatedManagement(t *testing.T) {
 	if len(page.Skills) != 1 || page.Skills[0].SourceStatus != "ready" {
 		t.Fatalf("disabled filter/observation: %+v", page)
 	}
+	call(map[string]any{"operation": "skill.list", "status": "current"}, "", &page)
+	if len(page.Skills) != 1 || !page.Skills[0].Head.Exists || page.Skills[0].Head.Enabled {
+		t.Fatalf("current filter did not retain the disabled skill: %+v", page)
+	}
 	if err = c.Close(); err != nil {
 		t.Fatal(err)
 	}

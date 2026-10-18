@@ -88,6 +88,7 @@ tools:
 | `delete_path` | 删除文件、符号链接、空目录；显式递归删除；禁止删除工作区根 |
 | `host_opencli` | Go 参数数组调用已安装的 OpenCLI，带站点白名单、权限、输出上限和进程回收 |
 | `bash` | 复用 Go shell 执行器；Windows 默认采用 PowerShell 语法，WSL/Docker 可显式配置 |
+| `skill_run` | 对当前会话固定的技能版本检查 Python 环境或执行 `.py` 入口；复用命令权限、超时和回执，不自动安装依赖 |
 
 文件工具接受工作区相对路径、工作区内的绝对路径及 `/mnt/acp-workspace/...`。
 文本附件单文件最多 1 MiB，每条消息最多 8 个、合计 4 MiB；支持 TXT、Markdown、CSV、TSV、JSON、YAML、LOG，不支持 PDF、Office、目录或 OCR。附件快照与工作区文件工具是两条独立授权路径，附件不授予任意宿主目录访问权。
@@ -95,6 +96,15 @@ tools:
 搜索跳过 `.git` 和符号链接，最多遍历 2000 个条目；`grep` 跳过二进制和超过
 512 KiB 的文件，扫描总字节上限 16 MiB。返回截断标记和跳过文件数。
 SDK 原有的 `list_directory/search_files/edit_file/execute` 工具仍可用。
+
+技能可以携带 Python 源码和文本依赖声明，宿主本身仍不依赖 Python。
+`skill_run` 使用 `action: check` 检查解释器/发行包元数据，使用 `action: run`
+执行 `name`、包内相对 `path` 和独立 `args`。运行文件来自会话的不可变快照，
+不是当前安装目录。Windows PowerShell 模式可发现 PATH 中的 Python；其他模式
+需显式允许对应解释器，操作员也可用命令环境中的 `DEERFLOW_SKILL_PYTHON` 指定。
+计划/只读模式不提供执行能力。手工发布含脚本候选需确认未执行验证的风险，
+这不授予额外运行权限，也不代表本地/PowerShell/WSL 安全隔离。完整契约见
+[Python 技能说明](skill-python-support-20261018.md)。
 
 默认与配置版 `read_file` 均返回含 `version`、`content` 的 JSON，版本对应完整文件。
 覆盖、追加和 `edit_file/str_replace` 必须使用最近读取的 `version` 作为

@@ -116,15 +116,18 @@ func TestExistingRustBridgeGoDaemonDiscovery(t *testing.T) {
 				}
 				return out
 			}
-			if out := invoke("--start-daemon", ""); !bytes.Contains(out, []byte("build=deerflow-go")) {
-				t.Fatalf("not the Go daemon: %s", out)
-			}
+			started := invoke("--start-daemon", "")
 			data, err := os.ReadFile(filepath.Join(ipc, localhost.EndpointFilename))
 			var ep localhost.Endpoint
-			if err != nil || json.Unmarshal(data, &ep) != nil || ep.Token == "" {
+			if err != nil || json.Unmarshal(data, &ep) != nil || ep.Token == "" || ep.BuildID == "" || ep.InstanceID == "" {
 				t.Fatal("missing daemon endpoint identity")
 			}
-			if out := invoke("--status", ""); !bytes.Contains(out, []byte("build=deerflow-go")) || bytes.Contains(out, []byte(ep.Token)) {
+			// Release builds override the development build ID. Bind output to the
+			// actual native endpoint instead of assuming a fixed label prefix.
+			if !bytes.Contains(started, []byte("build="+ep.BuildID)) || bytes.Contains(started, []byte(ep.Token)) {
+				t.Fatal("startup did not match the native endpoint or leaked its credential")
+			}
+			if out := invoke("--status", ""); !bytes.Contains(out, []byte("build="+ep.BuildID)) || bytes.Contains(out, []byte(ep.Token)) {
 				t.Fatal("invalid or credential-bearing Bridge status")
 			}
 			if out := invoke("--manage", `{"operation":"daemon.status"}`); !bytes.Contains(out, []byte(`"config_revision"`)) || bytes.Contains(out, []byte(ep.Token)) {

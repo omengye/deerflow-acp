@@ -66,13 +66,37 @@ func TestCatalogPaginationFiltersAndStaleCursors(t *testing.T) {
 	if len(seen) != 6 {
 		t.Fatalf("missing targets: %+v", seen)
 	}
-	for status, count := range map[string]int{"enabled": 4, "disabled": 1, "deleted": 1} {
+	for status, count := range map[string]int{"current": 5, "enabled": 4, "disabled": 1, "deleted": 1} {
 		page, err := r.QueryCatalog(ctx, harness.SkillQuery{Status: status, Limit: 100})
 		if err != nil || len(page.Skills) != count {
 			t.Fatalf("filter %s: %+v %v", status, page, err)
 		}
 	}
-	for _, bad := range []harness.SkillQuery{{Limit: 0}, {Limit: 101}, {Limit: 1, Status: "published"}, {Limit: 1, Cursor: "bad"}, {Limit: 1, Cursor: first.Next, SourceID: "a"}} {
+	current := harness.SkillQuery{Status: "current", Limit: 1}
+	currentSeen := map[string]bool{}
+	for {
+		page, err := r.QueryCatalog(ctx, current)
+		if err != nil || len(page.Skills) != 1 || !page.Skills[0].Head.Exists {
+			t.Fatalf("current page includes tombstone or pagination gap: %+v %v", page, err)
+		}
+		key := page.Skills[0].Target.SourceID + "/" + page.Skills[0].Target.Name
+		if currentSeen[key] {
+			t.Fatalf("duplicate current target: %s", key)
+		}
+		currentSeen[key] = true
+		if page.Next == "" {
+			break
+		}
+		current.Cursor = page.Next
+	}
+	if len(currentSeen) != 5 || currentSeen["a/gamma"] || !currentSeen["b/alpha"] {
+		t.Fatalf("current filter lost disabled skills or retained deleted skills: %+v", currentSeen)
+	}
+	page, err := r.QueryCatalog(ctx, harness.SkillQuery{Status: "current", Name: "gamma", SourceID: "a", Limit: 1})
+	if err != nil || len(page.Skills) != 0 || page.Next != "" {
+		t.Fatalf("current name search exposed deleted skill: %+v %v", page, err)
+	}
+	for _, bad := range []harness.SkillQuery{{Limit: 0}, {Limit: 101}, {Limit: 1, Status: "published"}, {Limit: 1, Cursor: "bad"}, {Limit: 1, Cursor: first.Next, SourceID: "a"}, {Limit: 1, Cursor: first.Next, Status: "current"}} {
 		if _, err := r.QueryCatalog(ctx, bad); !errors.Is(err, harness.ErrInvalidInput) {
 			t.Fatalf("accepted query %+v: %v", bad, err)
 		}
@@ -95,7 +119,7 @@ func TestCatalogPaginationFiltersAndStaleCursors(t *testing.T) {
 	if _, err = r2.GetCatalogSkill(ctx, entry.Target); !errors.Is(err, harness.ErrPermissionDenied) {
 		t.Fatalf("rebound source accepted old target: %v", err)
 	}
-	page, err := r2.QueryCatalog(ctx, harness.SkillQuery{SourceID: "a", Limit: 100})
+	page, err = r2.QueryCatalog(ctx, harness.SkillQuery{SourceID: "a", Limit: 100})
 	if err != nil || len(page.Skills) != 0 {
 		t.Fatalf("rebound source exposed former records: %+v %v", page, err)
 	}

@@ -34,6 +34,12 @@ func TestEvolutionNullAndZeroDefaultsAreValidAndDormantExceptionsAreNarrow(t *te
 	}
 	limits := projection["validation"].(map[string]any)
 	for key, value := range limits {
+		if key == "response_format" {
+			if value != "text" {
+				t.Fatalf("review transport default changed: %v", value)
+			}
+			continue
+		}
 		if value != 0 {
 			t.Fatalf("%s default changed: %v", key, value)
 		}

@@ -58,6 +58,12 @@ func (s *Service) recordApproval(ctx context.Context, id string, review Review) 
 		if !validReportFor(p.Evaluation, input) {
 			return ErrValidation
 		}
+		if err := s.guardAutoPatch(ctx, tx, *p, input); err != nil {
+			return err
+		}
+		if requiresScriptAcknowledgment(p.Evaluation, input) && !review.AcknowledgeUnverifiedScripts {
+			return invalid("publication requires explicit acknowledgment that support scripts were not execution-validated")
+		}
 		if err := s.guardBehaviorReport(ctx, tx.SQL(), *p, p.Evaluation); err != nil {
 			return err
 		}
@@ -67,9 +73,6 @@ func (s *Service) recordApproval(ctx context.Context, id string, review Review) 
 		}
 		if diff != p.Diff || !slices.Equal(changed, p.ChangedFiles) {
 			return errors.New("skill approval diff is inconsistent")
-		}
-		if err := s.guardAutoPatch(ctx, tx, *p, input); err != nil {
-			return err
 		}
 		approval := harness.SkillApproval{ProposalID: p.ID, Target: p.Target, Base: p.Base, CandidateVersion: p.CandidateVersion, EvaluationDigest: p.EvaluationDigest, Review: review, CreatedAt: time.Now().UTC()}
 		data, err := json.Marshal(approval)

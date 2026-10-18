@@ -233,7 +233,7 @@ func TestProposalPublishAuditFailureIsAtomic(t *testing.T) {
 }
 
 func TestProposalSecurityValidationAndSourceIsolation(t *testing.T) {
-	for _, fault := range []string{"unavailable", "wrong_digest", "failed_behavior", "script_without_isolation"} {
+	for _, fault := range []string{"unavailable", "wrong_digest", "failed_behavior"} {
 		t.Run(fault, func(t *testing.T) {
 			f := newFixture(t, validatorFunc(func(_ context.Context, input ValidationInput) (Report, error) {
 				report := validReport(input)
@@ -248,9 +248,6 @@ func TestProposalSecurityValidationAndSourceIsolation(t *testing.T) {
 				return report, nil
 			}))
 			r := f.request(t, "blocked", "Candidate")
-			if fault == "script_without_isolation" {
-				r.Files["scripts/run.sh"] = []byte("echo sample\n")
-			}
 			p, err := f.service.Submit(context.Background(), r)
 			if err != nil || p.Status != "failed" || strings.Contains(p.Error, "credential") {
 				t.Fatalf("validation did not fail closed: %+v %v", p, err)
@@ -332,17 +329,26 @@ func TestProposalRejectDuringValidationAndDeleteRollback(t *testing.T) {
 	}
 }
 
-func TestProposalRejectsPythonAndBrokenReferences(t *testing.T) {
+func TestProposalAcceptsPythonAndRejectsBrokenReferences(t *testing.T) {
 	f := newFixture(t, nil)
-	for _, body := range []string{"Run `python3 scripts/run.py`.", "See [guide](missing.md).", "See [escape](../secret.md).", "See [escape](%2e%2e/secret.md)."} {
+	for _, body := range []string{"See [guide](missing.md).", "See [escape](../secret.md).", "See [escape](%2e%2e/secret.md)."} {
 		if _, err := f.service.Submit(context.Background(), f.request(t, body, body)); !errors.Is(err, harness.ErrInvalidInput) {
 			t.Fatalf("accepted invalid candidate %q: %v", body, err)
 		}
 	}
-	r := f.request(t, "python_file", "Candidate")
+	r := f.request(t, "python_file", "Run `python3 tool.PY`.")
 	r.Files["tool.PY"] = []byte("print('fixture')")
-	if _, err := f.service.Submit(context.Background(), r); !errors.Is(err, harness.ErrInvalidInput) {
-		t.Fatalf("accepted Python support file: %v", err)
+	p := f.submit(t, r)
+	if p.Status != "pending_review" || p.Evaluation.IsolatedScripts {
+		t.Fatalf("Python candidate not reviewable: %+v", p)
+	}
+	if _, err := f.service.Approve(context.Background(), p.ID, review(p)); !errors.Is(err, harness.ErrInvalidInput) {
+		t.Fatalf("unverified script approved without acknowledgment: %v", err)
+	}
+	decision := review(p)
+	decision.AcknowledgeUnverifiedScripts = true
+	if _, err := f.service.Approve(context.Background(), p.ID, decision); err != nil {
+		t.Fatalf("acknowledged Python publication failed: %v", err)
 	}
 	r = f.request(t, "reference", "See [guide](references/guide.md).")
 	r.Files["references/guide.md"] = []byte("Read [main](../SKILL.md).\n")

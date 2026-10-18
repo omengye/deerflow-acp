@@ -95,14 +95,14 @@ func TestExistingRustBridgeGoLaunchScripts(t *testing.T) {
 		t.Helper()
 		data, err := os.ReadFile(filepath.Join(ipc, localhost.EndpointFilename))
 		var ep localhost.Endpoint
-		if err != nil || json.Unmarshal(data, &ep) != nil || ep.Token == "" {
+		if err != nil || json.Unmarshal(data, &ep) != nil || ep.Token == "" || ep.BuildID == "" || ep.InstanceID == "" {
 			t.Fatal("launcher did not create an authenticated endpoint")
 		}
 		return ep
 	}
 	invoke("start", true)
 	first := endpoint()
-	if out := invoke("status", true); !bytes.Contains(out, []byte("build=deerflow-go")) || bytes.Contains(out, []byte(first.Token)) {
+	if out := invoke("status", true); !bytes.Contains(out, []byte("build="+first.BuildID)) || bytes.Contains(out, []byte(first.Token)) {
 		t.Fatal("launcher status did not identify Go or leaked endpoint credentials")
 	}
 	invoke("restart", true)

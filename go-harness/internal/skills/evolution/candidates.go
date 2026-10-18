@@ -19,12 +19,14 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
 
-var pythonCommand = regexp.MustCompile("(?im)(^|[`$>]|\\n)[ \\t]*(python(?:[23](?:\\.[0-9]+)?)?|py[ \\t]+-[23]|uv[ \\t]+run|pip[23]?)[ \\t]+|^#![^\\n]*python")
 var markdownLink = regexp.MustCompile(`\]\(([^\s)]+)(?:\s+"[^"]*")?\)`)
 
 func validateFiles(files map[string][]byte) error {
 	if len(files) == 0 || len(files) > 20 {
 		return invalid("candidate requires 1..20 files")
+	}
+	if _, _, err := skills.ParseRuntimeManifest(files); err != nil {
+		return err
 	}
 	total := 0
 	for name, data := range files {
@@ -36,11 +38,13 @@ func validateFiles(files map[string][]byte) error {
 			return invalid("candidate files require reviewable UTF-8 content")
 		}
 		switch strings.ToLower(path.Ext(name)) {
-		case ".py", ".pyw", ".pyc", ".pyo", ".whl", ".pyz":
-			return invalid("Python support files are unsupported")
+		case ".pyc", ".pyo", ".pyd", ".whl", ".pyz":
+			return invalid("compiled Python artifacts are not reviewable source files")
 		}
-		if pythonCommand.Match(data) {
-			return invalid("candidate requires a Python command")
+		for _, part := range strings.Split(strings.ToLower(name), "/") {
+			if part == ".venv" || part == "site-packages" || part == "__pycache__" {
+				return invalid("runtime environments and caches must remain outside the skill package")
+			}
 		}
 		if !strings.EqualFold(path.Ext(name), ".md") {
 			continue
@@ -77,7 +81,7 @@ func containsScripts(files map[string][]byte) bool {
 			return true
 		}
 		switch strings.ToLower(path.Ext(name)) {
-		case ".sh", ".bash", ".zsh", ".ps1", ".cmd", ".bat", ".js", ".mjs", ".cjs", ".ts", ".go", ".rs", ".rb", ".pl", ".exe", ".dll", ".so":
+		case ".py", ".pyw", ".sh", ".bash", ".zsh", ".ps1", ".cmd", ".bat", ".js", ".mjs", ".cjs", ".ts", ".go", ".rs", ".rb", ".pl", ".exe", ".dll", ".so":
 			return true
 		}
 	}
@@ -264,6 +268,7 @@ func (s *Service) submit(ctx context.Context, request Request, validate bool) (P
 		}
 		now := time.Now().UTC()
 		p = Proposal{ID: newID(), Status: "validating", StateVersion: 1, Action: request.Action, SkillName: request.Name, Target: tx.Target(), Base: head, Reason: request.Reason, Trigger: request.Trigger, Origin: request.Origin, Author: request.Author, ChangedFiles: changed, Diff: diff, CreatedAt: now, UpdatedAt: now}
+		p.ReviewRetryOf, _ = ctx.Value(reviewRetryKey{}).(string)
 		p.OverlayBase, err = tx.OverlayBase()
 		if err != nil {
 			return err
@@ -420,6 +425,7 @@ func (s *Service) Validate(ctx context.Context, id string, expected int64) (Prop
 		p.StateVersion++
 		p.UpdatedAt = time.Now().UTC()
 		p.Evaluation = report
+		p.ScriptReviewRequired = requiresScriptAcknowledgment(report, input)
 		p.EvaluationDigest = encodedHash(report)
 		p.ValidationFailure = nil
 		if head != p.Base {
@@ -457,7 +463,11 @@ func validReportFor(report Report, input ValidationInput) bool {
 			return false
 		}
 	}
-	return reportBoundTo(report, input) && report.Security == "passed" && (report.Behavior == "passed" || report.Behavior == "not_run") && (!containsScripts(input.CandidateFiles) || report.IsolatedScripts && report.Behavior == "passed")
+	return reportBoundTo(report, input) && report.Security == "passed" && (report.Behavior == "passed" || report.Behavior == "not_run")
+}
+
+func requiresScriptAcknowledgment(report Report, input ValidationInput) bool {
+	return containsScripts(input.CandidateFiles) && !(report.IsolatedScripts && report.Behavior == "passed")
 }
 
 func reportBoundTo(report Report, input ValidationInput) bool {

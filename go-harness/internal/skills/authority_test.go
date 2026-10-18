@@ -163,6 +163,51 @@ func TestFileAuthorityLegacyDatabaseOnlyUnavailable(t *testing.T) {
 	}
 }
 
+func TestFileAuthorityDeletedSkillsDoNotWarnOrLoadInCurrentSnapshot(t *testing.T) {
+	for _, mode := range []string{"directory", "legacy_database_only"} {
+		t.Run(mode, func(t *testing.T) {
+			r, db, selection := publicationFixture(t)
+			ctx := context.Background()
+			old := snapshot(t, r, selection)
+			if err := r.Delete(ctx, "project", "research"); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "legacy_database_only" {
+				if _, err := db.DB().Exec(`UPDATE df_skill_control SET import_directory='' WHERE name='research'`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			current := snapshot(t, r, selection)
+			if len(current.Refs()) != 0 || current.SourceWarnings() != "" {
+				t.Fatalf("deleted skill is still advertised: refs=%+v warnings=%q", current.Refs(), current.SourceWarnings())
+			}
+			history, err := r.QueryCatalog(ctx, harness.SkillQuery{Status: "deleted", Limit: 10})
+			if err != nil || len(history.Skills) != 1 || history.Skills[0].Head.Exists {
+				t.Fatalf("deletion history was lost: %+v %v", history, err)
+			}
+			restored, err := r.Restore(ctx, selection, old.Refs())
+			if err != nil || len(restored.Refs()) != 1 {
+				t.Fatalf("explicit pinned resume was lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestFileAuthorityUnboundSourceStillWarns(t *testing.T) {
+	r, db, selection := publicationFixture(t)
+	if _, err := db.DB().Exec(`INSERT INTO df_skill_source_status VALUES(?,?,'','unavailable','','legacy_database_only_requires_migration')`, r.sources["project"].identity, "unbound"); err != nil {
+		t.Fatal(err)
+	}
+	current := snapshot(t, r, selection)
+	if len(current.Refs()) != 1 || !strings.Contains(current.SourceWarnings(), "Skill unbound ") {
+		t.Fatal("missing install/control row suppressed a legitimate source warning")
+	}
+	selection.Names = []string{"research"}
+	if got := snapshot(t, r, selection).SourceWarnings(); got != "" {
+		t.Fatalf("unselected source leaked a warning: %q", got)
+	}
+}
+
 func TestFileAuthorityNoReplaceAndNoSameNameFallback(t *testing.T) {
 	root := t.TempDir()
 	for _, kind := range []string{"file", "dir"} {

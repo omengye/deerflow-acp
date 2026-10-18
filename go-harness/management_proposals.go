@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -16,6 +17,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/localhost"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
+	"github.com/omengye/deerflow-acp/go-harness/internal/skills/evolution"
 )
 
 func proposalManagementError(err error) error {
@@ -144,6 +146,7 @@ func proposalProjection(p harness.SkillProposal) map[string]any {
 		state = p.Status
 	}
 	result["publication"] = map[string]any{"state": state, "error_code": code, "retryable": retry}
+	result["review_retry_available"] = evolution.CanRetryReview(p)
 	return result
 }
 
@@ -157,6 +160,66 @@ func proposalProjections(proposals []harness.SkillProposal) []map[string]any {
 
 func (c *Client) managementProposals(ctx context.Context, request localhost.ManagementRequest) (any, error) {
 	switch request.Operation {
+	case "proposal.submit":
+		// Operator draft import stages bytes, never copies into an installation.
+		if err := proposalFields(request, "target", "expected_head", "request_key", "reason", "files"); err != nil {
+			return nil, err
+		}
+		var target harness.SkillTarget
+		if err := managementSkillObject(request.Fields, "target", &target, "source_id", "source_identity", "name", "scope"); err != nil {
+			return nil, err
+		}
+		var head harness.SkillHead
+		if err := managementSkillObject(request.Fields, "expected_head", &head, "version", "state_version", "exists", "enabled", "managed"); err != nil {
+			return nil, err
+		}
+		current, _, _, err := c.evolution.Head(ctx, target.SourceID, target.Name)
+		if err != nil {
+			return nil, err
+		}
+		if current != target {
+			return nil, harness.ErrPermissionDenied
+		}
+		key, err := managementID(request.Fields, "request_key")
+		if err != nil {
+			return nil, err
+		}
+		reason, err := optionalProposalString(request.Fields, "reason", 4000)
+		if err != nil {
+			return nil, err
+		}
+		files, err := managementDraftFiles(request.Fields["files"])
+		if err != nil {
+			return nil, err
+		}
+		action := "create"
+		if head.Exists {
+			action = "edit"
+		}
+		p, err := c.evolution.Submit(ctx, harness.SkillProposalRequest{SourceID: target.SourceID, Name: target.Name, Base: head, Action: action, Files: files, Reason: reason, RequestKey: "operator-draft/" + key, Author: "desktop", Origin: "manual_agent"})
+		if err != nil {
+			return nil, err
+		}
+		_, _, catalog, err := c.evolution.Head(ctx, p.Target.SourceID, p.SkillName)
+		return map[string]any{"proposal": proposalProjection(p), "catalog_version": catalog}, err
+	case "proposal.review_retry":
+		if err := proposalFields(request, "proposal_id", "expected_state_version"); err != nil {
+			return nil, err
+		}
+		id, err := managementID(request.Fields, "proposal_id")
+		if err != nil {
+			return nil, err
+		}
+		state, err := optionalProposalInteger(request.Fields, "expected_state_version", 0)
+		if err != nil || state < 1 {
+			return nil, managementInvalid("review retry requires observed state")
+		}
+		p, err := c.evolution.RetryReview(ctx, id, state)
+		if err != nil {
+			return nil, err
+		}
+		_, _, catalog, err := c.evolution.Head(ctx, p.Target.SourceID, p.SkillName)
+		return map[string]any{"proposal": proposalProjection(p), "catalog_version": catalog}, err
 	case "proposal.publish_retry":
 		if err := proposalFields(request, "proposal_id", "expected_approval_version"); err != nil {
 			return nil, err
@@ -223,6 +286,9 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 			return nil, err
 		}
 		result := map[string]any{"proposals": proposalProjections(page.Proposals), "catalog_version": page.CatalogVersion, "next_cursor": page.Next, "truncated": page.Next != ""}
+		for i, projected := range result["proposals"].([]map[string]any) {
+			projected["review_retry_available"] = c.evolution.ReviewRetryAvailable(page.Proposals[i])
+		}
 		if request.Operation == "proposal.list" {
 			return result, nil
 		}
@@ -250,6 +316,9 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 		if request.Operation != "proposal.get" {
 			allowed = append(allowed, "expected_state_version", "expected_base_sha256", "note")
 		}
+		if request.Operation == "proposal.approve" {
+			allowed = append(allowed, "acknowledge_unverified_scripts")
+		}
 		if err := proposalFields(request, allowed...); err != nil {
 			return nil, err
 		}
@@ -267,6 +336,7 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 				return nil, err
 			}
 			result := proposalProjection(p)
+			result["review_retry_available"] = c.evolution.ReviewRetryAvailable(p)
 			result["current_head"] = head
 			result["catalog_version"] = catalog
 			return result, nil
@@ -301,6 +371,11 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 			return nil, err
 		}
 		review := harness.SkillReview{ExpectedStateVersion: state, Actor: "desktop", Note: note}
+		if raw, exists := request.Fields["acknowledge_unverified_scripts"]; exists {
+			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &review.AcknowledgeUnverifiedScripts) != nil {
+				return nil, managementInvalid("acknowledge_unverified_scripts must be boolean")
+			}
+		}
 		if request.Operation == "proposal.approve" {
 			p, err = c.evolution.Approve(ctx, id, review)
 		} else {
@@ -322,6 +397,52 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 		return c.managementSkillRollback(ctx, request)
 	}
 	return nil, managementInvalid("unsupported skill management operation")
+}
+
+func managementDraftFiles(raw json.RawMessage) (map[string][]byte, error) {
+	if len(raw) == 0 || len(raw) > 2<<20 {
+		return nil, managementInvalid("draft files exceed bounds")
+	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	start, err := d.Token()
+	if err != nil || start != json.Delim('{') {
+		return nil, managementInvalid("files must be an object of UTF-8 strings")
+	}
+	files := map[string][]byte{}
+	total := 0
+	for d.More() {
+		token, err := d.Token()
+		if err != nil {
+			return nil, managementInvalid("invalid draft file name")
+		}
+		name, ok := token.(string)
+		if !ok {
+			return nil, managementInvalid("invalid draft file name")
+		}
+		if _, exists := files[name]; exists {
+			return nil, managementInvalid("duplicate draft file")
+		}
+		var value json.RawMessage
+		if err = d.Decode(&value); err != nil || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return nil, managementInvalid("invalid draft file content")
+		}
+		var text string
+		if json.Unmarshal(value, &text) != nil {
+			return nil, managementInvalid("draft file content must be a string")
+		}
+		total += len(text)
+		if len(text) > 128<<10 || total > 512<<10 || len(files) >= 20 {
+			return nil, managementInvalid("draft files exceed bounds")
+		}
+		files[name] = []byte(text)
+	}
+	if _, err = d.Token(); err != nil {
+		return nil, managementInvalid("invalid draft files")
+	}
+	if _, err = d.Token(); err != io.EOF || len(files) == 0 {
+		return nil, managementInvalid("invalid draft files")
+	}
+	return files, nil
 }
 
 func (c *Client) managementSkillRollback(ctx context.Context, request localhost.ManagementRequest) (any, error) {

@@ -25,7 +25,7 @@ func TestSkillReviewFailureDistinguishesQualityRejectionAndUnavailable(t *testin
 		retryable  bool
 	}{
 		{"quality-rejected", "", 0, false},
-		{"quality-invalid", "review_response_invalid", 0, false},
+		{"quality-invalid", "review_response_invalid", 0, true},
 		{"quality-truncated", "review_response_incomplete", 0, false},
 		{"quality-unauthorized", "review_request_failed", 401, false},
 		{"quality-rate-limited", "review_temporarily_unavailable", 429, true},

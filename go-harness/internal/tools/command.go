@@ -93,6 +93,11 @@ func (t *commandTool) InvokableRun(ctx context.Context, args string, _ ...tool.O
 
 // All foreground adapters share cancellation, process joining and receipts.
 func executeCommand(ctx context.Context, backend harness.CommandBackend, request harness.CommandRequest) (harness.CommandSnapshot, error) {
+	return ExecuteCommand(ctx, backend, request)
+}
+
+// ExecuteCommand shares foreground process ownership with skill execution.
+func ExecuteCommand(ctx context.Context, backend harness.CommandBackend, request harness.CommandRequest) (harness.CommandSnapshot, error) {
 	started, err := backend.Start(ctx, request)
 	if err != nil {
 		return harness.CommandSnapshot{}, err

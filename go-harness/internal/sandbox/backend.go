@@ -34,6 +34,7 @@ type Backend struct {
 type task struct {
 	mu             sync.Mutex
 	snapshot       harness.CommandSnapshot
+	argv0          string
 	stdout, stderr *capture
 	cancel         context.CancelFunc
 	done           chan struct{}
@@ -49,6 +50,7 @@ func (b *Backend) Start(ctx context.Context, request harness.CommandRequest) (ha
 		return harness.CommandSnapshot{}, harness.MarkToolNotExecuted(err)
 	}
 	request.Args = append([]string(nil), request.Args...)
+	argv0 := request.Executable
 	if err := b.validateRequest(&request); err != nil {
 		return harness.CommandSnapshot{}, harness.MarkToolNotExecuted(err)
 	}
@@ -66,7 +68,7 @@ func (b *Backend) Start(ctx context.Context, request harness.CommandRequest) (ha
 		return harness.CommandSnapshot{}, harness.MarkToolNotExecuted(fmt.Errorf("%w: command capacity exhausted; release completed task records", harness.ErrBusy))
 	}
 	runCtx, cancel := context.WithTimeout(ctx, request.Timeout)
-	t := &task{snapshot: harness.CommandSnapshot{ID: id, Provider: b.cfg.Provider, State: harness.CommandStarting, StartedAt: time.Now().UTC(), ProcessLocal: true}, cancel: cancel, done: make(chan struct{}), stdout: newCapture(b.cfg.Limits.OutputBytes), stderr: newCapture(b.cfg.Limits.OutputBytes)}
+	t := &task{snapshot: harness.CommandSnapshot{ID: id, Provider: b.cfg.Provider, State: harness.CommandStarting, StartedAt: time.Now().UTC(), ProcessLocal: true}, argv0: argv0, cancel: cancel, done: make(chan struct{}), stdout: newCapture(b.cfg.Limits.OutputBytes), stderr: newCapture(b.cfg.Limits.OutputBytes)}
 	b.tasks[id] = t
 	b.active++
 	initial := t.snapshot

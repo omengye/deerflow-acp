@@ -274,6 +274,12 @@ func (s *smoke) respond(session, runtime string, p obj, decision string) {
 	need(s.waku.rpc(obj{"type": "respond", "requestId": p["requestId"], "optionId": permissionOption(p, decision)}, session, runtime)["type"] == "ack", "permission not acknowledged")
 }
 func (s *smoke) skill(session, runtime string) {
+	catalog := s.waku.deerflow("manage", obj{"operation": "skill.list", "status": "current", "limit": 100})
+	need(len(array(catalog["skills"])) > 0, "current skill catalog is empty")
+	for _, item := range array(catalog["skills"]) {
+		need(object(object(item)["head"])["exists"] == true, "current catalog exposed a deleted skill")
+	}
+	s.log("Current skill catalog filter accepted through Waku and Go management", obj{})
 	marker, id := s.fake.plan("skill", obj{"skill": "bootstrap"})
 	start := s.fake.count()
 	s.prompt(session, runtime, marker+": Load the bootstrap skill then report completion.")
@@ -390,6 +396,7 @@ func (s *smoke) run() {
 	wakuProcess := s.startWaku(token, "waku-daemon")
 	saved := s.configure()
 	saved = s.startupRecovery()
+	s.preparePythonSkill()
 	w := s.waku
 	beforeReadiness := s.fake.count()
 	readiness := w.deerflow("check-readiness")
@@ -419,6 +426,7 @@ func (s *smoke) run() {
 	oldRuntime, cursor := s.startChat(session, nil)
 	s.textAttachment(session, oldRuntime, true)
 	s.skill(session, oldRuntime)
+	s.pythonSkill(session, oldRuntime)
 	approvalRuntime, approvalCursor := s.startApproval(approvalSession, nil)
 	s.writeTurn(approvalSession, approvalRuntime, "full-access.txt", "", "", false, false)
 	s.setApproval(approvalSession, approvalRuntime, "ask")

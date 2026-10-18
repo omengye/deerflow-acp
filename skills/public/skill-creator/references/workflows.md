@@ -8,6 +8,8 @@ Use one task that exposes the current weakness, a normal task, and a nearby requ
 4. Save case results and artifact references. Record time, tokens and model identity only when the runtime provides them. Omit unavailable metrics.
 5. Present the changed instructions and observed differences to the user. Revise only in response to demonstrated failures or requested changes. Re-run affected cases before proposing the revision.
 
-Use fixture tools for external writes. A skill draft is not permission to send messages, deploy code, spend provider budget or replay historical external operations. Candidate scripts require an explicitly supported isolation mechanism; if unavailable, leave behavior unverified.
+Use fixture tools for external writes. A skill draft is not permission to send messages, deploy code, spend provider budget or replay historical external operations. Distinguish instruction/fixture evaluation from actual supporting-script execution. If scripts have not run, keep that evidence `not_run`; never turn a configured test failure into an untested result. Neither mocks nor static model reviews establish isolated execution.
+
+Passing static safety and quality review permits manual publication of a script-bearing package while script execution remains unverified. It does not permit automatic publication or authorize a test run. Use the host-bound `skill_run` workflow and the configured execution policy for an authorized runtime check or execution; see [Python runtime guidance](python-runtime.md). Do not execute live cloud operations just to make a review report look complete.
 
 The local validation command checks package structure. The native candidate service supplies its own safety and quality reports. Neither automatically imports manually written evaluation JSON as trusted approval evidence.

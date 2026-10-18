@@ -508,9 +508,14 @@ func (s *Service) RunGeneration(ctx context.Context) (bool, error) {
 			return generationFailure(err)
 		}
 		if id != "" {
-			return s.reviewBehaviorManual(work, job, id)
+			code, retry := s.reviewBehaviorManual(work, job, id)
+			return code, s.boundReviewRetry(work, id, job.Attempts, retry)
 		}
-		return s.generateOne(work, job)
+		code, retry := s.generateOne(work, job)
+		if r, err := readGeneration(work, s.db, job.ID); err == nil && r.proposal != "" {
+			retry = s.boundReviewRetry(work, r.proposal, job.Attempts, retry)
+		}
+		return code, retry
 	})
 	cleanup, cancel = context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
@@ -520,6 +525,20 @@ func (s *Service) RunGeneration(ctx context.Context) (bool, error) {
 		}
 	}
 	return worked, errors.Join(before, err, s.reconcileGeneration(cleanup), s.reconcileBehavior(cleanup))
+}
+
+func (s *Service) boundReviewRetry(ctx context.Context, id string, attempts int, retry bool) bool {
+	if !retry {
+		return false
+	}
+	p, err := s.Get(ctx, id)
+	if err != nil {
+		return false
+	}
+	if p.ValidationFailure != nil && p.ValidationFailure.Code == "review_response_invalid" {
+		return attempts < 2
+	}
+	return retry
 }
 
 func (s *Service) StartGeneration() error {

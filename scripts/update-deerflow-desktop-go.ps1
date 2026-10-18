@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory)][string]$TargetDirectory,
     [Parameter(Mandatory)][string]$BackupDirectory,
     [string]$SkillCreatorExpectedHash = '',
+    [string]$SkillCreatorExpectedManifest = '',
     [switch]$Restart,
     [switch]$RefreshBundledWeChat
 )
@@ -34,6 +35,7 @@ $userData = Join-Path $target 'user-data'
 if (-not (Test-Path -LiteralPath $userData -PathType Container)) { throw 'Existing user-data is required' }
 $creatorRelative = 'skills\public\skill-creator\SKILL.md'
 $creator = Join-Path $userData $creatorRelative
+if ($SkillCreatorExpectedHash -and $SkillCreatorExpectedManifest) { throw 'Choose a file hash or a complete skill manifest, not both' }
 if ($SkillCreatorExpectedHash) {
     if ((Get-FileHash -LiteralPath $creator).Hash -ine $SkillCreatorExpectedHash) { throw 'Skill creator changed since review; refusing to overwrite it' }
     if (-not (Test-Path -LiteralPath (Join-Path $source 'resources\skills\public\skill-creator\SKILL.md'))) { throw 'Build lacks skill creator' }
@@ -58,6 +60,24 @@ function Assert-Manifest([string]$Root, [hashtable]$Expected) {
     foreach ($relative in $Expected.Keys) {
         if ($actual[$relative] -cne $Expected[$relative]) { throw "File verification failed: $relative" }
     }
+}
+
+$creatorRoot = Join-Path $userData 'skills\public\skill-creator'
+$newCreatorRoot = Join-Path $source 'resources\skills\public\skill-creator'
+$creatorExpected = $null
+if ($SkillCreatorExpectedManifest) {
+    $creatorExpected = Get-Content -LiteralPath $SkillCreatorExpectedManifest -Raw | ConvertFrom-Json -AsHashtable
+    if ($creatorExpected.Count -lt 1 -or -not $creatorExpected.ContainsKey('SKILL.md')) { throw 'Invalid reviewed skill creator manifest' }
+    Assert-Manifest $creatorRoot $creatorExpected
+    if (-not (Test-Path -LiteralPath (Join-Path $newCreatorRoot 'SKILL.md'))) { throw 'Build lacks skill creator' }
+}
+function Replace-CreatorTree([string]$From) {
+    $checked = [IO.Path]::GetFullPath($creatorRoot)
+    $intended = [IO.Path]::GetFullPath((Join-Path $userData 'skills\public\skill-creator'))
+    if ($checked -ine $intended -or -not $checked.StartsWith([IO.Path]::GetFullPath($userData) + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Skill creator target escaped user data' }
+    if (Test-Path -LiteralPath $checked) { Remove-Item -LiteralPath $checked -Recurse -Force }
+    Copy-Item -LiteralPath $From -Destination $checked -Recurse
+    Assert-Manifest $checked (Get-FileManifest $From)
 }
 
 $processes = Get-InstalledProcesses
@@ -104,6 +124,7 @@ foreach ($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User, [Sec
 }
 Set-Acl -LiteralPath $backup -AclObject $acl
 $before = Get-FileManifest $userData
+if ($creatorExpected) { Assert-Manifest $creatorRoot $creatorExpected }
 Copy-Item -LiteralPath $userData -Destination (Join-Path $backup 'user-data') -Recurse
 Assert-Manifest (Join-Path $backup 'user-data') $before
 $before | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $backup 'user-data-sha256.json') -Encoding utf8NoBOM
@@ -130,6 +151,15 @@ if ($SkillCreatorExpectedHash) {
     Copy-Item -LiteralPath (Join-Path $source 'resources\skills\public\skill-creator\SKILL.md') -Destination $creator -Force
     $before[$creatorRelative] = (Get-FileHash -LiteralPath $creator).Hash
 }
+if ($creatorExpected) {
+    Replace-CreatorTree $newCreatorRoot
+    foreach ($relative in @($before.Keys)) {
+        if ($relative.StartsWith('skills\public\skill-creator\', [StringComparison]::OrdinalIgnoreCase)) { $before.Remove($relative) }
+    }
+    foreach ($relative in (Get-FileManifest $creatorRoot).Keys) {
+        $before['skills\public\skill-creator\' + $relative] = (Get-FileHash -LiteralPath (Join-Path $creatorRoot $relative)).Hash
+    }
+}
 Assert-Manifest $userData $before
 } catch {
     $failure = $_
@@ -141,9 +171,10 @@ Assert-Manifest $userData $before
         } else { Copy-Item -LiteralPath $entry.FullName -Destination (Join-Path $target $entry.Name) -Force }
     }
     if ($SkillCreatorExpectedHash) { Copy-Item -LiteralPath (Join-Path $backup "user-data\$creatorRelative") -Destination $creator -Force }
+    if ($creatorExpected) { Replace-CreatorTree (Join-Path $backup 'user-data\skills\public\skill-creator') }
     throw "Replacement failed; original programs and skill creator restored. User data was not rolled back. Backup: $backup. Cause: $failure"
 }
-$result = [ordered]@{source=$source; target=$target; backup=$backup; exe_count=$names.Count; user_data_files=$before.Count; user_data_verified=$true; skill_creator_updated=[bool]$SkillCreatorExpectedHash; programs_before=$oldPrograms}
+$result = [ordered]@{source=$source; target=$target; backup=$backup; exe_count=$names.Count; user_data_files=$before.Count; user_data_verified=$true; skill_creator_updated=[bool]($SkillCreatorExpectedHash -or $creatorExpected); programs_before=$oldPrograms}
 $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $backup 'deployment.json') -Encoding utf8NoBOM
 if ($Restart) {
     $desktop = Start-Process -FilePath (Join-Path $target 'deerflow-desktop.exe') -WorkingDirectory $target -WindowStyle Hidden -PassThru

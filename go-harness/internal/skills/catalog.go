@@ -36,8 +36,8 @@ func (r *Registry) QueryCatalog(ctx context.Context, q harness.SkillQuery) (harn
 	if q.Limit < 1 || q.Limit > 100 || len(q.Cursor) > 2048 || len(q.SourceID) > 128 || q.Name != "" && !validName(q.Name) {
 		return page, invalid("invalid catalog query")
 	}
-	if q.Status != "" && q.Status != "enabled" && q.Status != "disabled" && q.Status != "deleted" {
-		return page, invalid("catalog status must be enabled, disabled or deleted")
+	if q.Status != "" && q.Status != "current" && q.Status != "enabled" && q.Status != "disabled" && q.Status != "deleted" {
+		return page, invalid("catalog status must be current, enabled, disabled or deleted")
 	}
 	if q.SourceID != "" && r.sources[q.SourceID] == nil {
 		return page, harness.ErrPermissionDenied
@@ -79,6 +79,8 @@ func (r *Registry) QueryCatalog(ctx context.Context, q harness.SkillQuery) (harn
 		args = append(args, q.Name)
 	}
 	switch q.Status {
+	case "current":
+		where += " AND c.deleted=0"
 	case "enabled":
 		where += " AND c.deleted=0 AND i.enabled=1"
 	case "disabled":

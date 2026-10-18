@@ -200,7 +200,10 @@ func (s *Snapshot) SourceWarnings() string { return s.warnings }
 func (r *Registry) sourceWarnings(ctx context.Context, sources []*source, names []string) (string, error) {
 	var messages []string
 	for _, s := range sources {
-		rows, err := r.db.QueryContext(ctx, `SELECT st.name,st.directory,st.error_code FROM df_skill_source_status st LEFT JOIN df_skill_installs i ON i.source_key=st.source_key AND i.name=st.name WHERE st.source_key=? AND st.status<>'ready' AND (i.enabled=1 OR i.enabled IS NULL) ORDER BY st.name`, s.identity)
+		rows, err := r.db.QueryContext(ctx, `SELECT st.name,st.directory,st.error_code FROM df_skill_source_status st LEFT JOIN df_skill_installs i ON i.source_key=st.source_key AND i.name=st.name
+ WHERE st.source_key=? AND st.status<>'ready' AND (i.enabled=1 OR i.enabled IS NULL)
+ AND NOT EXISTS(SELECT 1 FROM df_skill_control c WHERE c.source_key=st.source_key AND c.name=st.name AND c.deleted=1)
+ ORDER BY st.name`, s.identity)
 		if err != nil {
 			return "", err
 		}

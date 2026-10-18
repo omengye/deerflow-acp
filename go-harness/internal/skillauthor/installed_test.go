@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestInstalledValidationDoesNotWeakenEvolution(t *testing.T) {
+func TestInstalledAndAuthoringValidationAllowPythonWithoutExecution(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "fixture")
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -24,7 +24,7 @@ func TestInstalledValidationDoesNotWeakenEvolution(t *testing.T) {
 	if report, err := ValidateInstalled(context.Background(), dir); err != nil || report.Behavior != "not_run" || report.FileCount != 3 {
 		t.Fatalf("installed: %+v %v", report, err)
 	}
-	if _, err := Validate(context.Background(), dir); err == nil {
-		t.Fatal("evolution allowed Python")
+	if report, err := Validate(context.Background(), dir); err != nil || report.Behavior != "not_run" {
+		t.Fatal("authoring rejected Python source", report, err)
 	}
 }

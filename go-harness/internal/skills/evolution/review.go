@@ -28,6 +28,13 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 		return Proposal{}, err
 	}
 	if err = s.recordApproval(ctx, id, review); err != nil {
+		// Admission can durably mark revoked evidence stale or unsafe content
+		// failed. Return that state, not an empty proposal that hides the guard.
+		check, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if fresh, getErr := s.Get(check, id); getErr == nil {
+			return fresh, err
+		}
 		return Proposal{}, err
 	}
 	var result Proposal
@@ -84,6 +91,9 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 		}
 		if !validReportFor(p.Evaluation, input) {
 			return ErrValidation
+		}
+		if requiresScriptAcknowledgment(p.Evaluation, input) && !review.AcknowledgeUnverifiedScripts {
+			return invalid("publication requires explicit acknowledgment that support scripts were not execution-validated")
 		}
 		if err := s.guardBehaviorReport(ctx, tx.SQL(), *p, p.Evaluation); err != nil {
 			return err

@@ -62,7 +62,13 @@ func (b *Backend) run(ctx context.Context, t *task, r harness.CommandRequest) ex
 		if b.cfg.Provider == harness.SandboxPowerShell {
 			argv = powerShellArgs(b.cfg.Shell, r.Script)
 		}
-		return runProcess(ctx, b.processSpec(t, argv, false), t.stdout, t.stderr)
+		spec := b.processSpec(t, argv, false)
+		if b.cfg.Provider == harness.SandboxLocal {
+			// Launch the validated canonical binary, retaining the invocation
+			// name that interpreters use to discover a virtual environment.
+			spec.argv0 = t.argv0
+		}
+		return runProcess(ctx, spec, t.stdout, t.stderr)
 	}
 }
 func (b *Backend) processSpec(t *task, argv []string, remote bool) processSpec {

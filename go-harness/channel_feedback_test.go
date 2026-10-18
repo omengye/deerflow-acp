@@ -9,11 +9,17 @@ import (
 	"testing"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func TestChannelNewCreatesEmptySessionWithoutModelAndPreservesOld(t *testing.T) {
+	workspace := testutil.CanonicalTempDir(t)
+	checkChannelNewSession(t, workspace, workspace)
+}
+
+func checkChannelNewSession(t *testing.T, workspace, canonicalWorkspace string) {
+	t.Helper()
 	ctx := context.Background()
-	workspace := t.TempDir()
 	calls := 0
 	c, err := Open(ctx, Config{DataDir: t.TempDir(), Engine: engineFunc(func(ctx context.Context, r harness.RunRequest, emit harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
 		calls++
@@ -38,8 +44,8 @@ func TestChannelNewCreatesEmptySessionWithoutModelAndPreservesOld(t *testing.T) 
 		t.Fatal(created, err, calls)
 	}
 	x, err := c.service.Store.Session(ctx, current)
-	if err != nil || x.ApprovalMode != harness.ApprovalGlobal || x.CWD != workspace {
-		t.Fatal(x, err)
+	if err != nil || x.ApprovalMode != harness.ApprovalGlobal || x.CWD != canonicalWorkspace {
+		t.Fatalf("new session=%+v want canonical cwd=%q (input=%q) err=%v", x, canonicalWorkspace, workspace, err)
 	}
 	var n int
 	if err = c.store.DB().QueryRow(`SELECT count(*) FROM harness_runs WHERE session_id=?`, current).Scan(&n); err != nil || n != 0 {

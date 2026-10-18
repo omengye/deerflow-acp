@@ -2,6 +2,8 @@
 
 修订日期：2026-10-02。状态：本轮功能实施与开发手测包已完成，用户手测及正式发行验收待完成；阶段进展与剩余项见 [实施记录](eino-subagents-skill-evolution-status.md)。
 
+2026-10-18 范围澄清：用户已要求支持技能内的 Python 源码。下文“无 Python”约束继续适用于 DeerFlow 宿主和维护流水线，不再禁止技能资源及经既有命令后端授权的可选 Python 执行；具体边界见 [Python 技能契约](skill-python-support-20261018.md)。不恢复旧 Python DeerFlow 后端，不自动安装解释器或依赖。
+
 工作分支：`codex/eino-harness-acp-refactor`。工作树：`C:\Users\ym200\.codex\worktrees\eino-harness-acp\deerflow-api`。
 
 下文的新增字段、接口、状态投影和验收场景为本轮实施目标；以实施记录中的验证结果区分已完成部分与待完成部分，不能据配置类型或方案示例宣称能力已经可用。

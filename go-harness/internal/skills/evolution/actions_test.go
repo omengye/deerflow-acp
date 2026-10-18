@@ -68,7 +68,7 @@ func TestProposalMutationRejectsAmbiguousOrInvalidInputs(t *testing.T) {
 		{Action: "write_file", Path: "SKILL.md", Content: pointer("Cannot use support-file API")},
 		{Action: "write_file", Path: "../../outside", Content: pointer("outside")},
 		{Action: "write_file", Path: "folder/../inside", Content: pointer("noncanonical")},
-		{Action: "write_file", Path: "run.py", Content: pointer("print('python')")},
+		{Action: "write_file", Path: "run.pyc", Content: pointer("compiled bytecode")},
 		{Action: "remove_file", Path: "SKILL.md"},
 		{Action: "remove_file", Path: "missing.md"},
 		{Action: "delete", Content: pointer("unexpected")},

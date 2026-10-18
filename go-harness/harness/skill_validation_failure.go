@@ -4,9 +4,12 @@ package harness
 // evidence. Retryable permits consideration of a bounded retry under the same
 // authorization and budget; it neither schedules one nor resets a failed job.
 type SkillValidationFailure struct {
-	Code      string `json:"code"`
-	Stage     string `json:"stage"`
-	Retryable bool   `json:"retryable"`
+	Code           string `json:"code"`
+	Stage          string `json:"stage"`
+	Retryable      bool   `json:"retryable"`
+	DetailCode     string `json:"detail_code,omitempty"`
+	ResponseDigest string `json:"response_digest,omitempty"`
+	ResponseBytes  int    `json:"response_bytes,omitempty"`
 }
 
 func (f *SkillValidationFailure) Unwrap() error { return ErrSkillValidation }
@@ -47,6 +50,8 @@ func (f *SkillValidationFailure) Error() string {
 		return "The review response is invalid or refers to different content; no decision was accepted."
 	case "review_response_incomplete":
 		return "The review response was incomplete; no decision was accepted."
+	case "review_refused":
+		return "The review provider refused the request; no decision was accepted and review retry is not permitted."
 	case "review_request_failed":
 		return "The review model request failed; this does not establish a content rejection."
 	case "review_temporarily_unavailable":

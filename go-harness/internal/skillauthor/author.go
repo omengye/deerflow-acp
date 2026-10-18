@@ -200,10 +200,10 @@ func packageSkill(ctx context.Context, directory, output string, write func(cont
 	}
 	output = filepath.Join(parent, filepath.Base(output))
 	rel, err := filepath.Rel(source, output)
-	if err != nil {
+	if err != nil && strings.EqualFold(filepath.VolumeName(source), filepath.VolumeName(output)) {
 		return report, err
 	}
-	if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return report, errors.New("archive output must be outside the skill directory")
 	}
 	if strings.ToLower(filepath.Ext(output)) != ".skill" {

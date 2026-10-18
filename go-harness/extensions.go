@@ -563,6 +563,13 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			return out, err
 		}
 		out.Tools = append(out.Tools, command)
+		if len(state.Skills) > 0 && cfg.ToolPolicy.Allows("execute") && cfg.ToolPolicy.Allows("skill_run") {
+			runner, runErr := newSkillRunTool(snapshot, commands, commandPolicy, req)
+			if runErr != nil {
+				return out, runErr
+			}
+			out.Tools = append(out.Tools, runner)
+		}
 		if commandPolicy.AllowShell && cfg.ToolPolicy.Allows("bash") {
 			for _, setting := range cfg.BuiltinTools {
 				if setting.Name == "bash" {

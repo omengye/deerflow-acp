@@ -25,6 +25,7 @@ type smoke struct {
 	report                                                                 obj
 	mu                                                                     sync.Mutex
 	legacy                                                                 bool
+	python                                                                 string
 }
 
 func below(path, root string) bool {
@@ -101,6 +102,9 @@ func (s *smoke) environment() []string {
 	for k, v := range map[string]string{"PATH": s.root + string(os.PathListSeparator) + filepath.Join(values["SYSTEMROOT"], "System32"), "HOME": filepath.Join(profile, "home"), "USERPROFILE": filepath.Join(profile, "home"), "APPDATA": filepath.Join(profile, "roaming"), "LOCALAPPDATA": filepath.Join(profile, "local"), "XDG_CONFIG_HOME": filepath.Join(profile, "config"), "XDG_CACHE_HOME": filepath.Join(profile, "cache"), "TEMP": filepath.Join(profile, "temp"), "TMP": filepath.Join(profile, "temp"), "DEER_FLOW_PORTABLE_ROOT": s.root, "DEER_FLOW_CONFIG_PATH": s.config, "DEER_FLOW_ACP_RUNTIME_DIR": s.runtime, "WAKU_APP_EXECUTABLE": filepath.Join(s.root, "deerflow-desktop.exe"), "DEERFLOW_GO_DATA_DIR": filepath.Join(s.root, "user-data", "data", "go-harness"), "NO_PROXY": "127.0.0.1,localhost"} {
 		values[k] = v
 	}
+	if s.python != "" {
+		values["PATH"] += string(os.PathListSeparator) + filepath.Dir(s.python)
+	}
 	var out []string
 	for k, v := range values {
 		out = append(out, k+"="+v)
@@ -155,7 +159,7 @@ func (s *smoke) prepare() {
 		}
 		name := strings.ToLower(d.Name())
 		ext := strings.ToLower(filepath.Ext(name))
-		if name == "runtime" || name == ".venv" || name == "site-packages" || name == "python.exe" || name == "pythonw.exe" || ext == ".py" || ext == ".pyw" || ext == ".pyc" || ext == ".pyo" {
+		if name == "runtime" || name == ".venv" || name == "site-packages" || name == "__pycache__" || name == "python.exe" || name == "pythonw.exe" || ext == ".pyc" || ext == ".pyo" || ext == ".pyd" || ext == ".whl" || ext == ".pyz" || ((ext == ".py" || ext == ".pyw") && !below(path, filepath.Join(s.packagePath, "resources", "skills"))) {
 			return fmt.Errorf("package contains Python component: %s", path)
 		}
 		return nil
@@ -300,12 +304,13 @@ func main() {
 			os.Exit(17)
 		}
 	}
-	var packagePath, cache string
+	var packagePath, cache, python string
 	var fixture, legacy bool
 	flag.StringVar(&packagePath, "package", "", "fresh extracted Windows Go desktop package")
 	flag.StringVar(&cache, "cache", ".build-cache/desktop-smoke", "isolated output root; must not be inside the supplied package")
 	flag.BoolVar(&fixture, "mcp-fixture", false, "run the isolated stdio MCP fixture")
 	flag.BoolVar(&legacy, "legacy-empty-mcp-policy", false, "verify legacy enabled MCP with no executable allowlist")
+	flag.StringVar(&python, "python", "", "optional operator-selected python.exe for pinned skill execution smoke; never installed or bundled")
 	flag.Parse()
 	if fixture {
 		if e := serveMCP(os.Stdin, os.Stdout); e != nil {
@@ -334,6 +339,14 @@ func main() {
 		os.Exit(2)
 	}
 	s := &smoke{packagePath: absolute, cache: cache, root: root, logs: filepath.Join(filepath.Dir(root), "logs"), workspace: filepath.Join(root, "smoke-workspace"), config: filepath.Join(root, "user-data", "config", "config.yaml"), runtime: filepath.Join(root, "user-data", "runtime", "acp-go"), legacy: legacy, report: obj{"package": absolute, "smoke_root": root, "ok": false, "checks": []any{}, "cleanup_errors": []any{}}}
+	if python != "" {
+		python, e = filepath.Abs(python)
+		if e != nil || !exists(python) || !strings.EqualFold(filepath.Base(python), "python.exe") {
+			fmt.Fprintln(os.Stderr, "--python must name an existing python.exe")
+			os.Exit(2)
+		}
+		s.python = python
+	}
 	if e = os.MkdirAll(s.logs, 0700); e != nil {
 		fmt.Fprintln(os.Stderr, e)
 		os.Exit(1)

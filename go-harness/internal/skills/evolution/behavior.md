@@ -89,7 +89,10 @@ a real no-skill candidate. The absent variant has an empty version and package.
 
 No shell, Python, OpenCLI, MCP or arbitrary script runs in this evaluator.
 Only the configured model provider makes network requests. `IsolatedScripts`
-stays false: fixture execution does not authorize executable support files.
+stays false: fixture execution does not verify executable support files. A
+script package requires explicit operator acknowledgment for manual publication;
+automatic publication remains disabled. Runtime readiness and permission are
+checked independently by `skill_run`, which executes session-pinned source.
 
 ## Jobs, results and approval
 

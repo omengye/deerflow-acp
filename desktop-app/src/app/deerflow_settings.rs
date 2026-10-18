@@ -735,7 +735,7 @@ impl Waku {
             .skill_center_loads
             .push_back(json!({"operation":"skill.auto_patch.status"}));
         let query = match state.skill_center_tab {
-            SkillCenterTab::Catalog => Some(json!({"operation":"skill.list","limit":20})),
+            SkillCenterTab::Catalog => Some(skills::catalog_request("", "")),
             SkillCenterTab::Review => Some(
                 json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":20}),
             ),
@@ -3379,7 +3379,7 @@ impl Waku {
                 self.deerflow_settings.skill_browser.behavior = behavior;
                 self.deerflow_settings.skill_browser.review_stale = false;
             }
-            "proposal.source_review" => {
+            "proposal.source_review" | "proposal.review_retry" => {
                 self.deerflow_settings.skill_browser.complete_mutation(request);
                 self.deerflow_settings.skill_browser.source_review_feedback = None;
                 let proposal = &data["proposal"];
@@ -3388,7 +3388,9 @@ impl Waku {
                     input.set_content(proposal["diff"].as_str().unwrap_or("").to_owned(), cx);
                 });
                 self.deerflow_request("manage", json!({"operation":"proposal.get","proposal_id":proposal["id"]}), cx);
-                self.deerflow_settings.notice = Some("已基于当前目录提交新的候选；需检查新的审核结果并确认发布，旧批准不会转移。".into());
+                self.deerflow_settings.notice = Some(if operation == "proposal.review_retry" {
+                    "已为原始不可变内容创建审核重试候选；旧失败记录保留，审核通过后仍需确认发布。"
+                } else { "已基于当前目录提交新的候选；需检查新的审核结果并确认发布，旧批准不会转移。" }.into());
             }
             "proposal.approve" | "proposal.publish_retry" | "proposal.reject" | "proposal.rollback" => {
                 self.deerflow_settings
@@ -3797,10 +3799,9 @@ impl Waku {
             ));
             if let Some(proposal) = &state.proposal {
                 let id = proposal["id"].as_str().unwrap_or("").to_owned();
-                let approve_id = id.clone();
-                let base = proposal["base_sha256"].clone();
                 let observed_state = proposal["state_version"].clone();
                 let reject_state = observed_state.clone();
+                let approval = publication_state::approval_action(proposal);
                 group = group
                     .child(df_label(
                         proposal["skill_name"].as_str().unwrap_or("提案").to_owned(),
@@ -3833,8 +3834,8 @@ impl Waku {
                     || state.skill_browser.review_stale
                     || state.skill_browser.mutations_pending()
                     || observed_state.as_u64().is_none_or(|v| v == 0);
-                let (can_approve, can_reject) = publication_state::review_actions(proposal);
-                let approve_disabled = disabled || !can_approve;
+                let (_, can_reject) = publication_state::review_actions(proposal);
+                let approve_disabled = disabled || approval.is_none();
                 let reject_disabled = disabled || !can_reject;
                 group = group.child(df_label("当前提案状态", publication_state::review_hint(proposal), theme));
                 if let Some((feedback_id, message)) = &state.skill_browser.source_review_feedback {
@@ -3853,6 +3854,15 @@ impl Waku {
                 if let Some(retry) = publication_state::retry_request(proposal) {
                     group = group.child(df_button("df-proposal-resume", "重试原发布", disabled, false, theme, cx,
                         move |this, _, cx| { this.deerflow_request("manage", retry.clone(), cx); }));
+                }
+                if proposal["review_retry_available"] == true {
+                    let retry_review = json!({"operation":"proposal.review_retry","proposal_id":proposal["id"],"expected_state_version":observed_state});
+                    group = group.child(df_button("df-proposal-review-retry", "重新审核原始内容…", disabled, false, theme, cx,
+                        move |this, _, cx| {
+                            this.deerflow_settings.confirm_manage = Some(("为原始候选内容创建一次新的限额审核，不读取当前目录、不修改旧失败记录。将使用维护模型额度，通过后仍需人工发布。重复点击不会重复创建。".into(), retry_review.clone()));
+                            this.settings_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
+                            cx.notify();
+                        }));
                 }
                 if publication_state::can_review_source(proposal) {
                     let source_review = json!({"operation":"proposal.source_review","proposal_id":proposal["id"],
@@ -3874,13 +3884,17 @@ impl Waku {
                             .child(df_button("df-source-review-cancel", "取消本次送审", unavailable, false, theme, cx,
                                 |this, _, cx| { this.deerflow_settings.confirm_manage = None; cx.notify(); }))));
                 }
+                if let Some(warning) = approval.as_ref().and_then(|action| action.warning) {
+                    group = group.child(df_label("发布前请确认脚本风险", warning, theme));
+                }
+                let approve_label = approval.as_ref().map_or("确认发布", |action| action.label);
                 group = group.child(div().flex().flex_none().flex_wrap().gap(px(6.0))
-                .child(df_button("df-proposal-approve", "确认发布", approve_disabled, false, theme, cx,
+                .child(df_button("df-proposal-approve", approve_label, approve_disabled, false, theme, cx,
                     move |this, _, cx| {
-                        this.deerflow_settings.confirm_manage = None;
-                        this.deerflow_request("manage", json!({"operation":"proposal.approve","proposal_id":approve_id,"expected_base_sha256":base,"expected_state_version":observed_state}), cx);
-                        this.settings_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
-                        cx.notify();
+                        if let Some(action) = &approval {
+                            this.deerflow_settings.confirm_manage = None;
+                            this.deerflow_request("manage", action.request.clone(), cx);
+                        }
                     }))
                 .child(df_button("df-proposal-reject", "拒绝提案…", reject_disabled, false, theme, cx,
                     move |this, _, cx| {

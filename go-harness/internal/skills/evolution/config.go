@@ -25,9 +25,10 @@ type ReviewSettings struct {
 	SecurityFailClosed   *bool  `yaml:"security_fail_closed"`
 	AllowBuiltinOverlays bool   `yaml:"allow_builtin_overlays"`
 	Validation           struct {
-		TimeoutSeconds  int `yaml:"timeout_seconds"`
-		MaxInputBytes   int `yaml:"max_input_bytes"`
-		MaxOutputTokens int `yaml:"max_output_tokens"`
+		ResponseFormat  string `yaml:"response_format"`
+		TimeoutSeconds  int    `yaml:"timeout_seconds"`
+		MaxInputBytes   int    `yaml:"max_input_bytes"`
+		MaxOutputTokens int    `yaml:"max_output_tokens"`
 	} `yaml:"validation"`
 	Generation struct {
 		Enabled         bool `yaml:"enabled"`
@@ -265,7 +266,7 @@ func (s ReviewSettings) LearningMatchingModel(route harness.ModelRoute) *harness
 }
 
 func (s ReviewSettings) ModelConfig(moderation, evaluation harness.ModelRoute) harness.SkillModelReviewConfig {
-	return harness.SkillModelReviewConfig{Moderation: moderation, Evaluation: evaluation, Timeout: time.Duration(s.Validation.TimeoutSeconds) * time.Second, MaxInputBytes: s.Validation.MaxInputBytes, MaxOutputTokens: s.Validation.MaxOutputTokens}
+	return harness.SkillModelReviewConfig{Moderation: moderation, Evaluation: evaluation, Timeout: time.Duration(s.Validation.TimeoutSeconds) * time.Second, MaxInputBytes: s.Validation.MaxInputBytes, MaxOutputTokens: s.Validation.MaxOutputTokens, ResponseFormat: s.Validation.ResponseFormat}
 }
 
 func (s ReviewSettings) GenerationOptions(route harness.ModelRoute, sources []string) *harness.SkillGenerationOptions {

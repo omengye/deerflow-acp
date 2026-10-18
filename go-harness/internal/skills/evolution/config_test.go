@@ -48,6 +48,21 @@ func TestSkillMaintenanceModelInheritance(t *testing.T) {
 	}
 }
 
+func TestReviewResponseFormatConfiguration(t *testing.T) {
+	for _, format := range []string{"text", "json_schema", "unsupported"} {
+		settings, err := DecodeReviewConfig([]byte("enabled: true\nvalidation:\n  response_format: "+format+"\n"), map[string]bool{"primary": true}, "primary")
+		if format == "unsupported" {
+			if err == nil {
+				t.Fatal("invalid format")
+			}
+			continue
+		}
+		if err != nil || settings.Validation.ResponseFormat != format {
+			t.Fatal(settings, err)
+		}
+	}
+}
+
 func TestSkillReviewConfigSharesStrictActiveContract(t *testing.T) {
 	models := map[string]bool{"primary": true, "quality": true}
 	base := "enabled: true\nmoderation_model_name: primary\nevaluation_model_name: quality\n"

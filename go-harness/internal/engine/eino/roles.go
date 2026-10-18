@@ -206,6 +206,7 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 	}
 	selected := make([]tool.BaseTool, 0, len(available))
 	protected := map[string]bool{}
+	preparers := map[string]harness.ToolArgumentPreparer{}
 	ownedBackground := map[string]bool{}
 	addTool := func(t tool.BaseTool) error {
 		info, err := t.Info(ctx)
@@ -230,6 +231,9 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 			return nil
 		}
 		selected = append(selected, t)
+		if prepare, ok := t.(harness.ToolArgumentPreparer); ok {
+			preparers[info.Name] = prepare
+		}
 		protected[info.Name] = e.config.PermissionMode.RequiresPermission(info.Name) || req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
 		return nil
 	}
@@ -333,7 +337,7 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 	handlers = append(handlers,
 		&outputContinuationHistory{},
 		&modelLifecycle{io: lifecycle, budget: budget, sink: sink, media: &media, settings: spec.ModelSettings, tuning: tuning, role: true, contextWindow: e.config.ContextWindows[spec.Model]},
-		&toolMiddleware{sink: sink, permissions: permissions, protected: protected, policy: roleToolPolicy(spec, len(children) > 0, ownedBackground), permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, durableTaskWait: ownedBackground["task_wait"], io: lifecycle, budget: budget, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore})
+		&toolMiddleware{sink: sink, permissions: permissions, protected: protected, preparers: preparers, policy: roleToolPolicy(spec, len(children) > 0, ownedBackground), permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, durableTaskWait: ownedBackground["task_wait"], io: lifecycle, budget: budget, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore})
 	child, err := deep.New(ctx, &deep.Config{
 		Name: name, Description: spec.Description, Instruction: e.config.Instruction + "\n\n" + spec.Instruction + extensions.InstructionAppend + stoppedToolInstruction(ctx),
 		ChatModel: chat, MaxIteration: nativeMaxIterations(spec.MaxTurns),

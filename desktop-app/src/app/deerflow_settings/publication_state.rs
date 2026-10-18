@@ -62,6 +62,44 @@ pub(super) fn review_actions(proposal: &Value) -> (bool, bool) {
     }
 }
 
+pub(super) struct ApprovalAction {
+    pub(super) label: &'static str,
+    pub(super) warning: Option<&'static str>,
+    pub(super) request: Value,
+}
+
+// Keep the visible risk acknowledgment bound to the exact candidate being approved.
+pub(super) fn approval_action(proposal: &Value) -> Option<ApprovalAction> {
+    if !review_actions(proposal).0 {
+        return None;
+    }
+    let id = proposal["id"].as_str().filter(|id| !id.is_empty())?;
+    let state = proposal["state_version"].as_u64().filter(|v| *v > 0)?;
+    // New-skill proposals have an explicit null base in the host projection.
+    let base = proposal.get("base_sha256")?;
+    if !base.is_null()
+        && !base
+            .as_str()
+            .is_some_and(|base| base.is_empty() || super::skills_contract::digest(base))
+    {
+        return None;
+    }
+    let mut action = ApprovalAction {
+        label: "确认发布",
+        warning: None,
+        request: json!({"operation":"proposal.approve","proposal_id":id,
+            "expected_base_sha256":base,"expected_state_version":state}),
+    };
+    if proposal["script_review_required"] == true {
+        action.label = "确认脚本风险并发布";
+        action.warning = Some(
+            "点击“确认脚本风险并发布”即表示你已审查脚本并接受风险，将直接提交发布，不再弹出第二次确认。静态检查或模拟测试不代表脚本已真实执行或隔离验证。Python 和依赖需另行准备；运行仍受命令权限约束，本地、PowerShell 和 WSL 并非安全隔离。",
+        );
+        action.request["acknowledge_unverified_scripts"] = json!(true);
+    }
+    Some(action)
+}
+
 pub(super) fn review_hint(proposal: &Value) -> &'static str {
     if !proposal["approval"].is_null() {
         return notice(proposal);
@@ -104,6 +142,69 @@ pub(super) fn source_review_error(code: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_click_publication_binds_risk_copy_and_acknowledgment_to_the_candidate() {
+        let mut proposal = json!({"id":"p_reviewed","status":"pending_review",
+            "state_version":2,"base_sha256":null,"script_review_required":false});
+        let ordinary = approval_action(&proposal).unwrap();
+        assert_eq!(ordinary.label, "确认发布");
+        assert!(ordinary.warning.is_none());
+        assert_eq!(
+            ordinary.request,
+            json!({"operation":"proposal.approve",
+                "proposal_id":"p_reviewed","expected_state_version":2,"expected_base_sha256":null})
+        );
+
+        proposal["script_review_required"] = json!(true);
+        proposal["base_sha256"] = json!("a".repeat(64));
+        let script = approval_action(&proposal).unwrap();
+        assert_eq!(script.label, "确认脚本风险并发布");
+        assert!(script.warning.unwrap().contains("不再弹出第二次确认"));
+        assert!(script.warning.unwrap().contains("并非安全隔离"));
+        assert_eq!(
+            script.request,
+            json!({"operation":"proposal.approve",
+            "proposal_id":"p_reviewed","expected_state_version":2,
+            "expected_base_sha256":"a".repeat(64),"acknowledge_unverified_scripts":true})
+        );
+        proposal["state_version"] = json!(3);
+        assert_ne!(approval_action(&proposal).unwrap().request, script.request);
+    }
+
+    #[test]
+    fn publication_action_requires_a_complete_unapproved_pending_candidate() {
+        let proposal = json!({"id":"p_one","status":"pending_review",
+            "state_version":2,"base_sha256":"","script_review_required":true});
+        for (field, value) in [
+            ("id", json!("")),
+            ("id", Value::Null),
+            ("state_version", json!(0)),
+            ("state_version", Value::Null),
+            ("base_sha256", json!(false)),
+            ("base_sha256", json!("invalid")),
+            ("approval", json!({"review":{"ExpectedStateVersion":2}})),
+        ] {
+            let mut invalid = proposal.clone();
+            invalid[field] = value;
+            assert!(approval_action(&invalid).is_none(), "{field}");
+        }
+        let mut incomplete = proposal.clone();
+        incomplete.as_object_mut().unwrap().remove("base_sha256");
+        assert!(approval_action(&incomplete).is_none());
+        for status in [
+            "stale",
+            "failed",
+            "rejected",
+            "validating",
+            "published",
+            "publishing",
+        ] {
+            let mut invalid = proposal.clone();
+            invalid["status"] = json!(status);
+            assert!(approval_action(&invalid).is_none(), "{status}");
+        }
+    }
 
     #[test]
     fn approved_is_not_published_and_retry_keeps_original_review() {

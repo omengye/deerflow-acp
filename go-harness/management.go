@@ -187,7 +187,7 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 	case "proposal.behavior", "proposal.behavior.receipts":
 		data, err := c.managementBehavior(ctx, request)
 		return data, proposalManagementError(err)
-	case "proposal.list", "proposal.get", "proposal.approve", "proposal.reject", "proposal.history", "proposal.rollback", "proposal.source_review", "proposal.publish_retry":
+	case "proposal.list", "proposal.get", "proposal.approve", "proposal.reject", "proposal.history", "proposal.rollback", "proposal.source_review", "proposal.publish_retry", "proposal.review_retry", "proposal.submit":
 		data, err := c.managementProposals(ctx, request)
 		return data, proposalManagementError(err)
 	case "daemon.status", "daemon.drain", "daemon.resume":

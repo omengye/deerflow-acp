@@ -36,7 +36,7 @@ func TestCommandHelper(t *testing.T) {
 	switch args[0] {
 	case "echo":
 		cwd, _ := os.Getwd()
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"cwd": cwd, "args": args[1:], "secret": os.Getenv("DEERFLOW_SANDBOX_HOST_SECRET"), "explicit": os.Getenv("EXPLICIT_VALUE")})
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"cwd": cwd, "argv0": os.Args[0], "args": args[1:], "secret": os.Getenv("DEERFLOW_SANDBOX_HOST_SECRET"), "explicit": os.Getenv("EXPLICIT_VALUE")})
 		os.Exit(7)
 	case "output":
 		_, _ = os.Stdout.Write(bytes.Repeat([]byte("o"), 1<<20))
@@ -146,6 +146,37 @@ func TestPowerShellArgvRejectedBeforeProcessStart(t *testing.T) {
 	}
 	if b.active != 0 || len(b.tasks) != 0 {
 		t.Fatal("rejected argv created an execution task")
+	}
+}
+
+func TestLocalExecutableAliasPreservesInvocationAndRejectsRetarget(t *testing.T) {
+	cfg := testConfig(t)
+	dir := t.TempDir()
+	alias := filepath.Join(dir, "interpreter.exe")
+	if err := os.Symlink(cfg.AllowedExecutables[0], alias); err != nil {
+		t.Skipf("executable symlinks unavailable: %v", err)
+	}
+	cfg.AllowedExecutables = []string{alias}
+	b := newTestBackend(t, cfg, t.TempDir())
+	r := helperRequest(t, "echo")
+	r.Executable = alias
+	s := waitTask(t, b, launchTask(t, b, r).ID)
+	var echoed struct{ Argv0 string }
+	if err := json.Unmarshal([]byte(s.Stdout.Text), &echoed); err != nil || echoed.Argv0 != alias || s.ExitCode == nil || *s.ExitCode != 7 || !s.TerminationConfirmed {
+		t.Fatalf("invocation alias lost: %+v %v", s, err)
+	}
+	other := filepath.Join(dir, "unapproved.exe")
+	if err := os.WriteFile(other, []byte("not an approved executable"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, alias); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Start(context.Background(), r); !errors.Is(err, harness.ErrPermissionDenied) {
+		t.Fatalf("retargeted alias escaped canonical allowlist: %v", err)
 	}
 }
 

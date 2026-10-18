@@ -516,8 +516,12 @@ func TestBehaviorNativeReviewDoesNotAuthorizeScriptExecution(t *testing.T) {
 	}
 	generationRun(t, f.service)
 	p, err = f.service.Get(ctx, p.ID)
-	if err != nil || p.Status != "failed" || p.Evaluation.IsolatedScripts || e.calls.Load() != 0 {
+	if err != nil || p.Status != "pending_review" || p.Evaluation.IsolatedScripts {
 		t.Fatalf("script review %+v %v", p, err)
+	}
+	_ = e // Fixture calls are not execution of the helper.
+	if _, err := f.service.Approve(ctx, p.ID, review(p)); !errors.Is(err, harness.ErrInvalidInput) {
+		t.Fatalf("script risk acknowledgment was not required: %v", err)
 	}
 }
 

@@ -328,6 +328,12 @@ pub(super) fn fields() -> Vec<Field> {
             Kind::TrueOnly,
         ),
         (
+            "validation/response_format",
+            "审核响应格式",
+            "默认文本兼容模式；仅在 OpenAI 兼容服务确认支持时选择 JSON Schema。格式校验失败不会视为内容通过",
+            Kind::Choice(&[("text", "文本兼容"), ("json_schema", "严格 JSON Schema")]),
+        ),
+        (
             "validation/timeout_seconds",
             "候选审查超时（秒）",
             "0 使用 60；可设置 1–300，包含排队和两次审查",

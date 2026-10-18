@@ -309,7 +309,7 @@ func TestGenerationTransactionsRejectOrphansAndInvalidCandidates(t *testing.T) {
 	}
 	g.body = func(context.Context, skillmaintenance.GenerationInput) (skillmaintenance.Candidate, error) {
 		files := skillFiles("Use the helper")
-		files["helper.py"] = []byte("print('bad')")
+		files["helper.pyc"] = []byte("unsupported bytecode")
 		return skillmaintenance.Candidate{Reason: "Add helper", Files: files}, nil
 	}
 	job := queueGeneration(t, f, "python")

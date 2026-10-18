@@ -24,6 +24,7 @@ type execution struct {
 }
 type processSpec struct {
 	argv, env    []string
+	argv0        string
 	cwd          string
 	limits       harness.CommandLimits
 	remoteInput  bool
@@ -55,6 +56,9 @@ func runProcess(ctx context.Context, spec processSpec, stdout, stderr io.Writer)
 		return beforeStart(fmt.Errorf("empty command"))
 	}
 	cmd := exec.Command(spec.argv[0], spec.argv[1:]...)
+	if spec.argv0 != "" {
+		cmd.Args[0] = spec.argv0
+	}
 	cmd.Dir = spec.cwd
 	cmd.Env = spec.env
 	outR, outW, err := os.Pipe()

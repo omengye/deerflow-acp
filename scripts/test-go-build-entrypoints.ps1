@@ -44,19 +44,28 @@ param([string]$Configuration,[string]$OutputDirectory,[string]$DesktopTargetDire
     Assert-GoBundledSkills -Source $skills
     foreach ($content in @('python scripts/run.py', '`python3 scripts/run.py`', 'pip install package', './scripts/run.py')) {
         Set-Content -LiteralPath (Join-Path $skills 'SKILL.md') -Value $content -Encoding utf8
-        $rejected = $false
-        try { Assert-GoBundledSkills -Source $skills } catch { $rejected = $_.Exception.Message -like '*Python execution*' }
-        Assert-Fixture $rejected "Python execution reference accepted: $content"
+        Assert-GoBundledSkills -Source $skills
     }
     Set-Content -LiteralPath (Join-Path $skills 'SKILL.md') -Value 'Document Python projects with `grep --include="*.py"`.' -Encoding utf8
     Assert-GoBundledSkills -Source $skills
     Set-Content -LiteralPath (Join-Path $skills 'SKILL.md') -Value "``````python`n# Documentation language example`n``````" -Encoding utf8
     Assert-GoBundledSkills -Source $skills
     Set-Content -LiteralPath (Join-Path $skills 'run.py') -Value 'fixture' -Encoding utf8
+    Set-Content -LiteralPath (Join-Path $skills 'requirements.txt') -Value 'paramiko>=3' -Encoding utf8
+    Assert-GoBundledSkills -Source $skills
+    foreach ($name in @('run.pyc', 'run.pyd', 'package.whl', 'python.exe', 'pyvenv.cfg')) {
+        $file = Join-Path $skills $name
+        Set-Content -LiteralPath $file -Value 'fixture' -Encoding utf8
+        $rejected = $false
+        try { Assert-GoBundledSkills -Source $skills } catch { $rejected = $true }
+        Assert-Fixture $rejected "Compiled runtime accepted: $name"
+        Remove-Item -LiteralPath $file
+    }
+    New-Item -ItemType Directory -Path (Join-Path $skills '.venv') | Out-Null
     $rejected = $false
-    try { Assert-GoBundledSkills -Source $skills } catch { $rejected = $_.Exception.Message -like '*requires Python*' }
-    Assert-Fixture $rejected 'Python implementation accepted'
-    Write-Host 'Go build entry points: syntax, delegation, source dependency gate and skill input rejection passed.'
+    try { Assert-GoBundledSkills -Source $skills } catch { $rejected = $true }
+    Assert-Fixture $rejected 'Runtime environment accepted'
+    Write-Host 'Go build entry points: syntax, delegation, Python skill source acceptance and runtime exclusion passed.'
 } finally {
     $resolvedFixture = [IO.Path]::GetFullPath($fixture)
     if ($resolvedFixture.StartsWith([IO.Path]::GetFullPath($cache) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {

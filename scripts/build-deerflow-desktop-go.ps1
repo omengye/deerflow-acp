@@ -122,6 +122,7 @@ New-Item -ItemType Directory -Path $packageResources | Out-Null
 foreach ($name in $binaries.Keys) { Copy-Item -LiteralPath $binaries[$name] -Destination (Join-Path $outputRoot $name) }
 Copy-Item -LiteralPath $desktopDefault -Destination (Join-Path $packageResources "default-config.yaml")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\go-native-tools.md") -Destination (Join-Path $packageResources "go-native-tools.md")
+Copy-Item -LiteralPath (Join-Path $repoRoot "docs\skill-python-support-20261018.md") -Destination (Join-Path $packageResources "skill-python-support-20261018.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\harness-reliability-20261012.md") -Destination (Join-Path $packageResources "harness-reliability-20261012.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\eino-three-iterations-20261004.md") -Destination (Join-Path $packageResources "eino-three-iterations.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\skill-business-suites.md") -Destination (Join-Path $packageResources "skill-business-suites.md")
@@ -184,9 +185,10 @@ the user's OpenCLI browser bridge. It does not require Python.
 The optional stdio MCP executable allowlist is in local_acp of config.yaml.
 WSL command execution uses the bundled, SHA-256 verified Go Linux helper.
 Select a WSL2 distribution explicitly; no guest interpreter is required.
-Bundled skill inputs are checked before building; Python scripts and execution
-commands cause an explicit build failure. Native skill authoring is available
-through deerflow-skill-go.exe.
+Bundled skills may contain reviewable Python source and text dependency
+declarations. Python skills need a separately configured interpreter and packages;
+the Go host never installs them automatically. Native skill authoring is available
+through deerflow-skill-go.exe. Use skill_run check before executing pinned source.
 To update, close Desktop and copy user-data into a new package. Do not replace
 or delete it. A previous Python session database cannot be opened by Go.
 
@@ -205,10 +207,12 @@ foreach ($forbidden in @("runtime", "python.exe", "pythonw.exe", ".venv", "site-
     if (Test-Path -LiteralPath (Join-Path $outputRoot $forbidden)) { throw "Unexpected Python dependency in package: $forbidden" }
 }
 $forbiddenEntries = Get-ChildItem -LiteralPath $outputRoot -Recurse -Force | Where-Object {
-    $_.Name -match '^(python(?:w)?(?:[0-9.]+)?\.exe|pyvenv\.cfg|site-packages|conda-meta|\.venv)$' -or $_.Extension -in @('.py', '.pyw', '.pyc', '.pyo')
+    $_.Name -match '^(python(?:w)?(?:[0-9.]+)?\.exe|pyvenv\.cfg|site-packages|conda-meta|\.venv|__pycache__)$' -or
+    $_.Extension -in @('.pyc', '.pyo', '.pyd', '.whl', '.pyz') -or
+    ($_.Extension -in @('.py', '.pyw') -and -not $_.FullName.StartsWith((Join-Path $packageResources 'skills') + '\', [StringComparison]::OrdinalIgnoreCase))
 }
 if ($forbiddenEntries) { throw "Unexpected Python runtime component in package: $($forbiddenEntries[0].FullName)" }
-$sourceRecord['python_source_dependency_inputs'] = 'checked_absent'
+$sourceRecord['python_source_dependency_inputs'] = 'skill_sources_only_host_independent'
 $sourceRecord['python_runtime_in_package'] = 'checked_absent'
 $sourceRecord | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $outputRoot "BUILD_SOURCE.json") -Encoding utf8
 if ($CreateZip) {

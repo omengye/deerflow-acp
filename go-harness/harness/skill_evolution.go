@@ -88,6 +88,8 @@ type SkillProposal struct {
 	ReviewedBy             string                  `json:"reviewed_by,omitempty"`
 	PublishedRevision      int64                   `json:"published_revision,omitempty"`
 	BehaviorJobID          string                  `json:"behavior_job_id,omitempty"`
+	ScriptReviewRequired   bool                    `json:"script_review_required,omitempty"`
+	ReviewRetryOf          string                  `json:"review_retry_of,omitempty"`
 	Error                  string                  `json:"error,omitempty"`
 	ValidationFailure      *SkillValidationFailure `json:"validation_failure,omitempty"`
 	// Read-only host projection; never authorizes publication or changes status.
@@ -147,6 +149,7 @@ type SkillModelReviewConfig struct {
 	Moderation, Evaluation         ModelRoute
 	Timeout                        time.Duration
 	MaxInputBytes, MaxOutputTokens int
+	ResponseFormat                 string
 }
 
 type SkillValidationInput struct {
@@ -194,8 +197,9 @@ type SkillPublication struct {
 }
 
 type SkillReview struct {
-	ExpectedStateVersion int64
-	Actor, Note          string
+	ExpectedStateVersion         int64
+	Actor, Note                  string
+	AcknowledgeUnverifiedScripts bool `json:",omitempty"`
 }
 
 type SkillRollback struct {

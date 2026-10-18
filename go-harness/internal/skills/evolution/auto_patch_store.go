@@ -119,6 +119,9 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 		return nil
 	}
 	learningCandidate := p.Trigger.Type == "experience_pattern"
+	if containsScripts(input.CandidateFiles) {
+		return autoPatchDecision("script_package_requires_review")
+	}
 	a := s.autoPatch
 	if a != nil && slices.Contains(a.builtin, p.Target.SourceID) {
 		return autoPatchDecision("scope_or_coverage_requires_review")

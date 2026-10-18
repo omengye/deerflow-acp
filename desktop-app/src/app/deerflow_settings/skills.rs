@@ -6,6 +6,16 @@ use serde::Deserialize;
 
 pub(super) const PAGE_SIZE: usize = 20;
 
+pub(super) fn catalog_request(status: &str, name: &str) -> Value {
+    let mut request = json!({"operation":"skill.list","limit":PAGE_SIZE,
+        "status":if status.is_empty() { "current" } else { status }});
+    let name = name.trim();
+    if !name.is_empty() {
+        request["name"] = json!(name);
+    }
+    request
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct CatalogSkill {
     target: Target,
@@ -143,6 +153,7 @@ fn mutation(request: &Value) -> bool {
                     | "proposal.reject"
                     | "proposal.rollback"
                     | "proposal.source_review"
+                    | "proposal.review_retry"
                     | "proposal.publish_retry"
             )
         )
@@ -508,6 +519,7 @@ pub(super) fn proposal_disposition_label(proposal: &Value) -> &str {
         Some("waiting_quota") => "等待自动采用额度",
         Some("learning_authorization_required") => "需要经验来源授权",
         Some("scope_or_coverage_requires_review") => "范围或可信覆盖需要确认",
+        Some("script_package_requires_review") => "含脚本，需要人工确认",
         Some("improvement_or_metadata_requires_review") => "改善不足或元数据超范围",
         Some("change_size_requires_review") => "修改规模超出自动采用范围",
         Some("configuration_requires_review") => "配置已变化，请核对后重新生成",
@@ -626,7 +638,7 @@ impl Waku {
                         this.deerflow_settings.skill_browser.abandon_retry();
                         this.deerflow_request(
                             "manage",
-                            json!({"operation":"skill.list", "limit":PAGE_SIZE}),
+                            catalog_request("", ""),
                             cx,
                         );
                     },
@@ -708,6 +720,13 @@ impl Waku {
                 "内容审查不能证明真实任务效果；本次由用户审查决定是否发布。",
                 theme,
             ));
+        }
+        if proposal["script_review_required"] == true {
+            group = group.child(df_label("脚本未进行真实隔离执行验证", "静态内容检查或模拟行为测试不证明脚本可运行。此候选不可自动发布，人工发布需明确确认；运行前请使用 skill_run check 检查 Python 与依赖。", theme));
+        }
+        if proposal["validation_failure"].is_object() {
+            let failure = &proposal["validation_failure"];
+            group = group.child(df_label("审核失败诊断", format!("阶段：{} · 原因：{} · 细分：{}\n审核响应字节数：{}；仅保留摘要，不显示原始模型响应。", text(&failure["stage"]), text(&failure["code"]), text(&failure["detail_code"]), failure["response_bytes"]), theme));
         }
         group = group.child(df_label(
             "候选与基础版本",
@@ -1031,15 +1050,15 @@ impl Waku {
             state.busy() || state.applying() || state.status["running"].as_bool() != Some(true);
         let mut group = df_group(theme).child(df_label(
             "已安装技能",
-            "由 Eino Go 服务管理；启停立即保存，对新任务生效。",
+            "默认仅显示当前技能；已删除项保留在历史筛选中。启停立即保存，对新任务生效。",
             theme,
         ));
         let mut filters = div().flex().flex_wrap().gap(px(6.0));
         for (status, label) in [
-            ("", "刷新全部"),
+            ("current", "刷新当前"),
             ("enabled", "已启用"),
             ("disabled", "已停用"),
-            ("deleted", "已删除"),
+            ("deleted", "已删除历史"),
         ] {
             filters = filters.child(df_button(
                 SharedString::from(format!("df-skills-{status}")),
@@ -1049,10 +1068,7 @@ impl Waku {
                 theme,
                 cx,
                 move |this, _, cx| {
-                    let mut query = json!({"operation":"skill.list","limit":PAGE_SIZE});
-                    if !status.is_empty() {
-                        query["status"] = json!(status);
-                    }
+                    let query = catalog_request(status, "");
                     this.deerflow_settings.skill_browser.rollback = None;
                     this.deerflow_request("manage", query, cx);
                 },
@@ -1078,10 +1094,7 @@ impl Waku {
                         cx,
                         |this, _, cx| {
                             let name = this.skills_search.read(cx).content().trim().to_owned();
-                            let mut request = json!({"operation":"skill.list","limit":PAGE_SIZE});
-                            if !name.is_empty() {
-                                request["name"] = json!(name);
-                            }
+                            let request = catalog_request("", &name);
                             this.deerflow_request("manage", request, cx);
                         },
                     )),
@@ -1090,7 +1103,7 @@ impl Waku {
                 div()
                     .text_size(sp(12.0))
                     .text_color(theme.text_tertiary)
-                    .child("名称精确匹配；留空查询全部。"),
+                    .child("名称精确匹配当前技能；留空查询全部当前技能，不含已删除历史。"),
             );
         if browser.catalog_stale {
             group = group.child(df_label(
@@ -1425,6 +1438,11 @@ fn validate_review_result(request: &Value, data: &Value) -> anyhow::Result<()> {
                 && data["revision"]["version"].as_u64().is_some_and(|v| v > 0),
             "回滚结果与请求不一致"
         );
+    } else if request["operation"] == "proposal.review_retry" {
+        anyhow::ensure!(data["proposal"]["id"].as_str().is_some_and(|id| !id.is_empty())
+            && data["proposal"]["id"] != request["proposal_id"]
+            && data["proposal"]["review_retry_of"] == request["proposal_id"]
+            && data["proposal"]["state_version"].as_u64().is_some_and(|v| v > 0), "审核重试结果与原提案不一致");
     } else if request["operation"] == "proposal.source_review" {
         anyhow::ensure!(data["proposal"]["id"].as_str().is_some_and(|id| !id.is_empty())
             && data["proposal"]["action"] == "create"
@@ -1457,6 +1475,19 @@ fn validate_review_result(request: &Value, data: &Value) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_retry_requires_a_distinct_linked_candidate() {
+        let request = json!({"operation":"proposal.review_retry","proposal_id":"old","expected_state_version":2});
+        assert!(mutation(&request));
+        let mut result = json!({"catalog_version":3,"proposal":{"id":"new","review_retry_of":"old","state_version":1}});
+        validate_review_result(&request, &result).unwrap();
+        result["proposal"]["id"] = json!("old");
+        assert!(validate_review_result(&request, &result).is_err());
+        result["proposal"]["id"] = json!("new");
+        result["proposal"]["review_retry_of"] = json!("other");
+        assert!(validate_review_result(&request, &result).is_err());
+    }
 
     #[test]
     fn source_review_failure_stays_local_without_enabling_old_proposal() {
@@ -1498,6 +1529,32 @@ mod tests {
     }
 
     #[test]
+    fn direct_script_approval_retry_preserves_the_exact_risk_decision() {
+        let proposal = json!({"id":"p_script","status":"pending_review","state_version":2,
+            "base_sha256":null,"script_review_required":true});
+        let request = publication_state::approval_action(&proposal).unwrap().request;
+        let mut browser = SkillBrowser::default();
+        assert!(browser.can_begin(&request));
+        browser.begin(&request);
+        browser.transport_failed(&request);
+        assert!(browser.mutations_pending());
+        assert_eq!(browser.retry.as_ref(), Some(&request));
+        assert!(browser.can_begin(&request));
+        for (field, value) in [
+            ("proposal_id", json!("p_other")),
+            ("expected_state_version", json!(3)),
+            ("acknowledge_unverified_scripts", json!(false)),
+        ] {
+            let mut changed = request.clone();
+            changed[field] = value;
+            assert!(!browser.can_begin(&changed), "{field}");
+        }
+        browser.backend_failed(&request, "conflict");
+        assert!(!browser.mutations_pending());
+        assert!(browser.review_stale);
+    }
+
+    #[test]
     fn deerflow_generation_transport_failure_retains_original_mutation() {
         for request in [
             json!({"operation":"skill.generation.enqueue","target":{"source_id":"project"},"request_key":"stable-key","reason":"original intent","expected_head":{"state_version":0}}),
@@ -1532,6 +1589,27 @@ mod tests {
             "record":{"description":"Research sources","enabled":true},
             "builtin":true,"managed_source":false,"can_refresh_import":false
         })
+    }
+
+    #[test]
+    fn catalog_defaults_and_name_search_exclude_deleted_history() {
+        let current = catalog_request("", "");
+        assert_eq!(
+            current,
+            json!({"operation":"skill.list","status":"current","limit":20})
+        );
+        assert_eq!(catalog_request("current", ""), current);
+        let search = catalog_request("", " todo-extract ");
+        assert_eq!(search["status"], "current");
+        assert_eq!(search["name"], "todo-extract");
+        for status in ["current", "enabled", "disabled", "deleted"] {
+            let request = catalog_request(status, "research");
+            let mut nav = PageNav::default();
+            nav.accept(&request, "next", "cursor").unwrap();
+            let next = nav.request(true).unwrap();
+            assert_eq!(next["status"], status);
+            assert_eq!(next["name"], "research");
+        }
     }
 
     #[test]

@@ -56,6 +56,21 @@ func TestReviewConfigValidateSaveAndReload(t *testing.T) {
 	}
 }
 
+func TestReviewResponseFormatRoundTripsAndOlderDraftPreservesIt(t *testing.T) {
+	options, doc := reviewDocument(t)
+	readObject(readObject(doc, "skill_evolution"), "validation")["response_format"] = "json_schema"
+	saved := run(t, options, "save", doc)
+	if readObject(readObject(saved, "skill_evolution"), "validation")["response_format"] != "json_schema" {
+		t.Fatal("format not saved")
+	}
+	delete(readObject(readObject(saved, "skill_evolution"), "validation"), "response_format")
+	run(t, options, "save", saved)
+	raw, err := readYAML(options.Config)
+	if err != nil || readObject(readObject(raw, "skill_evolution"), "validation")["response_format"] != "json_schema" {
+		t.Fatal("older draft lost saved format", err)
+	}
+}
+
 func TestReviewConfigRejectsIneffectiveSettingsWithoutWriting(t *testing.T) {
 	for _, mode := range []string{"unknown-model", "automatic", "discovery", "fail-open", "skills-disabled", "missing-external-custom", "file-custom", "missing-builtin"} {
 		t.Run(mode, func(t *testing.T) {
