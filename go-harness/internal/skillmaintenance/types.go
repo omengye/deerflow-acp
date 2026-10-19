@@ -114,8 +114,9 @@ type Job struct {
 }
 
 type Claim struct {
-	Job   Job
-	token string
+	Job        Job
+	token      string
+	leaseUntil time.Time
 }
 
 type ModelCall struct {

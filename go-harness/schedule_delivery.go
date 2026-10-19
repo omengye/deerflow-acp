@@ -12,6 +12,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/automation"
 	"github.com/omengye/deerflow-acp/go-harness/internal/localhost"
+	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
 type scheduleDelivery struct {
@@ -53,6 +54,11 @@ func (c *Client) managementScheduleDelivery(ctx context.Context, r localhost.Man
 	if err := decodeManagement(r, &in, "account", "workspace", "id", "status"); err != nil {
 		return nil, err
 	}
+	workspace, err := session.NormalizeWorkspace(in.Workspace)
+	if err != nil {
+		return nil, managementInvalid("choose an existing workspace directory")
+	}
+	in.Workspace = workspace
 	db := c.store.DB()
 	if r.Operation == "schedule.buzz.poll" {
 		// A send whose acknowledgement was lost is quarantined, never replayed.
@@ -104,7 +110,7 @@ func (c *Client) managementScheduleDelivery(ctx context.Context, r localhost.Man
 	}
 	var v scheduleDelivery
 	var raw, source []byte
-	err := db.QueryRowContext(ctx, `SELECT id,schedule_id,target,source,text,status FROM harness_schedule_deliveries WHERE id=? AND account=? AND workspace=?`, in.ID, in.Account, in.Workspace).Scan(&v.ID, &v.ScheduleID, &raw, &source, &v.Text, &v.Status)
+	err = db.QueryRowContext(ctx, `SELECT id,schedule_id,target,source,text,status FROM harness_schedule_deliveries WHERE id=? AND account=? AND workspace=?`, in.ID, in.Account, in.Workspace).Scan(&v.ID, &v.ScheduleID, &raw, &source, &v.Text, &v.Status)
 	if err != nil {
 		return nil, err
 	}

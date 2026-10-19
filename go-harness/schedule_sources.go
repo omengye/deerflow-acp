@@ -16,6 +16,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/channels"
 	"github.com/omengye/deerflow-acp/go-harness/internal/localhost"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
+	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
 type scheduledRunKey struct{}
@@ -27,11 +28,21 @@ type buzzSchedulePolicy struct {
 	FullAccess bool     `json:"full_access"`
 }
 
-func (c *Client) bindScheduleSource(ctx context.Context, session string, source automation.Source) error {
-	source.SessionID = session
+func (c *Client) bindScheduleSource(ctx context.Context, sessionID string, source automation.Source) error {
+	x, err := c.service.Store.Session(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	workspace, err := session.NormalizeWorkspace(source.Workspace)
+	if err != nil || !session.SameWorkspace(workspace, x.CWD) {
+		return harness.ErrPermissionDenied
+	}
+	// Resolve aliases only at attachment. Persist the session's pinned path so
+	// later symlink changes cannot transfer a saved grant to another workspace.
+	source.SessionID, source.Workspace = sessionID, x.CWD
 	raw, err := json.Marshal(source)
 	if err == nil {
-		_, err = c.store.DB().ExecContext(ctx, `INSERT INTO harness_schedule_sources(session_id,source) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET source=excluded.source`, session, raw)
+		_, err = c.store.DB().ExecContext(ctx, `INSERT INTO harness_schedule_sources(session_id,source) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET source=excluded.source`, sessionID, raw)
 	}
 	return err
 }
@@ -67,7 +78,7 @@ func (c *Client) scheduleSource(ctx context.Context, req harness.RunRequest) (au
 			return source, err
 		}
 	}
-	if source.Workspace != req.Session.CWD {
+	if !session.SameWorkspace(source.Workspace, req.Session.CWD) {
 		return source, harness.ErrPermissionDenied
 	}
 	raw, err = json.Marshal(source)
@@ -110,7 +121,7 @@ func (c *Client) authorizeScheduleSource(ctx context.Context, source automation.
 }
 
 func (c *Client) ownsSchedule(ctx context.Context, source automation.Source, spec automation.Spec) bool {
-	if source.Workspace != spec.Workspace {
+	if !session.SameWorkspace(source.Workspace, spec.Workspace) {
 		return false
 	}
 	if source.Kind == "desktop" {
@@ -139,7 +150,11 @@ func (c *Client) managementScheduleSources(ctx context.Context, r localhost.Mana
 		if in.Account == "" || len(in.Account) > 256 || !filepath.IsAbs(in.Workspace) || len(in.Allowed) > 100 || in.FullAccess && len(in.Allowed) == 0 {
 			return nil, managementInvalid("invalid Buzz schedule policy")
 		}
-		in.Workspace = filepath.Clean(in.Workspace)
+		workspace, err := session.NormalizeWorkspace(in.Workspace)
+		if err != nil {
+			return nil, managementInvalid("choose an existing workspace directory")
+		}
+		in.Workspace = workspace
 		for _, sender := range in.Allowed {
 			if sender == "" || len(sender) > 256 {
 				return nil, managementInvalid("invalid sender")
@@ -154,7 +169,7 @@ func (c *Client) managementScheduleSources(ctx context.Context, r localhost.Mana
 		if err := c.store.DB().QueryRowContext(ctx, `SELECT policy,version FROM harness_schedule_buzz_grants WHERE account=? AND workspace=?`, in.Account, in.Workspace).Scan(&old, &oldVersion); err == nil && string(old) == string(raw) {
 			version = oldVersion
 		}
-		_, err := c.store.DB().ExecContext(ctx, `INSERT INTO harness_schedule_buzz_grants(account,workspace,policy,version,expires_ms) VALUES(?,?,?,?,?) ON CONFLICT(account,workspace) DO UPDATE SET policy=excluded.policy,version=excluded.version,expires_ms=excluded.expires_ms`, in.Account, in.Workspace, raw, version, time.Now().Add(2*time.Minute).UnixMilli())
+		_, err = c.store.DB().ExecContext(ctx, `INSERT INTO harness_schedule_buzz_grants(account,workspace,policy,version,expires_ms) VALUES(?,?,?,?,?) ON CONFLICT(account,workspace) DO UPDATE SET policy=excluded.policy,version=excluded.version,expires_ms=excluded.expires_ms`, in.Account, in.Workspace, raw, version, time.Now().Add(2*time.Minute).UnixMilli())
 		return map[string]any{"version": version}, err
 	case "schedule.buzz.bind":
 		var in struct {
@@ -169,14 +184,6 @@ func (c *Client) managementScheduleSources(ctx context.Context, r localhost.Mana
 		if s.Account == "" || s.Sender == "" || len(s.Account) > 256 || len(s.Sender) > 256 || len(s.Grant) > 256 || s.MessageID == "" || s.Conversation == "" || len(s.MessageID) > 256 || len(s.Conversation) > 512 {
 			return nil, managementInvalid("invalid Buzz source")
 		}
-		// Session existence/workspace are checked through the host session store.
-		x, err := c.service.Store.Session(ctx, in.Session)
-		if err != nil {
-			return nil, err
-		}
-		if x.CWD != s.Workspace {
-			return nil, harness.ErrPermissionDenied
-		}
 		return map[string]any{"bound": true}, c.bindScheduleSource(ctx, in.Session, s)
 	case "schedule.owner.link":
 		var in struct {
@@ -189,15 +196,22 @@ func (c *Client) managementScheduleSources(ctx context.Context, r localhost.Mana
 		if len(in.Sources) < 1 || len(in.Sources) > 20 || len(in.Owner) > 200 {
 			return nil, managementInvalid("invalid owner link")
 		}
+		for index, source := range in.Sources {
+			if source.Kind == "" || source.Account == "" || source.Sender == "" || !filepath.IsAbs(source.Workspace) {
+				return nil, managementInvalid("incomplete source identity")
+			}
+			workspace, err := session.NormalizeWorkspace(source.Workspace)
+			if err != nil {
+				return nil, managementInvalid("choose an existing workspace directory")
+			}
+			in.Sources[index].Workspace = workspace
+		}
 		tx, err := c.store.DB().BeginTx(ctx, nil)
 		if err != nil {
 			return nil, err
 		}
 		defer tx.Rollback()
 		for _, source := range in.Sources {
-			if source.Kind == "" || source.Account == "" || source.Sender == "" || !filepath.IsAbs(source.Workspace) {
-				return nil, managementInvalid("incomplete source identity")
-			}
 			if strings.TrimSpace(in.Owner) == "" {
 				_, err = tx.ExecContext(ctx, `DELETE FROM harness_schedule_owner_links WHERE principal=?`, source.Principal())
 			} else {

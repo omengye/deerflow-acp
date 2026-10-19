@@ -395,6 +395,7 @@ func (s *Store) ClaimKinds(ctx context.Context, kinds []JobKind) (Claim, bool, e
 	j.State, j.StateVersion, j.Attempts, j.ErrorCode, j.RetryAt = "running", j.StateVersion+1, j.Attempts+1, "", time.Time{}
 	claim := Claim{Job: j, token: rand.Text()}
 	lease := min(now.Add(leaseDuration).UnixNano(), j.Deadline.UnixNano())
+	claim.leaseUntil = timestamp(lease)
 	_, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET state='running',state_version=?,attempts=?,token=?,lease_ns=?,deadline_ns=?,retry_ns=0,error_code='' WHERE id=?`, j.StateVersion, j.Attempts, claim.token, lease, j.Deadline.UnixNano(), j.ID)
 	if err != nil {
 		return Claim{}, false, err
@@ -417,24 +418,30 @@ func (s *Store) check(ctx context.Context, tx *sql.Tx, c Claim, now time.Time) (
 }
 
 func (s *Store) Heartbeat(ctx context.Context, c Claim) error {
+	_, err := s.heartbeat(ctx, c)
+	return err
+}
+
+func (s *Store) heartbeat(ctx context.Context, c Claim) (time.Time, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	defer tx.Rollback()
 	now, err := s.clock(ctx, tx)
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	j, err := s.check(ctx, tx, c, now)
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET lease_ns=? WHERE id=?`, min(now.Add(leaseDuration).UnixNano(), j.Deadline.UnixNano()), j.ID)
+	lease := min(now.Add(leaseDuration).UnixNano(), j.Deadline.UnixNano())
+	_, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET lease_ns=? WHERE id=?`, lease, j.ID)
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
-	return tx.Commit()
+	return timestamp(lease), tx.Commit()
 }
 
 // Complete/Fail never release model charges. Error codes are a fixed enum.

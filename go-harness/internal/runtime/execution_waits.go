@@ -12,6 +12,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	"github.com/omengye/deerflow-acp/go-harness/internal/background"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
+	fastjson "github.com/segmentio/encoding/json"
 )
 
 func checkExecutionInterruptSet(permissions []ExecutionInterruptBinding, waits []interaction.TaskWaitBinding) error {
@@ -39,7 +40,17 @@ func checkExecutionWaitBytes(data []byte, waits []interaction.TaskWaitBinding) e
 		TaskWaitsEnabled bool                          `json:"taskWaitsEnabled"`
 		TaskWaits        []interaction.TaskWaitBinding `json:"taskWaits"`
 	}
-	decodeErr := json.Unmarshal(data, &envelope)
+	// Native nested-role checkpoints can approach the 64 MiB storage limit.
+	// Scan their opaque JSON strings in blocks rather than encoding/json's
+	// race-instrumented byte-at-a-time state machine while holding SQLite.
+	// Keep full JSON validation and the same field decoding/binding checks.
+	decodeErr := fastjson.Unmarshal(data, &envelope)
+	if decodeErr != nil {
+		// The standard decoder validates syntax before populating fields and
+		// continues after type errors. Preserve that legacy behavior on errors.
+		envelope.TaskWaitsEnabled, envelope.TaskWaits = false, nil
+		decodeErr = json.Unmarshal(data, &envelope)
+	}
 	if len(waits) == 0 && len(envelope.TaskWaits) == 0 {
 		return nil
 	}

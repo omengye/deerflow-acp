@@ -45,14 +45,25 @@ func (s *Store) RunKinds(ctx context.Context, kinds []JobKind, handler Handler) 
 	go func() {
 		ticker := time.NewTicker(leaseDuration / 3)
 		defer ticker.Stop()
+		leaseUntil := claim.leaseUntil
 		for {
 			select {
 			case <-work.Done():
 				done <- nil
 				return
 			case <-ticker.C:
-				check, stop := context.WithTimeout(work, 2*time.Second)
-				err := s.Heartbeat(check, claim)
+				// Renewal shares the single SQLite connection with publication.
+				// Wait within the confirmed lease, not an unrelated two-second
+				// timer, and stop before expiry if it cannot be renewed. The final
+				// lease inherits the job deadline so it remains a job_deadline.
+				var check context.Context
+				var stop context.CancelFunc
+				if leaseUntil.Before(claim.Job.Deadline) {
+					check, stop = context.WithDeadline(work, leaseUntil.Add(-2*time.Second))
+				} else {
+					check, stop = context.WithCancel(work)
+				}
+				renewedUntil, err := s.heartbeat(check, claim)
 				checkErr := check.Err()
 				stop()
 				if err != nil {
@@ -67,6 +78,7 @@ func (s *Store) RunKinds(ctx context.Context, kinds []JobKind, handler Handler) 
 					done <- err
 					return
 				}
+				leaseUntil = renewedUntil
 			}
 		}
 	}()

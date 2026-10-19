@@ -17,6 +17,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/automation"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 type fakeTransport struct {
@@ -38,7 +39,8 @@ func fixture(t *testing.T, run Runner) (*Manager, *instance) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	i := &instance{id: "test", manifest: Manifest{ID: "fixture", Descriptor: channelproto.Descriptor{ID: "fixture", Name: "Fixture", Protocol: 1}}, cfg: Config{Enabled: true, Workspace: t.TempDir()}, revision: 1, auth: channelproto.Auth{Account: "bot", Owner: "alice", Secret: json.RawMessage(`{"token":"private"}`)}}
+	// Directly seed the already-attached state normally produced by Configure.
+	i := &instance{id: "test", manifest: Manifest{ID: "fixture", Descriptor: channelproto.Descriptor{ID: "fixture", Name: "Fixture", Protocol: 1}}, cfg: Config{Enabled: true, Workspace: testutil.CanonicalTempDir(t)}, revision: 1, auth: channelproto.Auth{Account: "bot", Owner: "alice", Secret: json.RawMessage(`{"token":"private"}`)}}
 	m.items[i.id] = i
 	if err = m.persist(context.Background(), i); err != nil {
 		t.Fatal(err)

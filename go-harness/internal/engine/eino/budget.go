@@ -16,6 +16,21 @@ import (
 
 type budgetError struct{ resource string }
 
+func init() { schema.Register[*budgetError]() }
+
+// Cancellation can snapshot an event while its budget error is still in the
+// native stream. Persist its classification without exporting mutable state.
+func (e *budgetError) GobEncode() ([]byte, error) { return []byte(e.resource), nil }
+func (e *budgetError) GobDecode(data []byte) error {
+	switch resource := string(data); resource {
+	case "model_calls", "tool_calls", "tokens", "time":
+		e.resource = resource
+		return nil
+	default:
+		return fmt.Errorf("%w: unknown checkpoint budget resource", harness.ErrInvalidInput)
+	}
+}
+
 func (e *budgetError) Error() string { return "run " + e.resource + " budget exhausted" }
 func (e *budgetError) stopReason() string {
 	if e.resource == "tokens" {

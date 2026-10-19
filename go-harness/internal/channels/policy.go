@@ -10,6 +10,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/channelproto"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/automation"
+	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
 type FullAccessGrant struct {
@@ -40,15 +41,20 @@ func (d Dispatch) scope() string {
 }
 
 // ScheduleSource captures the locally granted capability, not the model's text.
-func (m *Manager) ScheduleSource(d Dispatch, session string) automation.Source {
-	s := automation.Source{Kind: d.Instance, Account: d.Account, Sender: d.Sender, Workspace: d.Workspace, Conversation: d.Conversation, MessageID: d.MessageID, SessionID: session}
+func (m *Manager) ScheduleSource(d Dispatch, sessionID string) automation.Source {
+	s := automation.Source{Kind: d.Instance, Account: d.Account, Sender: d.Sender, Workspace: d.Workspace, Conversation: d.Conversation, MessageID: d.MessageID, SessionID: sessionID}
+	workspace, err := session.NormalizeWorkspace(d.Workspace)
+	if err != nil {
+		return s
+	}
+	s.Workspace = workspace
 	i, err := m.get(d.Instance)
 	if err != nil {
 		return s
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.cfg.Enabled && i.revision == d.Revision && i.auth.Account == d.Account && i.auth.Owner == d.Sender && i.cfg.Workspace == d.Workspace && fullAccessAuthorized(i.cfg, i.auth) && effectiveApproval(i.cfg, i.auth) == harness.ApprovalAllowAlways {
+	if i.cfg.Enabled && i.revision == d.Revision && i.auth.Account == d.Account && i.auth.Owner == d.Sender && i.cfg.Workspace == workspace && fullAccessAuthorized(i.cfg, i.auth) && effectiveApproval(i.cfg, i.auth) == harness.ApprovalAllowAlways {
 		s.Grant = fmt.Sprint(i.cfg.FullAccess.GrantedAt)
 	}
 	return s

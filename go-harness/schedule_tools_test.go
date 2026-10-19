@@ -16,6 +16,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/automation"
 	"github.com/omengye/deerflow-acp/go-harness/internal/channels"
 	"github.com/omengye/deerflow-acp/go-harness/internal/localhost"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 func scheduleManageTest(t *testing.T, c *Client, request map[string]any) (any, error) {
@@ -274,7 +275,8 @@ func TestScheduleBuzzLeaseExpiryAndDeliverySurvivesDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	workspace := t.TempDir()
+	// This fixture inserts trusted scheduler records directly, after attachment.
+	workspace := testutil.CanonicalTempDir(t)
 	register := map[string]any{"operation": "schedule.buzz.register", "account": "bot", "workspace": workspace, "allowed_senders": []string{"alice"}, "full_access": true}
 	v, err := scheduleManageTest(t, c, register)
 	if err != nil {
@@ -436,7 +438,7 @@ func TestScheduleExplicitCrossChannelOwnerLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	workspace := t.TempDir()
+	workspace := testutil.CanonicalTempDir(t)
 	a := automation.Source{Kind: "buzz", Account: "bot", Sender: "alice", Workspace: workspace}
 	b := automation.Source{Kind: "wechat", Account: "wechat-bot", Sender: "owner", Workspace: workspace}
 	spec := automation.Spec{Source: &a, Workspace: workspace}
