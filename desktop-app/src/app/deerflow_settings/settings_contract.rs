@@ -341,6 +341,7 @@ const EVOLUTION_FIELDS: &[&str] = &[
     "/validation/timeout_seconds",
     "/validation/max_input_bytes",
     "/validation/max_output_tokens",
+    "/validation/response_format",
     "/generation",
     "/generation/enabled",
     "/generation/timeout_seconds",
@@ -432,6 +433,7 @@ fn expected_type(path: &str) -> Option<&'static str> {
         | "/skill_evolution/moderation_model_name"
         | "/skill_evolution/generation_model_name"
         | "/skill_evolution/evaluation_model_name"
+        | "/skill_evolution/validation/response_format"
         | "/skill_evolution/learning/extraction_model_name"
         | "/skill_evolution/learning/consolidation_model_name"
         | "/skill_evolution/learning/matching_model_name"
@@ -636,7 +638,7 @@ mod tests {
         ]}});
         doc["skill_evolution"] = json!({"enabled":false,"mode":"review","allow_builtin_overlays":false,
             "moderation_model_name":"","evaluation_model_name":"","generation_model_name":"","security_fail_closed":true,
-            "validation":{"timeout_seconds":0,"max_input_bytes":0,"max_output_tokens":0},
+            "validation":{"timeout_seconds":0,"max_input_bytes":0,"max_output_tokens":0,"response_format":"text"},
             "generation":{"enabled":false,"timeout_seconds":0,"max_input_bytes":0,"max_output_tokens":0},
             "learning":{"enabled":false,"extraction_model_name":null,"consolidation_enabled":false,"consolidation_model_name":null,"cross_session_enabled":false,"matching_enabled":false,"matching_model_name":null,"idle_seconds":300,"timeout_seconds":60,"max_input_bytes":131072,"max_output_tokens":4096,"max_daily_model_calls":10,"max_daily_tokens":50000,"external_context_policy":"hints_only"},
             "discovery":{"operator_corrections_enabled":false,"missing_reports_enabled":false,"successful_workflows_enabled":false,"experience_patterns_enabled":false,"experience_new_skills_enabled":false,"experience_review_drafts_enabled":false,"new_skill_source_id":"","repeat_threshold":2,"repeat_window_days":30,"cooldown_hours":24,"max_daily_proposals":5,"max_pending_proposals":20},
@@ -700,6 +702,32 @@ mod tests {
         assert!(!contract.allows("/runtime/goal_auto_continue"));
         assert!(!contract.allows("/memory/advanced"));
         assert!(!contract.allows("/runtime"));
+    }
+
+    #[test]
+    fn deerflow_review_response_format_does_not_block_model_saves() {
+        let path = "/skill_evolution/validation/response_format";
+        for format in ["text", "json_schema"] {
+            let mut doc = document();
+            doc["skill_evolution"]["validation"]["response_format"] = json!(format);
+            let fields = doc["config_schema"]["fields"].as_array_mut().unwrap();
+            fields.retain(|field| field["path"] != path);
+            // Match Go's descriptor independently of the desktop type whitelist.
+            fields.push(json!({"path":path,"type":"string","default":"text",
+                "enum":["text","json_schema"],"apply":"restart",
+                "operations":["validate","save"],"hash":"response-format-v1"}));
+            doc["models"][0]["name"] = json!("edited-model");
+            doc["default_model"] = json!("edited-model");
+            let original = doc.clone();
+            for running in [false, true] {
+                let status = json!({"running":running,"config_schema":doc["config_schema"]});
+                let contract = Capabilities::read(&doc, &status);
+                assert!(contract.allows(path), "{format}, running={running}");
+                assert!(contract.can_save(&doc), "{format}, running={running}");
+                assert!(contract.issue.is_none());
+            }
+            assert_eq!(doc, original);
+        }
     }
 
     #[test]
@@ -776,6 +804,7 @@ mod tests {
         for path in [
             "/skill_evolution/validation",
             "/skill_evolution/validation/max_input_bytes",
+            "/skill_evolution/validation/response_format",
             "/skill_evolution/generation",
             "/skill_evolution/generation/enabled",
             "/skill_evolution/generation/max_output_tokens",
