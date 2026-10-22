@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
@@ -44,6 +45,12 @@ func TestCancelPermissionThenPromptOnSameConnection(t *testing.T) {
 				t.Fatal(err)
 			}
 			c := connect(t, f.service)
+			// Cancellation joins checkpoint/receipt persistence before replying.
+			// Keep one bounded fixture deadline rather than a five-second timer
+			// per frame that can expire during legitimate race-instrumented I/O.
+			wait, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			c.waitCtx = wait
 			c.initialize(t)
 			sid := c.newSession(t, f.cwd)
 			first := c.request(t, "session/prompt", promptParams(sid, "write"))

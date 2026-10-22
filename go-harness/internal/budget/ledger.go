@@ -339,22 +339,48 @@ func (l *Ledger) checkEffect(ctx context.Context, tx *sql.Tx, s Scope) error {
 	return nil
 }
 func (l *Ledger) Validate(ctx context.Context, s Scope) error {
-	return l.transaction(ctx, "validate", func(tx *sql.Tx) error {
-		r, err := readRoot(ctx, tx, s.RootBudgetID)
-		if err != nil {
-			return err
+	return l.transaction(ctx, "validate", func(tx *sql.Tx) error { return l.validateTx(ctx, tx, s) })
+}
+
+// Probe validates an already-running attempt without mistaking a busy local
+// connection pool for failed accounting. checked=false means no connection was
+// acquired; native lease heartbeats and effect admission remain authoritative.
+// Once acquired, all transaction errors (including deadlines) fail closed.
+func (l *Ledger) Probe(ctx context.Context, s Scope) (checked bool, err error) {
+	conn, err := l.db.Conn(ctx)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded) {
+			return false, nil
 		}
-		if err = l.advance(ctx, tx, r, l.config.Now().UnixNano()); err != nil {
-			return err
-		}
-		if err = blocked(r); err != nil {
-			return err
-		}
-		if err = l.checkEffect(ctx, tx, s); err != nil {
-			return err
-		}
-		return saveRoot(ctx, tx, r)
-	})
+		return false, persist("acquire validation connection", err)
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return true, persist("validate", err)
+	}
+	defer tx.Rollback()
+	if err = l.validateTx(ctx, tx, s); err != nil {
+		return true, persist("validate", err)
+	}
+	return true, persist("validate", tx.Commit())
+}
+
+func (l *Ledger) validateTx(ctx context.Context, tx *sql.Tx, s Scope) error {
+	r, err := readRoot(ctx, tx, s.RootBudgetID)
+	if err != nil {
+		return err
+	}
+	if err = l.advance(ctx, tx, r, l.config.Now().UnixNano()); err != nil {
+		return err
+	}
+	if err = blocked(r); err != nil {
+		return err
+	}
+	if err = l.checkEffect(ctx, tx, s); err != nil {
+		return err
+	}
+	return saveRoot(ctx, tx, r)
 }
 func (l *Ledger) Heartbeat(ctx context.Context, s Scope) error {
 	var denial error

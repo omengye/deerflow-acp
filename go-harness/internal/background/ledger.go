@@ -152,12 +152,18 @@ func (a *LedgerAdapter) HeartbeatAttemptTx(ctx context.Context, tx *sql.Tx, scop
 func (a *LedgerAdapter) HeartbeatInterval() time.Duration { return a.ledger.HeartbeatInterval() }
 
 func (a *LedgerAdapter) CheckAttemptBudget(ctx context.Context, scope TaskScope) error {
-	err := a.ledger.Validate(ctx, BudgetScope(scope))
+	checked, err := a.ledger.Probe(ctx, BudgetScope(scope))
+	if !checked && err == nil {
+		// A checkpoint can hold the single connection past this polling
+		// window. No accounting ran; retry on the next monitor tick. Native
+		// heartbeats still fence expiry, and new effects cannot bypass SQL.
+		return nil
+	}
 	if !errors.Is(err, bt.ErrLeaseLost) {
 		return err
 	}
 	// Durable cancellation closes new-effect admission while cleanup still
-	// owns the native and child leases. Validate wraps this normal fence denial
+	// owns the native and child leases. Probe wraps this normal fence denial
 	// as a persistence error; confirm the exact live cancellation before
 	// classifying it as an ordinary stop. Real lease loss stays diagnostic.
 	tx, readErr := a.store.DB().BeginTx(ctx, nil)

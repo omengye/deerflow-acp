@@ -120,8 +120,8 @@ func discoveryOptions() *harness.SkillDiscoveryOptions {
 
 func waitDiscoverySignal(t *testing.T, ctx context.Context, c *Client, runID string) harness.SkillSignalEvidence {
 	t.Helper()
-	timer := time.NewTimer(10 * time.Second)
-	defer timer.Stop()
+	// The collector has bounded SQL attempts and retry backoff. Share the
+	// fixture deadline rather than failing between valid automatic retries.
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -141,9 +141,7 @@ func waitDiscoverySignal(t *testing.T, ctx context.Context, c *Client, runID str
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-timer.C:
-			t.Fatalf("real root did not settle: run=%s page=%+v", runID, page)
+			t.Fatalf("real root did not settle before fixture deadline: run=%s page=%+v error=%v", runID, page, ctx.Err())
 		case <-ticker.C:
 		}
 	}

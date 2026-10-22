@@ -76,6 +76,7 @@ type client struct {
 	finished   chan struct{}
 	serveErr   error
 	nextID     int
+	waitCtx    context.Context
 }
 
 func connect(t *testing.T, service *hr.Service) *client {
@@ -158,6 +159,12 @@ func (c *client) notify(t *testing.T, method string, params any) {
 
 func (c *client) read(t *testing.T) wireMessage {
 	t.Helper()
+	ctx := c.waitCtx
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+	}
 	select {
 	case err := <-c.readErrors:
 		t.Fatal(err)
@@ -166,8 +173,8 @@ func (c *client) read(t *testing.T) wireMessage {
 			t.Fatal("agent stdout closed before expected protocol message")
 		}
 		return msg
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for ACP message")
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for ACP message: %v", ctx.Err())
 	}
 	return wireMessage{}
 }

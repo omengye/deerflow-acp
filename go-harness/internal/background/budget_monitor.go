@@ -24,8 +24,9 @@ func startBudgetMonitor(ctx context.Context, monitor BudgetMonitor, scope TaskSc
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				// An in-progress database probe must join before publishing an
-				// outcome, including when the inner executor finishes meanwhile.
+				// An acquired database probe must join before publishing an
+				// outcome. Waiting for a busy pool alone may defer to the next tick;
+				// native lease renewal and effect admission remain authoritative.
 				probe, stopProbe := context.WithTimeout(context.WithoutCancel(ctx), max(interval, 5*time.Second))
 				err := monitor.CheckAttemptBudget(probe, scope)
 				stopProbe()

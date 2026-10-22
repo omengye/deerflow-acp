@@ -490,7 +490,12 @@ func (p *Peer) dispatchRequest(msg envelope) {
 	p.handlers.Add(1)
 	go func() {
 		defer p.handlers.Done()
-		defer func() {
+		finished := false
+		finish := func() {
+			if finished {
+				return
+			}
+			finished = true
 			if release != nil {
 				release()
 			}
@@ -499,7 +504,8 @@ func (p *Peer) dispatchRequest(msg envelope) {
 			delete(p.inflight, key)
 			p.mu.Unlock()
 			<-p.requestSlots
-		}()
+		}
+		defer finish()
 		result, err := p.invoke(ctx, msg.Method, msg.Params)
 		response := envelope{JSONRPC: "2.0", ID: msg.ID}
 		if err != nil {
@@ -510,14 +516,22 @@ func (p *Peer) dispatchRequest(msg envelope) {
 				response.Error = asRPCError(err)
 			}
 		}
-		if release != nil {
-			release()
-			release = nil
-		}
-		// A canceled prompt can still return its ACP stopReason. Only connection
-		// cancellation should suppress the final response.
-		if err := p.send(p.ctx, response); err != nil && p.ctx.Err() == nil {
+		frame, err := marshalFrame(response, p.opts.MaxFrameBytes)
+		if err != nil {
 			p.shutdown(err)
+			return
+		}
+		// A peer may receive the response before Write returns. Release the
+		// request ID and capacity before publishing it, not after send joins.
+		finish()
+		// A canceled prompt can still return its ACP stopReason. Only connection
+		// cancellation should suppress the final response. Queue without waiting
+		// so released slots cannot leave unbounded goroutines behind a slow writer.
+		select {
+		case <-p.ctx.Done():
+		case p.writes <- writeJob{ctx: p.ctx, frame: frame}:
+		default:
+			p.shutdown(ErrBackpressure)
 		}
 	}()
 }
