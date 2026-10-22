@@ -160,8 +160,17 @@ func runBackgroundParentContinuation(t *testing.T, modes string, automatic bool,
 		writeTreeModelResponse(w, req.Stream, msg, finish)
 	}))
 	defer provider.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 65*time.Second)
+	// This scenario opens the durable SDK three times. Give setup/recovery its
+	// own headroom; each asynchronous task wait still has a shorter hard bound.
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
+	started := time.Now()
+	phase := "initial tasks"
+	markPhase := func(name string) {
+		t.Helper()
+		phase = name
+		t.Logf("continuation phase=%q elapsed=%s", phase, time.Since(started))
+	}
 	depth, count, concurrent := 2, 2, 1
 	if mixed {
 		depth, count = 3, 3
@@ -201,11 +210,31 @@ func runBackgroundParentContinuation(t *testing.T, modes string, automatic bool,
 		t.Fatalf("initial %+v %v", initial, err)
 	}
 	waitTask := func(id string, approve bool, want string) harness.BackgroundTask {
+		t.Helper()
+		wait, stopWait := context.WithTimeout(ctx, 45*time.Second)
+		defer stopWait()
+		started := time.Now()
+		var last []harness.BackgroundTask
+		fail := func(err error) {
+			t.Helper()
+			t.Fatalf("phase=%q waiting for task=%q status=%q approve=%v after %s: %v; last=%+v pool=%+v", phase, id, want, approve, time.Since(started), err, last, c.store.DB().Stats())
+		}
 		for {
-			tasks, err := c.BackgroundTasks(ctx, sess.ID, "", 100)
-			if err != nil {
-				t.Fatal(err)
+			var tasks []harness.BackgroundTask
+			var err error
+			if id == "" {
+				tasks, err = c.BackgroundTasks(wait, sess.ID, "", 100)
+			} else {
+				// The original tree already completed. Poll only the continuation
+				// instead of repeatedly loading every ancestor and its resources.
+				var task harness.BackgroundTask
+				task, err = c.BackgroundTask(wait, sess.ID, id)
+				tasks = []harness.BackgroundTask{task}
 			}
+			if err != nil {
+				fail(err)
+			}
+			last = tasks
 			allDone := len(tasks) >= 2
 			for _, task := range tasks {
 				if id != "" && task.ID == id && task.Status == want {
@@ -216,9 +245,9 @@ func runBackgroundParentContinuation(t *testing.T, modes string, automatic bool,
 				}
 				allDone = allDone && task.Status == "completed"
 				if approve && task.Status == "waiting_input" && task.Interaction != nil {
-					_, err = c.ApproveBackgroundTask(ctx, sess.ID, task.ID, harness.TaskApproval{ID: task.Interaction.ID, TaskVersion: task.Version, Decision: harness.AllowOnce})
+					_, err = c.ApproveBackgroundTask(wait, sess.ID, task.ID, harness.TaskApproval{ID: task.Interaction.ID, TaskVersion: task.Version, Decision: harness.AllowOnce})
 					if err != nil {
-						t.Fatal(err)
+						fail(err)
 					}
 				}
 			}
@@ -226,16 +255,17 @@ func runBackgroundParentContinuation(t *testing.T, modes string, automatic bool,
 				return harness.BackgroundTask{}
 			}
 			select {
-			case <-ctx.Done():
-				t.Fatalf("waiting for %s %s: %+v", id, want, tasks)
-			case <-time.After(20 * time.Millisecond):
+			case <-wait.Done():
+				fail(wait.Err())
+			case <-time.After(100 * time.Millisecond):
 			}
 		}
 	}
 	waitTask("", true, "")
+	markPhase("recover completed parent")
 	var note string
 	for note == "" {
-		err = c.store.DB().QueryRow(`SELECT notification_id FROM harness_background_inbox WHERE parent_session_id<>? AND json_extract(CAST(payload AS TEXT),'$.Kind')='completed' ORDER BY seq LIMIT 1`, sess.ID).Scan(&note)
+		err = c.store.DB().QueryRowContext(ctx, `SELECT notification_id FROM harness_background_inbox WHERE parent_session_id<>? AND json_extract(CAST(payload AS TEXT),'$.Kind')='completed' ORDER BY seq LIMIT 1`, sess.ID).Scan(&note)
 		if err == nil {
 			break
 		}
@@ -260,6 +290,7 @@ func runBackgroundParentContinuation(t *testing.T, modes string, automatic bool,
 		}
 	}
 	reopen()
+	markPhase("admit continuation and wait for approval")
 	startUpdates := func() (chan harness.RunResult, chan error, context.CancelFunc) {
 		updates, done := make(chan harness.RunResult, 16), make(chan error, 1)
 		live, stop := context.WithCancel(ctx)
@@ -317,12 +348,14 @@ func runBackgroundParentContinuation(t *testing.T, modes string, automatic bool,
 		t.Fatal(err)
 	}
 	c = nil
+	markPhase("recover paused continuation")
 	reopen()
 	paused, err = c.BackgroundTask(ctx, sess.ID, id)
 	if err != nil || paused.Interaction == nil {
 		t.Fatalf("lost approval %+v %v", paused, err)
 	}
 	if stopKind != "" {
+		markPhase("cancel " + stopKind)
 		before := parentContinuations.Load()
 		if stopKind == "subtree" {
 			var previous string
@@ -357,6 +390,7 @@ func runBackgroundParentContinuation(t *testing.T, modes string, automatic bool,
 		}
 		return
 	}
+	markPhase("approve continuation")
 	var sourcePayload []byte
 	if err = c.store.DB().QueryRow(`SELECT payload FROM harness_background_continuation_sources WHERE task_id=?`, id).Scan(&sourcePayload); err != nil {
 		t.Fatal(err)
@@ -379,6 +413,7 @@ func runBackgroundParentContinuation(t *testing.T, modes string, automatic bool,
 		t.Fatal(err)
 	}
 	waitTask(id, false, "completed")
+	markPhase("propagate continuation result")
 	if data, err := os.ReadFile(filepath.Join(workspace, "background-parent.txt")); err != nil || string(data) != "once" {
 		t.Fatalf("write %q %v", data, err)
 	}
