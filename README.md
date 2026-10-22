@@ -26,10 +26,12 @@ Windows MVP 统一交付入口支持桌面、独立 ACP 或全部包，并在归
 
 ```powershell
 .\scripts\build-windows.ps1 -Package Desktop
+# 可选：同时生成未签名的 EXE 安装包（需要 Inno Setup 6）。
+.\scripts\build-windows.ps1 -Package Desktop -CreateInstaller
 # -Package ACP 或 -Package All
 ```
 
-正式 ZIP 要求干净、已提交的工作树；未提交开发构建使用 `-Development`，仅输出目录。GitHub Actions 的 **Build Windows MVP** 可以选择包类型；现有桌面和 ACP Release 工作流复用同一检查流程。当前 MVP 判断及验收边界见[发版检查记录](docs/release-readiness-20261014.md)，完整命令和产物见[Windows 构建说明](docs/windows-desktop-actions.md)。
+正式 ZIP 和安装包要求干净、已提交的工作树；未提交开发构建使用 `-Development`，默认仅输出目录，可加 `-CreateInstaller` 生成文件名带 `development` 的本地测试安装包。GitHub Actions 的 **Build Windows MVP** 可以选择包类型，Desktop/All 自动生成未签名安装包；现有桌面和 ACP Release 工作流复用同一检查流程。当前 MVP 判断及验收边界见[发版检查记录](docs/release-readiness-20261014.md)，完整命令和产物见[Windows 构建说明](docs/windows-desktop-actions.md)。
 
 需要 Git、Go 和 Rust。Windows 桌面还需要 MSVC、Windows SDK、CMake 与 shader 编译器，详见[桌面构建说明](docs/windows-desktop-actions.md)。项目构建和运行不使用 Python、uv 或 pip。
 

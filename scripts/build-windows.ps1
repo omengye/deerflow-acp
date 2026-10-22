@@ -9,7 +9,10 @@ param(
     [ValidateRange(1, 60)]
     [int]$TestTimeoutMinutes = 30,
     [switch]$Development,
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [switch]$CreateInstaller,
+    [string]$InstallerCompiler = '',
+    [string]$InstallerVersion = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,6 +24,20 @@ if ($env:OS -ne 'Windows_NT' -or [Runtime.InteropServices.RuntimeInformation]::O
 }
 if ($SkipTests -and -not $Development) { throw '-SkipTests requires -Development; release archives always run regression tests.' }
 if (-not $Development -and $Configuration -ne 'Release') { throw 'Distribution archives require Release. Use -Development for a Debug directory.' }
+if ($CreateInstaller -and $Package -eq 'ACP') { throw '-CreateInstaller requires -Package Desktop or All.' }
+if ($CreateInstaller -and $Configuration -ne 'Release') { throw '-CreateInstaller requires -Configuration Release.' }
+if ($CreateInstaller) {
+    . (Join-Path $PSScriptRoot 'windows-desktop-installer.ps1')
+    $InstallerCompiler = Find-DeerFlowInstallerCompiler -CompilerPath $InstallerCompiler
+    if (-not $InstallerVersion) {
+        $versionLines = @(Select-String -LiteralPath (Join-Path $repoRoot 'desktop-app\Cargo.toml') -Pattern '^version = "(\d+\.\d+\.\d+)"$')
+        if ($versionLines.Count -ne 1) { throw 'Cannot determine the desktop version. Pass -InstallerVersion.' }
+        $InstallerVersion = $versionLines[0].Matches[0].Groups[1].Value
+    }
+    if ($InstallerVersion -notmatch '^\d+\.\d+\.\d+(\.\d+)?$' -or @($InstallerVersion.Split('.') | Where-Object { [long]$_ -gt 65535 }).Count) {
+        throw 'Installer version must have three or four numeric components, each at most 65535.'
+    }
+}
 foreach ($command in @('git', 'go', 'cargo', 'rustc')) {
     $null = Get-Command $command -CommandType Application -ErrorAction Stop
 }
@@ -157,6 +174,18 @@ try {
                     if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force }
                 }
                 throw
+            }
+        }
+        if ($CreateInstaller -and $kind -eq 'Desktop') {
+            $installer = New-DeerFlowDesktopInstaller -PackageDirectory $packageRoot -OutputDirectory $outputRoot `
+                -RepositoryRoot $repoRoot -CompilerPath $InstallerCompiler -Version $InstallerVersion -Development:$Development
+            if (-not $Development) {
+                try { Assert-DesktopSourceIdentity -Expected $sourceIdentity } catch {
+                    foreach ($path in @($installer, "$installer.sha256")) {
+                        if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force }
+                    }
+                    throw
+                }
             }
         }
         $label = if ($SkipTests) { 'Development (regression skipped)' } else { 'Verified' }

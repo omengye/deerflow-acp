@@ -52,3 +52,5 @@ jobs:
         run: ./scripts/test-go-test-batches.ps1
       - name: Test Windows package release gates
         run: ./scripts/test-windows-package.ps1
+      - name: Test Windows installer input and failure gates
+        run: ./scripts/test-windows-installer.ps1

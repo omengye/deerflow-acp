@@ -73,11 +73,42 @@ jobs:
           }
           if (-not $fxcPath) { throw 'Windows SDK shader compiler fxc.exe is required' }
           "GPUI_FXC_PATH=$fxcPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install Inno Setup for unsigned desktop installer
+        if: inputs.package != 'ACP'
+        timeout-minutes: 5
+        run: |
+          $version = '6.7.3'
+          $sha256 = '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732'
+          $tag = 'is-' + $version.Replace('.', '_')
+          $download = Join-Path $env:RUNNER_TEMP "innosetup-$version.exe"
+          $installDir = Join-Path $env:RUNNER_TEMP "innosetup-$version"
+          Invoke-WebRequest -Uri "https://github.com/jrsoftware/issrc/releases/download/$tag/innosetup-$version.exe" -OutFile $download
+          if ((Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sha256) {
+            throw 'Inno Setup download checksum mismatch'
+          }
+          $arguments = @('/CURRENTUSER', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/NOICONS', '/TASKS=', "/DIR=`"$installDir`"")
+          $process = Start-Process -FilePath $download -ArgumentList $arguments -WindowStyle Hidden -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Inno Setup installation failed (exit $($process.ExitCode))" }
+          $compiler = Join-Path $installDir 'ISCC.exe'
+          if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw 'Inno Setup compiler was not installed' }
+          "INNO_SETUP_COMPILER=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Test Windows packaging failure gates
         run: |
           ./scripts/test-go-build-entrypoints.ps1
           ./scripts/test-go-test-batches.ps1
           ./scripts/test-windows-package.ps1
+          ./scripts/test-windows-installer.ps1
+      - name: Test installer compilation, upgrade and uninstall
+        if: inputs.package != 'ACP'
+        timeout-minutes: 5
+        run: |
+          New-Item -ItemType Directory -Path .build-cache/windows-release-logs -Force | Out-Null
+          Start-Transcript -Path .build-cache/windows-release-logs/installer.txt
+          try {
+            ./scripts/test-windows-installer.ps1 -Install -InstallerCompiler $env:INNO_SETUP_COMPILER
+          } finally {
+            Stop-Transcript
+          }
       - name: Build and verify Windows packages
         id: build
         run: |
@@ -85,7 +116,9 @@ jobs:
           Start-Transcript -Path .build-cache/windows-release-logs/build.txt
           try {
             ./scripts/build-windows.ps1 -Package $env:PACKAGE_SELECTION `
-              -OutputDirectory 'dist/desktop/windows-mvp'
+              -OutputDirectory 'dist/desktop/windows-mvp' `
+              -CreateInstaller:($env:PACKAGE_SELECTION -ne 'ACP') `
+              -InstallerCompiler $env:INNO_SETUP_COMPILER
             if ($LASTEXITCODE -ne 0) { throw 'Windows package build failed' }
           } finally {
             Stop-Transcript
@@ -94,7 +127,7 @@ jobs:
           Built **$env:PACKAGE_SELECTION** for Windows x64 from $env:GITHUB_SHA.
           Go regression tests, Rust Bridge tests and packaged protocol checks passed.
           Desktop protocol checks include copied Skills directories, failed startup recovery and configuration saves during startup.
-          Artifacts include binary/source ZIPs, SHA-256 checksums and build manifests.
+          Artifacts include binary/source ZIPs, SHA-256 checksums and build manifests; Desktop also includes an unsigned Setup.exe.
           Protocol checks use local fixtures; real model and GUI acceptance are separate.
           "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
       - name: Test desktop configuration startup states
@@ -131,6 +164,8 @@ jobs:
           path: |
             dist/desktop/windows-mvp/*.zip
             dist/desktop/windows-mvp/*.zip.sha256
+            dist/desktop/windows-mvp/*-Setup.exe
+            dist/desktop/windows-mvp/*-Setup.exe.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -144,7 +179,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Upload Windows build diagnostics
-        if: ${{ always() && steps.build.outcome != 'skipped' }}
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: DeerFlow-Windows-${{ inputs.package }}-build-logs

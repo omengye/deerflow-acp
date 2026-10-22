@@ -14,6 +14,9 @@
 .\scripts\build-windows.ps1 -Package ACP
 .\scripts\build-windows.ps1 -Package All -OutputDirectory 'dist/desktop/mvp-0.1.0'
 
+# 同时生成未签名的 EXE 安装程序（需要 Inno Setup 6）。
+.\scripts\build-windows.ps1 -Package Desktop -CreateInstaller
+
 # 未提交开发构建，仍编译并检查包内协议，仅生成开发目录。
 .\scripts\build-windows.ps1 -Package ACP -Development
 ```
@@ -33,6 +36,46 @@
 ```
 
 `-DesktopTargetDirectory` 可选择 Cargo 输出位置。源码身份检查在编译前进行，并在复制和归档时再次核查；`-SkipBuild -CreateZip` 被拒绝。`BUILD_COMMIT.txt` 和 `BUILD_SOURCE.json` 记录来源，详见[归档要求](go-acp-portable.md#desktop-builds-and-corresponding-source)。
+
+### EXE 安装程序
+
+DeerFlow 专用安装器使用 `resources/windows/deerflow-desktop.iss`，打包同一套通过协议检查的完整桌面目录，不使用上游 Waku 的产品标识、自动更新或发布地址。安装包内含 Go 后端、Bridge、配置工具、WSL helper、技能及许可证；终端用户运行桌面不需要安装 Go、Rust 或 Python。Git、WebView2 和可选工具的宿主依赖不由安装器安装。
+
+构建机安装 Inno Setup 6 后执行：
+
+```powershell
+winget install --id JRSoftware.InnoSetup --exact
+.\scripts\build-windows.ps1 -Package Desktop -CreateInstaller
+
+# 编译器不在标准位置时显式指定；版本默认读取 desktop-app/Cargo.toml。
+.\scripts\build-windows.ps1 -Package Desktop -CreateInstaller `
+    -InstallerCompiler 'D:\Tools\Inno Setup 6\ISCC.exe' -InstallerVersion '0.1.19'
+
+# 未提交修改的本地体验包。仍真实编译并通过两种协议 smoke 和包内 Bridge 测试。
+# -SkipTests 仅在 Development 下可选，跳过耗时的全量源码回归，不跳过包内检查。
+.\scripts\build-windows.ps1 -Package Desktop -Development -CreateInstaller `
+    -DesktopTargetDirectory 'desktop-app/target'
+```
+
+正式输出为 `DeerFlow-Desktop-<版本>-windows-x64-Setup.exe` 及 `.exe.sha256`，与便携 ZIP、对应源码 ZIP 放在同一输出目录。必须同时分发对应源码 ZIP 和许可证。开发安装包名称带 `-development`，来源和测试状态保留在包内，不作为正式发行凭证；开发模式不生成源码 ZIP。`-CreateInstaller` 仅支持 Release Desktop/All，不接受 ACP 或 Debug。无需设置 Windows 证书，不做 Authenticode 签名；Windows 可能显示未知发布者或 SmartScreen 警告。
+
+安装行为：
+
+- 默认安装到 `%LOCALAPPDATA%\Programs\DeerFlowDesktop`，仅当前用户，无需管理员权限。可以选择其他当前用户可写目录，不要选只读的 `Program Files`。覆盖安装沿用原安装目录，不自动迁移已有安装。
+- 创建开始菜单快捷方式，可勾选桌面快捷方式；可从 Windows 已安装应用中卸载。安装向导目前为英文，应用首次启动仍默认简体中文。
+- `user-data` 仍在安装目录内，由应用首次启动创建。覆盖安装保留配置、密钥、历史和技能；卸载只移除安装器管理的程序文件，保留 `user-data`。安装包拒绝包含已使用目录中的个人数据。
+- 升级或卸载前先结束任务，退出桌面并停止该目录的后台服务。安装器检测到目标目录仍有进程就中止，不强杀进程；WMI 不可用时也中止。静默安装不会启动桌面或重启机器。
+- 不自动迁移已有便携版的用户数据，也不自动刷新微信插件的可执行文件哈希绑定。迁移请在所有服务停止后备份并复制 `user-data`；需要刷新微信绑定的旧包升级继续使用经审核的 `scripts/update-deerflow-desktop-go.ps1 -Restart -RefreshBundledWeChat` 流程。
+
+安装器校验：
+
+```powershell
+.\scripts\test-windows-installer.ps1
+.\scripts\test-windows-installer.ps1 -Compile # 需要 Inno Setup，实际编译隔离的测试载荷，不安装或启动应用
+.\scripts\test-windows-installer.ps1 -Install # 使用独立产品 ID，验证静默安装、覆盖安装、卸载和数据保留
+```
+
+这些测试检查私有数据排除、文件校验和、源码及协议门禁、失败清理和实际 ISCC 编译。`-Install` 在隔离目录用测试载荷验证安装生命周期，不启动桌面应用，不修改已有安装；不能替代完整应用在另一台电脑上的界面和功能验收。Actions 的 Desktop/All 构建在正式打包前自动运行 `-Install`，验证静默安装、占用中拒绝升级或卸载、覆盖升级和卸载后保留用户数据。
 
 ### 未提交工作树的本地交付
 
@@ -75,15 +118,20 @@ race 进一步划分为 runtime、SDK 根包、其余 internal 包三个独立�
 
 在 **Actions → Build Windows MVP → Run workflow** 选择分支与包类型。`All` 在一次作业中生成桌面和 ACP 两套包。**Build Windows Desktop** 与 **Release Windows Portable ACP** 也可手动运行；发布 GitHub Release（含预发布）触发对应标签构建。手动运行只生成 artifact，不创建 Release。新文件提交到对应分支后才能在 GitHub 执行；手动工作流入口通常需要先存在于默认分支。
 
+只需要桌面安装包时，打开 **Actions → Build Windows Desktop → Run workflow**，选择分支后运行。成功后在该次运行底部的 **Artifacts** 下载 `DeerFlow-Windows-Desktop-x64`，解压即可取得 `Setup.exe`、便携 ZIP、对应源码和校验文件。无需配置签名证书或额外的 Repository secrets。
+
+Desktop/All 工作流从 [Inno Setup 官方发布](https://github.com/jrsoftware/issrc/releases/tag/is-6_7_3) 下载固定的 `6.7.3`，校验仓库中固定的 SHA-256 后静默安装到 runner 临时目录，并显式使用该编译器；不依赖 runner 预装版本或 Chocolatey 最新版。ACP 构建跳过 Inno Setup。安装器生命周期日志保存在 `.build-cache/windows-release-logs/installer.txt`，失败时也会尝试上传到构建诊断 artifact。
+
 桌面 artifact `DeerFlow-Windows-Desktop-x64` 包含：
 
+- `DeerFlow-Desktop-<版本>-windows-x64-Setup.exe` 及其 SHA-256 文件（未签名）。
 - `DeerFlow-Desktop-Go-windows-x64.zip`。
 - `DeerFlow-Desktop-Go-source.zip`。
 - 两个 ZIP 对应的 SHA-256 文件。
 
 ACP artifact `DeerFlow-Windows-ACP-x64` 包含 `DeerFlow-ACP-Go-windows-x64.zip`、`DeerFlow-ACP-Go-source.zip` 及两份校验文件。All artifact 为 `DeerFlow-Windows-All-x64`，包含两套产物。
 
-解压后运行 `DeerFlow-Desktop-Go/deerflow-desktop.exe`。程序包与源码使用同一固定提交，并保留 Waku GPL 和 DeerFlow 许可证。成功的发布作业将经回归及 smoke 的附件上传至现有 Release。当前生成未签名的 Windows x64 便携包，不生成安装器。
+可运行 `Setup.exe` 安装，或解压 ZIP 后运行 `DeerFlow-Desktop-Go/deerflow-desktop.exe`。程序包与源码使用同一固定提交，并保留 Waku GPL 和 DeerFlow 许可证。成功的发布作业将经回归及 smoke 的安装包、ZIP 和校验文件上传至现有 Release。当前 Windows x64 安装包和便携包均未签名。
 
 工作流缓存 Rust/Go 构建依赖，不复用发行目录或用户数据。普通 Go/Bridge 回归由 [Go harness](../.github/workflows/go-harness.yml) 执行，Waku 配置/协议及构建脚本检查由 [Desktop contracts](../.github/workflows/ci.yml) 执行。独立 ACP 的 [Release Windows Portable ACP](../.github/workflows/build-portable.yml) 只构建 Go ACP 与 Bridge 包，不包含 Waku。
 

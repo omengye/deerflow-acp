@@ -32,3 +32,5 @@ jobs:
           files: |
             dist/windows/*.zip
             dist/windows/*.zip.sha256
+            dist/windows/*-Setup.exe
+            dist/windows/*-Setup.exe.sha256
