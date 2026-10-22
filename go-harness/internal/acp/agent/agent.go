@@ -109,12 +109,14 @@ func decode(raw json.RawMessage, v any) error {
 	}
 	return nil
 }
-func mapError(err error) error {
+func mapError(err error) (mapped error) {
 	if err == nil {
 		return nil
 	}
+	defer func() { mapped = executionErrorMetadata(err, mapped) }()
 	var p *protocol.Error
 	var skillConflict *harness.SkillNameConflictError
+	var compaction *harness.CompactionError
 	if errors.As(err, &p) {
 		return err
 	}
@@ -135,6 +137,8 @@ func mapError(err error) error {
 		return receiptRecoveryError(true)
 	case errors.Is(err, harness.ErrContextLimit):
 		return &protocol.Error{Code: -32024, Message: "模型输入超过上下文上限。请减少本次输入或图片，或在新会话中仅带入必要摘要后重试。若已有工具执行完成，请先检查其结果，避免重复操作。", Data: map[string]any{"kind": "context_limit", "automaticReplay": false}}
+	case errors.As(err, &compaction):
+		return compactionError(compaction)
 	case errors.Is(err, harness.ErrTaskTreeStopped):
 		return &protocol.Error{Code: executionConflictCode, Message: "This execution has been stopped. Read its current state before continuing.", Data: map[string]any{"kind": "execution_stopped", "getMethod": getExecutionMethod, "automaticReplay": false}}
 	case errors.Is(err, harness.ErrBusy):

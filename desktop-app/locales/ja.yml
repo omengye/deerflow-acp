@@ -642,6 +642,8 @@ session.turn_waiting_background: バックグラウンドタスクを待って�
 transcript.waiting_background: バックグラウンドタスクを待っています
 session.stopped_before_response: エージェントは回答を返す前に停止しました
 session.codex_exited_before_response: Codex app-server は回答を返す前に終了しました
+session.failed_after_partial_response: このターンは完了前に失敗しました。途中までの出力は保存されています。
+session.agent_exited_during_turn: このターンが完了する前にエージェントとの接続が終了しました。途中までの出力は保存されています。
 session.steer_rejected: エージェントに追加の指示を送れませんでした（%{error}）。メッセージはフォローアップとしてキューに追加されました
 session.steer_rejected_plain: エージェントに追加の指示を送れませんでした。メッセージはフォローアップとしてキューに追加されました
 session.agent_ran_out_of_context: このターンでエージェントのコンテキストが不足しました

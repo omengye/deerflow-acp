@@ -13,14 +13,14 @@ use super::{
     fitted_file_tree_width, fitted_panel_widths, folded_transcript_row_kinds,
     format_worked_duration, format_working_elapsed, maintain_transcript_anchor, message_opens_turn,
     message_starts_followup_turn, navigation_preview_snippet, navigation_rail_fade_visibility,
-    navigation_rail_height, navigation_rail_scale, paused_toast_duration, pop_stream_batch,
-    push_transcript_activity, response_footer_message_index, response_row_turn_id,
-    session_accepts_turn_output, session_is_reapable, should_refresh_branch_after_activity,
-    should_show_navigation_rail, should_show_scroll_to_bottom, task_id_from_notification_tag,
-    task_notification_tag, transcript_anchor_end_space, transcript_navigation_turns,
-    transcript_rests_at_tail, transcript_row_kinds, transcript_row_splice,
-    transcript_rows_fingerprint, turn_finish_summary, widened_panel_width_for_file_editor,
-    widened_panel_width_for_review,
+    navigation_rail_height, navigation_rail_scale, paused_toast_duration, persist_turn_failure,
+    persist_turn_finish_message, pop_stream_batch, push_transcript_activity,
+    response_footer_message_index, response_row_turn_id, session_accepts_turn_output,
+    session_is_reapable, should_refresh_branch_after_activity, should_show_navigation_rail,
+    should_show_scroll_to_bottom, task_id_from_notification_tag, task_notification_tag,
+    transcript_anchor_end_space, transcript_navigation_turns, transcript_rests_at_tail,
+    transcript_row_kinds, transcript_row_splice, transcript_rows_fingerprint, turn_finish_summary,
+    widened_panel_width_for_file_editor, widened_panel_width_for_review,
 };
 use crate::git_branch::BranchEntry;
 use crate::model::{
@@ -363,6 +363,157 @@ fn failed_empty_turn_retains_its_driver_error() {
     );
     assert_eq!(turn_finish_summary(true, None, Some(error.into())), None);
     assert_eq!(turn_finish_summary(false, None, None), None);
+}
+
+#[test]
+fn deerflow_failed_turn_preserves_partial_output_and_persists_error() {
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::DeerFlow);
+    let turn_id = session.begin_turn("Inspect the clock");
+    let answer_id = session.push_message(MessageRole::Assistant, "I will check the next result.");
+    push_transcript_activity(
+        &mut session,
+        ActivityItem::new(None, ActivityKind::Command, "Read settings", None, true),
+        false,
+    );
+    let activity_id = session.transcript_blocks[0].activities[0].id;
+    let error = "Context compaction failed: the summary reached its output limit.";
+    let mut notice = None;
+
+    persist_turn_finish_message(&mut session, &mut notice, false, None, Some(error.into()));
+    session.finish_active_turn(TurnStatus::Failed);
+
+    assert_eq!(session.messages.len(), 3);
+    assert_eq!(session.messages[1].id, answer_id);
+    assert_eq!(session.messages[1].content, "I will check the next result.");
+    assert_eq!(session.messages[2].content, error);
+    assert_eq!(session.messages[2].turn_id, Some(turn_id));
+    assert!(!session.messages[2].streaming);
+    assert_eq!(session.transcript_blocks[0].activities[0].id, activity_id);
+    assert!(session.transcript_blocks[0].activities[0].complete);
+
+    let restored: AgentSession =
+        serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+    assert_eq!(restored.messages[2].content, error);
+    assert_eq!(restored.turns[0].status, TurnStatus::Failed);
+}
+
+#[test]
+fn deerflow_failure_events_keep_one_notice_per_turn() {
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::DeerFlow);
+    session.begin_turn("Inspect the project");
+    session.push_message(MessageRole::Assistant, "Partial findings");
+    let mut notice = None;
+
+    // A connection-stage Error may already have persisted a notice.
+    persist_turn_failure(&mut session, &mut notice, "Internal error".into());
+    let notice_id = session.messages.last().unwrap().id;
+    persist_turn_finish_message(
+        &mut session,
+        &mut notice,
+        false,
+        Some("Context compaction failed".into()),
+        Some("Internal error".into()),
+    );
+    persist_turn_failure(
+        &mut session,
+        &mut notice,
+        "Context compaction failed".into(),
+    );
+    assert_eq!(session.messages.len(), 3);
+    assert_eq!(session.messages.last().unwrap().id, notice_id);
+    assert_eq!(
+        session.messages.last().unwrap().content,
+        "Context compaction failed"
+    );
+
+    session.finish_active_turn(TurnStatus::Failed);
+    // A trailing ProcessExited must not append another message to a settled turn.
+    persist_turn_failure(&mut session, &mut notice, "Process exited".into());
+    assert_eq!(session.messages.len(), 3);
+    assert_eq!(
+        session.messages.last().unwrap().content,
+        "Context compaction failed"
+    );
+}
+
+#[test]
+fn deerflow_failure_notice_does_not_overwrite_an_earlier_turn() {
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::DeerFlow);
+    session.begin_turn("First request");
+    let mut notice = None;
+    persist_turn_failure(&mut session, &mut notice, "First failure".into());
+    let first_notice_id = session.messages.last().unwrap().id;
+    session.finish_active_turn(TurnStatus::Failed);
+
+    let next_turn_id = session.begin_turn("Continue from the saved findings");
+    persist_turn_failure(&mut session, &mut notice, "Second failure".into());
+    assert_eq!(session.messages.len(), 4);
+    assert_eq!(session.messages[1].id, first_notice_id);
+    assert_eq!(session.messages[1].content, "First failure");
+    assert_eq!(session.messages[3].content, "Second failure");
+    assert_eq!(session.messages[3].turn_id, Some(next_turn_id));
+}
+
+#[test]
+fn deerflow_success_after_partial_output_does_not_persist_transient_error() {
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::DeerFlow);
+    session.begin_turn("Inspect the project");
+    session.push_message(MessageRole::Assistant, "Completed findings");
+    let mut notice = None;
+
+    persist_turn_finish_message(
+        &mut session,
+        &mut notice,
+        true,
+        Some("Turn completed".into()),
+        Some("Transient provider error".into()),
+    );
+    assert_eq!(session.messages.len(), 2);
+    assert_eq!(session.messages[1].content, "Completed findings");
+    assert!(notice.is_none());
+}
+
+#[test]
+fn deerflow_failed_partial_turn_without_error_keeps_a_failure_notice() {
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::DeerFlow);
+    session.begin_turn("Inspect the project");
+    session.push_message(MessageRole::Assistant, "Still checking");
+    let mut notice = None;
+
+    persist_turn_finish_message(&mut session, &mut notice, false, None, None);
+    assert_eq!(session.messages.len(), 3);
+    assert_eq!(session.messages[1].content, "Still checking");
+    assert!(!session.messages[2].content.is_empty());
+    assert!(notice.is_some());
+}
+
+#[test]
+fn deerflow_empty_turn_still_persists_its_terminal_message() {
+    let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::DeerFlow);
+    session.begin_turn("Inspect the project");
+    let mut notice = None;
+
+    persist_turn_finish_message(
+        &mut session,
+        &mut notice,
+        false,
+        None,
+        Some("Connection failed".into()),
+    );
+    assert_eq!(session.messages.len(), 2);
+    assert_eq!(session.messages[1].content, "Connection failed");
+    session.finish_active_turn(TurnStatus::Failed);
+
+    session.begin_turn("Try again");
+    persist_turn_finish_message(
+        &mut session,
+        &mut notice,
+        true,
+        Some("Task completed".into()),
+        None,
+    );
+    assert_eq!(session.messages.len(), 4);
+    assert_eq!(session.messages[3].content, "Task completed");
 }
 
 #[test]

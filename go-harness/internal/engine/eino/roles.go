@@ -324,7 +324,7 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 	if e.config.Compaction.Enabled {
 		private := media
 		private.importer, private.publish = nil, nil
-		metered := &trackedModel{inner: chat, io: lifecycle, budget: budget, sink: sink, media: &private, settings: spec.ModelSettings, tuning: tuning, role: true, contextWindow: e.config.ContextWindows[spec.Model]}
+		metered := &trackedModel{inner: chat, io: lifecycle, budget: budget, sink: sink, media: &private, settings: harness.AgentModelSettings{MaxTokens: spec.ModelSettings.MaxTokens}, tuning: e.compactionTuning(spec.Model), role: true, contextWindow: e.config.ContextWindows[spec.Model]}
 		compaction, err = newCompactionMiddleware(ctx, windowCompaction(e.config.Compaction, e.config.ContextWindows[spec.Model], outputReserve(budget.limits.MaxOutputTokens, spec.ModelSettings)), metered)
 		if err != nil {
 			return nil, err

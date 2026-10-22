@@ -902,6 +902,7 @@ struct SessionRuntime {
     computer_use_previews: Vec<ComputerUsePreview>,
     computer_session_grants: HashSet<String>,
     last_driver_error: Option<String>,
+    failure_notice: Option<TurnFailureNotice>,
     /// When this session last sent or received anything, for idle reaping.
     last_active_at: Instant,
     /// Background-process snapshots are provider IPC. Keep the polling clock

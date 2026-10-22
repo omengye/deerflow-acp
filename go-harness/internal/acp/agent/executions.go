@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -107,6 +108,9 @@ func (a *Agent) runResponse(run func(harness.EventHandler) (harness.RunResult, e
 	}
 	result, err := run(emit)
 	if err != nil {
+		if result.Execution != nil {
+			return nil, &executionResultError{cause: err, state: result.Execution}
+		}
 		return nil, err
 	}
 	response := acp.PromptResponse{StopReason: acp.StopReason(result.StopReason)}
@@ -129,4 +133,55 @@ func (a *Agent) runResponse(run func(harness.EventHandler) (harness.RunResult, e
 		response.Meta = map[string]any{"deerflow": metadata}
 	}
 	return response, nil
+}
+
+// Keep the original error chain until the final ACP mapping; continuation
+// handlers still need its budget and background error classifications.
+type executionResultError struct {
+	cause error
+	state *harness.ExecutionState
+}
+
+func (e *executionResultError) Error() string { return e.cause.Error() }
+func (e *executionResultError) Unwrap() error { return e.cause }
+
+func executionErrorMetadata(original, mapped error) error {
+	var result *executionResultError
+	if !errors.As(original, &result) || result.state == nil {
+		return mapped
+	}
+	state := result.state
+	if !validID(state.SessionID, 256) || !validID(state.RunID, 256) {
+		return mapped
+	}
+	switch state.Status {
+	case harness.ExecutionRunning, harness.ExecutionSuspending, harness.ExecutionWaitingInput, harness.ExecutionResuming,
+		harness.ExecutionCompleted, harness.ExecutionCancelled, harness.ExecutionFailed, harness.ExecutionNeedsReconciliation:
+	default:
+		return mapped
+	}
+	var rpc *protocol.Error
+	if !errors.As(mapped, &rpc) {
+		rpc = &protocol.Error{Code: protocol.InternalError, Message: "Internal error"}
+	}
+	details := make(map[string]any)
+	if rpc.Data != nil {
+		existing, ok := rpc.Data.(map[string]any)
+		if !ok {
+			return mapped
+		}
+		for key, value := range existing {
+			details[key] = value
+		}
+	}
+	// Do not expose BlockedReason, waiting arguments, native targets or config.
+	details["execution"] = map[string]any{
+		"sessionId": state.SessionID, "runId": state.RunID, "status": state.Status,
+		"version": state.Version, "resumable": state.Status == harness.ExecutionWaitingInput && state.Resumable,
+	}
+	details["getMethod"] = getExecutionMethod
+	details["automaticReplay"] = false
+	copyError := *rpc
+	copyError.Data = details
+	return &copyError
 }

@@ -316,7 +316,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	if e.config.Compaction.Enabled {
 		privateMedia := *media
 		privateMedia.importer, privateMedia.publish = nil, nil
-		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel]}
+		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, tuning: e.compactionTuning(selectedModel), contextWindow: e.config.ContextWindows[selectedModel]}
 		compaction, err = newCompactionMiddleware(ctx, windowCompaction(e.config.Compaction, e.config.ContextWindows[selectedModel], outputReserve(b.limits.MaxOutputTokens, harness.AgentModelSettings{})), metered)
 		if err != nil {
 			return p, fmt.Errorf("build context compaction: %w", err)

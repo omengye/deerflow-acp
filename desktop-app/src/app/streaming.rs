@@ -719,27 +719,19 @@ impl Waku {
                 self.complete_turn_blocks(session_id);
                 runtime.stream_phase = None;
                 runtime.park_announced = false;
-                let needs_fallback = !self.turn_has_assistant_message(session_id);
                 if let Some(session) = self.state.session_mut(session_id) {
                     session.status = if success {
                         SessionStatus::Idle
                     } else {
                         SessionStatus::Failed
                     };
-                    if needs_fallback {
-                        session.push_message(
-                            MessageRole::Assistant,
-                            turn_finish_summary(success, summary, driver_error).unwrap_or_else(
-                                || {
-                                    if success {
-                                        tr!("session.turn_completed")
-                                    } else {
-                                        tr!("session.stopped_before_response")
-                                    }
-                                },
-                            ),
-                        );
-                    }
+                    persist_turn_finish_message(
+                        session,
+                        &mut runtime.failure_notice,
+                        success,
+                        summary,
+                        driver_error,
+                    );
                 }
                 self.finish_active_turn_with_analytics(
                     session_id,
@@ -812,22 +804,12 @@ impl Waku {
                     .find(|session| session.id == session_id)
                     .and_then(AgentSession::active_turn_id)
                     .is_some();
-                let should_append = has_active_turn
-                    && !self.turn_has_assistant_message(session_id)
-                    && self
-                        .state
-                        .sessions
-                        .iter()
-                        .find(|session| session.id == session_id)
-                        .is_some_and(|session| session.status != SessionStatus::Working);
                 if let Some(session) = self.state.session_mut(session_id)
                     && has_active_turn
                 {
                     if session.status != SessionStatus::Working {
                         session.status = SessionStatus::Failed;
-                    }
-                    if should_append {
-                        session.push_message(MessageRole::Assistant, error);
+                        persist_turn_failure(session, &mut runtime.failure_notice, error);
                     }
                 }
             }
@@ -845,19 +827,16 @@ impl Waku {
                 runtime.pending_computer_approval = None;
                 runtime.driver.cancel_computer_use();
                 runtime.computer_use_previews.clear();
-                let needs_fallback = !self.turn_has_assistant_message(session_id);
                 let failure_message = runtime
                     .last_driver_error
                     .take()
-                    .unwrap_or_else(|| tr!("session.codex_exited_before_response"));
+                    .unwrap_or_else(|| tr!("session.agent_exited_during_turn"));
                 let should_finish_turn = if let Some(session) = self.state.session_mut(session_id)
-                    && session.status.is_busy()
+                    && (session.status.is_busy() || session.active_turn_id().is_some())
                 {
                     session.status = SessionStatus::Failed;
                     session.updated_at = unix_time();
-                    if needs_fallback {
-                        session.push_message(MessageRole::Assistant, failure_message);
-                    }
+                    persist_turn_failure(session, &mut runtime.failure_notice, failure_message);
                     true
                 } else {
                     false
@@ -1054,6 +1033,70 @@ pub(super) fn turn_finish_summary(
     driver_error: Option<String>,
 ) -> Option<String> {
     summary.or_else(|| (!success).then_some(driver_error).flatten())
+}
+
+pub(super) struct TurnFailureNotice {
+    turn_id: Uuid,
+    message_id: Uuid,
+}
+
+pub(super) fn persist_turn_failure(
+    session: &mut AgentSession,
+    notice: &mut Option<TurnFailureNotice>,
+    error: String,
+) {
+    let Some(turn_id) = session.active_turn_id() else {
+        return;
+    };
+    // Error, TurnFinished and ProcessExited can describe the same failure.
+    // Update only our notice, never replace the provider's partial answer.
+    if let Some(previous) = notice.as_ref().filter(|notice| notice.turn_id == turn_id)
+        && let Some(message) = session
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|message| message.id == previous.message_id)
+    {
+        message.content = error;
+        return;
+    }
+    *notice = Some(TurnFailureNotice {
+        turn_id,
+        message_id: session.push_message(MessageRole::Assistant, error),
+    });
+}
+
+pub(super) fn persist_turn_finish_message(
+    session: &mut AgentSession,
+    notice: &mut Option<TurnFailureNotice>,
+    success: bool,
+    summary: Option<String>,
+    driver_error: Option<String>,
+) {
+    let Some(turn_id) = session.active_turn_id() else {
+        return;
+    };
+    let has_response = session
+        .messages
+        .iter()
+        .any(|message| message.role == MessageRole::Assistant && message.turn_id == Some(turn_id));
+    if success {
+        if !has_response {
+            session.push_message(
+                MessageRole::Assistant,
+                summary.unwrap_or_else(|| tr!("session.turn_completed")),
+            );
+        }
+        return;
+    }
+    let error = turn_finish_summary(false, summary, driver_error).unwrap_or_else(|| {
+        if has_response {
+            tr!("session.failed_after_partial_response")
+        } else {
+            tr!("session.stopped_before_response")
+        }
+    });
+    persist_turn_failure(session, notice, error);
 }
 
 /// Coalesce every adjacent delta of one kind while retaining provider order.

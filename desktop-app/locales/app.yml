@@ -1264,6 +1264,10 @@ session.stopped_before_response:
   en: The agent stopped before returning a response
 session.codex_exited_before_response:
   en: Codex app-server exited before returning a response
+session.failed_after_partial_response:
+  en: This turn failed before completion. Partial output has been preserved.
+session.agent_exited_during_turn:
+  en: The agent connection closed before this turn completed. Partial output has been preserved.
 session.steer_rejected:
   en: The agent couldn't be steered (%{error}); the message was queued as a follow-up
 session.steer_rejected_plain:

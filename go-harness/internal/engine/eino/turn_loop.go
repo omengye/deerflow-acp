@@ -62,7 +62,7 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 		ContextWindows                        map[string]int           `json:",omitempty"`
 		ContextPolicy                         string
 		ModelThinking                         map[string]harness.ThinkingConfig `json:",omitempty"`
-	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.OutputTokenParameter, e.config.ModelRoutes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode, e.config.Subagents, e.config.ContextWindows, "adaptive-window-compaction-v2/output-parameter-v1/output-continuation-v1/stopped-tool-followup-v1/progress-v1/continuity-v1", e.config.ModelThinking})
+	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.OutputTokenParameter, e.config.ModelRoutes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode, e.config.Subagents, e.config.ContextWindows, "adaptive-window-compaction-v3/output-parameter-v1/output-continuation-v1/stopped-tool-followup-v1/progress-v1/continuity-v1", e.config.ModelThinking})
 	if err != nil {
 		return "", fmt.Errorf("encode execution contract: %w", err)
 	}

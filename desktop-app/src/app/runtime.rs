@@ -3039,6 +3039,7 @@ impl Waku {
                 computer_use_previews: Vec::new(),
                 computer_session_grants: HashSet::new(),
                 last_driver_error: None,
+                failure_notice: None,
                 last_active_at: Instant::now(),
                 last_background_refresh_at: Instant::now()
                     .checked_sub(BACKGROUND_WORK_REFRESH_INTERVAL)

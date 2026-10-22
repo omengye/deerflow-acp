@@ -261,6 +261,21 @@ Full tool results remain in receipts and private snapshots; model previews are
 bounded to 8 KiB per result and 16 KiB per run, with `read_tool_output` for details.
 SDK embedders enable compaction with `Config.Compaction.Enabled`.
 
+Hidden summaries use a concise factual handoff, not the main turn's reasoning
+effort or role temperature. A declared thinking switch is disabled only for the
+summary; models without a declared switch receive no guessed provider option.
+Summary requests remain bounded by the shared budget, role output cap and a
+4,096-token ceiling. A truncated, empty or oversized summary is regenerated
+once with a shorter instruction, with a fresh reservation in the same budget.
+Provider errors, invalid output structure and cancellation are not retried.
+Neither rejected summary is inserted into history, and the 16 KiB acceptance
+limit remains enforced. Exhausted validation returns ACP `context_compaction`
+with safe reason/finish/size/attempt metadata, not summary text. Completed tool
+effects are not replayed. A failed old checkpoint may be unresumable even when
+all receipts are settled; review those effects and issue a new continuation
+instead of forcing checkpoint replay. The desktop persists terminal errors
+even after partial assistant output.
+
 Both executables allow two concurrent foreground runs across sessions by default.
 `--max-active-runs` changes this limit; `--queue-timeout` defaults to `0`, with
 no queue deadline. An explicit positive value enables one, including multi-day
