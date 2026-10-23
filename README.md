@@ -20,6 +20,14 @@
 
 Linux 的 ACP 可执行文件省略 `.exe`。客户端启动 Bridge 或直连 stdio 程序；`--start-daemon`、`--status`、`--stop-daemon` 用于管理常驻进程。
 
+## Windows 安装
+
+打开 [Build Windows Desktop](https://github.com/omengye/deerflow-acp/actions/workflows/build-desktop.yml)，选择所需分支最近一次成功的构建。在运行摘要中点击 **Download the Windows x64 installer**，或在 **Artifacts** 下载 **DeerFlow-Windows-Installer-x64**。登录 GitHub 后下载并解压，双击 `DeerFlow-Desktop-<版本>-windows-x64-Setup.exe` 安装。
+
+安装包适用于 Windows 10/11 x64，采用未签名安装器，无需配置 Windows 证书。默认仅为当前用户安装到 `%LOCALAPPDATA%\Programs\DeerFlowDesktop`，支持开始菜单入口和卸载；运行桌面不需要安装 Go、Rust 或 Python。Git、WebView2 及可选工具按[安装说明](docs/windows-desktop-actions.md#exe-安装程序)准备。
+
+下载包同时包含对应源码 ZIP 和 SHA-256 校验文件。Actions 下载保留 14 天；过期后可重新运行工作流。有正式发布时，可从 [Releases](https://github.com/omengye/deerflow-acp/releases) 下载对应安装文件。升级前先退出桌面并停止该安装目录的后台服务；覆盖安装及卸载都会保留 `user-data`。
+
 ## 从源码构建
 
 Windows MVP 统一交付入口支持桌面、独立 ACP 或全部包，并在归档前运行回归和包内协议检查：

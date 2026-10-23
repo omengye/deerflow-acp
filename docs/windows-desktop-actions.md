@@ -118,11 +118,11 @@ race 进一步划分为 runtime、SDK 根包、其余 internal 包三个独立�
 
 在 **Actions → Build Windows MVP → Run workflow** 选择分支与包类型。`All` 在一次作业中生成桌面和 ACP 两套包。**Build Windows Desktop** 与 **Release Windows Portable ACP** 也可手动运行；发布 GitHub Release（含预发布）触发对应标签构建。手动运行只生成 artifact，不创建 Release。新文件提交到对应分支后才能在 GitHub 执行；手动工作流入口通常需要先存在于默认分支。
 
-只需要桌面安装包时，打开 **Actions → Build Windows Desktop → Run workflow**，选择分支后运行。成功后在该次运行底部的 **Artifacts** 下载 `DeerFlow-Windows-Desktop-x64`，解压即可取得 `Setup.exe`、便携 ZIP、对应源码和校验文件。无需配置签名证书或额外的 Repository secrets。
+只需要桌面安装包时，打开 **Actions → Build Windows Desktop → Run workflow**，选择分支后运行。成功后在运行摘要点击 **Download the Windows x64 installer**，或在 **Artifacts** 下载 `DeerFlow-Windows-Installer-x64`。登录 GitHub 后下载并解压，运行其中的 `DeerFlow-Desktop-<版本>-windows-x64-Setup.exe`。该独立下载包含安装器及其 SHA-256 文件、对应源码 ZIP 及其 SHA-256 文件；Desktop 和 All 都生成这一下载入口。Actions 产物保留 14 天，过期后需重新运行工作流；正式 Release 的附件不受该保留期影响。无需配置签名证书或额外的 Repository secrets。
 
 Desktop/All 工作流从 [Inno Setup 官方发布](https://github.com/jrsoftware/issrc/releases/tag/is-6_7_3) 下载固定的 `6.7.3`，校验仓库中固定的 SHA-256 后静默安装到 runner 临时目录，并显式使用该编译器；不依赖 runner 预装版本或 Chocolatey 最新版。ACP 构建跳过 Inno Setup。安装器生命周期日志保存在 `.build-cache/windows-release-logs/installer.txt`，失败时也会尝试上传到构建诊断 artifact。
 
-桌面 artifact `DeerFlow-Windows-Desktop-x64` 包含：
+需要便携版或全部产物时，原有桌面 artifact `DeerFlow-Windows-Desktop-x64` 仍包含：
 
 - `DeerFlow-Desktop-<版本>-windows-x64-Setup.exe` 及其 SHA-256 文件（未签名）。
 - `DeerFlow-Desktop-Go-windows-x64.zip`。
