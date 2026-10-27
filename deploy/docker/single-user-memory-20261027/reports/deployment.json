@@ -1,0 +1,1 @@
+{"status": "deployed", "image": "deerflow-server:single-user-memory-20261027", "migration": {"personal": 1, "channel": 22, "name": "single-user-memory-v1-20261027"}, "backup": "/home/gen/deerflow-deploy/single-user-memory-20261027/backup", "embedding_host_port": false}

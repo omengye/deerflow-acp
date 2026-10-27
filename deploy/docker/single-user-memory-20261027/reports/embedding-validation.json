@@ -1,0 +1,1 @@
+{"passed": true, "runs": [{"queries": 100, "recall_at_5": 0.95, "p95_ms": 16}, {"queries": 100, "recall_at_5": 0.95, "p95_ms": 16}, {"queries": 100, "recall_at_5": 0.95, "p95_ms": 17}]}

@@ -1,0 +1,56 @@
+{
+  "containers": [
+    {
+      "name": "deerflow-deploy-deerflow-1",
+      "image": "deerflow-server:single-user-memory-20261027",
+      "image_id": "sha256:d89395c9629b359a3c8a8688f9a0f0e2145ff32a4c67f30a99b5226c045ab26f",
+      "status": "running",
+      "health": "healthy",
+      "ports": [
+        "18787/tcp"
+      ],
+      "published_bindings": {
+        "18787/tcp": [
+          {
+            "HostIp": "100.80.205.120",
+            "HostPort": "18787"
+          },
+          {
+            "HostIp": "192.168.1.190",
+            "HostPort": "18787"
+          }
+        ]
+      }
+    },
+    {
+      "name": "deerflow-memory-embedding",
+      "image": "deerflow-memory-embedding:single-user-v1",
+      "image_id": "sha256:4557fdc9b8d308c469804cbca299010e16a0e657023bb34f7c4dda2fe5effc00",
+      "status": "running",
+      "health": "healthy",
+      "ports": [
+        "18787/tcp",
+        "8080/tcp"
+      ],
+      "published_bindings": {}
+    },
+    {
+      "name": "folotoy-ws-folotoy-1",
+      "image": "folotoy-deerflow-ws:mobile-waku-v10-20261026",
+      "image_id": "sha256:d62df21b7ca56bd217edf20053b220e431d9ad96c8ac4b8def911db9213258bf",
+      "status": "running",
+      "health": "healthy",
+      "ports": [],
+      "published_bindings": {}
+    }
+  ],
+  "active_facts_by_scope": {
+    "global": 1,
+    "workspace": 1
+  },
+  "jobs": {
+    "completed": 2
+  },
+  "native_sha256": "ca5facb05a3a41a1724f0072168b91ed0fddb810c4bb5783114150eb2ff04337",
+  "unknown_legacy_records_preserved": 1
+}

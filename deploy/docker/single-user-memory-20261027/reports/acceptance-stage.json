@@ -1,0 +1,10 @@
+{
+  "migrated_personal_present": true,
+  "lost_ack_reconciled": true,
+  "conflict_protected": true,
+  "explicit_save_committed": true,
+  "cross_session_cross_workspace_recall": true,
+  "automatic_extraction_committed": true,
+  "forget_confirmed": true,
+  "passed": true
+}

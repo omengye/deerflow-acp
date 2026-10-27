@@ -1,0 +1,38 @@
+{
+  "go_toolchain": "1.26.8",
+  "full_regression": {
+    "note": "Windows host command test passed on isolated rerun",
+    "passed": 3583,
+    "skipped": 31,
+    "failed": 1
+  },
+  "final_related_packages": {
+    "passed": 835
+  },
+  "final_memory_package": {
+    "passed": 16
+  },
+  "personal_memory_integration": {
+    "passed": 3
+  },
+  "memory_regression_before_final_ranking": {
+    "passed": 33
+  },
+  "deployment_config_tests": {
+    "passed": 3
+  },
+  "android": {
+    "commit": "2d56a97",
+    "failures": 0,
+    "tests": 120,
+    "version_code": 7,
+    "apk_sha256": "7d6c36fecfb4fd358fe274c7cf02c56ea53ddb454bcf6c6bd0158df569f8ef6c",
+    "version": "2.1.0",
+    "signature_v2_verified": true,
+    "lint_errors": 0,
+    "lint_warnings": 19
+  },
+  "backend_commit": "640d466a",
+  "working_tree_had_preexisting_changes": true,
+  "physical_android_device_tested": false
+}

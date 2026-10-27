@@ -1,0 +1,16 @@
+{
+  "management_ready": true,
+  "idempotent_replay": true,
+  "receipt_confirmed": true,
+  "test_fact_forgotten": true,
+  "native_sha256": "3acf2f4f6ad73d2fffe8e4c598441162bfb28ee3fa87cf1beeb2afdf2db04f13",
+  "native_matches_build": true,
+  "single_user_enabled": true,
+  "desktop_running": true,
+  "connection_mode": "local",
+  "user_data_verified_during_update": true,
+  "wechat_enabled": true,
+  "wechat_authenticated": true,
+  "wechat_bound": true,
+  "wechat_process_running": true
+}

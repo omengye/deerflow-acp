@@ -1,0 +1,43 @@
+{
+  "completed_at": "2026-10-27T14:57:41.5693153+08:00",
+  "local_temporary_paths_removed": [
+    "D:\\Tools\\deerflow-api\\.task-memory-work",
+    "D:\\Tools\\deerflow-api\\deploy\\docker\\single-user-memory-20261027\\bin",
+    "D:\\Tools\\deerflow-api\\deploy\\docker\\single-user-memory-20261027\\model"
+  ],
+  "remote_temporary_paths_removed": [
+    "stage-data",
+    "stage-logs",
+    "staging",
+    "stage-compose.json",
+    "memory.test",
+    "deerflow-acpd.real",
+    "corpus.json",
+    "run-release.py",
+    "sanitized-reports.zip",
+    "stage.log",
+    "stage.exit",
+    "embedding-build.log",
+    "embedding-build.exit",
+    "server-build.log",
+    "server-build.exit",
+    "release.log",
+    "release.exit",
+    "acceptance-stage.log",
+    "acceptance-stage.exit",
+    "embedding-acceptance.log",
+    "embedding-acceptance.exit",
+    "embedding-acceptance-repeat.log"
+  ],
+  "stage_containers_remaining": 0,
+  "production_healthy": true,
+  "embedding_healthy": true,
+  "folotoy_healthy": true,
+  "embedding_host_ports": [],
+  "desktop_running_from_installed_directory": true,
+  "original_desktop_config_backup_verified": true,
+  "production_data_preserved": true,
+  "rollback_backups_preserved": true,
+  "android_apk_preserved": true,
+  "unrelated_files_preserved": true
+}

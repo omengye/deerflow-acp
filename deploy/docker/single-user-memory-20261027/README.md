@@ -41,3 +41,13 @@
 保留代码、测试报告、镜像和回滚备份。验收结束移除隔离容器、隔离数据副本、构建上下文、临时测试二进制和传输文件。不要清理生产卷、技能、用户工作区或其他任务的缓存。
 
 向量模型依据 [BGE 官方说明](https://huggingface.co/BAAI/bge-small-zh-v1.5) 使用；检索参数以本仓库合成语料验证，分数不是概率。上线后的实际召回质量仍需随用户资料类型变化复核。
+
+## 本次实施结果
+
+- 后端代码：`codex/single-user-memory`，提交 `640d466a`。Gentoo 已运行 `deerflow-server:single-user-memory-20261027`，向量服务和既有 FoloToy 渠道健康。
+- Android：`codex/waku-mobile-resilience`，提交 `2d56a97`，版本 `2.1.0`（7）。生成文件为 `D:\Tools\deerflow-app\app\build\outputs\apk\debug\deerflow-2.1.0-memory.apk`。
+- 当前桌面安装 `D:\Tools\deerflow-api\dist\desktop\DeerFlow-Desktop-Go-20261010-103944` 的原生后端已更新、启用单用户记忆并重启。验证了实际管理接口的写入、去重、回执和遗忘，微信渠道保持认证并运行。连接方式保持本地模式，本地记忆不与 Gentoo 自动同步。
+- 隔离测试验证了自动提取与重启恢复；生产公网测试验证了明确保存、跨会话跨工作区回忆、丢失回执恢复、冲突保护及遗忘。测试事实已遗忘，测试会话已清理。详见 [隔离验收](reports/acceptance-stage.json)、[生产验收](reports/acceptance-production.json)、[重启验收](reports/restart-stage.json)。
+- 100 条合成中文查询连续三轮 `Recall@5 = 0.95`，P95 为 16–17 ms；这是该合成评估集的结果，不代表真实用户资料的通用召回率。详见 [检索验收](reports/embedding-validation.json)。
+- Go 1.26.8 全量回归 3583 项通过、31 项跳过，1 项 Windows 主机命令测试在全量负载下失败，单独重跑通过。最终相关包 835 项通过。Android 120 项测试通过，Lint 无错误、19 条警告，APK 签名验证通过；本次未做实体手机测试。详见 [本地测试](reports/local-validation.json)。
+- 已删除本次隔离环境、模型下载、临时二进制和传输文件；生产数据、安装包、部署代码及回滚备份保留。详见 [清理记录](reports/cleanup.json)。服务端备份在 `/home/gen/deerflow-deploy/single-user-memory-20261027/backup`，桌面备份在 `D:\Tools\deerflow-api\dist\desktop-backups\single-user-memory-20261027`。
