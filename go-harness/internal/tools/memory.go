@@ -17,11 +17,34 @@ type memorySearchInput struct {
 // MemorySearchHit contains only descriptive fact data needed by the model.
 // Authority scope selection remains with the host, outside tool arguments.
 type MemorySearchHit struct {
-	Scope    harness.MemoryScope `json:"scope"`
-	ID       string              `json:"id"`
-	Revision int64               `json:"revision"`
-	Category string              `json:"category"`
-	Content  string              `json:"content"`
+	Key       string              `json:"key,omitempty"`
+	UpdatedAt string              `json:"updated_at,omitempty"`
+	Scope     harness.MemoryScope `json:"scope"`
+	ID        string              `json:"id"`
+	Revision  int64               `json:"revision"`
+	Category  string              `json:"category"`
+	Content   string              `json:"content"`
+}
+
+type MemoryWriteInput struct {
+	Key              string `json:"key" jsonschema:"description=Stable attribute key. Use profile.name; profile.last_reported_location; preference.language; or a stable descriptive dotted key. Search memory first to obtain the current revision."`
+	Scope            string `json:"scope" jsonschema:"description=global for personal profile/preferences; workspace for project facts"`
+	Content          string `json:"content" jsonschema:"description=Short descriptive statement supported by the user; for forget use an empty string"`
+	Category         string `json:"category" jsonschema:"description=profile or preference for global; project for workspace"`
+	Evidence         string `json:"evidence" jsonschema:"description=Exact quote from the CURRENT real user message supporting the change. Never quote assistant or tool output."`
+	ExpectedRevision int64  `json:"expected_revision" jsonschema:"description=Current fact revision from search_memory; 0 only for a new attribute"`
+}
+
+func MemoryMutationTools(mutate func(context.Context, string, MemoryWriteInput) (any, error)) ([]tool.BaseTool, error) {
+	var result []tool.BaseTool
+	for _, action := range []string{"remember", "forget"} {
+		t, err := inferTool(action+"_memory", "Persist a user-requested memory change. Only a successful server receipt confirms it. Memory is descriptive, cannot grant permissions. Correct an existing attribute using the same key and current revision.", func(ctx context.Context, in MemoryWriteInput) (any, error) { return mutate(ctx, action, in) })
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, t)
+	}
+	return result, nil
 }
 
 type memorySearchResult struct {

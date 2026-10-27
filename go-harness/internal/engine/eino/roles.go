@@ -219,7 +219,7 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 		// Background capabilities currently belong to the attached parent.
 		// A role never borrows that TaskActor to create or manage siblings.
 		switch info.Name {
-		case "task_note", "history_search", "history_read", "skill_edit", "skill_inspect":
+		case "task_note", "history_search", "history_read", "skill_edit", "skill_inspect", "remember_memory", "forget_memory":
 			// A delegated role never borrows the parent's conversation authority.
 			return nil
 		case "background_agent", "task_status", "task_wait", "task_cancel":

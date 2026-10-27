@@ -145,6 +145,9 @@ func (s *Store) SettleStagingTx(ctx context.Context, tx *sql.Tx, runID, attemptI
 	}
 	promoted := 0
 	scopeChanged := false
+	// Compare every proposal with the batch's initial scope revision. Earlier
+	// inserts in this transaction must not invalidate later independent facts.
+	initialVersions := make(map[string]int64)
 	for _, item := range items {
 		status := "discarded"
 		if promote {
@@ -156,7 +159,12 @@ func (s *Store) SettleStagingTx(ctx context.Context, tx *sql.Tx, runID, attemptI
 			if err != nil {
 				return 0, err
 			}
-			if version != item.expectedScopeRevision {
+			initial, seen := initialVersions[item.scope.key]
+			if !seen {
+				initial = version
+				initialVersions[item.scope.key] = version
+			}
+			if initial != item.expectedScopeRevision {
 				status = "scope_changed"
 				scopeChanged = true
 			} else {

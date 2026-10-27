@@ -266,6 +266,8 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 			sessions = append(sessions, entry)
 		}
 		return map[string]any{"sessions": sessions, "truncated": truncated}, nil
+	case "memory.personal.get", "memory.personal.mutate", "memory.personal.receipt":
+		return c.managementPersonalMemory(ctx, request)
 	case "memory.get", "memory.delete", "memory.promote":
 		return c.managementMemory(ctx, request)
 	case "session.delete":

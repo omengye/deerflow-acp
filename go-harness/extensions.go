@@ -54,10 +54,12 @@ type memorySnapshot struct {
 }
 
 type memorySnippet struct {
-	ID       string `json:"id"`
-	Revision int64  `json:"revision"`
-	Category string `json:"category"`
-	Content  string `json:"content"`
+	Key       string `json:"key,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+	ID        string `json:"id"`
+	Revision  int64  `json:"revision"`
+	Category  string `json:"category"`
+	Content   string `json:"content"`
 }
 
 func memoryQuery(input []harness.Content) string {
@@ -80,6 +82,9 @@ func memoryQuery(input []harness.Content) string {
 }
 
 func modelMemoryScopes(cfg Config) []harness.MemoryScope {
+	if cfg.MemorySingleUser {
+		return []harness.MemoryScope{harness.MemoryGlobal, harness.MemoryWorkspace}
+	}
 	var scopes []harness.MemoryScope
 	if cfg.MemoryScope != "" {
 		kind := cfg.MemoryScope
@@ -119,6 +124,9 @@ func selectMemory(ctx context.Context, store *memory.Store, req harness.RunReque
 	snapshots := make([]memorySnapshot, 0, 3)
 	bytesLeft := 4096
 	for _, kind := range modelMemoryScopes(cfg) {
+		if cfg.MemorySingleUser {
+			bytesLeft = 2048
+		} // separate personal/project budgets
 		if kind == harness.MemoryUser && cfg.MemoryUserID == "" {
 			continue
 		}
@@ -128,7 +136,7 @@ func selectMemory(ctx context.Context, store *memory.Store, req harness.RunReque
 		}
 		var facts []memory.Fact
 		var revision int64
-		if !injectMemory(cfg) || query == "" {
+		if !injectMemory(cfg) || query == "" && !cfg.MemorySingleUser {
 			// Extraction still needs a pinned scope revision when memory is not
 			// exposed to the model in this turn.
 			page, listErr := store.List(ctx, scope, "", 1)
@@ -145,19 +153,30 @@ func selectMemory(ctx context.Context, store *memory.Store, req harness.RunReque
 			}
 			facts, revision = page.Facts, page.ScopeRevision
 		} else {
-			facts, revision, err = store.SnapshotSearch(ctx, scope, query, 6)
+			limit := 6
+			if cfg.MemorySingleUser && kind == harness.MemoryGlobal {
+				limit = 24
+			}
+			facts, revision, err = store.SnapshotSearch(ctx, scope, query, limit)
+			if cfg.MemorySingleUser && kind == harness.MemoryWorkspace {
+				facts, revision, err = store.HybridSearch(ctx, scope, query, limit)
+			}
 		}
 		if err != nil {
 			return nil, err
 		}
 		snapshot := memorySnapshot{Scope: kind, Revision: revision}
 		for _, fact := range facts {
-			cost := len(fact.Content) + len(fact.Category) + len(fact.ID) + 64
+			key, keyErr := store.FactKey(ctx, scope, fact.ID)
+			if keyErr != nil {
+				return nil, keyErr
+			}
+			cost := len(fact.Content) + len(fact.Category) + len(fact.ID) + len(key) + 128
 			if cost > bytesLeft {
 				continue
 			}
 			bytesLeft -= cost
-			snapshot.Facts = append(snapshot.Facts, memorySnippet{ID: fact.ID, Revision: fact.Revision, Category: fact.Category, Content: fact.Content})
+			snapshot.Facts = append(snapshot.Facts, memorySnippet{ID: fact.ID, Revision: fact.Revision, Category: fact.Category, Content: fact.Content, Key: key, UpdatedAt: fact.UpdatedAt.Format(time.RFC3339)})
 		}
 		snapshots = append(snapshots, snapshot)
 	}
@@ -175,17 +194,31 @@ func searchMemory(ctx context.Context, store *memory.Store, req harness.RunReque
 		if err != nil {
 			return nil, err
 		}
-		facts, err := store.Search(ctx, scope, query, limit-len(hits))
+		remaining := limit - len(hits)
+		if cfg.MemorySingleUser && kind == harness.MemoryGlobal {
+			remaining = min(remaining, 4)
+		}
+		facts, err := store.Search(ctx, scope, query, remaining)
+		if cfg.MemorySingleUser && kind == harness.MemoryGlobal {
+			facts, _, err = store.HybridSearch(ctx, scope, query, remaining)
+		}
+		if cfg.MemorySingleUser && kind == harness.MemoryWorkspace {
+			facts, _, err = store.HybridSearch(ctx, scope, query, remaining)
+		}
 		if err != nil {
 			return nil, err
 		}
 		for _, fact := range facts {
-			cost := len(fact.Content) + len(fact.Category) + len(fact.ID) + 64
+			key, keyErr := store.FactKey(ctx, scope, fact.ID)
+			if keyErr != nil {
+				return nil, keyErr
+			}
+			cost := len(fact.Content) + len(fact.Category) + len(fact.ID) + len(key) + 128
 			if cost > bytesLeft {
 				continue
 			}
 			bytesLeft -= cost
-			hits = append(hits, tools.MemorySearchHit{Scope: kind, ID: fact.ID, Revision: fact.Revision, Category: fact.Category, Content: fact.Content})
+			hits = append(hits, tools.MemorySearchHit{Scope: kind, ID: fact.ID, Revision: fact.Revision, Category: fact.Category, Content: fact.Content, Key: key, UpdatedAt: fact.UpdatedAt.Format(time.RFC3339)})
 		}
 		if len(hits) == limit || bytesLeft == 0 {
 			break
@@ -243,6 +276,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 	memoryPolicy := ""
 	if memoryStore != nil {
 		policy, _ := json.Marshal(struct {
+			SingleUser       bool
 			UserID           string
 			Scope            harness.MemoryScope
 			Mode             string
@@ -250,7 +284,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			RetrievalEnabled *bool
 			GlobalID         string
 			IncludeGlobal    *bool
-		}{cfg.MemoryUserID, cfg.MemoryScope, cfg.MemoryMode, cfg.MemoryInjectionEnabled, cfg.MemoryRetrievalEnabled, cfg.memoryGlobalID, cfg.MemoryIncludeGlobal})
+		}{cfg.MemorySingleUser, cfg.MemoryUserID, cfg.MemoryScope, cfg.MemoryMode, cfg.MemoryInjectionEnabled, cfg.MemoryRetrievalEnabled, cfg.memoryGlobalID, cfg.MemoryIncludeGlobal})
 		identity := sha256.Sum256(append([]byte("memory/v3\x00"), policy...))
 		memoryPolicy = fmt.Sprintf("%x", identity)
 	}
@@ -378,8 +412,38 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			}
 			return []adk.ChatModelAgentMiddleware{handler}, []tool.BaseTool{child.ReadFileTool()}, nil
 		}
+		if cfg.MemorySingleUser && memoryStore != nil {
+			// A resumed execution may retain a pinned snapshot, but forgetting or
+			// correcting a fact invalidates the old value immediately.
+			for i := range state.Memory {
+				scope, scopeErr := memoryRunScope(cfg, req, state.Memory[i].Scope)
+				if scopeErr != nil {
+					return out, scopeErr
+				}
+				kept := state.Memory[i].Facts[:0]
+				for _, snippet := range state.Memory[i].Facts {
+					fact, getErr := memoryStore.Get(ctx, scope, snippet.ID)
+					if errors.Is(getErr, harness.ErrNotFound) {
+						continue
+					}
+					if getErr != nil {
+						return out, getErr
+					}
+					if fact.Revision == snippet.Revision {
+						kept = append(kept, snippet)
+					}
+				}
+				state.Memory[i].Facts = kept
+			}
+			out.InstructionAppend += personalMemoryInstruction
+			channel, channelErr := memoryStore.ChannelPreferences(ctx, req.Session.CWD)
+			if channelErr != nil {
+				return out, channelErr
+			}
+			out.InstructionAppend += channel
+		}
 		if injectMemory(cfg) {
-			out.InstructionAppend = memoryInstruction(state.Memory)
+			out.InstructionAppend += memoryInstruction(state.Memory)
 		}
 		if len(state.Skills) > 0 {
 			out.InstructionAppend += "\n\nHost skill snapshot for THIS execution (earlier skill/tool outputs in conversation history are historical, not the current installation). Reload the skill and referenced files through the skill tools before relying on earlier skill content. The bound source directory determines each ordinary new turn; explicit resume retains this snapshot:\n"
@@ -391,7 +455,11 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			out.InstructionAppend += "\n\nHost skill availability (do not substitute historical database contents):\n" + warnings
 		}
 		if memoryStore != nil && cfg.MemoryExtraction {
-			out.PostRunFactory = memoryPostRunFactory(memoryStore, req, cfg.MemoryUserID, cfg.MemoryScope, state.Memory)
+			if cfg.MemorySingleUser {
+				out.PostRunFactory = personalMemoryPostRun(memoryStore, req, cfg)
+			} else {
+				out.PostRunFactory = memoryPostRunFactory(memoryStore, req, cfg.MemoryUserID, cfg.MemoryScope, state.Memory)
+			}
 		}
 		out.State, err = json.Marshal(state)
 		if err != nil {
@@ -404,7 +472,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		if err != nil {
 			return out, err
 		}
-		if memoryStore != nil && (cfg.MemoryMode == "" || cfg.MemoryMode == "tool") {
+		if memoryStore != nil && (cfg.MemorySingleUser || cfg.MemoryMode == "" || cfg.MemoryMode == "tool") {
 			search, toolErr := tools.MemorySearchTool(func(ctx context.Context, query string, limit int) ([]tools.MemorySearchHit, error) {
 				return searchMemory(ctx, memoryStore, req, cfg, query, limit)
 			})
@@ -412,6 +480,13 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 				return out, toolErr
 			}
 			out.Tools = append(out.Tools, search)
+			if cfg.MemorySingleUser && !readOnly && (req.RootBudgetID == "" || req.RootBudgetID == req.RunID) {
+				mutations, mutationErr := personalMemoryTools(memoryStore, req, cfg)
+				if mutationErr != nil {
+					return out, mutationErr
+				}
+				out.Tools = append(out.Tools, mutations...)
+			}
 		}
 		if len(state.Skills) > 0 && cfg.ToolPolicy.Allows("skill") {
 			handler, err := einoskill.NewMiddleware(ctx, &einoskill.Config{Backend: snapshot, BuildContent: snapshot.BuildContent})

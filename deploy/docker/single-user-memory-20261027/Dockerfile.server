@@ -1,0 +1,8 @@
+ARG BASE_IMAGE=deerflow-server:mobile-waku-v10-20261026
+FROM ${BASE_IMAGE}
+USER root
+COPY --chmod=0755 bin/deerflow-acpd.real /opt/deerflow/bin/deerflow-acpd.real
+COPY --chmod=0755 bin/deerflow-config-go /opt/deerflow/bin/deerflow-config-go
+COPY --chmod=0755 bin/deerflow-personal-migrate /opt/deerflow/bin/deerflow-personal-migrate
+LABEL cc.sprwhisp.deerflow.memory="single-user-v1"
+USER deerflow:deerflow

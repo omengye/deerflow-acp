@@ -131,8 +131,9 @@ type Page struct {
 }
 
 type Store struct {
-	db  *sql.DB
-	fts bool
+	db       *sql.DB
+	fts      bool
+	embedder Embedder
 }
 
 func New(ctx context.Context, db *sql.DB) (*Store, error) {
@@ -173,6 +174,9 @@ CREATE TABLE IF NOT EXISTS memory_fact_revisions (
 		return nil, err
 	}
 	store := &Store{db: db}
+	if err = store.initPersonal(ctx); err != nil {
+		return nil, err
+	}
 	if _, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS memory_fts_state(scope_key TEXT PRIMARY KEY, revision INTEGER NOT NULL);`); err != nil {
 		return nil, err
 	}

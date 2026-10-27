@@ -104,6 +104,9 @@ type runtimeDocument struct {
 		IncludeGlobal  *bool  `yaml:"include_global"`
 	} `yaml:"skills"`
 	Memory struct {
+		SingleUser       bool   `yaml:"single_user"`
+		EmbeddingURL     string `yaml:"embedding_url"`
+		EmbeddingModel   string `yaml:"embedding_model"`
 		Enabled          *bool  `yaml:"enabled"`
 		Mode             string `yaml:"mode"`
 		InjectionEnabled *bool  `yaml:"injection_enabled"`
@@ -456,6 +459,12 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 			base += "\n"
 		}
 		cfg.Instruction = base + "<deployment_instructions>\n" + overlay + "\n</deployment_instructions>"
+	}
+	cfg.MemorySingleUser = source.Memory.SingleUser
+	cfg.MemoryEmbeddingURL = source.Memory.EmbeddingURL
+	cfg.MemoryEmbeddingModel = source.Memory.EmbeddingModel
+	if cfg.MemorySingleUser && (source.Memory.IncludeGlobal != nil && !*source.Memory.IncludeGlobal || source.LocalACP.MemoryScope == "session") {
+		return result, fmt.Errorf("single_user memory requires a shared global profile")
 	}
 	if source.Memory.Enabled != nil {
 		cfg.MemoryEnabled = source.Memory.Enabled

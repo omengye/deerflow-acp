@@ -1,0 +1,16 @@
+ARG BASE_IMAGE=deerflow-server:mobile-waku-v10-20261026
+FROM ${BASE_IMAGE}
+USER root
+RUN python3 -m venv /opt/deerflow-memory-python \
+    && /opt/deerflow-memory-python/bin/pip install --no-cache-dir fastembed==0.7.4
+COPY download_model.py embedding_server.py /opt/deerflow-memory/
+COPY model/ /opt/deerflow-memory/model/
+RUN /opt/deerflow-memory-python/bin/python /opt/deerflow-memory/download_model.py \
+    && /opt/deerflow-memory-python/bin/pip freeze > /opt/deerflow-memory/requirements.lock
+ENV HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+USER deerflow:deerflow
+EXPOSE 8080
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["/opt/deerflow-memory-python/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=3).read()"]
+ENTRYPOINT ["/opt/deerflow-memory-python/bin/python", "/opt/deerflow-memory/embedding_server.py"]
+CMD []

@@ -164,6 +164,11 @@ type Config struct {
 	// MemoryExtraction enables a bounded post-turn model call that proposes
 	// descriptive facts for terminal promotion. Disabled by default.
 	MemoryExtraction bool
+	// MemorySingleUser enables synchronous personal memory tools and durable
+	// background extraction for the installation's one persistent profile.
+	MemorySingleUser     bool
+	MemoryEmbeddingURL   string
+	MemoryEmbeddingModel string
 	// Compaction enables budgeted native Eino session summarization.
 	Compaction harness.CompactionConfig
 	// Retention controls optional automatic cleanup of detached sessions.
@@ -198,6 +203,8 @@ type Client struct {
 	operations       sync.WaitGroup
 	closeDone        chan struct{}
 	closeErr         error
+	memoryCancel     context.CancelFunc
+	memoryDone       chan struct{}
 }
 
 func Open(ctx context.Context, cfg Config) (client *Client, err error) {
@@ -279,6 +286,9 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	}
 	if cfg.MemoryScope == harness.MemoryGlobal && cfg.MemoryIncludeGlobal != nil && !*cfg.MemoryIncludeGlobal && (cfg.MemoryEnabled == nil || *cfg.MemoryEnabled) {
 		return nil, fmt.Errorf("%w: global memory scope requires include_global=true", harness.ErrInvalidInput)
+	}
+	if cfg.MemorySingleUser && (cfg.MemoryScope == harness.MemorySession || cfg.MemoryIncludeGlobal != nil && !*cfg.MemoryIncludeGlobal) {
+		return nil, fmt.Errorf("%w: single-user memory requires a shared profile", harness.ErrInvalidInput)
 	}
 	if cfg.MemoryMode != "" && cfg.MemoryMode != "middleware" && cfg.MemoryMode != "tool" {
 		return nil, fmt.Errorf("%w: memory mode must be middleware or tool", harness.ErrInvalidInput)
@@ -613,6 +623,13 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.MemorySingleUser && cfg.MemoryEmbeddingURL != "" {
+		embedder, embedErr := memory.NewHTTPEmbedder(cfg.MemoryEmbeddingURL, cfg.MemoryEmbeddingModel)
+		if embedErr != nil {
+			return nil, embedErr
+		}
+		memoryStore.SetEmbedder(embedder)
+	}
 	engine := cfg.Engine
 	if engine == nil {
 		modelMemory := memoryStore
@@ -712,6 +729,12 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	client.skillReadAllowed = cfg.ToolPolicy.Allows("skill") || cfg.ToolPolicy.Allows("read_skill_file")
 	if err = client.startAutomation(ctx, cfg); err != nil {
 		return nil, err
+	}
+	if cfg.MemorySingleUser && cfg.MemoryExtraction && (cfg.MemoryEnabled == nil || *cfg.MemoryEnabled) && cfg.Engine == nil {
+		if err = client.startMemoryWorker(ctx, cfg); err != nil {
+			_ = client.Close()
+			return nil, err
+		}
 	}
 	return client, nil
 }
@@ -887,6 +910,10 @@ func (c *Client) Close() error {
 	}
 	disconnectErr := c.service.Disconnect(context.Background(), c.owner)
 	c.operations.Wait()
+	if c.memoryCancel != nil {
+		c.memoryCancel()
+		<-c.memoryDone
+	}
 	// Stop and join local evidence collection before any dependency is closed,
 	// including the error path where background resource draining fails.
 	collectorErr := errors.Join(c.evolution.Close(), c.learning.Close())
