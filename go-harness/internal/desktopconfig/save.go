@@ -38,7 +38,7 @@ func (s service) save(document map[string]any, validateOnly bool) (any, error) {
 		return nil, err
 	}
 	defer lock.Unlock()
-	data, err := readYAML(s.config)
+	data, configRevision, err := readYAMLWithRevision(s.config)
 	if err != nil {
 		return nil, err
 	}
@@ -46,10 +46,6 @@ func (s service) save(document map[string]any, validateOnly bool) (any, error) {
 		return nil, err
 	}
 	paths := s.paths(data)
-	configRevision, err := hashFile(s.config)
-	if err != nil {
-		return nil, err
-	}
 	extensionsRevision, err := hashFile(paths.extensions)
 	if err != nil {
 		return nil, err

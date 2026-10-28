@@ -159,8 +159,12 @@ func mapError(err error) (mapped error) {
 		return rpcError(protocol.InvalidParams, "Requested session or tool receipt was not found")
 	case errors.As(err, &skillConflict):
 		return &protocol.Error{Code: protocol.InvalidParams, Message: "存在重复启用的同名技能，暂时无法继续。请打开技能中心，对照技能名称和来源，仅保留需要的一份启用，再重新发送消息。无需删除聊天记录。", Data: map[string]any{"kind": "skill_name_conflict", "skillName": skillConflict.Name, "sources": []string{skillConflict.FirstSource, skillConflict.SecondSource}, "automaticReplay": false}}
+	case errors.Is(err, harness.ErrModelVisionUnavailable):
+		return &protocol.Error{Code: protocol.InvalidParams, Message: "当前输入或会话历史中包含图片，但所选模型未配置图片理解能力。请切换到支持图片的模型，或确认该模型支持图片后在模型设置中启用视觉能力；也可新建纯文本会话继续。", Data: map[string]any{"kind": "model_vision_unavailable", "automaticReplay": false}}
 	case errors.Is(err, harness.ErrInvalidInput):
 		return rpcError(protocol.InvalidParams, "Invalid request parameters")
+	case errors.Is(err, harness.ErrModelResponseInvalid):
+		return &protocol.Error{Code: -32026, Message: "模型返回的流式数据不完整或格式异常，本轮已停止。请检查已执行的工具结果后再继续。", Data: map[string]any{"kind": "model_response_invalid", "automaticReplay": false}}
 	}
 	return err
 }

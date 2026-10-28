@@ -259,7 +259,7 @@ func (p *mediaProjection) hydrate(ctx context.Context, input []*schema.Message, 
 					return nil, err
 				}
 				if !p.policy.SupportsVision(selectedModel) {
-					return nil, invalidMedia("selected model does not have configured vision capability")
+					return nil, harness.ErrModelVisionUnavailable
 				}
 				if p.resolver == nil {
 					return nil, invalidMedia("image asset resolver is unavailable")

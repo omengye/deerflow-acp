@@ -16,7 +16,7 @@ var runtimeDefaults = configschema.Defaults("runtime")
 var memoryDefaults = configschema.Defaults("memory")
 
 func (s service) snapshot() (map[string]any, error) {
-	data, err := readYAML(s.config)
+	data, configRevision, err := readYAMLWithRevision(s.config)
 	if err != nil {
 		return nil, err
 	}
@@ -57,10 +57,6 @@ func (s service) snapshot() (map[string]any, error) {
 		if _, err := skills.ResolveManagedSources(s.config, settings["managed_sources"], settings["export_root"]); err != nil {
 			skillSourceDiagnostics = append(skillSourceDiagnostics, err.Error())
 		}
-	}
-	configRevision, err := hashFile(s.config)
-	if err != nil {
-		return nil, err
 	}
 	extensionsRevision, err := hashFile(paths.extensions)
 	if err != nil {

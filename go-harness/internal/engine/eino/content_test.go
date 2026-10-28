@@ -270,7 +270,7 @@ func TestImageHydrationPreservesDurableHistoryAndCheckpoint(t *testing.T) {
 	// Switching to a text-only selected model must reject historical images too.
 	next := request("text-only")
 	next.Session.Model = "text-only"
-	if _, err := e.Run(context.Background(), next, nil, nil); !errors.Is(err, harness.ErrInvalidInput) {
+	if _, err := e.Run(context.Background(), next, nil, nil); !errors.Is(err, harness.ErrInvalidInput) || !errors.Is(err, harness.ErrModelVisionUnavailable) {
 		t.Fatalf("text-only model accepted image history: %v", err)
 	}
 	if fake.calls != 3 {
@@ -286,7 +286,7 @@ func TestMediaHydrationRejectsUnauthorizedAndUnnormalizedInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.hydrate(context.Background(), []*schema.Message{message}, []model.Option{model.WithModel("text-only")}); !errors.Is(err, harness.ErrInvalidInput) {
+	if _, err := p.hydrate(context.Background(), []*schema.Message{message}, []model.Option{model.WithModel("text-only")}); !errors.Is(err, harness.ErrInvalidInput) || !errors.Is(err, harness.ErrModelVisionUnavailable) {
 		t.Fatalf("per-call model override bypassed vision policy: %v", err)
 	}
 	foreign := *p

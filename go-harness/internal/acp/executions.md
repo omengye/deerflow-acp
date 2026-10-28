@@ -50,6 +50,13 @@ errors use the transport's generic error response; raw provider or database
 errors are not serialized. Ordinary ownership, busy, and receipt error codes
 remain applicable.
 
+Malformed JSON from the model response is reported as `-32026` with
+`kind: model_response_invalid` and a safe explanation. The original cause
+remains available in local diagnostics. This error does not retry the model or
+replay tools: `automaticReplay` remains false, and attached execution metadata
+still determines whether the saved run can resume. Partial output is not a
+successful result; inspect completed tool results before continuing.
+
 Checkpoints pin accepted input, session configuration, resource versions,
 native history, business event cursor, tool receipts, and budget identity. A
 nonempty client MCP connection has a process-local generation; reconnecting it

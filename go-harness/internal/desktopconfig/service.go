@@ -218,26 +218,33 @@ func copyInitialSkills(source, destination string) error {
 }
 
 func readYAML(path string) (map[string]any, error) {
+	data, _, err := readYAMLWithRevision(path)
+	return data, err
+}
+
+func readYAMLWithRevision(path string) (map[string]any, string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer file.Close()
 	body, err := io.ReadAll(io.LimitReader(file, 2<<20+1))
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if len(body) > 2<<20 {
-		return nil, errors.New("configuration exceeds 2 MiB")
+		return nil, "", errors.New("configuration exceeds 2 MiB")
 	}
 	var data map[string]any
 	if err := yaml.Unmarshal(body, &data); err != nil {
-		return nil, fmt.Errorf("invalid configuration YAML: %w", err)
+		return nil, "", fmt.Errorf("invalid configuration YAML: %w", err)
 	}
 	if data == nil {
-		return nil, errors.New("configuration must be a YAML object")
+		return nil, "", errors.New("configuration must be a YAML object")
 	}
-	return data, nil
+	// Bind optimistic concurrency to the bytes actually projected, not a later
+	// filesystem read that could observe another writer's replacement.
+	return data, fmt.Sprintf("%x", sha256.Sum256(body)), nil
 }
 
 func readJSON(path string) (map[string]any, error) {
