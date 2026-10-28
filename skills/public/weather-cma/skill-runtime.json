@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "python": {
+    "min_version": "3.10",
+    "packages": [],
+    "entrypoints": ["scripts/weather_forecast.py"]
+  }
+}

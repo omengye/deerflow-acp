@@ -1,86 +1,29 @@
 ---
 name: weather-cma
-description: "Use this skill for ANY weather query about Chinese cities — forecasts, current conditions, rain checks, temperature, weekend weather, etc. Uses China Meteorological Administration (中国气象局) official data from weather.cma.cn. Always use this skill instead of wttr.in or generic weather APIs when the user asks about weather in China, especially for Beijing. Trigger on queries like 天气, 下雨, 气温, 温度, 天气预报, 会不会下雨, 明天天气, 周末天气, and any weather-related question in Chinese. Default city is Beijing."
+description: 查询中国城市未来七天天气、明天下雨及气温，使用中国天气网和国家气象中心官方预报并核对真实日期。默认城市北京。
 ---
 
-# Weather CMA — 中国气象局天气预报
+# 中国城市天气预报
 
-Query weather data from the official China Meteorological Administration (CMA / 中国气象局) website. This is the authoritative source for weather in China — use it instead of wttr.in, which may return cached/outdated data.
+优先通过 `skill_run` 执行本技能的 `scripts/weather_forecast.py`。它读取完整官方预报页、验证发布时间和日期序列，再输出所需日期的精简 JSON，避免通用 `web_fetch` 的导航和长度截断。不需要 API Key。
 
-## Workflow
+## 查询
 
-1. Determine the target city (default: **Beijing / 北京**, station ID `54511`)
-2. Fetch `https://weather.cma.cn/web/weather/{station_id}.html` using `web_fetch`
-3. Parse and present the results in clean, human-readable Chinese
+加载本技能后，用 `skill_run` 调用：
 
-## Default City
-
-**Default is always Beijing (北京).** Only query other cities if the user explicitly names them. For other cities, look up the station ID from `references/station-ids.md`.
-
-## Core Station IDs
-
-| City | Station ID | URL |
-|------|-----------|-----|
-| 北京 | 54511 | https://weather.cma.cn/web/weather/54511.html |
-| 上海 | 58367 | https://weather.cma.cn/web/weather/58367.html |
-| 广州 | 59287 | https://weather.cma.cn/web/weather/59287.html |
-| 深圳 | 59493 | https://weather.cma.cn/web/weather/59493.html |
-| 成都 | 56294 | https://weather.cma.cn/web/weather/56294.html |
-| 杭州 | 58457 | https://weather.cma.cn/web/weather/58457.html |
-| 武汉 | 57494 | https://weather.cma.cn/web/weather/57494.html |
-| 南京 | 58238 | https://weather.cma.cn/web/weather/58238.html |
-| 天津 | 54527 | https://weather.cma.cn/web/weather/54527.html |
-| 重庆 | 57516 | https://weather.cma.cn/web/weather/57516.html |
-| 西安 | 57036 | https://weather.cma.cn/web/weather/57036.html |
-
-For more cities, see `references/station-ids.md`.
-
-## Understanding the Page Structure
-
-The CMA page contains two data sections:
-
-### 7-Day Forecast
-Each day shows:
-- Date and weekday
-- **Daytime** (白天): weather condition, wind direction/level, max temperature
-- **Nighttime** (夜间): weather condition, wind direction/level, min temperature
-
-Weather icons indicate conditions: w1=晴/多云, w2=阴, w7=小雨, w8=中雨, etc.
-
-### Hourly Forecast Table (today)
-A table with ~3-hour intervals (17:00, 20:00, 23:00, 02:00, 05:00, 08:00, 11:00, 14:00) showing: temperature, precipitation, wind speed/direction, pressure, humidity, cloud cover.
-
-**Important**: The hourly table's publish time tells you how current the data is. Look for the timestamp at the top of the page like "7天天气预报（2026/05/15 12:00发布）".
-
-## Output Format
-
-Always present weather data in this structure:
-
-```
-## {城市}天气预报
-
-**数据来源**: 中国气象局 [citation:中国气象局-{城市}](https://weather.cma.cn/web/weather/{station_id}.html)
-**发布时间**: {publish time from page}
-
-### 7天预报
-
-| 日期 | 白天 | 夜间 | 最高温 | 最低温 | 风力 |
-|------|------|------|--------|--------|------|
-| 5/15 周五 | 多云 | 阴 | 28℃ | 20℃ | 东南风 微风 |
-| 5/16 周六 | 小雨 🌧️ | 小雨 🌧️ | 25℃ | 18℃ | 东风 微风 |
-| ... | ... | ... | ... | ... | ... |
-
-### 关键提示
-- {Direct answer to the user's specific question first}
-- {Rain check: will it rain? when?}
-- {Practical advice: umbrella, clothing, etc.}
+```json
+{"action":"run","name":"weather-cma","path":"scripts/weather_forecast.py","args":["--city","北京","--date","tomorrow"],"timeout_seconds":30}
 ```
 
-## Rules
+- “今天 / 明天 / 后天”分别使用 `today / tomorrow / after-tomorrow`；脚本每次读取服务器的 `Asia/Shanghai` 当前日期计算，不要自行猜日期或沿用旧轮次的日期。
+- 指定日期使用 `--date YYYY-MM-DD`；连续多日加 `--days N`（总范围限当前七天）。用户未说城市时用北京。
+- 内置北京、上海、广州、深圳、成都、杭州、武汉、南京、天津、重庆、西安。其他城市先从中国天气网实际页面确认城市代码，再传 `--city 城市 --weather-code 九位代码`；不要把 CMA 五位站号当成九位代码。原始站号参考保留在 [references/station-ids.md](references/station-ids.md)。
+- 若运行工具要求先检查环境，可先 `skill_run` 的 `action=check`。不要将 `skill://` 位置当成本地脚本路径；工具会执行本轮锁定的技能快照。
 
-- **Direct answer first**: If user asks "明天会不会下雨", start with "会下雨 🌧️" or "不会，明天是晴天 ☀️", then show the data
-- **Always cite CMA**: Include the CMA URL as a citation source
-- **Day + Night**: Present both daytime and nighttime conditions for each day — they can differ significantly
-- **Rain details**: If the hourly table is available, use it to tell the user approximately when rain is expected
-- **Temperature**: Format as "最高温℃ / 最低温℃"
-- **Natural Chinese**: Present all information in natural, conversational Chinese — not just a data dump
+## 依据实际结果回答
+
+只有 `ok=true` 且 `forecast[].date` 覆盖用户所问日期，才报告其中天气、温度和风力。`checked_at` 是查询时间，`source_published_at` 是来源标注的预报时间，不要混用。
+
+语音玩具对话沿用角色的简短朗读风格，直接说日期、会不会下雨、最高/最低温和必要的穿衣建议，一般两三句；不朗读 URL、JSON、表格或工具日志。文字对话可附 `source_url` 作为出处，并按用户要求给表格，使用实际成功的数据源名称。
+
+脚本自动从中国天气网切换到国家气象中心。`ok=false` 时说明未取得对应日期的可靠预报，不从旧新闻或搜索摘要拼出天气。搜索只能用于发现当前官方预报页面，不能代替日期核验。CMA 页面出现人机验证时换上述官方来源，不反复抓取、不绕过验证码。
