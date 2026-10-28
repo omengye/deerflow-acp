@@ -1,0 +1,109 @@
+{
+  "completed_at": "2026-10-28T07:28:22.074609+00:00",
+  "legacy_root": "/home/gen/Documents/deerflow-api",
+  "stopped_pids": [
+    3698,
+    3699,
+    118884
+  ],
+  "stop_method": "bash daemon.sh stop (project graceful shutdown)",
+  "stop_exit_code": 0,
+  "verification": [
+    {
+      "active_legacy_pids": [],
+      "port_8000_closed": true
+    },
+    {
+      "active_legacy_pids": [],
+      "port_8000_closed": true
+    },
+    {
+      "active_legacy_pids": [],
+      "port_8000_closed": true
+    }
+  ],
+  "legacy_autostart_references_found": [],
+  "autostart_locations_checked": [
+    "user systemd",
+    "system systemd",
+    "desktop autostart",
+    "cron directories when present",
+    "gen shell login files"
+  ],
+  "current_container_unchanged": true,
+  "current_container": "7e21082cf2107e9f34ac8420de354244ee8a21a1d75a9de653ecd2ee8e35a3de running healthy",
+  "removed_runtime_files": [
+    "data/deerflow-api.daemon.pid",
+    "data/deerflow-api.daemon.stop"
+  ],
+  "preserved": [
+    "legacy source, config, data, venv and logs",
+    "current Docker mounts and dependencies",
+    "release source archives and rollback backup"
+  ],
+  "post_shutdown_validation": {
+    "public_wss": {
+      "delay_seconds": 0,
+      "result": "hello",
+      "elapsed_ms": 214,
+      "rpc": {
+        "getSettings": true,
+        "loadTaskState": true
+      }
+    },
+    "containers": {
+      "deerflow-deploy-deerflow-1": {
+        "status": "running",
+        "health": "healthy",
+        "id": "7e21082cf2107e9f34ac8420de354244ee8a21a1d75a9de653ecd2ee8e35a3de"
+      },
+      "folotoy-ws-folotoy-1": {
+        "status": "running",
+        "health": "healthy",
+        "id": "83a2ae51ccdac3bd5384a45ba1121514d3b597df03ddff94a4be92b83f327c67"
+      },
+      "folotoy-server-nginx-1": {
+        "status": "running",
+        "health": null,
+        "id": "b95366c33b1f83210ae5a17351fd1c4b0cbf4f14d7cb23077d00b0c4029c656d"
+      },
+      "folotoy-server-emqx-1": {
+        "status": "running",
+        "health": null,
+        "id": "ceb2c903811eeb341724d7b253613a998bafa0774a83ca1a40712179ce3a1357"
+      }
+    },
+    "opencli_bridge": "active",
+    "old_port_8000_closed": true
+  },
+  "verified_at": "2026-10-28T07:28:45.336419+00:00",
+  "task_cleanup": {
+    "temporary_files_removed": [
+      "build/",
+      "build.log",
+      "offline-build.log",
+      "offline-build.exit",
+      "vendor.log",
+      "vendor.exit",
+      "vendor-config.toml",
+      "pull.log",
+      "probe_artifacts.py",
+      "preserved-before.json"
+    ],
+    "temporary_container_removed": true,
+    "retained": [
+      "baseline-source.tar.gz",
+      "build-source.tar.gz",
+      "source-verification.json",
+      "previous.env",
+      "release.py",
+      "step1-server.patch",
+      "README.md",
+      "smoke.json",
+      "production.json",
+      "deployment.json",
+      "validation.json"
+    ],
+    "business_data_deleted": false
+  }
+}
