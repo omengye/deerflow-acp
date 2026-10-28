@@ -1,0 +1,10 @@
+{
+  "status": "available",
+  "elapsed_seconds": 3.09,
+  "exit_code": 0,
+  "operation": "resolve",
+  "provider": "qq-music",
+  "candidate_count": 2,
+  "error": null,
+  "test_mid": "000BEsDj0UUhf8"
+}

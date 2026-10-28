@@ -1,0 +1,80 @@
+{
+  "project": "D:\\Tools\\folo_server_src\\src\\folotoy-decompiled",
+  "files": [
+    {
+      "path": "src/app.py",
+      "before_sha256": "25500ea2f3f6fb5a74ffcc345803e9bb98b8f88f2f3c6e6c54871b3826a84287",
+      "after_sha256": "d5ac35e2ba4b4e965b2651ffd0e95a0b815f1edd5502f558aca4e360781ca307"
+    },
+    {
+      "path": "src/core/conversation_control.py",
+      "before_sha256": "473664e30163f8724fec606362a2550c250d2a735fab3f65f6afdeda71340bc4",
+      "after_sha256": "8a02fe02c0b0372fdd1a64c8550193e8cdd077a5f81fc7210f803dcc08a504f4"
+    },
+    {
+      "path": "src/core/speech_wav_processor.py",
+      "before_sha256": "691291dd0041bac32dc11071b0d1010bf3a48fd562f97a99a8e2ff5cb1502fdd",
+      "after_sha256": "1de9f8f261cdd4e16f46a17f4377f3585b53f75bb3d03e6ed713f73c5dcfb04e"
+    },
+    {
+      "path": "src/core/api_server.py",
+      "before_sha256": "74df5cd8605d4176b67a56c6c7d5d59a4c77bebc3968b530518ae8620b9e4d26",
+      "after_sha256": "e62ea6f17107f247f2e1ed8cd8e25cfeae0e49b0c373f13aeb86d7c0dfb0dbc2"
+    },
+    {
+      "path": "src/sdk/llm_sdk/deerflow.py",
+      "before_sha256": "a5b7cd7f9db22b28c36ddfc8cfe279e9297c842a78a166cf93783e6ff815fcf1",
+      "after_sha256": "533d1eddaa3fc149c9829334afb488ffa491ae745e6d45bec099386952440eef"
+    },
+    {
+      "path": "src/core/music_playback.py",
+      "before_sha256": null,
+      "after_sha256": "dd40db806990c41f63fe0c94b45dd15536ceb48ccd03a31ec0d7a25edc03083c"
+    }
+  ],
+  "test_files": [
+    {
+      "path": "verify/test_music_playback.py",
+      "before_sha256": null,
+      "after_sha256": "8832b49971517cc30343e7dc4dd0725d455a1591ceecc069db7487cdda2bf874"
+    }
+  ],
+  "validation": {
+    "music_tests": {
+      "run": 15,
+      "passed": 14,
+      "skipped": 1,
+      "skip_reason": "Windows symlink creation privilege unavailable"
+    },
+    "original_voice_clock_acp_pipeline_regressions": {
+      "run": 51,
+      "passed": 51
+    }
+  },
+  "service_contract": {
+    "base_url": "http://172.27.0.1:8090",
+    "endpoints": [
+      "GET /v1/music/health",
+      "POST /v1/music/play",
+      "GET /v1/music/jobs/{id}"
+    ],
+    "config_env": "MUSIC_CONTROL_CONFIG",
+    "states": [
+      "queued",
+      "preparing",
+      "ready",
+      "waiting_turn",
+      "published",
+      "dry_run",
+      "failed",
+      "cancelled"
+    ],
+    "published_means": "MQTT submitted, not playback acknowledgement",
+    "get_flags": [
+      "audio_requested",
+      "device_audio_requested"
+    ],
+    "jobs_persist_across_restart": false,
+    "restart_recovery": "job becomes unknown/404; do not automatically replay"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "passed": true,
+  "protocol": 10,
+  "checks": [
+    {
+      "delay_seconds": 0,
+      "result": "hello",
+      "elapsed_ms": 67,
+      "rpc": {
+        "getSettings": true,
+        "loadTaskState": true
+      }
+    },
+    {
+      "delay_seconds": 0,
+      "result": "hello",
+      "elapsed_ms": 212,
+      "rpc": {
+        "getSettings": true,
+        "loadTaskState": true
+      }
+    },
+    {
+      "delay_seconds": 10,
+      "result": "hello",
+      "elapsed_ms": 10185,
+      "rpc": {
+        "getSettings": true,
+        "loadTaskState": true
+      }
+    }
+  ]
+}

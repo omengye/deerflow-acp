@@ -1,0 +1,17 @@
+{
+  "gentoo": {
+    "passed": true,
+    "removed_items": 7,
+    "removed_bytes": 817123525,
+    "backup_preserved": true,
+    "programs_and_source_preserved": true
+  },
+  "local": {
+    "passed": false,
+    "state": "blocked_by_automatic_approval_review",
+    "reason": "blocked by policy",
+    "retained_path": "D:\\Tools\\deerflow-api\\dist\\gentoo-skill-learning-20261028\\tests",
+    "retained_bytes": 444506034,
+    "no_alternate_deletion_attempted": true
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "jobs": [
+    {
+      "ordinal": 1,
+      "state": "failed",
+      "error_code": "invalid_candidate",
+      "has_candidate": true,
+      "has_proposal": true,
+      "proposal_status": "failed",
+      "validation_failure": {
+        "code": "quality_rejected",
+        "stage": "quality",
+        "retryable": false
+      },
+      "evaluation": {
+        "security": "passed",
+        "behavior": "not_run"
+      },
+      "model_checks": [],
+      "calls": [
+        [
+          "generation",
+          "settled",
+          1
+        ],
+        [
+          "quality",
+          "settled",
+          1
+        ],
+        [
+          "security",
+          "settled",
+          1
+        ]
+      ]
+    },
+    {
+      "ordinal": 2,
+      "state": "failed",
+      "error_code": "invalid_candidate",
+      "has_candidate": true,
+      "has_proposal": true,
+      "proposal_status": "failed",
+      "validation_failure": {
+        "code": "quality_rejected",
+        "stage": "quality",
+        "retryable": false
+      },
+      "evaluation": {
+        "security": "passed",
+        "behavior": "not_run"
+      },
+      "model_checks": [],
+      "calls": [
+        [
+          "generation",
+          "settled",
+          1
+        ],
+        [
+          "quality",
+          "settled",
+          1
+        ],
+        [
+          "security",
+          "settled",
+          1
+        ]
+      ]
+    },
+    {
+      "ordinal": 3,
+      "state": "completed",
+      "error_code": "",
+      "has_candidate": true,
+      "has_proposal": true,
+      "proposal_status": "pending_review",
+      "validation_failure": {},
+      "evaluation": {
+        "security": "passed",
+        "behavior": "not_run"
+      },
+      "model_checks": [],
+      "calls": [
+        [
+          "generation",
+          "settled",
+          1
+        ],
+        [
+          "quality",
+          "settled",
+          1
+        ],
+        [
+          "security",
+          "settled",
+          1
+        ]
+      ]
+    }
+  ],
+  "automatic_trigger_verified": true,
+  "generated_candidates": 3,
+  "pending_review": 1,
+  "quality_rejected": 2
+}

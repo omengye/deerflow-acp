@@ -1,0 +1,39 @@
+[
+  {
+    "command": [
+      "docker",
+      "build",
+      "--file"
+    ],
+    "exit": 0,
+    "tail": [
+      "#5 [1/2] FROM docker.io/library/folotoy-deerflow-ws:device-sessions-v2-20261025",
+      "#5 DONE 0.2s",
+      "",
+      "#6 [2/2] COPY --chown=1000:1000 sdk/deerflow_ws_client.py /opt/folotoy/sdk/deerflow_ws_client.py",
+      "#6 DONE 0.4s",
+      "",
+      "#7 exporting to image",
+      "#7 exporting layers 0.1s done",
+      "#7 writing image sha256:d62df21b7ca56bd217edf20053b220e431d9ad96c8ac4b8def911db9213258bf done",
+      "#7 naming to docker.io/library/folotoy-deerflow-ws:mobile-waku-v10-20261026",
+      "#7 naming to docker.io/library/folotoy-deerflow-ws:mobile-waku-v10-20261026 0.0s done",
+      "#7 DONE 0.1s"
+    ]
+  },
+  {
+    "command": [
+      "docker",
+      "run",
+      "--rm"
+    ],
+    "exit": 0,
+    "tail": [
+      ".........................",
+      "----------------------------------------------------------------------",
+      "Ran 25 tests in 3.695s",
+      "",
+      "OK"
+    ]
+  }
+]

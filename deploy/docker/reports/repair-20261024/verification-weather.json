@@ -1,0 +1,137 @@
+{
+  "case": "weather",
+  "passed": true,
+  "conversation": {
+    "case": "weather",
+    "status": "conversation_completed",
+    "role": "1",
+    "transport": "ws",
+    "turn_timeout_seconds": 120,
+    "tool_receipts_verified": false,
+    "requires_native_tool_audit": true,
+    "waku_session_id": "a5fad7e5-6b9a-46b3-ad36-5cc62839386e",
+    "reply": "北京明天（10月25日）有小雨，9到12℃，北风不大。出门穿件保暖外套，记得带雨伞、穿防滑鞋哦！你更喜欢雨天踩水坑，还是在家听雨声呢？",
+    "reply_truncated": false,
+    "completed": true,
+    "stop_reason": "end_turn",
+    "mode": "fullAccess",
+    "approval": "allow_always",
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "VLCH6YIULOJIQONFUEHRFO2PY3"
+    },
+    "waku_runtime_id": "fb4e5fbe-3760-435e-9e04-ffb744946ddd",
+    "server_model": "gpt-6-luna",
+    "confirmed_approval": "allow_always",
+    "cleanup": {
+      "actors_recorded": 1,
+      "actors_released": 1,
+      "passed": true
+    },
+    "elapsed_ms": 21241
+  },
+  "native_tool_audit": {
+    "native_session": "VLCH6YIULOJIQONFUEHRFO2PY3",
+    "database": "/var/lib/deerflow/user-data/config/go-harness-state/harness.db",
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "arguments": {
+          "skill": "weather-cma"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill",
+        "status": "completed",
+        "failure_code": null
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "arguments": {
+          "name": "weather-cma",
+          "action": "run",
+          "path": "scripts/weather_forecast.py",
+          "args": [
+            "--city",
+            "北京",
+            "--date",
+            "tomorrow"
+          ]
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "status": "completed",
+        "failure_code": null,
+        "skill": "weather-cma",
+        "version": "89d0d53d5e5591a5cc55996949a7cb1dce3a2bcab80d3df5271d299a3e53622b",
+        "ready": true,
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "weather_result": {
+          "ok": true,
+          "city": "北京",
+          "timezone": "Asia/Shanghai",
+          "checked_at": "2026-10-24T18:16:52+08:00",
+          "today": "2026-10-24",
+          "requested_date": "2026-10-25",
+          "source": "中国天气网",
+          "source_url": "https://www.weather.com.cn/weather/101010100.shtml",
+          "source_published_at": "2026-10-24T18:00+08:00",
+          "forecast": [
+            {
+              "date": "2026-10-25",
+              "condition": "小雨",
+              "high_c": 12,
+              "low_c": 9,
+              "wind": "北风 < 3级",
+              "daytime": "小雨",
+              "nighttime": "小雨",
+              "rain_expected": true,
+              "snow_expected": false
+            }
+          ],
+          "fallback_attempts": []
+        }
+      }
+    ],
+    "verified_results": [
+      {
+        "kind": "dated_weather",
+        "date": "2026-10-25",
+        "source": "中国天气网",
+        "forecast": [
+          {
+            "date": "2026-10-25",
+            "condition": "小雨",
+            "high_c": 12,
+            "low_c": 9,
+            "wind": "北风 < 3级",
+            "daytime": "小雨",
+            "nighttime": "小雨",
+            "rain_expected": true,
+            "snow_expected": false
+          }
+        ]
+      }
+    ],
+    "unexpected_tools": [],
+    "run": {
+      "id": "UUGI7PL2MVHJ4PZBWSVWU5WWLZ",
+      "status": "completed",
+      "stop_reason": "end_turn"
+    },
+    "expected_tomorrow": "2026-10-25",
+    "trusted_clock_context_present": true,
+    "passed": true
+  }
+}

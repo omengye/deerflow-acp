@@ -1,0 +1,139 @@
+{
+  "status": "passed",
+  "passed": true,
+  "role": 1,
+  "provider": "volcengine-asr2",
+  "input_sample_rate": 32000,
+  "stages": [
+    {
+      "stage": "source_tts_generated",
+      "elapsed_ms": 1235,
+      "audio_bytes": 53760
+    },
+    {
+      "stage": "source_pcm_ready",
+      "elapsed_ms": 1296,
+      "pcm_bytes": 172032,
+      "sample_rate": 32000,
+      "duration_seconds": 2.688
+    },
+    {
+      "stage": "registered_asr2_dispatch_completed",
+      "elapsed_ms": 4478,
+      "resource_id": "volc.seedasr.sauc.duration"
+    },
+    {
+      "stage": "mqtt_device_logged_in",
+      "elapsed_ms": 4484
+    },
+    {
+      "stage": "udp_recording_uploaded",
+      "elapsed_ms": 7289,
+      "audio_packets": 135,
+      "pcm_bytes": 172032,
+      "sample_rate": 32000,
+      "frame_type_hex": "01"
+    },
+    {
+      "stage": "http_audio_downloaded",
+      "elapsed_ms": 24053,
+      "order": 1,
+      "audio_bytes": 191520,
+      "since_upload_ms": 16764
+    },
+    {
+      "stage": "http_audio_downloaded",
+      "elapsed_ms": 24546,
+      "order": 2,
+      "audio_bytes": 65280,
+      "since_upload_ms": 17257
+    },
+    {
+      "stage": "http_audio_downloaded",
+      "elapsed_ms": 25044,
+      "order": 3,
+      "audio_bytes": 46080,
+      "since_upload_ms": 17755
+    },
+    {
+      "stage": "mqtt_audio_completion",
+      "elapsed_ms": 29465,
+      "segments": 3
+    },
+    {
+      "stage": "asr_ws_llm_tts_chain_completed",
+      "elapsed_ms": 29766,
+      "conversation_state": "completed"
+    }
+  ],
+  "test_device": "ASR2TEST96059E01A768F297",
+  "stt_provider": "volcengine-asr2",
+  "resource_id": "volc.seedasr.sauc.duration",
+  "scope": "role1_mqtt_udp_ws_tts",
+  "transport": "ws",
+  "ws_mode": "fullAccess",
+  "approval": "allow_always",
+  "hotwords_enabled": false,
+  "context_enabled": false,
+  "post_correction_enabled": false,
+  "fallback_used": false,
+  "physical_toy_audio_published": false,
+  "device_wire_sample_rate": 32000,
+  "device_wire_frame_type_hex": "01",
+  "recording_id": 59416,
+  "simulated_device": true,
+  "physical_toy_playback_claimed": false,
+  "cleanup": {
+    "mqtt_disconnected": true,
+    "source_tts_file_removed": true,
+    "actors_recorded": 1,
+    "actors_released": 1,
+    "durable_synthetic_identity_removed": true,
+    "transient_device_note": "Server has no logout handler; test login remains in RAM until service restart."
+  },
+  "asr_dispatch": {
+    "provider": "volcengine-asr2",
+    "resource_id": "volc.seedasr.sauc.duration",
+    "request_id": "5b55e469-02e4-4d45-b5f0-c5bc35f79375",
+    "final": true,
+    "text": "帮我查询明天北京的天气。",
+    "elapsed_ms": 3174,
+    "elapsed_includes_audio_replay": true,
+    "private_api_key_present": true,
+    "engine_module_file": "/opt/folotoy/sdk/stt_sdk/volcengine_asr2.py",
+    "fallback_used": false,
+    "input_sample_rate": 32000,
+    "input_duration_seconds": 2.688
+  },
+  "asr2_dispatch_verified": true,
+  "request_id": "7de6be78-9b83-460e-aa42-c0b447fb0d15",
+  "tts_readiness_verified": true,
+  "voice_audio_sequence_verified": true,
+  "terminal_count": 1,
+  "speech_segments": 3,
+  "download_user_agent": "Python-urllib (not ESP32)",
+  "native_tool_receipts_audited": false,
+  "conversation_state": "completed",
+  "native_cursor": {
+    "provider": "deerFlow",
+    "sessionId": "PYNXZOOOW5MKMWCJI7AWAIQ6VR"
+  },
+  "voice_request_id": "f11be6f81a2d471fae1fe83c4a6572d9",
+  "waku_session_id": "72be7e9c-0cdf-4498-bfda-2611934ada54",
+  "pipeline_completed": true,
+  "full_voice_pipeline_tested": true,
+  "voice_pipeline_provider_receipt_verified": true,
+  "audio_segments": 3,
+  "downloaded_audio_bytes": 302880,
+  "elapsed_ms": 29952,
+  "main_process_asr_receipt": {
+    "provider": "volcengine-asr2",
+    "resource_id": "volc.seedasr.sauc.duration",
+    "request_id": "7de6be78-9b83-460e-aa42-c0b447fb0d15",
+    "final": true
+  },
+  "device_rate_path_verified": true,
+  "direct_dispatch_request_id": "5b55e469-02e4-4d45-b5f0-c5bc35f79375",
+  "fix_id": "4da4859759624ee09141618634a0850a",
+  "validator_sha256": "7ee869c874b0a779c97c5e89c97142fe21bb5a7634194b45f92b92277502d468"
+}

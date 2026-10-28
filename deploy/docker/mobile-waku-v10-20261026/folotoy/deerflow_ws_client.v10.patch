@@ -1,0 +1,27 @@
+--- sdk/deerflow_ws_client.py (v9)
++++ sdk/deerflow_ws_client.py (v10)
+@@ -1,4 +1,4 @@
+-"""Persistent Waku protocol 9 transport for the FoloToy text/voice provider.
++"""Persistent Waku protocol 10 transport for the FoloToy text/voice provider.
+ 
+ This is a Waku client, not an ACP-over-WebSocket implementation. Only the
+ existing provider-facing API is translated. No submitted prompt is retried.
+@@ -185,15 +185,15 @@
+                                   close_timeout=min(2, self.connect_timeout),
+                                   compression=None, max_size=4 * 1024 * 1024)
+                 # Hello contains a credential: never include frames in errors.
+-                socket.send(json.dumps({'type': 'hello', 'protocolVersion': 9,
++                socket.send(json.dumps({'type': 'hello', 'protocolVersion': 10,
+                     'token': token, 'clientId': str(uuid.uuid4()), 'resumeFrom': []}))
+                 hello = json.loads(socket.recv(timeout=max(0.001, deadline - time.monotonic())))
+-                if hello.get('type') != 'hello' or hello.get('protocolVersion') != 9:
++                if hello.get('type') != 'hello' or hello.get('protocolVersion') != 10:
+                     raise DeerFlowError('Waku authentication or protocol negotiation failed')
+             except Exception:
+                 if socket is not None:
+                     socket.close()
+-                raise DeerFlowError('could not authenticate a Waku protocol 9 connection') from None
++                raise DeerFlowError('could not authenticate a Waku protocol 10 connection') from None
+             finally:
+                 token = None
+             with self._lock:

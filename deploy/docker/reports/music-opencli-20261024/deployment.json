@@ -1,0 +1,54 @@
+{
+  "status": "deployed",
+  "backup": "/home/gen/deerflow-deploy/music-opencli-20261024/backup-20261024T112627Z-8b247de7",
+  "credentials_in_payload": false,
+  "new_skills": [
+    "toy-playmusic",
+    "song-download",
+    "qq-music",
+    "opencli"
+  ],
+  "previous_containers": [
+    {
+      "name": "deerflow-deploy-deerflow-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "deerflow-server:skills-20261024",
+      "image_id": "sha256:67c41f4a58abc924b321712c07cd88f188d2109fffbad0ded09500d3f1ad0b85"
+    },
+    {
+      "name": "folotoy-ws-folotoy-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "folotoy-deerflow-ws:tools-fix-20261024",
+      "image_id": "sha256:de159aa04d8a7c0d81bd362e38c5de6ab2e744861d3d5bd1ee18c6606aea050e"
+    }
+  ],
+  "host_bridge_supervisor": "systemd-user",
+  "native_identity": {
+    "data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+    "original_session_accessible": true
+  },
+  "containers": [
+    {
+      "name": "deerflow-deploy-deerflow-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "deerflow-server:music-opencli-20261024",
+      "image_id": "sha256:ef1bbe1a75d4072845e583631e45c8d39d5adcadc4a42ac61cf7b7c3eea4bd32"
+    },
+    {
+      "name": "folotoy-ws-folotoy-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "folotoy-deerflow-ws:music-20261024",
+      "image_id": "sha256:856c22011d1432922004fdfdfb3674e6051c31a29daae264bf4fe2a7b5d5cf03"
+    }
+  ],
+  "host_bridge_healthy": true,
+  "roles_unchanged": true,
+  "only_requested_native_fields_changed": true,
+  "original_images_retained": true,
+  "playback_functionality_pending_live_validation": true,
+  "browser_functionality_pending_live_validation": true
+}

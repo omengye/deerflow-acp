@@ -1,0 +1,2 @@
+FROM folotoy-deerflow-ws:tools-fix-20261024
+COPY --chown=1000:1000 folotoy-source/src/ /opt/folotoy/

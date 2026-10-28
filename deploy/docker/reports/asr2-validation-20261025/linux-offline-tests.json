@@ -1,0 +1,11 @@
+{
+  "status": "passed",
+  "tests_run": 17,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "elapsed_ms": 75,
+  "python_version": "3.11.5",
+  "network_requests_made": false,
+  "test_error_details": null
+}

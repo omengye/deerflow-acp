@@ -1,0 +1,32 @@
+{
+  "http_status": 403,
+  "resource_id": "volc.seedasr.sauc.duration",
+  "request_id": "018ef56d-f59b-44b5-b582-7c8bfc6f66c7",
+  "response_header_names": [
+    "Server",
+    "Content-Type",
+    "Content-Length",
+    "Connection",
+    "Date",
+    "X-Tt-Logid",
+    "Api-Service-Host",
+    "server-timing",
+    "x-tt-trace-host",
+    "x-tt-trace-tag",
+    "x-tt-trace-id",
+    "Access-Control-Allow-Origin",
+    "Access-Control-Allow-Credentials",
+    "Access-Control-Allow-Methods",
+    "Access-Control-Allow-Headers",
+    "Access-Control-Expose-Headers",
+    "server-timing",
+    "x-alicdn-da-ups-status",
+    "Via",
+    "Timing-Allow-Origin",
+    "EagleId"
+  ],
+  "x-tt-logid": "2026102510443931F73B6F2F3766623A95",
+  "body": {
+    "error": "[resource_id=volc.seedasr.sauc.duration] requested resource not granted"
+  }
+}

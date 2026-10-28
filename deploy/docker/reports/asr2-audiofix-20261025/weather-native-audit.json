@@ -1,0 +1,22 @@
+{
+  "native_session": "PYNXZOOOW5MKMWCJI7AWAIQ6VR",
+  "run": {
+    "id": "XGDAJC5SBVOAYC3KCZSGCEQBUG",
+    "status": "completed",
+    "stop_reason": "end_turn"
+  },
+  "tools": [
+    {
+      "name": "skill",
+      "status": "completed",
+      "failure_code": null
+    },
+    {
+      "name": "skill_run",
+      "status": "completed",
+      "failure_code": null
+    }
+  ],
+  "reply_has_weather_terms": true,
+  "completed": true
+}

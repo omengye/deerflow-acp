@@ -1,0 +1,103 @@
+{
+  "case": "full",
+  "voice_report": "/home/gen/Documents/folotoy/deerflow-ws/src/data/music-voice-full-chain.json",
+  "passed": false,
+  "native_tool_audit": {
+    "case": "full",
+    "test_device": "MUSICVOICEBB6BD82424AACEC3",
+    "passed": false,
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "skill": "qq-music"
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "skill": "qq-music",
+        "action": "run",
+        "path": "scripts/qq_music_api.py",
+        "arguments": [
+          "search",
+          "晴天 交响改编",
+          "--limit",
+          "10"
+        ]
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "skill": "qq-music",
+        "status": "completed",
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "version": "f2765f4c48db85d0a28436c84ae4017a6445e54d11de142b605bc6554e087c6e",
+        "ok": true,
+        "operation": "search",
+        "result_count": 0
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "skill": "qq-music",
+        "action": "run",
+        "path": "scripts/qq_music_api.py",
+        "arguments": [
+          "search",
+          "晴天",
+          "--limit",
+          "10"
+        ]
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "skill": "qq-music",
+        "status": "completed",
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "version": "f2765f4c48db85d0a28436c84ae4017a6445e54d11de142b605bc6554e087c6e",
+        "ok": true,
+        "operation": "search",
+        "result_count": 0
+      }
+    ],
+    "verified_searches": [],
+    "verified_downloads": [],
+    "verified_plays": [],
+    "unexpected_tools": [],
+    "errors": [
+      "expected_exactly_one_voice_play_submission",
+      "no_verified_voice_play",
+      "qq_search_returned_no_results",
+      "no_verified_qq_download",
+      "qq_search_download_play_sequence_missing"
+    ],
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "2BCFAVMUWRFIXPY5R43R3FNHCC"
+    },
+    "voice_request_id": "f838fc607b954c139c65c660fa3f8369",
+    "cursor_recovered_from_device": true,
+    "voice_context_verified": true,
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "run": {
+      "id": "RZ3N2HGCC6XHU2KEFHTKL6PCN4",
+      "status": "completed",
+      "stop_reason": "end_turn",
+      "created_at": "2026-10-24T11:35:29.365954626Z"
+    },
+    "play_submissions": 0,
+    "search_download_play_sequence_verified": false
+  },
+  "voice_status": "failed",
+  "voice_failure_code": "music_was_not_appended_after_tts_in_one_recording_batch",
+  "same_recording_queue_verified": false,
+  "reported_music_job_matches_native": false,
+  "converted_audio_exists": false
+}

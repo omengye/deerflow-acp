@@ -1,0 +1,56 @@
+{
+  "status": "passed",
+  "containers": [
+    {
+      "name": "deerflow-deploy-deerflow-1",
+      "image": "deerflow-server:music-opencli-20261024",
+      "status": "running",
+      "health": "healthy"
+    },
+    {
+      "name": "folotoy-ws-folotoy-1",
+      "image": "folotoy-deerflow-ws:music-20261024",
+      "status": "running",
+      "health": "healthy"
+    }
+  ],
+  "skills": {
+    "catalog_ok": true,
+    "total": 29,
+    "enabled": 28,
+    "new": [
+      {
+        "name": "opencli",
+        "enabled": true,
+        "source_status": "ready"
+      },
+      {
+        "name": "qq-music",
+        "enabled": true,
+        "source_status": "ready"
+      },
+      {
+        "name": "song-download",
+        "enabled": true,
+        "source_status": "ready"
+      },
+      {
+        "name": "toy-playmusic",
+        "enabled": true,
+        "source_status": "ready"
+      }
+    ]
+  },
+  "original_session_accessible": true,
+  "host_bridge_service": "active",
+  "host_bridge_enabled": "enabled",
+  "user_linger": "yes",
+  "music_api": {
+    "http_status": 200,
+    "ok": true
+  },
+  "opencli_api": {
+    "http_status": 200,
+    "ok": true
+  }
+}

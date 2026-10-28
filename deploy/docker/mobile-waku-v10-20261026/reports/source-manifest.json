@@ -1,0 +1,529 @@
+{
+  "sourceRevision": "6b8c5c89-working-tree",
+  "files": {
+    "deploy/docker/Cargo.server.lock": {
+      "sha256": "c6f13ea2855c11654c9fef5332ae757a5ea9ee37accf59ef7b19645fb543f4e0",
+      "bytes": 77132
+    },
+    "deploy/docker/Cargo.server.toml": {
+      "sha256": "818e3e4c2fe13fdd868c33cfc31dea909b8611c6fb4371aa49cd775f516e3295",
+      "bytes": 208
+    },
+    "deploy/docker/healthcheck/Cargo.lock": {
+      "sha256": "ab5a9d9d1e27e98ff16006e37721e721d4cdf53c8216181b471c0212df5a898d",
+      "bytes": 31218
+    },
+    "deploy/docker/healthcheck/Cargo.toml": {
+      "sha256": "f4f44628a4e09065aa41220bc3d544306a3d81cde40d9431cb0272028bb68db3",
+      "bytes": 366
+    },
+    "deploy/docker/healthcheck/src/main.rs": {
+      "sha256": "c7fad61470035689bd26decc899143990de85676c70ea571d078228157b1d38c",
+      "bytes": 2793
+    },
+    "deploy/docker/mobile-waku-v10-20261026/Dockerfile": {
+      "sha256": "9694b5da275190fb84e1cff839a129aa4e4ac175a28ce8b1d73c2545f98c9c83",
+      "bytes": 3398
+    },
+    "deploy/docker/mobile-waku-v10-20261026/Dockerfile.dockerignore": {
+      "sha256": "f6cb8a7f0fadf1db1b9670441ac901c247118ae29bd0d557955e11c4bcbdae01",
+      "bytes": 937
+    },
+    "deploy/docker/mobile-waku-v10-20261026/entrypoint.sh": {
+      "sha256": "808bb57ab2bfa6a9007b2dd98e0c119c94fe504cb882bd077da6a14bf836e428",
+      "bytes": 2022
+    },
+    "desktop-app/crates/waku-client/Cargo.toml": {
+      "sha256": "b0fd09970ee21dfdb6421cc149e509ac79590a3a60e0472d7b5b2197f333a06a",
+      "bytes": 664
+    },
+    "desktop-app/crates/waku-client/README.md": {
+      "sha256": "9374f7f4624fdaf41ad3e688c14c57aa31c4c6c5887330ebf88cc68b7c80217b",
+      "bytes": 819
+    },
+    "desktop-app/crates/waku-client/src/client/replay.rs": {
+      "sha256": "88dc2314b7b1b85d262c7c4b458f8080a8ca00473b218ee16f96b1e62216bc91",
+      "bytes": 16563
+    },
+    "desktop-app/crates/waku-client/src/client.rs": {
+      "sha256": "bbe5583de6560253b0e03ee39fa16bc98445f57c97f5ee9db93bf76aa734eade",
+      "bytes": 17793
+    },
+    "desktop-app/crates/waku-client/src/command_env.rs": {
+      "sha256": "f19da4ad5d37aa450b3bf02c2279fe1fb829335a6ea8a65e83020396037f0fd5",
+      "bytes": 8652
+    },
+    "desktop-app/crates/waku-client/src/composer_complete.rs": {
+      "sha256": "4502e086a22738434a3dd44ed9026c6b2fd9fa1393c92f3889a183793c2660ff",
+      "bytes": 19216
+    },
+    "desktop-app/crates/waku-client/src/computer_use.rs": {
+      "sha256": "d941d8adeb3145e32c5ee65cb1afa7ef52fc5c5ecdc91957ec450cade71206ee",
+      "bytes": 773
+    },
+    "desktop-app/crates/waku-client/src/driver.rs": {
+      "sha256": "109aac51d7674261aefa55e14b96aa1eb515e8a1a1bc2ae810ea83da27ea3ee8",
+      "bytes": 6422
+    },
+    "desktop-app/crates/waku-client/src/lib.rs": {
+      "sha256": "489701b2558e52cc7a07577431ab5f0966836dd193946d44cc43de1aa46e47ec",
+      "bytes": 985
+    },
+    "desktop-app/crates/waku-client/src/persistence.rs": {
+      "sha256": "56294a40f075a98ad1a278c02ffdd6bd924b69900feb5e46de98c4326846702f",
+      "bytes": 45518
+    },
+    "desktop-app/crates/waku-client/src/process.rs": {
+      "sha256": "15f2a1adf1c7de6d13da86eafd847ecd9f9708bd46eacc44846bb882da027590",
+      "bytes": 28400
+    },
+    "desktop-app/crates/waku-client/src/workspace_client.rs": {
+      "sha256": "7c8d4516aea91cfe1fb2d03d7d212a8bc7ea4a5bbfdc53c6d629e612f2f4385c",
+      "bytes": 1378
+    },
+    "desktop-app/crates/waku-core/Cargo.toml": {
+      "sha256": "de0cefa7b09c34a247b33a977f7b06470106a3b20fa983bd8429ac89e3bb5e17",
+      "bytes": 1450
+    },
+    "desktop-app/crates/waku-core/README.md": {
+      "sha256": "f80c19536d8a29dcf7a2327556625caedd9c982c9f2d9a64c5f3ddf51b341e23",
+      "bytes": 1946
+    },
+    "desktop-app/crates/waku-core/build.rs": {
+      "sha256": "39bb0c89cbfe52a36aafb8bf8b1d7fe70da067d5662546576adb846577ae41b3",
+      "bytes": 2771
+    },
+    "desktop-app/crates/waku-core/src/acp_session.rs": {
+      "sha256": "d188b85b3f1dedb5fc761029e5d91c7344c5340822ad4e37556ba7cb219f5df5",
+      "bytes": 17592
+    },
+    "desktop-app/crates/waku-core/src/amp_session.rs": {
+      "sha256": "b2c4bf6a6972bac02967f89fd7fbbf11fb73b386523e0b457e136469d5fdaf00",
+      "bytes": 19330
+    },
+    "desktop-app/crates/waku-core/src/attachments.rs": {
+      "sha256": "917eef9a6f65d587961e1ed86318a3ccdcf19ba09c9855508d49427d95db66a7",
+      "bytes": 16540
+    },
+    "desktop-app/crates/waku-core/src/blob_store.rs": {
+      "sha256": "83696666cdf37286cb440efc82ba73decc613f6f7452073c80fcc957c7d92bc3",
+      "bytes": 11791
+    },
+    "desktop-app/crates/waku-core/src/checkpoint.rs": {
+      "sha256": "c2560a9d12058cbbc645cb0c57b76194bbd215ea08a73a1c72de184044f870b9",
+      "bytes": 39970
+    },
+    "desktop-app/crates/waku-core/src/claude_metadata.rs": {
+      "sha256": "9dfa325686675c6c786b99c3af4ae4781cff6673db68d9e78d0d56bc19ebcfab",
+      "bytes": 4046
+    },
+    "desktop-app/crates/waku-core/src/claude_session.rs": {
+      "sha256": "d76cd5085652cd4461de749d297e7340ab1007491871518c2b31e11d8fee6b2c",
+      "bytes": 42088
+    },
+    "desktop-app/crates/waku-core/src/codex_session.rs": {
+      "sha256": "a59ad751b787f4066e9dca20c69d3e2d34600ce465baf65b79cb039baa774650",
+      "bytes": 16486
+    },
+    "desktop-app/crates/waku-core/src/command_env.rs": {
+      "sha256": "013c8845553956c114d30a82fca2eaadcd5376d2ef88f5640bb7148743fb9aaf",
+      "bytes": 50335
+    },
+    "desktop-app/crates/waku-core/src/composer_complete.rs": {
+      "sha256": "d063222f9ea21335f6a072b929821d9b9ebfa955b07ce710f720ddfb233a3fa7",
+      "bytes": 61460
+    },
+    "desktop-app/crates/waku-core/src/computer_use.rs": {
+      "sha256": "7b2d3432d164f8deb9e12a80bc188d430102badb449a28d0a905bfd2c4403919",
+      "bytes": 16164
+    },
+    "desktop-app/crates/waku-core/src/cursor_session.rs": {
+      "sha256": "66d42018925d82ecf77107c63d5eefcb8a23ce9f933b5133c765f9f3c23aecc2",
+      "bytes": 4412
+    },
+    "desktop-app/crates/waku-core/src/daemon.rs": {
+      "sha256": "7b48fbdd59285024b231e998637ef176faf28db2324c05e4c227e4ae0ca53c80",
+      "bytes": 98273
+    },
+    "desktop-app/crates/waku-core/src/deepseek_pool.rs": {
+      "sha256": "7f575e6c8d7cc3192c20aec99fdf8e93c88ad5937c933f184e3b783cc853a1d7",
+      "bytes": 4970
+    },
+    "desktop-app/crates/waku-core/src/deepseek_session.rs": {
+      "sha256": "5083ddfbc7dd199a2356def868b5b741e8c3cbff8298ab827fd9729f50cf1116",
+      "bytes": 43986
+    },
+    "desktop-app/crates/waku-core/src/deerflow_config.rs": {
+      "sha256": "b8d44d10b73bdb763095fa2f3b1631dd73d3726dc334c052f19fbff3a0cb3b88",
+      "bytes": 44178
+    },
+    "desktop-app/crates/waku-core/src/driver/acp/deerflow_tasks.rs": {
+      "sha256": "64cf2ae3286990e066891f7a20b709232dd1f9a81d1b7a77b1594932b5a0278f",
+      "bytes": 63495
+    },
+    "desktop-app/crates/waku-core/src/driver/acp.rs": {
+      "sha256": "a81ebc2fa9325c4176d82cebbe34aec1bdab353d290dc75e03f7b96c92dd55f1",
+      "bytes": 199804
+    },
+    "desktop-app/crates/waku-core/src/driver/activity.rs": {
+      "sha256": "8c695ee70edc1d983b98768c84ead78417cfc6d99fd667ac865f859d24e49e5f",
+      "bytes": 7243
+    },
+    "desktop-app/crates/waku-core/src/driver/amp.rs": {
+      "sha256": "21b2083217ae4ac226dd21c321ba330ad814f8f9a8eefbbc8a2246af620b78b5",
+      "bytes": 32744
+    },
+    "desktop-app/crates/waku-core/src/driver/claude.rs": {
+      "sha256": "16e8ed3524e132a32c6ec871f1d453102251bd5a0be7261a712d9c2be0017bf3",
+      "bytes": 112589
+    },
+    "desktop-app/crates/waku-core/src/driver/codex.rs": {
+      "sha256": "e13568e79deef2942f4b25fdeb8454b5b110ef9a06126b2ac37f559300cbb17c",
+      "bytes": 148616
+    },
+    "desktop-app/crates/waku-core/src/driver/computer_use.rs": {
+      "sha256": "74572622bcc565a3ff4c533508827fdae2f6b052a3f7af538f14d921bb97a6b1",
+      "bytes": 8511
+    },
+    "desktop-app/crates/waku-core/src/driver/deepseek.rs": {
+      "sha256": "66b7abf912424a8b357272a26e3065d861fab1c52dab43bcd3c19be7d656695c",
+      "bytes": 59075
+    },
+    "desktop-app/crates/waku-core/src/driver/fixtures/codex_fork.sh": {
+      "sha256": "dc59a8d0dfdc44b3966b4d50264d04a249524f25ea8d569ad2787f0ad9ccd1b5",
+      "bytes": 2530
+    },
+    "desktop-app/crates/waku-core/src/driver/mod.rs": {
+      "sha256": "570769945e0d859ad506bce8ff43c2d67cf547e56dc4e21fe99c9da5677e7c95",
+      "bytes": 10968
+    },
+    "desktop-app/crates/waku-core/src/driver/opencode.rs": {
+      "sha256": "d7b7acc2d87f4792b9eaa3f317de2eddf5fbb0e43a2b8d9636952d6db829c25b",
+      "bytes": 83085
+    },
+    "desktop-app/crates/waku-core/src/driver/opencode2.rs": {
+      "sha256": "36ca7b0b8b8e2980acb0811cdc3c4a59e21a25963980c6226c20009e82312222",
+      "bytes": 123658
+    },
+    "desktop-app/crates/waku-core/src/driver/opencode2_computer_use.rs": {
+      "sha256": "02b4140d0cf527f8bc60911889a0081ea40862984950e03cfc17cec12c51557d",
+      "bytes": 9122
+    },
+    "desktop-app/crates/waku-core/src/driver/pi.rs": {
+      "sha256": "4c27ba9b713e4ff9649ad27fb6925a5ceada73742587485dbb20253111823a95",
+      "bytes": 93064
+    },
+    "desktop-app/crates/waku-core/src/driver/support.rs": {
+      "sha256": "8285953f1dcd1de8363be417aaca709957437ef7d6711a0c4c52ae805cab257f",
+      "bytes": 27456
+    },
+    "desktop-app/crates/waku-core/src/driver/title_refresh.rs": {
+      "sha256": "cc2448379921d89705d3c53eb886910899849d0c46b821e847aa27e2867b5f27",
+      "bytes": 5502
+    },
+    "desktop-app/crates/waku-core/src/frontmatter.rs": {
+      "sha256": "de98559f26f67b70029d8557fdbf21cb047636f5ece584ea5b0d1c7097acb70f",
+      "bytes": 1787
+    },
+    "desktop-app/crates/waku-core/src/fs_ext.rs": {
+      "sha256": "c03927c849509d5bc0b1293fea118456db51193ad49bf661aa40f20bcae82e0a",
+      "bytes": 2379
+    },
+    "desktop-app/crates/waku-core/src/git_branch.rs": {
+      "sha256": "97bd059d034dbc1be0376512485c8790168708594a2da5afb236c3d135d0b976",
+      "bytes": 14307
+    },
+    "desktop-app/crates/waku-core/src/git_commit.rs": {
+      "sha256": "953f0059dd41c988732cf5adbd3ff01341220c9bb6d2023c5a9effa4a42a5be9",
+      "bytes": 32952
+    },
+    "desktop-app/crates/waku-core/src/grok_session.rs": {
+      "sha256": "b31a81283803f29d966eef79889596ea7ae85d6eed8de39372de232cf7329b99",
+      "bytes": 17812
+    },
+    "desktop-app/crates/waku-core/src/http_wire.rs": {
+      "sha256": "1ef75cdfb51554bd52079cbb0b4f0a5faa240caf9a793144696111a96c882a60",
+      "bytes": 23393
+    },
+    "desktop-app/crates/waku-core/src/i18n.rs": {
+      "sha256": "8bd4881ddb478e51271aab08316f6c644e79952a2e2c61ed8fdbb88a128e8d9e",
+      "bytes": 33
+    },
+    "desktop-app/crates/waku-core/src/identity.rs": {
+      "sha256": "ba6cdd18c42211f6937fc0be5317bbcb25e2be126f0f9e9067f60d10ba3ed441",
+      "bytes": 37
+    },
+    "desktop-app/crates/waku-core/src/kimi_session.rs": {
+      "sha256": "82c12399963d711de9ba3b780985ab8cba6094641e2ce8706102d1699beb908d",
+      "bytes": 12335
+    },
+    "desktop-app/crates/waku-core/src/lib.rs": {
+      "sha256": "f9346302f005c1ca10f9a4d9d1b489ae1d61997069d2ccafeb00f23a785eed70",
+      "bytes": 2056
+    },
+    "desktop-app/crates/waku-core/src/model.rs": {
+      "sha256": "c8d29d9f05c8bde3a7a222c02c9456dfa4f4da3949c4389ca46083ae14068f47",
+      "bytes": 4105
+    },
+    "desktop-app/crates/waku-core/src/model_catalog.rs": {
+      "sha256": "253838d0b4e9ca5b5620be48f7e4c1867e27d604d90b3ea3824a7f97121381d8",
+      "bytes": 106455
+    },
+    "desktop-app/crates/waku-core/src/opencode2_api.rs": {
+      "sha256": "57cff4f2f1a2316c171e919326ac213fd5e0b94e41edece04610a75044bfb7b4",
+      "bytes": 70710
+    },
+    "desktop-app/crates/waku-core/src/opencode2_service.rs": {
+      "sha256": "57274e0220db5652b67261d7980ad5b084ce27226bd472594056ef3b0e4bb9a5",
+      "bytes": 44105
+    },
+    "desktop-app/crates/waku-core/src/opencode2_session.rs": {
+      "sha256": "5c04b9f1187deddae77de510609f45120cbf998a4e3fa05fd8b320c2a0ac47c4",
+      "bytes": 37304
+    },
+    "desktop-app/crates/waku-core/src/opencode_pool.rs": {
+      "sha256": "b5a596d4b6d6f3ca203a20c08eb6579f6cc72b61264c2137415489287bc68e03",
+      "bytes": 15126
+    },
+    "desktop-app/crates/waku-core/src/opencode_session.rs": {
+      "sha256": "08f223a420bf7aab195d340e1aba0522516623e5db7dbf9c830e276f27f5ae2a",
+      "bytes": 20754
+    },
+    "desktop-app/crates/waku-core/src/persistence.rs": {
+      "sha256": "1fcfca5fbb22e108e84ac149820960ca021ffd3ea757aac6e2fdf523ee9fd435",
+      "bytes": 142101
+    },
+    "desktop-app/crates/waku-core/src/pi_session.rs": {
+      "sha256": "294a10cdda7303dbd815dd61bc172f39a96c2ab8e9b6f29c27c63658cf8917d9",
+      "bytes": 19285
+    },
+    "desktop-app/crates/waku-core/src/projectless.rs": {
+      "sha256": "c7b20d1343487eff7877aff9af070a85b5caa5d9d12cdbdd6faf45bb1d5583c1",
+      "bytes": 13194
+    },
+    "desktop-app/crates/waku-core/src/protocol.rs": {
+      "sha256": "6ee1ca285a4224ae6ba07f3cd88251dfec4163360c60fe1a1151b009903686c8",
+      "bytes": 371
+    },
+    "desktop-app/crates/waku-core/src/server/auth.rs": {
+      "sha256": "2b38a31dd9e792551df007324c55d271b1d4c32b71c8b14458b5128f5451a899",
+      "bytes": 3918
+    },
+    "desktop-app/crates/waku-core/src/server/auth_tests.rs": {
+      "sha256": "e6f6b1853be47e8c38f15150b898fdbd4e466b78cce468b0627146f04ef8308b",
+      "bytes": 10324
+    },
+    "desktop-app/crates/waku-core/src/server/replay_log.rs": {
+      "sha256": "0891b5c738db5714c60c75a0a365c03262326e3eac161a26b50ac4913eb415f5",
+      "bytes": 11923
+    },
+    "desktop-app/crates/waku-core/src/server/replay_tests.rs": {
+      "sha256": "6de63b5aa86aa63d604eb077df767a669918330a484ba1bfc71b98c38d185ed8",
+      "bytes": 10174
+    },
+    "desktop-app/crates/waku-core/src/server.rs": {
+      "sha256": "e9233b44ae27bff4e63527ba56a263d6e71d2e3f5e33ecf685cc997c906d1758",
+      "bytes": 86540
+    },
+    "desktop-app/crates/waku-core/src/settings.rs": {
+      "sha256": "31fdfb29f8e211ae0fce488e4d66f5ff2f4f9fb92425d668c49d5cc3e7b5b5bf",
+      "bytes": 6691
+    },
+    "desktop-app/crates/waku-core/src/skills.rs": {
+      "sha256": "9de4cc2fa8e592d1da5f37adfba86d961ae45af426576147c1d6e81c573803b0",
+      "bytes": 24721
+    },
+    "desktop-app/crates/waku-core/src/slash_command_catalog.rs": {
+      "sha256": "64953c63a47a75c0be4dcab45304f9134aa31adf3ceb983dd66843ff9ed53798",
+      "bytes": 32648
+    },
+    "desktop-app/crates/waku-core/src/terminal.rs": {
+      "sha256": "c559262818b83dcbd2db5c3b48fd028cdeb1aaa770218d8fc1a81235297f5dc9",
+      "bytes": 10209
+    },
+    "desktop-app/crates/waku-core/src/theme.rs": {
+      "sha256": "c0d6be9a467df8e1dabf3fe3d4dc00da69e763ff8c25b3ab259eb211178e013b",
+      "bytes": 34
+    },
+    "desktop-app/crates/waku-core/src/usage.rs": {
+      "sha256": "716d09266344c03474b0d4ea0e2e473f065df0bea721e3c70c4e51739006a952",
+      "bytes": 47051
+    },
+    "desktop-app/crates/waku-core/src/usage_history.rs": {
+      "sha256": "d787a76fef21fecf6627f5dcc4713a6db488bae0ed29b2ccbc96c44ed4b41b0e",
+      "bytes": 65265
+    },
+    "desktop-app/crates/waku-core/src/workspace.rs": {
+      "sha256": "b89ddb774471fcfcdbfc7005eeaac1d2492ca0ef1a1b333babc01436d4b20824",
+      "bytes": 26970
+    },
+    "desktop-app/crates/waku-core/src/worktree.rs": {
+      "sha256": "05bf22214e6e2e5ceaacf90faff1dfa2b1f1bb10c69694e5dba18084165eca33",
+      "bytes": 11790
+    },
+    "desktop-app/crates/waku-daemon/Cargo.toml": {
+      "sha256": "0097aad300142ec286376a80fe86eddeea3f29218d50995141b4b90036c0a32c",
+      "bytes": 705
+    },
+    "desktop-app/crates/waku-daemon/README.md": {
+      "sha256": "3da9900b9fd55caa622760ce28bb6b284919c8b6efcc891465eb4186ee578967",
+      "bytes": 1319
+    },
+    "desktop-app/crates/waku-daemon/src/bin/waku-debug-daemon.rs": {
+      "sha256": "2754173ab03be66923c93be09bf28ea5dcf1ff22716c719677aade764d856cea",
+      "bytes": 25
+    },
+    "desktop-app/crates/waku-daemon/src/main.rs": {
+      "sha256": "731b708dea36f26f0e387c493d7b9a0b6c53845188429c8225d334877a2d7258",
+      "bytes": 7798
+    },
+    "desktop-app/crates/waku-protocol/Cargo.toml": {
+      "sha256": "c70de14cc46b1a96255ee7b878e8c79dcc56a05e3cca246b9aa5a8ea585bd2ef",
+      "bytes": 759
+    },
+    "desktop-app/crates/waku-protocol/README.md": {
+      "sha256": "b825896771bf26d570fa26bf72d32e4b46f4f6b244fa922fef43b020b34f5707",
+      "bytes": 539
+    },
+    "desktop-app/crates/waku-protocol/src/attachments.rs": {
+      "sha256": "dbb206ac8f573d7f1a70efef394a5a818cf86189785fb9498d0c4dddc15ca32b",
+      "bytes": 945
+    },
+    "desktop-app/crates/waku-protocol/src/bin/export_types.rs": {
+      "sha256": "927ddda2af7e874478b570c8dae61333205e313345e5f97b8b69e1854a04aa91",
+      "bytes": 4609
+    },
+    "desktop-app/crates/waku-protocol/src/blob.rs": {
+      "sha256": "7c5e1f47d9f7b75085e6757032da0c8c32d6be53bceb6267d0a7eb4ff86410e0",
+      "bytes": 258
+    },
+    "desktop-app/crates/waku-protocol/src/checkpoint.rs": {
+      "sha256": "a7168b694d093feb7f02e40a32ff45e38bad6f07ba9283959128ec3fba2be832",
+      "bytes": 535
+    },
+    "desktop-app/crates/waku-protocol/src/composer.rs": {
+      "sha256": "f03237cc3aeb8420e45cb86c55f45092f0672f74d1d1e0335e7db1bda0e3e189",
+      "bytes": 1444
+    },
+    "desktop-app/crates/waku-protocol/src/computer_use.rs": {
+      "sha256": "226a4b76291711ed72f5b40c37fa64ae4d84a96ffda80bf623802d0974be88dc",
+      "bytes": 4024
+    },
+    "desktop-app/crates/waku-protocol/src/deerflow_tasks.rs": {
+      "sha256": "fc829df3b91890698cc361070aac5e22c9ab8ce6f83211780d913fd756becc12",
+      "bytes": 13167
+    },
+    "desktop-app/crates/waku-protocol/src/driver_wire.rs": {
+      "sha256": "3ff42cfe4fc2ef9ba141228d2c77f11801bf50c97ad4b771ca2548ca8979198f",
+      "bytes": 15111
+    },
+    "desktop-app/crates/waku-protocol/src/git.rs": {
+      "sha256": "2fcab32bea37431645727db17963c3600d51004a192342adb2309a24384ea61c",
+      "bytes": 1553
+    },
+    "desktop-app/crates/waku-protocol/src/i18n.rs": {
+      "sha256": "5cb4efc876df6688fd312a35bd579afed597c2dbf49155594cf9a18fdae3697f",
+      "bytes": 7534
+    },
+    "desktop-app/crates/waku-protocol/src/identity.rs": {
+      "sha256": "5cb6bccbefde9d4bf4cfcfbb5fae5becbf61e95170f8551e5a9e98b160d777d1",
+      "bytes": 6640
+    },
+    "desktop-app/crates/waku-protocol/src/lib.rs": {
+      "sha256": "d82e6678f3316161cd81b1dc87ad0e17908898fe3385ce197b66fc109ebd04c8",
+      "bytes": 1932
+    },
+    "desktop-app/crates/waku-protocol/src/model.rs": {
+      "sha256": "a9a9e60115e937f5fcd01d8494fc76692e7a24cd59a2def91df9880f12276cd4",
+      "bytes": 171562
+    },
+    "desktop-app/crates/waku-protocol/src/model_catalog.rs": {
+      "sha256": "5322b198df3917dda3af099def77c097f1586f0ac7ce39ef1b44c98712216126",
+      "bytes": 14756
+    },
+    "desktop-app/crates/waku-protocol/src/persistence.rs": {
+      "sha256": "3f81f93e77262377b0f976cf7bde7252370391e2b532aff31de2d8483c0856e1",
+      "bytes": 5225
+    },
+    "desktop-app/crates/waku-protocol/src/projectless.rs": {
+      "sha256": "f5e5b3a356c673fb5616e1eb01fe83406e6c82063bc25f6af154df36a217a455",
+      "bytes": 2275
+    },
+    "desktop-app/crates/waku-protocol/src/protocol.rs": {
+      "sha256": "079d0a969a5e171f6e988b001e8774e7c869f73982f425bb90272abd56d724b8",
+      "bytes": 22489
+    },
+    "desktop-app/crates/waku-protocol/src/provider_session.rs": {
+      "sha256": "abbea4a51afd02e75d9ca2d90f0481c73b02fff69ef272579159ec6c55c06976",
+      "bytes": 1812
+    },
+    "desktop-app/crates/waku-protocol/src/settings.rs": {
+      "sha256": "f0bd0e271639bdf61e7f406cf7262e36609a92f00c91d8d7b372e79089bf6ef2",
+      "bytes": 1439
+    },
+    "desktop-app/crates/waku-protocol/src/skills.rs": {
+      "sha256": "27cfcb87a9459a19a326411bae9469f4e9a60b8645172d3ec57bdc29f396fd8b",
+      "bytes": 2540
+    },
+    "desktop-app/crates/waku-protocol/src/theme.rs": {
+      "sha256": "cafb2da67bcfd3e807c92e8932f459cf995449dfd260484bfc814a2c7a3e9296",
+      "bytes": 727
+    },
+    "desktop-app/crates/waku-protocol/src/usage.rs": {
+      "sha256": "0cb958744010418c6f58a0403ba7578ff2a99e4f125026d63b96e950dd9949f8",
+      "bytes": 2021
+    },
+    "desktop-app/crates/waku-protocol/src/usage_history.rs": {
+      "sha256": "e1fd8e92ccc8ca9ac0184abfec681817831ea4df934a45d757dcd5e94fa21046",
+      "bytes": 7388
+    },
+    "desktop-app/crates/waku-protocol/src/workspace.rs": {
+      "sha256": "8416eb9d552eb90f969e3e6684c016ecdb6c637c81252457d1d782c1abef0046",
+      "bytes": 6096
+    },
+    "desktop-app/db/migrations/0000_init.sql": {
+      "sha256": "c79e7f1a302acefa12118b7a48f206fc44fb2dad9574a28c60a04a63317a8b42",
+      "bytes": 1294
+    },
+    "desktop-app/db/migrations/0001_clear_sugar_man.sql": {
+      "sha256": "c329b840d7fa58b1231caac30125d353a1250320ac9dddca75edbb2ff4d66e23",
+      "bytes": 244
+    },
+    "desktop-app/db/migrations/0002_cute_miracleman.sql": {
+      "sha256": "d24469296280cd4e30f8aeb737e66d954df3767f559a2aa62e5cc284b3f377fc",
+      "bytes": 144
+    },
+    "desktop-app/db/migrations/meta/0000_snapshot.json": {
+      "sha256": "b07c5a6138e496c91daa953a7a9e8f98155bfd6fb02a3d982bf5ffca4ef00970",
+      "bytes": 6520
+    },
+    "desktop-app/db/migrations/meta/0001_snapshot.json": {
+      "sha256": "701cfb2a05c3bceea19a32805557889ea3d06c32ea29979efd12f727d134798e",
+      "bytes": 6712
+    },
+    "desktop-app/db/migrations/meta/0002_snapshot.json": {
+      "sha256": "f180cef3b56c97973a02ba8288845e55ad5360bd3b31325cc80b6d30c82fbcbf",
+      "bytes": 7137
+    },
+    "desktop-app/db/migrations/meta/_journal.json": {
+      "sha256": "14bb73168d4f8123965d9807be26dbc3170b43ba004dd507fd48b891c3603e6a",
+      "bytes": 506
+    },
+    "desktop-app/locales/app.yml": {
+      "sha256": "45b850d6ff9fd757018dfe87a45728b4c6482a9da683067579e0b5c1d52ece7a",
+      "bytes": 63065
+    },
+    "desktop-app/locales/ja.yml": {
+      "sha256": "185e80aed765e61f9ca70770959a3041196ac922ce1169099e589811e8ab2a3a",
+      "bytes": 68881
+    },
+    "desktop-app/locales/zh-CN.yml": {
+      "sha256": "ec795e4755fca407a4ab4064056cea2348ac544575cf188e9851fe66e7188ba8",
+      "bytes": 55593
+    },
+    "desktop-app/resources/deerflow/default-config.yaml": {
+      "sha256": "9729f9bd372a77620f920bba9593ec3d815734452330ff7f18497dafde08b4ea",
+      "bytes": 6365
+    }
+  }
+}

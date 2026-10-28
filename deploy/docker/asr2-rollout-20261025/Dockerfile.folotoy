@@ -1,0 +1,10 @@
+ARG BASE_IMAGE=folotoy-deerflow-ws:music-20261024
+FROM ${BASE_IMAGE}
+COPY --chown=1000:1000 folotoy-source/src/config.py /opt/folotoy/config.py
+COPY --chown=1000:1000 folotoy-source/src/util/config_util.py /opt/folotoy/util/config_util.py
+COPY --chown=1000:1000 folotoy-source/src/sdk/stt.py /opt/folotoy/sdk/stt.py
+COPY --chown=1000:1000 folotoy-source/src/sdk/stt_sdk/volcengine_asr2.py /opt/folotoy/sdk/stt_sdk/volcengine_asr2.py
+USER root
+RUN rm -f /opt/folotoy/config.cpython-*.so /opt/folotoy/util/config_util.cpython-*.so /opt/folotoy/sdk/stt.cpython-*.so /opt/folotoy/sdk/stt_sdk/volcengine_asr2.cpython-*.so
+ARG RUNTIME_USER=1000:1000
+USER ${RUNTIME_USER}

@@ -1,0 +1,114 @@
+{
+  "case": "music_download_qq",
+  "passed": false,
+  "conversation_reused": false,
+  "conversation": {
+    "case": "music_download_qq",
+    "status": "conversation_completed",
+    "transport": "ws",
+    "mode": "fullAccess",
+    "approval": "allow_always",
+    "turn_timeout_seconds": 240,
+    "tool_receipts_verified": false,
+    "requires_native_tool_audit": true,
+    "voice_turn_context_injected": false,
+    "waku_session_id": "9883c1c9-6dbb-4caf-b19b-133b0d6f1822",
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "K72DXXPYBLVTFOMDEJJLELM4CB"
+    },
+    "native_session_id": "K72DXXPYBLVTFOMDEJJLELM4CB",
+    "waku_runtime_id": "2864160b-3e3a-4796-bbfa-4b93c1bf722f",
+    "confirmed_approval": "allow_always",
+    "server_model": "gpt-6-luna",
+    "completed": true,
+    "stop_reason": "end_turn",
+    "reply": "下载失败：QQ 音乐接口返回 `music_api_network_error`，没有确认下载成功，因此无法报告相对路径、文件大小或摘要；我没有改下其他歌曲，也没有播放。",
+    "reply_truncated": false,
+    "cleanup": {
+      "actors_recorded": 1,
+      "actors_released": 1,
+      "passed": true
+    },
+    "actual_tool_activities": [
+      {
+        "name": "skill",
+        "arguments": {
+          "skill": "qq-music"
+        },
+        "complete": true,
+        "failed": false
+      },
+      {
+        "name": "skill_run",
+        "arguments": {
+          "name": "qq-music",
+          "action": "run",
+          "path": "scripts/qq_music_api.py",
+          "args": [
+            "download",
+            "--mid",
+            "000BEsDj0UUhf8"
+          ]
+        },
+        "complete": true,
+        "failed": true
+      }
+    ],
+    "elapsed_ms": 39336
+  },
+  "native_tool_audit": {
+    "native_session": "K72DXXPYBLVTFOMDEJJLELM4CB",
+    "database": "/var/lib/deerflow/user-data/config/go-harness-state/harness.db",
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "run": {
+      "id": "XDZSPGQ7QM5GNHNSTUVXPJZJZX",
+      "status": "completed",
+      "stop_reason": "end_turn"
+    },
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "arguments": {
+          "skill": "qq-music"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill",
+        "status": "completed",
+        "failure_code": null
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "arguments": {
+          "name": "qq-music",
+          "action": "run",
+          "path": "scripts/qq_music_api.py",
+          "args": [
+            "download",
+            "--mid",
+            "000BEsDj0UUhf8"
+          ]
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "status": "failed",
+        "failure_code": "unknown",
+        "unstructured_result": true
+      }
+    ],
+    "verified_results": [],
+    "unexpected_tools": [],
+    "play_submissions": 0,
+    "passed": false
+  }
+}

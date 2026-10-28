@@ -1,0 +1,164 @@
+{
+  "asr_failures": [
+    {
+      "time": "2026-10-25 12:16:06,830",
+      "error": "asr2_requires_16k_mono_s16_wav",
+      "status": "None"
+    },
+    {
+      "time": "2026-10-25 12:16:21,440",
+      "error": "asr2_requires_16k_mono_s16_wav",
+      "status": "None"
+    }
+  ],
+  "transcription_events": [
+    {
+      "time": "2026-10-25 12:16:06,830",
+      "device_suffix": "***3b78",
+      "synthetic": false,
+      "transcript_is_none": true,
+      "text_length": 0,
+      "provider": null,
+      "request_id": null,
+      "weather_phrase_recognized": false
+    },
+    {
+      "time": "2026-10-25 12:16:21,440",
+      "device_suffix": "***3b78",
+      "synthetic": false,
+      "transcript_is_none": true,
+      "text_length": 0,
+      "provider": null,
+      "request_id": null,
+      "weather_phrase_recognized": false
+    }
+  ],
+  "recent_recording_metadata": [
+    {
+      "file": "recording-0d59e67a02b84d7387f401504e73ff7b.wav",
+      "rate": 32000,
+      "channels": 1,
+      "width": 2,
+      "frames": 131072,
+      "duration_seconds": 4.096,
+      "compression": "NONE",
+      "mtime_utc": "2026-10-25T04:16:21.439961+00:00"
+    },
+    {
+      "file": "recording-fe41a8102fe54f24bf122e9a28d291ed.wav",
+      "rate": 32000,
+      "channels": 1,
+      "width": 2,
+      "frames": 367616,
+      "duration_seconds": 11.488,
+      "compression": "NONE",
+      "mtime_utc": "2026-10-25T04:16:06.828415+00:00"
+    },
+    {
+      "file": "recording-1197541dcc024b34a301f7a8e609311e.wav",
+      "rate": 16000,
+      "channels": 1,
+      "width": 2,
+      "frames": 53760,
+      "duration_seconds": 3.36,
+      "compression": "NONE",
+      "mtime_utc": "2026-10-25T03:24:20.601737+00:00"
+    },
+    {
+      "file": "recording-b0d6c43054474d68a35becbb7868afec.wav",
+      "rate": 32000,
+      "channels": 1,
+      "width": 2,
+      "frames": 464384,
+      "duration_seconds": 14.512,
+      "compression": "NONE",
+      "mtime_utc": "2026-10-24T13:02:54.372136+00:00"
+    },
+    {
+      "file": "recording-21dc15df139d423b9bad9f00df4ab6e4.wav",
+      "rate": 32000,
+      "channels": 1,
+      "width": 2,
+      "frames": 69120,
+      "duration_seconds": 2.16,
+      "compression": "NONE",
+      "mtime_utc": "2026-10-24T12:54:14.672355+00:00"
+    },
+    {
+      "file": "recording-101f1816bc6f43f99cc1c3eab41db797.wav",
+      "rate": 32000,
+      "channels": 1,
+      "width": 2,
+      "frames": 1573888,
+      "duration_seconds": 49.184,
+      "compression": "NONE",
+      "mtime_utc": "2026-10-24T12:45:30.555962+00:00"
+    },
+    {
+      "file": "recording-c3457247bb2446a58740bb3726704c5d.wav",
+      "rate": 32000,
+      "channels": 1,
+      "width": 2,
+      "frames": 237056,
+      "duration_seconds": 7.408,
+      "compression": "NONE",
+      "mtime_utc": "2026-10-24T12:40:24.204523+00:00"
+    },
+    {
+      "file": "recording-399488afebc641418285443372cbf1e9.wav",
+      "rate": 32000,
+      "channels": 1,
+      "width": 2,
+      "frames": 59904,
+      "duration_seconds": 1.872,
+      "compression": "NONE",
+      "mtime_utc": "2026-10-24T12:40:08.380387+00:00"
+    },
+    {
+      "file": "recording-e62f993ef4ed4b8c9947150953d9de07.wav",
+      "rate": 32000,
+      "channels": 1,
+      "width": 2,
+      "frames": 310272,
+      "duration_seconds": 9.696,
+      "compression": "NONE",
+      "mtime_utc": "2026-10-24T12:34:05.487183+00:00"
+    },
+    {
+      "file": "recording-7077c1dab7a14564b3eb7999d2dc617d.wav",
+      "rate": 32000,
+      "channels": 1,
+      "width": 2,
+      "frames": 230912,
+      "duration_seconds": 7.216,
+      "compression": "NONE",
+      "mtime_utc": "2026-10-24T12:31:19.034877+00:00"
+    },
+    {
+      "file": "recording-103dfe2ec94b4fe58bd7bddedbf2acc3.wav",
+      "rate": 32000,
+      "channels": 1,
+      "width": 2,
+      "frames": 155136,
+      "duration_seconds": 4.848,
+      "compression": "NONE",
+      "mtime_utc": "2026-10-24T12:26:47.927418+00:00"
+    },
+    {
+      "file": "recording-6d22d6ac5a0749fda8896fb4c1dbc62d.wav",
+      "rate": 32000,
+      "channels": 1,
+      "width": 2,
+      "frames": 73728,
+      "duration_seconds": 2.304,
+      "compression": "NONE",
+      "mtime_utc": "2026-10-24T12:25:39.329928+00:00"
+    }
+  ],
+  "container": {
+    "image": "folotoy-deerflow-ws:asr2-20261025",
+    "status": "running",
+    "health": "healthy",
+    "started_at": "2026-10-25T03:25:35.509824379Z"
+  }
+}

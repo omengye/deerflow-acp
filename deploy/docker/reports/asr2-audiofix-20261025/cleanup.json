@@ -1,0 +1,21 @@
+{
+  "status": "completed",
+  "duplicate_test_reports_removed": [
+    {
+      "file": "asr2-rate8000-4da4859759624ee09141618634a0850a.json",
+      "bytes": 3791
+    },
+    {
+      "file": "asr2-rate16000-4da4859759624ee09141618634a0850a.json",
+      "bytes": 3799
+    },
+    {
+      "file": "asr2-rate32000-4da4859759624ee09141618634a0850a.json",
+      "bytes": 4106
+    }
+  ],
+  "bytes_freed": 11696,
+  "build_contexts_remaining": 0,
+  "original_user_recordings_retained": true,
+  "old_images_and_both_rollback_paths_retained": true
+}

@@ -1,0 +1,44 @@
+{
+  "containers": {
+    "deerflow-deploy-deerflow-1": {
+      "id": "757689b7641b7a4ab760172cb6fb9183f52e501c0078f926a88fee627e167729",
+      "image": "deerflow-server:mobile-waku-v10-20261026",
+      "imageId": "sha256:ec7ab72b5bc8cfe2964f5c2f208db0921eadb5ca4ad04c1f0a995378049b2abf",
+      "status": "running",
+      "health": "healthy",
+      "startedAt": "2026-10-26T09:28:25.932300531Z",
+      "restartCount": 0
+    },
+    "folotoy-ws-folotoy-1": {
+      "id": "231d433daeb98bc2964ce76df92f75d9e19330ca6df8fa08d217861a69625456",
+      "image": "folotoy-deerflow-ws:mobile-waku-v10-20261026",
+      "imageId": "sha256:d62df21b7ca56bd217edf20053b220e431d9ad96c8ac4b8def911db9213258bf",
+      "status": "running",
+      "health": "healthy",
+      "startedAt": "2026-10-26T09:28:32.017459972Z",
+      "restartCount": 0
+    }
+  },
+  "originalRuntimeHashesPreserved": true,
+  "hostOpenCliBridgeActive": true,
+  "nativeActiveOperations": 0,
+  "foloActualClient": {
+    "authenticated": true,
+    "getSettings": true,
+    "temporaryStateRemovedOnExit": true
+  },
+  "publishedBindings": {
+    "18787/tcp": [
+      {
+        "HostIp": "100.80.205.120",
+        "HostPort": "18787"
+      },
+      {
+        "HostIp": "192.168.1.190",
+        "HostPort": "18787"
+      }
+    ]
+  },
+  "nativeDataDirectoryPreserved": true,
+  "updatedAt": "2026-10-26T09:30:22.800273+00:00"
+}

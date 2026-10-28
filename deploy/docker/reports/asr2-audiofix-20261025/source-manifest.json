@@ -1,0 +1,47 @@
+{
+  "project": "D:\\Tools\\folo_server_src\\src\\folotoy-decompiled",
+  "files": [
+    {
+      "path": "src/sdk/stt_sdk/volcengine_asr2.py",
+      "before_sha256": "b77453075b9198c94220c5c7899ad01e80dc80a1e16e73ff56ad61ae4a4dc8e0",
+      "after_sha256": "0a05c170fcc7da7f1593b844ee9e23a1864c588b4e1c961a2e8817212861819d"
+    }
+  ],
+  "test_files": [
+    {
+      "path": "verify/test_asr2_audio_normalization.py",
+      "before_sha256": null,
+      "after_sha256": "f0874001ab40401514278be7c5991c18070f433acd21902c272aef18604c2f5d"
+    }
+  ],
+  "validation": {
+    "windows_offline_tests": {
+      "tests": 13,
+      "passed": 11,
+      "skipped": 2,
+      "skip_reason": "FFmpeg unavailable on Windows PATH; actual tone checks must run on Gentoo"
+    },
+    "wire_protocol_functions_unchanged": true,
+    "gentoo_offline_tests": {
+      "tests": 13,
+      "passed": 13,
+      "skipped": 0,
+      "real_ffmpeg_tone_and_duration_checks": true,
+      "network_calls": false
+    }
+  },
+  "normalization": {
+    "supported_input_rates": [
+      8000,
+      16000,
+      32000
+    ],
+    "target_rate": 16000,
+    "channels": 1,
+    "sample_width": 2,
+    "max_duration_seconds": 120,
+    "resample_timeout_seconds": 10,
+    "hotwords": false,
+    "legacy_fallback": false
+  }
+}

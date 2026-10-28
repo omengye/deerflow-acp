@@ -1,0 +1,97 @@
+{
+  "status": "passed",
+  "stages": [
+    {
+      "stage": "source_tts_generated",
+      "elapsed_ms": 1371,
+      "audio_bytes": 148320
+    },
+    {
+      "stage": "source_pcm_ready",
+      "elapsed_ms": 1432,
+      "pcm_bytes": 237312,
+      "sample_rate": 16000
+    },
+    {
+      "stage": "mqtt_device_logged_in",
+      "elapsed_ms": 1437
+    },
+    {
+      "stage": "udp_recording_uploaded",
+      "elapsed_ms": 8985,
+      "audio_packets": 186,
+      "pcm_bytes": 237312
+    },
+    {
+      "stage": "http_audio_downloaded",
+      "elapsed_ms": 29998,
+      "order": 1,
+      "audio_bytes": 93600,
+      "since_upload_ms": 21013
+    },
+    {
+      "stage": "http_audio_downloaded",
+      "elapsed_ms": 30550,
+      "order": 2,
+      "audio_bytes": 91680,
+      "since_upload_ms": 21565
+    },
+    {
+      "stage": "http_audio_downloaded",
+      "elapsed_ms": 34425,
+      "order": 3,
+      "audio_bytes": 96872,
+      "since_upload_ms": 25440
+    },
+    {
+      "stage": "mqtt_audio_completion",
+      "elapsed_ms": 34425,
+      "segments": 3
+    },
+    {
+      "stage": "asr_ws_llm_tts_chain_completed",
+      "elapsed_ms": 34728,
+      "conversation_state": "completed"
+    }
+  ],
+  "test_device": "MUSICVOICE66EB6BD44F6E1D10",
+  "recording_id": 33368,
+  "simulated_device": true,
+  "physical_toy_playback_claimed": false,
+  "cleanup": {
+    "mqtt_disconnected": true,
+    "source_tts_file_removed": true,
+    "actors_recorded": 1,
+    "actors_released": 1,
+    "durable_synthetic_identity_removed": true,
+    "transient_device_note": "Server has no logout handler; test login remains in RAM until service restart."
+  },
+  "music_queue_verified": true,
+  "terminal_count": 1,
+  "music_orders": [
+    3
+  ],
+  "speech_segments": 2,
+  "music_filename": "music-1ce4ccde5c5647c89c1d5c4c352dc694.mp3",
+  "download_user_agent": "Python-urllib (not ESP32)",
+  "native_tool_receipts_audited": false,
+  "conversation_state": "completed",
+  "native_cursor": {
+    "provider": "deerFlow",
+    "sessionId": "KX7FACIURA63FIE7FXTX7CS3XX"
+  },
+  "voice_request_id": "e6908868a8b9411ab41ce82086757bdc",
+  "waku_session_id": "cd660180-a5ac-4c3d-9b0d-7bcac84cc8d7",
+  "music_job": {
+    "id": "1ce4ccde5c5647c89c1d5c4c352dc694",
+    "state": "published",
+    "device_key": "MUSICVOICE66EB6BD44F6E1D10",
+    "request_id": "e6908868a8b9411ab41ce82086757bdc",
+    "audio_requested": true,
+    "device_audio_requested": false,
+    "delivery_confirmed": false
+  },
+  "audio_segments": 3,
+  "downloaded_audio_bytes": 282152,
+  "elapsed_ms": 34838
+}

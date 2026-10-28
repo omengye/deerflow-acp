@@ -1,0 +1,7 @@
+{
+  "backup": "/home/gen/deerflow-deploy/skill-learning-recovery-20261028/backup",
+  "business_data_restored": false,
+  "image_id": "sha256:535bfcc89aebc94561e4d8a31fd6624f00c4aaddc10394a49df875f7ac6198ce",
+  "passed": true,
+  "phase": "deployed"
+}

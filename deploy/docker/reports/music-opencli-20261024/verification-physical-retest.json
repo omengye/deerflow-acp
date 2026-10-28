@@ -1,0 +1,11 @@
+{
+  "status": "device_fetched_audio",
+  "job_id": "9dc6f3c88dfc4e409011ab42680fac1c",
+  "state": "published",
+  "audio_requested": true,
+  "device_audio_requested": true,
+  "speaker_playback_confirmed": false,
+  "error": null,
+  "device_suffix": "***3b78",
+  "idempotency_key": "physical-retest-20261024-cf70bb4f8d274c39"
+}

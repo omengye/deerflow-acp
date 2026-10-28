@@ -1,0 +1,36 @@
+{
+  "date": "2026-10-24",
+  "host": "192.168.1.190",
+  "credential_value_in_report": false,
+  "private_config": "/home/gen/deerflow-deploy/data/user-data/config/config.yaml",
+  "private_config_mode": "0600",
+  "backup": "/home/gen/deerflow-deploy/data/backups/brave-20261024T092833Z/config.yaml.before",
+  "only_persisted_configuration_change": "tools.web_search.api_key",
+  "brave_api": {"http_status": 200, "result_count": 3},
+  "folotoy_ws_test": {
+    "role": "1",
+    "transport": "ws",
+    "mode": "fullAccess",
+    "approval": "allow_always",
+    "native_session": "OMZFPV5NMX4F2ARFBZY75O3LVO",
+    "web_search_status": "completed",
+    "result_count": 5,
+    "temporary_actor_released": true
+  },
+  "natural_weather_test": {
+    "web_search_status": "completed",
+    "result_count": 5,
+    "weather_accuracy_passed": false,
+    "reason": "No trusted current date in the production prompt; model searched 2026-04-16 and reused an old forecast. No product prompt change was made."
+  },
+  "remaining_weather_limitations": [
+    "CMA page still returns a human-verification challenge.",
+    "web_fetch defaults to 4096 characters; navigation can consume the output before forecast data.",
+    "Production voice prompts still lack a trusted current date and timezone."
+  ],
+  "runtime_note": {
+    "original_data_dir_restored": "/var/lib/deerflow/user-data/config/go-harness-state",
+    "database_migration_performed": false,
+    "preexisting_launch_directory_inconsistency": "Waku managed starts use user-data/data/go-harness. The original native runtime was restored explicitly after the container restart; a later restart or apply can choose the other directory. Persistent directory alignment remains outside this credential change."
+  }
+}

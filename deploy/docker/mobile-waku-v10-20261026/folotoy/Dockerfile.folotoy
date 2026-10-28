@@ -1,0 +1,5 @@
+ARG BASE_IMAGE=folotoy-deerflow-ws:device-sessions-v2-20261025
+FROM ${BASE_IMAGE}
+
+# Inherit the existing user, entrypoint, dependencies and device-session fixes.
+COPY --chown=1000:1000 sdk/deerflow_ws_client.py /opt/folotoy/sdk/deerflow_ws_client.py

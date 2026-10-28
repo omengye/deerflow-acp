@@ -1,0 +1,30 @@
+{
+  "model": "ASR2.0-hourly",
+  "recognition_performed": false,
+  "attempts": [
+    {
+      "endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+      "resource_id": "volc.seedasr.sauc.duration",
+      "http_status": 403,
+      "log_id": "202610251056536FF6130F35B6EC265122",
+      "request_id": "72108f06-5c1b-4966-8325-9f36b6927a9d",
+      "provider_error": "[resource_id=volc.seedasr.sauc.duration] requested resource not granted"
+    },
+    {
+      "endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream",
+      "resource_id": "volc.seedasr.sauc.duration",
+      "http_status": 403,
+      "log_id": "20261025105653D0C17D6FD738672CF4B1",
+      "request_id": "1cebe04b-00f7-4c87-a91c-7e02a56d4681",
+      "provider_error": "[resource_id=volc.seedasr.sauc.duration] requested resource not granted"
+    },
+    {
+      "endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
+      "resource_id": "volc.seedasr.sauc.duration",
+      "http_status": 400,
+      "log_id": "2026102510565356DBFE4E9CAB61FE58C7",
+      "request_id": "f9be3f0d-2e32-4e1f-a3c8-978ecdf02e23",
+      "provider_error": "resourceId volc.seedasr.sauc.duration is not allowed"
+    }
+  ]
+}

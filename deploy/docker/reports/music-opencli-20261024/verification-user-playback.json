@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "job_id": "9dc6f3c88dfc4e409011ab42680fac1c",
+  "device_audio_requested": true,
+  "speaker_playback_confirmed_by_user": true,
+  "evidence": "User answered: 听到了音乐",
+  "recorded_at": "2026-10-24T11:52:46.445050+00:00",
+  "duration_seconds": 8,
+  "replay_count_after_user_powered_on": 1
+}

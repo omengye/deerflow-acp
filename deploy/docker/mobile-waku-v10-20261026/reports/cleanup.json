@@ -1,0 +1,45 @@
+{
+  "updatedAt": "2026-10-26T17:33:54.825873+08:00",
+  "removedTemporaryPaths": [
+    "source",
+    "source.tar.gz",
+    "build.py",
+    "build.pid",
+    "build.log",
+    "build-attempt1.log",
+    "startup-build.log",
+    "folotoy",
+    "__pycache__",
+    "test_entrypoint.py",
+    "test_verify_wss.py",
+    "test_rollout.py",
+    "startup-rollout.py",
+    "build-attempt1-status.json",
+    "build-status.json",
+    "isolated-smoke.json"
+  ],
+  "removedDedicatedCaches": [
+    {
+      "id": "lceyigfflwe8jvf8d1yqz2vho",
+      "size": "310MB",
+      "mount": "/deerflow-mobile-v10-healthcheck-target"
+    },
+    {
+      "id": "m9jiy0rbace0xymxnyocx6bw3",
+      "size": "1.922GB",
+      "mount": "/deerflow-mobile-v10-daemon-target"
+    }
+  ],
+  "sharedRegistryCachePreserved": true,
+  "intermediateImageRemoved": "deerflow-server:mobile-waku-v10-prestart-20261026",
+  "scratchContainersRemaining": false,
+  "productionHealthy": true,
+  "rollbackImagesPreserved": true,
+  "backupPreserved": "/home/gen/deerflow-deploy/mobile-waku-v10-20261026/backup",
+  "localTemporaryPathsRemoved": [
+    "D:\\Tools\\deerflow-api\\.tmp\\mobile-waku-v10-20261026",
+    "D:\\Tools\\deerflow-api\\deploy\\docker\\mobile-waku-v10-20261026\\__pycache__",
+    "D:\\Tools\\deerflow-api\\deploy\\docker\\mobile-waku-v10-20261026\\folotoy\\sdk\\__pycache__",
+    "D:\\Tools\\deerflow-api\\deploy\\docker\\mobile-waku-v10-20261026\\folotoy\\tests\\__pycache__"
+  ]
+}

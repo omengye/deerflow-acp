@@ -1,0 +1,43 @@
+{
+  "status": "completed",
+  "deleted_duplicate_test_reports": [
+    {
+      "path": "/home/gen/Documents/folotoy/deerflow-ws/src/data/asr2-role1-b8f33762da9e4942b3d9205747440a59.json",
+      "bytes": 3507
+    },
+    {
+      "path": "/home/gen/Documents/folotoy/deerflow-ws/src/data/asr2-role2-b8f33762da9e4942b3d9205747440a59.json",
+      "bytes": 2005
+    },
+    {
+      "path": "/home/gen/Documents/folotoy/deerflow-ws/src/data/asr2-role3-b8f33762da9e4942b3d9205747440a59.json",
+      "bytes": 2005
+    },
+    {
+      "path": "/home/gen/Documents/folotoy/deerflow-ws/src/data/asr2-role4-b8f33762da9e4942b3d9205747440a59.json",
+      "bytes": 2005
+    },
+    {
+      "path": "/home/gen/Documents/folotoy/deerflow-ws/src/data/asr2-role5-b8f33762da9e4942b3d9205747440a59.json",
+      "bytes": 2005
+    },
+    {
+      "path": "/home/gen/Documents/folotoy/deerflow-ws/src/data/asr2-role6-b8f33762da9e4942b3d9205747440a59.json",
+      "bytes": 2005
+    },
+    {
+      "path": "/home/gen/Documents/folotoy/deerflow-ws/src/data/asr2-role7-b8f33762da9e4942b3d9205747440a59.json",
+      "bytes": 2005
+    }
+  ],
+  "bytes_freed": 15537,
+  "build_context_directories_remaining": 0,
+  "retained": [
+    "canonical acceptance reports",
+    "deployment payload and rollback scripts",
+    "old and new running images",
+    "original file backups",
+    "private ASR2 environment",
+    "downloaded music and ordinary audio"
+  ]
+}

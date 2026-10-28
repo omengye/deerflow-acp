@@ -1,0 +1,63 @@
+{
+  "project": "D:\\Tools\\folo_server_src\\src\\folotoy-decompiled",
+  "files": [
+    {
+      "path": "src/config.py",
+      "before_sha256": "4a9d6938129861538a499dd5a74244927d5bec861f0f77c56d3c1f7b139dfbf9",
+      "after_sha256": "399ebe64c2d390dd24a5e4693759665e775e18d42e02024fff27ed8804bf8544"
+    },
+    {
+      "path": "src/util/config_util.py",
+      "before_sha256": "98396a9ebf4fb8745a9a33e5becd877ce1fff148f8df6df2e782f70947be5b37",
+      "after_sha256": "985f684c656f0e5243a53d90f43d92cd3dcb055bd21cd59fee6c47ab5e2f5c0a"
+    },
+    {
+      "path": "src/sdk/stt.py",
+      "before_sha256": "a27b80cb680c1a85eca7a5c27726be8bdd018dcfd71f01d7b5e50ebb72536859",
+      "after_sha256": "3d14f7b3e8f06be5eb4ee5b58029d9fcdd9f00136a3a16a93e11a778ce86d0bb"
+    },
+    {
+      "path": "src/sdk/stt_sdk/volcengine_asr2.py",
+      "before_sha256": null,
+      "after_sha256": "b77453075b9198c94220c5c7899ad01e80dc80a1e16e73ff56ad61ae4a4dc8e0"
+    }
+  ],
+  "environment": {
+    "VOLCENGINE_ASR2_API_KEY": "private secret; not included",
+    "VOLCENGINE_ASR2_RESOURCE_ID": "volc.seedasr.sauc.duration",
+    "VOLCENGINE_ASR2_TIMEOUT": 45
+  },
+  "provider_name": "volcengine-asr2",
+  "hotwords": false,
+  "context": false,
+  "automatic_legacy_fallback": false,
+  "test_files": [
+    {
+      "path": "verify/test_asr2_integration.py",
+      "before_sha256": null,
+      "after_sha256": "67453b17cb4652341ff0520790b779eebbf06d87484b617accd6e759f0803e99"
+    }
+  ],
+  "validation": {
+    "asr2_integration_tests": {
+      "tests": 9,
+      "passed": 9,
+      "failed": 0,
+      "network_calls": false,
+      "python": "3.12.14"
+    },
+    "existing_deerflow_config_ws_regressions": {
+      "tests": 20,
+      "passed": 20,
+      "failed": 0,
+      "excluded": "unchanged role example JSON presence test",
+      "network_calls": false
+    },
+    "original_candidate_protocol_tests": {
+      "tests": 17,
+      "passed": 17,
+      "note": "previous candidate tests and live final recognition passed; protocol functions retained unchanged"
+    },
+    "protocol_functions_unchanged": true
+  }
+}

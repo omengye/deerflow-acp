@@ -1,0 +1,148 @@
+{
+  "case": "music_download_qq",
+  "passed": true,
+  "conversation_reused": false,
+  "conversation": {
+    "case": "music_download_qq",
+    "status": "conversation_completed",
+    "transport": "ws",
+    "mode": "fullAccess",
+    "approval": "allow_always",
+    "turn_timeout_seconds": 240,
+    "tool_receipts_verified": false,
+    "requires_native_tool_audit": true,
+    "voice_turn_context_injected": false,
+    "waku_session_id": "836fc92f-93c4-4f2b-b3c5-7ee3ae8021dd",
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "66CI6VHPJRHLA6NBGBUYOGHZII"
+    },
+    "native_session_id": "66CI6VHPJRHLA6NBGBUYOGHZII",
+    "waku_runtime_id": "2b5af870-1b05-4439-87f7-fe38a5534180",
+    "confirmed_approval": "allow_always",
+    "server_model": "gpt-6-luna",
+    "completed": true,
+    "stop_reason": "end_turn",
+    "reply": "已下载指定 MID **000BEsDj0UUhf8**，未播放。默认音质成功返回的文件为：`QQ音乐 - 000BEsDj0UUhf8 - dba227e9.m4a`（共享音乐目录相对路径），大小 **725,721 字节**；SHA-256：`b3f91758d47ce9dca18c3d5fb82b9f811e0e7d85a0791c71d8ce8efe7385e2b3`。返回检测到有效音频文件头。",
+    "reply_truncated": false,
+    "cleanup": {
+      "actors_recorded": 1,
+      "actors_released": 1,
+      "passed": true
+    },
+    "actual_tool_activities": [
+      {
+        "name": "skill",
+        "arguments": {
+          "skill": "qq-music"
+        },
+        "complete": true,
+        "failed": false
+      },
+      {
+        "name": "skill_run",
+        "arguments": {
+          "name": "qq-music",
+          "action": "run",
+          "path": "scripts/qq_music_api.py",
+          "args": [
+            "download",
+            "--mid",
+            "000BEsDj0UUhf8"
+          ]
+        },
+        "complete": true,
+        "failed": false
+      }
+    ],
+    "elapsed_ms": 20592
+  },
+  "native_tool_audit": {
+    "native_session": "66CI6VHPJRHLA6NBGBUYOGHZII",
+    "database": "/var/lib/deerflow/user-data/config/go-harness-state/harness.db",
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "run": {
+      "id": "EUAWRFWKQPY2VF2W75PTZZKYEI",
+      "status": "completed",
+      "stop_reason": "end_turn"
+    },
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "arguments": {
+          "skill": "qq-music"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill",
+        "status": "completed",
+        "failure_code": null
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "arguments": {
+          "name": "qq-music",
+          "action": "run",
+          "path": "scripts/qq_music_api.py",
+          "args": [
+            "download",
+            "--mid",
+            "000BEsDj0UUhf8"
+          ]
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "status": "completed",
+        "failure_code": null,
+        "skill": "qq-music",
+        "version": "be50dbe1862b7bb2583d889cbe23c44763d505dab97f29824cf9a0ae8373237b",
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "file_check": {
+          "path": "/workspaces/folotoy/music/QQ音乐 - 000BEsDj0UUhf8 - dba227e9.m4a",
+          "relative_path": "QQ音乐 - 000BEsDj0UUhf8 - dba227e9.m4a",
+          "bytes": 725721,
+          "sha256": "b3f91758d47ce9dca18c3d5fb82b9f811e0e7d85a0791c71d8ce8efe7385e2b3",
+          "passed": true
+        }
+      }
+    ],
+    "verified_results": [
+      {
+        "kind": "music_download",
+        "provider": "qq-music",
+        "file": {
+          "path": "/workspaces/folotoy/music/QQ音乐 - 000BEsDj0UUhf8 - dba227e9.m4a",
+          "relative_path": "QQ音乐 - 000BEsDj0UUhf8 - dba227e9.m4a",
+          "bytes": 725721,
+          "sha256": "b3f91758d47ce9dca18c3d5fb82b9f811e0e7d85a0791c71d8ce8efe7385e2b3",
+          "passed": true
+        }
+      }
+    ],
+    "unexpected_tools": [],
+    "play_submissions": 0,
+    "passed": true
+  },
+  "media_probe": {
+    "passed": true,
+    "audio_streams": [
+      {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "sample_rate": "44100",
+        "channels": 2
+      }
+    ],
+    "duration_seconds": 119.1648
+  }
+}

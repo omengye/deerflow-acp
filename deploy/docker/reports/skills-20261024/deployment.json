@@ -1,0 +1,22 @@
+{
+  "status": "deployed",
+  "at": "2026-10-24T07:38:40.835585+00:00",
+  "image": "sha256:67c41f4a58abc924b321712c07cd88f188d2109fffbad0ded09500d3f1ad0b85",
+  "image_tag": "deerflow-server:skills-20261024",
+  "skills": 25,
+  "enabled": 24,
+  "disabled": [
+    "instabox-exec-windows"
+  ],
+  "host_skills": "/home/gen/deerflow-deploy/skills",
+  "container_skills": "/var/lib/deerflow/user-data/skills",
+  "go_rust_binaries_unchanged": true,
+  "private_rag_config": "configured outside skill package",
+  "backup": "/home/gen/deerflow-deploy/skill-migration-20261024/backup",
+  "rag_health_reachable": true,
+  "node_syntax_checks": "passed",
+  "private_config_mode": "0600",
+  "desktop_ws": "authenticated",
+  "skill_ws_execution": "passed",
+  "folotoy_voice_after_reconnect": "passed"
+}

@@ -1,0 +1,24 @@
+{
+  "input_file": "recording-0d59e67a02b84d7387f401504e73ff7b.wav",
+  "input_sha256": "e03df93240148fabcae10d2aabeec00b4645c283f167481b86045dfe4954182e",
+  "fallback_used": false,
+  "hotwords_enabled": false,
+  "production_code_modified": false,
+  "input_rate": 32000,
+  "input_frames": 131072,
+  "input_duration_seconds": 4.096,
+  "normalized_pcm_bytes": 131072,
+  "normalized_rate": 16000,
+  "normalized_duration_seconds": 4.096,
+  "asr_result": {
+    "text": "我查一下北京明天的天气。",
+    "elapsed_ms": 4744,
+    "request_id": "e90da93e-4b66-4769-a3c3-22b7582ce370",
+    "resource_id": "volc.seedasr.sauc.duration",
+    "final": true,
+    "provider": "volcengine-asr2"
+  },
+  "passed": true,
+  "elapsed_ms": 4801,
+  "candidate_sha256": "0a05c170fcc7da7f1593b844ee9e23a1864c588b4e1c961a2e8817212861819d"
+}

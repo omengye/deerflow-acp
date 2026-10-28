@@ -1,0 +1,121 @@
+{
+  "case": "cloud_sandbox",
+  "passed": true,
+  "conversation": {
+    "case": "cloud_sandbox",
+    "status": "conversation_completed",
+    "role": "1",
+    "transport": "ws",
+    "turn_timeout_seconds": 120,
+    "tool_receipts_verified": false,
+    "requires_native_tool_audit": true,
+    "waku_session_id": "3e06826a-1310-4e6a-a6e5-a368f9062f8d",
+    "reply": "沙箱状态检查完成，未修改策略。命令成功（退出码 0）；检测到沙箱版本 0.0.80、Node.js v22.23.3、bubblewrap 0.9.0 和 socat。你还想了解这些组件分别是做什么的吗？",
+    "reply_truncated": false,
+    "completed": true,
+    "stop_reason": "end_turn",
+    "mode": "fullAccess",
+    "approval": "allow_always",
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "AC6TL2TPN4WCEEWXVK6BR7QFBP"
+    },
+    "waku_runtime_id": "ef41a4b9-85de-4f00-8d82-3d59bcc09f97",
+    "server_model": "gpt-6-luna",
+    "confirmed_approval": "allow_always",
+    "cleanup": {
+      "actors_recorded": 1,
+      "actors_released": 1,
+      "passed": true
+    },
+    "elapsed_ms": 22716
+  },
+  "native_tool_audit": {
+    "native_session": "AC6TL2TPN4WCEEWXVK6BR7QFBP",
+    "database": "/var/lib/deerflow/user-data/config/go-harness-state/harness.db",
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "arguments": {
+          "skill": "huaweicloud-sandbox"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill",
+        "status": "completed",
+        "failure_code": null
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "arguments": {
+          "name": "huaweicloud-sandbox",
+          "action": "check"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "status": "completed",
+        "failure_code": null,
+        "skill": "huaweicloud-sandbox",
+        "version": "72ebc6dcdf788cb487596bbf2612147c88a6a74951c8f747c1ba2529da80bd49",
+        "ready": true,
+        "exit_code": null,
+        "termination_confirmed": null
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "arguments": {
+          "name": "huaweicloud-sandbox",
+          "action": "run",
+          "path": "scripts/huaweicloud_sandbox.py",
+          "args": [
+            "--key",
+            "/var/lib/deerflow/user-data/private/skills/huaweicloud/huaweicloud_ed25519",
+            "--known-hosts",
+            "/var/lib/deerflow/user-data/private/skills/huaweicloud/known_hosts",
+            "status"
+          ]
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "status": "completed",
+        "failure_code": null,
+        "skill": "huaweicloud-sandbox",
+        "version": "72ebc6dcdf788cb487596bbf2612147c88a6a74951c8f747c1ba2529da80bd49",
+        "ready": true,
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "stdout": "0.0.80\nv22.23.3\nbubblewrap 0.9.0\n/usr/bin/socat\n"
+      }
+    ],
+    "verified_results": [
+      {
+        "kind": "strict_ssh_status",
+        "skill": "huaweicloud-sandbox",
+        "exit_code": 0,
+        "stdout": "0.0.80\nv22.23.3\nbubblewrap 0.9.0\n/usr/bin/socat\n"
+      }
+    ],
+    "unexpected_tools": [],
+    "run": {
+      "id": "ML7PYKAQSKYD2ZNDNWTR4MWYZ2",
+      "status": "completed",
+      "stop_reason": "end_turn"
+    },
+    "expected_tomorrow": "2026-10-25",
+    "trusted_clock_context_present": true,
+    "passed": true
+  }
+}

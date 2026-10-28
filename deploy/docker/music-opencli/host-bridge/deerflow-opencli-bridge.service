@@ -1,0 +1,20 @@
+[Unit]
+Description=DeerFlow bridge to the existing host OpenCLI browser session
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/gen
+Environment=HOME=/home/gen
+Environment=PATH=/home/gen/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /home/gen/deerflow-deploy/host-tools/host_opencli_bridge.py --config /home/gen/deerflow-deploy/private/opencli-bridge.json
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

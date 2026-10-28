@@ -1,0 +1,11 @@
+................................DeerFlow pipeline failed for device device request 4f3929083de34e1a89c66381cbe4249e (ValueError)
+Failure voice failed for device device (RuntimeError)
+.....DeerFlow provider failed for device device request bdb1b4a8993d467f9cf0785a72994a53 (DeerFlowError)
+.DeerFlow provider failed for device device request 7c107ff74665424f9b7ba883b19a3e66 (DeerFlowError)
+........Ignoring invalid DeerFlow audio frame
+Ignoring invalid DeerFlow audio frame
+.....
+----------------------------------------------------------------------
+Ran 51 tests in 8.146s
+
+OK

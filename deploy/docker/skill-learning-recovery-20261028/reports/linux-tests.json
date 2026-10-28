@@ -1,0 +1,93 @@
+{
+  "passed": true,
+  "image_id": "sha256:535bfcc89aebc94561e4d8a31fd6624f00c4aaddc10394a49df875f7ac6198ce",
+  "build_id": "skill-learning-recovery-20261028",
+  "binaries": {
+    "deerflow-acpd.real": "d81f51b23eb5ac814d765ed4c66abadb0c85f884f0f24f27db033d08ea0aa51b",
+    "deerflow-config-go": "58e2bf2307f5797a0273fbe71630ffdd24d56d185885f2eef11621770268071e",
+    "deerflow-control-go": "8647c7c47721ed87c2da13a3c0e030a475b05e71edf64eb87b97c4f475f1589f",
+    "deerflow-skill-go": "9fa11c70a6365a02ea0fb3e925839c4760bb59fe075181e887aff54cc166fc61"
+  },
+  "results": [
+    {
+      "name": "01-root.test",
+      "exit_code": 0,
+      "passed_cases": 13,
+      "failed_cases": 0,
+      "seconds": 75.02,
+      "filter": "^TestSkillLearningNative(PipelineAutomaticReviewAndPublication|FollowupResolutionAutomaticReviewAndPublication|AutomaticPipelineSurvivesHistoricalUnfinishedTasks)$",
+      "log": "/home/gen/deerflow-deploy/skill-learning-recovery-20261028/linux-test-logs/01-root.test.log",
+      "passed": true
+    },
+    {
+      "name": "02-root.test",
+      "exit_code": 0,
+      "passed_cases": 19,
+      "failed_cases": 0,
+      "seconds": 1.88,
+      "filter": "^Test(ManagementLearningDiagnosticsAndRetryStrictScope|SkillLearningAutoPatchSDKIndependentStartupGrantAndManagementStatus|SkillCatalogAuthenticatedManagement|SkillCatalogManagementRejectsIncompleteAndUnknownFields|PersonalMemoryManagementDurableReceiptAndProfileGuard|PersonalMemoryBackgroundQueueSurvivesClientRestart)$",
+      "log": "/home/gen/deerflow-deploy/skill-learning-recovery-20261028/linux-test-logs/02-root.test.log",
+      "passed": true
+    },
+    {
+      "name": "03-learning.test",
+      "exit_code": 0,
+      "passed_cases": 120,
+      "failed_cases": 0,
+      "seconds": 0.35,
+      "filter": ".",
+      "log": "/home/gen/deerflow-deploy/skill-learning-recovery-20261028/linux-test-logs/03-learning.test.log",
+      "passed": true
+    },
+    {
+      "name": "04-skillmaintenance.test",
+      "exit_code": 0,
+      "passed_cases": 36,
+      "failed_cases": 0,
+      "seconds": 38.52,
+      "filter": ".",
+      "log": "/home/gen/deerflow-deploy/skill-learning-recovery-20261028/linux-test-logs/04-skillmaintenance.test.log",
+      "passed": true
+    },
+    {
+      "name": "05-runtime.test",
+      "exit_code": 0,
+      "passed_cases": 37,
+      "failed_cases": 0,
+      "seconds": 36.82,
+      "filter": "^TestSkillLearning(Queue.*|QueuedJob.*|Diagnostics.*|ExtractionRetry.*|ExtractionDebounceRestartAndRedaction|ExtractionUnsafeAndUnsettledDoNotCall|ExtractionRevocationRejectsLateAndForgedOutput|CaptureDefaultOffConsentAndEpisode)$",
+      "log": "/home/gen/deerflow-deploy/skill-learning-recovery-20261028/linux-test-logs/05-runtime.test.log",
+      "passed": true
+    },
+    {
+      "name": "06-desktopconfig.test",
+      "exit_code": 0,
+      "passed_cases": 226,
+      "failed_cases": 0,
+      "seconds": 122.81,
+      "filter": ".",
+      "log": "/home/gen/deerflow-deploy/skill-learning-recovery-20261028/linux-test-logs/06-desktopconfig.test.log",
+      "passed": true
+    },
+    {
+      "name": "07-agent.test",
+      "exit_code": 0,
+      "passed_cases": 4,
+      "failed_cases": 0,
+      "seconds": 0.32,
+      "filter": "^Test(ACPModelResponseFailureRetainsPartialOutputAndSafeState|ModelResponseErrorsArePublicWithoutProviderDetails|ModelVisionFailure.*)$",
+      "log": "/home/gen/deerflow-deploy/skill-learning-recovery-20261028/linux-test-logs/07-agent.test.log",
+      "passed": true
+    },
+    {
+      "name": "08-eino.test",
+      "exit_code": 0,
+      "passed_cases": 8,
+      "failed_cases": 0,
+      "seconds": 0.34,
+      "filter": "^Test(ProviderModelResponseClassificationPreservesCause|ProviderMalformedStreamStopsWithoutReplay|MediaHydrationRejectsUnauthorizedAndUnnormalizedInputs)$",
+      "log": "/home/gen/deerflow-deploy/skill-learning-recovery-20261028/linux-test-logs/08-eino.test.log",
+      "passed": true
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=folotoy-deerflow-ws:asr2-20261025
+FROM ${BASE_IMAGE}
+ARG RUNTIME_USER=1000:1000
+COPY --chown=1000:1000 folotoy-source/src/sdk/stt_sdk/volcengine_asr2.py /opt/folotoy/sdk/stt_sdk/volcengine_asr2.py
+USER root
+RUN rm -f /opt/folotoy/sdk/stt_sdk/volcengine_asr2.cpython-*.so
+USER ${RUNTIME_USER}

@@ -1,0 +1,60 @@
+{
+  "status": "passed",
+  "stages": [
+    {
+      "stage": "source_tts_generated",
+      "elapsed_ms": 1345,
+      "audio_bytes": 55680
+    },
+    {
+      "stage": "source_pcm_ready",
+      "elapsed_ms": 1414,
+      "pcm_bytes": 89088,
+      "sample_rate": 16000
+    },
+    {
+      "stage": "mqtt_device_logged_in",
+      "elapsed_ms": 1420
+    },
+    {
+      "stage": "udp_recording_uploaded",
+      "elapsed_ms": 4315,
+      "audio_packets": 70,
+      "pcm_bytes": 89088
+    },
+    {
+      "stage": "http_audio_downloaded",
+      "elapsed_ms": 8542,
+      "order": 1,
+      "audio_bytes": 39840,
+      "since_upload_ms": 4227
+    },
+    {
+      "stage": "http_audio_downloaded",
+      "elapsed_ms": 9067,
+      "order": 2,
+      "audio_bytes": 61920,
+      "since_upload_ms": 4752
+    },
+    {
+      "stage": "mqtt_audio_completion",
+      "elapsed_ms": 15896,
+      "segments": 2
+    },
+    {
+      "stage": "asr_ws_llm_tts_chain_completed",
+      "elapsed_ms": 15897,
+      "conversation_state": "completed"
+    }
+  ],
+  "test_device": "WSLIVE800EC4E9CD839597",
+  "cleanup": {
+    "logout_published": true,
+    "mqtt_disconnected": true,
+    "source_tts_file_removed": true
+  },
+  "conversation_state": "completed",
+  "audio_segments": 2,
+  "downloaded_audio_bytes": 101760,
+  "elapsed_ms": 15898
+}

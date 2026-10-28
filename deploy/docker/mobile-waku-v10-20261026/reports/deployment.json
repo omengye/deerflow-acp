@@ -1,0 +1,76 @@
+{
+  "status": "deployed",
+  "backup": "/home/gen/deerflow-deploy/mobile-waku-v10-20261026/backup",
+  "previousContainers": {
+    "deerflow-deploy-deerflow-1": {
+      "id": "c6b3a4e60faeb633fd834548d075ffab3fa86c9666932d4e177bdccb4e335cb8",
+      "image": "deerflow-server:music-opencli-20261024",
+      "imageId": "sha256:ef1bbe1a75d4072845e583631e45c8d39d5adcadc4a42ac61cf7b7c3eea4bd32",
+      "startedAt": "2026-10-25T05:05:19.032629374Z"
+    },
+    "folotoy-ws-folotoy-1": {
+      "id": "e718f1c475ced9f212d893d2ec880d1b012c6899a852377640598ede5a77e410",
+      "image": "folotoy-deerflow-ws:device-sessions-v2-20261025",
+      "imageId": "sha256:80163922f89ab836c45419ebcd8cf78b8c377608690cb425979f3de45b08e042",
+      "startedAt": "2026-10-25T05:43:30.721290175Z"
+    }
+  },
+  "targetImageIds": {
+    "deerflow-deploy-deerflow-1": "sha256:ec7ab72b5bc8cfe2964f5c2f208db0921eadb5ca4ad04c1f0a995378049b2abf",
+    "folotoy-ws-folotoy-1": "sha256:d62df21b7ca56bd217edf20053b220e431d9ad96c8ac4b8def911db9213258bf"
+  },
+  "appliedConfigHashes": {
+    "/home/gen/deerflow-deploy/.env": "cbc066ddfe3f17785a85bd5cb6b5c2365ed97a23c171cd12aae811aa5c6f9eb2",
+    "/home/gen/deerflow-deploy/compose.yaml": "0b0505144a5b2d0b561c60f1bd8adacc2474f0c3f07536909b4e9bf0770b4827",
+    "/home/gen/Documents/folotoy/deerflow-ws/src/compose.ws.yaml": "ca0141e6ec3f7797473cbae6acb9505b4ff904c80597957fa043a4ff01b838d5",
+    "/home/gen/Documents/folotoy/deerflow-ws/src/sdk/deerflow_ws_client.py": "f2f95f58d7a2a89f208052cdac8b51977d0f00c00f4a5300149d1787bab8fe2d"
+  },
+  "updatedAt": "2026-10-26T09:28:37.677324+00:00",
+  "dataRestorePolicy": "Manual review required; rollout and rollback never restore business data automatically.",
+  "archives": [
+    {
+      "path": "/home/gen/deerflow-deploy/mobile-waku-v10-20261026/backup/data.tar.gz",
+      "bytes": 35417093,
+      "sha256": "148b54c81922a7a4d5e9a5d03fa3eab0370b0e2221e55b3304f2b58faa4ce9a5"
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/mobile-waku-v10-20261026/backup/folotoy-data.tar.gz",
+      "bytes": 17607,
+      "sha256": "d35276850dfb3a9c1f5875703f6eeadaeaf5eadb7b5a6f89e61594fcefa0182c"
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/mobile-waku-v10-20261026/backup/skills.tar.gz",
+      "bytes": 198309,
+      "sha256": "a7b851c3874507e9ff390119d715d8adeae316103deb826e6d5f845169683d84"
+    }
+  ],
+  "waku": {
+    "protocol": 10,
+    "settings": true,
+    "taskState": true,
+    "sessionCount": 1
+  },
+  "containers": {
+    "deerflow-deploy-deerflow-1": {
+      "id": "757689b7641b7a4ab760172cb6fb9183f52e501c0078f926a88fee627e167729",
+      "image": "deerflow-server:mobile-waku-v10-20261026",
+      "imageId": "sha256:ec7ab72b5bc8cfe2964f5c2f208db0921eadb5ca4ad04c1f0a995378049b2abf",
+      "status": "running",
+      "health": "healthy",
+      "startedAt": "2026-10-26T09:28:25.932300531Z"
+    },
+    "folotoy-ws-folotoy-1": {
+      "id": "231d433daeb98bc2964ce76df92f75d9e19330ca6df8fa08d217861a69625456",
+      "image": "folotoy-deerflow-ws:mobile-waku-v10-20261026",
+      "imageId": "sha256:d62df21b7ca56bd217edf20053b220e431d9ad96c8ac4b8def911db9213258bf",
+      "status": "running",
+      "health": "healthy",
+      "startedAt": "2026-10-26T09:28:32.017459972Z"
+    }
+  },
+  "startupFix": {
+    "nativeReadyWithoutChat": true,
+    "proposalListWithoutChat": true,
+    "entrypointSha256": "808bb57ab2bfa6a9007b2dd98e0c119c94fe504cb882bd077da6a14bf836e428"
+  }
+}

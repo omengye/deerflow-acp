@@ -1,0 +1,86 @@
+{
+  "format_version": 1,
+  "fix_id": "4da4859759624ee09141618634a0850a",
+  "status": "deployed_and_verified",
+  "backup": "/home/gen/deerflow-deploy/asr2-audiofix-20261025/backup-20261025T042911Z-4da48597",
+  "folotoy_root": "/home/gen/Documents/folotoy/deerflow-ws/src",
+  "rollout_report": "/home/gen/deerflow-deploy/asr2-rollout-20261025/deployment.json",
+  "payload_root": "/home/gen/deerflow-deploy/asr2-audiofix-20261025/payload-1792902551026839952",
+  "previous_container": {
+    "image": "folotoy-deerflow-ws:asr2-20261025",
+    "image_id": "sha256:7709540ad8f915a8d4e6dc37c1892d78ae3921e875d3dea4277e7c59b25d4b8f",
+    "runtime_user": "1000:1000",
+    "container_id": "ea754d0f617dd231f5ae2dca09f4822c8cb2e29d3edfa99fd471fa29b29eb052",
+    "started_at": "2026-10-25T03:25:35.509824379Z",
+    "status": "running",
+    "health": "healthy"
+  },
+  "new_image": "folotoy-deerflow-ws:asr2-audiofix-20261025",
+  "credentials_changed": false,
+  "roles_changed": false,
+  "hotwords_enabled": false,
+  "full_v2_rollback": "python3 /home/gen/deerflow-deploy/asr2-rollout-20261025/payload-1792898580653760384/rollback.py --deployment-report /home/gen/deerflow-deploy/asr2-rollout-20261025/deployment.json",
+  "manual_rollback": "python3 /home/gen/deerflow-deploy/asr2-audiofix-20261025/payload-1792902551026839952/rollback.py --deployment-report /home/gen/deerflow-deploy/asr2-audiofix-20261025/deployment.json",
+  "pinned_base_tag": "folotoy-deerflow-ws:asr2-audiofix-base-4da485975962",
+  "container": {
+    "image": "folotoy-deerflow-ws:asr2-audiofix-20261025",
+    "image_id": "sha256:fd86221313c9898038fb907055f3619469a723ba11822701f6436eb2e2d05f5e",
+    "runtime_user": "1000:1000",
+    "container_id": "6ba9646bafbe547283b5c066892c5547649d2f91211597a63fe6db2c220ad2fe",
+    "started_at": "2026-10-25T04:29:13.924129827Z",
+    "status": "running",
+    "health": "healthy"
+  },
+  "runtime": {
+    "module_file": "/opt/folotoy/sdk/stt_sdk/volcengine_asr2.py",
+    "module_sha256": "0a05c170fcc7da7f1593b844ee9e23a1864c588b4e1c961a2e8817212861819d",
+    "ffmpeg_available": true,
+    "roles": {
+      "1": {
+        "provider": "volcengine-asr2",
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true
+      },
+      "2": {
+        "provider": "volcengine-asr2",
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true
+      },
+      "3": {
+        "provider": "volcengine-asr2",
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true
+      },
+      "4": {
+        "provider": "volcengine-asr2",
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true
+      },
+      "5": {
+        "provider": "volcengine-asr2",
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true
+      },
+      "6": {
+        "provider": "volcengine-asr2",
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true
+      },
+      "7": {
+        "provider": "volcengine-asr2",
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true
+      }
+    },
+    "global_stt_type": "volcengine-asr",
+    "hotwords_enabled": false
+  },
+  "full_v2_rollback_preserved": true,
+  "live_input_validation_passed": true,
+  "verified_input_rates": [
+    8000,
+    16000,
+    32000
+  ],
+  "verification_report": "/home/gen/deerflow-deploy/asr2-audiofix-20261025/final-verification.json"
+}

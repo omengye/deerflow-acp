@@ -1,0 +1,62 @@
+{
+  "status": "recognized",
+  "resource_id": "volc.seedasr.sauc.duration",
+  "hotwords_enabled": false,
+  "context_enabled": false,
+  "post_correction_enabled": false,
+  "production_asr_switched": false,
+  "physical_toy_audio_published": false,
+  "synthetic_source_audio_removed": true,
+  "input_kind": "synthetic_tts_not_human_error_sample",
+  "reference_text": "请查询华为云服务器的运行状态。",
+  "audio": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "sample_width": 2,
+    "duration_seconds": 3.408,
+    "sha256": "8277bd132116a33cc4f9650693b78db0b6e491a9881f00e0ebaef21203559d34"
+  },
+  "old_v2": {
+    "status": "recognized",
+    "provider_code": 1000,
+    "text": "请查询华为云服务器的运行状态。",
+    "elapsed_ms": 748
+  },
+  "asr2": {
+    "status": "recognized",
+    "text": "请查询华为云服务器的运行状态。",
+    "elapsed_ms": 3985,
+    "request_id": "740ec248-0968-4ebd-8bf4-00f0f850c5fd",
+    "resource_id": "volc.seedasr.sauc.duration",
+    "final": true
+  },
+  "asr2_recognition_available": true,
+  "accuracy_comparison_possible": true,
+  "human_error_audio_evaluated": false,
+  "auth_mode": "x_api_key",
+  "key_label": "api-key-20260103182713",
+  "private_key_saved": false,
+  "credentials_in_process_arguments": false,
+  "production_before": {
+    "container_id": "e626871f907fe4ffc3b81fe65e425779194c4626dedd70b82833adfe6c0b3425",
+    "image": "folotoy-deerflow-ws:music-20261024",
+    "image_id": "sha256:856c22011d1432922004fdfdfb3674e6051c31a29daae264bf4fe2a7b5d5cf03",
+    "started_at": "2026-10-24T11:26:37.866469194Z",
+    "health": "healthy",
+    "roles_sha256": "2fb48b5f627d4fbb4c1fdbca1ebdb5e0f90a216bf05acef19653f3196f2ee370",
+    "compose_sha256": "6ba255b46f8bf33c47eeff70aace29b169ada28cf954d12914fc6dc3e06e686a"
+  },
+  "production_after": {
+    "container_id": "e626871f907fe4ffc3b81fe65e425779194c4626dedd70b82833adfe6c0b3425",
+    "image": "folotoy-deerflow-ws:music-20261024",
+    "image_id": "sha256:856c22011d1432922004fdfdfb3674e6051c31a29daae264bf4fe2a7b5d5cf03",
+    "started_at": "2026-10-24T11:26:37.866469194Z",
+    "health": "healthy",
+    "roles_sha256": "2fb48b5f627d4fbb4c1fdbca1ebdb5e0f90a216bf05acef19653f3196f2ee370",
+    "compose_sha256": "6ba255b46f8bf33c47eeff70aace29b169ada28cf954d12914fc6dc3e06e686a"
+  },
+  "production_unchanged": true,
+  "adapter_sha256": "1bc1ffe99869427975f2e37c580cb257c2db498b96d847b19fbad5e4645775dd",
+  "probe_exit_code": 0,
+  "elapsed_includes_audio_replay": true
+}

@@ -1,0 +1,43 @@
+{
+  "status": "completed",
+  "deleted": [
+    {
+      "path": "/home/gen/deerflow-deploy/music-integration-20261024/payload.tar.gz",
+      "bytes": 709705
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/music-integration-20261024/payload",
+      "bytes": 860026
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/music-integration-20261024/music-candidates.tar.gz",
+      "bytes": 16036
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/music-integration-20261024/music-candidates",
+      "bytes": 59248
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/music-integration-20261024/opencli-posix-tests.tar.gz",
+      "bytes": 12892
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/music-integration-20261024/opencli-posix-tests",
+      "bytes": 112325
+    },
+    {
+      "path": "/home/gen/.tmp/music-opencli/bridge-tests",
+      "bytes": 0
+    }
+  ],
+  "bytes_freed": 1770232,
+  "retained": [
+    "running images and original images",
+    "private configuration",
+    "downloaded shared music",
+    "playback audio",
+    "host bridge runtime and journal",
+    "deployment and rollback backups"
+  ],
+  "recorded_at": "2026-10-24T11:53:16.362416+00:00"
+}

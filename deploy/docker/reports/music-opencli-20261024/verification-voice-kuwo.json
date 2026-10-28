@@ -1,0 +1,179 @@
+{
+  "case": "kuwo",
+  "voice_report": "/home/gen/Documents/folotoy/deerflow-ws/src/data/music-voice-kuwo-chain.json",
+  "passed": true,
+  "native_tool_audit": {
+    "case": "kuwo",
+    "test_device": "MUSICVOICEB8D4E49E5DF0C645",
+    "passed": true,
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "skill": "song-download"
+      },
+      {
+        "event": "start",
+        "name": "skill",
+        "skill": "toy-playmusic"
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "skill": "song-download",
+        "action": "run",
+        "path": "scripts/song-download.py",
+        "arguments": [
+          "search",
+          "晴天",
+          "--limit",
+          "5"
+        ]
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "skill": "song-download",
+        "status": "completed",
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "version": "21dba05f50abef5834f92d9274dc7ec73ebe804e094d3b16e1060fb6b7a21b95",
+        "ok": true,
+        "operation": "search",
+        "result_count": 5
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "skill": "song-download",
+        "action": "run",
+        "path": "scripts/song-download.py",
+        "arguments": [
+          "download",
+          "--song-title",
+          "晴天",
+          "--artist",
+          "周杰伦"
+        ]
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "skill": "song-download",
+        "status": "completed",
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "version": "21dba05f50abef5834f92d9274dc7ec73ebe804e094d3b16e1060fb6b7a21b95",
+        "ok": true,
+        "operation": "download",
+        "file": {
+          "passed": true,
+          "relative_path": "晴天 - 周杰伦 - a19dae98.mp3",
+          "bytes": 4317292,
+          "sha256": "62b9564aa93b4fb951173f62660b83dfd97e647be620e5bec4462b94ea93ba76"
+        }
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "skill": "toy-playmusic",
+        "action": "run",
+        "path": "scripts/toy-playmusic.py",
+        "arguments": [
+          "play",
+          "晴天 - 周杰伦 - a19dae98.mp3",
+          "--device-key",
+          "MUSICVOICEB8D4E49E5DF0C645",
+          "--request-id",
+          "fc532839312c4659a8d7ec9d15e7890f"
+        ]
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "skill": "toy-playmusic",
+        "status": "completed",
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "version": "c55b296be552ee8d602c59a232101f1d5a3e0cb87bb61ff3be36bdcabed65452",
+        "ok": true,
+        "operation": "play",
+        "job": {
+          "id": "8c0f7f8b285f4149a7b882a491ecc50b",
+          "state": "queued",
+          "device_key": "MUSICVOICEB8D4E49E5DF0C645",
+          "request_id": "fc532839312c4659a8d7ec9d15e7890f"
+        },
+        "voice_target_verified": true,
+        "file": {
+          "passed": true,
+          "relative_path": "晴天 - 周杰伦 - a19dae98.mp3",
+          "bytes": 4317292,
+          "sha256": "62b9564aa93b4fb951173f62660b83dfd97e647be620e5bec4462b94ea93ba76"
+        }
+      }
+    ],
+    "verified_searches": [
+      {
+        "index": 15,
+        "count": 5,
+        "provider": "kuwo"
+      }
+    ],
+    "verified_downloads": [
+      {
+        "index": 20,
+        "file": {
+          "passed": true,
+          "relative_path": "晴天 - 周杰伦 - a19dae98.mp3",
+          "bytes": 4317292,
+          "sha256": "62b9564aa93b4fb951173f62660b83dfd97e647be620e5bec4462b94ea93ba76"
+        }
+      }
+    ],
+    "verified_plays": [
+      {
+        "index": 23,
+        "job": {
+          "id": "8c0f7f8b285f4149a7b882a491ecc50b",
+          "state": "queued",
+          "device_key": "MUSICVOICEB8D4E49E5DF0C645",
+          "request_id": "fc532839312c4659a8d7ec9d15e7890f"
+        },
+        "file": {
+          "passed": true,
+          "relative_path": "晴天 - 周杰伦 - a19dae98.mp3",
+          "bytes": 4317292,
+          "sha256": "62b9564aa93b4fb951173f62660b83dfd97e647be620e5bec4462b94ea93ba76"
+        }
+      }
+    ],
+    "unexpected_tools": [],
+    "errors": [],
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "PV37X6WX6M4P3FHUGEWX3TU3GH"
+    },
+    "voice_request_id": "fc532839312c4659a8d7ec9d15e7890f",
+    "cursor_recovered_from_device": false,
+    "voice_context_verified": true,
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "run": {
+      "id": "UW7J36N2R6WAQQIMM4FFEE2AGL",
+      "status": "completed",
+      "stop_reason": "end_turn",
+      "created_at": "2026-10-24T11:49:54.107596934Z"
+    },
+    "play_submissions": 1,
+    "search_download_play_sequence_verified": true
+  },
+  "voice_status": "passed",
+  "voice_failure_code": null,
+  "same_recording_queue_verified": true,
+  "reported_music_job_matches_native": true,
+  "converted_audio_exists": true
+}

@@ -1,0 +1,954 @@
+{
+  "data": {
+    "skills": [
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "academic-paper-review",
+          "scope": "global"
+        },
+        "head": {
+          "version": "b2615edc865390a5b77ff250c4dd7ff8ae3f2dab5a4082387b5bed92d0356f6b",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "academic-paper-review",
+            "version": "b2615edc865390a5b77ff250c4dd7ff8ae3f2dab5a4082387b5bed92d0356f6b",
+            "hash": "b2615edc865390a5b77ff250c4dd7ff8ae3f2dab5a4082387b5bed92d0356f6b"
+          },
+          "description": "Use this skill when the user requests to review, analyze, critique, or summarize academic papers, research articles, preprints, or scientific publications. Supports comprehensive structured reviews covering methodology assessment, contribution evaluation, literature positioning, and constructive feedback generation. Trigger on queries involving paper URLs, uploaded PDFs, arXiv links, or requests like \"review this paper\", \"analyze this research\", \"summarize this study\", or \"write a peer review\".",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 1,
+          "totalBytes": 12138,
+          "installedAt": "2026-10-24T07:38:39.649487267Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/academic-paper-review",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "bootstrap",
+          "scope": "global"
+        },
+        "head": {
+          "version": "cd555b2a3d1d3c31fea65d5e96d542b401b85c19bcd2ecbbe3194724317bb931",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "bootstrap",
+            "version": "cd555b2a3d1d3c31fea65d5e96d542b401b85c19bcd2ecbbe3194724317bb931",
+            "hash": "cd555b2a3d1d3c31fea65d5e96d542b401b85c19bcd2ecbbe3194724317bb931"
+          },
+          "description": "Generate a personalized SOUL.md through a warm, adaptive onboarding conversation. Trigger when the user wants to create, set up, or initialize their AI partner's identity — e.g., \"create my SOUL.md\", \"bootstrap my agent\", \"set up my AI partner\", \"define who you are\", \"let's do onboarding\", \"personalize this AI\", \"make you mine\", or when a SOUL.md is missing. Also trigger for updates: \"update my SOUL.md\", \"change my AI's personality\", \"tweak the soul\".",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 3,
+          "totalBytes": 11540,
+          "installedAt": "2026-10-24T07:38:39.672121987Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/bootstrap",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "chart-visualization",
+          "scope": "global"
+        },
+        "head": {
+          "version": "c4d133a10fc92d7c6abfc7a1188012826cecd47d074bfc32a57a4a2cc70958fa",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "chart-visualization",
+            "version": "c4d133a10fc92d7c6abfc7a1188012826cecd47d074bfc32a57a4a2cc70958fa",
+            "hash": "c4d133a10fc92d7c6abfc7a1188012826cecd47d074bfc32a57a4a2cc70958fa"
+          },
+          "description": "This skill should be used when the user wants to visualize data. It intelligently selects the most suitable chart type from 26 available options, extracts parameters based on detailed specifications, and generates a chart image using a JavaScript script.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 28,
+          "totalBytes": 35889,
+          "installedAt": "2026-10-24T07:38:39.780673477Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/chart-visualization",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "claude-to-deerflow",
+          "scope": "global"
+        },
+        "head": {
+          "version": "b776ebea93ed93f590c3d69c4b98d045da504639d0e9dc77b97868e4c03c802b",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "claude-to-deerflow",
+            "version": "b776ebea93ed93f590c3d69c4b98d045da504639d0e9dc77b97868e4c03c802b",
+            "hash": "b776ebea93ed93f590c3d69c4b98d045da504639d0e9dc77b97868e4c03c802b"
+          },
+          "description": "Use when connecting an ACP-capable client to the Eino-based DeerFlow runtime, delegating an authorized task through that client, or diagnosing a DeerFlow ACP connection and session.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 1,
+          "totalBytes": 5070,
+          "installedAt": "2026-10-24T07:38:39.790277468Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/claude-to-deerflow",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "code-documentation",
+          "scope": "global"
+        },
+        "head": {
+          "version": "8b807890c43edf5873fe5108085fa399eb9be6c127e131f88a3ef565e12ec843",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "code-documentation",
+            "version": "8b807890c43edf5873fe5108085fa399eb9be6c127e131f88a3ef565e12ec843",
+            "hash": "8b807890c43edf5873fe5108085fa399eb9be6c127e131f88a3ef565e12ec843"
+          },
+          "description": "Use this skill when the user requests to generate, create, or improve documentation for code, APIs, libraries, repositories, or software projects. Supports README generation, API reference documentation, inline code comments, architecture documentation, changelog generation, and developer guides. Trigger on requests like \"document this code\", \"create a README\", \"generate API docs\", \"write developer guide\", or when analyzing codebases for documentation purposes.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 1,
+          "totalBytes": 13877,
+          "installedAt": "2026-10-24T07:38:39.801606946Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/code-documentation",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "consulting-analysis",
+          "scope": "global"
+        },
+        "head": {
+          "version": "32dfe2288b7a4418b04fbbf8fcba72220149cdaaf3e090a5a30e4c4561c95659",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "consulting-analysis",
+            "version": "32dfe2288b7a4418b04fbbf8fcba72220149cdaaf3e090a5a30e4c4561c95659",
+            "hash": "32dfe2288b7a4418b04fbbf8fcba72220149cdaaf3e090a5a30e4c4561c95659"
+          },
+          "description": "Use this skill when the user requests to generate, create, or write professional research reports including but not limited to market analysis, consumer insights, brand analysis, financial analysis, industry research, competitive intelligence, investment due diligence, or any consulting-grade analytical report. This skill operates in two phases — (1) generating a structured analysis framework with chapter skeleton, data query requirements, and analysis logic, and (2) after data collection by other skills, producing the final consulting-grade report with structured narratives, embedded charts, and strategic insights.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 1,
+          "totalBytes": 34272,
+          "installedAt": "2026-10-24T07:38:39.818632384Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/consulting-analysis",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "deep-research",
+          "scope": "global"
+        },
+        "head": {
+          "version": "c2af9d394bd119f6cf420b56ac8c2e5e49bc994a2a3463fff3ec205adca7d6c1",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "deep-research",
+            "version": "c2af9d394bd119f6cf420b56ac8c2e5e49bc994a2a3463fff3ec205adca7d6c1",
+            "hash": "c2af9d394bd119f6cf420b56ac8c2e5e49bc994a2a3463fff3ec205adca7d6c1"
+          },
+          "description": "Use this skill instead of WebSearch for ANY question requiring web research. Trigger on queries like \"what is X\", \"explain X\", \"compare X and Y\", \"research X\", or before content generation tasks. Provides systematic multi-angle research methodology instead of single superficial searches. Use this proactively when the user's question needs online information.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 1,
+          "totalBytes": 7879,
+          "installedAt": "2026-10-24T07:38:39.82981512Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/deep-research",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-custom",
+          "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+          "name": "deepseek-search",
+          "scope": "global"
+        },
+        "head": {
+          "version": "eb3ff4808c24dbf25519148d51a42acc0411402339a6c0f3fa2d0db113e41c93",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-custom",
+            "sourceIdentity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "deepseek-search",
+            "version": "eb3ff4808c24dbf25519148d51a42acc0411402339a6c0f3fa2d0db113e41c93",
+            "hash": "eb3ff4808c24dbf25519148d51a42acc0411402339a6c0f3fa2d0db113e41c93"
+          },
+          "description": "Use when performing web searches, retrieving real-time internet data, or fetching and parsing webpage content to Markdown using DeepSeek Search and Fetch APIs (POST https://api.deepseek.com/v1/tools/search and https://api.deepseek.com/v1/tools/fetch).",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 1,
+          "totalBytes": 14729,
+          "installedAt": "2026-10-24T07:38:39.507285595Z",
+          "stateVersion": 1
+        },
+        "builtin": false,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/custom/deepseek-search",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-custom",
+          "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+          "name": "fanren-rag",
+          "scope": "global"
+        },
+        "head": {
+          "version": "ac6a29cf1df57266a920e209a28dbaff3c291431e52517437c84b15419d7aa8c",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-custom",
+            "sourceIdentity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "fanren-rag",
+            "version": "ac6a29cf1df57266a920e209a28dbaff3c291431e52517437c84b15419d7aa8c",
+            "hash": "ac6a29cf1df57266a920e209a28dbaff3c291431e52517437c84b15419d7aa8c"
+          },
+          "description": "凡人修仙传（人界篇/灵界篇/仙界篇全集）自托管 RAG 检索入口。\n当用户希望查询、考据、检索凡人修仙传原著内容（人物、情节、章节、法宝、功法、\n时间线、设定等），或问\"韩立在xx章...\"、\"xx功法/法宝怎么回事\"、\"查一下凡人修仙传...\"\n时，使用此 skill。\n它调用用户自部署的知识库 HTTP API（阿里 Zvec 嵌入式向量库 + bge-small-zh\nembedding，15,492 个章节切片）进行混合检索，返回带 [卷名] 章节名出处的原文片段。\n不要再用通用 web 搜索或凭记忆回答凡人修仙传相关问题——优先走此入口。",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 5,
+          "totalBytes": 10864,
+          "installedAt": "2026-10-24T07:38:39.532055785Z",
+          "stateVersion": 1
+        },
+        "builtin": false,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/custom/fanren-rag",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "find-skills",
+          "scope": "global"
+        },
+        "head": {
+          "version": "4a5ac4b68fad80ffb27d1e2e7d726d589f189a0b033a175220f7f47d671a8289",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "find-skills",
+            "version": "4a5ac4b68fad80ffb27d1e2e7d726d589f189a0b033a175220f7f47d671a8289",
+            "hash": "4a5ac4b68fad80ffb27d1e2e7d726d589f189a0b033a175220f7f47d671a8289"
+          },
+          "description": "Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 2,
+          "totalBytes": 6464,
+          "installedAt": "2026-10-24T07:38:39.841634202Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/find-skills",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "frontend-design",
+          "scope": "global"
+        },
+        "head": {
+          "version": "c479f1a15c7c38ff7dfae2177f79de002c5fcff581369466a1af2ee72052021e",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "frontend-design",
+            "version": "c479f1a15c7c38ff7dfae2177f79de002c5fcff581369466a1af2ee72052021e",
+            "hash": "c479f1a15c7c38ff7dfae2177f79de002c5fcff581369466a1af2ee72052021e"
+          },
+          "description": "Create distinctive, production-grade frontend interfaces with high design quality. Use this skill when the user asks to build web components, pages, artifacts, posters, or applications (examples include websites, landing pages, dashboards, React components, HTML/CSS layouts, or when styling/beautifying any web UI). Generates creative, polished code and UI design that avoids generic AI aesthetics.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 2,
+          "totalBytes": 17583,
+          "installedAt": "2026-10-24T07:38:39.856878417Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/frontend-design",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "github-deep-research",
+          "scope": "global"
+        },
+        "head": {
+          "version": "2baefc34c54de157cfa24e5ae9297a9515044ab2cf7ff2122759469e84316b17",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "github-deep-research",
+            "version": "2baefc34c54de157cfa24e5ae9297a9515044ab2cf7ff2122759469e84316b17",
+            "hash": "2baefc34c54de157cfa24e5ae9297a9515044ab2cf7ff2122759469e84316b17"
+          },
+          "description": "Use when investigating a GitHub repository's architecture, development history, maintenance, issues or alternatives using primary sources.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 2,
+          "totalBytes": 6544,
+          "installedAt": "2026-10-24T07:38:39.868087136Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/github-deep-research",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-custom",
+          "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+          "name": "huaweicloud-linux",
+          "scope": "global"
+        },
+        "head": {
+          "version": "3d6ee0f3a4782727c8345c108d3fae3dea6469bf37b8dc71ea6b133368541fa4",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-custom",
+            "sourceIdentity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "huaweicloud-linux",
+            "version": "3d6ee0f3a4782727c8345c108d3fae3dea6469bf37b8dc71ea6b133368541fa4",
+            "hash": "3d6ee0f3a4782727c8345c108d3fae3dea6469bf37b8dc71ea6b133368541fa4"
+          },
+          "description": "操作华为云 Linux 主机 (1.92.70.163:2233) 的专属管理工具。\n当用户需要在这台华为云 Linux 服务器上执行命令、查询系统状态、查看服务日志、\n启停进程、上传下载文件或部署维护应用时使用此 skill。\n认证文件严格保存在当前用户主目录 (~/Documents/ssh_info/huaweicloud_ed25519)，\nskill 内部不存放任何私钥或敏感凭据，安全跨平台。",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 3,
+          "totalBytes": 9661,
+          "installedAt": "2026-10-24T07:38:39.547594461Z",
+          "stateVersion": 1
+        },
+        "builtin": false,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/custom/huaweicloud-linux",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-custom",
+          "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+          "name": "huaweicloud-sandbox",
+          "scope": "global"
+        },
+        "head": {
+          "version": "936701d67cf2817d3534bb7d134702881ea946f5f83a344da1b32f9a0b789c6b",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-custom",
+            "sourceIdentity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "huaweicloud-sandbox",
+            "version": "936701d67cf2817d3534bb7d134702881ea946f5f83a344da1b32f9a0b789c6b",
+            "hash": "936701d67cf2817d3534bb7d134702881ea946f5f83a344da1b32f9a0b789c6b"
+          },
+          "description": "Manage the existing Anthropic Sandbox Runtime on the user's Huawei Cloud Linux host. Use for explicitly requested remote sandbox health checks, sandboxed commands, policy inspection, or approved network/filesystem allowlist changes. Do not use for unrelated cloud administration or automatic SSH trust enrollment.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 4,
+          "totalBytes": 13399,
+          "installedAt": "2026-10-24T07:38:39.567841088Z",
+          "stateVersion": 1
+        },
+        "builtin": false,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/custom/huaweicloud-sandbox",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-custom",
+          "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+          "name": "instabox-exec-windows",
+          "scope": "global"
+        },
+        "head": {
+          "version": "0eca2d4b4837fe096a89b33bf9d87d5dd6df2769f69fff00b8d629999e0684ed",
+          "state_version": 1,
+          "exists": true,
+          "enabled": false,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-custom",
+            "sourceIdentity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "instabox-exec-windows",
+            "version": "0eca2d4b4837fe096a89b33bf9d87d5dd6df2769f69fff00b8d629999e0684ed",
+            "hash": "0eca2d4b4837fe096a89b33bf9d87d5dd6df2769f69fff00b8d629999e0684ed"
+          },
+          "description": "Use when driving an Instabox sandbox from Windows PowerShell - passing exec arguments safely, uploading files via stdin, downloading text files, and cleaning up remote artifacts.",
+          "scope": "global",
+          "enabled": false,
+          "fileCount": 1,
+          "totalBytes": 8758,
+          "installedAt": "2026-10-24T07:38:39.578417023Z",
+          "stateVersion": 1
+        },
+        "builtin": false,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/custom/instabox-exec-windows",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "newsletter-generation",
+          "scope": "global"
+        },
+        "head": {
+          "version": "be55023215fabac8de290cf43e2625f03291ae81d72b79a193337f2181fa2491",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "newsletter-generation",
+            "version": "be55023215fabac8de290cf43e2625f03291ae81d72b79a193337f2181fa2491",
+            "hash": "be55023215fabac8de290cf43e2625f03291ae81d72b79a193337f2181fa2491"
+          },
+          "description": "Use this skill when the user requests to generate, create, write, or draft a newsletter, email digest, weekly roundup, industry briefing, or curated content summary. Supports topic-based research, content curation from multiple sources, and professional formatting for email or web distribution. Trigger on requests like \"create a newsletter about X\", \"write a weekly digest\", \"generate a tech roundup\", or \"curate news about Y\".",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 1,
+          "totalBytes": 12859,
+          "installedAt": "2026-10-24T07:38:39.878338787Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/newsletter-generation",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-custom",
+          "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+          "name": "searxng-web-search",
+          "scope": "global"
+        },
+        "head": {
+          "version": "58af083c26579e3d93d98422b920554386a4b1d7c4135bcd55adff131c49d85e",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-custom",
+            "sourceIdentity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "searxng-web-search",
+            "version": "58af083c26579e3d93d98422b920554386a4b1d7c4135bcd55adff131c49d85e",
+            "hash": "58af083c26579e3d93d98422b920554386a4b1d7c4135bcd55adff131c49d85e"
+          },
+          "description": "Use when performing web searches, gathering online information, or integrating search capabilities using a dedicated SearXNG instance (such as https://aibuild.qzz.io) with Bearer token authentication.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 1,
+          "totalBytes": 6501,
+          "installedAt": "2026-10-24T07:38:39.587402338Z",
+          "stateVersion": 1
+        },
+        "builtin": false,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/custom/searxng-web-search",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-custom",
+          "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+          "name": "show-me",
+          "scope": "global"
+        },
+        "head": {
+          "version": "845d375e56ce51e9978b868daab67f7d43c02ad96ccf42df61b198fc3e17db34",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-custom",
+            "sourceIdentity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "show-me",
+            "version": "845d375e56ce51e9978b868daab67f7d43c02ad96ccf42df61b198fc3e17db34",
+            "hash": "845d375e56ce51e9978b868daab67f7d43c02ad96ccf42df61b198fc3e17db34"
+          },
+          "description": "Use when the user asks to see something rather than read about it - \"show me\", \"let me see it\", \"what does it look like\", \"give me options\", or any moment you are about to describe a layout, a plan, a comparison or a design in prose. Renders it as a self-contained HTML page or concise visual artifact.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 1,
+          "totalBytes": 2886,
+          "installedAt": "2026-10-24T07:38:39.595139408Z",
+          "stateVersion": 1
+        },
+        "builtin": false,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/custom/show-me",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "skill-creator",
+          "scope": "global"
+        },
+        "head": {
+          "version": "3e580592e9644b48cd6e73296f3dea38883b7eec1c0a230b09735da35efdfdbf",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "skill-creator",
+            "version": "3e580592e9644b48cd6e73296f3dea38883b7eec1c0a230b09735da35efdfdbf",
+            "hash": "3e580592e9644b48cd6e73296f3dea38883b7eec1c0a230b09735da35efdfdbf"
+          },
+          "description": "Use when creating a reusable DeerFlow skill, correcting an existing skill, or preparing a skill candidate for review.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 7,
+          "totalBytes": 31188,
+          "installedAt": "2026-10-24T07:38:39.911953139Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/skill-creator",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "surprise-me",
+          "scope": "global"
+        },
+        "head": {
+          "version": "f5f9baf7913ed83eda32f0f0fe79a522b2fdbc73b52f2edcc3d4d124599da18b",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "surprise-me",
+            "version": "f5f9baf7913ed83eda32f0f0fe79a522b2fdbc73b52f2edcc3d4d124599da18b",
+            "hash": "f5f9baf7913ed83eda32f0f0fe79a522b2fdbc73b52f2edcc3d4d124599da18b"
+          },
+          "description": "Create a delightful, unexpected \"wow\" experience for the user by dynamically discovering and creatively combining other enabled skills. Triggers when the user says \"surprise me\" or any request expressing a desire for an unexpected creative showcase. Also triggers when the user is bored, wants inspiration, or asks for \"something interesting\".",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 1,
+          "totalBytes": 2640,
+          "installedAt": "2026-10-24T07:38:39.919429692Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/surprise-me",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "systematic-literature-review",
+          "scope": "global"
+        },
+        "head": {
+          "version": "45ba73d2ef5cb5a0b603466bee6e8af8dcc80e93cf2814a104f91ed4228dede9",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "systematic-literature-review",
+            "version": "45ba73d2ef5cb5a0b603466bee6e8af8dcc80e93cf2814a104f91ed4228dede9",
+            "hash": "45ba73d2ef5cb5a0b603466bee6e8af8dcc80e93cf2814a104f91ed4228dede9"
+          },
+          "description": "Use when surveying multiple academic papers on a research topic, comparing their methods and findings, and producing a cited synthesis. A single-paper critique belongs to academic-paper-review.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 6,
+          "totalBytes": 28635,
+          "installedAt": "2026-10-24T07:38:39.960172915Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/systematic-literature-review",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-custom",
+          "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+          "name": "ulw-plan",
+          "scope": "global"
+        },
+        "head": {
+          "version": "33ecabe9f4080cd4d990e496b23e2855b6f914b3f26b4fde86e5f4e85c9c48a0",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-custom",
+            "sourceIdentity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "ulw-plan",
+            "version": "33ecabe9f4080cd4d990e496b23e2855b6f914b3f26b4fde86e5f4e85c9c48a0",
+            "hash": "33ecabe9f4080cd4d990e496b23e2855b6f914b3f26b4fde86e5f4e85c9c48a0"
+          },
+          "description": "Plan-only workflow for Prometheus in DeerFlow. Research the request, resolve requirements, and write one executable .omo/plans plan with dependencies and acceptance checks before implementation.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 7,
+          "totalBytes": 29360,
+          "installedAt": "2026-10-24T07:38:39.63227863Z",
+          "stateVersion": 1
+        },
+        "builtin": false,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/custom/ulw-plan",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "vercel-deploy",
+          "scope": "global"
+        },
+        "head": {
+          "version": "6ff71bd736c144cf0641c201a7b01d9efb7c17459b2fefbf851f7c5f2fd9915b",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "vercel-deploy",
+            "version": "6ff71bd736c144cf0641c201a7b01d9efb7c17459b2fefbf851f7c5f2fd9915b",
+            "hash": "6ff71bd736c144cf0641c201a7b01d9efb7c17459b2fefbf851f7c5f2fd9915b"
+          },
+          "description": "Deploy applications and websites to Vercel. Use this skill when the user requests deployment actions such as \"Deploy my app\", \"Deploy this to production\", \"Create a preview deployment\", \"Deploy and give me the link\", or \"Push this live\". No authentication required - returns preview URL and claimable deployment link.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 2,
+          "totalBytes": 10147,
+          "installedAt": "2026-10-24T07:38:39.977770232Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/vercel-deploy",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "weather-cma",
+          "scope": "global"
+        },
+        "head": {
+          "version": "a9667617f1a25aebcf716c01e5f4ae76def7c5f48c4ec65e0e53000d20b79b96",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "weather-cma",
+            "version": "a9667617f1a25aebcf716c01e5f4ae76def7c5f48c4ec65e0e53000d20b79b96",
+            "hash": "a9667617f1a25aebcf716c01e5f4ae76def7c5f48c4ec65e0e53000d20b79b96"
+          },
+          "description": "Use this skill for ANY weather query about Chinese cities — forecasts, current conditions, rain checks, temperature, weekend weather, etc. Uses China Meteorological Administration (中国气象局) official data from weather.cma.cn. Always use this skill instead of wttr.in or generic weather APIs when the user asks about weather in China, especially for Beijing. Trigger on queries like 天气, 下雨, 气温, 温度, 天气预报, 会不会下雨, 明天天气, 周末天气, and any weather-related question in Chinese. Default city is Beijing.",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 2,
+          "totalBytes": 8015,
+          "installedAt": "2026-10-24T07:38:39.993734884Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/weather-cma",
+        "source_status": "ready"
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "web-design-guidelines",
+          "scope": "global"
+        },
+        "head": {
+          "version": "9b5f25099fa885e1752edc21c8ef115ca54eccb85e0c286816c2ad1cbf5640d1",
+          "state_version": 1,
+          "exists": true,
+          "enabled": true,
+          "managed": false
+        },
+        "record": {
+          "ref": {
+            "sourceId": "python-public",
+            "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "web-design-guidelines",
+            "version": "9b5f25099fa885e1752edc21c8ef115ca54eccb85e0c286816c2ad1cbf5640d1",
+            "hash": "9b5f25099fa885e1752edc21c8ef115ca54eccb85e0c286816c2ad1cbf5640d1"
+          },
+          "description": "Review UI code for Web Interface Guidelines compliance. Use when asked to \"review my UI\", \"check accessibility\", \"audit design\", \"review UX\", or \"check my site against best practices\".",
+          "scope": "global",
+          "enabled": true,
+          "fileCount": 1,
+          "totalBytes": 1231,
+          "installedAt": "2026-10-24T07:38:40.007912936Z",
+          "builtin": true,
+          "stateVersion": 1
+        },
+        "builtin": true,
+        "managed_source": false,
+        "can_refresh_import": true,
+        "source_directory": "/var/lib/deerflow/user-data/skills/public/web-design-guidelines",
+        "source_status": "ready"
+      }
+    ],
+    "sources": [
+      {
+        "target": {
+          "source_id": "python-custom",
+          "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+          "name": "",
+          "scope": "global"
+        },
+        "builtin": false,
+        "managed_source": false
+      },
+      {
+        "target": {
+          "source_id": "python-public",
+          "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+          "name": "",
+          "scope": "global"
+        },
+        "builtin": true,
+        "managed_source": false
+      }
+    ],
+    "catalog_version": 25
+  },
+  "ok": true,
+  "runtime": {
+    "build_id": "6b8c5c89",
+    "config_path": "/var/lib/deerflow/user-data/config/config.yaml",
+    "data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+    "instance_id": "FF4CPJv8WLU2Yxt4jqh5fc6lybrnvXeAhBvwn2TI-Kc",
+    "pid": 39
+  }
+}

@@ -1,0 +1,7 @@
+/bin/
+/tests/
+/test-fixtures/
+/stage-*/
+/backup/
+/candidate-config.yaml
+/__pycache__/

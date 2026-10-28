@@ -1,0 +1,65 @@
+{
+  "status": "passed",
+  "passed": true,
+  "role": 2,
+  "provider": "volcengine-asr2",
+  "stages": [
+    {
+      "stage": "source_tts_generated",
+      "elapsed_ms": 1207,
+      "audio_bytes": 67200
+    },
+    {
+      "stage": "source_pcm_ready",
+      "elapsed_ms": 1264,
+      "pcm_bytes": 107520,
+      "sample_rate": 16000
+    },
+    {
+      "stage": "registered_asr2_dispatch_completed",
+      "elapsed_ms": 5111,
+      "resource_id": "volc.seedasr.sauc.duration"
+    }
+  ],
+  "test_device": "ASR2TESTBFE79EBF9EDA1EEA",
+  "stt_provider": "volcengine-asr2",
+  "resource_id": "volc.seedasr.sauc.duration",
+  "scope": "role_dispatch_and_tts_readiness",
+  "transport": "ws",
+  "ws_mode": "fullAccess",
+  "approval": "allow_always",
+  "hotwords_enabled": false,
+  "context_enabled": false,
+  "post_correction_enabled": false,
+  "fallback_used": false,
+  "physical_toy_audio_published": false,
+  "recording_id": 19664,
+  "simulated_device": true,
+  "physical_toy_playback_claimed": false,
+  "cleanup": {
+    "source_tts_file_removed": true,
+    "no_device_or_actor_created": true
+  },
+  "asr_dispatch": {
+    "provider": "volcengine-asr2",
+    "resource_id": "volc.seedasr.sauc.duration",
+    "request_id": "e6e04d5b-4ab8-4575-ad79-316fbacc694f",
+    "final": true,
+    "text": "请只回答测试通过，不要调用工具。",
+    "elapsed_ms": 3833,
+    "elapsed_includes_audio_replay": true,
+    "private_api_key_present": true,
+    "engine_module_file": "/opt/folotoy/sdk/stt_sdk/volcengine_asr2.py",
+    "fallback_used": false
+  },
+  "asr2_dispatch_verified": true,
+  "request_id": "e6e04d5b-4ab8-4575-ad79-316fbacc694f",
+  "tts_readiness_verified": true,
+  "full_voice_pipeline_tested": false,
+  "limitations": [
+    "Roles2-7 use their real ASR dispatch and TTS; role1 separately covers the shared MQTT/UDP/WS voice path."
+  ],
+  "elapsed_ms": 5112,
+  "deployment_id": "b8f33762da9e4942b3d9205747440a59",
+  "validator_sha256": "a9b54f0e8e10b02325f83d16607b7d0bb0e7cc7993b303ab9ed18c73df18a778"
+}

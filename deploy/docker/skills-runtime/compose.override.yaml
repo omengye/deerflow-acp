@@ -1,0 +1,6 @@
+# Optional hotfix for an already built skills image. Copy this wrapper into the
+# deployment's runtime/ directory. A normal compose up/restart keeps the mount.
+services:
+  deerflow:
+    volumes:
+      - ./runtime/deerflow-acpd-wrapper.sh:/opt/deerflow/bin/deerflow-acpd:ro

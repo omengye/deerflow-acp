@@ -1,0 +1,92 @@
+{
+  "activity": {
+    "active_operations": 0,
+    "active_runs": 0,
+    "draining": false,
+    "queued_runs": 0
+  },
+  "auto_patch": {
+    "enabled": true,
+    "observing": 0,
+    "published_today": 0,
+    "readiness": {
+      "catalog_version": 0,
+      "eligible_targets": 0,
+      "installed": 0,
+      "missing_suite": 0,
+      "needs_attention": 0,
+      "new_skills_require_review": true,
+      "pending_review": 0,
+      "policy_identity": "62017c4f535bf0f950be654da73213d60a38bc3429aa8ce74b8c55cc032921a4",
+      "reasons": [
+        "no_eligible_targets"
+      ],
+      "state": "partial",
+      "waiting_candidates": 0
+    },
+    "running": true
+  },
+  "binaries": {
+    "deerflow-acpd.real": "d81f51b23eb5ac814d765ed4c66abadb0c85f884f0f24f27db033d08ea0aa51b",
+    "deerflow-config-go": "58e2bf2307f5797a0273fbe71630ffdd24d56d185885f2eef11621770268071e",
+    "deerflow-control-go": "8647c7c47721ed87c2da13a3c0e030a475b05e71edf64eb87b97c4f475f1589f",
+    "deerflow-skill-go": "9fa11c70a6365a02ea0fb3e925839c4760bb59fe075181e887aff54cc166fc61"
+  },
+  "candidate_sha256": "500d07ca919cc797d9724f52edc74cbe6757d223930f291f6aefafcb0d45dcc8",
+  "database": {
+    "learning_outbox": {},
+    "maintenance_calls": {},
+    "maintenance_jobs": {},
+    "runs": {},
+    "sessions": 0
+  },
+  "diagnostics_contract": true,
+  "discovery": {
+    "enabled": true,
+    "failed_signals": 0,
+    "pending": 0,
+    "running": true,
+    "triggers": [
+      "operator_corrections",
+      "missing_skill",
+      "repeated_workflow",
+      "experience_pattern"
+    ]
+  },
+  "generation": {
+    "enabled": true
+  },
+  "image_id": "sha256:535bfcc89aebc94561e4d8a31fd6624f00c4aaddc10394a49df875f7ac6198ce",
+  "isolated_network": true,
+  "learning": {
+    "auto_patch_enabled": true,
+    "consolidation_enabled": true,
+    "cross_session_enabled": false,
+    "enabled": true,
+    "experiences": 0,
+    "idle_seconds": 300,
+    "matches": 0,
+    "matching_enabled": true,
+    "mode": "guarded_auto_patch",
+    "patterns": 0,
+    "pending_inputs": 0,
+    "proposal_discovery_enabled": true,
+    "queue": {
+      "blocked": 0,
+      "capture_limited_sessions": 0,
+      "failed": 0,
+      "failed_jobs": 0,
+      "pending": 0,
+      "queued": 0,
+      "ready": 0,
+      "reasons": [],
+      "skipped": 0
+    },
+    "running": true
+  },
+  "passed": true,
+  "production_mounts": false,
+  "runtime_build_id": "skill-learning-recovery-20261028",
+  "synthetic_configuration": true,
+  "wrapper_sha256": "5b409ad2c2f1c8298df7ca0d3ea65e184a551edc1c49641e0f451f911c5fa4f3"
+}

@@ -1,0 +1,50 @@
+{
+  "status": "passed",
+  "host": "192.168.1.190",
+  "skills": [
+    "song-download",
+    "qq-music",
+    "toy-playmusic",
+    "opencli"
+  ],
+  "checks": {
+    "all_four_skills_enabled_and_ready": true,
+    "containers_and_private_services_healthy": true,
+    "kuwo_search_actual_native_tool": true,
+    "qq_search_actual_native_tool": true,
+    "qq_download_actual_native_tool_and_audio_probe": true,
+    "kuwo_voice_search_download_play_native_receipts": true,
+    "local_music_voice_queue": true,
+    "actual_toy_fetched_audio": true,
+    "user_heard_music": true,
+    "host_opencli_browser_connected": true,
+    "host_opencli_browser_bilibili_read": true,
+    "original_session_accessible": true
+  },
+  "connection": {
+    "transport": "ws",
+    "mode": "fullAccess",
+    "approval": "allow_always"
+  },
+  "music_root_on_host": "/home/gen/deerflow-workspaces/folotoy/music",
+  "repairs": [
+    "Kuwo downloads can reuse exact selected title/artist and skip a second unstable search."
+  ],
+  "known_limitations": [
+    "QQ upstream intermittently returned empty results or network errors during testing; later native QQ download and media probe passed. Historical failed QQ voice attempt is retained as evidence.",
+    "OpenCLI requires the host browser and extension to remain connected."
+  ],
+  "cleanup": {
+    "remote_temporary_bytes_freed": 1770232,
+    "local_temporary_cleanup": "completed",
+    "local_temporary_bytes_freed": 20230121
+  },
+  "important_evidence": [
+    "verification-voice-kuwo.json",
+    "verification-music_download_qq.json",
+    "verification-opencli_read.json",
+    "verification-physical-retest.json",
+    "verification-user-playback.json",
+    "verification-final-health.json"
+  ]
+}

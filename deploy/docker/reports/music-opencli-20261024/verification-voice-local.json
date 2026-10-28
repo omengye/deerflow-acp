@@ -1,0 +1,124 @@
+{
+  "case": "local",
+  "voice_report": "/home/gen/Documents/folotoy/deerflow-ws/src/data/music-voice-verification.json",
+  "passed": true,
+  "native_tool_audit": {
+    "case": "local",
+    "test_device": "MUSICVOICE66EB6BD44F6E1D10",
+    "passed": true,
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "skill": "toy-playmusic"
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "skill": "toy-playmusic",
+        "action": "run",
+        "path": "scripts/toy-playmusic.py",
+        "arguments": [
+          "list",
+          "--match",
+          "验证音乐"
+        ]
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "skill": "toy-playmusic",
+        "status": "completed",
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "version": "c55b296be552ee8d602c59a232101f1d5a3e0cb87bb61ff3be36bdcabed65452",
+        "ok": true,
+        "operation": "list"
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "skill": "toy-playmusic",
+        "action": "run",
+        "path": "scripts/toy-playmusic.py",
+        "arguments": [
+          "play",
+          "音乐测试/验证音乐.mp3",
+          "--device-key",
+          "MUSICVOICE66EB6BD44F6E1D10",
+          "--request-id",
+          "e6908868a8b9411ab41ce82086757bdc"
+        ]
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "skill": "toy-playmusic",
+        "status": "completed",
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "version": "c55b296be552ee8d602c59a232101f1d5a3e0cb87bb61ff3be36bdcabed65452",
+        "ok": true,
+        "operation": "play",
+        "job": {
+          "id": "1ce4ccde5c5647c89c1d5c4c352dc694",
+          "state": "preparing",
+          "device_key": "MUSICVOICE66EB6BD44F6E1D10",
+          "request_id": "e6908868a8b9411ab41ce82086757bdc"
+        },
+        "voice_target_verified": true,
+        "file": {
+          "passed": true,
+          "relative_path": "音乐测试/验证音乐.mp3",
+          "bytes": 96884,
+          "sha256": "8ad7197d0968a138e681e6ad44131cf6983da040b83f7dcaf931c9fa37485e19"
+        }
+      }
+    ],
+    "verified_searches": [],
+    "verified_downloads": [],
+    "verified_plays": [
+      {
+        "index": 13,
+        "job": {
+          "id": "1ce4ccde5c5647c89c1d5c4c352dc694",
+          "state": "preparing",
+          "device_key": "MUSICVOICE66EB6BD44F6E1D10",
+          "request_id": "e6908868a8b9411ab41ce82086757bdc"
+        },
+        "file": {
+          "passed": true,
+          "relative_path": "音乐测试/验证音乐.mp3",
+          "bytes": 96884,
+          "sha256": "8ad7197d0968a138e681e6ad44131cf6983da040b83f7dcaf931c9fa37485e19"
+        }
+      }
+    ],
+    "unexpected_tools": [],
+    "errors": [],
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "KX7FACIURA63FIE7FXTX7CS3XX"
+    },
+    "voice_request_id": "e6908868a8b9411ab41ce82086757bdc",
+    "cursor_recovered_from_device": false,
+    "voice_context_verified": true,
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "run": {
+      "id": "OS5DN3HJYFCQLQV2S665EVG5X7",
+      "status": "completed",
+      "stop_reason": "end_turn",
+      "created_at": "2026-10-24T11:31:12.992841354Z"
+    },
+    "play_submissions": 1
+  },
+  "voice_status": "passed",
+  "voice_failure_code": null,
+  "same_recording_queue_verified": true,
+  "reported_music_job_matches_native": true,
+  "converted_audio_exists": true
+}

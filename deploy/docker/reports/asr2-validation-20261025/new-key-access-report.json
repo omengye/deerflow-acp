@@ -1,0 +1,24 @@
+{
+  "phase": "new_api_key_handshake",
+  "production_auth_mode": "legacy_app_id_and_access_token",
+  "production_asr2_api_key_present": false,
+  "production_app_id_suffix": "8381",
+  "production_access_token_matches_supplied_keys": [],
+  "production_api_key_matches_supplied_keys": [],
+  "private_keys_saved": false,
+  "attempts": [
+    {
+      "key_label": "api-key-20260103182713",
+      "endpoint": "bigmodel_nostream",
+      "resource_id": "volc.seedasr.sauc.duration",
+      "request_id": "3edcf1ff-870a-414a-87dd-cee52ef4b23d",
+      "status": "connected",
+      "http_status": 101,
+      "log_id": "20261025111022E2C2EAEB3C796A24AF55",
+      "elapsed_ms": 293
+    }
+  ],
+  "status": "handshake_available",
+  "selected_key_label": "api-key-20260103182713",
+  "selected_endpoint": "bigmodel_nostream"
+}

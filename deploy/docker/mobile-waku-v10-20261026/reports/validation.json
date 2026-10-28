@@ -1,0 +1,13 @@
+{
+  "rustResults": [
+    "#21 0.600 test result: ok. 79 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+    "#21 44.75 test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 545 filtered out; finished in 4.19s"
+  ],
+  "entrypointTests": 5,
+  "verifyWssTests": 8,
+  "rolloutTests": 13,
+  "folotoyClientTests": 25,
+  "finalImageId": "sha256:ec7ab72b5bc8cfe2964f5c2f208db0921eadb5ca4ad04c1f0a995378049b2abf",
+  "liveStreamReplay": "not exercised: no live runtime",
+  "physicalPhoneWeakNetwork": "not exercised"
+}

@@ -1,0 +1,44 @@
+{
+  "budget_preserved": true,
+  "changed_paths": [
+    "/skill_evolution/auto_patch/experience_patterns_enabled",
+    "/skill_evolution/behavior/enabled",
+    "/skill_evolution/behavior/suite_path",
+    "/skill_evolution/discovery/experience_new_skills_enabled",
+    "/skill_evolution/discovery/experience_patterns_enabled",
+    "/skill_evolution/discovery/experience_review_drafts_enabled",
+    "/skill_evolution/discovery/missing_reports_enabled",
+    "/skill_evolution/discovery/new_skill_source_id",
+    "/skill_evolution/discovery/operator_corrections_enabled",
+    "/skill_evolution/discovery/successful_workflows_enabled",
+    "/skill_evolution/enabled",
+    "/skill_evolution/generation/enabled",
+    "/skill_evolution/generation/max_input_bytes",
+    "/skill_evolution/generation/max_output_tokens",
+    "/skill_evolution/generation/timeout_seconds",
+    "/skill_evolution/learning/consolidation_enabled",
+    "/skill_evolution/learning/enabled",
+    "/skill_evolution/learning/matching_enabled",
+    "/skill_evolution/mode",
+    "/skill_evolution/validation/max_input_bytes",
+    "/skill_evolution/validation/max_output_tokens",
+    "/skill_evolution/validation/timeout_seconds",
+    "/skills/export_root",
+    "/skills/managed_sources"
+  ],
+  "cross_session_enabled": false,
+  "database": {
+    "learning_outbox": {},
+    "maintenance_calls": {},
+    "maintenance_jobs": {},
+    "runs": {
+      "cancelled": 1,
+      "completed": 127,
+      "needs_reconciliation": 7
+    },
+    "sessions": 66
+  },
+  "database_path": "/home/gen/deerflow-deploy/data/user-data/config/go-harness-state/harness.db",
+  "passed": true,
+  "phase": "prepared"
+}

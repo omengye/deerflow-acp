@@ -1,0 +1,840 @@
+{
+  "project": {
+    "path": "/home/gen/Documents/deerflow-api",
+    "exists": true,
+    "top_level": [
+      ".agents",
+      ".claude",
+      ".codex",
+      ".config.yaml.lock",
+      ".git",
+      ".gitattributes",
+      ".github",
+      ".gitignore",
+      ".mypy_cache",
+      ".pytest_cache",
+      ".sisyphus",
+      ".venv",
+      "LICENSE",
+      "PORTABLE_README.md",
+      "README.md",
+      "acp-daemon.ps1",
+      "acp-service.ps1",
+      "admin-ui",
+      "app",
+      "bridge",
+      "config.example.yaml",
+      "config.yaml",
+      "config.yaml.bak1",
+      "daemon.sh",
+      "data",
+      "deerflow",
+      "deerflow-api.log",
+      "desktop",
+      "desktop-app",
+      "docs",
+      "examples",
+      "extensions_config.example.json",
+      "extensions_config.json",
+      "integrations",
+      "packages",
+      "pyproject.toml",
+      "resources",
+      "scripts",
+      "skills",
+      "start.bat",
+      "start.sh",
+      "stop.bat",
+      "stop.ps1",
+      "stop.sh",
+      "tests",
+      "uv.lock"
+    ]
+  },
+  "skill_directory_categories": [
+    {
+      "name": "custom",
+      "directory": true
+    },
+    {
+      "name": "public",
+      "directory": true
+    }
+  ],
+  "old_project_skills": {
+    "count": 85,
+    "skills": [
+      {
+        "name": "agently-email-sender",
+        "path": "skills/custom/agently-email-sender/SKILL.md",
+        "description": "Guidance for sending HTML email reports via agently-cli, including authentication status check, token refresh, inline HTML formatting, and non-interactive two-phase confirmation to",
+        "runtime_manifest": false
+      },
+      {
+        "name": "agently-mail",
+        "path": "skills/custom/agently-mail/SKILL.md",
+        "description": "通过 agently-cli 命令行工具操作邮件：发送、回复、转发、搜索、读取、下载附件、管理收件箱。当用户需要进行任何邮件相关操作时使用此 skill。",
+        "runtime_manifest": false
+      },
+      {
+        "name": "agently-mail-send",
+        "path": "skills/custom/agently-mail-send/SKILL.md",
+        "description": "Send HTML email using agently-cli (Tencent QQMail agent CLI). Handles authentication check, token refresh, and two-phase confirmation. Use when the user wants to send an email via ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "ai-hot-daily-briefing",
+        "path": "skills/custom/ai-hot-daily-briefing/SKILL.md",
+        "description": "获取当天最新 AI 日报资讯，整理为中文 Markdown 简报，转换为带内联样式的 HTML 邮件正文，并通过 agently-cli 发送邮件。适用于每天重复的 AI 热点日报汇总与邮件推送任务。",
+        "runtime_manifest": false
+      },
+      {
+        "name": "ai-hot-daily-email",
+        "path": "skills/custom/ai-hot-daily-email/SKILL.md",
+        "description": "Create a Chinese AI HOT daily briefing from AI HOT news, convert it to a styled HTML email, and send it to a specified recipient using the agently-cli two-phase send flow. Use for ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "ai-hot-daily-report-email",
+        "path": "skills/custom/ai-hot-daily-report-email/SKILL.md",
+        "description": "获取 AI HOT 每日 AI 日报，整理成中文 Markdown 简报并输出，再转换为带内联样式的 HTML 邮件正文，通过 agently-cli 发送到指定邮箱。适用于用户要求“AI HOT 日报”或定时发送 AI 日报邮件的场景。",
+        "runtime_manifest": false
+      },
+      {
+        "name": "aihot",
+        "path": "skills/custom/aihot/SKILL.md",
+        "description": "AI HOT (aihot.virxact.com) 中文 AI 资讯查询 Skill。当用户想知道\"今天 AI 圈有什么\"、\"AI 日报\"、\"AI HOT\"、\"AI 资讯\"、\"AI 热点\"、\"最近 AI\"、\"OpenAI/Anthropic/Google 最近发布了什么\"、\"AI hot today\"、\"AI news today\"、\"看一下 AI 行业动",
+        "runtime_manifest": false
+      },
+      {
+        "name": "aihot-daily-brief",
+        "path": "skills/custom/aihot-daily-brief/SKILL.md",
+        "description": "Compile and email the AI HOT daily digest in Chinese. Use when the user asks for today's AI news or daily AI report, or when a scheduled job requests an AI HOT 日报 email. Produces a",
+        "runtime_manifest": false
+      },
+      {
+        "name": "aihot-daily-digest",
+        "path": "skills/custom/aihot-daily-digest/SKILL.md",
+        "description": "Generate a Chinese AI HOT daily brief from aihot, convert it to inline-styled HTML, and send it via agently-cli with two-phase confirmation. Use for daily recurring AI news digest ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "aihot-daily-digest-email",
+        "path": "skills/custom/aihot-daily-digest-email/SKILL.md",
+        "description": "Generate a Chinese AI HOT daily news digest in Markdown, convert it to a styled HTML email, and send it via agently-cli using the non-interactive two-phase confirmation flow. Use f",
+        "runtime_manifest": false
+      },
+      {
+        "name": "aihot-daily-email",
+        "path": "skills/custom/aihot-daily-email/SKILL.md",
+        "description": "发送 AI HOT 日报邮件。当用户要求\"发送AI日报邮件\"、\"把AI日报发我邮箱\"、\"给我发下AI日报\"或类似请求时，综合使用 aihot 和 baoyu-markdown-to-html 技能拉取日报、转换为格式良好的邮件并发送到指定收件人。",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-article-illustrator",
+        "path": "skills/custom/baoyu-article-illustrator/SKILL.md",
+        "description": "Analyzes article structure, identifies positions requiring visual aids, generates illustrations with Type × Style × Palette three-dimension approach. Use when user asks to \"illustr",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-comic",
+        "path": "skills/custom/baoyu-comic/SKILL.md",
+        "description": "Knowledge comic creator supporting multiple art styles and tones. Creates original educational comics with detailed panel layouts and batch-capable image generation. Use when user ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-compress-image",
+        "path": "skills/custom/baoyu-compress-image/SKILL.md",
+        "description": "Compresses images to WebP (default) or PNG with automatic tool selection. Use when user asks to \"compress image\", \"optimize image\", \"convert to webp\", or reduce image file size.",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-cover-image",
+        "path": "skills/custom/baoyu-cover-image/SKILL.md",
+        "description": "Generates article cover images with 5 dimensions (type, palette, rendering, text, mood) combining 11 color palettes and 7 rendering styles. Supports cinematic (2.35:1), widescreen ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-danger-gemini-web",
+        "path": "skills/custom/baoyu-danger-gemini-web/SKILL.md",
+        "description": "Generates images and text via reverse-engineered Gemini Web API. Supports text generation, image generation from prompts, reference images for vision input, and multi-turn conversa",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-danger-x-to-markdown",
+        "path": "skills/custom/baoyu-danger-x-to-markdown/SKILL.md",
+        "description": "Converts X (Twitter) tweets and articles to markdown with YAML front matter. Uses reverse-engineered API requiring user consent. Use when user mentions \"X to markdown\", \"tweet to m",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-diagram",
+        "path": "skills/custom/baoyu-diagram/SKILL.md",
+        "description": "Create professional, dark-themed SVG diagrams of any type — architecture diagrams, flowcharts, sequence diagrams, structural diagrams, mind maps, timelines, illustrative/conceptual",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-electron-extract",
+        "path": "skills/custom/baoyu-electron-extract/SKILL.md",
+        "description": "Extracts resources and JavaScript from any installed Electron app (`.asar` bundle), restoring original sources from `.js.map` files when available or formatting minified code with ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-format-markdown",
+        "path": "skills/custom/baoyu-format-markdown/SKILL.md",
+        "description": "Formats plain text or markdown files with frontmatter, titles, summaries, headings, bold, lists, and code blocks. Use when user asks to \"format markdown\", \"beautify article\", \"add ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-image-gen",
+        "path": "skills/custom/baoyu-image-gen/SKILL.md",
+        "description": "AI image generation with OpenAI GPT Image 2, Azure OpenAI, Google, OpenRouter, DashScope, Z.AI GLM-Image, MiniMax, Jimeng, Seedream and Replicate APIs. Supports text-to-image, refe",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-infographic",
+        "path": "skills/custom/baoyu-infographic/SKILL.md",
+        "description": "Generate professional infographics with 21 layout types and 22 visual styles. Analyzes content, recommends layout×style combinations, and generates publication-ready infographics. ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-markdown-to-html",
+        "path": "skills/custom/baoyu-markdown-to-html/SKILL.md",
+        "description": "Converts Markdown to styled HTML with WeChat-compatible themes. Supports code highlighting, math, Mermaid (rendered to PNG via headless Chrome), PlantUML, footnotes, alerts, infogr",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-post-to-wechat",
+        "path": "skills/custom/baoyu-post-to-wechat/SKILL.md",
+        "description": "Posts content to WeChat Official Account (微信公众号) via API or Chrome CDP. Supports article posting (文章) with HTML, markdown, or plain text input, and image-text posting (贴图, formerly",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-post-to-weibo",
+        "path": "skills/custom/baoyu-post-to-weibo/SKILL.md",
+        "description": "Posts content to Weibo (微博). Supports regular posts with text, images, and videos, and headline articles (头条文章) with Markdown input via Chrome CDP. Use when user asks to \"post to W",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-post-to-x",
+        "path": "skills/custom/baoyu-post-to-x/SKILL.md",
+        "description": "Posts content and articles to X (Twitter). Supports regular posts with images/videos and X Articles (long-form Markdown). In Codex, honor explicit requests for the Codex Chrome plu",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-slide-deck",
+        "path": "skills/custom/baoyu-slide-deck/SKILL.md",
+        "description": "Generates professional slide deck images from content. Creates outlines with style instructions, then generates individual slide images. Use when user asks to \"create slides\", \"mak",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-translate",
+        "path": "skills/custom/baoyu-translate/SKILL.md",
+        "description": "Translates articles and documents between languages with three modes - quick (direct), normal (analyze then translate), and refined (analyze, translate, review, polish). Supports c",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-url-to-markdown",
+        "path": "skills/custom/baoyu-url-to-markdown/SKILL.md",
+        "description": "Fetch any URL and convert to markdown using baoyu-fetch CLI (Chrome CDP with site-specific adapters). Built-in adapters for X/Twitter, YouTube transcripts, Hacker News threads, and",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-wechat-summary",
+        "path": "skills/custom/baoyu-wechat-summary/SKILL.md",
+        "description": "Summarizes WeChat group chat highlights into a structured digest using the local wx-cli binary (https://github.com/jackwener/wx-cli). Generates a normal digest by default; a roast ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-xhs-images",
+        "path": "skills/custom/baoyu-xhs-images/SKILL.md",
+        "description": "Generates infographic image card series with 12 visual styles, 8 layouts, and 3 color palettes. Breaks content into 1-10 cartoon-style image cards optimized for social media engage",
+        "runtime_manifest": false
+      },
+      {
+        "name": "baoyu-youtube-transcript",
+        "path": "skills/custom/baoyu-youtube-transcript/SKILL.md",
+        "description": "Downloads YouTube video transcripts/subtitles and cover images by URL or video ID. Supports multiple languages, translation, chapters, and speaker identification. Caches raw data f",
+        "runtime_manifest": false
+      },
+      {
+        "name": "bilibili-trending",
+        "path": "skills/custom/bilibili-trending/SKILL.md",
+        "description": "Fetch Bilibili (B站) trending videos, ranking boards, user following feed, and single-video analysis (metadata, UP主 upload history, comments) using the host_opencli tool. Includes e",
+        "runtime_manifest": false
+      },
+      {
+        "name": "check-open-source-commercial-license",
+        "path": "skills/custom/check-open-source-commercial-license/SKILL.md",
+        "description": "Determine if a software project can be used commercially by inspecting its open-source license, separate asset licenses, and trademark terms. Use this when the user asks \"Can I use",
+        "runtime_manifest": false
+      },
+      {
+        "name": "community-notification-triage",
+        "path": "skills/custom/community-notification-triage/SKILL.md",
+        "description": "Triage unread community notifications by separating passive reactions (likes/upvotes) from substantive comments, replying to comments that warrant engagement, marking notifications",
+        "runtime_manifest": false
+      },
+      {
+        "name": "daily-ai-hn-digest",
+        "path": "skills/custom/daily-ai-hn-digest/SKILL.md",
+        "description": "Generate and deliver the user's recurring daily AI HOT report and Hacker News hot distribution digest.",
+        "runtime_manifest": false
+      },
+      {
+        "name": "diagnose-scheduled-tasks",
+        "path": "skills/custom/diagnose-scheduled-tasks/SKILL.md",
+        "description": "Diagnose missing or empty scheduled tasks by systematically checking application-specific task lists, system crontab, systemd timers, API endpoints, and filesystem artifacts.",
+        "runtime_manifest": false
+      },
+      {
+        "name": "fictional-plot-research",
+        "path": "skills/custom/fictional-plot-research/SKILL.md",
+        "description": "Use when the user asks for detailed explanations of events, battles, or character actions in a fictional narrative (novel, manga, game, movie, etc.) that require external research.",
+        "runtime_manifest": false
+      },
+      {
+        "name": "github-issue-research",
+        "path": "skills/custom/github-issue-research/SKILL.md",
+        "description": "Research GitHub issues, pull requests, and code markers to determine whether a feature is implemented, planned, or unsupported.",
+        "runtime_manifest": false
+      },
+      {
+        "name": "github-project-feature-research",
+        "path": "skills/custom/github-project-feature-research/SKILL.md",
+        "description": "Verify whether an open-source GitHub project supports a specific feature. Use when a user asks about a project's capability, configuration options, or protocol support. Covers web ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "hackernews-digest",
+        "path": "skills/custom/hackernews-digest/SKILL.md",
+        "description": "Hacker News 每日热门摘要 Skill。当用户想要查看、整理或发布 Hacker News 前 10 热门帖子时使用。支持抓取 HN 首页、生成中文摘要、发布到 InStreet 社区、发送邮件及同步至 Notion。触发关键词：Hacker News、HN、HN digest、HN 热门、HN 前10、hackernews、今天的 HN。",
+        "runtime_manifest": false
+      },
+      {
+        "name": "hn-daily-digest",
+        "path": "skills/custom/hn-daily-digest/SKILL.md",
+        "description": "Create and distribute a daily Hacker News top-10 digest to InStreet, Notion, and email. Trigger when the user asks to continue the HN digest workflow or when a recurring daily dist",
+        "runtime_manifest": false
+      },
+      {
+        "name": "hn-digest-distribution",
+        "path": "skills/custom/hn-digest-distribution/SKILL.md",
+        "description": "Build and distribute a daily Chinese-language Hacker News top-10 digest across InStreet, Notion, and email. Use when the user asks to send or publish today's HN digest, or confirms",
+        "runtime_manifest": false
+      },
+      {
+        "name": "instreet",
+        "path": "skills/custom/instreet/SKILL.md",
+        "description": "InStreet AI Agent 社交网络操作 Skill。当用户需要访问 instreet.coze.site 社区、查看帖子、发帖、评论、点赞、管理小组、参与竞技场/文学社/预言机/桌游室、查看 Agent 动态、搜索用户或进行任何 InStreet 相关操作时使用此 skill。触发关键词：instreet、InStreet、AI Agent 社区、",
+        "runtime_manifest": false
+      },
+      {
+        "name": "instreet-daily-post-check",
+        "path": "skills/custom/instreet-daily-post-check/SKILL.md",
+        "description": "Verify and summarize the user's InStreet submissions for a given day, including post data and comments.",
+        "runtime_manifest": false
+      },
+      {
+        "name": "lore-provenance-research",
+        "path": "skills/custom/lore-provenance-research/SKILL.md",
+        "description": "Use when the user asks how a character, item, or ability in a fictional work was obtained, or asks for a more concrete origin chain (\"怎么得到的？具体一点\"). Produces a verified, chronologic",
+        "runtime_manifest": false
+      },
+      {
+        "name": "multi-source-research-synthesis",
+        "path": "skills/custom/multi-source-research-synthesis/SKILL.md",
+        "description": "Use for complex factual, biographical, or narrative questions that require gathering information from multiple web searches and synthesizing a cited answer. Especially useful when ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "my-coffee",
+        "path": "skills/custom/my-coffee/SKILL.md",
+        "description": "Use when users ask to order Luckin Coffee, search Luckin stores/products, query pickup code/order status, cancel a Luckin order, or mention 瑞幸、luckin、咖啡、点单、下单、门店、取餐码.",
+        "runtime_manifest": false
+      },
+      {
+        "name": "notion-api",
+        "path": "skills/custom/notion-api/SKILL.md",
+        "description": "This skill provides comprehensive instructions for interacting with the Notion API via REST calls. This skill should be used whenever the user asks to interact with Notion, includi",
+        "runtime_manifest": false
+      },
+      {
+        "name": "open-source-project-evaluation",
+        "path": "skills/custom/open-source-project-evaluation/SKILL.md",
+        "description": "Evaluate the capabilities of an open-source AI agent project by researching official docs, GitHub issues, and real-user feedback, then produce a structured assessment. Use when the",
+        "runtime_manifest": false
+      },
+      {
+        "name": "opencli",
+        "path": "skills/custom/opencli/SKILL.md",
+        "description": "OpenCLI 多站点适配器工具。通过 host_opencli 工具操作小红书 (xiaohongshu)、抖音 (douyin)、Twitter (twitter)、GitHub (github) 等站点。当用户需要进行浏览、搜索、获取内容、查看用户等操作时使用此 skill。触发关键词：小红书、抖音、opencli、host_opencli、浏览抖音、",
+        "runtime_manifest": false
+      },
+      {
+        "name": "qq-music",
+        "path": "skills/custom/qq-music/SKILL.md",
+        "description": "QQ Music search, parse, and download workflow using api.nki.pw. Use when the user asks to search QQ音乐/QQ Music songs, resolve downloadable audio URLs, download a song by keyword or",
+        "runtime_manifest": false
+      },
+      {
+        "name": "rain-tomorrow-check",
+        "path": "skills/custom/rain-tomorrow-check/SKILL.md",
+        "description": "Answer whether it will rain tomorrow, including rain type, temperature, precipitation timing, and an umbrella suggestion. Use when the user asks 明天下雨吗 or similar repeated rain ques",
+        "runtime_manifest": false
+      },
+      {
+        "name": "sandbox-init",
+        "path": "skills/custom/sandbox-init/SKILL.md",
+        "description": "Sandbox HOME directory readiness probe. Run at the start of every new conversation session, before any other work, to avoid a race condition where /etc/profile.d/nodejs.sh runs bef",
+        "runtime_manifest": false
+      },
+      {
+        "name": "sheet-music-to-midi",
+        "path": "skills/custom/sheet-music-to-midi/SKILL.md",
+        "description": "\"Professional sheet music to MIDI converter. Supports: (1) sheet music images (JPG/PNG) → MIDI via Optical Music Recognition (OMR), (2) MusicXML/MXL → MIDI, (3) ABC notation → MIDI",
+        "runtime_manifest": false
+      },
+      {
+        "name": "soda-music",
+        "path": "skills/custom/soda-music/SKILL.md",
+        "description": "汽水音乐（Soda Music）搜索与下载 Skill。当用户需要搜索汽水音乐歌曲、查看红心歌单、获取歌单曲目、下载/解密歌曲时使用。触发关键词：汽水音乐、soda music、汽水、soda、抖音音乐。",
+        "runtime_manifest": false
+      },
+      {
+        "name": "song-download",
+        "path": "skills/custom/song-download/SKILL.md",
+        "description": "搜索并下载歌曲到本地。基于酷我音乐 API（西瓜糖 API），支持关键词搜索、交互式选歌、指定音质、可选转码为 24kHz mono 96kbps MP3。不依赖任何硬件，纯粹的\"搜歌、下歌、存歌\"。",
+        "runtime_manifest": false
+      },
+      {
+        "name": "subway-seat-tracker",
+        "path": "skills/custom/subway-seat-tracker/SKILL.md",
+        "description": "\"自动追踪地铁座位选择结果（选对/选错）及详细心得过程，追加到本地日志文件并同步更新 Notion 页面。当用户提到‘地铁选对’、‘地铁选错’、‘地铁座位’、‘地铁胜率’、‘选座记录’、‘地铁打卡’等相关词汇时触发。\"",
+        "runtime_manifest": false
+      },
+      {
+        "name": "toy-playmusic",
+        "path": "skills/custom/toy-playmusic/SKILL.md",
+        "description": "Play an existing local music/audio file, or a music file selected from a specified local directory, on a FoloToy toy by calling the host sidecar local playback API when available, ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "video-insights",
+        "path": "skills/custom/video-insights/SKILL.md",
+        "description": "Extract and summarize key insights from a video link, with optional contextual research, while minimizing tool usage.",
+        "runtime_manifest": false
+      },
+      {
+        "name": "windows-acp-toolchain-diagnosis",
+        "path": "skills/custom/windows-acp-toolchain-diagnosis/SKILL.md",
+        "description": "Diagnose why a Windows ACP tool (e.g., remote_deerflow) is unavailable or failing. Use when users ask about Windows ACP tools, remote_deerflow connectivity, missing ACP bridge/daem",
+        "runtime_manifest": false
+      },
+      {
+        "name": "x-trending-topics",
+        "path": "skills/custom/x-trending-topics/SKILL.md",
+        "description": "Retrieve and summarize current trending topics on X (formerly Twitter). Use when the user asks what is trending on X, or asks for hot/popular topics on X.",
+        "runtime_manifest": false
+      },
+      {
+        "name": "xianxia-lore-research",
+        "path": "skills/custom/xianxia-lore-research/SKILL.md",
+        "description": "Research and explain cultivation techniques, artifacts, characters, or power systems in Chinese xianxia/xuanhuan web novels, especially \"A Record of a Mortal's Journey to Immortali",
+        "runtime_manifest": false
+      },
+      {
+        "name": "academic-paper-review",
+        "path": "skills/public/academic-paper-review/SKILL.md",
+        "description": "Use this skill when the user requests to review, analyze, critique, or summarize academic papers, research articles, preprints, or scientific publications. Supports comprehensive s",
+        "runtime_manifest": false
+      },
+      {
+        "name": "bootstrap",
+        "path": "skills/public/bootstrap/SKILL.md",
+        "description": "- Generate a personalized SOUL.md through a warm, adaptive onboarding conversation. Trigger when the user wants to create, set up, or initialize their AI partner's identity — e.g.,",
+        "runtime_manifest": false
+      },
+      {
+        "name": "chart-visualization",
+        "path": "skills/public/chart-visualization/SKILL.md",
+        "description": "This skill should be used when the user wants to visualize data. It intelligently selects the most suitable chart type from 26 available options, extracts parameters based on detai",
+        "runtime_manifest": false
+      },
+      {
+        "name": "claude-to-deerflow",
+        "path": "skills/public/claude-to-deerflow/SKILL.md",
+        "description": "\"Interact with DeerFlow AI agent platform via its HTTP API. Use this skill when the user wants to send messages or questions to DeerFlow for research/analysis, start a DeerFlow con",
+        "runtime_manifest": false
+      },
+      {
+        "name": "code-documentation",
+        "path": "skills/public/code-documentation/SKILL.md",
+        "description": "Use this skill when the user requests to generate, create, or improve documentation for code, APIs, libraries, repositories, or software projects. Supports README generation, API r",
+        "runtime_manifest": false
+      },
+      {
+        "name": "consulting-analysis",
+        "path": "skills/public/consulting-analysis/SKILL.md",
+        "description": "Use this skill when the user requests to generate, create, or write professional research reports including but not limited to market analysis, consumer insights, brand analysis, f",
+        "runtime_manifest": false
+      },
+      {
+        "name": "data-analysis",
+        "path": "skills/public/data-analysis/SKILL.md",
+        "description": "Use this skill when the user uploads Excel (.xlsx/.xls) or CSV files and wants to perform data analysis, generate statistics, create summaries, pivot tables, SQL queries, or any fo",
+        "runtime_manifest": false
+      },
+      {
+        "name": "deep-research",
+        "path": "skills/public/deep-research/SKILL.md",
+        "description": "Use this skill instead of WebSearch for ANY question requiring web research. Trigger on queries like \"what is X\", \"explain X\", \"compare X and Y\", \"research X\", or before content ge",
+        "runtime_manifest": false
+      },
+      {
+        "name": "find-skills",
+        "path": "skills/public/find-skills/SKILL.md",
+        "description": "Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending c",
+        "runtime_manifest": false
+      },
+      {
+        "name": "frontend-design",
+        "path": "skills/public/frontend-design/SKILL.md",
+        "description": "Create distinctive, production-grade frontend interfaces with high design quality. Use this skill when the user asks to build web components, pages, artifacts, posters, or applicat",
+        "runtime_manifest": false
+      },
+      {
+        "name": "github-deep-research",
+        "path": "skills/public/github-deep-research/SKILL.md",
+        "description": "Conduct multi-round deep research on any GitHub Repo. Use when users request comprehensive analysis, timeline reconstruction, competitive analysis, or in-depth investigation of Git",
+        "runtime_manifest": false
+      },
+      {
+        "name": "image-generation",
+        "path": "skills/public/image-generation/SKILL.md",
+        "description": "Use this skill when the user requests to generate, create, imagine, or visualize images including characters, scenes, products, or any visual content. Supports structured prompts a",
+        "runtime_manifest": false
+      },
+      {
+        "name": "newsletter-generation",
+        "path": "skills/public/newsletter-generation/SKILL.md",
+        "description": "Use this skill when the user requests to generate, create, write, or draft a newsletter, email digest, weekly roundup, industry briefing, or curated content summary. Supports topic",
+        "runtime_manifest": false
+      },
+      {
+        "name": "podcast-generation",
+        "path": "skills/public/podcast-generation/SKILL.md",
+        "description": "Use this skill when the user requests to generate, create, or produce podcasts from text content. Converts written content into a two-host conversational podcast audio format with ",
+        "runtime_manifest": false
+      },
+      {
+        "name": "ppt-generation",
+        "path": "skills/public/ppt-generation/SKILL.md",
+        "description": "Use this skill when the user requests to generate, create, or make presentations (PPT/PPTX). Creates visually rich slides by generating images for each slide and composing them int",
+        "runtime_manifest": false
+      },
+      {
+        "name": "skill-creator",
+        "path": "skills/public/skill-creator/SKILL.md",
+        "description": "Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run e",
+        "runtime_manifest": false
+      },
+      {
+        "name": "surprise-me",
+        "path": "skills/public/surprise-me/SKILL.md",
+        "description": "Create a delightful, unexpected \"wow\" experience for the user by dynamically discovering and creatively combining other enabled skills. Triggers when the user says \"surprise me\" or",
+        "runtime_manifest": false
+      },
+      {
+        "name": "systematic-literature-review",
+        "path": "skills/public/systematic-literature-review/SKILL.md",
+        "description": "Use this skill when the user wants a systematic literature review, survey, or synthesis across multiple academic papers on a topic. Also covers annotated bibliographies and cross-p",
+        "runtime_manifest": false
+      },
+      {
+        "name": "vercel-deploy",
+        "path": "skills/public/vercel-deploy-claimable/SKILL.md",
+        "description": "Deploy applications and websites to Vercel. Use this skill when the user requests deployment actions such as \"Deploy my app\", \"Deploy this to production\", \"Create a preview deploym",
+        "runtime_manifest": false
+      },
+      {
+        "name": "video-generation",
+        "path": "skills/public/video-generation/SKILL.md",
+        "description": "Use this skill when the user requests to generate, create, or imagine videos. Supports structured prompts and reference image for guided generation.",
+        "runtime_manifest": false
+      },
+      {
+        "name": "weather-cma",
+        "path": "skills/public/weather-cma/SKILL.md",
+        "description": "\"Use this skill for ANY weather query about Chinese cities — forecasts, current conditions, rain checks, temperature, weekend weather, etc. Uses China Meteorological Administration",
+        "runtime_manifest": false
+      },
+      {
+        "name": "web-design-guidelines",
+        "path": "skills/public/web-design-guidelines/SKILL.md",
+        "description": "Review UI code for Web Interface Guidelines compliance. Use when asked to \"review my UI\", \"check accessibility\", \"audit design\", \"review UX\", or \"check my site against best practic",
+        "runtime_manifest": false
+      }
+    ]
+  },
+  "skill_root_reference": {
+    "config": "config.yaml",
+    "skills_path": "./skills"
+  },
+  "container_current_skills": {
+    "ok": true,
+    "count": 25,
+    "skills": [
+      {
+        "name": "academic-paper-review",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "b2615edc865390a5b77ff250c4dd7ff8ae3f2dab5a4082387b5bed92d0356f6b"
+      },
+      {
+        "name": "bootstrap",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "cd555b2a3d1d3c31fea65d5e96d542b401b85c19bcd2ecbbe3194724317bb931"
+      },
+      {
+        "name": "chart-visualization",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "c4d133a10fc92d7c6abfc7a1188012826cecd47d074bfc32a57a4a2cc70958fa"
+      },
+      {
+        "name": "claude-to-deerflow",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "b776ebea93ed93f590c3d69c4b98d045da504639d0e9dc77b97868e4c03c802b"
+      },
+      {
+        "name": "code-documentation",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "8b807890c43edf5873fe5108085fa399eb9be6c127e131f88a3ef565e12ec843"
+      },
+      {
+        "name": "consulting-analysis",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "32dfe2288b7a4418b04fbbf8fcba72220149cdaaf3e090a5a30e4c4561c95659"
+      },
+      {
+        "name": "deep-research",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "c2af9d394bd119f6cf420b56ac8c2e5e49bc994a2a3463fff3ec205adca7d6c1"
+      },
+      {
+        "name": "deepseek-search",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "eb3ff4808c24dbf25519148d51a42acc0411402339a6c0f3fa2d0db113e41c93"
+      },
+      {
+        "name": "fanren-rag",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "ac6a29cf1df57266a920e209a28dbaff3c291431e52517437c84b15419d7aa8c"
+      },
+      {
+        "name": "find-skills",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "4a5ac4b68fad80ffb27d1e2e7d726d589f189a0b033a175220f7f47d671a8289"
+      },
+      {
+        "name": "frontend-design",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "c479f1a15c7c38ff7dfae2177f79de002c5fcff581369466a1af2ee72052021e"
+      },
+      {
+        "name": "github-deep-research",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "2baefc34c54de157cfa24e5ae9297a9515044ab2cf7ff2122759469e84316b17"
+      },
+      {
+        "name": "huaweicloud-linux",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "5440cf1788aa8f194a63a3f89e19aa540915e3c929adaf962a26797ae37e2ec2"
+      },
+      {
+        "name": "huaweicloud-sandbox",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "72ebc6dcdf788cb487596bbf2612147c88a6a74951c8f747c1ba2529da80bd49"
+      },
+      {
+        "name": "instabox-exec-windows",
+        "enabled": false,
+        "source_status": "ready",
+        "version": "0eca2d4b4837fe096a89b33bf9d87d5dd6df2769f69fff00b8d629999e0684ed"
+      },
+      {
+        "name": "newsletter-generation",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "be55023215fabac8de290cf43e2625f03291ae81d72b79a193337f2181fa2491"
+      },
+      {
+        "name": "searxng-web-search",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "58af083c26579e3d93d98422b920554386a4b1d7c4135bcd55adff131c49d85e"
+      },
+      {
+        "name": "show-me",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "845d375e56ce51e9978b868daab67f7d43c02ad96ccf42df61b198fc3e17db34"
+      },
+      {
+        "name": "skill-creator",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "3e580592e9644b48cd6e73296f3dea38883b7eec1c0a230b09735da35efdfdbf"
+      },
+      {
+        "name": "surprise-me",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "f5f9baf7913ed83eda32f0f0fe79a522b2fdbc73b52f2edcc3d4d124599da18b"
+      },
+      {
+        "name": "systematic-literature-review",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "45ba73d2ef5cb5a0b603466bee6e8af8dcc80e93cf2814a104f91ed4228dede9"
+      },
+      {
+        "name": "ulw-plan",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "33ecabe9f4080cd4d990e496b23e2855b6f914b3f26b4fde86e5f4e85c9c48a0"
+      },
+      {
+        "name": "vercel-deploy",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "6ff71bd736c144cf0641c201a7b01d9efb7c17459b2fefbf851f7c5f2fd9915b"
+      },
+      {
+        "name": "weather-cma",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "89d0d53d5e5591a5cc55996949a7cb1dce3a2bcab80d3df5271d299a3e53622b"
+      },
+      {
+        "name": "web-design-guidelines",
+        "enabled": true,
+        "source_status": "ready",
+        "version": "9b5f25099fa885e1752edc21c8ef115ca54eccb85e0c286816c2ad1cbf5640d1"
+      }
+    ]
+  },
+  "comparison": {
+    "old_only": [
+      "agently-email-sender",
+      "agently-mail",
+      "agently-mail-send",
+      "ai-hot-daily-briefing",
+      "ai-hot-daily-email",
+      "ai-hot-daily-report-email",
+      "aihot",
+      "aihot-daily-brief",
+      "aihot-daily-digest",
+      "aihot-daily-digest-email",
+      "aihot-daily-email",
+      "baoyu-article-illustrator",
+      "baoyu-comic",
+      "baoyu-compress-image",
+      "baoyu-cover-image",
+      "baoyu-danger-gemini-web",
+      "baoyu-danger-x-to-markdown",
+      "baoyu-diagram",
+      "baoyu-electron-extract",
+      "baoyu-format-markdown",
+      "baoyu-image-gen",
+      "baoyu-infographic",
+      "baoyu-markdown-to-html",
+      "baoyu-post-to-wechat",
+      "baoyu-post-to-weibo",
+      "baoyu-post-to-x",
+      "baoyu-slide-deck",
+      "baoyu-translate",
+      "baoyu-url-to-markdown",
+      "baoyu-wechat-summary",
+      "baoyu-xhs-images",
+      "baoyu-youtube-transcript",
+      "bilibili-trending",
+      "check-open-source-commercial-license",
+      "community-notification-triage",
+      "daily-ai-hn-digest",
+      "data-analysis",
+      "diagnose-scheduled-tasks",
+      "fictional-plot-research",
+      "github-issue-research",
+      "github-project-feature-research",
+      "hackernews-digest",
+      "hn-daily-digest",
+      "hn-digest-distribution",
+      "image-generation",
+      "instreet",
+      "instreet-daily-post-check",
+      "lore-provenance-research",
+      "multi-source-research-synthesis",
+      "my-coffee",
+      "notion-api",
+      "open-source-project-evaluation",
+      "opencli",
+      "podcast-generation",
+      "ppt-generation",
+      "qq-music",
+      "rain-tomorrow-check",
+      "sandbox-init",
+      "sheet-music-to-midi",
+      "soda-music",
+      "song-download",
+      "subway-seat-tracker",
+      "toy-playmusic",
+      "video-generation",
+      "video-insights",
+      "windows-acp-toolchain-diagnosis",
+      "x-trending-topics",
+      "xianxia-lore-research"
+    ],
+    "container_only": [
+      "deepseek-search",
+      "fanren-rag",
+      "huaweicloud-linux",
+      "huaweicloud-sandbox",
+      "instabox-exec-windows",
+      "searxng-web-search",
+      "show-me",
+      "ulw-plan"
+    ],
+    "common": [
+      "academic-paper-review",
+      "bootstrap",
+      "chart-visualization",
+      "claude-to-deerflow",
+      "code-documentation",
+      "consulting-analysis",
+      "deep-research",
+      "find-skills",
+      "frontend-design",
+      "github-deep-research",
+      "newsletter-generation",
+      "skill-creator",
+      "surprise-me",
+      "systematic-literature-review",
+      "vercel-deploy",
+      "weather-cma",
+      "web-design-guidelines"
+    ]
+  }
+}

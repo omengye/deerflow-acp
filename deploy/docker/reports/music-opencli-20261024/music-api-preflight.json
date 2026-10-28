@@ -1,0 +1,247 @@
+{
+  "container_exit_code": 0,
+  "cases": [
+    {
+      "case": "kuwo_search",
+      "exit_code": 0,
+      "elapsed_seconds": 8.3,
+      "result": {
+        "ok": true,
+        "provider": "kuwo",
+        "operation": "search",
+        "query": "晴天",
+        "count": 3,
+        "results": [
+          {
+            "index": 1,
+            "title": "晴天",
+            "artist": "周杰伦"
+          },
+          {
+            "index": 2,
+            "title": "晴天",
+            "artist": "何老希"
+          },
+          {
+            "index": 3,
+            "title": "晴天 (深情版)",
+            "artist": "Lucky小爱"
+          }
+        ]
+      }
+    },
+    {
+      "case": "qq_search",
+      "exit_code": 0,
+      "elapsed_seconds": 4.19,
+      "result": {
+        "ok": true,
+        "provider": "qq-music",
+        "operation": "search",
+        "query": "晴天",
+        "count": 0,
+        "results": []
+      }
+    },
+    {
+      "case": "qq_resolve",
+      "exit_code": 0,
+      "elapsed_seconds": 6.26,
+      "result": {
+        "ok": true,
+        "provider": "qq-music",
+        "operation": "resolve",
+        "selected": {
+          "mid": "000BEsDj0UUhf8"
+        },
+        "candidates": [
+          {
+            "index": 1,
+            "quality": "default",
+            "format": "m4a",
+            "bitrate": "97",
+            "size": "1.38MB",
+            "available": true
+          },
+          {
+            "index": 2,
+            "quality": "low",
+            "format": "m4a",
+            "bitrate": "48",
+            "size": "708.71KB",
+            "available": true
+          }
+        ]
+      }
+    },
+    {
+      "case": "qq_download",
+      "exit_code": 0,
+      "elapsed_seconds": 2.22,
+      "result": {
+        "ok": true,
+        "provider": "qq-music",
+        "operation": "download",
+        "selected": {
+          "mid": "000BEsDj0UUhf8"
+        },
+        "candidates": [
+          {
+            "index": 1,
+            "quality": "default",
+            "format": "m4a",
+            "bitrate": "97",
+            "size": "1.38MB",
+            "available": true
+          },
+          {
+            "index": 2,
+            "quality": "low",
+            "format": "m4a",
+            "bitrate": "48",
+            "size": "708.71KB",
+            "available": true
+          }
+        ],
+        "path": "/workspaces/folotoy/music/QQ音乐 - 000BEsDj0UUhf8 - 9fcb79d0.m4a",
+        "filename": "QQ音乐 - 000BEsDj0UUhf8 - 9fcb79d0.m4a",
+        "bytes": 725721,
+        "sha256": "b3f91758d47ce9dca18c3d5fb82b9f811e0e7d85a0791c71d8ce8efe7385e2b3",
+        "audio_header_detected": true,
+        "content_type": "audio/mp4",
+        "transcode_required_for_toy": true,
+        "relative_path": "QQ音乐 - 000BEsDj0UUhf8 - 9fcb79d0.m4a",
+        "selected_quality": {
+          "index": 2,
+          "quality": "low",
+          "format": "m4a",
+          "bitrate": "48",
+          "size": "708.71KB",
+          "available": true
+        },
+        "next_skill": "toy-playmusic",
+        "playback_started": false
+      },
+      "file_exists": true,
+      "file_bytes": 725721,
+      "ffprobe_exit_code": 0,
+      "audio_metadata": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "aac",
+            "sample_rate": "44100",
+            "channels": 2
+          }
+        ],
+        "format": {
+          "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+          "duration": "119.164800"
+        }
+      }
+    },
+    {
+      "case": "kuwo_download",
+      "exit_code": 0,
+      "elapsed_seconds": 16.83,
+      "result": {
+        "ok": true,
+        "provider": "kuwo",
+        "operation": "download",
+        "selected": {
+          "index": 1,
+          "title": "晴天",
+          "artist": "周杰伦"
+        },
+        "candidates": [
+          {
+            "index": 0,
+            "format": "flac",
+            "bitrate": "2000",
+            "size": "52.83Mb",
+            "available": true
+          },
+          {
+            "index": 1,
+            "format": "ogg",
+            "bitrate": "192",
+            "size": "5.59Mb",
+            "available": true
+          },
+          {
+            "index": 2,
+            "format": "ogg",
+            "bitrate": "300",
+            "size": "9.85Mb",
+            "available": true
+          },
+          {
+            "index": 3,
+            "format": "ogg",
+            "bitrate": "100",
+            "size": "2.79Mb",
+            "available": true
+          },
+          {
+            "index": 4,
+            "format": "mp3",
+            "bitrate": "320",
+            "size": "10.29Mb",
+            "available": true
+          },
+          {
+            "index": 5,
+            "format": "aac",
+            "bitrate": "48",
+            "size": "1.57Mb",
+            "available": true
+          },
+          {
+            "index": 6,
+            "format": "mp3",
+            "bitrate": "128",
+            "size": "4.12Mb",
+            "available": true
+          }
+        ],
+        "path": "/workspaces/folotoy/music/晴天 - 周杰伦 - 1edf3ece.mp3",
+        "filename": "晴天 - 周杰伦 - 1edf3ece.mp3",
+        "bytes": 4317292,
+        "sha256": "62b9564aa93b4fb951173f62660b83dfd97e647be620e5bec4462b94ea93ba76",
+        "audio_header_detected": true,
+        "content_type": "audio/mpeg",
+        "transcode_required_for_toy": true,
+        "relative_path": "晴天 - 周杰伦 - 1edf3ece.mp3",
+        "selected_quality": {
+          "index": 6,
+          "format": "mp3",
+          "bitrate": "128",
+          "size": "4.12Mb",
+          "available": true
+        },
+        "next_skill": "toy-playmusic",
+        "playback_started": false
+      },
+      "file_exists": true,
+      "file_bytes": 4317292,
+      "ffprobe_exit_code": 0,
+      "audio_metadata": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "mp3",
+            "sample_rate": "44100",
+            "channels": 2,
+            "side_data_list": [
+              {}
+            ]
+          }
+        ],
+        "format": {
+          "format_name": "mp3",
+          "duration": "269.792653"
+        }
+      }
+    }
+  ]
+}

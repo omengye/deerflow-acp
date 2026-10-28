@@ -1,0 +1,115 @@
+{
+  "status": "completed",
+  "date": "2026-10-24",
+  "host": "192.168.1.190",
+  "supersedes": "../brave-20261024/report.json",
+  "changes": [
+    "Dynamic Asia/Shanghai clock context on each FoloToy turn",
+    "Dated weather extraction from complete official HTML with fallback",
+    "Explicit persistent native data directory across recreation/restart",
+    "Huawei Cloud skill runtime manifests and explicit private SSH paths"
+  ],
+  "verified": {
+    "weather": {
+      "passed": true,
+      "mode": "fullAccess",
+      "approval": "allow_always",
+      "tool_receipts": [
+        {
+          "kind": "dated_weather",
+          "date": "2026-10-25",
+          "source": "中国天气网",
+          "forecast": [
+            {
+              "date": "2026-10-25",
+              "condition": "小雨",
+              "high_c": 12,
+              "low_c": 9,
+              "wind": "北风 < 3级",
+              "daytime": "小雨",
+              "nighttime": "小雨",
+              "rain_expected": true,
+              "snow_expected": false
+            }
+          ]
+        }
+      ],
+      "temporary_actors_released": true
+    },
+    "cloud_linux": {
+      "passed": true,
+      "mode": "fullAccess",
+      "approval": "allow_always",
+      "tool_receipts": [
+        {
+          "kind": "strict_ssh_status",
+          "skill": "huaweicloud-linux",
+          "exit_code": 0,
+          "stdout": "=== [系统版本] ===\nPRETTY_NAME=\"Ubuntu 24.04.5 LTS\"\n=== [运行时间与负载] ===\n 18:18:06 up 7 days,  8:24,  1 user,  load average: 0.00, 0.00, 0.00\n=== [内存状态] ===\n               total        used        free      shared  buff/cache   available\nMem:           1.7Gi       442Mi       238Mi       2.6Mi       1.2Gi       1.3Gi\nSwap:             0B          0B          0B\n=== [磁盘状态] ===\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/vda1        40G  5.2G   33G  14% /\n=== [网络接口] ===\nlo               UNKNOWN        127.0.0.1/8 ::1/128 \neth0             UP             172.31.15.28/20 fe80::f816:3eff:fe7a:6a77/64 \ndocker0          DOWN           172.17.0.1/16 fe80::642c:78ff:fec5:3f53/64\n"
+        }
+      ],
+      "temporary_actors_released": true
+    },
+    "cloud_sandbox": {
+      "passed": true,
+      "mode": "fullAccess",
+      "approval": "allow_always",
+      "tool_receipts": [
+        {
+          "kind": "strict_ssh_status",
+          "skill": "huaweicloud-sandbox",
+          "exit_code": 0,
+          "stdout": "0.0.80\nv22.23.3\nbubblewrap 0.9.0\n/usr/bin/socat\n"
+        }
+      ],
+      "temporary_actors_released": true
+    }
+  },
+  "runtime": {
+    "after_recreate": {
+      "data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+      "original_session_accessible": true
+    },
+    "after_restart": {
+      "data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+      "original_session_accessible": true
+    },
+    "containers": [
+      {
+        "name": "deerflow-deploy-deerflow-1",
+        "status": "running",
+        "health": "healthy",
+        "image": "deerflow-server:skills-20261024"
+      },
+      {
+        "name": "folotoy-ws-folotoy-1",
+        "status": "running",
+        "health": "healthy",
+        "image": "folotoy-deerflow-ws:tools-fix-20261024"
+      }
+    ]
+  },
+  "roles_unchanged": true,
+  "deerflow_config_unchanged": true,
+  "cloud_ssh": {
+    "credential_copy_explicitly_authorized": true,
+    "first_use_identity_explicitly_authorized": true,
+    "host_fingerprint": "SHA256:kNZ3ltl1ElRH2z/kvQ9PKtGGbtHiHAah7dg5TOBkodo",
+    "files_mode": "0600",
+    "private_directory_mode": "0700",
+    "credentials_in_images_skills_reports": false,
+    "cloud_operations": "read-only status; no cloud configuration or policy changes"
+  },
+  "offline_validation": {
+    "folotoy_clock": 23,
+    "weather_parser": 12,
+    "huawei_clients": 11,
+    "folotoy_installer": 8,
+    "sdk_probe_contracts": 3,
+    "runtime_wrapper": "shell syntax, explicit CLI precedence, Compose format/idempotence/conflict checks passed"
+  },
+  "notes": [
+    "Cloud status verifies connectivity and component availability, not effective sandbox isolation.",
+    "Go binaries were not rebuilt. Original images and private rollback backups were retained."
+  ]
+}

@@ -1,0 +1,122 @@
+{
+  "case": "cloud_linux",
+  "passed": true,
+  "conversation": {
+    "case": "cloud_linux",
+    "status": "conversation_completed",
+    "role": "1",
+    "transport": "ws",
+    "turn_timeout_seconds": 120,
+    "tool_receipts_verified": false,
+    "requires_native_tool_audit": true,
+    "waku_session_id": "77692ebc-c472-4e84-9eb0-a35b685ad3b1",
+    "reply": "检查完成，没有修改配置。服务器负载很低（0.00），内存已用约 442 MiB、可用约 1.3 GiB；磁盘用了 14%（5.2/40 GiB）。状态看起来很轻松呢！你还想看看什么呀？",
+    "reply_truncated": false,
+    "completed": true,
+    "stop_reason": "end_turn",
+    "mode": "fullAccess",
+    "approval": "allow_always",
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "SRWG7ICNPNRHHLONJOFK3YFJ4N"
+    },
+    "waku_runtime_id": "77f77c9c-3516-4818-88f9-38805d9741b6",
+    "server_model": "gpt-6-luna",
+    "confirmed_approval": "allow_always",
+    "cleanup": {
+      "actors_recorded": 1,
+      "actors_released": 1,
+      "passed": true
+    },
+    "elapsed_ms": 24467
+  },
+  "native_tool_audit": {
+    "native_session": "SRWG7ICNPNRHHLONJOFK3YFJ4N",
+    "database": "/var/lib/deerflow/user-data/config/go-harness-state/harness.db",
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "arguments": {
+          "skill": "huaweicloud-linux",
+          "args": "只读检查服务器当前状态，报告负载、内存和磁盘使用情况。不得修改配置或系统。"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill",
+        "status": "completed",
+        "failure_code": null
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "arguments": {
+          "name": "huaweicloud-linux",
+          "action": "check"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "status": "completed",
+        "failure_code": null,
+        "skill": "huaweicloud-linux",
+        "version": "5440cf1788aa8f194a63a3f89e19aa540915e3c929adaf962a26797ae37e2ec2",
+        "ready": true,
+        "exit_code": null,
+        "termination_confirmed": null
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "arguments": {
+          "name": "huaweicloud-linux",
+          "action": "run",
+          "path": "scripts/huaweicloud_ssh.py",
+          "args": [
+            "--key",
+            "/var/lib/deerflow/user-data/private/skills/huaweicloud/huaweicloud_ed25519",
+            "--known-hosts",
+            "/var/lib/deerflow/user-data/private/skills/huaweicloud/known_hosts",
+            "status"
+          ]
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "status": "completed",
+        "failure_code": null,
+        "skill": "huaweicloud-linux",
+        "version": "5440cf1788aa8f194a63a3f89e19aa540915e3c929adaf962a26797ae37e2ec2",
+        "ready": true,
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "stdout": "=== [系统版本] ===\nPRETTY_NAME=\"Ubuntu 24.04.5 LTS\"\n=== [运行时间与负载] ===\n 18:18:06 up 7 days,  8:24,  1 user,  load average: 0.00, 0.00, 0.00\n=== [内存状态] ===\n               total        used        free      shared  buff/cache   available\nMem:           1.7Gi       442Mi       238Mi       2.6Mi       1.2Gi       1.3Gi\nSwap:             0B          0B          0B\n=== [磁盘状态] ===\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/vda1        40G  5.2G   33G  14% /\n=== [网络接口] ===\nlo               UNKNOWN        127.0.0.1/8 ::1/128 \neth0             UP             172.31.15.28/20 fe80::f816:3eff:fe7a:6a77/64 \ndocker0          DOWN           172.17.0.1/16 fe80::642c:78ff:fec5:3f53/64\n"
+      }
+    ],
+    "verified_results": [
+      {
+        "kind": "strict_ssh_status",
+        "skill": "huaweicloud-linux",
+        "exit_code": 0,
+        "stdout": "=== [系统版本] ===\nPRETTY_NAME=\"Ubuntu 24.04.5 LTS\"\n=== [运行时间与负载] ===\n 18:18:06 up 7 days,  8:24,  1 user,  load average: 0.00, 0.00, 0.00\n=== [内存状态] ===\n               total        used        free      shared  buff/cache   available\nMem:           1.7Gi       442Mi       238Mi       2.6Mi       1.2Gi       1.3Gi\nSwap:             0B          0B          0B\n=== [磁盘状态] ===\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/vda1        40G  5.2G   33G  14% /\n=== [网络接口] ===\nlo               UNKNOWN        127.0.0.1/8 ::1/128 \neth0             UP             172.31.15.28/20 fe80::f816:3eff:fe7a:6a77/64 \ndocker0          DOWN           172.17.0.1/16 fe80::642c:78ff:fec5:3f53/64\n"
+      }
+    ],
+    "unexpected_tools": [],
+    "run": {
+      "id": "FKRFYBBBLRVWJC2TF4SSATOHSR",
+      "status": "completed",
+      "stop_reason": "end_turn"
+    },
+    "expected_tomorrow": "2026-10-25",
+    "trusted_clock_context_present": true,
+    "passed": true
+  }
+}

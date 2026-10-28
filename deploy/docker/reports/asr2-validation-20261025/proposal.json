@@ -1,0 +1,111 @@
+{
+  "status": "deployed_and_verified",
+  "date": "2026-10-25",
+  "scope": {
+    "implement_candidate": true,
+    "test_real_availability": true,
+    "deploy_to_production": true,
+    "hotwords": false,
+    "context": false,
+    "text_correction": false
+  },
+  "target": {
+    "provider_name": "volcengine-asr2",
+    "endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream",
+    "model_name": "bigmodel",
+    "resource_id": "volc.seedasr.sauc.duration"
+  },
+  "test_findings": {
+    "windows_offline_tests_passed": 17,
+    "gentoo_offline_tests": {
+      "status": "passed",
+      "tests_run": 17,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "elapsed_ms": 75,
+      "python_version": "3.11.5",
+      "network_requests_made": false,
+      "test_error_details": null
+    },
+    "old_v2_recognized": true,
+    "asr2_recognition_available": true,
+    "production_unchanged": true,
+    "private_host_config_matches_runtime": true,
+    "legacy_credential_failure": {
+      "status": "blocked",
+      "error": "asr2_handshake_rejected",
+      "http_status": 403,
+      "elapsed_ms": 232
+    },
+    "legacy_provider_error": "requested resource not granted",
+    "new_key_live_test": {
+      "text": "请查询华为云服务器的运行状态。",
+      "reference": "请查询华为云服务器的运行状态。",
+      "resource_id": "volc.seedasr.sauc.duration",
+      "final": true,
+      "audio_duration_seconds": 3.408,
+      "elapsed_ms_including_audio_replay": 3985,
+      "production_unchanged": true,
+      "human_error_audio_evaluated": false
+    }
+  },
+  "implementation_after_approval": [
+    {
+      "step": 1,
+      "action": "Configure the verified new API Key in the private FoloToy ASR2.0 runtime configuration. Authentication and isolated final recognition already passed; never embed the Key into the image, source, skill, argv or report."
+    },
+    {
+      "step": 2,
+      "action": "Compare old/new models on identical audio: user names, technical terms, songs and ordinary commands; record transcription errors, total time, audio replay time and final-result wait separately. Synthetic speech only demonstrates availability."
+    },
+    {
+      "step": 3,
+      "action": "Register the new engine in FoloToy STT dispatch and configuration mapping; keep the current provider as default. Build a new image with a precise backup and test actual loaded modules."
+    },
+    {
+      "step": 4,
+      "action": "With user approval, enable ASR2.0 on role1 for a trial. Confirm real toy voice recognition, DeerFlow WS/fullAccess, TTS and music still work."
+    },
+    {
+      "step": 5,
+      "action": "After successful trial, enable roles2-7. Keep the former image and role configuration for rollback."
+    }
+  ],
+  "failure_policy": {
+    "validation": "No automatic fallback; an ASR2.0 failure must remain visible in reports.",
+    "production_proposal": "An optional bounded old-ASR fallback can be added separately; record the actual provider and never label fallback output ASR2.0."
+  },
+  "files": {
+    "test_volcengine_asr2.py": "6f8669517eefdb263ecb18577cefb9c728d387bbf3813b8cb595e4a922705f55",
+    "verify-asr2.py": "170ea82f64b96998b56bfca5f25ee0d8473b1b0a4ec550cee69a54795f89e619",
+    "volcengine_asr2.py": "1bc1ffe99869427975f2e37c580cb257c2db498b96d847b19fbad5e4645775dd"
+  },
+  "official_reference": "https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-automatic-speech-recognition-websocket?lang=zh",
+  "selected_authentication": {
+    "mode": "x_api_key",
+    "key_label": "api-key-20260103182713",
+    "raw_key_saved": false,
+    "production_current_authentication": "legacy_app_id_and_access_token"
+  },
+  "evidence": {
+    "new_key_access": "new-key-access-report.json",
+    "new_key_recognition": "model-probe-new-key-report.json",
+    "offline_tests": "linux-offline-tests.json",
+    "historical_legacy_rejection": "model-probe-before-grant.json"
+  },
+  "production_deployment": {
+    "date": "2026-10-25",
+    "roles": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "key_saved_in_private_runtime_configuration_only": true,
+    "report": "../asr2-rollout-20261025/summary.json"
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "case": "kuwo",
+  "voice_report": "/home/gen/Documents/folotoy/deerflow-ws/src/data/music-voice-kuwo-chain.json",
+  "passed": false,
+  "native_tool_audit": {
+    "case": "kuwo",
+    "test_device": "MUSICVOICE76FC4F265A75B833",
+    "passed": false,
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "skill": "song-download"
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "skill": "song-download",
+        "action": "run",
+        "path": "scripts/song-download.py",
+        "arguments": [
+          "search",
+          "晴天",
+          "--limit",
+          "5"
+        ]
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "skill": "song-download",
+        "status": "completed",
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "version": "c917163f2df0de6653af21a3821db91d1cb98c684ee28684e4c27ec1bea0026f",
+        "ok": true,
+        "operation": "search",
+        "result_count": 5
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "skill": "song-download",
+        "action": "run",
+        "path": "scripts/song-download.py",
+        "arguments": [
+          "download",
+          "晴天",
+          "--song-index",
+          "1"
+        ]
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "skill": "song-download",
+        "status": "failed",
+        "exit_code": 1,
+        "termination_confirmed": true,
+        "version": "c917163f2df0de6653af21a3821db91d1cb98c684ee28684e4c27ec1bea0026f",
+        "ok": false,
+        "operation": "download",
+        "business_error": "selected_song_not_found",
+        "download_file_returned": false
+      }
+    ],
+    "verified_searches": [
+      {
+        "index": 10,
+        "count": 5,
+        "provider": "kuwo"
+      }
+    ],
+    "verified_downloads": [],
+    "verified_plays": [],
+    "unexpected_tools": [],
+    "errors": [
+      "expected_exactly_one_voice_play_submission",
+      "no_verified_voice_play",
+      "no_verified_kuwo_download",
+      "kuwo_search_download_play_sequence_missing"
+    ],
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "766YLGU3A2VMNUALVTXROGSNYL"
+    },
+    "voice_request_id": "87c3581c7db14f4c9108d0a95ceb7c39",
+    "cursor_recovered_from_device": false,
+    "voice_context_verified": true,
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "run": {
+      "id": "6OZAPHHTNJCQIDLXOGRWDZ7LWF",
+      "status": "completed",
+      "stop_reason": "end_turn",
+      "created_at": "2026-10-24T11:43:50.921092009Z"
+    },
+    "play_submissions": 0,
+    "search_download_play_sequence_verified": false
+  },
+  "voice_status": "failed",
+  "voice_failure_code": "music_was_not_appended_after_tts_in_one_recording_batch",
+  "same_recording_queue_verified": false,
+  "reported_music_job_matches_native": false,
+  "converted_audio_exists": false
+}

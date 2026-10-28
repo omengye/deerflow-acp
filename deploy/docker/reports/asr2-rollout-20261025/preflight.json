@@ -1,0 +1,47 @@
+{
+  "production_sources": {
+    "config.py": "4a9d6938129861538a499dd5a74244927d5bec861f0f77c56d3c1f7b139dfbf9",
+    "util/config_util.py": "98396a9ebf4fb8745a9a33e5becd877ce1fff148f8df6df2e782f70947be5b37",
+    "sdk/stt.py": "a27b80cb680c1a85eca7a5c27726be8bdd018dcfd71f01d7b5e50ebb72536859",
+    "sdk/stt_sdk/volcengine_asr2.py": null
+  },
+  "containers": [
+    {
+      "name": "folotoy-ws-folotoy-1",
+      "image": "folotoy-deerflow-ws:music-20261024",
+      "image_id": "sha256:856c22011d1432922004fdfdfb3674e6051c31a29daae264bf4fe2a7b5d5cf03",
+      "status": "running",
+      "health": "healthy"
+    },
+    {
+      "name": "deerflow-deploy-deerflow-1",
+      "image": "deerflow-server:music-opencli-20261024",
+      "image_id": "sha256:ef1bbe1a75d4072845e583631e45c8d39d5adcadc4a42ac61cf7b7c3eea4bd32",
+      "status": "running",
+      "health": "healthy"
+    }
+  ],
+  "roles_stt": {
+    "1": "global_default",
+    "2": "global_default",
+    "3": "global_default",
+    "4": "global_default",
+    "5": "global_default",
+    "6": "global_default",
+    "7": "global_default"
+  },
+  "conversation_status_counts": {
+    "completed": 4,
+    "invalidated": 6
+  },
+  "runtime_modules": {
+    "python_modules": {
+      "config": "/opt/folotoy/config.py",
+      "util.config_util": "/opt/folotoy/util/config_util.py",
+      "sdk.stt": "/opt/folotoy/sdk/stt.py",
+      "sdk.stt_sdk.volcengine_asr": "/opt/folotoy/sdk/stt_sdk/volcengine_asr.py"
+    },
+    "websockets_version": "12.0"
+  },
+  "native_active_operations": 0
+}

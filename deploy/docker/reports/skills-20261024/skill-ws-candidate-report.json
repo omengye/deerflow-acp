@@ -1,0 +1,39 @@
+{
+  "status": "passed",
+  "skill": "huaweicloud-sandbox",
+  "mode": "fullAccess",
+  "evidence_source": "server richActivity tool inputs and outputs",
+  "session_id": "314e2f95-1fc7-4719-b0d7-84304fedb2e4",
+  "native_session_id": "LHV2OW6DQLJQB2KSUGGVTBQZZU",
+  "skill_loaded_from_tool_result": true,
+  "actual_tool_calls": [
+    "skill",
+    "skill_run",
+    "skill_run"
+  ],
+  "readiness_receipts": [
+    {
+      "ready": true,
+      "dependencies_declared": true,
+      "python_version": "3.11.2",
+      "paramiko_version": "4.0.0",
+      "version": "936701d67cf2817d3534bb7d134702881ea946f5f83a344da1b32f9a0b789c6b"
+    }
+  ],
+  "execution_receipts": [
+    {
+      "execution_checked": true,
+      "exit_code": 0,
+      "termination_confirmed": true,
+      "help_output_verified": true,
+      "version": "936701d67cf2817d3534bb7d134702881ea946f5f83a344da1b32f9a0b789c6b"
+    }
+  ],
+  "same_pinned_version": true,
+  "unexpected_tool_calls": [],
+  "passed": true,
+  "turn_completed": true,
+  "assistant_text_characters": 128,
+  "test_actor_released": true,
+  "elapsed_ms": 20993
+}

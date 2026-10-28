@@ -1,0 +1,202 @@
+{
+  "case": "music_play_admin",
+  "passed": true,
+  "conversation_reused": true,
+  "conversation": {
+    "case": "music_play_admin",
+    "status": "conversation_completed",
+    "transport": "ws",
+    "mode": "fullAccess",
+    "approval": "allow_always",
+    "turn_timeout_seconds": 120,
+    "tool_receipts_verified": false,
+    "requires_native_tool_audit": true,
+    "voice_turn_context_injected": false,
+    "waku_session_id": "f5e74a83-46db-492d-8451-ed173ec411e1",
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "IEC3PHC4CZUVAXT2Y7JLE3H5ZV"
+    },
+    "native_session_id": "IEC3PHC4CZUVAXT2Y7JLE3H5ZV",
+    "waku_runtime_id": "fa24cd9c-8963-4192-9d93-3b047705090a",
+    "confirmed_approval": "allow_always",
+    "server_model": "gpt-6-luna",
+    "completed": true,
+    "stop_reason": "end_turn",
+    "reply": "已将“音乐测试/验证音乐.mp3”提交到默认设备队列。任务状态为 **published**，表示 MQTT 播放指令已发送；这不代表扬声器已开始或完成播放。",
+    "reply_truncated": false,
+    "cleanup": {
+      "actors_recorded": 1,
+      "actors_released": 1,
+      "passed": true
+    },
+    "actual_tool_activities": [
+      {
+        "name": "skill",
+        "arguments": {
+          "skill": "toy-playmusic"
+        },
+        "complete": true,
+        "failed": false
+      },
+      {
+        "name": "skill_run",
+        "arguments": {
+          "name": "toy-playmusic",
+          "action": "run",
+          "path": "scripts/toy-playmusic.py",
+          "args": [
+            "play",
+            "音乐测试/验证音乐.mp3",
+            "--default-device"
+          ]
+        },
+        "complete": true,
+        "failed": false
+      },
+      {
+        "name": "skill_run",
+        "arguments": {
+          "name": "toy-playmusic",
+          "action": "run",
+          "path": "scripts/toy-playmusic.py",
+          "args": [
+            "status",
+            "5ff5b91e62514aeaa178397bb4479888"
+          ]
+        },
+        "complete": true,
+        "failed": false
+      }
+    ],
+    "elapsed_ms": 18311
+  },
+  "native_tool_audit": {
+    "native_session": "IEC3PHC4CZUVAXT2Y7JLE3H5ZV",
+    "database": "/var/lib/deerflow/user-data/config/go-harness-state/harness.db",
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "run": {
+      "id": "ZEYDQSMR2VKP2GJXFYEQVRRGVX",
+      "status": "completed",
+      "stop_reason": "end_turn"
+    },
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "arguments": {
+          "skill": "toy-playmusic"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill",
+        "status": "completed",
+        "failure_code": null
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "arguments": {
+          "name": "toy-playmusic",
+          "action": "run",
+          "path": "scripts/toy-playmusic.py",
+          "args": [
+            "play",
+            "音乐测试/验证音乐.mp3",
+            "--default-device"
+          ]
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "status": "completed",
+        "failure_code": null,
+        "skill": "toy-playmusic",
+        "version": "c55b296be552ee8d602c59a232101f1d5a3e0cb87bb61ff3be36bdcabed65452",
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "job": {
+          "id": "5ff5b91e62514aeaa178397bb4479888",
+          "state": "queued",
+          "device_key": "48ca439d3b78",
+          "request_id": null,
+          "filename": null,
+          "url": null,
+          "error": null,
+          "audio_requested": false,
+          "device_audio_requested": false,
+          "delivery_confirmed": false
+        }
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "arguments": {
+          "name": "toy-playmusic",
+          "action": "run",
+          "path": "scripts/toy-playmusic.py",
+          "args": [
+            "status",
+            "5ff5b91e62514aeaa178397bb4479888"
+          ]
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "status": "completed",
+        "failure_code": null,
+        "skill": "toy-playmusic",
+        "version": "c55b296be552ee8d602c59a232101f1d5a3e0cb87bb61ff3be36bdcabed65452",
+        "exit_code": 0,
+        "termination_confirmed": true
+      }
+    ],
+    "verified_results": [
+      {
+        "kind": "music_queued",
+        "job": {
+          "id": "5ff5b91e62514aeaa178397bb4479888",
+          "state": "queued",
+          "device_key": "48ca439d3b78",
+          "request_id": null,
+          "filename": null,
+          "url": null,
+          "error": null,
+          "audio_requested": false,
+          "device_audio_requested": false,
+          "delivery_confirmed": false
+        },
+        "media": "音乐测试/验证音乐.mp3",
+        "explicit_default_device": true
+      }
+    ],
+    "unexpected_tools": [],
+    "play_submissions": 1,
+    "passed": true
+  },
+  "music_job_status": {
+    "passed": true,
+    "job": {
+      "id": "5ff5b91e62514aeaa178397bb4479888",
+      "state": "published",
+      "device_key": "48ca439d3b78",
+      "request_id": null,
+      "filename": "music-5ff5b91e62514aeaa178397bb4479888.mp3",
+      "url": "http://192.168.1.190:8081/music-5ff5b91e62514aeaa178397bb4479888.mp3",
+      "error": null,
+      "audio_requested": false,
+      "device_audio_requested": false,
+      "delivery_confirmed": false
+    },
+    "device_audio_requested": false,
+    "speaker_playback_confirmed": false,
+    "error_type": null
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "status": "deployed_and_verified",
+  "host": "192.168.1.190",
+  "deployment_id": "b8f33762da9e4942b3d9205747440a59",
+  "image": "folotoy-deerflow-ws:asr2-20261025",
+  "api_key_label": "api-key-20260103182713",
+  "provider": "volcengine-asr2",
+  "endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream",
+  "resource_id": "volc.seedasr.sauc.duration",
+  "roles": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "hotwords_enabled": false,
+  "context_enabled": false,
+  "text_correction_enabled": false,
+  "automatic_legacy_fallback_enabled": false,
+  "validation": {
+    "stage1_role1_full_mqtt_udp_asr_ws_tts_http_chain_passed": true,
+    "stage1_role1_main_process_asr_receipt_verified": true,
+    "stage2_only_after_matching_role1_acceptance": true,
+    "roles2_through7_real_asr_dispatch_and_tts_passed": true,
+    "final_checks": {
+      "only_role_asr_changed": true,
+      "all_roles_accepted": true,
+      "all_deployed_file_hashes_match": true,
+      "rollback_backup_hashes_match": true,
+      "private_key_file_0600": true,
+      "private_directory_0700": true,
+      "key_not_in_image_environment_or_history": true,
+      "key_not_in_public_payload": true,
+      "original_image_available": true,
+      "containers_healthy": true,
+      "all_roles_ws_full_access": true,
+      "music_service_healthy": true,
+      "opencli_service_healthy": true,
+      "original_deerflow_session_accessible": true
+    },
+    "offline_tests": {
+      "candidate_protocol": 17,
+      "new_integration": 9,
+      "existing_config_ws_regressions": 20,
+      "deployment_rollback_behaviors": 8,
+      "voice_validator_behaviors": 10
+    }
+  },
+  "test_scope": {
+    "role1": "Synthetic device through the actual production MQTT/UDP/ASR/DeerFlow WS/TTS/audio HTTP pipeline; main-process ASR2 provider receipt audited.",
+    "roles2_to7": "Each actual role configuration selected the registered ASR2 engine, returned final text, and generated TTS input successfully. No synthetic role-switch backdoor was added.",
+    "human_error_audio_accuracy_measured": false,
+    "physical_speaker_playback_tested": false
+  },
+  "rollback": {
+    "backup": "/home/gen/deerflow-deploy/asr2-rollout-20261025/backup-20261025T032300Z-b8f33762",
+    "original_image": "folotoy-deerflow-ws:music-20261024",
+    "original_image_id": "sha256:856c22011d1432922004fdfdfb3674e6051c31a29daae264bf4fe2a7b5d5cf03",
+    "command": "python3 /home/gen/deerflow-deploy/asr2-rollout-20261025/payload-1792898580653760384/rollback.py --deployment-report /home/gen/deerflow-deploy/asr2-rollout-20261025/deployment.json",
+    "backup_hashes_valid": true,
+    "original_image_available": true,
+    "live_rollback_rehearsed": false
+  },
+  "cleanup": {
+    "remote": "completed",
+    "local": "completed",
+    "local_temporary_bytes_freed": 17276031
+  },
+  "credentials_in_image_or_reports": false,
+  "post_deployment_audio_fix": {
+    "resolved": true,
+    "cause": "Physical toy uses 32k WAV, missed by the earlier 16k-only validation.",
+    "report": "../asr2-audiofix-20261025/summary.json",
+    "current_image": "folotoy-deerflow-ws:asr2-audiofix-20261025"
+  }
+}

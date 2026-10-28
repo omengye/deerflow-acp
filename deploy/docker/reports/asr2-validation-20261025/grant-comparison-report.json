@@ -1,0 +1,31 @@
+{
+  "phase": "resource_grant_diagnosis_only",
+  "recognition_performed": false,
+  "application_id_suffix": "8381",
+  "attempts": [
+    {
+      "resource_id": "volc.bigasr.sauc.duration",
+      "model_family": "1.0",
+      "http_status": 403,
+      "request_id": "5847e932-3312-4a46-823f-1f6748a4354f",
+      "log_id": "2026102510534611B9858185D21EDC0583",
+      "provider_error": "[resource_id=volc.bigasr.sauc.duration] requested resource not granted"
+    },
+    {
+      "resource_id": "volc.bigasr.sauc.concurrent",
+      "model_family": "1.0",
+      "http_status": 403,
+      "request_id": "ca1756be-ab48-4a42-9f00-77e18412f45f",
+      "log_id": "20261025105346526560D6806742FFCA12",
+      "provider_error": "[resource_id=volc.bigasr.sauc.concurrent] requested resource not granted"
+    },
+    {
+      "resource_id": "volc.seedasr.sauc.duration",
+      "model_family": "2.0",
+      "http_status": 403,
+      "request_id": "b9abf788-857f-439b-95ce-670a799aaa30",
+      "log_id": "20261025105346EFFAAC1C51BFA72D55CD",
+      "provider_error": "[resource_id=volc.seedasr.sauc.duration] requested resource not granted"
+    }
+  ]
+}

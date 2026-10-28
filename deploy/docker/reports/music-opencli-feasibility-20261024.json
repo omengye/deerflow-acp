@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-24",
+  "timezone": "Asia/Shanghai",
+  "status": "feasible_not_deployed",
+  "source_project": "/home/gen/Documents/deerflow-api",
+  "skills": [
+    "toy-playmusic",
+    "song-download",
+    "qq-music",
+    "opencli"
+  ],
+  "observed": {
+    "song_download_search": {
+      "http_status": 200,
+      "query": "晴天",
+      "result_count": 20,
+      "download_tested": false
+    },
+    "qq_music_search": {
+      "http_status": 200,
+      "query": "晴天",
+      "result_count": 3,
+      "download_tested": false
+    },
+    "legacy_playback_api": {
+      "port": 8090,
+      "available": false
+    },
+    "folotoy_health": {
+      "port": 8081,
+      "http_status": 200
+    },
+    "container_to_folotoy_health": {
+      "url": "http://172.27.0.1:8081/v1/metrics/health",
+      "http_status": 200
+    },
+    "opencli": {
+      "version": "1.8.6",
+      "path": "/home/gen/.npm-global/bin/opencli",
+      "daemon_running": false,
+      "browser_extension_connection_verified": false,
+      "browser_processes_present": true,
+      "local_daemon_endpoint": "http://127.0.0.1:19825"
+    },
+    "deerflow_runtime": {
+      "requests": false,
+      "ffmpeg": false
+    },
+    "folotoy_runtime": {
+      "requests": true,
+      "ffmpeg": true
+    },
+    "physical_toy_playback_tested": false,
+    "credentials_embedded_in_legacy_skill_docs_or_scripts": true
+  },
+  "recommended_integration": {
+    "downloads": "Run song-download/qq-music via skill_run with requests and private API configuration; save into existing persistent /workspaces/folotoy/music.",
+    "media_sharing": "Bind the matching host directory into FoloToy read-only; transcode in FoloToy using existing ffmpeg and serve resulting audio through its LAN-accessible HTTP service.",
+    "playback": "Add an authenticated, turn-associated playback queue to FoloToy. Carry device/request context from the voice turn, append music after TTS, and coordinate cancellation instead of independently publishing legacy playback messages.",
+    "opencli": "Configure built-in host_opencli to a fixed container proxy; proxy calls a token-protected gen-user host bridge that runs the installed OpenCLI with its existing HOME and browser extension.",
+    "native_config": "Explicit sandbox.allow_host_tools=true and host_opencli.executable proxy path; keep WS/fullAccess.",
+    "credentials": "Remove embedded credentials from migrated skill text/scripts; retain only private runtime configuration.",
+    "core_changes": "No Go/Rust core change expected; skill scripts, runtime/deployment, host bridge and a small FoloToy playback integration are required."
+  },
+  "scope": "Read-only assessment and two music search queries only; no music download, no playback command, no daemon start, and no production configuration changes."
+}

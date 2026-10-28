@@ -1,0 +1,1 @@
+{"version":1,"python":{"min_version":"3.10","packages":["paramiko"],"entrypoints":["scripts/huaweicloud_ssh.py"]}}

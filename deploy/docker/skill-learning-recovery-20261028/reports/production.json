@@ -1,0 +1,223 @@
+{
+  "activity": {
+    "active_operations": 0,
+    "active_runs": 0,
+    "draining": false,
+    "queued_runs": 0
+  },
+  "auto_patch": {
+    "enabled": true,
+    "observing": 0,
+    "published_today": 0,
+    "readiness": {
+      "catalog_version": 35,
+      "eligible_targets": 0,
+      "installed": 29,
+      "missing_suite": 0,
+      "needs_attention": 1,
+      "new_skills_require_review": true,
+      "pending_review": 1,
+      "policy_identity": "d475a73b247dcacbbe4974a6b28aa021514e342d6a47fab7349a3a3963da8d26",
+      "reasons": [
+        "some_targets_require_review",
+        "no_eligible_targets"
+      ],
+      "state": "partial",
+      "waiting_candidates": 0
+    },
+    "running": true
+  },
+  "budgets_preserved": true,
+  "business_data_restored": false,
+  "database": {
+    "learning_outbox": {},
+    "maintenance_calls": {
+      "settled": 9
+    },
+    "maintenance_jobs": {
+      "completed": 1,
+      "failed": 2
+    },
+    "runs": {
+      "cancelled": 1,
+      "completed": 127,
+      "needs_reconciliation": 7
+    },
+    "sessions": 66
+  },
+  "database_path": "/home/gen/deerflow-deploy/data/user-data/config/go-harness-state/harness.db",
+  "diagnostics": true,
+  "discovery": {
+    "enabled": true,
+    "failed_signals": 0,
+    "pending": 1,
+    "running": true,
+    "triggers": [
+      "operator_corrections",
+      "missing_skill",
+      "repeated_workflow",
+      "experience_pattern"
+    ]
+  },
+  "generation": {
+    "enabled": true
+  },
+  "health": "healthy",
+  "image_id": "sha256:535bfcc89aebc94561e4d8a31fd6624f00c4aaddc10394a49df875f7ac6198ce",
+  "learning": {
+    "auto_patch_enabled": true,
+    "consolidation_enabled": true,
+    "cross_session_enabled": false,
+    "enabled": true,
+    "experiences": 0,
+    "idle_seconds": 300,
+    "matches": 0,
+    "matching_enabled": true,
+    "mode": "guarded_auto_patch",
+    "patterns": 0,
+    "pending_inputs": 0,
+    "proposal_discovery_enabled": true,
+    "queue": {
+      "blocked": 0,
+      "capture_limited_sessions": 0,
+      "failed": 0,
+      "failed_jobs": 0,
+      "pending": 0,
+      "queued": 0,
+      "ready": 0,
+      "reasons": [],
+      "skipped": 0
+    },
+    "running": true
+  },
+  "other_containers": [
+    {
+      "id": "faeaf82b9685205cb7d771d637de17402a655889fda3691a7525ccdcd3d1ea38",
+      "name": "buzz-prod-minio-1",
+      "running": true,
+      "started_at": "2026-10-18T09:13:32.039607211Z",
+      "status": "running"
+    },
+    {
+      "id": "b15da817fa7f9b161c44a8cbc26d95fa0bb6b9ffabf6b9f3c7103675ca68a33e",
+      "name": "buzz-prod-minio-init-1",
+      "running": false,
+      "started_at": "2026-10-07T05:17:43.044176876Z",
+      "status": "exited"
+    },
+    {
+      "id": "0629928f7c27e7e8014bb9b5fa412e60cd87768ebba9a165c110cafe56cc6bb8",
+      "name": "buzz-prod-pairing-relay-1",
+      "running": true,
+      "started_at": "2026-10-18T09:13:31.926762653Z",
+      "status": "running"
+    },
+    {
+      "id": "1d241dd5ce6c360c6214d9178fe4cd5458ecf61b318c13b8921e786c1a590869",
+      "name": "buzz-prod-postgres-1",
+      "running": true,
+      "started_at": "2026-10-18T09:13:32.012426057Z",
+      "status": "running"
+    },
+    {
+      "id": "56346f8a09a5c09704062e90a9c4f900e68e67e4271a0980ca9b0748da706234",
+      "name": "buzz-prod-redis-1",
+      "running": true,
+      "started_at": "2026-10-18T09:13:32.035511253Z",
+      "status": "running"
+    },
+    {
+      "id": "6ba9829c51eec16f1cd56067ee4baa2e972f0afb3db2d3cd0e1c8dac4d781661",
+      "name": "buzz-prod-relay-1",
+      "running": true,
+      "started_at": "2026-10-18T09:13:31.907461203Z",
+      "status": "running"
+    },
+    {
+      "id": "552da9ef07cd7faab250cf617fc981907dedae3e44f71f5fc2ae35dc0e2e68c9",
+      "name": "extra-class-postgres",
+      "running": true,
+      "started_at": "2026-10-18T09:13:31.947551791Z",
+      "status": "running"
+    },
+    {
+      "id": "ceb2c903811eeb341724d7b253613a998bafa0774a83ca1a40712179ce3a1357",
+      "name": "folotoy-server-emqx-1",
+      "running": true,
+      "started_at": "2026-10-18T09:13:31.963314152Z",
+      "status": "running"
+    },
+    {
+      "id": "b95366c33b1f83210ae5a17351fd1c4b0cbf4f14d7cb23077d00b0c4029c656d",
+      "name": "folotoy-server-nginx-1",
+      "running": true,
+      "started_at": "2026-10-18T09:13:31.90174129Z",
+      "status": "running"
+    },
+    {
+      "id": "83a2ae51ccdac3bd5384a45ba1121514d3b597df03ddff94a4be92b83f327c67",
+      "name": "folotoy-ws-folotoy-1",
+      "running": true,
+      "started_at": "2026-10-27T02:51:35.378460165Z",
+      "status": "running"
+    },
+    {
+      "id": "f7173bd9b0f66870698e6a05a0da3f386ff532bbc20a5bb3abd8dc67539959ed",
+      "name": "immich_machine_learning",
+      "running": true,
+      "started_at": "2026-10-18T09:13:32.044033533Z",
+      "status": "running"
+    },
+    {
+      "id": "d7424fe11b926091eb4df66a45901ad9d46d9ec3ab404c46287b0c1c90f7ffc0",
+      "name": "immich_postgres",
+      "running": true,
+      "started_at": "2026-10-18T09:13:32.295168041Z",
+      "status": "running"
+    },
+    {
+      "id": "68a59308c20c0b926ccca3261cbc361b4c8a5fab5bcfc856ebf02ba5e52de77e",
+      "name": "immich_redis",
+      "running": true,
+      "started_at": "2026-10-18T09:13:32.017191753Z",
+      "status": "running"
+    },
+    {
+      "id": "fceb23a84ecd7b7eca5e92343d81d6d2eff8e4b2a5aed7f7fae928c135e266fd",
+      "name": "immich_server",
+      "running": true,
+      "started_at": "2026-10-18T09:13:32.360345831Z",
+      "status": "running"
+    },
+    {
+      "id": "ea190a8e7e9b52539d33cd98cf86012ef3d635b350aff4c8a9d45f3a8b45e877",
+      "name": "openlist",
+      "running": true,
+      "started_at": "2026-10-18T09:13:32.027303762Z",
+      "status": "running"
+    },
+    {
+      "id": "930a7d780f1ddb1e8b792f2d84129c9160a817994d836573d930caf8d4529096",
+      "name": "redis",
+      "running": true,
+      "started_at": "2026-10-18T09:13:31.871863292Z",
+      "status": "running"
+    },
+    {
+      "id": "106f1d91e39ba837cd0ae3a00abe7e1a0a2efc7a087b1c3f398c0c2097dcec26",
+      "name": "rustfs-server",
+      "running": true,
+      "started_at": "2026-10-18T09:13:31.989502127Z",
+      "status": "running"
+    },
+    {
+      "id": "847ba3bbbfcdce8b8c24f8e4b144c22d30593ad516b72ab9489f0fbb7dace4f5",
+      "name": "uptime-kuma-uptime-kuma-1",
+      "running": true,
+      "started_at": "2026-10-18T09:13:32.006479151Z",
+      "status": "running"
+    }
+  ],
+  "passed": true,
+  "runtime_build_id": "skill-learning-recovery-20261028"
+}

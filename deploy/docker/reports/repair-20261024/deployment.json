@@ -1,0 +1,246 @@
+{
+  "status": "deployed",
+  "credential_values_in_payload": false,
+  "folotoy_installation": {
+    "status": "applied",
+    "image": "folotoy-deerflow-ws:tools-fix-20261024",
+    "provider_sha256": "a5b7cd7f9db22b28c36ddfc8cfe279e9297c842a78a166cf93783e6ff815fcf1",
+    "changed_files": [
+      "sdk/llm_sdk/deerflow.py",
+      "compose.ws.yaml"
+    ],
+    "backup": "/home/gen/Documents/folotoy/deerflow-ws/backups/folotoy-clock-20261024T101426Z-3d224b60",
+    "image_sha256": "sha256:de159aa04d8a7c0d81bd362e38c5de6ab2e744861d3d5bd1ee18c6606aea050e",
+    "services_restarted": false
+  },
+  "runtime_installation": {
+    "status": "installed",
+    "backup": "/home/gen/deerflow-deploy/runtime-backups/20261024T101427Z-b716faad",
+    "mount": "./runtime/deerflow-acpd-wrapper.sh:/opt/deerflow/bin/deerflow-acpd:ro",
+    "wrapper_sha256": "5b409ad2c2f1c8298df7ca0d3ea65e184a551edc1c49641e0f451f911c5fa4f3",
+    "compose_changed": true,
+    "requires_recreate": true,
+    "persistent_data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+    "database_modified": false
+  },
+  "after_recreate": {
+    "data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+    "original_session_accessible": true
+  },
+  "after_restart": {
+    "data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+    "original_session_accessible": true
+  },
+  "skills": {
+    "weather-cma": {
+      "skills": [
+        {
+          "target": {
+            "source_id": "python-public",
+            "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "weather-cma",
+            "scope": "global"
+          },
+          "head": {
+            "version": "89d0d53d5e5591a5cc55996949a7cb1dce3a2bcab80d3df5271d299a3e53622b",
+            "state_version": 2,
+            "exists": true,
+            "enabled": true,
+            "managed": false
+          },
+          "record": {
+            "ref": {
+              "sourceId": "python-public",
+              "sourceIdentity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+              "name": "weather-cma",
+              "version": "89d0d53d5e5591a5cc55996949a7cb1dce3a2bcab80d3df5271d299a3e53622b",
+              "hash": "89d0d53d5e5591a5cc55996949a7cb1dce3a2bcab80d3df5271d299a3e53622b"
+            },
+            "description": "查询中国城市未来七天天气、明天下雨及气温，使用中国天气网和国家气象中心官方预报并核对真实日期。默认城市北京。",
+            "scope": "global",
+            "enabled": true,
+            "fileCount": 4,
+            "totalBytes": 19905,
+            "installedAt": "2026-10-24T10:14:34.73935327Z",
+            "builtin": true,
+            "stateVersion": 2
+          },
+          "builtin": true,
+          "managed_source": false,
+          "can_refresh_import": true,
+          "source_directory": "/var/lib/deerflow/user-data/skills/public/weather-cma",
+          "source_status": "ready"
+        }
+      ],
+      "sources": [
+        {
+          "target": {
+            "source_id": "python-custom",
+            "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "",
+            "scope": "global"
+          },
+          "builtin": false,
+          "managed_source": false
+        },
+        {
+          "target": {
+            "source_id": "python-public",
+            "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "",
+            "scope": "global"
+          },
+          "builtin": true,
+          "managed_source": false
+        }
+      ],
+      "catalog_version": 28
+    },
+    "huaweicloud-linux": {
+      "skills": [
+        {
+          "target": {
+            "source_id": "python-custom",
+            "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "huaweicloud-linux",
+            "scope": "global"
+          },
+          "head": {
+            "version": "5440cf1788aa8f194a63a3f89e19aa540915e3c929adaf962a26797ae37e2ec2",
+            "state_version": 2,
+            "exists": true,
+            "enabled": true,
+            "managed": false
+          },
+          "record": {
+            "ref": {
+              "sourceId": "python-custom",
+              "sourceIdentity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+              "name": "huaweicloud-linux",
+              "version": "5440cf1788aa8f194a63a3f89e19aa540915e3c929adaf962a26797ae37e2ec2",
+              "hash": "5440cf1788aa8f194a63a3f89e19aa540915e3c929adaf962a26797ae37e2ec2"
+            },
+            "description": "操作用户的华为云 Linux 主机（默认 1.92.70.163:2233，root）。用于明确请求的系统状态、服务日志、命令执行、SFTP 文件传输和应用维护；通过外部 SSH 私钥和已验证 known_hosts 连接。",
+            "scope": "global",
+            "enabled": true,
+            "fileCount": 5,
+            "totalBytes": 11513,
+            "installedAt": "2026-10-24T10:14:34.525166788Z",
+            "stateVersion": 2
+          },
+          "builtin": false,
+          "managed_source": false,
+          "can_refresh_import": true,
+          "source_directory": "/var/lib/deerflow/user-data/skills/custom/huaweicloud-linux",
+          "source_status": "ready"
+        }
+      ],
+      "sources": [
+        {
+          "target": {
+            "source_id": "python-custom",
+            "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "",
+            "scope": "global"
+          },
+          "builtin": false,
+          "managed_source": false
+        },
+        {
+          "target": {
+            "source_id": "python-public",
+            "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "",
+            "scope": "global"
+          },
+          "builtin": true,
+          "managed_source": false
+        }
+      ],
+      "catalog_version": 28
+    },
+    "huaweicloud-sandbox": {
+      "skills": [
+        {
+          "target": {
+            "source_id": "python-custom",
+            "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "huaweicloud-sandbox",
+            "scope": "global"
+          },
+          "head": {
+            "version": "72ebc6dcdf788cb487596bbf2612147c88a6a74951c8f747c1ba2529da80bd49",
+            "state_version": 2,
+            "exists": true,
+            "enabled": true,
+            "managed": false
+          },
+          "record": {
+            "ref": {
+              "sourceId": "python-custom",
+              "sourceIdentity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+              "name": "huaweicloud-sandbox",
+              "version": "72ebc6dcdf788cb487596bbf2612147c88a6a74951c8f747c1ba2529da80bd49",
+              "hash": "72ebc6dcdf788cb487596bbf2612147c88a6a74951c8f747c1ba2529da80bd49"
+            },
+            "description": "Manage the existing Anthropic Sandbox Runtime on the user's Huawei Cloud Linux host. Use for explicitly requested remote sandbox health checks, sandboxed commands, policy inspection, or approved network/filesystem allowlist changes. Do not use for unrelated cloud administration or automatic SSH trust enrollment.",
+            "scope": "global",
+            "enabled": true,
+            "fileCount": 4,
+            "totalBytes": 13808,
+            "installedAt": "2026-10-24T10:14:34.540171396Z",
+            "stateVersion": 2
+          },
+          "builtin": false,
+          "managed_source": false,
+          "can_refresh_import": true,
+          "source_directory": "/var/lib/deerflow/user-data/skills/custom/huaweicloud-sandbox",
+          "source_status": "ready"
+        }
+      ],
+      "sources": [
+        {
+          "target": {
+            "source_id": "python-custom",
+            "source_identity": "17b0a63aeb6677fdfe7631f2ed5e4a7fbd06bcea6a8ad59ab066159086902aac",
+            "name": "",
+            "scope": "global"
+          },
+          "builtin": false,
+          "managed_source": false
+        },
+        {
+          "target": {
+            "source_id": "python-public",
+            "source_identity": "63c744bda68536ac29b74400c52e2c6a2541eae002b292c931936f12d64dae63",
+            "name": "",
+            "scope": "global"
+          },
+          "builtin": true,
+          "managed_source": false
+        }
+      ],
+      "catalog_version": 28
+    }
+  },
+  "containers": [
+    {
+      "name": "deerflow-deploy-deerflow-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "deerflow-server:skills-20261024"
+    },
+    {
+      "name": "folotoy-ws-folotoy-1",
+      "status": "running",
+      "health": "healthy",
+      "image": "folotoy-deerflow-ws:tools-fix-20261024"
+    }
+  ],
+  "roles_unchanged": true,
+  "deerflow_model_and_tool_config_unchanged": true,
+  "private_ssh_files_mode": {
+    "huaweicloud_ed25519": "0o600",
+    "known_hosts": "0o600"
+  }
+}

@@ -1,0 +1,91 @@
+# syntax=docker/dockerfile:1.7
+
+FROM rust:1.96-bookworm AS rust-builder
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        build-essential \
+        clang \
+        cmake \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY bridge ./bridge
+COPY desktop-app ./desktop-app
+COPY deploy/docker/healthcheck ./deploy/docker/healthcheck
+COPY deploy/docker/Cargo.server.toml ./desktop-app/Cargo.toml
+COPY deploy/docker/Cargo.server.lock ./desktop-app/Cargo.lock
+
+ARG CARGO_BUILD_JOBS=4
+RUN --mount=type=cache,id=deerflow-server-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=deerflow-server-bridge-target,target=/src/bridge/target \
+    cargo build --locked --release --manifest-path bridge/Cargo.toml \
+    && mkdir -p /out \
+    && cp bridge/target/release/deerflow-acp /out/deerflow-acp
+RUN --mount=type=cache,id=deerflow-server-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=deerflow-server-daemon-target,target=/src/desktop-app/target \
+    cargo build --locked --release \
+        --manifest-path desktop-app/Cargo.toml \
+        --package waku-daemon \
+        --bin waku-daemon \
+    && cp desktop-app/target/release/waku-daemon /out/waku-daemon
+RUN --mount=type=cache,id=deerflow-server-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=deerflow-server-healthcheck-target,target=/src/deploy/docker/healthcheck/target \
+    cargo build --locked --release \
+        --manifest-path deploy/docker/healthcheck/Cargo.toml \
+    && cp deploy/docker/healthcheck/target/release/deerflow-server-healthcheck /out/deerflow-server-healthcheck
+
+FROM golang:1.26-bookworm AS go-builder
+
+WORKDIR /src/go-harness
+COPY go-harness ./
+
+ARG DEERFLOW_BUILD_ID=deerflow-server-dev
+ARG GOPROXY=https://goproxy.cn,direct
+RUN mkdir -p /out \
+    && go env -w GOPROXY="${GOPROXY}" \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X=main.buildID=${DEERFLOW_BUILD_ID}" \
+        -o /out/deerflow-acpd ./cmd/deerflow-acpd-go \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+        -o /out/deerflow-config-go ./cmd/deerflow-config-go \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+        -o /out/deerflow-control-go ./cmd/deerflow-control-go \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+        -o /out/deerflow-skill-go ./cmd/deerflow-skill-go
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        bash \
+        ca-certificates \
+        git \
+        openssh-client \
+        tini \
+        tzdata \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 deerflow \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash deerflow
+
+COPY --from=rust-builder /out/ /opt/deerflow/bin/
+COPY --from=go-builder /out/ /opt/deerflow/bin/
+COPY resources/default-config.yaml /opt/deerflow/resources/default-config.yaml
+COPY deploy/docker/entrypoint.sh /opt/deerflow/bin/deerflow-server-entrypoint
+COPY LICENSE /opt/deerflow/LICENSE
+
+RUN chmod 0755 /opt/deerflow/bin/* \
+    && mkdir -p /var/lib/deerflow /var/log/deerflow /workspaces \
+    && chown -R deerflow:deerflow /var/lib/deerflow /var/log/deerflow /workspaces
+
+ENV DEER_FLOW_PORTABLE_ROOT=/var/lib/deerflow \
+    WAKU_HEALTH_ADDRESS=127.0.0.1:18787
+
+USER deerflow:deerflow
+WORKDIR /workspaces
+EXPOSE 18787
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=4 \
+    CMD ["/opt/deerflow/bin/deerflow-server-healthcheck"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/deerflow/bin/deerflow-server-entrypoint"]

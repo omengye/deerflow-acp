@@ -1,0 +1,14 @@
+{
+  "status": "applied",
+  "skill": "song-download",
+  "backup": "/home/gen/deerflow-deploy/music-opencli-20261024/song-selection-fix-7834f22f031a",
+  "before_version": "c917163f2df0de6653af21a3821db91d1cb98c684ee28684e4c27ec1bea0026f",
+  "after_version": "21dba05f50abef5834f92d9274dc7ec73ebe804e094d3b16e1060fb6b7a21b95",
+  "enabled": true,
+  "source_status": "ready",
+  "containers_restarted": false,
+  "files": [
+    "skills/custom/song-download/SKILL.md",
+    "skills/custom/song-download/scripts/song-download.py"
+  ]
+}

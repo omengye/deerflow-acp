@@ -1,0 +1,259 @@
+{
+  "case": "opencli_read",
+  "passed": true,
+  "conversation_reused": false,
+  "conversation": {
+    "case": "opencli_read",
+    "status": "conversation_completed",
+    "transport": "ws",
+    "mode": "fullAccess",
+    "approval": "allow_always",
+    "turn_timeout_seconds": 120,
+    "tool_receipts_verified": false,
+    "requires_native_tool_audit": true,
+    "voice_turn_context_injected": false,
+    "waku_session_id": "23075f65-23b0-430b-844b-e475134ff365",
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "YRGVYLSEPNLLNHJVNQY5HGZNLY"
+    },
+    "native_session_id": "YRGVYLSEPNLLNHJVNQY5HGZNLY",
+    "waku_runtime_id": "c1c5f4d8-3164-49c3-927b-ee0d669ac771",
+    "confirmed_approval": "allow_always",
+    "server_model": "gpt-6-luna",
+    "completed": true,
+    "stop_reason": "end_turn",
+    "reply": "通过 OpenCLI 1.8.6 的 B 站只读 `hot` 命令获取到当前热门视频前三项：\n\n1. **抗日神剧逆天剧情！女兵战场睡觉？睡醒还要给她找吃的！**\n2. **人性、欲望与奇观，自驾拉斯维加斯，现实夜之城什么样？**\n3. **折1万次，会坏吗？iPhone Duo深度评测**\n\n本次仅读取热门列表，未登录、点赞、评论或发布。",
+    "reply_truncated": false,
+    "cleanup": {
+      "actors_recorded": 1,
+      "actors_released": 1,
+      "passed": true
+    },
+    "actual_tool_activities": [
+      {
+        "name": "skill",
+        "arguments": {
+          "skill": "opencli"
+        },
+        "complete": true,
+        "failed": false
+      },
+      {
+        "name": "host_opencli",
+        "arguments": {
+          "command": "version"
+        },
+        "complete": true,
+        "failed": false
+      },
+      {
+        "name": "host_opencli",
+        "arguments": {
+          "site": "bilibili",
+          "command": "help"
+        },
+        "complete": true,
+        "failed": true
+      },
+      {
+        "name": "host_opencli",
+        "arguments": {
+          "site": "bilibili",
+          "command": "help"
+        },
+        "complete": true,
+        "failed": false
+      },
+      {
+        "name": "host_opencli",
+        "arguments": {
+          "site": "bilibili",
+          "command": "help",
+          "arguments": [
+            "hot"
+          ]
+        },
+        "complete": true,
+        "failed": false
+      },
+      {
+        "name": "host_opencli",
+        "arguments": {
+          "site": "bilibili",
+          "command": "hot",
+          "arguments": [
+            "--limit",
+            "3",
+            "--format",
+            "json"
+          ]
+        },
+        "complete": true,
+        "failed": false
+      }
+    ],
+    "elapsed_ms": 34872
+  },
+  "native_tool_audit": {
+    "native_session": "YRGVYLSEPNLLNHJVNQY5HGZNLY",
+    "database": "/var/lib/deerflow/user-data/config/go-harness-state/harness.db",
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "run": {
+      "id": "W53Z3HFJIOEQ3YBUZP6Y2XZNR6",
+      "status": "completed",
+      "stop_reason": "end_turn"
+    },
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "arguments": {
+          "skill": "opencli"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill",
+        "status": "completed",
+        "failure_code": null
+      },
+      {
+        "event": "start",
+        "name": "host_opencli",
+        "arguments": {
+          "command": "version"
+        }
+      },
+      {
+        "event": "start",
+        "name": "host_opencli",
+        "arguments": {
+          "site": "bilibili",
+          "command": "help"
+        }
+      },
+      {
+        "event": "end",
+        "name": "host_opencli",
+        "status": "failed",
+        "failure_code": "unknown",
+        "unstructured_result": true
+      },
+      {
+        "event": "end",
+        "name": "host_opencli",
+        "status": "completed",
+        "failure_code": null,
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "stdout_truncated": false
+      },
+      {
+        "event": "start",
+        "name": "host_opencli",
+        "arguments": {
+          "site": "bilibili",
+          "command": "help"
+        }
+      },
+      {
+        "event": "end",
+        "name": "host_opencli",
+        "status": "completed",
+        "failure_code": null,
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "stdout_truncated": false
+      },
+      {
+        "event": "start",
+        "name": "host_opencli",
+        "arguments": {
+          "site": "bilibili",
+          "command": "help",
+          "arguments": [
+            "hot"
+          ]
+        }
+      },
+      {
+        "event": "end",
+        "name": "host_opencli",
+        "status": "completed",
+        "failure_code": null,
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "stdout_truncated": false
+      },
+      {
+        "event": "start",
+        "name": "host_opencli",
+        "arguments": {
+          "site": "bilibili",
+          "command": "hot",
+          "arguments": [
+            "--limit",
+            "3",
+            "--format",
+            "json"
+          ]
+        }
+      },
+      {
+        "event": "end",
+        "name": "host_opencli",
+        "status": "completed",
+        "failure_code": null,
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "stdout_truncated": false,
+        "result_count": 3
+      }
+    ],
+    "verified_results": [
+      {
+        "kind": "opencli_site_read",
+        "site": "bilibili",
+        "command": "hot",
+        "count": 3,
+        "sample": [
+          {
+            "rank": 1,
+            "title": "抗日神剧逆天剧情！女兵战场睡觉？睡醒还要给她找吃的！",
+            "author": "文西与阿漆",
+            "play": 2404655,
+            "danmaku": 11654,
+            "bvid": "BV1Cfni6cELz",
+            "url": "https://www.bilibili.com/video/BV1Cfni6cELz"
+          },
+          {
+            "rank": 2,
+            "title": "人性、欲望与奇观，自驾拉斯维加斯，现实夜之城什么样？",
+            "author": "超Carry的柴西",
+            "play": 1866664,
+            "danmaku": 2971,
+            "bvid": "BV12qnt6VEM1",
+            "url": "https://www.bilibili.com/video/BV12qnt6VEM1"
+          },
+          {
+            "rank": 3,
+            "title": "折1万次，会坏吗？iPhone Duo深度评测",
+            "author": "影视飓风",
+            "play": 7901584,
+            "danmaku": 92055,
+            "bvid": "BV1xrnz6gEVD",
+            "url": "https://www.bilibili.com/video/BV1xrnz6gEVD"
+          }
+        ]
+      }
+    ],
+    "unexpected_tools": [],
+    "play_submissions": 0,
+    "passed": true
+  }
+}

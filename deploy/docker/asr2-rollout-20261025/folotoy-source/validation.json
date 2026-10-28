@@ -1,0 +1,22 @@
+{
+  "asr2_integration_tests": {
+    "tests": 9,
+    "passed": 9,
+    "failed": 0,
+    "network_calls": false,
+    "python": "3.12.14"
+  },
+  "existing_deerflow_config_ws_regressions": {
+    "tests": 20,
+    "passed": 20,
+    "failed": 0,
+    "excluded": "unchanged role example JSON presence test",
+    "network_calls": false
+  },
+  "original_candidate_protocol_tests": {
+    "tests": 17,
+    "passed": 17,
+    "note": "previous candidate tests and live final recognition passed; protocol functions retained unchanged"
+  },
+  "protocol_functions_unchanged": true
+}

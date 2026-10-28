@@ -1,0 +1,103 @@
+{
+  "format_version": 1,
+  "deployment_id": "b8f33762da9e4942b3d9205747440a59",
+  "status": "all_roles_ready",
+  "backup": "/home/gen/deerflow-deploy/asr2-rollout-20261025/backup-20261025T032300Z-b8f33762",
+  "folotoy_root": "/home/gen/Documents/folotoy/deerflow-ws/src",
+  "previous_container": {
+    "image": "folotoy-deerflow-ws:music-20261024",
+    "image_id": "sha256:856c22011d1432922004fdfdfb3674e6051c31a29daae264bf4fe2a7b5d5cf03",
+    "runtime_user": "1000:1000",
+    "container_id": "e626871f907fe4ffc3b81fe65e425779194c4626dedd70b82833adfe6c0b3425",
+    "started_at": "2026-10-24T11:26:37.866469194Z",
+    "status": "running",
+    "health": "healthy"
+  },
+  "payload_root": "/home/gen/deerflow-deploy/asr2-rollout-20261025/payload-1792898580653760384",
+  "new_image": "folotoy-deerflow-ws:asr2-20261025",
+  "key_label": "api-key-20260103182713",
+  "credentials_in_image": false,
+  "hotwords_enabled": false,
+  "old_provider_retained": true,
+  "manual_rollback": "python3 /home/gen/deerflow-deploy/asr2-rollout-20261025/payload-1792898580653760384/rollback.py --deployment-report /home/gen/deerflow-deploy/asr2-rollout-20261025/deployment.json",
+  "pinned_base_tag": "folotoy-deerflow-ws:asr2-base-b8f33762da9e",
+  "container": {
+    "image": "folotoy-deerflow-ws:asr2-20261025",
+    "image_id": "sha256:7709540ad8f915a8d4e6dc37c1892d78ae3921e875d3dea4277e7c59b25d4b8f",
+    "runtime_user": "1000:1000",
+    "container_id": "ea754d0f617dd231f5ae2dca09f4822c8cb2e29d3edfa99fd471fa29b29eb052",
+    "started_at": "2026-10-25T03:25:35.509824379Z",
+    "status": "running",
+    "health": "healthy"
+  },
+  "runtime": {
+    "roles": {
+      "1": "volcengine-asr2",
+      "2": "volcengine-asr2",
+      "3": "volcengine-asr2",
+      "4": "volcengine-asr2",
+      "5": "volcengine-asr2",
+      "6": "volcengine-asr2",
+      "7": "volcengine-asr2"
+    },
+    "new_provider_config": {
+      "1": {
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true,
+        "timeout": 45.0
+      },
+      "2": {
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true,
+        "timeout": 45.0
+      },
+      "3": {
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true,
+        "timeout": 45.0
+      },
+      "4": {
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true,
+        "timeout": 45.0
+      },
+      "5": {
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true,
+        "timeout": 45.0
+      },
+      "6": {
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true,
+        "timeout": 45.0
+      },
+      "7": {
+        "resource_id": "volc.seedasr.sauc.duration",
+        "api_key_present": true,
+        "timeout": 45.0
+      }
+    },
+    "module_files": {
+      "config": "/opt/folotoy/config.py",
+      "util.config_util": "/opt/folotoy/util/config_util.py",
+      "sdk.stt": "/opt/folotoy/sdk/stt.py",
+      "sdk.stt_sdk.volcengine_asr2": "/opt/folotoy/sdk/stt_sdk/volcengine_asr2.py"
+    },
+    "global_stt_type": "volcengine-asr",
+    "new_api_key_present": true,
+    "hotwords_enabled": false
+  },
+  "role1_roles_sha256": "e3373ac8b57a993d6d4b1a1baa341e7ffc1a51501b86491ca95530587d150812",
+  "active_asr2_roles": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "stage2_requires_role1_acceptance": true,
+  "role1_acceptance_passed": true,
+  "final_roles_sha256": "788fe8b54581dca898ae410c9d1cb89f4467517b24f770db0483dccd25fecf35"
+}

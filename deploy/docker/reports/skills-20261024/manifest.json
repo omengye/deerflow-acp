@@ -1,0 +1,813 @@
+{
+  "skills": [
+    {
+      "name": "academic-paper-review",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "b2615edc865390a5b77ff250c4dd7ff8ae3f2dab5a4082387b5bed92d0356f6b",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "a0285baaeacc916bf45751c06db37745b195ddd4ec30e271ec1472f6cd48e8aa",
+          "bytes": 12138
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "b2615edc865390a5b77ff250c4dd7ff8ae3f2dab5a4082387b5bed92d0356f6b"
+    },
+    {
+      "name": "bootstrap",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "cd555b2a3d1d3c31fea65d5e96d542b401b85c19bcd2ecbbe3194724317bb931",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "references/conversation-guide.md",
+          "sha256": "00daeb7f6f1da0c5c7df6cb49eea2d94a845952cbee66f735122ec408a25ca2c",
+          "bytes": 4440
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "d117997b877f80da7411d33b457878ad9ae0a649f43781a74c8b09707984356d",
+          "bytes": 4802
+        },
+        {
+          "path": "templates/SOUL.template.md",
+          "sha256": "9d69c06c8e57103838f4beeab4bd85c73716889adc5d6abc06466e7f1bd6d3fb",
+          "bytes": 2298
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "cd555b2a3d1d3c31fea65d5e96d542b401b85c19bcd2ecbbe3194724317bb931"
+    },
+    {
+      "name": "chart-visualization",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "c4d133a10fc92d7c6abfc7a1188012826cecd47d074bfc32a57a4a2cc70958fa",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "authoring_limit_only; verify with live registry",
+      "files": [
+        {
+          "path": "references/generate_area_chart.md",
+          "sha256": "0ac564c28376e5b025b1cb816b5651a1ca0497c9b3c9893cd58e0809bf3a3120",
+          "bytes": 1485
+        },
+        {
+          "path": "references/generate_bar_chart.md",
+          "sha256": "dd485e9218e111c93cf34957c763a2e6c863e6f9c77a577a4219287bd4656898",
+          "bytes": 1470
+        },
+        {
+          "path": "references/generate_boxplot_chart.md",
+          "sha256": "084c938314b71ee0f856a6e7ea95b37e3ce5d5d6124d80769b7c4eb04e86cf31",
+          "bytes": 1066
+        },
+        {
+          "path": "references/generate_column_chart.md",
+          "sha256": "f2f33273d5e9347be1cb5111fddff204a32756d3568c67964193afbb67107d9f",
+          "bytes": 1344
+        },
+        {
+          "path": "references/generate_district_map.md",
+          "sha256": "3062a4302d11209cf781740f20b1591cfe7e18dd0c34ef243fafb3bc3100ef5c",
+          "bytes": 1615
+        },
+        {
+          "path": "references/generate_dual_axes_chart.md",
+          "sha256": "25dd5b71ceadffb6dc68d3b1ba28ebc4de46f22deb1bc19e74df752f93fa5f20",
+          "bytes": 1232
+        },
+        {
+          "path": "references/generate_fishbone_diagram.md",
+          "sha256": "9a00f607c1b925952ed13bb9a706e4bc6ec75784c973910cf47805a167e81c41",
+          "bytes": 911
+        },
+        {
+          "path": "references/generate_flow_diagram.md",
+          "sha256": "dac4bb359eff6147ab751762b92cf9c85ab9f758816fb829660e4f6f5d3df342",
+          "bytes": 996
+        },
+        {
+          "path": "references/generate_funnel_chart.md",
+          "sha256": "73cab2e2685397e1c7dc6f09ac556bf8d905358a174da9abe7194347b3bd08f6",
+          "bytes": 950
+        },
+        {
+          "path": "references/generate_histogram_chart.md",
+          "sha256": "c969b081d8befea33245e234a33d62114188654721ad46c27aea71f3b9b9af51",
+          "bytes": 1030
+        },
+        {
+          "path": "references/generate_line_chart.md",
+          "sha256": "5e693337100d825cea7b7f0c58330de348bf0b3c6f2233e3c9859def3c9fd12d",
+          "bytes": 1113
+        },
+        {
+          "path": "references/generate_liquid_chart.md",
+          "sha256": "be7d7c57a0134e2b4c993f4ee4ca56b400040286dcd1890ef862542fe796f6e9",
+          "bytes": 985
+        },
+        {
+          "path": "references/generate_mind_map.md",
+          "sha256": "1577e8658f85635a711724bbf8c143cdd579dbd461fbdbc30735d6fd93a890de",
+          "bytes": 855
+        },
+        {
+          "path": "references/generate_network_graph.md",
+          "sha256": "ca96018532580896485a635c68c6b1a0e126c0faea38a06ae12f45f8955940c7",
+          "bytes": 952
+        },
+        {
+          "path": "references/generate_organization_chart.md",
+          "sha256": "76977dba9f4819f35627979dd39211ddf9e2487e6615514131980c1de4ea6c91",
+          "bytes": 934
+        },
+        {
+          "path": "references/generate_path_map.md",
+          "sha256": "8d9fabdb4dcc10d57de51f97dbd228fad11acce5993ce23514d1e9ae75c82213",
+          "bytes": 878
+        },
+        {
+          "path": "references/generate_pie_chart.md",
+          "sha256": "7453168d65f97b5cc0a686e379e799f65290b44814b783f30023e59c89100c40",
+          "bytes": 1011
+        },
+        {
+          "path": "references/generate_pin_map.md",
+          "sha256": "77ea6c009a4fb7413c08f6dfe86fcfee9c901ba8fa6187575d0f5530d839fcd4",
+          "bytes": 991
+        },
+        {
+          "path": "references/generate_radar_chart.md",
+          "sha256": "a41811420bf776129bd183d9dea12764e60e5f463b36fa0a8a620c04ba398330",
+          "bytes": 977
+        },
+        {
+          "path": "references/generate_sankey_chart.md",
+          "sha256": "e0a819dc949221e47dcc9dea4889af8336f2aa85bda7e9d60523d87d7ad38687",
+          "bytes": 1046
+        },
+        {
+          "path": "references/generate_scatter_chart.md",
+          "sha256": "545c2eb328ece019f46c6b1199581e67665fd3e50438133f4b9d41a4f751f7c8",
+          "bytes": 1025
+        },
+        {
+          "path": "references/generate_spreadsheet.md",
+          "sha256": "3c03cc0794265126f4b4a0c9a3f610e5cfd0ff107437c6bf354d77517011819d",
+          "bytes": 1616
+        },
+        {
+          "path": "references/generate_treemap_chart.md",
+          "sha256": "c42d07bb652c9e8ca6e972b99177412f21dd2165a12243b97fac53ffb12f001e",
+          "bytes": 966
+        },
+        {
+          "path": "references/generate_venn_chart.md",
+          "sha256": "e50f71ccb14ba780c267414cae8c4f2aa447136d1b1d8e62b9a74d8d924884cf",
+          "bytes": 933
+        },
+        {
+          "path": "references/generate_violin_chart.md",
+          "sha256": "ca1b6901c7f40e9d97e2a5d4c32cfffe4edc23a5998acfb3b558602b87fd32a0",
+          "bytes": 1030
+        },
+        {
+          "path": "references/generate_word_cloud_chart.md",
+          "sha256": "e13e276578491492db7efd10faf7d08f0f4609d76016bb6eb3f005103a0a851d",
+          "bytes": 878
+        },
+        {
+          "path": "scripts/generate.js",
+          "sha256": "1204e0facf80d0941a77aea96b9ac81fd0b449738289302496cf5c0327c69f47",
+          "bytes": 4242
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "eb44160e5a51bc0951696c65c13623bb7f686c140b6fd44e6e588b43c9911840",
+          "bytes": 3358
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "c4d133a10fc92d7c6abfc7a1188012826cecd47d074bfc32a57a4a2cc70958fa"
+    },
+    {
+      "name": "claude-to-deerflow",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "b776ebea93ed93f590c3d69c4b98d045da504639d0e9dc77b97868e4c03c802b",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "b5de9b2a7aa0cb73120fd32dff56b99a2efa1339e9f9ff2a27bdb41ee592f016",
+          "bytes": 5070
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "b776ebea93ed93f590c3d69c4b98d045da504639d0e9dc77b97868e4c03c802b"
+    },
+    {
+      "name": "code-documentation",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "8b807890c43edf5873fe5108085fa399eb9be6c127e131f88a3ef565e12ec843",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "75721d7bc1b294592dc31a1e1d92ff9c390115af4b08ed42e7e0a2b094060676",
+          "bytes": 13877
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "8b807890c43edf5873fe5108085fa399eb9be6c127e131f88a3ef565e12ec843"
+    },
+    {
+      "name": "consulting-analysis",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "32dfe2288b7a4418b04fbbf8fcba72220149cdaaf3e090a5a30e4c4561c95659",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "8a04163fc83a17f73cd0069c474574701053bdc02e8b59e36af78f2524b2ae5d",
+          "bytes": 34272
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "32dfe2288b7a4418b04fbbf8fcba72220149cdaaf3e090a5a30e4c4561c95659"
+    },
+    {
+      "name": "deep-research",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "c2af9d394bd119f6cf420b56ac8c2e5e49bc994a2a3463fff3ec205adca7d6c1",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "04712f4daa7937cc1f8dabc1a086a9549e670eb3fa3f1a8d30abdc3ea8b31a79",
+          "bytes": 7879
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "c2af9d394bd119f6cf420b56ac8c2e5e49bc994a2a3463fff3ec205adca7d6c1"
+    },
+    {
+      "name": "find-skills",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "4a5ac4b68fad80ffb27d1e2e7d726d589f189a0b033a175220f7f47d671a8289",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "scripts/install-skill.sh",
+          "sha256": "f38bf4bb68115be6a5cf3211c2885114d70864f396197a53653f852d567261fb",
+          "bytes": 1554
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "0fccfaeacc4c71bfc93aeabf06d2d5d17480d4a09cb024c643a90b14dc024aba",
+          "bytes": 4910
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "4a5ac4b68fad80ffb27d1e2e7d726d589f189a0b033a175220f7f47d671a8289"
+    },
+    {
+      "name": "frontend-design",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "c479f1a15c7c38ff7dfae2177f79de002c5fcff581369466a1af2ee72052021e",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "LICENSE.txt",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "bytes": 10174
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "f187caf13081bd3b5509f4c7424b7b507e3140020daaf3454b9181d1af4f61ca",
+          "bytes": 7409
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "c479f1a15c7c38ff7dfae2177f79de002c5fcff581369466a1af2ee72052021e"
+    },
+    {
+      "name": "github-deep-research",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "2baefc34c54de157cfa24e5ae9297a9515044ab2cf7ff2122759469e84316b17",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "assets/report_template.md",
+          "sha256": "cf22ab113b6546f4455d50f24810c13d663cdc743003922513b8faa9e82625fd",
+          "bytes": 3909
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "d672cfac5dc2609aeb1efa82efeabc334f330ff99e47479fbfb6c4b7ea87b496",
+          "bytes": 2635
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "2baefc34c54de157cfa24e5ae9297a9515044ab2cf7ff2122759469e84316b17"
+    },
+    {
+      "name": "newsletter-generation",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "be55023215fabac8de290cf43e2625f03291ae81d72b79a193337f2181fa2491",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "cc66adb99053a781d6b5ce65f5e698c62384b8793421d15067d880e7b32538dc",
+          "bytes": 12859
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "be55023215fabac8de290cf43e2625f03291ae81d72b79a193337f2181fa2491"
+    },
+    {
+      "name": "skill-creator",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "3e580592e9644b48cd6e73296f3dea38883b7eec1c0a230b09735da35efdfdbf",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "LICENSE.txt",
+          "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+          "bytes": 11357
+        },
+        {
+          "path": "references/managed-lifecycle.md",
+          "sha256": "2fbdfaa326cc13c4ad6994419b47032eb163d5d08fe9ad891ece821941fd3623",
+          "bytes": 5980
+        },
+        {
+          "path": "references/output-patterns.md",
+          "sha256": "89596fc11d53ea4f01e3134439078e4b3335d5c41e8b9e63480d5f7e728d277d",
+          "bytes": 1236
+        },
+        {
+          "path": "references/python-runtime.md",
+          "sha256": "a2c855a314e96872f32b2dad78c13da5b58d35038ec9e73d0b9522b91e67ff20",
+          "bytes": 3648
+        },
+        {
+          "path": "references/schemas.md",
+          "sha256": "81c614843779d0bc735d42c0d6d599a6418501f44b43363f9e12314b5028a88c",
+          "bytes": 2218
+        },
+        {
+          "path": "references/workflows.md",
+          "sha256": "ae2dbbfd10a910aee120d94e8771e65993c7dee57b3ea308b1200e25232ec27c",
+          "bytes": 2341
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "907ae3c576dd7f5810f87c65c6d5ad8d2d492d72405c6622e775519384e80c61",
+          "bytes": 4408
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "3e580592e9644b48cd6e73296f3dea38883b7eec1c0a230b09735da35efdfdbf"
+    },
+    {
+      "name": "surprise-me",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "f5f9baf7913ed83eda32f0f0fe79a522b2fdbc73b52f2edcc3d4d124599da18b",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "e93e72ca445d112fa46c8b4d1b355cd97a51448ad20693f1279296523944d01a",
+          "bytes": 2640
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "f5f9baf7913ed83eda32f0f0fe79a522b2fdbc73b52f2edcc3d4d124599da18b"
+    },
+    {
+      "name": "systematic-literature-review",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "45ba73d2ef5cb5a0b603466bee6e8af8dcc80e93cf2814a104f91ed4228dede9",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "evals/evals.json",
+          "sha256": "171e431f22ffb11f330be9626b1560765066501f765bd0d0d2d99246bbef943d",
+          "bytes": 2481
+        },
+        {
+          "path": "evals/trigger_eval_set.json",
+          "sha256": "b04f49c4bc252d1465b4577310874927a1e449e7f4c346805ea8a80f17029597",
+          "bytes": 3553
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "106513749a696fe02ea3d967fe03f3c38ead17ae653a7deeb9db16e3680bf612",
+          "bytes": 3043
+        },
+        {
+          "path": "templates/apa.md",
+          "sha256": "eec7beba46eaa6b9693110e83c90dd5b7a899c693101f1e79930b5a0ccd37c0b",
+          "bytes": 6163
+        },
+        {
+          "path": "templates/bibtex.md",
+          "sha256": "1c4d2fafb49231513ecc59f7224f45817000573d07e3fdf1453784c0533c5fe7",
+          "bytes": 7385
+        },
+        {
+          "path": "templates/ieee.md",
+          "sha256": "fb07cf49613508fa1bc53de0a6179e3c8647af6c1fe1e047390db8e1562782f2",
+          "bytes": 6010
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "45ba73d2ef5cb5a0b603466bee6e8af8dcc80e93cf2814a104f91ed4228dede9"
+    },
+    {
+      "name": "vercel-deploy",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "6ff71bd736c144cf0641c201a7b01d9efb7c17459b2fefbf851f7c5f2fd9915b",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "scripts/deploy.sh",
+          "sha256": "ba5f1d87d4a5d5680a78f17e68eab47493b33153eda3205037dbfcd637308009",
+          "bytes": 6857
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "e83771f060bbde730353e611ac797d559992665dbae473ce375829d87c654d8f",
+          "bytes": 3290
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "6ff71bd736c144cf0641c201a7b01d9efb7c17459b2fefbf851f7c5f2fd9915b"
+    },
+    {
+      "name": "weather-cma",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "a9667617f1a25aebcf716c01e5f4ae76def7c5f48c4ec65e0e53000d20b79b96",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "references/station-ids.md",
+          "sha256": "6f3e806caa19aa7e64b4eae632377bdd0fcd65795b63cabce588bc38b01b04b8",
+          "bytes": 3622
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "80ac84e2f1e826e61143fd3ce47963074101601b93b1654163d32f8fdb040220",
+          "bytes": 4393
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "a9667617f1a25aebcf716c01e5f4ae76def7c5f48c4ec65e0e53000d20b79b96"
+    },
+    {
+      "name": "web-design-guidelines",
+      "category": "public",
+      "original_category": "public",
+      "origin": "directory",
+      "source_version": "9b5f25099fa885e1752edc21c8ef115ca54eccb85e0c286816c2ad1cbf5640d1",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "f4647ca866a3accf763777f83e7682954f0187cd6bea7eea0399796652414e8f",
+          "bytes": 1231
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "9b5f25099fa885e1752edc21c8ef115ca54eccb85e0c286816c2ad1cbf5640d1"
+    },
+    {
+      "name": "deepseek-search",
+      "category": "custom",
+      "original_category": "custom",
+      "origin": "verified_published_export",
+      "source_version": "eb3ff4808c24dbf25519148d51a42acc0411402339a6c0f3fa2d0db113e41c93",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "0f35d91273e30984b4287217a72e46bbaed0af16191a559be27dc8a31e798f01",
+          "bytes": 14729
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "eb3ff4808c24dbf25519148d51a42acc0411402339a6c0f3fa2d0db113e41c93"
+    },
+    {
+      "name": "fanren-rag",
+      "category": "custom",
+      "original_category": "custom",
+      "origin": "directory",
+      "source_version": "699b0ca672f4a55663d2991a79a2676e9f7591d07c68f66bfc85ebfe9339a499",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [
+        "Private endpoint credential moved outside published skill package"
+      ],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "assets/endpoint.json",
+          "sha256": "3f6de11a20f0e416df711fc08bdf36f8ca994b37f27618f7d5c04ec1e7ae4ee5",
+          "bytes": 168
+        },
+        {
+          "path": "meta.json",
+          "sha256": "ebc0cc9223c81fdce90491987aa0cd00739b1afe5ac1fbfe6aed6c30a78ad166",
+          "bytes": 220
+        },
+        {
+          "path": "README.md",
+          "sha256": "7243f421da052dc41121280c73e842bed6631a5f83a519370a5b40106fb21cdd",
+          "bytes": 1675
+        },
+        {
+          "path": "scripts/fanren_rag.py",
+          "sha256": "ea76ab224db670919b650a1ee645871d7af79ea8a401a4d0c87fd2983cbf4ae6",
+          "bytes": 3568
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "fbf4f7f5a31800df4d306299a6390df4e82079f98d5144ac5c5eeeffa092d41b",
+          "bytes": 5233
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "ac6a29cf1df57266a920e209a28dbaff3c291431e52517437c84b15419d7aa8c"
+    },
+    {
+      "name": "huaweicloud-linux",
+      "category": "custom",
+      "original_category": "custom",
+      "origin": "directory",
+      "source_version": "66749e0f6dc8ef36402082a120a2e4650568339b5e7683dda3c98262e3c59ac8",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "meta.json",
+          "sha256": "07d2203b9cfde2673ec0b64872a8f9b44a1cdbd5ae4dc69ffe27d74abb0778c2",
+          "bytes": 222
+        },
+        {
+          "path": "scripts/huaweicloud_ssh.py",
+          "sha256": "de462ad65a0f27df82c74834eccfb0b113b3129e4f41f7ae0c16594e44066c0a",
+          "bytes": 6256
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "e1148bc10a14d8b3132695898bb3f19d89c0544f886462d57a5a4f8072d7ccb4",
+          "bytes": 3183
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "3d6ee0f3a4782727c8345c108d3fae3dea6469bf37b8dc71ea6b133368541fa4"
+    },
+    {
+      "name": "instabox-exec-windows",
+      "category": "custom",
+      "original_category": "custom",
+      "origin": "verified_published_export",
+      "source_version": "0eca2d4b4837fe096a89b33bf9d87d5dd6df2769f69fff00b8d629999e0684ed",
+      "local_enabled": true,
+      "enabled": false,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "692eb549e9d7a03ea4154205b3eb373842446db0f935a2990cd709bda560d88a",
+          "bytes": 8758
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "0eca2d4b4837fe096a89b33bf9d87d5dd6df2769f69fff00b8d629999e0684ed"
+    },
+    {
+      "name": "searxng-web-search",
+      "category": "custom",
+      "original_category": "custom",
+      "origin": "verified_published_export",
+      "source_version": "58af083c26579e3d93d98422b920554386a4b1d7c4135bcd55adff131c49d85e",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "9f40c5ec7a872eccea06770c02eaa13fcedc805225875c7ea08b01d8738a408a",
+          "bytes": 6501
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "58af083c26579e3d93d98422b920554386a4b1d7c4135bcd55adff131c49d85e"
+    },
+    {
+      "name": "ulw-plan",
+      "category": "custom",
+      "original_category": "custom",
+      "origin": "directory",
+      "source_version": "a6b65f1ba75fbe6bb968869c4b1cad72462eba806110163244d4896846f6a3de",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [
+        "Linux Node invocation and helper path"
+      ],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "LICENSE.md",
+          "sha256": "b61ac928f152d13517328263e6bee9175b928f9ab696a2d2ca2b6cfd961ddc32",
+          "bytes": 3973
+        },
+        {
+          "path": "references/intent-clear.md",
+          "sha256": "c6477f1b5cff5375cbf672bdb44b485dcbdb7b1aa2aec1b31f740f2ef770262c",
+          "bytes": 623
+        },
+        {
+          "path": "references/intent-unclear.md",
+          "sha256": "0a71edd042bfbfba3faa8b292530fe03d64e4120b2a6391ccb9b4860f5bfcb50",
+          "bytes": 662
+        },
+        {
+          "path": "references/workflow.md",
+          "sha256": "10e608816112b2e59f7f7f907b6e9265068e25ed6f0c54611977cf795ea59128",
+          "bytes": 2067
+        },
+        {
+          "path": "scripts/plan-templates.mjs",
+          "sha256": "8c2568f9d29cfecf04577c2fc882888d6d3d49abe0726885c8fbc944dab66d6f",
+          "bytes": 7361
+        },
+        {
+          "path": "scripts/scaffold-plan.mjs",
+          "sha256": "1486ae629bbcb4a9ac0179f1c1ed6a1964b6701644e94cff37e5afde748fd0c0",
+          "bytes": 8582
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "47036f4bd711c4db48e6aaeda12aeae5cb86d7e619d61897716cfc0d3c21cba5",
+          "bytes": 6092
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "33ecabe9f4080cd4d990e496b23e2855b6f914b3f26b4fde86e5f4e85c9c48a0"
+    },
+    {
+      "name": "huaweicloud-sandbox",
+      "category": "custom",
+      "original_category": "evolved",
+      "origin": "verified_published_export",
+      "source_version": "b04ca410da1158bf1476225803aeecb27a0b3ddf2159c52dd880754d7bf92d8c",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [
+        "Linux SSH path examples; no private keys migrated"
+      ],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "requirements.txt",
+          "sha256": "158cac3bc3a6fcd0d8295d222f9424e7dce6c5f94ca381ae528c520234cda7b9",
+          "bytes": 17
+        },
+        {
+          "path": "scripts/huaweicloud_sandbox.py",
+          "sha256": "e80ace69874d0f42224cb7a76c9ba3910a7787a5012641acadfb0f8a89a2e8d5",
+          "bytes": 8737
+        },
+        {
+          "path": "skill-runtime.json",
+          "sha256": "44e10c06c40056299127514bc0e50c6d642b633efa2b8d0d66615993babb00a8",
+          "bytes": 119
+        },
+        {
+          "path": "SKILL.md",
+          "sha256": "6e9ec0cdbf8e514b8debc8daa55641c8df143f3e779f2968e547083342783725",
+          "bytes": 4526
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "936701d67cf2817d3534bb7d134702881ea946f5f83a344da1b32f9a0b789c6b"
+    },
+    {
+      "name": "show-me",
+      "category": "custom",
+      "original_category": "evolved",
+      "origin": "verified_published_export",
+      "source_version": "845d375e56ce51e9978b868daab67f7d43c02ad96ccf42df61b198fc3e17db34",
+      "local_enabled": true,
+      "enabled": true,
+      "patches": [],
+      "structural_validation": "passed",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "01a0ff353906e18c83cb9029c38fe1c9551f758075a54742bb3cc01133745e5f",
+          "bytes": 2886
+        }
+      ],
+      "runtime_registry_validation": "passed",
+      "target_version": "845d375e56ce51e9978b868daab67f7d43c02ad96ccf42df61b198fc3e17db34"
+    }
+  ],
+  "source": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\skills",
+  "managed_transfer": "synced current publication to ordinary custom package",
+  "private_config": "fanren-rag endpoint transferred separately; not included in package"
+}

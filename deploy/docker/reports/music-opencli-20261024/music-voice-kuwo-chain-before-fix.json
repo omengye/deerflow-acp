@@ -1,0 +1,66 @@
+{
+  "status": "failed",
+  "stages": [
+    {
+      "stage": "source_tts_generated",
+      "elapsed_ms": 1514,
+      "audio_bytes": 168000
+    },
+    {
+      "stage": "source_pcm_ready",
+      "elapsed_ms": 1588,
+      "pcm_bytes": 268800,
+      "sample_rate": 16000
+    },
+    {
+      "stage": "mqtt_device_logged_in",
+      "elapsed_ms": 1592
+    },
+    {
+      "stage": "udp_recording_uploaded",
+      "elapsed_ms": 10128,
+      "audio_packets": 210,
+      "pcm_bytes": 268800
+    },
+    {
+      "stage": "http_audio_downloaded",
+      "elapsed_ms": 43758,
+      "order": 1,
+      "audio_bytes": 171360,
+      "since_upload_ms": 33630
+    },
+    {
+      "stage": "http_audio_downloaded",
+      "elapsed_ms": 44322,
+      "order": 2,
+      "audio_bytes": 62400,
+      "since_upload_ms": 34193
+    },
+    {
+      "stage": "mqtt_audio_completion",
+      "elapsed_ms": 47942,
+      "segments": 2
+    }
+  ],
+  "test_device": "MUSICVOICE76FC4F265A75B833",
+  "recording_id": 57526,
+  "simulated_device": true,
+  "physical_toy_playback_claimed": false,
+  "cleanup": {
+    "mqtt_disconnected": true,
+    "source_tts_file_removed": true,
+    "actors_recorded": 1,
+    "actors_released": 1,
+    "durable_synthetic_identity_removed": true,
+    "transient_device_note": "Server has no logout handler; test login remains in RAM until service restart."
+  },
+  "native_cursor": {
+    "provider": "deerFlow",
+    "sessionId": "766YLGU3A2VMNUALVTXROGSNYL"
+  },
+  "voice_request_id": "87c3581c7db14f4c9108d0a95ceb7c39",
+  "waku_session_id": "e9f5069e-e4bd-4b05-a982-4c3d15ae9b2c",
+  "conversation_state": "completed",
+  "failure_code": "music_was_not_appended_after_tts_in_one_recording_batch",
+  "elapsed_ms": 48368
+}

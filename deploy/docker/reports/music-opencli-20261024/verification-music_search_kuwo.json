@@ -1,0 +1,146 @@
+{
+  "case": "music_search_kuwo",
+  "passed": true,
+  "conversation_reused": false,
+  "conversation": {
+    "case": "music_search_kuwo",
+    "status": "conversation_completed",
+    "transport": "ws",
+    "mode": "fullAccess",
+    "approval": "allow_always",
+    "turn_timeout_seconds": 120,
+    "tool_receipts_verified": false,
+    "requires_native_tool_audit": true,
+    "voice_turn_context_injected": false,
+    "waku_session_id": "73f88baf-df87-4e42-ae33-d01efb984123",
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "X3TJT6CG5GSCYUFK4L3CGRQCY2"
+    },
+    "native_session_id": "X3TJT6CG5GSCYUFK4L3CGRQCY2",
+    "waku_runtime_id": "926d4b8d-4e0c-4b32-b124-ba08102d9169",
+    "confirmed_approval": "allow_always",
+    "server_model": "gpt-6-luna",
+    "completed": true,
+    "stop_reason": "end_turn",
+    "reply": "酷我音乐搜索“晴天”的前三项：\n\n1. **晴天** — 周杰伦\n2. **晴天** — 何老希\n3. **晴天 (深情版)** — Lucky小爱",
+    "reply_truncated": false,
+    "cleanup": {
+      "actors_recorded": 1,
+      "actors_released": 1,
+      "passed": true
+    },
+    "actual_tool_activities": [
+      {
+        "name": "skill",
+        "arguments": {
+          "skill": "song-download",
+          "args": "仅使用酷我音乐搜索歌曲“晴天”，返回搜索结果前三项的标题和歌手。严禁下载、播放，也不要使用其他搜索来源。"
+        },
+        "complete": true,
+        "failed": false
+      },
+      {
+        "name": "skill_run",
+        "arguments": {
+          "name": "song-download",
+          "action": "run",
+          "path": "scripts/song-download.py",
+          "args": [
+            "search",
+            "晴天",
+            "--limit",
+            "3"
+          ]
+        },
+        "complete": true,
+        "failed": false
+      }
+    ],
+    "elapsed_ms": 20717
+  },
+  "native_tool_audit": {
+    "native_session": "X3TJT6CG5GSCYUFK4L3CGRQCY2",
+    "database": "/var/lib/deerflow/user-data/config/go-harness-state/harness.db",
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "run": {
+      "id": "4CA7JO2G5X7WDC44P5LRJ5ZCZH",
+      "status": "completed",
+      "stop_reason": "end_turn"
+    },
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "arguments": {
+          "skill": "song-download",
+          "args": "仅使用酷我音乐搜索歌曲“晴天”，返回搜索结果前三项的标题和歌手。严禁下载、播放，也不要使用其他搜索来源。"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill",
+        "status": "completed",
+        "failure_code": null
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "arguments": {
+          "name": "song-download",
+          "action": "run",
+          "path": "scripts/song-download.py",
+          "args": [
+            "search",
+            "晴天",
+            "--limit",
+            "3"
+          ]
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "status": "completed",
+        "failure_code": null,
+        "skill": "song-download",
+        "version": "c917163f2df0de6653af21a3821db91d1cb98c684ee28684e4c27ec1bea0026f",
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "provider": "kuwo",
+        "search_count": 3
+      }
+    ],
+    "verified_results": [
+      {
+        "kind": "music_search",
+        "provider": "kuwo",
+        "count": 3,
+        "results": [
+          {
+            "index": 1,
+            "title": "晴天",
+            "artist": "周杰伦"
+          },
+          {
+            "index": 2,
+            "title": "晴天",
+            "artist": "何老希"
+          },
+          {
+            "index": 3,
+            "title": "晴天 (深情版)",
+            "artist": "Lucky小爱"
+          }
+        ]
+      }
+    ],
+    "unexpected_tools": [],
+    "play_submissions": 0,
+    "passed": true
+  }
+}

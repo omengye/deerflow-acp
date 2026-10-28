@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "base_image_id": "sha256:0a39622576b914ba64d73794288315b824b48bbdcfcb22d7687c8799872a6514",
+  "image_id": "sha256:535bfcc89aebc94561e4d8a31fd6624f00c4aaddc10394a49df875f7ac6198ce",
+  "inherited_layers": 25,
+  "unchanged_hashes": "2f74bbc5ce844579dff83b58015c74ccaa19e826eded94dbc50908128586abcd  /opt/deerflow/bin/waku-daemon\n9660f0e9b45a1eab6a38dc3cbec6cebb510eaef0026701f68aba4cb85892537f  /opt/deerflow/bin/deerflow-acp\n926cbdf2cbba2dd047d9e934217c81e062143a340a527aa7229901436fbaceca  /opt/deerflow/bin/deerflow-acpd\n808bb57ab2bfa6a9007b2dd98e0c119c94fe504cb882bd077da6a14bf836e428  /opt/deerflow/bin/deerflow-server-entrypoint\n",
+  "production_bind_wrapper_sha256": "5b409ad2c2f1c8298df7ca0d3ea65e184a551edc1c49641e0f451f911c5fa4f3",
+  "production_wrapper_matches_image": false,
+  "stage_uses_verified_isolated_wrapper_copy": true
+}

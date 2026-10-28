@@ -1,0 +1,11 @@
+{
+  "passed": true,
+  "other_configuration_unchanged": true,
+  "model_credentials_and_web_proxies_preserved": true,
+  "budgets_preserved": true,
+  "database_counts": {
+    "harness_sessions": 66,
+    "harness_runs": 135,
+    "harness_learning_controls": 0
+  }
+}

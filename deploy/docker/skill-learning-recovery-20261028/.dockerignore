@@ -1,0 +1,7 @@
+*
+!Dockerfile
+!bin/
+!bin/deerflow-acpd.real
+!bin/deerflow-config-go
+!bin/deerflow-control-go
+!bin/deerflow-skill-go

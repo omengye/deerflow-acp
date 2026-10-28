@@ -1,0 +1,111 @@
+{
+  "case": "opencli_doctor",
+  "passed": true,
+  "conversation_reused": true,
+  "conversation": {
+    "case": "opencli_doctor",
+    "status": "conversation_completed",
+    "transport": "ws",
+    "mode": "fullAccess",
+    "approval": "allow_always",
+    "turn_timeout_seconds": 120,
+    "tool_receipts_verified": false,
+    "requires_native_tool_audit": true,
+    "voice_turn_context_injected": false,
+    "waku_session_id": "c08b289f-f7bb-4946-9697-a886b2c37356",
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "I3IVNYFZDWTSPUMHZL7MSH4FHM"
+    },
+    "native_session_id": "I3IVNYFZDWTSPUMHZL7MSH4FHM",
+    "waku_runtime_id": "be9798ac-e091-401e-9302-3186c6616c34",
+    "confirmed_approval": "allow_always",
+    "server_model": "gpt-6-luna",
+    "completed": true,
+    "stop_reason": "end_turn",
+    "reply": "OpenCLI `doctor` 诊断已实际完成（退出码 0）：\n\n- **宿主 OpenCLI daemon：运行中**，监听端口 `19825`，版本 `v1.8.6`\n- **浏览器插件：已连接**，版本 `v1.0.22`（有 `v1.0.26` 可更新）\n- **连接状态：正常**，耗时 `0.1s`\n- 配置档 `uutzpmtk` 显示已连接\n\n另外，OpenCLI 本身也提示有 `v2.0.2` 更新。此次仅执行了连接诊断。",
+    "reply_truncated": false,
+    "cleanup": {
+      "actors_recorded": 1,
+      "actors_released": 1,
+      "passed": true
+    },
+    "actual_tool_activities": [
+      {
+        "name": "skill",
+        "arguments": {
+          "skill": "opencli"
+        },
+        "complete": true,
+        "failed": false
+      },
+      {
+        "name": "host_opencli",
+        "arguments": {
+          "command": "doctor"
+        },
+        "complete": true,
+        "failed": false
+      }
+    ],
+    "elapsed_ms": 16392
+  },
+  "native_tool_audit": {
+    "native_session": "I3IVNYFZDWTSPUMHZL7MSH4FHM",
+    "database": "/var/lib/deerflow/user-data/config/go-harness-state/harness.db",
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "run": {
+      "id": "WB3SWI7QGBI2J3VE6HSFUAS4BV",
+      "status": "completed",
+      "stop_reason": "end_turn"
+    },
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "arguments": {
+          "skill": "opencli"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill",
+        "status": "completed",
+        "failure_code": null
+      },
+      {
+        "event": "start",
+        "name": "host_opencli",
+        "arguments": {
+          "command": "doctor"
+        }
+      },
+      {
+        "event": "end",
+        "name": "host_opencli",
+        "status": "completed",
+        "failure_code": null,
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "stdout_truncated": false,
+        "daemon_running": true,
+        "extension_connected": true,
+        "stdout": "opencli v1.8.6 doctor (node v26.12.1)\n\n[OK] Daemon: running on port 19825 (v1.8.6)\n[OK] Extension: connected (v1.0.22) → v1.0.26 available\n\nProfiles:\n  • uutzpmtk: connected v1.0.22\n[OK] Connectivity: connected in 0.1s\n\nIssues:\n  • Extension update available: v1.0.22 → v1.0.26\n  Download from: https://github.com/jackwener/opencli/releases\n"
+      }
+    ],
+    "verified_results": [
+      {
+        "kind": "opencli_doctor",
+        "daemon_running": true,
+        "extension_connected": true
+      }
+    ],
+    "unexpected_tools": [],
+    "play_submissions": 0,
+    "passed": true
+  }
+}

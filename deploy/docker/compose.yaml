@@ -1,0 +1,29 @@
+services:
+  deerflow:
+    image: ${DEERFLOW_IMAGE:-deerflow-server:pilot-20261024}
+    pull_policy: never
+    restart: unless-stopped
+    user: "${DEERFLOW_UID:-1000}:${DEERFLOW_GID:-1000}"
+    ports:
+      - "${DEERFLOW_BIND_ADDRESS:-127.0.0.1}:${DEERFLOW_HOST_PORT:-18787}:18787"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      WAKU_DAEMON_TOKEN: ${WAKU_DAEMON_TOKEN:?set WAKU_DAEMON_TOKEN in .env}
+    volumes:
+      - ./data:/var/lib/deerflow
+      - ./skills:/var/lib/deerflow/user-data/skills
+      - ./logs:/var/log/deerflow
+      - ${DEERFLOW_WORKSPACES:-/home/gen/deerflow-workspaces}:/workspaces
+    mem_limit: 6g
+    cpus: 4.0
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    stop_grace_period: 45s

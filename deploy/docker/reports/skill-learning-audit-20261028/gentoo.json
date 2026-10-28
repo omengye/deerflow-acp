@@ -1,0 +1,61 @@
+{
+  "image_id": "sha256:0a39622576b914ba64d73794288315b824b48bbdcfcb22d7687c8799872a6514",
+  "configured_image": "sha256:0a39622576b914ba64d73794288315b824b48bbdcfcb22d7687c8799872a6514",
+  "health": "healthy",
+  "started_at": "2026-10-28T07:10:54.591695929Z",
+  "runtime_build_id": "deerflow-go-dev",
+  "activity": {
+    "active_operations": 0,
+    "active_runs": 0,
+    "queued_runs": 0,
+    "draining": false
+  },
+  "learning": {
+    "version": "procedural-experience-v1",
+    "enabled": false,
+    "running": null,
+    "idle_seconds": 0,
+    "pending_inputs": 0,
+    "experiences": 0,
+    "patterns": 0,
+    "matches": 0,
+    "consolidation_enabled": false,
+    "matching_enabled": false,
+    "cross_session_enabled": false,
+    "has_queue_diagnostics": false
+  },
+  "discovery": {
+    "enabled": false,
+    "running": false,
+    "pending": 0,
+    "failed_signals": 0
+  },
+  "generation": {
+    "enabled": false
+  },
+  "auto_patch": {
+    "enabled": false,
+    "running": false,
+    "readiness": {
+      "state": "disabled",
+      "eligible_targets": 0,
+      "missing_suite": 0,
+      "pending_review": 0,
+      "waiting_candidates": 0,
+      "reasons": [
+        "automatic_publication_disabled",
+        "some_targets_require_review",
+        "no_eligible_targets"
+      ]
+    }
+  },
+  "inputs": [],
+  "unfinished_runs": {},
+  "completed_pending_with_older_unfinished_root": {
+    "inputs": 0,
+    "sessions": 0
+  },
+  "maintenance_jobs": [],
+  "checked_at": "2026-10-28",
+  "scope": "Read-only inspection; no restart, configuration change, model invocation, or deployment."
+}

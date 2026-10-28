@@ -1,0 +1,81 @@
+{
+  "status": "passed",
+  "fix_id": "4da4859759624ee09141618634a0850a",
+  "checks": {
+    "all_three_real_wire_rate_paths_passed": true,
+    "original_failed_recording_recognized": true,
+    "original_recording_unchanged": true,
+    "gentoo_normalization_tests_all_passed": true,
+    "hotfix_files_match_expected": true,
+    "hotfix_rollback_backups_valid": true,
+    "original_v2_rollback_targets_current": true,
+    "original_v2_backups_valid": true,
+    "original_v2_image_retained": true,
+    "previous_asr2_image_retained": true,
+    "private_key_permissions_unchanged": true,
+    "key_file_unchanged_from_asr2_rollout": true,
+    "containers_healthy": true,
+    "weather_tool_run_completed": true,
+    "all_roles_remain_asr2": true,
+    "roles_file_unchanged": true,
+    "music_healthy": true,
+    "opencli_healthy": true
+  },
+  "rates": {
+    "8000": {
+      "passed": true,
+      "input_sample_rate": 8000,
+      "device_wire_sample_rate": 8000,
+      "device_wire_frame_type_hex": "05",
+      "device_rate_path_verified": true,
+      "request_id": "435629d3-239f-44eb-9b69-7c2ba65f19b7",
+      "provider": "volcengine-asr2",
+      "resource_id": "volc.seedasr.sauc.duration",
+      "voice_pipeline_provider_receipt_verified": true,
+      "audio_segments": 1
+    },
+    "16000": {
+      "passed": true,
+      "input_sample_rate": 16000,
+      "device_wire_sample_rate": 16000,
+      "device_wire_frame_type_hex": "04",
+      "device_rate_path_verified": true,
+      "request_id": "ef3e2528-8bfb-45d4-b7d1-b2118ae52910",
+      "provider": "volcengine-asr2",
+      "resource_id": "volc.seedasr.sauc.duration",
+      "voice_pipeline_provider_receipt_verified": true,
+      "audio_segments": 1
+    },
+    "32000": {
+      "passed": true,
+      "input_sample_rate": 32000,
+      "device_wire_sample_rate": 32000,
+      "device_wire_frame_type_hex": "01",
+      "device_rate_path_verified": true,
+      "request_id": "7de6be78-9b83-460e-aa42-c0b447fb0d15",
+      "provider": "volcengine-asr2",
+      "resource_id": "volc.seedasr.sauc.duration",
+      "voice_pipeline_provider_receipt_verified": true,
+      "audio_segments": 3
+    }
+  },
+  "root_cause": "Physical toy sent 32000 Hz mono PCM16 WAV; previous adapter accepted only 16000 Hz and rejected locally before an ASR request.",
+  "containers": [
+    {
+      "name": "folotoy-ws-folotoy-1",
+      "image": "folotoy-deerflow-ws:asr2-audiofix-20261025",
+      "image_id": "sha256:fd86221313c9898038fb907055f3619469a723ba11822701f6436eb2e2d05f5e",
+      "status": "running",
+      "health": "healthy"
+    },
+    {
+      "name": "deerflow-deploy-deerflow-1",
+      "image": "deerflow-server:music-opencli-20261024",
+      "image_id": "sha256:ef1bbe1a75d4072845e583631e45c8d39d5adcadc4a42ac61cf7b7c3eea4bd32",
+      "status": "running",
+      "health": "healthy"
+    }
+  ],
+  "manual_rollback_audiofix": "python3 /home/gen/deerflow-deploy/asr2-audiofix-20261025/payload-1792902551026839952/rollback.py --deployment-report /home/gen/deerflow-deploy/asr2-audiofix-20261025/deployment.json",
+  "manual_rollback_full_v2": "python3 /home/gen/deerflow-deploy/asr2-rollout-20261025/payload-1792898580653760384/rollback.py --deployment-report /home/gen/deerflow-deploy/asr2-rollout-20261025/deployment.json"
+}

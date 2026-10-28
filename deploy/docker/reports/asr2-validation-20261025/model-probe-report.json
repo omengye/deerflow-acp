@@ -1,0 +1,56 @@
+{
+  "status": "blocked",
+  "resource_id": "volc.seedasr.sauc.duration",
+  "hotwords_enabled": false,
+  "context_enabled": false,
+  "post_correction_enabled": false,
+  "production_asr_switched": false,
+  "physical_toy_audio_published": false,
+  "synthetic_source_audio_removed": true,
+  "input_kind": "synthetic_tts_not_human_error_sample",
+  "reference_text": "请查询华为云服务器的运行状态。",
+  "audio": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "sample_width": 2,
+    "duration_seconds": 3.408,
+    "sha256": "bd6a5a2c731fc7a42f8fef41b639e3fa6b403f31a30cfb9de2215dc1e990cf02"
+  },
+  "old_v2": {
+    "status": "recognized",
+    "provider_code": 1000,
+    "text": "请查询华为云服务器的运行状态。",
+    "elapsed_ms": 722
+  },
+  "asr2": {
+    "status": "blocked",
+    "error": "asr2_handshake_rejected",
+    "http_status": 403,
+    "elapsed_ms": 232
+  },
+  "asr2_recognition_available": false,
+  "accuracy_comparison_possible": false,
+  "human_error_audio_evaluated": false,
+  "production_before": {
+    "container_id": "e626871f907fe4ffc3b81fe65e425779194c4626dedd70b82833adfe6c0b3425",
+    "image": "folotoy-deerflow-ws:music-20261024",
+    "image_id": "sha256:856c22011d1432922004fdfdfb3674e6051c31a29daae264bf4fe2a7b5d5cf03",
+    "started_at": "2026-10-24T11:26:37.866469194Z",
+    "health": "healthy",
+    "roles_sha256": "2fb48b5f627d4fbb4c1fdbca1ebdb5e0f90a216bf05acef19653f3196f2ee370",
+    "compose_sha256": "6ba255b46f8bf33c47eeff70aace29b169ada28cf954d12914fc6dc3e06e686a"
+  },
+  "production_after": {
+    "container_id": "e626871f907fe4ffc3b81fe65e425779194c4626dedd70b82833adfe6c0b3425",
+    "image": "folotoy-deerflow-ws:music-20261024",
+    "image_id": "sha256:856c22011d1432922004fdfdfb3674e6051c31a29daae264bf4fe2a7b5d5cf03",
+    "started_at": "2026-10-24T11:26:37.866469194Z",
+    "health": "healthy",
+    "roles_sha256": "2fb48b5f627d4fbb4c1fdbca1ebdb5e0f90a216bf05acef19653f3196f2ee370",
+    "compose_sha256": "6ba255b46f8bf33c47eeff70aace29b169ada28cf954d12914fc6dc3e06e686a"
+  },
+  "production_unchanged": true,
+  "adapter_sha256": "1bc1ffe99869427975f2e37c580cb257c2db498b96d847b19fbad5e4645775dd",
+  "probe_exit_code": 1,
+  "elapsed_includes_audio_replay": true
+}

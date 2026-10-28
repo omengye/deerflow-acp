@@ -1,0 +1,72 @@
+{
+  "ok": true,
+  "endpoint": "wss://deerflow.sprwhisp.cc/v1",
+  "protocolVersion": 10,
+  "cycles": [
+    {
+      "hello": {
+        "ok": true,
+        "protocolVersion": 10
+      },
+      "getSettings": {
+        "ok": true
+      },
+      "loadTaskState": {
+        "ok": true,
+        "sessions": 1,
+        "projects": 1,
+        "statuses": {
+          "idle": 1
+        }
+      },
+      "hydrateSession": {
+        "ok": true,
+        "messages": 2,
+        "turns": 1
+      },
+      "attachSession": {
+        "ok": true,
+        "runtimePresent": false
+      },
+      "replayEvents": {
+        "skipped": "no_live_runtime"
+      },
+      "ignoredLiveMessages": 0
+    },
+    {
+      "hello": {
+        "ok": true,
+        "protocolVersion": 10
+      },
+      "getSettings": {
+        "ok": true
+      },
+      "loadTaskState": {
+        "ok": true,
+        "sessions": 1,
+        "projects": 1,
+        "statuses": {
+          "idle": 1
+        }
+      },
+      "hydrateSession": {
+        "ok": true,
+        "messages": 2,
+        "turns": 1
+      },
+      "attachSession": {
+        "ok": true,
+        "runtimePresent": false
+      },
+      "replayEvents": {
+        "skipped": "no_live_runtime"
+      },
+      "ignoredLiveMessages": 0
+    }
+  ],
+  "reconnectVerified": true,
+  "abruptFirstDisconnect": true,
+  "invalidTokenRejected": true,
+  "nativeManagementWithoutChat": true,
+  "verifiedAt": "2026-10-26T09:30:04.124655+00:00"
+}

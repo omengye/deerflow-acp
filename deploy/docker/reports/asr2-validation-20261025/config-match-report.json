@@ -1,0 +1,22 @@
+{
+  "application_id_suffix": "8381",
+  "host_config_checks": [
+    {
+      "file": ".env",
+      "credential_fields_present": [],
+      "matches_current_container": {}
+    },
+    {
+      "file": ".env.ws",
+      "credential_fields_present": [
+        "VOLCENGINE_ASR_APP_ID",
+        "VOLCENGINE_ASR_ACCESS_TOKEN"
+      ],
+      "matches_current_container": {
+        "VOLCENGINE_ASR_APP_ID": true,
+        "VOLCENGINE_ASR_ACCESS_TOKEN": true
+      }
+    }
+  ],
+  "runtime_asr2_api_key_present": false
+}

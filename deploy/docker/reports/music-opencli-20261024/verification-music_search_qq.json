@@ -1,0 +1,180 @@
+{
+  "case": "music_search_qq",
+  "passed": true,
+  "conversation_reused": true,
+  "conversation": {
+    "case": "music_search_qq",
+    "status": "conversation_completed",
+    "transport": "ws",
+    "mode": "fullAccess",
+    "approval": "allow_always",
+    "turn_timeout_seconds": 120,
+    "tool_receipts_verified": false,
+    "requires_native_tool_audit": true,
+    "voice_turn_context_injected": false,
+    "waku_session_id": "145e36dd-0975-4c8f-96d3-b53d6dc2745a",
+    "native_cursor": {
+      "provider": "deerFlow",
+      "sessionId": "LKWONYQF3QBVUHR4TQY54AMMHC"
+    },
+    "native_session_id": "LKWONYQF3QBVUHR4TQY54AMMHC",
+    "waku_runtime_id": "10cb488f-6652-4413-be2c-ef01a0f8ff77",
+    "confirmed_approval": "allow_always",
+    "server_model": "gpt-6-luna",
+    "completed": true,
+    "stop_reason": "end_turn",
+    "reply": "QQ 音乐搜索“晴天”的前三项：\n\n1. **晴天** — 周杰伦\n2. **晴天 (交响改编版)** — 维也纳碎片\n3. **晴天 (Live)** — 周杰伦",
+    "reply_truncated": false,
+    "cleanup": {
+      "actors_recorded": 1,
+      "actors_released": 1,
+      "passed": true
+    },
+    "actual_tool_activities": [
+      {
+        "name": "skill",
+        "arguments": {
+          "skill": "qq-music"
+        },
+        "complete": true,
+        "failed": false
+      },
+      {
+        "name": "skill_run",
+        "arguments": {
+          "name": "qq-music",
+          "action": "check"
+        },
+        "complete": true,
+        "failed": false
+      },
+      {
+        "name": "skill_run",
+        "arguments": {
+          "name": "qq-music",
+          "action": "run",
+          "path": "scripts/qq_music_api.py",
+          "args": [
+            "search",
+            "晴天",
+            "--limit",
+            "3"
+          ]
+        },
+        "complete": true,
+        "failed": false
+      }
+    ],
+    "elapsed_ms": 21457
+  },
+  "native_tool_audit": {
+    "native_session": "LKWONYQF3QBVUHR4TQY54AMMHC",
+    "database": "/var/lib/deerflow/user-data/config/go-harness-state/harness.db",
+    "permission": {
+      "mode": "default",
+      "model": "gpt-6-luna",
+      "approval_mode": "allow_always"
+    },
+    "run": {
+      "id": "MAHRFXSF66A4RBCQ3CPRFYDB6T",
+      "status": "completed",
+      "stop_reason": "end_turn"
+    },
+    "tools": [
+      {
+        "event": "start",
+        "name": "skill",
+        "arguments": {
+          "skill": "qq-music"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill",
+        "status": "completed",
+        "failure_code": null
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "arguments": {
+          "name": "qq-music",
+          "action": "check"
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "status": "completed",
+        "failure_code": null,
+        "skill": "qq-music",
+        "version": "f2765f4c48db85d0a28436c84ae4017a6445e54d11de142b605bc6554e087c6e",
+        "exit_code": null,
+        "termination_confirmed": null
+      },
+      {
+        "event": "start",
+        "name": "skill_run",
+        "arguments": {
+          "name": "qq-music",
+          "action": "run",
+          "path": "scripts/qq_music_api.py",
+          "args": [
+            "search",
+            "晴天",
+            "--limit",
+            "3"
+          ]
+        }
+      },
+      {
+        "event": "end",
+        "name": "skill_run",
+        "status": "completed",
+        "failure_code": null,
+        "skill": "qq-music",
+        "version": "f2765f4c48db85d0a28436c84ae4017a6445e54d11de142b605bc6554e087c6e",
+        "exit_code": 0,
+        "termination_confirmed": true,
+        "provider": "qq-music",
+        "search_count": 3
+      }
+    ],
+    "verified_results": [
+      {
+        "kind": "music_search",
+        "provider": "qq-music",
+        "count": 3,
+        "results": [
+          {
+            "index": 1,
+            "title": "晴天",
+            "artist": "周杰伦",
+            "album": "",
+            "mid": "0039MnYb0qxYhV",
+            "access_label": "付费"
+          },
+          {
+            "index": 2,
+            "title": "晴天 (交响改编版)",
+            "artist": "维也纳碎片",
+            "album": "",
+            "mid": "000BEsDj0UUhf8",
+            "access_label": "免费"
+          },
+          {
+            "index": 3,
+            "title": "晴天 (Live)",
+            "artist": "周杰伦",
+            "album": "",
+            "mid": "004Fs2FP1EvZYc",
+            "access_label": "付费"
+          }
+        ]
+      }
+    ],
+    "unexpected_tools": [],
+    "play_submissions": 0,
+    "passed": true
+  }
+}

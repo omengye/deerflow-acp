@@ -1,0 +1,246 @@
+{
+  "management_host": "100.80.205.120",
+  "project_root": "/home/gen/deerflow-deploy",
+  "captured_at": "2026-10-28T05:53:27.258094+00:00",
+  "remote_changes_made": false,
+  "project_allocated_bytes": 165691392,
+  "project_allocated_mib": 158.02,
+  "filesystem": [
+    "Filesystem        1B-blocks         Used       Avail Use% Mounted on",
+    "/dev/nvme0n1p3 245619412992 161605279744 71462821888  70% /"
+  ],
+  "cleanup_candidates": [
+    {
+      "path": "/home/gen/deerflow-deploy/voice-repair-20261025/payload-66c92e3784a7",
+      "allocated_bytes": 65536,
+      "reason": "Unreferenced historical build draft",
+      "runtime_mount_reference": false,
+      "project_deployment_path_references": []
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/voice-repair-20261025/payload-dc21966e968c",
+      "allocated_bytes": 65536,
+      "reason": "Unreferenced historical build draft",
+      "runtime_mount_reference": false,
+      "project_deployment_path_references": []
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/voice-repair-20261025/revision-464f9311",
+      "allocated_bytes": 65536,
+      "reason": "Unreferenced historical build draft",
+      "runtime_mount_reference": false,
+      "project_deployment_path_references": []
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/voice-repair-20261025/revision-5d487745",
+      "allocated_bytes": 65536,
+      "reason": "Unreferenced historical build draft",
+      "runtime_mount_reference": false,
+      "project_deployment_path_references": []
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/asr2-diagnosis-20261025",
+      "allocated_bytes": 20480,
+      "reason": "Historical ASR diagnosis and test reports; deleting loses those historical records",
+      "runtime_mount_reference": false,
+      "project_deployment_path_references": []
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/asr2-validation-20261025",
+      "allocated_bytes": 40960,
+      "reason": "Historical ASR diagnosis and test reports; deleting loses those historical records",
+      "runtime_mount_reference": false,
+      "project_deployment_path_references": []
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/skill-migration-20261024/runtime-build-fast.log",
+      "allocated_bytes": 176128,
+      "reason": "Historical build/cleanup log",
+      "runtime_mount_reference": false
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/skill-migration-20261024/runtime-build.log",
+      "allocated_bytes": 20480,
+      "reason": "Historical build/cleanup log",
+      "runtime_mount_reference": false
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/build-cache-cleanup-20261024.log",
+      "allocated_bytes": 8192,
+      "reason": "Historical build/cleanup log",
+      "runtime_mount_reference": false
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/cleanup-20261024.log",
+      "allocated_bytes": 4096,
+      "reason": "Historical build/cleanup log",
+      "runtime_mount_reference": false
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/build-20261024.log.gz",
+      "logical_bytes": 2928,
+      "reason": "Historical compressed build log",
+      "runtime_mount_reference": false
+    }
+  ],
+  "candidate_allocated_bytes_excluding_one_small_compressed_log": 532480,
+  "keep": [
+    {
+      "path": "/home/gen/deerflow-deploy/data",
+      "reason": "Mounted persistent runtime programs, config, database and session/tool state",
+      "allocated_bytes": 111087616
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/mobile-waku-v10-20261026/backup",
+      "reason": "Business data, FoloToy state, skills and private configuration rollback backups",
+      "allocated_bytes": 35700736
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/single-user-memory-20261027/backup",
+      "reason": "Pre-migration business DB and private config backups",
+      "allocated_bytes": 14938112
+    },
+    {
+      "paths": [
+        "/home/gen/deerflow-deploy/compose.yaml",
+        "/home/gen/deerflow-deploy/.env",
+        "/home/gen/deerflow-deploy/skills",
+        "/home/gen/deerflow-deploy/runtime",
+        "/home/gen/deerflow-deploy/host-tools",
+        "/home/gen/deerflow-deploy/private"
+      ],
+      "reason": "Current Docker configuration/mounts and active OpenCLI systemd service"
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/single-user-memory-20261027/embedding-compose.json",
+      "reason": "Embedding-service deployment descriptor; not a disposable test file"
+    },
+    {
+      "paths": [
+        "/home/gen/deerflow-deploy/asr2-rollout-20261025",
+        "/home/gen/deerflow-deploy/asr2-audiofix-20261025",
+        "/home/gen/deerflow-deploy/model-switch-20261027"
+      ],
+      "reason": "Keep deployment metadata, referenced rollback scripts, checksums and private backups"
+    },
+    {
+      "path": "/home/gen/deerflow-deploy/voice-repair-20261025/revision-32c7ce92",
+      "reason": "Referenced by deployment.json and acceptance.json; preserve the recorded final source artifact"
+    }
+  ],
+  "active_project_containers": [
+    {
+      "name": "deerflow-deploy-deerflow-1",
+      "state": "running",
+      "image": "deerflow-server:single-user-memory-20261027",
+      "image_id": "sha256:d89395c9629b359a3c8a8688f9a0f0e2145ff32a4c67f30a99b5226c045ab26f",
+      "mounts": [
+        {
+          "source": "/home/gen/deerflow-workspaces",
+          "destination": "/workspaces",
+          "rw": true
+        },
+        {
+          "source": "/home/gen/deerflow-deploy/data",
+          "destination": "/var/lib/deerflow",
+          "rw": true
+        },
+        {
+          "source": "/home/gen/deerflow-deploy/logs",
+          "destination": "/var/log/deerflow",
+          "rw": true
+        },
+        {
+          "source": "/home/gen/deerflow-deploy/runtime/deerflow-acpd-wrapper.sh",
+          "destination": "/opt/deerflow/bin/deerflow-acpd",
+          "rw": false
+        },
+        {
+          "source": "/home/gen/deerflow-deploy/skills",
+          "destination": "/var/lib/deerflow/user-data/skills",
+          "rw": true
+        }
+      ],
+      "compose_files": "/home/gen/deerflow-deploy/compose.yaml",
+      "compose_working_dir": "/home/gen/deerflow-deploy"
+    },
+    {
+      "name": "folotoy-ws-folotoy-1",
+      "state": "running",
+      "image": "folotoy-deerflow-ws:mobile-waku-v10-20261026",
+      "image_id": "sha256:d62df21b7ca56bd217edf20053b220e431d9ad96c8ac4b8def911db9213258bf",
+      "mounts": [
+        {
+          "source": "/home/gen/Documents/folotoy/deerflow-ws/src/audio",
+          "destination": "/audio",
+          "rw": true
+        },
+        {
+          "source": "/home/gen/Documents/folotoy/deerflow-ws/src/data",
+          "destination": "/data",
+          "rw": true
+        },
+        {
+          "source": "/home/gen/deerflow-workspaces/folotoy/music",
+          "destination": "/music",
+          "rw": false
+        },
+        {
+          "source": "/home/gen/Documents/folotoy/deerflow-ws/src/roles-ws.json",
+          "destination": "/config/roles.json",
+          "rw": false
+        },
+        {
+          "source": "/home/gen/Documents/folotoy/deerflow-ws/src/private/music-control.json",
+          "destination": "/run/deerflow-music-control.json",
+          "rw": false
+        }
+      ],
+      "compose_files": "/home/gen/Documents/folotoy/deerflow-ws/src/compose.ws.yaml",
+      "compose_working_dir": "/home/gen/Documents/folotoy/deerflow-ws/src"
+    }
+  ],
+  "systemd_references": {
+    "user": {
+      "query_exit_code": 0,
+      "units": [
+        {
+          "unit": "deerflow-opencli-bridge.service",
+          "ActiveState": "active",
+          "FragmentPath": "/home/gen/.config/systemd/user/deerflow-opencli-bridge.service",
+          "exec_paths_under_deploy": [
+            "/home/gen/deerflow-deploy/host-tools/host_opencli_bridge.py",
+            "/home/gen/deerflow-deploy/private/opencli-bridge.json"
+          ],
+          "WorkingDirectory": "/home/gen"
+        },
+        {
+          "unit": "folotoy-decompiled.service",
+          "ActiveState": "inactive",
+          "FragmentPath": "/home/gen/.config/systemd/user/folotoy-decompiled.service",
+          "exec_paths_under_deploy": [],
+          "WorkingDirectory": "/home/gen/Documents/folotoy/src"
+        }
+      ]
+    },
+    "system": {
+      "query_exit_code": 0,
+      "units": []
+    }
+  },
+  "other_disk_opportunity": {
+    "docker_system_df": [
+      "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE",
+      "Images          46        19        31.43GB   12.85GB (40%)",
+      "Containers      20        19        119MB     1.594kB (0%)",
+      "Local Volumes   17        10        1.807GB   14.13kB (0%)",
+      "Build Cache     176       0         3.794GB   2.34GB"
+    ],
+    "note": "Docker daemon storage is outside this project directory; unused images may still be needed for rollback, so this is not a deletion approval."
+  },
+  "audit_limitations": [
+    "Open file visibility is limited to processes readable by gen; Docker mounts and systemd references were checked separately.",
+    "A directory date or archive suffix alone does not establish that it is disposable.",
+    "Small historical reports may be removed if their diagnostic history is no longer needed."
+  ]
+}

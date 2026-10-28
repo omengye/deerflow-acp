@@ -1,0 +1,231 @@
+{
+  "build_id": "skill-learning-recovery-20261028",
+  "toolchain": "go version go1.26.8 windows/amd64",
+  "GOOS": "linux",
+  "GOARCH": "amd64",
+  "CGO_ENABLED": "0",
+  "source_manifest_sha256": "ab2f5b60df90c344736ae409cd96bfd00e7f658930637fedf878eb75d4bcaaab",
+  "artifacts": [
+    {
+      "path": "bin/deerflow-acpd.real",
+      "package": "./cmd/deerflow-acpd-go",
+      "test": false,
+      "exit_code": 0,
+      "seconds": 87.43,
+      "command": [
+        "build",
+        "-trimpath",
+        "-p=2",
+        "-buildvcs=false",
+        "-ldflags=-s -w -X=main.buildID=skill-learning-recovery-20261028",
+        "-o",
+        "D:\\Tools\\deerflow-api\\dist\\gentoo-skill-learning-20261028\\bin\\deerflow-acpd.real",
+        "./cmd/deerflow-acpd-go"
+      ],
+      "sha256": "d81f51b23eb5ac814d765ed4c66abadb0c85f884f0f24f27db033d08ea0aa51b",
+      "bytes": 57823394,
+      "elf": true
+    },
+    {
+      "path": "bin/deerflow-config-go",
+      "package": "./cmd/deerflow-config-go",
+      "test": false,
+      "exit_code": 0,
+      "seconds": 2.99,
+      "command": [
+        "build",
+        "-trimpath",
+        "-p=2",
+        "-buildvcs=false",
+        "-ldflags=-s -w",
+        "-o",
+        "D:\\Tools\\deerflow-api\\dist\\gentoo-skill-learning-20261028\\bin\\deerflow-config-go",
+        "./cmd/deerflow-config-go"
+      ],
+      "sha256": "58e2bf2307f5797a0273fbe71630ffdd24d56d185885f2eef11621770268071e",
+      "bytes": 41656482,
+      "elf": true
+    },
+    {
+      "path": "bin/deerflow-control-go",
+      "package": "./cmd/deerflow-control-go",
+      "test": false,
+      "exit_code": 0,
+      "seconds": 0.7,
+      "command": [
+        "build",
+        "-trimpath",
+        "-p=2",
+        "-buildvcs=false",
+        "-ldflags=-s -w",
+        "-o",
+        "D:\\Tools\\deerflow-api\\dist\\gentoo-skill-learning-20261028\\bin\\deerflow-control-go",
+        "./cmd/deerflow-control-go"
+      ],
+      "sha256": "8647c7c47721ed87c2da13a3c0e030a475b05e71edf64eb87b97c4f475f1589f",
+      "bytes": 3604642,
+      "elf": true
+    },
+    {
+      "path": "bin/deerflow-skill-go",
+      "package": "./cmd/deerflow-skill-go",
+      "test": false,
+      "exit_code": 0,
+      "seconds": 1.31,
+      "command": [
+        "build",
+        "-trimpath",
+        "-p=2",
+        "-buildvcs=false",
+        "-ldflags=-s -w",
+        "-o",
+        "D:\\Tools\\deerflow-api\\dist\\gentoo-skill-learning-20261028\\bin\\deerflow-skill-go",
+        "./cmd/deerflow-skill-go"
+      ],
+      "sha256": "9fa11c70a6365a02ea0fb3e925839c4760bb59fe075181e887aff54cc166fc61",
+      "bytes": 16126114,
+      "elf": true
+    },
+    {
+      "path": "tests/root.test",
+      "package": ".",
+      "test": true,
+      "exit_code": 0,
+      "seconds": 43.43,
+      "command": [
+        "test",
+        "-c",
+        "-trimpath",
+        "-p=2",
+        "-buildvcs=false",
+        "-o",
+        "D:\\Tools\\deerflow-api\\dist\\gentoo-skill-learning-20261028\\tests\\root.test",
+        "."
+      ],
+      "sha256": "2d14041632196638e0328826a65d4be7bcf5da447a747d0148e6c10e20651671",
+      "bytes": 86260045,
+      "elf": true
+    },
+    {
+      "path": "tests/learning.test",
+      "package": "./internal/learning",
+      "test": true,
+      "exit_code": 0,
+      "seconds": 2.36,
+      "command": [
+        "test",
+        "-c",
+        "-trimpath",
+        "-p=2",
+        "-buildvcs=false",
+        "-o",
+        "D:\\Tools\\deerflow-api\\dist\\gentoo-skill-learning-20261028\\tests\\learning.test",
+        "./internal/learning"
+      ],
+      "sha256": "ca7c6e0cbcfc1585a60eb61108b0f26909879014c7728d6172c1263dff00b1ff",
+      "bytes": 25307384,
+      "elf": true
+    },
+    {
+      "path": "tests/skillmaintenance.test",
+      "package": "./internal/skillmaintenance",
+      "test": true,
+      "exit_code": 0,
+      "seconds": 2.19,
+      "command": [
+        "test",
+        "-c",
+        "-trimpath",
+        "-p=2",
+        "-buildvcs=false",
+        "-o",
+        "D:\\Tools\\deerflow-api\\dist\\gentoo-skill-learning-20261028\\tests\\skillmaintenance.test",
+        "./internal/skillmaintenance"
+      ],
+      "sha256": "f07458d34ff68216d9d47cf9c12903767e168868cdb5e63929e70c02bd331aac",
+      "bytes": 24753222,
+      "elf": true
+    },
+    {
+      "path": "tests/runtime.test",
+      "package": "./internal/runtime",
+      "test": true,
+      "exit_code": 0,
+      "seconds": 6.12,
+      "command": [
+        "test",
+        "-c",
+        "-trimpath",
+        "-p=2",
+        "-buildvcs=false",
+        "-o",
+        "D:\\Tools\\deerflow-api\\dist\\gentoo-skill-learning-20261028\\tests\\runtime.test",
+        "./internal/runtime"
+      ],
+      "sha256": "900f0d3552563ecd8a00336d47c3f984ccc348f38f678c90553c8ad70a1df565",
+      "bytes": 68442740,
+      "elf": true
+    },
+    {
+      "path": "tests/desktopconfig.test",
+      "package": "./internal/desktopconfig",
+      "test": true,
+      "exit_code": 0,
+      "seconds": 5.4,
+      "command": [
+        "test",
+        "-c",
+        "-trimpath",
+        "-p=2",
+        "-buildvcs=false",
+        "-o",
+        "D:\\Tools\\deerflow-api\\dist\\gentoo-skill-learning-20261028\\tests\\desktopconfig.test",
+        "./internal/desktopconfig"
+      ],
+      "sha256": "21a9f9b45153c56c263a124d4efb66d4304aba082d7c6b56248f8edb698513db",
+      "bytes": 84834582,
+      "elf": true
+    },
+    {
+      "path": "tests/agent.test",
+      "package": "./internal/acp/agent",
+      "test": true,
+      "exit_code": 0,
+      "seconds": 4.76,
+      "command": [
+        "test",
+        "-c",
+        "-trimpath",
+        "-p=2",
+        "-buildvcs=false",
+        "-o",
+        "D:\\Tools\\deerflow-api\\dist\\gentoo-skill-learning-20261028\\tests\\agent.test",
+        "./internal/acp/agent"
+      ],
+      "sha256": "7e281e4b5add00da6e97f4fdac50f68333e47d05525dc1f76b77e3909352d232",
+      "bytes": 75770504,
+      "elf": true
+    },
+    {
+      "path": "tests/eino.test",
+      "package": "./internal/engine/eino",
+      "test": true,
+      "exit_code": 0,
+      "seconds": 6.59,
+      "command": [
+        "test",
+        "-c",
+        "-trimpath",
+        "-p=2",
+        "-buildvcs=false",
+        "-o",
+        "D:\\Tools\\deerflow-api\\dist\\gentoo-skill-learning-20261028\\tests\\eino.test",
+        "./internal/engine/eino"
+      ],
+      "sha256": "cdffad4565a26b5160199f78d910a797bdb4b0b3e5617f635136b7901bc792da",
+      "bytes": 79137557,
+      "elf": true
+    }
+  ],
+  "completed": true
+}

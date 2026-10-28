@@ -1,1 +1,7 @@
 *.sh text eol=lf
+
+# Deployment manifests verify these source files byte for byte.
+deploy/docker/**/folotoy-source/**/*.py text eol=lf
+
+# A space-only line is a required context marker in a unified patch.
+deploy/docker/**/*.patch text eol=lf -whitespace

@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+data/
+logs/
+healthcheck/target/
+
+# Private deployment state and disposable source backups.
+private/
+backup/
+local-source-backup/
+previous.env

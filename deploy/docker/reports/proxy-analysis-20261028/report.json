@@ -1,0 +1,364 @@
+{
+  "management_host": "100.80.205.120",
+  "read_only_analysis": true,
+  "production_configuration_changed": false,
+  "container_observation": {
+    "captured_at": "2026-10-28T06:20:26.152734+00:00",
+    "read_only": true,
+    "container": {
+      "name": "deerflow-deploy-deerflow-1",
+      "image": "deerflow-server:single-user-memory-20261027",
+      "health": "healthy",
+      "network_mode": "deerflow-deploy_default",
+      "extra_hosts": [],
+      "networks": {
+        "deerflow-deploy_default": {
+          "IPAddress": "172.27.0.2",
+          "Gateway": "172.27.0.1",
+          "NetworkID": "6ce9af511e5c7f04d443ce20ab421186a4ce12ad4e54d73da8bf32662754e85c"
+        }
+      },
+      "proxy_environment": {}
+    },
+    "ssh_environment_proxy": {},
+    "configured_tools": [
+      {
+        "name": "web_search",
+        "timeout": 0,
+        "max_results": 5,
+        "proxy": {
+          "configured": false
+        },
+        "api_key_configured": true
+      },
+      {
+        "name": "web_fetch",
+        "timeout": 10,
+        "max_output_chars": 0,
+        "proxy": {
+          "configured": false
+        },
+        "api_key_configured": false
+      },
+      {
+        "name": "image_search",
+        "timeout": 0,
+        "max_results": 5,
+        "proxy": {
+          "configured": false
+        },
+        "api_key_configured": false
+      },
+      {
+        "name": "host_opencli",
+        "timeout": 100,
+        "proxy": {
+          "configured": false
+        },
+        "api_key_configured": false
+      }
+    ],
+    "native_tool_proxy_fields": [
+      {
+        "name": "web_search",
+        "has_https_proxy_setting": true,
+        "proxy_configured": false
+      },
+      {
+        "name": "web_fetch",
+        "has_https_proxy_setting": true,
+        "proxy_configured": false
+      },
+      {
+        "name": "image_search",
+        "has_https_proxy_setting": true,
+        "proxy_configured": false
+      }
+    ],
+    "proxy_listener_candidates": [
+      {
+        "local_address": "172.17.0.1:11055",
+        "port": 11055,
+        "known_proxy_process": true,
+        "processes": [
+          [
+            "xray",
+            "883931"
+          ]
+        ]
+      },
+      {
+        "local_address": "172.17.0.1:11033",
+        "port": 11033,
+        "known_proxy_process": true,
+        "processes": [
+          [
+            "xray",
+            "883931"
+          ]
+        ]
+      }
+    ],
+    "proxy_services": {
+      "user": [],
+      "system": [
+        "xray.service"
+      ]
+    },
+    "user_service_manager_proxy": {},
+    "host_addresses": [
+      {
+        "interface": "lo",
+        "addresses": [
+          "127.0.0.1"
+        ]
+      },
+      {
+        "interface": "enp3s0",
+        "addresses": [
+          "192.168.1.190"
+        ]
+      },
+      {
+        "interface": "br-6dbdbc0f480c",
+        "addresses": [
+          "172.19.0.1"
+        ]
+      },
+      {
+        "interface": "br-731efd35a24d",
+        "addresses": [
+          "172.22.0.1"
+        ]
+      },
+      {
+        "interface": "br-a0ae2f5f8d36",
+        "addresses": [
+          "172.23.0.1"
+        ]
+      },
+      {
+        "interface": "br-fc0972bc39fd",
+        "addresses": [
+          "172.20.0.1"
+        ]
+      },
+      {
+        "interface": "docker_gwbridge",
+        "addresses": [
+          "172.21.0.1"
+        ]
+      },
+      {
+        "interface": "docker0",
+        "addresses": [
+          "172.17.0.1"
+        ]
+      },
+      {
+        "interface": "br-f9f9397371c5",
+        "addresses": [
+          "172.18.0.1"
+        ]
+      },
+      {
+        "interface": "br-fa74fd380255",
+        "addresses": [
+          "172.24.0.1"
+        ]
+      },
+      {
+        "interface": "br-0ce8ce2e2fa8",
+        "addresses": [
+          "172.26.0.1"
+        ]
+      },
+      {
+        "interface": "br-673bd3f490d3",
+        "addresses": [
+          "172.25.0.1"
+        ]
+      },
+      {
+        "interface": "tailscale0",
+        "addresses": [
+          "100.80.205.120"
+        ]
+      },
+      {
+        "interface": "br-6ce9af511e5c",
+        "addresses": [
+          "172.27.0.1"
+        ]
+      }
+    ],
+    "proxy_containers": [],
+    "compose_network_config": {
+      "extra_hosts": null,
+      "network_mode": null,
+      "environment_keys": [
+        "TZ",
+        "WAKU_DAEMON_TOKEN"
+      ]
+    }
+  },
+  "host_proxy_observation": {
+    "read_only": true,
+    "service": {
+      "ActiveState": "active",
+      "User": "gen",
+      "FragmentPath": "/etc/systemd/system/xray.service",
+      "WorkingDirectory": "/home/gen/Documents/xray"
+    },
+    "config_paths": [
+      "config_client.yaml"
+    ],
+    "inbound_settings": [
+      {
+        "listen": "172.17.0.1",
+        "port": 11033,
+        "protocol": "socks",
+        "authentication_mode": null,
+        "account_count": 0,
+        "udp_enabled": true
+      },
+      {
+        "listen": "172.17.0.1",
+        "port": 11055,
+        "protocol": "http",
+        "authentication_mode": null,
+        "account_count": 0,
+        "udp_enabled": true
+      }
+    ],
+    "config_status": [
+      {
+        "path": "/home/gen/Documents/xray/config_client.yaml",
+        "readable_json": true
+      }
+    ],
+    "routing_rule_count": 5,
+    "outbound_protocols": [
+      "blackhole",
+      "freedom",
+      "vless"
+    ]
+  },
+  "container_connectivity_tests": {
+    "read_only_configuration": true,
+    "production_config_modified": false,
+    "container": "deerflow-deploy-deerflow-1",
+    "http_proxy": "http://172.17.0.1:11055",
+    "results": [
+      {
+        "kind": "http",
+        "address": "172.17.0.1",
+        "port": 11055,
+        "tcp_reachable": true,
+        "elapsed_ms": 3
+      },
+      {
+        "kind": "socks",
+        "address": "172.17.0.1",
+        "port": 11033,
+        "tcp_reachable": true,
+        "socks5_no_auth_supported": true,
+        "elapsed_ms": 4
+      },
+      {
+        "kind": "brave_direct_connectivity",
+        "target_host": "api.search.brave.com",
+        "via_proxy": false,
+        "credentials_sent": false,
+        "network_response_received": false,
+        "error_type": "URLError",
+        "elapsed_ms": 11231
+      },
+      {
+        "kind": "google_direct_connectivity",
+        "target_host": "www.google.com",
+        "via_proxy": false,
+        "credentials_sent": false,
+        "network_response_received": false,
+        "error_type": "URLError",
+        "elapsed_ms": 30142
+      },
+      {
+        "kind": "google_http_proxy_connectivity",
+        "target_host": "www.google.com",
+        "via_proxy": true,
+        "credentials_sent": false,
+        "http_status": 204,
+        "network_response_received": true,
+        "elapsed_ms": 729
+      },
+      {
+        "kind": "brave_http_proxy_authenticated_search",
+        "target_host": "api.search.brave.com",
+        "via_proxy": true,
+        "credentials_sent": true,
+        "http_status": 200,
+        "network_response_received": true,
+        "search_result_count": 1,
+        "authenticated_search_passed": true,
+        "elapsed_ms": 1051
+      }
+    ],
+    "captured_at": "2026-10-28T06:24:41.936251+00:00"
+  },
+  "conclusion": {
+    "configuration_supported": true,
+    "native_tools": [
+      "web_search",
+      "web_fetch",
+      "image_search"
+    ],
+    "recommended_tool_field": "https_proxy",
+    "recommended_value": "http://172.17.0.1:11055",
+    "alternate_socks_proxy": "socks5://172.17.0.1:11033",
+    "existing_proxy_reusable": true,
+    "existing_brave_key_preserved": true,
+    "new_image_build_required": false,
+    "new_proxy_server_required": false
+  },
+  "proxy_boundaries": {
+    "native_web_tools": "Use each tool https_proxy; they explicitly ignore HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and NO_PROXY environment settings.",
+    "skill_run_bash_python": "Sandbox filters ambient proxy variables. Configure explicit --sandbox-env entries for desired subprocesses, and use a suitable NO_PROXY list.",
+    "mcp_http_sse": "Uses the daemon HTTP proxy environment; consider model and local service traffic before global changes.",
+    "mcp_stdio": "Configure the individual MCP server environment because subprocess environment is filtered.",
+    "host_opencli_browser": "Controlled by the host bridge process and browser; native tool proxy does not change browser settings."
+  },
+  "source_evidence": [
+    {
+      "path": "go-harness/internal/tools/web.go",
+      "line": 65,
+      "finding": "Transport.Proxy is set to nil, then only an explicit tool HTTPSProxy selects ProxyURL."
+    },
+    {
+      "path": "go-harness/harness/builtin_tools.go",
+      "line": 58,
+      "finding": "Proxy URL validation accepts http, https, socks5, socks5h."
+    },
+    {
+      "path": "go-harness/internal/launch/config.go",
+      "line": 809,
+      "finding": "Tool proxy can reference explicitly provided environment variables."
+    },
+    {
+      "path": "go-harness/internal/sandbox/config.go",
+      "line": 200,
+      "finding": "Sandbox process environment is filtered."
+    },
+    {
+      "path": "go-harness/internal/launch/sandbox.go",
+      "line": 31,
+      "finding": "--sandbox-env supplies explicit sandbox environment overrides."
+    }
+  ],
+  "suggested_change_scope": [
+    "Merge https_proxy into the three existing network tool entries in /home/gen/deerflow-deploy/data/user-data/config/config.yaml, retaining API keys and all other settings.",
+    "Back up the config; validate through the native config helper; reload the native runtime while idle.",
+    "Verify actual web_search, web_fetch, image_search runs, then a FoloToy question."
+  ],
+  "verification_limit": "Proxy connectivity and one authenticated Brave query were tested in an isolated Python process inside DeerFlow. The native tool configuration has not been changed, so production native tool proxy use has not yet been activated or verified."
+}

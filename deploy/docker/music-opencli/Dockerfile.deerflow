@@ -1,0 +1,9 @@
+FROM deerflow-server:skills-20261024
+USER root
+COPY wheels/ /tmp/deerflow-wheels/
+RUN /opt/deerflow-skill-python/bin/python -m pip install --no-index --no-cache-dir --find-links=/tmp/deerflow-wheels requests==2.32.5 \
+    && /opt/deerflow-skill-python/bin/python -m pip check \
+    && rm -rf /tmp/deerflow-wheels
+COPY --chmod=0755 proxy/opencli-proxy /opt/deerflow-host-tools/opencli-proxy
+RUN /opt/deerflow-skill-python/bin/python -c "import ast,pathlib,requests; ast.parse(pathlib.Path('/opt/deerflow-host-tools/opencli-proxy').read_text()); assert requests.__version__ == '2.32.5'"
+USER deerflow:deerflow

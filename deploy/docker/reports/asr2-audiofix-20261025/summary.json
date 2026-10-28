@@ -1,0 +1,98 @@
+{
+  "status": "fixed_deployed_and_verified",
+  "host": "192.168.1.190",
+  "fix_id": "4da4859759624ee09141618634a0850a",
+  "root_cause": {
+    "actual_device_audio": "32000 Hz, mono, PCM16 WAV",
+    "previous_adapter_requirement": "16000 Hz only",
+    "local_error": "asr2_requires_16k_mono_s16_wav",
+    "failure_stage": "local WAV validation before any ASR2 network request",
+    "confirmed_failed_attempts": 2,
+    "test_coverage_gap": "Earlier rollout tests only sent 16000 Hz synthetic device audio and missed physical 32000 Hz input."
+  },
+  "repair": {
+    "input_rates": [
+      8000,
+      16000,
+      32000
+    ],
+    "output_rate": 16000,
+    "method": "True FFmpeg raw PCM resampling for 8k/32k; bit-exact pass-through for 16k. Original WAV file remains unchanged.",
+    "hotwords_added": false,
+    "model_changed": false,
+    "credentials_changed": false,
+    "roles_changed": false,
+    "old_model_fallback": false
+  },
+  "evidence": {
+    "original_failed_recording_replay_passed": true,
+    "recognized_text": "我查一下北京明天的天气。",
+    "source_duration_seconds": 4.096,
+    "normalized_duration_seconds": 4.096,
+    "gentoo_normalization_tests": {
+      "status": "passed",
+      "tests_run": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "elapsed_ms": 214,
+      "network_requests_made": false,
+      "detail": null
+    },
+    "wire_rate_paths": {
+      "8000": {
+        "passed": true,
+        "input_sample_rate": 8000,
+        "device_wire_sample_rate": 8000,
+        "device_wire_frame_type_hex": "05",
+        "device_rate_path_verified": true,
+        "request_id": "435629d3-239f-44eb-9b69-7c2ba65f19b7",
+        "provider": "volcengine-asr2",
+        "resource_id": "volc.seedasr.sauc.duration",
+        "voice_pipeline_provider_receipt_verified": true,
+        "audio_segments": 1
+      },
+      "16000": {
+        "passed": true,
+        "input_sample_rate": 16000,
+        "device_wire_sample_rate": 16000,
+        "device_wire_frame_type_hex": "04",
+        "device_rate_path_verified": true,
+        "request_id": "ef3e2528-8bfb-45d4-b7d1-b2118ae52910",
+        "provider": "volcengine-asr2",
+        "resource_id": "volc.seedasr.sauc.duration",
+        "voice_pipeline_provider_receipt_verified": true,
+        "audio_segments": 1
+      },
+      "32000": {
+        "passed": true,
+        "input_sample_rate": 32000,
+        "device_wire_sample_rate": 32000,
+        "device_wire_frame_type_hex": "01",
+        "device_rate_path_verified": true,
+        "request_id": "7de6be78-9b83-460e-aa42-c0b447fb0d15",
+        "provider": "volcengine-asr2",
+        "resource_id": "volc.seedasr.sauc.duration",
+        "voice_pipeline_provider_receipt_verified": true,
+        "audio_segments": 3
+      }
+    },
+    "weather_tool_completed": true,
+    "all_final_checks_passed": true,
+    "physical_live_microphone_retest_observed": false
+  },
+  "deployment": {
+    "image": "folotoy-deerflow-ws:asr2-audiofix-20261025",
+    "status": "deployed_and_verified",
+    "backup": "/home/gen/deerflow-deploy/asr2-audiofix-20261025/backup-20261025T042911Z-4da48597",
+    "rollback_fix_only": "python3 /home/gen/deerflow-deploy/asr2-audiofix-20261025/payload-1792902551026839952/rollback.py --deployment-report /home/gen/deerflow-deploy/asr2-audiofix-20261025/deployment.json",
+    "rollback_full_v2": "python3 /home/gen/deerflow-deploy/asr2-rollout-20261025/payload-1792898580653760384/rollback.py --deployment-report /home/gen/deerflow-deploy/asr2-rollout-20261025/deployment.json",
+    "both_rollback_paths_preserved": true
+  },
+  "cleanup": {
+    "remote": "completed",
+    "user_original_recordings_retained": true,
+    "local": "completed",
+    "local_temporary_bytes_freed": 17112709
+  }
+}

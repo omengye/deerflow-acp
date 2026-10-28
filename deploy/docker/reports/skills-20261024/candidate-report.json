@@ -1,0 +1,9 @@
+{
+  "status": "passed",
+  "skills_registered": 25,
+  "skills_enabled": 24,
+  "paramiko": "4.0.0",
+  "python_entrypoints_help": "passed",
+  "chart_complete_files": 28,
+  "candidate_port": 19787
+}

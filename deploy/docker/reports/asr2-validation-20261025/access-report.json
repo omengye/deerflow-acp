@@ -1,0 +1,29 @@
+{
+  "phase": "authorization_handshake",
+  "endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream",
+  "credentials_source": "existing_private_container_environment",
+  "websockets_version": "12.0",
+  "model_recognition_tested": false,
+  "attempts": [
+    {
+      "resource_id": "volc.seedasr.sauc.duration",
+      "request_id": "3c51c2d1-db44-46a4-b4d4-c4eca14d8ad8",
+      "status": "rejected",
+      "http_status": 403,
+      "error_type": "InvalidStatusCode",
+      "log_id": "20261025105255FE6AD94B65D4F32E4044",
+      "elapsed_ms": 216
+    },
+    {
+      "resource_id": "volc.seedasr.sauc.concurrent",
+      "request_id": "69876505-d20e-4bd7-bb75-82d9c67df9cb",
+      "status": "rejected",
+      "http_status": 403,
+      "error_type": "InvalidStatusCode",
+      "log_id": "20261025105256896FCCA01241A02AA5D2",
+      "elapsed_ms": 210
+    }
+  ],
+  "auth_mode": "legacy_app_id_and_access_token",
+  "status": "blocked"
+}
