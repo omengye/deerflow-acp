@@ -1,0 +1,35 @@
+{
+  "temporary_files_removed": [
+    "build/",
+    "build.log",
+    "offline-build.log",
+    "offline-build.exit",
+    "vendor.log",
+    "vendor.exit",
+    "vendor-config.toml",
+    "pull.log",
+    "probe_artifacts.py",
+    "preserved-before.json"
+  ],
+  "temporary_container_removed": true,
+  "retained": [
+    "baseline-source.tar.gz",
+    "build-source.tar.gz",
+    "source-verification.json",
+    "previous.env",
+    "release.py",
+    "step1-server.patch",
+    "README.md",
+    "smoke.json",
+    "production.json",
+    "deployment.json",
+    "validation.json"
+  ],
+  "business_data_deleted": false,
+  "local_cleanup": "blocked_by_automatic_approval_policy",
+  "local_remaining_directories": [
+    "C:/Users/omeng/AppData/Local/Temp/deerflow-step1-20261028",
+    "C:/Users/omeng/AppData/Local/Temp/deerflow-step1-server-baseline-20261028"
+  ],
+  "rejection_reason": "blocked by policy (no further explanation supplied)"
+}

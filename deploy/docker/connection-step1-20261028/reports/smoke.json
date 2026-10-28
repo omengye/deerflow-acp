@@ -1,0 +1,46 @@
+{
+  "passed": true,
+  "image_id": "sha256:0a39622576b914ba64d73794288315b824b48bbdcfcb22d7687c8799872a6514",
+  "protocol": 10,
+  "results": [
+    {
+      "delay_seconds": 0,
+      "result": "hello",
+      "elapsed_ms": 76,
+      "rpc": {
+        "getSettings": true,
+        "loadTaskState": true
+      }
+    },
+    {
+      "delay_seconds": 6,
+      "result": "hello",
+      "elapsed_ms": 6075,
+      "rpc": {
+        "getSettings": true,
+        "loadTaskState": true
+      }
+    },
+    {
+      "delay_seconds": 10,
+      "result": "hello",
+      "elapsed_ms": 10066,
+      "rpc": {
+        "getSettings": true,
+        "loadTaskState": true
+      }
+    },
+    {
+      "delay_seconds": 0,
+      "result": "rejected",
+      "elapsed_ms": 25,
+      "rpc": {}
+    },
+    {
+      "delay_seconds": 21,
+      "result": "closed",
+      "elapsed_ms": 21025,
+      "rpc": {}
+    }
+  ]
+}

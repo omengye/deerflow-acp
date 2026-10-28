@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "image": "deerflow-server:connection-step1-20261028",
+  "image_id": "sha256:0a39622576b914ba64d73794288315b824b48bbdcfcb22d7687c8799872a6514",
+  "previous_image_id": "sha256:d89395c9629b359a3c8a8688f9a0f0e2145ff32a4c67f30a99b5226c045ab26f",
+  "business_data_restored": false,
+  "protocol": 10
+}

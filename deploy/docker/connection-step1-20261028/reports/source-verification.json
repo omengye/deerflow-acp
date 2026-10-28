@@ -1,0 +1,14 @@
+{
+  "base_image_id": "sha256:d89395c9629b359a3c8a8688f9a0f0e2145ff32a4c67f30a99b5226c045ab26f",
+  "baseline_files_verified": 125,
+  "changed_files": [
+    "desktop-app/crates/waku-core/README.md",
+    "desktop-app/crates/waku-core/src/server/auth_tests.rs",
+    "desktop-app/crates/waku-core/src/server.rs",
+    "desktop-app/crates/waku-daemon/src/main.rs"
+  ],
+  "patch_sha256": "71eef3aaffef40ea950da8d1ca5ddaa15415eb9e0e0bc649bb02ec0efd548269",
+  "baseline_archive_sha256": "301966b1d7bb4faa9cbcda0786234f266b55528dee6951d6ae4e4a87351cd061",
+  "build_archive_sha256": "e77c9c8cebe744ab0214018c4c71a5b818c08df883e223ae914ca59ffcea138b",
+  "source_newlines": "LF (verified original baseline accepts LF or CRLF)"
+}

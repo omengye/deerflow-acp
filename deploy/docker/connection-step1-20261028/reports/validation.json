@@ -1,0 +1,37 @@
+{
+  "healthy": "healthy",
+  "image_id": "sha256:0a39622576b914ba64d73794288315b824b48bbdcfcb22d7687c8799872a6514",
+  "restart_count": 0,
+  "native_resumed": true,
+  "preserved_runtime_and_config_files": 5,
+  "rust_tests_passed": 124,
+  "test_groups": [
+    79,
+    39,
+    6
+  ],
+  "deployment_tests_passed": 19,
+  "protocol": 10,
+  "initial_probe_address_corrected": true,
+  "android_commit": "dd32bce",
+  "android_validation": {
+    "version": "2.1.2",
+    "version_code": 9,
+    "android": {
+      "tests": 168,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "lint": {
+      "Warning": 21
+    },
+    "apk_sha256": "e4f526c8a492122410fcb2d0be9a8d2e3810eca1cf70bb1538c290dcc01f9348",
+    "physical_android_device_tested": false,
+    "server_protocol": 10,
+    "artifact_partial_across_disconnect": false,
+    "signature_v2_verified": true,
+    "same_signing_certificate_as_2_1_1": true,
+    "stale_artifact_error_after_runtime_end": "updated to unavailable state; cached files retained"
+  }
+}

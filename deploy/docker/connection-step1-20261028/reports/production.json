@@ -1,0 +1,46 @@
+{
+  "passed": true,
+  "image": "sha256:0a39622576b914ba64d73794288315b824b48bbdcfcb22d7687c8799872a6514",
+  "protocol": 10,
+  "health": "healthy",
+  "results": [
+    {
+      "delay_seconds": 0,
+      "result": "hello",
+      "elapsed_ms": 85,
+      "rpc": {
+        "getSettings": true,
+        "loadTaskState": true
+      }
+    },
+    {
+      "delay_seconds": 0,
+      "result": "hello",
+      "elapsed_ms": 212,
+      "rpc": {
+        "getSettings": true,
+        "loadTaskState": true
+      }
+    },
+    {
+      "delay_seconds": 6,
+      "result": "hello",
+      "elapsed_ms": 6182,
+      "rpc": {
+        "getSettings": true,
+        "loadTaskState": true
+      }
+    },
+    {
+      "delay_seconds": 10,
+      "result": "hello",
+      "elapsed_ms": 10178,
+      "rpc": {
+        "getSettings": true,
+        "loadTaskState": true
+      }
+    }
+  ],
+  "active_runs": 0,
+  "queued_runs": 0
+}
