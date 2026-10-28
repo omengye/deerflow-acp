@@ -292,6 +292,7 @@ function event(kind: string, payload: unknown): SequencedEvent {
     runtimeId: 'runtime',
     epoch: 'epoch',
     sequence: 1,
+    replayable: true,
     event: { kind, payload: payload as never },
   }
 }

@@ -30,6 +30,32 @@ test('DeerFlow confirms thinking independently of the remembered effort', () => 
   expect(legacy.thinking_mode).toBeNull()
 })
 
+test('live output and local failures preserve the persisted replay cursor', () => {
+  const confirmed = apply(runningSession(), 'textDelta', 'Received')
+  const cursor = confirmed.runtime_event_cursor!
+  const live = reduceRuntimeEvent(confirmed, {
+    ...event('terminalOutput', 'live-only'),
+    sequence: cursor.sequence + 100,
+    replayable: false,
+  }, clock).session
+  expect(live.runtime_event_cursor).toEqual(cursor)
+
+  const failed = reduceRuntimeEvent(live, {
+    ...event('turnFinished', { success: false, summary: 'Connection lost' }),
+    epoch: 'local',
+    sequence: cursor.sequence + 1,
+    replayable: false,
+  }, clock).session
+  expect(failed.turns.at(-1)?.status).toBe('failed')
+  expect(failed.runtime_event_cursor).toEqual(cursor)
+
+  const recovered = reduceRuntimeEvent(failed, {
+    ...event('textDelta', 'Recovered'),
+    sequence: cursor.sequence + 1,
+  }, clock).session
+  expect(recovered.runtime_event_cursor?.sequence).toBe(cursor.sequence + 1)
+})
+
 describe('promptSubmitted', () => {
   test('a client following the runtime mirrors another client’s submission under its ids', () => {
     // The desktop stayed attached to the idle runtime after the first turn;
@@ -167,6 +193,7 @@ function event(kind: string, payload: unknown): SequencedEvent {
     runtimeId: 'runtime',
     epoch: 'epoch',
     sequence: 1,
+    replayable: true,
     event: { kind, payload: payload as never },
   }
 }

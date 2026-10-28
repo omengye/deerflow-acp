@@ -1,9 +1,9 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::io;
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, anyhow, bail};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
@@ -21,27 +21,20 @@ use waku_protocol::{
 
 const READ_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-const MAX_BUFFERED_EVENTS_PER_RUNTIME: usize = 4096;
+mod replay;
 
 enum Outgoing {
     Message(ClientMessage),
+    Disconnect,
     Shutdown,
 }
 
 struct ClientInner {
     outgoing: Sender<Outgoing>,
     pending: Mutex<HashMap<Uuid, Sender<Result<ResponsePayload, RpcError>>>>,
-    sessions: Mutex<HashMap<(Uuid, Uuid), Sender<SequencedEvent>>>,
-    pending_events: Mutex<HashMap<(Uuid, Uuid), VecDeque<SequencedEvent>>>,
+    delivery: Mutex<replay::Delivery>,
     task_state_subscribers: Mutex<Vec<Sender<u64>>>,
-    last_sequences: Mutex<HashMap<(Uuid, Uuid), LastSequence>>,
     disconnected: AtomicBool,
-}
-
-#[derive(Clone, Copy)]
-struct LastSequence {
-    epoch: Uuid,
-    sequence: u64,
 }
 
 #[derive(Clone)]
@@ -59,24 +52,31 @@ impl DaemonClient {
         token: String,
         resume_from: Vec<ReplayCursor>,
     ) -> anyhow::Result<Self> {
-        let last_sequences = resume_from
-            .iter()
-            .map(|cursor| {
-                (
-                    (cursor.session_id, cursor.runtime_id),
-                    LastSequence {
-                        epoch: cursor.epoch,
-                        sequence: cursor.sequence,
-                    },
-                )
-            })
-            .collect();
-        let url = daemon_url(address)?;
+        let delivery = replay::Delivery::new(resume_from.clone());
+        let url = url::Url::parse(&daemon_url(address)?)?;
         let config = WebSocketConfig::default()
             .max_message_size(Some(MAX_WIRE_MESSAGE_BYTES))
             .max_frame_size(Some(MAX_WIRE_MESSAGE_BYTES));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let addresses = url
+            .socket_addrs(|| None)
+            .context("could not resolve Waku daemon host")?;
+        let mut stream = None;
+        for address in addresses {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            if let Ok(candidate) = TcpStream::connect_timeout(&address, remaining) {
+                stream = Some(candidate);
+                break;
+            }
+        }
+        let stream = stream.context("could not reach Waku daemon within 5 seconds")?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
         let (mut socket, _) =
-            tungstenite::client::connect_with_config(url.as_str(), Some(config), 3)
+            tungstenite::client_tls_with_config(url.as_str(), stream, Some(config), None)
                 .context("could not connect to Waku daemon")?;
         set_client_read_timeout(&mut socket, Some(Duration::from_secs(5)))?;
         write_json(
@@ -102,15 +102,19 @@ impl DaemonClient {
             other => bail!("daemon sent an invalid handshake response: {other:?}"),
         }
         set_client_read_timeout(&mut socket, Some(READ_POLL_INTERVAL))?;
+        match socket.get_mut() {
+            MaybeTlsStream::Plain(stream) => stream.set_write_timeout(None)?,
+            MaybeTlsStream::Rustls(stream) => stream.sock.set_write_timeout(None)?,
+            #[allow(unreachable_patterns)]
+            _ => {}
+        }
 
         let (outgoing, outgoing_rx) = unbounded();
         let inner = Arc::new(ClientInner {
             outgoing,
             pending: Mutex::new(HashMap::new()),
-            sessions: Mutex::new(HashMap::new()),
-            pending_events: Mutex::new(HashMap::new()),
+            delivery: Mutex::new(delivery),
             task_state_subscribers: Mutex::new(Vec::new()),
-            last_sequences: Mutex::new(last_sequences),
             disconnected: AtomicBool::new(false),
         });
         let thread_inner = inner.clone();
@@ -122,17 +126,17 @@ impl DaemonClient {
     }
 
     pub fn subscribe(&self, session_id: Uuid, runtime_id: Uuid) -> Receiver<SequencedEvent> {
-        let (events, receiver) = unbounded();
-        let key = (session_id, runtime_id);
-        let mut sessions = self.inner.sessions.lock();
-        sessions.insert(key, events.clone());
-        // Keep the subscription lock while draining the pre-subscription
-        // replay queue. The socket thread takes these locks in the same order,
-        // so a new live event cannot overtake older replayed events here.
-        if let Some(buffered) = self.inner.pending_events.lock().remove(&key) {
-            for event in buffered {
-                let _ = events.send(event);
-            }
+        let (receiver, request) = self.inner.delivery.lock().subscribe(session_id, runtime_id);
+        if self
+            .inner
+            .outgoing
+            .send(Outgoing::Message(ClientMessage::Request(request)))
+            .is_err()
+        {
+            self.inner
+                .delivery
+                .lock()
+                .unsubscribe(session_id, runtime_id);
         }
         receiver
     }
@@ -151,7 +155,10 @@ impl DaemonClient {
     }
 
     pub fn unsubscribe(&self, session_id: Uuid, runtime_id: Uuid) {
-        self.inner.sessions.lock().remove(&(session_id, runtime_id));
+        self.inner
+            .delivery
+            .lock()
+            .unsubscribe(session_id, runtime_id);
     }
 
     pub fn subscribe_task_state(&self) -> Receiver<u64> {
@@ -165,6 +172,16 @@ impl DaemonClient {
         session_id: Uuid,
         runtime_id: Uuid,
         command: Command,
+    ) -> anyhow::Result<ResponsePayload> {
+        self.request_with_timeout(session_id, runtime_id, command, REQUEST_TIMEOUT)
+    }
+
+    pub fn request_with_timeout(
+        &self,
+        session_id: Uuid,
+        runtime_id: Uuid,
+        command: Command,
+        timeout: Duration,
     ) -> anyhow::Result<ResponsePayload> {
         if self.inner.disconnected.load(Ordering::Acquire) {
             bail!("Waku daemon is disconnected");
@@ -187,7 +204,7 @@ impl DaemonClient {
             self.inner.pending.lock().remove(&request_id);
             bail!("Waku daemon connection is closed");
         }
-        match response_rx.recv_timeout(REQUEST_TIMEOUT) {
+        match response_rx.recv_timeout(timeout) {
             Ok(Ok(payload)) => Ok(payload),
             Ok(Err(error)) => Err(anyhow!(error.message)),
             Err(error) => {
@@ -221,17 +238,12 @@ impl DaemonClient {
     }
 
     pub fn last_sequences(&self) -> Vec<ReplayCursor> {
-        self.inner
-            .last_sequences
-            .lock()
-            .iter()
-            .map(|(&(session_id, runtime_id), cursor)| ReplayCursor {
-                session_id,
-                runtime_id,
-                epoch: cursor.epoch,
-                sequence: cursor.sequence,
-            })
-            .collect()
+        self.inner.delivery.lock().cursors()
+    }
+
+    /// Close only this client transport; the externally managed daemon remains running.
+    pub fn disconnect(&self) {
+        let _ = self.inner.outgoing.send(Outgoing::Disconnect);
     }
 
     pub fn shutdown(&self) {
@@ -258,12 +270,20 @@ fn run_client(
     inner: Arc<ClientInner>,
 ) {
     'connection: loop {
+        if inner.delivery.lock().expired() {
+            break;
+        }
         while let Ok(message) = outgoing.try_recv() {
             match message {
                 Outgoing::Message(message) => {
                     if write_json(&mut socket, &message).is_err() {
                         break 'connection;
                     }
+                }
+                Outgoing::Disconnect => {
+                    let _ = socket.close(None);
+                    let _ = socket.flush();
+                    break 'connection;
                 }
                 Outgoing::Shutdown => {
                     let _ = write_json(&mut socket, &ClientMessage::Shutdown);
@@ -283,7 +303,25 @@ fn run_client(
                         request_id,
                         outcome,
                     } => {
-                        if let Some(pending) = inner.pending.lock().remove(&request_id) {
+                        if inner.delivery.lock().is_replay(request_id) {
+                            let next = inner.delivery.lock().page(request_id, outcome);
+                            match next {
+                                Ok(Some(request)) => {
+                                    if write_json(&mut socket, &ClientMessage::Request(request))
+                                        .is_err()
+                                    {
+                                        break 'connection;
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    eprintln!(
+                                        "Waku runtime replay failed: {error}; reconnecting without skipping events"
+                                    );
+                                    break 'connection;
+                                }
+                            }
+                        } else if let Some(pending) = inner.pending.lock().remove(&request_id) {
                             let result = match outcome {
                                 ResponseOutcome::Ok { payload } => Ok(payload),
                                 ResponseOutcome::Error { error } => Err(error),
@@ -292,36 +330,11 @@ fn run_client(
                         }
                     }
                     ServerMessage::Event(event) => {
-                        let should_deliver = {
-                            let mut sequences = inner.last_sequences.lock();
-                            let previous = sequences
-                                .entry((event.session_id, event.runtime_id))
-                                .or_insert(LastSequence {
-                                    epoch: event.epoch,
-                                    sequence: 0,
-                                });
-                            if previous.epoch == event.epoch && event.sequence <= previous.sequence
-                            {
-                                false
-                            } else {
-                                previous.epoch = event.epoch;
-                                previous.sequence = event.sequence;
-                                true
-                            }
-                        };
-                        if should_deliver {
-                            let key = (event.session_id, event.runtime_id);
-                            let sessions = inner.sessions.lock();
-                            if let Some(events) = sessions.get(&key) {
-                                let _ = events.send(event);
-                            } else {
-                                let mut pending = inner.pending_events.lock();
-                                let buffered = pending.entry(key).or_default();
-                                buffered.push_back(event);
-                                while buffered.len() > MAX_BUFFERED_EVENTS_PER_RUNTIME {
-                                    buffered.pop_front();
-                                }
-                            }
+                        if let Err(error) = inner.delivery.lock().live(event) {
+                            eprintln!(
+                                "Waku runtime replay failed: {error}; reconnecting without skipping events"
+                            );
+                            break 'connection;
                         }
                     }
                     ServerMessage::TaskStateChanged { revision } => {
@@ -357,7 +370,7 @@ fn run_client(
     // hand off to a replacement client and ask the daemon whether the same
     // runtime still exists. Real provider exits arrive through the replayable
     // `processExited` event emitted by the daemon.
-    drop(std::mem::take(&mut *inner.sessions.lock()));
+    inner.delivery.lock().close();
     inner.task_state_subscribers.lock().clear();
 }
 
@@ -431,5 +444,49 @@ mod tests {
             daemon_url("wss://waku.example.test/old?ignored=1").unwrap(),
             "wss://waku.example.test/v1"
         );
+    }
+
+    #[test]
+    fn requests_can_time_out_and_disconnect_without_stopping_the_server() {
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (closed, closure) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            assert!(matches!(socket.read().unwrap(), Message::Text(_)));
+            write_json(
+                &mut socket,
+                &ServerMessage::Hello {
+                    protocol_version: PROTOCOL_VERSION,
+                    daemon_version: "test".into(),
+                },
+            )
+            .unwrap();
+            assert!(matches!(socket.read().unwrap(), Message::Text(_)));
+            assert!(matches!(socket.read().unwrap(), Message::Close(_)));
+            closed.send(()).unwrap();
+        });
+        let client = DaemonClient::connect(&address.to_string(), "test-token".into()).unwrap();
+        let started = Instant::now();
+        assert!(
+            client
+                .request_with_timeout(
+                    Uuid::nil(),
+                    Uuid::nil(),
+                    Command::GetSettings,
+                    Duration::from_millis(60)
+                )
+                .is_err()
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+        client.disconnect();
+        closure.recv_timeout(Duration::from_secs(2)).unwrap();
+        server.join().unwrap();
     }
 }

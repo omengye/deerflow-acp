@@ -1435,6 +1435,7 @@ function syntheticEvent(
     runtimeId,
     epoch: 'local',
     sequence: 0,
+    replayable: false,
     event: { kind, payload: payload as never },
   }
 }
@@ -1447,6 +1448,7 @@ function providerName(provider: AgentSession['provider']) {
       codex: 'Codex',
       cursor: 'Cursor Agent',
       deepSeek: 'DeepSeek Harness',
+      deerFlow: 'DeerFlow',
       fx: 'Fx',
       openCode: 'OpenCode',
       openCode2: 'OpenCode 2',

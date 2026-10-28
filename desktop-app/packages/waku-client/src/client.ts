@@ -11,6 +11,8 @@ import {
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 const OPEN = 1;
 const MAX_BUFFERED_EVENTS_PER_RUNTIME = 4096;
+const MAX_BUFFERED_EVENT_BYTES = 8 * 1024 * 1024;
+const REPLAY_PAGE_SIZE = 256;
 
 export type EventListener = (event: SequencedEvent) => void;
 export type WakuConnectionState = "disconnected" | "connecting" | "connected";
@@ -94,6 +96,12 @@ interface LastSequence {
   sequence: number;
 }
 
+interface ReplayCatchup {
+  generation: number;
+  live: SequencedEvent[];
+  liveBytes: number;
+}
+
 /** Browser-safe client for Waku's versioned JSON-over-WebSocket protocol. */
 export class WakuClient {
   readonly clientId: string;
@@ -109,7 +117,7 @@ export class WakuClient {
   private state: WakuConnectionState = "disconnected";
   private pending = new Map<string, PendingRequest>();
   private subscriptions = new Map<string, Set<EventListener>>();
-  private pendingEvents = new Map<string, SequencedEvent[]>();
+  private catchups = new Map<string, ReplayCatchup>();
   private taskStateListeners = new Set<(revision: number) => void>();
   private connectionStateListeners = new Set<ConnectionStateListener>();
   private sequences = new Map<string, LastSequence>();
@@ -246,6 +254,7 @@ export class WakuClient {
             clearTimeout(connectTimer);
             if (this.rejectConnect === failHandshake) this.rejectConnect = undefined;
             this.setConnectionState("connected");
+            for (const key of this.subscriptions.keys()) this.startCatchup(key);
             resolve();
             return;
           }
@@ -353,14 +362,13 @@ export class WakuClient {
       this.subscriptions.set(key, listeners);
     }
     listeners.add(listener);
-    const buffered = this.pendingEvents.get(key);
-    if (buffered) {
-      this.pendingEvents.delete(key);
-      for (const event of buffered) listener(event);
-    }
+    if (this.connected && listeners.size === 1) this.startCatchup(key);
     return () => {
       listeners?.delete(listener);
-      if (listeners?.size === 0) this.subscriptions.delete(key);
+      if (listeners?.size === 0) {
+        this.subscriptions.delete(key);
+        this.catchups.delete(key);
+      }
     };
   }
 
@@ -419,27 +427,43 @@ export class WakuClient {
     }
     if (message.type === "event") {
       const key = subscriptionKey(message.sessionId, message.runtimeId);
-      const previous = this.sequences.get(key);
-      if (
-        previous?.epoch === message.epoch &&
-        message.sequence <= previous.sequence
-      ) {
+      const listeners = this.subscriptions.get(key);
+      // An unobserved runtime has no confirmed projection. Recover it from the
+      // complete daemon journal when a subscriber attaches, never from a tail
+      // that may already have discarded its beginning.
+      if (!listeners?.size) return;
+      // Terminal output is transient and cannot be recovered from the journal.
+      // Deliver it even while the persistent transcript is catching up, without
+      // acknowledging it as history or suppressing it by a transcript cursor.
+      if (message.replayable === false) {
+        try {
+          for (const listener of listeners) listener(message);
+        } catch (error) {
+          this.failCatchup(asError(error), this.connectionGeneration);
+        }
         return;
       }
-      this.sequences.set(key, {
-        epoch: message.epoch,
-        sequence: message.sequence,
-      });
-      const listeners = this.subscriptions.get(key);
-      if (listeners?.size) {
-        for (const listener of listeners) listener(message);
-      } else {
-        const buffered = this.pendingEvents.get(key) ?? [];
-        buffered.push(message);
-        if (buffered.length > MAX_BUFFERED_EVENTS_PER_RUNTIME) {
-          buffered.splice(0, buffered.length - MAX_BUFFERED_EVENTS_PER_RUNTIME);
+      const catchup = this.catchups.get(key);
+      if (catchup) {
+        catchup.liveBytes += JSON.stringify(message).length * 2;
+        if (
+          catchup.live.length >= MAX_BUFFERED_EVENTS_PER_RUNTIME ||
+          catchup.liveBytes > MAX_BUFFERED_EVENT_BYTES
+        ) {
+          this.failCatchup(new Error("live event buffer overflow during recovery"), catchup.generation);
+          return;
         }
-        this.pendingEvents.set(key, buffered);
+        catchup.live.push(message);
+      } else {
+        try {
+          const previous = this.sequences.get(key);
+          if (!previous || previous.epoch !== message.epoch) {
+            throw new Error("runtime epoch changed without event recovery");
+          }
+          this.deliverEvent(key, message);
+        } catch (error) {
+          this.failCatchup(asError(error), this.connectionGeneration);
+        }
       }
       return;
     }
@@ -452,10 +476,102 @@ export class WakuClient {
     }
   }
 
+  private startCatchup(key: string): void {
+    if (!this.connected || !this.subscriptions.get(key)?.size || this.catchups.has(key)) return;
+    const catchup: ReplayCatchup = { generation: this.connectionGeneration, live: [], liveBytes: 0 };
+    this.catchups.set(key, catchup);
+    void this.catchupEvents(key, catchup).catch((error: unknown) => {
+      if (this.catchups.get(key) === catchup) this.failCatchup(asError(error), catchup.generation);
+    });
+  }
+
+  private async catchupEvents(key: string, catchup: ReplayCatchup): Promise<void> {
+    const [sessionId, runtimeId] = key.split(":", 2) as [string, string];
+    const confirmed = this.sequences.get(key);
+    let epoch = confirmed?.epoch ?? null;
+    let after = confirmed?.sequence ?? 0;
+    let through: number | null = null;
+    while (this.catchups.get(key) === catchup && catchup.generation === this.connectionGeneration) {
+      const page = await this.request({
+        type: "replayEvents",
+        epoch,
+        afterSequence: after,
+        throughSequence: through,
+        limit: REPLAY_PAGE_SIZE,
+      }, sessionId, runtimeId);
+      if (this.catchups.get(key) !== catchup || catchup.generation !== this.connectionGeneration) return;
+      if (page.type !== "replayEvents" || typeof page.epoch !== "string" || !page.epoch ||
+          !validSequence(page.throughSequence) || !validSequence(page.nextSequence) ||
+          !Array.isArray(page.events) || page.events.length > REPLAY_PAGE_SIZE ||
+          typeof page.hasMore !== "boolean") {
+        throw new Error("invalid event recovery page");
+      }
+      if (through !== null && (epoch !== page.epoch || through !== page.throughSequence)) {
+        throw new Error("event recovery snapshot changed during pagination");
+      }
+      const pageAfter = epoch === page.epoch ? after : 0;
+      let last = pageAfter;
+      for (const event of page.events) {
+        if (event.replayable !== true || event.sessionId !== sessionId || event.runtimeId !== runtimeId || event.epoch !== page.epoch ||
+            !validSequence(event.sequence) || event.sequence <= last || event.sequence > page.throughSequence) {
+          throw new Error("event recovery page has an invalid identity or sequence");
+        }
+        last = event.sequence;
+      }
+      if (page.throughSequence < pageAfter || page.nextSequence < last ||
+          (page.hasMore && (page.events.length === 0 || page.nextSequence !== last || last >= page.throughSequence)) ||
+          (!page.hasMore && page.nextSequence !== page.throughSequence)) {
+        throw new Error("event recovery cursor did not advance within its snapshot");
+      }
+      // Validate the whole page before exposing any of its events. A confirmed
+      // cursor advances only after subscribers receive the corresponding data.
+      if (epoch !== page.epoch) this.sequences.set(key, { epoch: page.epoch, sequence: 0 });
+      epoch = page.epoch;
+      through = page.throughSequence;
+      for (const event of page.events) {
+        if (this.catchups.get(key) !== catchup) return;
+        this.deliverEvent(key, event);
+      }
+      if (this.catchups.get(key) !== catchup) return;
+      after = page.nextSequence;
+      this.sequences.set(key, { epoch, sequence: after });
+      if (page.hasMore) continue;
+      // The page's through cursor is authoritative even when ephemeral events
+      // leave holes. Buffered live events beyond that snapshot follow in order.
+      for (const event of catchup.live) {
+        if (this.catchups.get(key) !== catchup) return;
+        if (event.epoch !== epoch) throw new Error("live event epoch differs from recovery snapshot");
+        this.deliverEvent(key, event);
+      }
+      this.catchups.delete(key);
+      return;
+    }
+  }
+
+  private deliverEvent(key: string, event: SequencedEvent): void {
+    if (!validSequence(event.sequence) || event.sequence === 0) throw new Error("invalid live event sequence");
+    const previous = this.sequences.get(key);
+    if (previous?.epoch === event.epoch && event.sequence <= previous.sequence) return;
+    const listeners = this.subscriptions.get(key);
+    if (!listeners?.size) return;
+    for (const listener of listeners) listener(event);
+    this.sequences.set(key, { epoch: event.epoch, sequence: event.sequence });
+  }
+
+  private failCatchup(error: Error, generation: number): void {
+    if (generation !== this.connectionGeneration) return;
+    this.disconnectReason = `Event recovery failed: ${error.message}`;
+    ++this.connectionGeneration;
+    const socket = this.socket;
+    this.markDisconnected(new WakuConnectionError("closed", this.disconnectReason));
+    socket?.close(1002, "event recovery failed");
+  }
+
   /** Drops the socket and settles its requests before telling listeners, so a
    * listener that reconnects on the spot works against a consistent client. */
   private markDisconnected(error: Error): void {
     this.socket = undefined;
+    this.catchups.clear();
     const pending = [...this.pending.values()];
     this.pending.clear();
     for (const request of pending) {
@@ -483,6 +599,10 @@ export function daemonUrl(address: string): string {
 
 function subscriptionKey(sessionId: string, runtimeId: string): string {
   return `${sessionId}:${runtimeId}`;
+}
+
+function validSequence(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0;
 }
 
 /** The daemon rejects an unsupported protocol before it can say hello, so a

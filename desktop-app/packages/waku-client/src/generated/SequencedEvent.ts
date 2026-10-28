@@ -6,4 +6,9 @@ export type SequencedEvent = { sessionId: string, runtimeId: string,
  * Changes whenever the daemon restarts, so a reused runtime id can begin
  * again at sequence one without being mistaken for an old event.
  */
-epoch: string, sequence: number, event: WireDriverEvent, };
+epoch: string, sequence: number,
+/**
+ * Live terminal output is never journaled or acknowledged as transcript
+ * history. Consumers must deliver it without advancing replay cursors.
+ */
+replayable: boolean, event: WireDriverEvent, };

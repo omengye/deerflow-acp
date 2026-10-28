@@ -19,7 +19,7 @@ use crate::usage::PlanUsage;
 use crate::usage_history::{UsageHistory, UsageWindow};
 use crate::workspace::{WorkspaceOperation, WorkspaceResult};
 
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 pub const MAX_WIRE_MESSAGE_BYTES: usize = 48 * 1024 * 1024;
 pub const DAEMON_TOKEN_ENV: &str = "WAKU_DAEMON_TOKEN";
 pub const DAEMON_ADDRESS_ENV: &str = "WAKU_DAEMON_ADDRESS";
@@ -83,6 +83,15 @@ pub enum Command {
     /// second app. It observes the session actor without starting, replacing,
     /// or otherwise mutating the provider process.
     AttachSession,
+    /// Read a stable page of the runtime's complete event journal. A new
+    /// subscription catches up before consuming live events; this never
+    /// executes provider work. Ephemeral events may leave sequence gaps.
+    ReplayEvents {
+        epoch: Option<Uuid>,
+        after_sequence: u64,
+        through_sequence: Option<u64>,
+        limit: usize,
+    },
     Start {
         options: WireDriverStartOptions,
     },
@@ -347,6 +356,9 @@ pub struct SequencedEvent {
     /// again at sequence one without being mistaken for an old event.
     pub epoch: Uuid,
     pub sequence: u64,
+    /// Live terminal output is never journaled or acknowledged as transcript
+    /// history. Consumers must deliver it without advancing replay cursors.
+    pub replayable: bool,
     pub event: WireDriverEvent,
 }
 
@@ -396,6 +408,13 @@ pub enum ResponseOutcome {
     rename_all_fields = "camelCase"
 )]
 pub enum ResponsePayload {
+    ReplayEvents {
+        epoch: Uuid,
+        events: Vec<SequencedEvent>,
+        through_sequence: u64,
+        next_sequence: u64,
+        has_more: bool,
+    },
     Ack,
     DeerFlow {
         data: Value,
@@ -527,6 +546,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn replay_pages_round_trip_with_explicit_event_delivery_mode() {
+        let epoch = Uuid::from_u128(3);
+        let command = Command::ReplayEvents {
+            epoch: Some(epoch),
+            after_sequence: 7,
+            through_sequence: Some(10),
+            limit: 256,
+        };
+        let json = serde_json::to_value(command).unwrap();
+        assert_eq!(json["type"], "replayEvents");
+        assert_eq!(json["afterSequence"], 7);
+        assert_eq!(json["throughSequence"], 10);
+        assert!(matches!(
+            serde_json::from_value::<Command>(json).unwrap(),
+            Command::ReplayEvents {
+                after_sequence: 7,
+                ..
+            }
+        ));
+        let payload = ResponsePayload::ReplayEvents {
+            epoch,
+            events: vec![SequencedEvent {
+                session_id: Uuid::nil(),
+                runtime_id: Uuid::from_u128(1),
+                epoch,
+                sequence: 8,
+                replayable: true,
+                event: WireDriverEvent::new("textDelta", serde_json::json!("recovered")),
+            }],
+            through_sequence: 10,
+            next_sequence: 10,
+            has_more: false,
+        };
+        let json = serde_json::to_value(payload).unwrap();
+        assert_eq!(json["events"][0]["replayable"], true);
+        assert_eq!(json["nextSequence"], 10);
+        assert_eq!(json["hasMore"], false);
+        assert!(matches!(
+            serde_json::from_value::<ResponsePayload>(json).unwrap(),
+            ResponsePayload::ReplayEvents {
+                next_sequence: 10,
+                has_more: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn thinking_mode_is_independent_and_optional_on_the_wire() {
         let legacy = serde_json::json!({"mode":"ask", "model":"fixture", "reasoningEffort":"high", "serviceTier":null, "contextWindow":null});
         let mut options: WireSessionOptions = serde_json::from_value(legacy).unwrap();
@@ -571,7 +638,7 @@ mod tests {
 
         assert_eq!(json["type"], "forkSessionFromResponse");
         assert_eq!(json["turnCount"], 7);
-        assert_eq!(PROTOCOL_VERSION, 9);
+        assert_eq!(PROTOCOL_VERSION, 10);
     }
 
     #[test]
@@ -604,7 +671,7 @@ mod tests {
 
         assert_eq!(json["type"], "rewindSessionToMessage");
         assert_eq!(json["turnCount"], 4);
-        assert_eq!(PROTOCOL_VERSION, 9);
+        assert_eq!(PROTOCOL_VERSION, 10);
     }
 
     #[test]

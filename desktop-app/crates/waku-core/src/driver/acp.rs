@@ -2272,15 +2272,27 @@ fn deerflow_text_attachments(
             .to_ascii_lowercase();
         let document_mime = match extension.as_str() {
             "pdf" => Some("application/pdf"),
-            "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            "docx" => {
+                Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            }
             "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
             _ => None,
         };
         if attachment.is_dir
             || !matches!(
                 extension.as_str(),
-                "txt" | "md" | "markdown" | "csv" | "tsv" | "json" | "yaml" | "yml" | "log"
-                    | "pdf" | "docx" | "xlsx"
+                "txt"
+                    | "md"
+                    | "markdown"
+                    | "csv"
+                    | "tsv"
+                    | "json"
+                    | "yaml"
+                    | "yml"
+                    | "log"
+                    | "pdf"
+                    | "docx"
+                    | "xlsx"
             )
         {
             return Err(image_attachment_error(
@@ -2301,9 +2313,10 @@ fn deerflow_text_attachments(
                 "Invalid stored attachment. Attach it again.",
             ));
         }
-        let path = attachment.path.canonicalize().map_err(|_| {
-            image_attachment_error("Attachment is unavailable. Attach it again.")
-        })?;
+        let path = attachment
+            .path
+            .canonicalize()
+            .map_err(|_| image_attachment_error("Attachment is unavailable. Attach it again."))?;
         if !roots.iter().any(|root| path.starts_with(root)) {
             return Err(image_attachment_error(
                 "Attachment is outside the desktop attachment store.",
@@ -2341,7 +2354,9 @@ fn deerflow_text_attachments(
         if let Some(mime) = document_mime {
             document_total += bytes.len();
             if document_total > 16 * 1024 * 1024 {
-                return Err(image_attachment_error("Documents exceed 16 MiB per message."));
+                return Err(image_attachment_error(
+                    "Documents exceed 16 MiB per message.",
+                ));
             }
             result.push(
                 serde_json::from_value(json!({"type":"resource", "resource":{
@@ -3552,7 +3567,13 @@ mod tests {
                         .await?,
                         "allow_always"
                     );
-                    for stored in ["global", "ask", "allow_always", "reject_always", "read_only"] {
+                    for stored in [
+                        "global",
+                        "ask",
+                        "allow_always",
+                        "reject_always",
+                        "read_only",
+                    ] {
                         assert_eq!(
                             initialize_deerflow_approval(
                                 &connection,
@@ -4320,7 +4341,8 @@ mod tests {
 
     #[test]
     fn deerflow_document_resources_use_bounded_base64_blobs() {
-        let root = std::env::temp_dir().join(format!("deerflow-acp-documents-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("deerflow-acp-documents-{}", uuid::Uuid::new_v4()));
         for name in ["report.pdf", "report.docx", "report.xlsx"] {
             let mut file = stored_image_attachment(&root, name, b"fixture bytes");
             file.is_image = false;

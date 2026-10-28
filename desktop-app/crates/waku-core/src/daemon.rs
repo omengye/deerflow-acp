@@ -1908,6 +1908,7 @@ fn handle_driver_command(
             return Ok(ResponsePayload::Cursor { cursor });
         }
         Command::AttachSession
+        | Command::ReplayEvents { .. }
         | Command::Start { .. }
         | Command::GetSettings
         | Command::DeerFlow { .. }

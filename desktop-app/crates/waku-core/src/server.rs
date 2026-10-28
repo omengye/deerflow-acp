@@ -5,6 +5,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
+mod auth;
+use auth::HandshakeStream;
+mod replay_log;
+use replay_log::{MAX_REPLAY_PAGE_EVENTS, ReplayLog};
+#[cfg(test)]
+mod replay_tests;
+
 use anyhow::{Context as _, bail};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use parking_lot::Mutex;
@@ -32,13 +39,14 @@ const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const SOCKET_WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HANDSHAKE_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_CONNECTIONS: usize = 64;
-const MAX_REPLAY_EVENTS_PER_SESSION: usize = 2048;
+const MAX_PENDING_AUTHENTICATIONS: usize = 16;
+const DEFAULT_AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(20);
 /// Per-subscriber cap on queued daemon messages. A subscriber that falls this
 /// far behind live events is dropped instead of buffered for, so a stalled
 /// client cannot make the daemon's heap grow at the stream rate forever.
-/// (Max 8 replaying runtimes at `MAX_REPLAY_EVENTS_PER_SESSION` fits; an
-/// overflow during replay or live emission closes the connection and the
-/// client reconnects from its last replayed cursor.)
+/// Replay is pulled separately in bounded pages from the runtime's disk log.
+/// Overflow closes the connection; a subscriber catches up from its last
+/// delivered cursor before accepting more live events.
 const MAX_QUEUED_MESSAGES_PER_SUBSCRIBER: usize = 16384;
 const MAX_CACHED_RESPONSES: usize = 2048;
 /// Responses are cached by request id so a client that missed a reply can
@@ -49,7 +57,7 @@ const MAX_CACHED_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const NATIVE_CLIENT_HEADER: &str = "x-waku-client";
 const NATIVE_CLIENT_HEADER_VALUE: &str = "native";
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ServerOptions {
     /// Browser WebSocket handshakes carry an Origin header. Most native clients
     /// do not; React Native does and identifies itself with `x-waku-client`.
@@ -59,9 +67,44 @@ pub struct ServerOptions {
     /// shutdown control message. Service-managed daemons keep running when an
     /// authenticated client disconnects.
     pub allow_shutdown: bool,
+    /// One deadline, measured from TCP acceptance, covers HTTP upgrade and the
+    /// authenticated Hello exchange. The public server accepts 1..=60 seconds.
+    pub authentication_timeout: Duration,
+}
+
+impl Default for ServerOptions {
+    fn default() -> Self {
+        Self {
+            allowed_origins: HashSet::new(),
+            allow_shutdown: false,
+            authentication_timeout: DEFAULT_AUTHENTICATION_TIMEOUT,
+        }
+    }
+}
+
+impl ServerOptions {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !(Duration::from_secs(1)..=Duration::from_secs(60))
+            .contains(&self.authentication_timeout)
+        {
+            bail!("authentication timeout must be between 1 and 60 seconds");
+        }
+        Ok(())
+    }
 }
 
 struct ConnectionPermit(Arc<AtomicUsize>);
+
+impl ConnectionPermit {
+    fn acquire(count: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
+        count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < limit).then_some(active + 1)
+            })
+            .ok()
+            .map(|_| Self(count.clone()))
+    }
+}
 
 impl Drop for ConnectionPermit {
     fn drop(&mut self) {
@@ -122,7 +165,7 @@ struct HubState {
     subscribers: HashMap<u64, Subscriber>,
     active_runtimes: HashMap<Uuid, Uuid>,
     next_sequences: HashMap<(Uuid, Uuid), u64>,
-    journal: HashMap<(Uuid, Uuid), VecDeque<SequencedEvent>>,
+    journal: HashMap<(Uuid, Uuid), ReplayLog>,
     responses: VecDeque<(Uuid, ResponseOutcome, usize)>,
     cached_response_bytes: usize,
     catalog_projects: HashMap<Uuid, ProjectCatalogEntry>,
@@ -259,52 +302,106 @@ impl Hub {
             runtime_id,
             epoch: self.epoch,
             sequence: *sequence,
+            replayable,
             event,
         };
         if replayable {
             let journal = state.journal.entry((session_id, runtime_id)).or_default();
-            journal.push_back(event.clone());
-            while journal.len() > MAX_REPLAY_EVENTS_PER_SESSION {
-                journal.pop_front();
-            }
+            journal.append(&event);
         }
         Self::broadcast(&mut state, &ServerMessage::Event(event), None);
     }
 
-    fn subscribe(&self, resume_from: &[ReplayCursor], subscriber: Subscriber) -> u64 {
+    fn subscribe(&self, _resume_from: &[ReplayCursor], subscriber: Subscriber) -> u64 {
         let mut state = self.state.lock();
         let id = state.next_subscriber_id;
         state.next_subscriber_id = state.next_subscriber_id.saturating_add(1);
-        // The subscriber is registered before replay so an oversized journal
-        // can only truncate the replay, never leave a live connection without
-        // events. Replay runs under the hub lock so no live event can
-        // interleave with the journal catch-up, and pushes into the bounded
-        // queue are non-blocking. Dropping the oldest replayed events matches
-        // the journal's own rollover semantics; clients reconcile any gap
-        // from session state.
-        let messages = subscriber.messages.clone();
+        // Do not push history before the client has installed its runtime
+        // subscription. Protocol 10 clients explicitly pull bounded pages,
+        // with a fixed watermark, before committing queued live events.
         state.subscribers.insert(id, subscriber);
-        for (&(session_id, runtime_id), events) in &state.journal {
-            let sequence = resume_from
-                .iter()
-                .find(|cursor| {
-                    cursor.session_id == session_id
-                        && cursor.runtime_id == runtime_id
-                        && cursor.epoch == self.epoch
-                })
-                .map(|cursor| cursor.sequence)
-                .unwrap_or_default();
-            for event in events.iter().filter(|event| event.sequence > sequence) {
-                if messages.len() >= MAX_QUEUED_MESSAGES_PER_SUBSCRIBER
-                    || messages
-                        .try_send(ServerMessage::Event(event.clone()))
-                        .is_err()
-                {
-                    return id;
-                }
-            }
-        }
         id
+    }
+
+    fn replay_page(
+        &self,
+        session_id: Uuid,
+        runtime_id: Uuid,
+        epoch: Option<Uuid>,
+        after_sequence: u64,
+        through_sequence: Option<u64>,
+        limit: usize,
+    ) -> anyhow::Result<ResponsePayload> {
+        anyhow::ensure!(
+            !session_id.is_nil() && !runtime_id.is_nil(),
+            "replay requires an exact runtime identity"
+        );
+        anyhow::ensure!(
+            (1..=MAX_REPLAY_PAGE_EVENTS).contains(&limit),
+            "invalid replay page limit"
+        );
+        let mut state = self.state.lock();
+        let active = state.active_runtimes.get(&session_id).copied();
+        if active != Some(runtime_id) {
+            // A client can subscribe before its first Start command. Only a
+            // completely new cursor can observe this empty pre-start state.
+            anyhow::ensure!(
+                active.is_none()
+                    && epoch.is_none()
+                    && after_sequence == 0
+                    && through_sequence.is_none(),
+                "runtime replay is no longer available"
+            );
+            return Ok(ResponsePayload::ReplayEvents {
+                epoch: self.epoch,
+                events: Vec::new(),
+                through_sequence: 0,
+                next_sequence: 0,
+                has_more: false,
+            });
+        }
+        let same_epoch = epoch == Some(self.epoch);
+        anyhow::ensure!(
+            through_sequence.is_none() || same_epoch,
+            "replay daemon epoch changed"
+        );
+        let after = if same_epoch { after_sequence } else { 0 };
+        let current = state
+            .next_sequences
+            .get(&(session_id, runtime_id))
+            .copied()
+            .unwrap_or_default();
+        let through = through_sequence.unwrap_or(current);
+        anyhow::ensure!(
+            after <= through && through <= current,
+            "replay cursor is outside this runtime"
+        );
+        let (events, has_more) = match state.journal.get_mut(&(session_id, runtime_id)) {
+            Some(journal) => journal.page(after, through, limit)?,
+            None => (Vec::new(), false),
+        };
+        anyhow::ensure!(
+            events.iter().all(|event| event.session_id == session_id
+                && event.runtime_id == runtime_id
+                && event.epoch == self.epoch),
+            "replay event identity changed"
+        );
+        let next_sequence = if has_more {
+            events
+                .last()
+                .map(|event| event.sequence)
+                .ok_or_else(|| anyhow::anyhow!("replay page made no progress"))?
+        } else {
+            // Ephemeral events deliberately leave holes in the retained log.
+            through
+        };
+        Ok(ResponsePayload::ReplayEvents {
+            epoch: self.epoch,
+            events,
+            through_sequence: through,
+            next_sequence,
+            has_more,
+        })
     }
 
     fn unsubscribe(&self, subscriber_id: u64) {
@@ -395,14 +492,14 @@ impl Hub {
             .find_map(|(cached_id, outcome, _)| (*cached_id == request_id).then(|| outcome.clone()))
     }
 
-    fn cache_response(&self, request_id: Uuid, outcome: ResponseOutcome) {
-        // File bytes are bulk data that clients read once; caching a copy per
-        // request would duplicate every open file in daemon memory, and the
-        // request is cheap to re-run if it is ever retried.
+    fn cache_response(&self, request_id: Uuid, outcome: &ResponseOutcome) {
+        // File bytes and replay pages are read-only bulk data. Retrying these
+        // reads is safe and caching each page would duplicate the journal in
+        // daemon memory.
         if matches!(
-            &outcome,
+            outcome,
             ResponseOutcome::Ok {
-                payload: ResponsePayload::BlobData { .. }
+                payload: ResponsePayload::BlobData { .. } | ResponsePayload::ReplayEvents { .. }
             }
         ) {
             return;
@@ -414,7 +511,9 @@ impl Hub {
             .unwrap_or(0);
         let mut state = self.state.lock();
         state.cached_response_bytes = state.cached_response_bytes.saturating_add(bytes);
-        state.responses.push_back((request_id, outcome, bytes));
+        state
+            .responses
+            .push_back((request_id, outcome.clone(), bytes));
         while state.responses.len() > MAX_CACHED_RESPONSES
             || state.cached_response_bytes > MAX_CACHED_RESPONSE_BYTES
         {
@@ -555,6 +654,7 @@ pub fn serve(
     shutdown: Arc<AtomicBool>,
     options: ServerOptions,
 ) -> anyhow::Result<()> {
+    options.validate()?;
     listener
         .set_nonblocking(true)
         .context("could not configure Waku daemon listener")?;
@@ -562,18 +662,18 @@ pub fn serve(
     let dispatcher = Arc::new(RequestDispatcher::new(backend.clone(), hub.clone()));
     let options = Arc::new(options);
     let active_connections = Arc::new(AtomicUsize::new(0));
+    let pending_authentications = Arc::new(AtomicUsize::new(0));
     while !shutdown.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((stream, _)) => {
-                if active_connections
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                        (active < MAX_CONNECTIONS).then_some(active + 1)
-                    })
-                    .is_err()
-                {
+                let accepted_at = std::time::Instant::now();
+                let Some(pending_permit) = ConnectionPermit::acquire(
+                    &pending_authentications,
+                    MAX_PENDING_AUTHENTICATIONS,
+                ) else {
                     continue;
-                }
-                let connection_permit = ConnectionPermit(active_connections.clone());
+                };
+                let active_connections = active_connections.clone();
                 let token = token.clone();
                 let dispatcher = dispatcher.clone();
                 let hub = hub.clone();
@@ -582,10 +682,17 @@ pub fn serve(
                 std::thread::Builder::new()
                     .name("waku-daemon-connection".into())
                     .spawn(move || {
-                        let _connection_permit = connection_permit;
-                        if let Err(error) =
-                            handle_connection(stream, &token, dispatcher, hub, shutdown, &options)
-                        {
+                        if let Err(error) = handle_connection(
+                            stream,
+                            &token,
+                            dispatcher,
+                            hub,
+                            shutdown,
+                            &options,
+                            accepted_at,
+                            pending_permit,
+                            active_connections,
+                        ) {
                             eprintln!("waku-daemon connection ended: {error:#}");
                         }
                     })
@@ -609,12 +716,21 @@ fn handle_connection(
     hub: Arc<Hub>,
     shutdown: Arc<AtomicBool>,
     options: &ServerOptions,
+    accepted_at: std::time::Instant,
+    pending_permit: ConnectionPermit,
+    active_connections: Arc<AtomicUsize>,
 ) -> anyhow::Result<()> {
     // Accepted sockets can inherit the listener's nonblocking flag on some
     // platforms. The handshake is deliberately blocking; steady-state reads
     // get their bounded polling behavior from SO_RCVTIMEO below.
     stream.set_nonblocking(false)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    // One absolute deadline covers the HTTP upgrade, all WebSocket fragments
+    // and control frames, token validation, and the server's Hello response.
+    let stream = HandshakeStream::new(
+        stream,
+        accepted_at + options.authentication_timeout,
+        shutdown.clone(),
+    );
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_HANDSHAKE_MESSAGE_BYTES))
         .max_frame_size(Some(MAX_HANDSHAKE_MESSAGE_BYTES));
@@ -626,8 +742,20 @@ fn handle_connection(
         },
         Some(config),
     )
-    .context("WebSocket handshake failed")?;
-    let hello = read_client_message(&mut socket)?;
+    .with_context(|| {
+        format!(
+            "WebSocket upgrade failed (elapsed_ms={}, authentication_timeout_ms={})",
+            accepted_at.elapsed().as_millis(),
+            options.authentication_timeout.as_millis(),
+        )
+    })?;
+    let hello = read_client_message(&mut socket).with_context(|| {
+        format!(
+            "client Hello failed (elapsed_ms={}, authentication_timeout_ms={})",
+            accepted_at.elapsed().as_millis(),
+            options.authentication_timeout.as_millis(),
+        )
+    })?;
     let resume_from = match hello {
         ClientMessage::Hello {
             protocol_version,
@@ -661,13 +789,33 @@ fn handle_connection(
         }
         _ => bail!("first daemon message was not a hello"),
     };
+    let Some(_connection_permit) = ConnectionPermit::acquire(&active_connections, MAX_CONNECTIONS)
+    else {
+        write_json(
+            &mut socket,
+            &ServerMessage::Rejected {
+                message: "daemon connection capacity reached".into(),
+            },
+        )?;
+        return Ok(());
+    };
     write_json(
         &mut socket,
         &ServerMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
             daemon_version: env!("CARGO_PKG_VERSION").into(),
         },
-    )?;
+    )
+    .context("could not send authenticated server Hello")?;
+    socket.get_mut().authenticated()?;
+    drop(pending_permit);
+    if accepted_at.elapsed() >= Duration::from_secs(1) {
+        eprintln!(
+            "waku-daemon slow authentication completed: elapsed_ms={} authentication_timeout_ms={}",
+            accepted_at.elapsed().as_millis(),
+            options.authentication_timeout.as_millis(),
+        );
+    }
     socket.set_config(|config| {
         config.max_message_size = Some(MAX_WIRE_MESSAGE_BYTES);
         config.max_frame_size = Some(MAX_WIRE_MESSAGE_BYTES);
@@ -689,7 +837,12 @@ fn handle_connection(
         if kicked.try_recv().is_ok() {
             break;
         }
-        while let Ok(message) = outgoing_rx.try_recv() {
+        // Give incoming page requests/cancellation a chance even while a
+        // provider continuously emits live events.
+        for _ in 0..MAX_REPLAY_PAGE_EVENTS {
+            let Ok(message) = outgoing_rx.try_recv() else {
+                break;
+            };
             if write_json(&mut socket, &message).is_err() {
                 break 'connection;
             }
@@ -951,14 +1104,30 @@ fn handle_request(
         if starts_runtime {
             hub.begin_runtime(session_id, runtime_id);
         }
-        let outcome = match backend.handle(request, hub.event_sink(session_id, runtime_id)) {
+        let handled = match &request.command {
+            Command::ReplayEvents {
+                epoch,
+                after_sequence,
+                through_sequence,
+                limit,
+            } => hub.replay_page(
+                session_id,
+                runtime_id,
+                *epoch,
+                *after_sequence,
+                *through_sequence,
+                *limit,
+            ),
+            _ => backend.handle(request, hub.event_sink(session_id, runtime_id)),
+        };
+        let outcome = match handled {
             Ok(payload) => ResponseOutcome::Ok { payload },
             Err(error) => ResponseOutcome::Error {
                 error: RpcError::from(error),
             },
         };
         if !notification {
-            hub.cache_response(request_id, outcome.clone());
+            hub.cache_response(request_id, &outcome);
         }
         (outcome, true)
     };
@@ -1024,7 +1193,7 @@ fn send_dispatch_error(
         .unwrap_or_else(|| ResponseOutcome::Error {
             error: RpcError { message },
         });
-    hub.cache_response(request_id, outcome.clone());
+    hub.cache_response(request_id, &outcome);
     let _ = outgoing.send(ServerMessage::Response {
         request_id,
         outcome,
@@ -1053,8 +1222,9 @@ fn retryable_error(error: &(dyn std::error::Error + 'static)) -> bool {
     error.source().is_some_and(retryable_error)
 }
 
-fn read_client_message(socket: &mut WebSocket<TcpStream>) -> anyhow::Result<ClientMessage> {
+fn read_client_message(socket: &mut WebSocket<HandshakeStream>) -> anyhow::Result<ClientMessage> {
     loop {
+        socket.get_ref().check_authentication_deadline()?;
         match socket.read()? {
             Message::Text(text) => return Ok(serde_json::from_str(text.as_ref())?),
             Message::Ping(_) => socket.flush()?,
@@ -1937,20 +2107,20 @@ mod tests {
             .send(WireDriverEvent::new("new-daemon", serde_json::Value::Null))
             .unwrap();
 
-        let (outgoing, events) = unbounded();
-        hub.subscribe(
-            &[ReplayCursor {
+        let ResponsePayload::ReplayEvents { events, .. } = hub
+            .replay_page(
                 session_id,
                 runtime_id,
-                epoch: Uuid::nil(),
-                sequence: u64::MAX,
-            }],
-            Subscriber::new(outgoing).0,
-        );
-
-        let ServerMessage::Event(event) = events.recv().unwrap() else {
+                Some(Uuid::nil()),
+                u64::MAX,
+                None,
+                256,
+            )
+            .unwrap()
+        else {
             panic!("expected the new daemon event to replay");
         };
+        let event = &events[0];
         assert_eq!(event.epoch, hub.epoch);
         assert_eq!(event.sequence, 1);
     }
@@ -1996,7 +2166,7 @@ mod tests {
                 )),
             },
         };
-        hub.cache_response(oversized_id, oversized);
+        hub.cache_response(oversized_id, &oversized);
         // A single outcome larger than the whole byte budget is never
         // retained; retrying the request runs it again instead of pinning a
         // >64 MB payload in daemon memory.
@@ -2005,7 +2175,7 @@ mod tests {
         let kept_id = Uuid::new_v4();
         hub.cache_response(
             kept_id,
-            ResponseOutcome::Ok {
+            &ResponseOutcome::Ok {
                 payload: ResponsePayload::Ack,
             },
         );

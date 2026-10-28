@@ -640,6 +640,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         runtimeId: runtime?.runtimeId ?? Crypto.randomUUID(),
         epoch: cursor?.epoch ?? `mobile-${Date.now()}`,
         sequence: (cursor?.sequence ?? 0) + 1,
+        replayable: false,
         event: { kind: 'turnFinished', payload: { success: false, summary: errorMessage(cause) } },
       }, clock).session;
       cacheSession(failed);

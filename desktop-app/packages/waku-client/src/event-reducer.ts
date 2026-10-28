@@ -63,10 +63,12 @@ export function reduceRuntimeEvent(
     removeRuntime: false,
   }
 
-  session.runtime_event_cursor = {
-    runtime_id: wire.runtimeId,
-    epoch: wire.epoch,
-    sequence: wire.sequence,
+  if (wire.replayable) {
+    session.runtime_event_cursor = {
+      runtime_id: wire.runtimeId,
+      epoch: wire.epoch,
+      sequence: wire.sequence,
+    }
   }
 
   switch (kind) {

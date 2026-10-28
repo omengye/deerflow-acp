@@ -84,6 +84,7 @@ describe('mobile runtime projection', () => {
       runtimeId: 'runtime',
       epoch: 'epoch',
       sequence: 4,
+      replayable: true,
       event: { kind: 'textDelta', payload: 'duplicate' },
     } satisfies SequencedEvent;
     expect(sessionCwd(current, project)).toBe('/waku-worktree');
@@ -100,6 +101,7 @@ describe('mobile runtime projection', () => {
       runtimeId: 'runtime',
       epoch: 'epoch',
       sequence: 4,
+      replayable: true,
       event: { kind: 'permission', payload: {} },
     } satisfies SequencedEvent;
     const text = {

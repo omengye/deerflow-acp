@@ -40,6 +40,7 @@ function fixture(options: { attached?: boolean } = {}) {
       runtimeId: 'runtime',
       epoch: 'epoch',
       sequence: ++sequence,
+      replayable: true,
       event: { kind, payload },
     };
   }

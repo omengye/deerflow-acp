@@ -8,7 +8,15 @@ use anyhow::{Context as _, anyhow, bail};
 use waku_protocol::{DAEMON_TOKEN_ENV, DaemonReady, PROTOCOL_VERSION};
 
 fn main() -> anyhow::Result<()> {
-    let arguments = Arguments::parse(std::env::args().skip(1))?;
+    let authentication_timeout = match std::env::var("WAKU_AUTHENTICATION_TIMEOUT_SECONDS") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => bail!("WAKU_AUTHENTICATION_TIMEOUT_SECONDS must be valid Unicode"),
+    };
+    let arguments = Arguments::parse_with_environment(
+        std::env::args().skip(1),
+        authentication_timeout.as_deref(),
+    )?;
     let token =
         std::env::var(DAEMON_TOKEN_ENV).context("Waku daemon authentication token is missing")?;
     // The bearer capability belongs only to this server process. Remove it
@@ -58,6 +66,7 @@ fn main() -> anyhow::Result<()> {
         waku_core::ServerOptions {
             allowed_origins: arguments.allowed_origins.into_iter().collect(),
             allow_shutdown: arguments.parent_pid.is_some(),
+            authentication_timeout: arguments.authentication_timeout,
         },
     )
 }
@@ -76,14 +85,24 @@ struct Arguments {
     parent_pid: Option<u32>,
     allowed_origins: Vec<String>,
     allow_non_loopback: bool,
+    authentication_timeout: Duration,
 }
 
 impl Arguments {
+    #[cfg(test)]
     fn parse(arguments: impl IntoIterator<Item = String>) -> anyhow::Result<Self> {
+        Self::parse_with_environment(arguments, None)
+    }
+
+    fn parse_with_environment(
+        arguments: impl IntoIterator<Item = String>,
+        authentication_timeout_env: Option<&str>,
+    ) -> anyhow::Result<Self> {
         let mut bind = "127.0.0.1:0".to_owned();
         let mut parent_pid = None;
         let mut allowed_origins = Vec::new();
         let mut allow_non_loopback = false;
+        let mut authentication_timeout = None;
         let mut arguments = arguments.into_iter();
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
@@ -111,9 +130,14 @@ impl Arguments {
                 "--allow-non-loopback" => {
                     allow_non_loopback = true;
                 }
+                "--authentication-timeout-seconds" => {
+                    authentication_timeout = Some(arguments.next().ok_or_else(|| {
+                        anyhow!("--authentication-timeout-seconds requires a value")
+                    })?);
+                }
                 "--help" | "-h" => {
                     println!(
-                        "usage: {} [--bind ADDRESS] [--allow-non-loopback] [--parent-pid PID] [--allow-origin ORIGIN]...",
+                        "usage: {} [--bind ADDRESS] [--allow-non-loopback] [--parent-pid PID] [--authentication-timeout-seconds SECONDS] [--allow-origin ORIGIN]...",
                         env!("CARGO_BIN_NAME")
                     );
                     std::process::exit(0);
@@ -121,11 +145,29 @@ impl Arguments {
                 unknown => bail!("unknown argument {unknown:?}"),
             }
         }
+        let authentication_timeout = match authentication_timeout
+            .as_deref()
+            .or(authentication_timeout_env)
+        {
+            Some(value) => {
+                let seconds: u64 = value
+                    .parse()
+                    .context("authentication timeout requires an integer from 1 to 60 seconds")?;
+                let options = waku_core::ServerOptions {
+                    authentication_timeout: Duration::from_secs(seconds),
+                    ..Default::default()
+                };
+                options.validate()?;
+                options.authentication_timeout
+            }
+            None => waku_core::ServerOptions::default().authentication_timeout,
+        };
         Ok(Self {
             bind,
             parent_pid,
             allowed_origins,
             allow_non_loopback,
+            authentication_timeout,
         })
     }
 }
@@ -200,5 +242,46 @@ mod tests {
     fn parses_explicit_non_loopback_opt_in() {
         let arguments = Arguments::parse(["--allow-non-loopback".into()]).unwrap();
         assert!(arguments.allow_non_loopback);
+    }
+
+    #[test]
+    fn authentication_timeout_defaults_to_twenty_seconds_and_accepts_override() {
+        let defaults = Arguments::parse([]).unwrap();
+        assert_eq!(defaults.authentication_timeout, Duration::from_secs(20));
+        for seconds in ["1", "30", "60"] {
+            let arguments =
+                Arguments::parse(["--authentication-timeout-seconds".into(), seconds.into()])
+                    .unwrap();
+            assert_eq!(
+                arguments.authentication_timeout,
+                Duration::from_secs(seconds.parse().unwrap()),
+            );
+        }
+    }
+
+    #[test]
+    fn authentication_timeout_rejects_invalid_or_unbounded_configuration() {
+        for value in ["0", "61", "-1", "1.5", "invalid", "18446744073709551616"] {
+            assert!(
+                Arguments::parse(["--authentication-timeout-seconds".into(), value.into(),])
+                    .is_err()
+            );
+        }
+        assert!(Arguments::parse(["--authentication-timeout-seconds".into()]).is_err());
+    }
+
+    #[test]
+    fn authentication_timeout_environment_is_overridden_by_cli() {
+        let from_env = Arguments::parse_with_environment([], Some("25")).unwrap();
+        assert_eq!(from_env.authentication_timeout, Duration::from_secs(25));
+        let from_cli = Arguments::parse_with_environment(
+            ["--authentication-timeout-seconds".into(), "30".into()],
+            Some("25"),
+        )
+        .unwrap();
+        assert_eq!(from_cli.authentication_timeout, Duration::from_secs(30));
+        assert!(Arguments::parse_with_environment([], Some("0")).is_err());
+        assert!(Arguments::parse_with_environment([], Some("invalid")).is_err());
+        assert!(Arguments::parse_with_environment([], Some("")).is_err());
     }
 }

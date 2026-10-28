@@ -7,7 +7,7 @@ import {
   daemonUrl,
   type WebSocketLike,
 } from "./client";
-import { PROTOCOL_VERSION } from "./generated";
+import { PROTOCOL_VERSION, type SequencedEvent } from "./generated";
 
 class FakeSocket implements WebSocketLike {
   readyState = 0;
@@ -82,6 +82,27 @@ async function connect(client: WakuClient, sockets: FakeSocket[]): Promise<FakeS
   return socket;
 }
 
+function delta(sequence: number, epoch = "epoch"): SequencedEvent {
+  return { sessionId: "session", runtimeId: "runtime", epoch, sequence, replayable: true,
+    event: { kind: "textDelta", payload: `piece-${sequence}` } };
+}
+
+function lastReplay(socket: FakeSocket) {
+  return socket.sent.map((entry) => JSON.parse(entry))
+    .filter((entry) => entry.type === "request" && entry.command.type === "replayEvents").at(-1);
+}
+
+async function replayPage(socket: FakeSocket, events: SequencedEvent[], throughSequence: number,
+  hasMore = false, epoch = events[0]?.epoch ?? "epoch") {
+  const request = lastReplay(socket);
+  expect(request).toBeDefined();
+  socket.receive({ type: "response", requestId: request.requestId,
+    outcome: { status: "ok", payload: { type: "replayEvents", epoch, events, throughSequence,
+      nextSequence: hasMore ? events.at(-1)!.sequence : throughSequence, hasMore } } });
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 describe("WakuClient", () => {
   test("reports connection state changes, including remote closure", async () => {
     const { client, sockets } = fixture();
@@ -154,6 +175,7 @@ describe("WakuClient", () => {
 
     const received: number[] = [];
     client.subscribe("session", "runtime", (event) => received.push(event.sequence));
+    await replayPage(first, [], 0, false, "epoch-one");
     const event = {
       type: "event",
       sessionId: "session",
@@ -175,6 +197,9 @@ describe("WakuClient", () => {
     ]);
     second.receive({ type: "hello", protocolVersion: PROTOCOL_VERSION, daemonVersion: "test" });
     await secondConnection;
+    expect(lastReplay(second).command.afterSequence).toBe(4);
+    await replayPage(second, [], 4, false, "epoch-one");
+    client.disconnect();
   });
 
   test("disconnect rejects an in-flight handshake and permits reconnecting", async () => {
@@ -199,7 +224,7 @@ describe("WakuClient", () => {
     await expect(connection).rejects.toThrow("The network connection was lost");
   });
 
-  test("accepts sequence one again when the daemon epoch changes", async () => {
+  test("recovers from sequence one when reconnecting to a new daemon epoch", async () => {
     const { client, sockets } = fixture();
     const socket = await connect(client, sockets);
     const received: Array<[string, number]> = [];
@@ -207,30 +232,20 @@ describe("WakuClient", () => {
       received.push([event.epoch, event.sequence]);
     });
 
-    socket.receive({
-      type: "event",
-      sessionId: "session",
-      runtimeId: "runtime",
-      epoch: "old",
-      sequence: 9,
-      event: { kind: "textDelta", payload: null },
-    });
-    socket.receive({
-      type: "event",
-      sessionId: "session",
-      runtimeId: "runtime",
-      epoch: "new",
-      sequence: 1,
-      event: { kind: "textDelta", payload: null },
-    });
+    await replayPage(socket, [delta(9, "old")], 9);
+    client.disconnect();
+    const replacement = await connect(client, sockets);
+    expect(lastReplay(replacement).command).toMatchObject({ epoch: "old", afterSequence: 9 });
+    await replayPage(replacement, [delta(1, "new")], 1);
 
     expect(received).toEqual([
       ["old", 9],
       ["new", 1],
     ]);
+    client.disconnect();
   });
 
-  test("buffers replayed events until a refreshed app attaches to the runtime", async () => {
+  test("does not advance unobserved runtimes and recovers them when an app attaches", async () => {
     const { client, sockets } = fixture();
     const socket = await connect(client, sockets);
 
@@ -252,8 +267,12 @@ describe("WakuClient", () => {
     });
 
     const received: number[] = [];
+    expect(client.replayCursors()).toEqual([]);
     client.subscribe("session", "runtime", (event) => received.push(event.sequence));
+    expect(received).toEqual([]);
+    await replayPage(socket, [delta(1), delta(2)], 2);
     expect(received).toEqual([1, 2]);
+    client.disconnect();
   });
 
   test("notifies connected apps when another client changes task state", async () => {
@@ -301,6 +320,168 @@ describe("WakuClient", () => {
 test("daemonUrl pins the versioned endpoint", () => {
   expect(daemonUrl("localhost:3030/anything?old=1")).toBe("ws://localhost:3030/v1");
   expect(daemonUrl("wss://waku.example.test")).toBe("wss://waku.example.test/v1");
+});
+
+describe("WakuClient complete event recovery", () => {
+  test("recovers more than the old 2048-event window before buffered live events", async () => {
+    const { client, sockets } = fixture();
+    const socket = await connect(client, sockets);
+    const received: number[] = [];
+    client.subscribe("session", "runtime", (event) => received.push(event.sequence));
+    socket.receive({ type: "event", ...delta(2050) });
+    socket.receive({ type: "event", ...delta(2051) });
+    expect(received).toEqual([]);
+    expect(client.replayCursors()).toEqual([]);
+    for (let after = 0; after < 2050;) {
+      const next = Math.min(after + 256, 2050);
+      expect(lastReplay(socket).command).toMatchObject({
+        afterSequence: after,
+        throughSequence: after === 0 ? null : 2050,
+        limit: 256,
+      });
+      const events = Array.from({ length: next - after }, (_, index) => delta(after + index + 1));
+      await replayPage(socket, events, 2050, next < 2050);
+      after = next;
+    }
+    expect(received).toEqual(Array.from({ length: 2051 }, (_, index) => index + 1));
+    expect(client.replayCursors()[0]?.sequence).toBe(2051);
+    expect(client.connected).toBe(true);
+    client.disconnect();
+  });
+
+  test("reconnect catches up existing subscriptions before resuming live delivery", async () => {
+    const { client, sockets } = fixture();
+    const first = await connect(client, sockets);
+    const received: number[] = [];
+    client.subscribe("session", "runtime", (event) => received.push(event.sequence));
+    await replayPage(first, [delta(1)], 1);
+    first.emitClose();
+    const second = await connect(client, sockets);
+    expect(lastReplay(second).command.afterSequence).toBe(1);
+    second.receive({ type: "event", ...delta(3) });
+    expect(received).toEqual([1]);
+    await replayPage(second, [delta(2)], 2);
+    expect(received).toEqual([1, 2, 3]);
+    client.disconnect();
+  });
+
+  test("ephemeral holes use the server snapshot cursor without inventing missing events", async () => {
+    const { client, sockets } = fixture();
+    const socket = await connect(client, sockets);
+    const received: number[] = [];
+    client.subscribe("session", "runtime", (event) => received.push(event.sequence));
+    await replayPage(socket, [delta(1), delta(3)], 5);
+    expect(client.replayCursors()[0]?.sequence).toBe(5);
+    socket.receive({ type: "event", ...delta(7) });
+    expect(received).toEqual([1, 3, 7]);
+    expect(client.connected).toBe(true);
+    client.disconnect();
+  });
+
+  test("subscribing before opening a terminal delivers transient output during recovery without acknowledging it", async () => {
+    const { client, sockets } = fixture();
+    const socket = await connect(client, sockets);
+    const received: string[] = [];
+    client.subscribe("session", "runtime", (event) => received.push(event.event.kind));
+    const opening = client.request({ type: "openTerminal", cwd: "/work", cols: 80, rows: 24 }, "session", "runtime");
+    const openRequest = JSON.parse(socket.sent.at(-1)!);
+    socket.receive({ type: "event", ...delta(1), replayable: false,
+      event: { kind: "terminalOutput", payload: "first prompt" } });
+    socket.receive({ type: "event", ...delta(2), replayable: false,
+      event: { kind: "terminalExited", payload: 0 } });
+    expect(received).toEqual(["terminalOutput", "terminalExited"]);
+    expect(client.replayCursors()).toEqual([]);
+
+    socket.receive({ type: "response", requestId: openRequest.requestId,
+      outcome: { status: "ok", payload: { type: "ack" } } });
+    await opening;
+    await replayPage(socket, [], 2);
+    // Even a sequence at/below the persistent snapshot is not a duplicate for
+    // terminal output. Delivery must leave that persistent cursor unchanged.
+    socket.receive({ type: "event", ...delta(1), replayable: false,
+      event: { kind: "terminalOutput", payload: "more output" } });
+    expect(received).toEqual(["terminalOutput", "terminalExited", "terminalOutput"]);
+    expect(client.replayCursors()[0]?.sequence).toBe(2);
+    expect(client.connected).toBe(true);
+    client.disconnect();
+  });
+
+  test("a changed snapshot fails closed without committing buffered live events", async () => {
+    const { client, sockets } = fixture();
+    const socket = await connect(client, sockets);
+    const received: number[] = [];
+    client.subscribe("session", "runtime", (event) => received.push(event.sequence));
+    await replayPage(socket, [delta(1)], 3, true);
+    socket.receive({ type: "event", ...delta(4) });
+    await replayPage(socket, [delta(2)], 4, true);
+    expect(client.connected).toBe(false);
+    expect(received).toEqual([1]);
+    expect(client.replayCursors()[0]?.sequence).toBe(1);
+    expect(client.lastDisconnectReason).toContain("snapshot changed");
+  });
+
+  test("a replay error preserves the confirmed cursor and requests it after reconnect", async () => {
+    const { client, sockets } = fixture();
+    const first = await connect(client, sockets);
+    const received: number[] = [];
+    client.subscribe("session", "runtime", (event) => received.push(event.sequence));
+    await replayPage(first, [delta(1)], 3, true);
+    first.receive({ type: "event", ...delta(4) });
+    first.receive({ type: "response", requestId: lastReplay(first).requestId,
+      outcome: { status: "error", error: { message: "journal unavailable" } } });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.connected).toBe(false);
+    expect(received).toEqual([1]);
+    const second = await connect(client, sockets);
+    expect(lastReplay(second).command.afterSequence).toBe(1);
+    await replayPage(second, [delta(2), delta(3), delta(4)], 4);
+    expect(received).toEqual([1, 2, 3, 4]);
+    client.disconnect();
+  });
+
+  test("overflow disconnects instead of dropping the oldest live events or advancing cursors", async () => {
+    const { client, sockets } = fixture();
+    const socket = await connect(client, sockets);
+    const received: number[] = [];
+    client.subscribe("session", "runtime", (event) => received.push(event.sequence));
+    for (let sequence = 1; sequence <= 4097; sequence++) socket.receive({ type: "event", ...delta(sequence) });
+    expect(client.connected).toBe(false);
+    expect(client.replayCursors()).toEqual([]);
+    expect(received).toEqual([]);
+    expect(client.lastDisconnectReason).toContain("overflow");
+    await Promise.resolve();
+  });
+
+  test("validates a complete page before delivering foreign or unordered events", async () => {
+    for (const bad of [
+      { ...delta(2), runtimeId: "foreign" },
+      { ...delta(2), replayable: false },
+      delta(1),
+    ]) {
+      const { client, sockets } = fixture();
+      const socket = await connect(client, sockets);
+      const received: number[] = [];
+      client.subscribe("session", "runtime", (event) => received.push(event.sequence));
+      await replayPage(socket, [delta(1), bad], 2);
+      expect(client.connected).toBe(false);
+      expect(client.replayCursors()).toEqual([]);
+      expect(received).toEqual([]);
+    }
+  });
+
+  test("unsubscribing fences a late recovery response and later live events", async () => {
+    const { client, sockets } = fixture();
+    const socket = await connect(client, sockets);
+    const received: number[] = [];
+    const unsubscribe = client.subscribe("session", "runtime", (event) => received.push(event.sequence));
+    unsubscribe();
+    await replayPage(socket, [delta(1)], 1);
+    socket.receive({ type: "event", ...delta(2) });
+    expect(client.replayCursors()).toEqual([]);
+    expect(received).toEqual([]);
+    client.disconnect();
+  });
 });
 
 describe("WakuClient connection failures", () => {

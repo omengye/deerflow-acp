@@ -400,7 +400,13 @@ impl DaemonSupervisor {
     /// service manager). Dropping the desktop never shuts this daemon down.
     pub fn connect(address: &str, token: String) -> anyhow::Result<Self> {
         let client = DaemonClient::connect(address, token.clone())?;
-        let settings = read_settings(&client)?;
+        let settings = match read_settings(&client) {
+            Ok(settings) => settings,
+            Err(error) => {
+                client.disconnect();
+                return Err(error);
+            }
+        };
         let supervisor = Self::from_target(
             DaemonTarget::Remote {
                 client,
@@ -719,7 +725,12 @@ fn queue_settings_refresh(inner: &SupervisorInner) {
 }
 
 fn read_settings(client: &DaemonClient) -> anyhow::Result<DaemonSettings> {
-    match client.request(Uuid::nil(), Uuid::nil(), Command::GetSettings)? {
+    match client.request_with_timeout(
+        Uuid::nil(),
+        Uuid::nil(),
+        Command::GetSettings,
+        Duration::from_secs(5),
+    )? {
         ResponsePayload::Settings { settings } => Ok(settings),
         _ => bail!("Waku daemon returned an invalid settings response"),
     }
