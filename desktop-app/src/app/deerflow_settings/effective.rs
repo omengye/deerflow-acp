@@ -444,7 +444,15 @@ fn push_row(
         Value::String(text) if text.len() <= 512 => text.clone(),
         Value::Number(number)
             if number.as_f64() == Some(0.0)
-                && matches!(path, "/runtime/run_timeout_seconds" | "/runtime/queue_timeout_seconds" | "/subagents/timeout_seconds") => "不限时（0）".to_owned(),
+                && matches!(
+                    path,
+                    "/runtime/run_timeout_seconds"
+                        | "/runtime/queue_timeout_seconds"
+                        | "/subagents/timeout_seconds"
+                ) =>
+        {
+            "不限时（0）".to_owned()
+        }
         Value::Number(number) => number.to_string(),
         Value::Array(items) if items.len() <= 128 => {
             let Some(items) = items.iter().map(Value::as_str).collect::<Option<Vec<_>>>() else {

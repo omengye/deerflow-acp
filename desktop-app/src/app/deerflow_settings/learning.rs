@@ -3,6 +3,243 @@ use super::learning_state::{Pane, Scope};
 use super::*;
 
 impl Waku {
+    pub(super) fn render_deerflow_learning_overview(
+        &self,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let state = &self.deerflow_settings;
+        let browser = &state.skill_browser.learning;
+        let unavailable = state.busy() || state.applying() || state.status["running"] != true;
+        let mut body = df_group(theme)
+            .child(df_label("学习流水线", "后台在线表示执行器可接收工作；是否已有产出请看经验、归并、匹配、生成和发布记录。状态是最近一次查询的快照。", theme))
+            .child(df_button("df-learning-overview-refresh", "刷新学习流水线", unavailable, false, theme, cx,
+                |this, _, cx| this.deerflow_queue_skill_center(cx)));
+        body = body.child(df_label(
+            "全目录学习状态",
+            browser
+                .status_summary
+                .clone()
+                .unwrap_or_else(|| "正在读取；若当前服务不支持诊断，请更新配套服务后重试。".into()),
+            theme,
+        ));
+        if let Some(queue) = browser.status.as_ref().and_then(|s| s.queue.as_ref()) {
+            body = body.child(df_label("全目录队列", queue.summary(), theme));
+            if !queue.reasons.is_empty() {
+                body = body.child(df_label(
+                    "全目录等待与阻塞原因",
+                    queue.reasons_summary(),
+                    theme,
+                ));
+            }
+        }
+        body = body
+            .child(df_label(
+                "自动发现",
+                state
+                    .skill_browser
+                    .discovery
+                    .status_summary()
+                    .unwrap_or("尚未读取发现状态")
+                    .to_owned(),
+                theme,
+            ))
+            .child(df_label(
+                "草稿生成",
+                state
+                    .skill_browser
+                    .generation
+                    .status_summary()
+                    .unwrap_or_else(|| "尚未读取生成状态".into()),
+                theme,
+            ));
+        let Some(session) = state
+            .skills_session_id
+            .as_ref()
+            .filter(|session| browser.session_id.as_ref() == Some(*session))
+        else {
+            return body
+                .child(df_label(
+                    "此聊天诊断不可用",
+                    "先打开一个已建立 DeerFlow 原生会话的聊天，再进入进化记录。",
+                    theme,
+                ))
+                .into_any_element();
+        };
+        let query = browser.diagnostics_request();
+        body = body.child(df_label(format!("此聊天：{}", state.skills_session_title),
+            "诊断只读取运行与作业元数据。任务未结算时应核对原任务；开始新目标不会解锁或回填历史输入。", theme))
+            .child(df_button("df-learning-diagnostics-refresh", "刷新此聊天诊断", unavailable || query.is_none(), false, theme, cx,
+                move |this, _, cx| { if let Some(query) = &query { this.deerflow_request("manage", query.clone(), cx); } }));
+        let Some(diagnostics) = &browser.diagnostics else {
+            return body
+                .child(df_label(
+                    "尚未读取此聊天诊断",
+                    "进入进化记录时会自动查询；不支持此接口的旧服务仍可展开学习详情查询作业。",
+                    theme,
+                ))
+                .into_any_element();
+        };
+        body = body.child(df_label(
+            "此聊天授权与队列",
+            format!(
+                "贡献 {} · 授权版本 {} · 后台执行器{}\n{}",
+                if diagnostics.contribute {
+                    "允许"
+                } else {
+                    "未允许"
+                },
+                diagnostics.consent_epoch,
+                if diagnostics.running {
+                    "在线"
+                } else {
+                    "离线"
+                },
+                diagnostics.queue.summary()
+            ),
+            theme,
+        ));
+        if !diagnostics.queue.reasons.is_empty() {
+            body = body.child(df_label(
+                "此聊天等待与阻塞原因",
+                diagnostics.queue.reasons_summary(),
+                theme,
+            ));
+        }
+        if diagnostics.inputs.is_empty() && diagnostics.jobs.is_empty() {
+            body = body.child(df_label(
+                "此聊天暂无已捕获的学习输入或作业",
+                "检查全局学习和此聊天贡献。仅在开启后捕获新的真实输入，旧聊天不会回填。",
+                theme,
+            ));
+        }
+        let visible = if browser.diagnostics_expanded {
+            super::learning_diagnostics::LIMIT
+        } else {
+            3
+        };
+        if diagnostics.inputs.len() > 3
+            || diagnostics
+                .jobs
+                .iter()
+                .filter(|job| job.job.state == "failed")
+                .count()
+                > 3
+        {
+            body = body.child(df_button(
+                "df-learning-diagnostics-details",
+                if browser.diagnostics_expanded {
+                    "收起诊断明细"
+                } else {
+                    "展开全部已载入诊断（当前最多显示 3 条输入 / 失败作业）"
+                },
+                false,
+                browser.diagnostics_expanded,
+                theme,
+                cx,
+                |this, _, cx| {
+                    this.deerflow_settings
+                        .skill_browser
+                        .learning
+                        .diagnostics_expanded = !this
+                        .deerflow_settings
+                        .skill_browser
+                        .learning
+                        .diagnostics_expanded;
+                    cx.notify();
+                },
+            ));
+        }
+        for (index, input) in diagnostics.inputs.iter().take(visible).enumerate() {
+            body = body.child(df_label(
+                format!("学习输入 {}", index + 1),
+                input.summary(),
+                theme,
+            ));
+            if matches!(
+                input.reason.as_str(),
+                "tree_unsettled" | "source_active" | "unsafe_outcome"
+            ) || input.state == "awaiting_completion"
+            {
+                let native_session = session.clone();
+                let run_id = input.run_id.clone();
+                body = body.child(df_button(
+                    SharedString::from(format!("df-learning-task-{index}")),
+                    "打开原任务核对 / 恢复",
+                    unavailable,
+                    false,
+                    theme,
+                    cx,
+                    move |this, _, cx| {
+                        this.open_deerflow_learning_recovery(
+                            &native_session,
+                            Some(&run_id),
+                            false,
+                            cx,
+                        )
+                    },
+                ));
+                let native_session = session.clone();
+                let run_id = input.run_id.clone();
+                body = body.child(df_button(
+                    SharedString::from(format!("df-learning-receipt-{index}")),
+                    "核对待确认回执",
+                    unavailable,
+                    false,
+                    theme,
+                    cx,
+                    move |this, _, cx| {
+                        this.open_deerflow_learning_recovery(
+                            &native_session,
+                            Some(&run_id),
+                            true,
+                            cx,
+                        )
+                    },
+                ));
+            }
+        }
+        for (index, item) in diagnostics
+            .jobs
+            .iter()
+            .filter(|item| item.job.state == "failed")
+            .take(visible)
+            .enumerate()
+        {
+            let request = browser.extraction_retry_request(&item.job.id);
+            body = body.child(df_label(
+                format!("失败学习作业 {}", item.job.id),
+                format!(
+                    "类型 {} · 错误 {} · 状态版本 {}\n{}",
+                    item.job.kind,
+                    item.job.error_code,
+                    item.job.state_version,
+                    if item.retryable {
+                        "可重试原提取；保留尝试次数、期限与已发生用量。".to_owned()
+                    } else {
+                        super::learning_diagnostics::reason(&item.retry_reason)
+                    }
+                ),
+                theme,
+            ));
+            if item.retryable {
+                body = body.child(df_button(SharedString::from(format!("df-learning-extraction-retry-{index}")),
+                    "重试原经验提取", unavailable || state.skill_browser.mutations_pending() || request.is_none(), false, theme, cx,
+                    move |this, _, cx| {
+                        if let Some(request) = &request {
+                            this.deerflow_settings.confirm_manage = Some((
+                                "重新排队原失败的经验提取，会继续消耗学习与共享维护额度。保留原尝试次数和期限，不重放任务工具，也不补录历史。服务会再次核验来源、授权版本及作业版本。".into(), request.clone()));
+                            cx.notify();
+                        }
+                    }));
+            }
+        }
+        if diagnostics.truncated {
+            body = body.child(df_label("诊断结果已截断", "仅显示有界输入和作业，未出现的记录不代表不存在。展开学习详情，在学习作业中分页核对历史。", theme));
+        }
+        body.into_any_element()
+    }
+
     pub(super) fn render_deerflow_learning(
         &self,
         theme: Theme,
@@ -365,13 +602,20 @@ impl Waku {
                     let allowed = request
                         .as_ref()
                         .is_some_and(|request| state.skill_browser.can_begin(request));
-                    history = history.child(df_button("df-learning-retry-enqueue", "确认授权一次新技能创建重试",
-                        mutation_disabled || !allowed, false, theme, cx, move |this, _, cx| {
+                    history = history.child(df_button(
+                        "df-learning-retry-enqueue",
+                        "确认授权一次新技能创建重试",
+                        mutation_disabled || !allowed,
+                        false,
+                        theme,
+                        cx,
+                        move |this, _, cx| {
                             if let Some(request) = &request {
                                 this.deerflow_settings.confirm_manage = None;
                                 this.deerflow_request("manage", request.clone(), cx);
                             }
-                        }));
+                        },
+                    ));
                 }
                 history = history.child(df_label("人工重新裁决已有技能目标",
                     "先在技能目录选择并刷新一个已启用技能，再回到本归并结果。目录选择不代表 runtime 访问授权；服务将重新核对来源、当前 head / overlay、归并修订与全部学习来源。此操作不调用匹配模型、不确认方法质量、不创建新技能，后续仍使用原 discovery 配额与独立证据；候选必须人工发布。", theme))
@@ -406,12 +650,23 @@ impl Waku {
             }
             if let Some(request) = &row.cancel {
                 let request = request.clone();
-                history = history.child(df_button("df-learning-job-cancel", "取消此学习作业", mutation_disabled,
-                    false, theme, cx, move |this, _, cx| {
+                history = history.child(df_button(
+                    "df-learning-job-cancel",
+                    "取消此学习作业",
+                    mutation_disabled,
+                    false,
+                    theme,
+                    cx,
+                    move |this, _, cx| {
                         this.deerflow_settings.confirm_manage = None;
                         this.deerflow_request("manage", request.clone(), cx);
-                    }));
-                history = history.child(df_label("取消说明", "停止当前学习作业，晚到输出不再写回；已发生用量、已保存历史和正式技能保留。", theme));
+                    },
+                ));
+                history = history.child(df_label(
+                    "取消说明",
+                    "停止当前学习作业，晚到输出不再写回；已发生用量、已保存历史和正式技能保留。",
+                    theme,
+                ));
             }
         }
         body = body.child(history).child(df_group(theme).child(df_label("进入现有审核流程",

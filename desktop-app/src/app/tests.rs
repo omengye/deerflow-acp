@@ -2051,14 +2051,15 @@ fn settings_search_filters_pages_for_arrow_cycling() {
     assert_eq!(
         pages(""),
         vec![
+            SettingsPage::DeerFlow,
             SettingsPage::Channels,
             SettingsPage::Schedules,
-            SettingsPage::DeerFlow,
             SettingsPage::DeerFlowModels,
             SettingsPage::DeerFlowTools,
             SettingsPage::DeerFlowSkillCenter,
             SettingsPage::Appearance,
-            SettingsPage::DeerFlowAdvanced
+            SettingsPage::DeerFlowAdvanced,
+            SettingsPage::Daemon,
         ]
     );
     assert_eq!(pages("api"), vec![SettingsPage::DeerFlowModels]);
@@ -2067,7 +2068,7 @@ fn settings_search_filters_pages_for_arrow_cycling() {
     assert!(!SettingsPage::General.is_visible_in_navigation());
     assert!(!SettingsPage::Providers.is_visible_in_navigation());
     assert!(!SettingsPage::Skills.is_visible_in_navigation());
-    assert!(!SettingsPage::Daemon.is_visible_in_navigation());
+    assert!(SettingsPage::Daemon.is_visible_in_navigation());
     assert!(SettingsPage::DeerFlowSkillCenter.is_visible_in_navigation());
     assert_eq!(pages("wechat"), vec![SettingsPage::Channels]);
     assert_eq!(pages("schedule"), vec![SettingsPage::Schedules]);

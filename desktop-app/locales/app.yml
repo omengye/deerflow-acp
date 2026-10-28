@@ -153,7 +153,7 @@ settings.providers:
 settings.usage:
   en: Usage
 settings.daemon:
-  en: Daemon
+  en: Server connection
 settings.computer_use:
   en: Computer Use
 settings.general_keywords:
@@ -2212,3 +2212,34 @@ settings.deerflow_advanced_keywords:
   en: advanced subagents roles memory skills budget limits timeout service logs diagnostics data sources import
 settings.deerflow_keywords:
   en: deerflow models agents memory skills tools permissions acp runtime diagnostics recovery
+
+server.title:
+  en: "DeerFlow server"
+server.description:
+  en: "Choose this computer or connect directly to a remote server over WebSocket. Saving restarts the desktop; the remote service keeps running."
+server.local:
+  en: "This computer"
+server.remote:
+  en: "Remote server"
+server.current_local:
+  en: "Currently using this computer"
+server.current_remote:
+  en: "Currently using remote server:"
+server.address:
+  en: "Server address"
+server.token_storage:
+  en: "The token stays on this device. Windows encrypts it for the current user. Use WS on a trusted LAN and WSS for other networks."
+server.test:
+  en: "Test connection"
+server.save_restart:
+  en: "Save and restart desktop"
+server.connecting:
+  en: "Checking and saving…"
+server.test_success:
+  en: "Connection successful. Authentication and server settings are available."
+server.failed:
+  en: "Connection could not be applied:"
+server.stop_tasks:
+  en: "Stop active tasks before switching servers."
+server.saved_restart_later:
+  en: "Saved. Restart the desktop after active tasks finish."

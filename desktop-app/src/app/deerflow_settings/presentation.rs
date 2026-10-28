@@ -1345,6 +1345,7 @@ impl Waku {
             }
             SkillCenterTab::History => {
                 body = body
+                    .child(self.render_deerflow_learning_overview(theme, cx))
                     .child(self.render_deerflow_proposals(theme, cx))
                     .child(self.render_deerflow_auto_patch(theme, cx))
                     .child(df_button(

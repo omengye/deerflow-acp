@@ -44,6 +44,17 @@ impl PageNav {
         self.previous.len() + 1
     }
 
+    pub(super) fn current_request(&self) -> Option<Value> {
+        if !self.query.is_object() {
+            return None;
+        }
+        let mut request = self.query.clone();
+        if !self.cursor.is_empty() {
+            request[&self.cursor_field] = json!(self.cursor);
+        }
+        Some(request)
+    }
+
     pub(super) fn accept(
         &mut self,
         request: &Value,
@@ -120,5 +131,23 @@ mod tests {
         assert!(nav.accept(&next, &"x".repeat(2049), "cursor").is_err());
         nav.accept(&first, "next", "cursor").unwrap();
         assert!(nav.request(false).is_none());
+    }
+
+    #[test]
+    fn refreshing_current_page_preserves_filters_and_navigation() {
+        let mut nav = PageNav::default();
+        assert!(nav.current_request().is_none());
+        let first = json!({"operation":"proposal.list", "status":"pending_review", "needs_attention":true, "source_id":"local", "name":"test", "limit":20});
+        nav.accept(&first, "next", "cursor").unwrap();
+        assert_eq!(nav.current_request(), Some(first.clone()));
+        let second = nav.request(true).unwrap();
+        nav.accept(&second, "third", "cursor").unwrap();
+        assert_eq!(nav.current_request(), Some(second.clone()));
+        nav.accept(&nav.current_request().unwrap(), "new-next", "cursor")
+            .unwrap();
+        assert_eq!(nav.page_number(), 2);
+        assert_eq!(nav.request(false), Some(first));
+        assert_eq!(nav.request(true).unwrap()["cursor"], "new-next");
+        assert_eq!(nav.current_request(), Some(second));
     }
 }

@@ -110,6 +110,10 @@ fn label(kind: &str) -> Option<&'static str> {
 }
 
 impl DiscoveryBrowser {
+    pub(super) fn status_summary(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
+
     pub(super) fn invalidate(&mut self) {
         *self = Self::default();
     }
@@ -147,14 +151,14 @@ impl DiscoveryBrowser {
                     "自动发现状态无效"
                 );
                 self.status = Some(format!(
-                    "自动发现{} · worker {}\n支持 {}\nUTC {} 已预留 {} 次 · 待处理 {} · 无效信号 {}{}",
+                    "自动发现{} · 后台执行器{}（在线不代表已有提案）\n支持 {}\nUTC {} 已预留 {} 次 · 待处理 {} · 无效信号 {}{}",
                     if status.enabled {
                         "已启用"
                     } else {
                         "未启用"
                     },
                     if status.running {
-                        "运行中"
+                        "在线"
                     } else {
                         "未运行"
                     },

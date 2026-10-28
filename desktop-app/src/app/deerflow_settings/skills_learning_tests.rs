@@ -26,6 +26,101 @@ fn browser() -> SkillBrowser {
 }
 
 #[test]
+fn history_refresh_keeps_pipeline_status_after_initial_or_changed_consent() {
+    for previously_loaded in [false, true] {
+        let mut browser = if previously_loaded {
+            browser()
+        } else {
+            let mut browser = SkillBrowser::default();
+            browser.set_learning_session(Some("session-a"));
+            browser
+        };
+        let service = store("first", 1);
+        let requests =
+            skill_center_load_requests(presentation::SkillCenterTab::History, Some("session-a"));
+        let mut consent_changed = false;
+        for request in requests {
+            browser.begin_at(&request, &service);
+            match request["operation"].as_str().unwrap() {
+                "skill.learning.control.get" => {
+                    consent_changed = browser
+                        .accept_learning(&request, control("session-a", 3, true))
+                        .unwrap();
+                }
+                "skill.discovery.status" => browser
+                    .discovery
+                    .accept(
+                        &request,
+                        json!({"version":"skill-discovery-v1","enabled":false,
+                        "running":false,"triggers":[],"today":"2026-10-28",
+                        "daily_reservations":0,"pending":0,"failed_signals":0}),
+                    )
+                    .unwrap(),
+                "skill.generation.status" => browser
+                    .generation
+                    .accept(
+                        &request,
+                        json!({"version":"skill-generation-v1","enabled":false,
+                        "sources":[]}),
+                    )
+                    .unwrap(),
+                "proposal.history" => {
+                    browser
+                        .accept_review_page(&request, &json!({"revisions":[]}))
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            consent_changed,
+            "fixture must exercise consent invalidation"
+        );
+        assert!(browser.discovery.status_summary().is_some());
+        assert!(browser.generation.status_summary().is_some());
+        assert!(!browser.history_list_stale);
+    }
+}
+
+#[test]
+fn extraction_retry_uncertain_result_remains_bound_to_original_service() {
+    let mut browser = browser();
+    let first = store("first", 1);
+    let query = browser.learning.diagnostics_request().unwrap();
+    let diagnostics = json!({"session_id":"session-a","consent_epoch":2,"contribute":true,"running":true,
+        "queue":{"pending":0,"queued":0,"ready":0,"blocked":0,"skipped":1,"failed":1,
+            "failed_jobs":1,"capture_limited_sessions":0,"reasons":[]},"inputs":[],
+        "jobs":[{"id":"smj_extract","episode_id":"lep_a","kind":"experience_extract","state":"failed",
+            "state_version":4,"attempts":1,"error_code":"temporary","deadline":"2026-10-29T01:00:00Z",
+            "retryable":true,"retry_reason":""}],"truncated":false});
+    browser.begin_at(&query, &first);
+    browser
+        .accept_learning(&query, diagnostics.clone())
+        .unwrap();
+    let request = browser
+        .learning
+        .extraction_retry_request("smj_extract")
+        .unwrap();
+    assert!(browser.can_begin_at(&request, &first));
+    browser.begin_at(&request, &first);
+    browser.transport_failed(&request);
+    assert!(browser.mutations_pending());
+    assert!(
+        !browser.can_begin_at(&request, &first),
+        "uncertain retry must not be replayed"
+    );
+    let reconcile = browser.learning.reconciliation_request().unwrap();
+    assert!(browser.can_begin_at(&reconcile, &first));
+    assert!(!browser.can_begin_at(&reconcile, &store("second", 1)));
+    browser.set_learning_session(Some("session-b"));
+    browser.begin_at(&reconcile, &first);
+    browser.accept_learning(&reconcile, diagnostics).unwrap();
+    assert!(browser.learning.diagnostics.is_none());
+    assert!(browser.mutations_pending());
+    assert_eq!(browser.learning.pending_request(), Some(&request));
+}
+
+#[test]
 fn learning_transport_fences_unknown_operations_to_original_store_without_replay() {
     let first = store("first", 1);
     let mut browser = browser();

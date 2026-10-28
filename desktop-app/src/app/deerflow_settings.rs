@@ -15,13 +15,20 @@ mod evolution;
 mod feedback;
 mod generation;
 mod learning;
+mod learning_diagnostics;
 mod learning_state;
 mod mcp_editor;
 mod memory_management;
 mod missing;
+mod model_metadata;
+mod model_metadata_logic;
+mod models_dev;
 pub(super) mod presentation;
-mod readiness;
 mod publication_state;
+mod readiness;
+mod rebase;
+#[cfg(test)]
+mod rebase_request_tests;
 mod roles;
 mod settings_contract;
 mod skill_sources;
@@ -209,6 +216,8 @@ pub(super) struct DeerFlowSettings {
     pub(super) generation_inputs: [Entity<TextInput>; 2],
     pub(super) feedback_input: Entity<TextInput>,
     pub(super) missing_input: Entity<TextInput>,
+    pub(super) model_metadata_search: Entity<TextInput>,
+    model_metadata: model_metadata::MetadataState,
     skills_session_id: Option<String>,
     skills_local_session_id: Option<Uuid>,
     skills_session_title: String,
@@ -292,6 +301,8 @@ impl DeerFlowSettings {
         let proposal_diff = cx.new(|cx| TextInput::new(window, cx).multi_line().read_only(true));
         let feedback_input = cx.new(|cx| TextInput::new(window, cx).multi_line().read_only(true));
         let missing_input = cx.new(|cx| TextInput::new(window, cx).multi_line().read_only(true));
+        let model_metadata_search =
+            cx.new(|cx| TextInput::new(window, cx).placeholder("搜索供应商、模型名称或 ID"));
         let generation_inputs = [
             cx.new(|cx| TextInput::new(window, cx).read_only(true)),
             cx.new(|cx| TextInput::new(window, cx).multi_line().read_only(true)),
@@ -301,6 +312,8 @@ impl DeerFlowSettings {
             generation_inputs,
             feedback_input,
             missing_input,
+            model_metadata_search,
+            model_metadata: model_metadata::MetadataState::default(),
             skills_session_id: None,
             skills_local_session_id: None,
             skills_session_title: String::new(),
@@ -596,6 +609,23 @@ fn document_with_model_names(
     Ok(result)
 }
 
+fn request_deerflow_with_draft(
+    operation: &str,
+    mut input: Value,
+    base: Option<&Value>,
+    mut request: impl FnMut(&str, Value) -> anyhow::Result<Value>,
+) -> anyhow::Result<Value> {
+    if matches!(operation, "validate" | "save" | "save-and-apply") {
+        let base =
+            base.ok_or_else(|| anyhow::anyhow!("配置原始快照缺失，请重新加载；草稿已保留。"))?;
+        let latest = request("snapshot", json!({}))?;
+        input = rebase::rebase_document(base, &input, &latest).map_err(anyhow::Error::msg)?;
+    }
+    // The backend still checks the merged revision; a later writer must not
+    // cause an unconditional retry that could overwrite concurrent changes.
+    request(operation, input)
+}
+
 impl Waku {
     pub(super) fn deerflow_sync_missing_session(&mut self, cx: &mut Context<Self>) {
         let context = missing_session_context(self.selected_session());
@@ -718,7 +748,10 @@ impl Waku {
 
     pub(super) fn ensure_deerflow_settings(&mut self, cx: &mut Context<Self>) {
         self.deerflow_sync_missing_session(cx);
-        if self.deerflow_settings.draft.is_none() && !self.deerflow_settings.busy() {
+        if !self.deerflow_settings.busy()
+            && (self.deerflow_settings.draft.is_none()
+                || !self.deerflow_settings.dirty && !self.deerflow_settings.editing_locked())
+        {
             self.deerflow_request("snapshot", json!({}), cx);
         }
         self.deerflow_status(cx);
@@ -728,28 +761,11 @@ impl Waku {
     }
 
     fn deerflow_queue_skill_center(&mut self, cx: &mut Context<Self>) {
-        use presentation::SkillCenterTab;
         let state = &mut self.deerflow_settings;
-        state.skill_center_loads.clear();
-        state
-            .skill_center_loads
-            .push_back(json!({"operation":"skill.auto_patch.status"}));
-        let query = match state.skill_center_tab {
-            SkillCenterTab::Catalog => Some(skills::catalog_request("", "")),
-            SkillCenterTab::Review => Some(
-                json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":20}),
-            ),
-            SkillCenterTab::History => Some(json!({"operation":"proposal.history","limit":20})),
-            _ => None,
-        };
-        if let Some(query) = query {
-            state.skill_center_loads.push_back(query);
-        }
-        if state.skill_center_tab == SkillCenterTab::History {
-            state
-                .skill_center_loads
-                .push_back(json!({"operation":"skill.auto_patch.list","limit":20}));
-        }
+        state.skill_center_loads = skills::skill_center_load_requests(
+            state.skill_center_tab,
+            state.skills_session_id.as_deref(),
+        );
         self.deerflow_flush_skill_center(cx);
     }
 
@@ -808,18 +824,16 @@ impl Waku {
         if self.deerflow_settings.busy() {
             return;
         }
-        if operation == "manage"
-            && input["operation"] == "proposal.list"
-            && self
-                .deerflow_settings
+        if matches!(
+            operation,
+            "snapshot" | "validate" | "save" | "save-and-apply" | "apply"
+        ) {
+            self.deerflow_settings.model_metadata.invalidate();
+        }
+        if operation == "manage" {
+            self.deerflow_settings
                 .skill_browser
-                .auto_patch
-                .needs_attention
-                .is_none()
-        {
-            if let Some(fields) = input.as_object_mut() {
-                fields.remove("needs_attention");
-            }
+                .normalize_proposal_list(&mut input);
         }
         if operation == "manage"
             && (input["operation"]
@@ -922,6 +936,11 @@ impl Waku {
             }
         }
         let operation = operation.to_owned();
+        let saved_draft = if matches!(operation.as_str(), "validate" | "save" | "save-and-apply") {
+            self.deerflow_settings.saved_draft.clone()
+        } else {
+            None
+        };
         let daemon = self.daemon.client();
         cx.spawn(async move |this, cx| {
             let request_operation = if structured_manage {
@@ -932,17 +951,22 @@ impl Waku {
             let result: anyhow::Result<Value> = cx
                 .background_executor()
                 .spawn(async move {
-                    match daemon.request(
-                        Uuid::nil(),
-                        Uuid::nil(),
-                        waku_client::Command::DeerFlow {
-                            operation: request_operation,
-                            input,
+                    request_deerflow_with_draft(
+                        &request_operation,
+                        input,
+                        saved_draft.as_ref(),
+                        |operation, input| match daemon.request(
+                            Uuid::nil(),
+                            Uuid::nil(),
+                            waku_client::Command::DeerFlow {
+                                operation: operation.to_owned(),
+                                input,
+                            },
+                        )? {
+                            waku_client::ResponsePayload::DeerFlow { data } => Ok(data),
+                            _ => anyhow::bail!("DeerFlow 返回了无法识别的响应"),
                         },
-                    )? {
-                        waku_client::ResponsePayload::DeerFlow { data } => Ok(data),
-                        _ => anyhow::bail!("DeerFlow 返回了无法识别的响应"),
-                    }
+                    )
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -1034,6 +1058,7 @@ impl Waku {
                                 (data, None)
                             };
                             if this.deerflow_settings.edit_generation == edits {
+                                this.deerflow_settings.model_metadata.reset_draft();
                                 this.deerflow_settings.saved_draft = Some(document.clone());
                                 this.deerflow_settings.invalid_text.clear();
                                 this.deerflow_settings.draft = Some(document);
@@ -1074,7 +1099,9 @@ impl Waku {
                             } else {
                                 this.deerflow_managed(&management_request, data, cx);
                             }
-                            if matches!(management_request["operation"].as_str(), Some("proposal.approve" | "proposal.publish_retry" | "proposal.reject" | "proposal.rollback" | "skill.set_enabled")) {
+                            if matches!(management_request["operation"].as_str(), Some("proposal.approve" | "proposal.publish_retry" | "proposal.reject" | "proposal.rollback" | "skill.set_enabled"))
+                                && !this.deerflow_settings.skill_center_loads.iter().any(|request| request["operation"] == "skill.auto_patch.status")
+                            {
                                 this.deerflow_settings.skill_center_loads.push_back(json!({"operation":"skill.auto_patch.status"}));
                             }
                         }
@@ -1331,6 +1358,7 @@ impl Waku {
             return;
         }
         self.deerflow_settings.input_text[slot] = text.clone();
+        self.deerflow_metadata_edited(&field.path, cx);
         self.deerflow_settings.dirty = true;
         self.deerflow_settings.edit_generation += 1;
         self.deerflow_settings.notice = None;
@@ -1358,6 +1386,7 @@ impl Waku {
                     self.deerflow_settings.errors.insert(field.path, error);
                 }
             }
+            self.deerflow_schedule_model_metadata(cx);
             cx.notify();
             return;
         }
@@ -1385,7 +1414,9 @@ impl Waku {
                         }
                     }
                     if let Err(error) = set_edit_value(document, &field.path, value) {
-                        self.deerflow_settings.errors.insert(field.path, error);
+                        self.deerflow_settings
+                            .errors
+                            .insert(field.path.clone(), error);
                     }
                 }
             }
@@ -1393,8 +1424,13 @@ impl Waku {
                 self.deerflow_settings
                     .invalid_text
                     .insert(field.path.clone(), text);
-                self.deerflow_settings.errors.insert(field.path, error);
+                self.deerflow_settings
+                    .errors
+                    .insert(field.path.clone(), error);
             }
+        }
+        if field.path.starts_with("/models/") {
+            self.deerflow_schedule_model_metadata(cx);
         }
         cx.notify();
     }
@@ -1403,6 +1439,7 @@ impl Waku {
         if !self.deerflow_settings.can_edit_field(path) {
             return;
         }
+        self.deerflow_metadata_edited(path, cx);
         self.deerflow_settings.errors.remove(path);
         self.deerflow_settings.invalid_text.remove(path);
         if let Some(document) = self.deerflow_settings.draft.as_mut() {
@@ -1418,6 +1455,9 @@ impl Waku {
         self.deerflow_settings.notice = None;
         if self.deerflow_settings.section == Section::Common {
             self.deerflow_rebind(cx);
+        }
+        if path.starts_with("/models/") {
+            self.deerflow_schedule_model_metadata(cx);
         }
         cx.notify();
     }
@@ -1619,6 +1659,7 @@ impl Waku {
         }
         items.push(json!({"original_name":"", "name":format!("model-{number}"), "display_name":"", "description":"", "provider":"openai", "model":"", "base_url":"", "api_key":"", "api_key_configured":false, "api_key_literal":false, "clear_api_key":false, "supports_vision":false, "context_window":0, "output_token_parameter":"auto"}));
         self.deerflow_settings.selected_model = items.len() - 1;
+        self.deerflow_settings.model_metadata.added(items.len() - 1);
         self.deerflow_settings.dirty = true;
         self.deerflow_settings.edit_generation += 1;
         self.deerflow_rebind(cx);
@@ -1643,6 +1684,7 @@ impl Waku {
             return;
         }
         let removed = items.remove(state.selected_model);
+        state.model_metadata.removed(state.selected_model);
         let next = items[0]["name"].as_str().unwrap_or("").to_owned();
         rename_model_references(doc, removed["name"].as_str().unwrap_or(""), &next);
         state.dirty = true;
@@ -2331,7 +2373,11 @@ impl Waku {
                     publication_state::source_confirmation(proposal, request)
                 })
             });
-        if let Some((description, request)) = state.confirm_manage.as_ref().filter(|_| !inline_source_confirmation) {
+        if let Some((description, request)) = state
+            .confirm_manage
+            .as_ref()
+            .filter(|_| !inline_source_confirmation)
+        {
             let request = request.clone();
             body = body.child(
                 df_group(theme)
@@ -2413,9 +2459,7 @@ impl Waku {
             content = content.child(effective);
         }
         match state.section {
-            Section::Common => {
-                content = content.child(self.render_deerflow_common(theme, cx))
-            }
+            Section::Common => content = content.child(self.render_deerflow_common(theme, cx)),
             Section::SkillCenter => {
                 content = content.child(self.render_deerflow_skill_center(theme, cx))
             }
@@ -2556,6 +2600,7 @@ impl Waku {
                                     return;
                                 }
                                 this.deerflow_settings.selected_model = index;
+                                this.deerflow_settings.model_metadata.invalidate();
                                 this.deerflow_rebind(cx);
                                 cx.notify();
                             },
@@ -2648,6 +2693,9 @@ impl Waku {
                             .child("名称在切换模型或保存时自动更新草稿引用，无需单独确认；密钥留空保留已有值。更换 provider 或 API 地址会清除旧凭据及原 provider 扩展。测试连接发送一次文本请求；Agent 能力测试最多两次请求，检查流式、工具调用及 usage，不执行工具。"),
                     ),
                 );
+                if items.get(selected).is_some() {
+                    content = content.child(self.render_model_metadata(theme, cx));
+                }
             }
             Section::Agents => {
                 content = content.child(self.render_deerflow_roles(theme, cx));
@@ -3354,6 +3402,11 @@ impl Waku {
                     }
                     Err(error) => {
                         self.deerflow_settings.skill_browser.review_stale = true;
+                        if operation == "proposal.list" {
+                            self.deerflow_settings.skill_browser.proposal_list_stale = true;
+                        } else {
+                            self.deerflow_settings.skill_browser.history_list_stale = true;
+                        }
                         self.deerflow_service_error(&error.to_string(), cx);
                     }
                 }
@@ -3380,36 +3433,52 @@ impl Waku {
                 self.deerflow_settings.skill_browser.review_stale = false;
             }
             "proposal.source_review" | "proposal.review_retry" => {
-                self.deerflow_settings.skill_browser.complete_mutation(request);
+                self.deerflow_settings
+                    .skill_browser
+                    .complete_mutation(request);
                 self.deerflow_settings.skill_browser.source_review_feedback = None;
                 let proposal = &data["proposal"];
                 self.deerflow_settings.proposal = Some(proposal.clone());
-                self.deerflow_settings.proposal_diff.update(cx, |input, cx| {
-                    input.set_content(proposal["diff"].as_str().unwrap_or("").to_owned(), cx);
-                });
-                self.deerflow_request("manage", json!({"operation":"proposal.get","proposal_id":proposal["id"]}), cx);
+                self.deerflow_settings
+                    .proposal_diff
+                    .update(cx, |input, cx| {
+                        input.set_content(proposal["diff"].as_str().unwrap_or("").to_owned(), cx);
+                    });
+                self.deerflow_request(
+                    "manage",
+                    json!({"operation":"proposal.get","proposal_id":proposal["id"]}),
+                    cx,
+                );
                 self.deerflow_settings.notice = Some(if operation == "proposal.review_retry" {
                     "已为原始不可变内容创建审核重试候选；旧失败记录保留，审核通过后仍需确认发布。"
                 } else { "已基于当前目录提交新的候选；需检查新的审核结果并确认发布，旧批准不会转移。" }.into());
             }
-            "proposal.approve" | "proposal.publish_retry" | "proposal.reject" | "proposal.rollback" => {
+            "proposal.approve"
+            | "proposal.publish_retry"
+            | "proposal.reject"
+            | "proposal.rollback" => {
                 self.deerflow_settings
                     .skill_browser
                     .complete_mutation(request);
-                if matches!(operation, "proposal.approve" | "proposal.publish_retry") && data["proposal"]["status"] != "published" {
+                if matches!(operation, "proposal.approve" | "proposal.publish_retry")
+                    && data["proposal"]["status"] != "published"
+                {
                     self.deerflow_settings.proposal = Some(data["proposal"].clone());
-                    self.deerflow_settings.notice = Some(publication_state::notice(&data["proposal"]).into());
+                    self.deerflow_settings.notice =
+                        Some(publication_state::notice(&data["proposal"]).into());
                     return;
                 }
                 self.deerflow_settings.proposal = None;
-                self.deerflow_request(
-                    "manage",
-                    json!({"operation":"proposal.history","limit":20}),
-                    cx,
-                );
+                let refresh = self
+                    .deerflow_settings
+                    .skill_browser
+                    .review_refresh_requests(request, self.deerflow_settings.show_more);
+                self.deerflow_settings.skill_center_loads.extend(refresh);
                 self.deerflow_settings.notice = Some(
                     match operation {
-                        "proposal.approve" | "proposal.publish_retry" => publication_state::notice(&data["proposal"]),
+                        "proposal.approve" | "proposal.publish_retry" => {
+                            publication_state::notice(&data["proposal"])
+                        }
                         "proposal.reject" => "提案已拒绝。",
                         _ => "技能版本已回滚，并创建了新修订记录。",
                     }
@@ -3793,7 +3862,7 @@ impl Waku {
             group = group.child(self.render_skill_page_nav(
                 "proposals",
                 &state.skill_browser.proposal_nav,
-                unavailable || state.skill_browser.review_stale,
+                unavailable || state.skill_browser.proposal_list_stale,
                 theme,
                 cx,
             ));
@@ -3837,23 +3906,51 @@ impl Waku {
                 let (_, can_reject) = publication_state::review_actions(proposal);
                 let approve_disabled = disabled || approval.is_none();
                 let reject_disabled = disabled || !can_reject;
-                group = group.child(df_label("当前提案状态", publication_state::review_hint(proposal), theme));
+                group = group.child(df_label(
+                    "当前提案状态",
+                    publication_state::review_hint(proposal),
+                    theme,
+                ));
                 if let Some((feedback_id, message)) = &state.skill_browser.source_review_feedback {
                     if feedback_id == &id {
                         group = group.child(df_label("本次目录审核未完成", message.clone(), theme));
                     }
                 }
                 let refresh_id = id.clone();
-                group = group.child(df_button("df-proposal-refresh-detail", "刷新此提案", unavailable, false, theme, cx,
+                group = group.child(df_button(
+                    "df-proposal-refresh-detail",
+                    "刷新此提案",
+                    unavailable,
+                    false,
+                    theme,
+                    cx,
                     move |this, _, cx| {
-                        this.deerflow_request("manage", json!({"operation":"proposal.get","proposal_id":refresh_id}), cx);
-                    }));
+                        this.deerflow_request(
+                            "manage",
+                            json!({"operation":"proposal.get","proposal_id":refresh_id}),
+                            cx,
+                        );
+                    },
+                ));
                 if !proposal["approval"].is_null() {
-                    group = group.child(df_label("批准与发布", publication_state::notice(proposal), theme));
+                    group = group.child(df_label(
+                        "批准与发布",
+                        publication_state::notice(proposal),
+                        theme,
+                    ));
                 }
                 if let Some(retry) = publication_state::retry_request(proposal) {
-                    group = group.child(df_button("df-proposal-resume", "重试原发布", disabled, false, theme, cx,
-                        move |this, _, cx| { this.deerflow_request("manage", retry.clone(), cx); }));
+                    group = group.child(df_button(
+                        "df-proposal-resume",
+                        "重试原发布",
+                        disabled,
+                        false,
+                        theme,
+                        cx,
+                        move |this, _, cx| {
+                            this.deerflow_request("manage", retry.clone(), cx);
+                        },
+                    ));
                 }
                 if proposal["review_retry_available"] == true {
                     let retry_review = json!({"operation":"proposal.review_retry","proposal_id":proposal["id"],"expected_state_version":observed_state});
@@ -3873,7 +3970,11 @@ impl Waku {
                             cx.notify();
                         }));
                 }
-                if let Some((description, request)) = state.confirm_manage.as_ref().filter(|(_, request)| publication_state::source_confirmation(proposal, request)) {
+                if let Some((description, request)) =
+                    state.confirm_manage.as_ref().filter(|(_, request)| {
+                        publication_state::source_confirmation(proposal, request)
+                    })
+                {
                     let request = request.clone();
                     group = group.child(df_group(theme)
                         .child(df_label("创建新的审核候选？", description.clone(), theme))
@@ -3949,7 +4050,7 @@ impl Waku {
             group = group.child(self.render_skill_page_nav(
                 "history",
                 &state.skill_browser.history_nav,
-                unavailable || state.skill_browser.review_stale,
+                unavailable || state.skill_browser.history_list_stale,
                 theme,
                 cx,
             ));
@@ -4627,6 +4728,7 @@ impl Waku {
         if let Some(index) = index {
             if top == "models" {
                 self.deerflow_settings.selected_model = index;
+                self.deerflow_settings.model_metadata.invalidate();
             } else if top == "tools" {
                 if let Some(name) = self
                     .deerflow_settings

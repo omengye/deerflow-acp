@@ -182,11 +182,7 @@ impl Waku {
             .flatten()
             .filter_map(Value::as_str)
         {
-            group = group.child(df_label(
-                "技能来源诊断（原文件与配置已保留）",
-                path,
-                theme,
-            ));
+            group = group.child(df_label("技能来源诊断（原文件与配置已保留）", path, theme));
         }
         group.into_any_element()
     }

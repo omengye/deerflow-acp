@@ -18,9 +18,18 @@ const SETTINGS_SIDEBAR_CONTEXT: &str = "SettingsSidebar";
 /// it.
 const SETTINGS_SEARCH_CONTEXT: &str = "SettingsSidebar > TextInput";
 
+const SETTINGS_FOCUS_CONTEXT: &str = "Settings";
+gpui::actions!(waku_settings, [FocusNextControl, FocusPreviousControl]);
+
 /// The sidebar's rows in display order, each with the keyword haystack the
 /// search field filters against.
 const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 14] = [
+    (
+        SettingsPage::DeerFlow,
+        "settings.deerflow",
+        "icons/bot.svg",
+        "settings.deerflow_keywords",
+    ),
     (
         SettingsPage::Channels,
         "settings.channels",
@@ -32,12 +41,6 @@ const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 14] = [
         "settings.schedules",
         "icons/hourglass.svg",
         "settings.schedules_keywords",
-    ),
-    (
-        SettingsPage::DeerFlow,
-        "settings.deerflow",
-        "icons/bot.svg",
-        "settings.deerflow_keywords",
     ),
     (
         SettingsPage::DeerFlowModels,
@@ -107,13 +110,29 @@ const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 14] = [
     ),
 ];
 
-/// Bind the search field's list-navigation keys. Called once at startup.
+/// Bind settings-only focus traversal and sidebar search navigation.
 pub fn init(cx: &mut App) {
     use gpui::KeyBinding;
     cx.bind_keys([
         KeyBinding::new("down", SelectNextEntry, Some(SETTINGS_SEARCH_CONTEXT)),
         KeyBinding::new("up", SelectPreviousEntry, Some(SETTINGS_SEARCH_CONTEXT)),
+        KeyBinding::new("tab", FocusNextControl, Some(SETTINGS_FOCUS_CONTEXT)),
+        KeyBinding::new(
+            "shift-tab",
+            FocusPreviousControl,
+            Some(SETTINGS_FOCUS_CONTEXT),
+        ),
     ]);
+}
+
+fn settings_focus_root(focus: &FocusHandle) -> Div {
+    div()
+        .key_context("Waku Settings")
+        .track_focus(focus)
+        .tab_group()
+        .tab_stop(false)
+        .on_action(|_: &FocusNextControl, window, cx| window.focus_next(cx))
+        .on_action(|_: &FocusPreviousControl, window, cx| window.focus_prev(cx))
 }
 
 /// The sidebar rows the query leaves visible, in display order. `query` must
@@ -135,9 +154,7 @@ impl Waku {
     pub(super) fn render_settings(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::current(cx);
 
-        div()
-            .key_context("Waku")
-            .track_focus(&self.settings_focus)
+        settings_focus_root(&self.settings_focus)
             .on_action(cx.listener(Self::close_window_with_deerflow_guard))
             .on_action(cx.listener(Self::new_session_action))
             .on_action(cx.listener(Self::new_project_action))
@@ -570,6 +587,16 @@ impl Waku {
     }
 
     fn render_daemon_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(16.0))
+            .child(self.render_server_connection(cx))
+            .child(self.render_managed_daemon_settings(cx))
+            .into_any_element()
+    }
+
+    fn render_managed_daemon_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::current(cx);
         if self.daemon.is_remote() {
             return div()
@@ -2586,8 +2613,92 @@ fn permission_status_row(
 
 #[cfg(test)]
 mod tests {
-    use super::abbreviate_home_path;
+    use super::*;
     use std::path::Path;
+
+    #[gpui::test]
+    fn settings_tab_traverses_and_activates_controls_without_affecting_other_views(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct Harness {
+            root: FocusHandle,
+            activations: Vec<usize>,
+            settings: bool,
+        }
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let mut root = if self.settings {
+                    settings_focus_root(&self.root)
+                } else {
+                    div().key_context("Waku").track_focus(&self.root)
+                };
+                for index in 0..2 {
+                    root = root.child(deerflow_settings::df_button(
+                        ("settings-test-control", index),
+                        "Control",
+                        false,
+                        false,
+                        Theme::light(),
+                        cx,
+                        move |this, _, cx| {
+                            this.activations.push(index);
+                            cx.notify();
+                        },
+                    ));
+                }
+                root.size_full().flex().flex_col()
+            }
+        }
+
+        cx.update(init);
+        let (view, cx) = cx.add_window_view(|_, cx| Harness {
+            root: cx.focus_handle(),
+            activations: vec![],
+            settings: true,
+        });
+        cx.run_until_parked();
+        let root = cx.read_entity(&view, |view, _| view.root.clone());
+        cx.update(|window, cx| window.focus(&root, cx));
+        cx.simulate_keystrokes("tab");
+        // Keep df_button's real implicit handles: overriding them with a
+        // default track_focus handle would remove their tab-stop metadata.
+        let first = cx.update(|window, cx| {
+            assert!(
+                !root.is_focused(window),
+                "Tab must leave the settings container"
+            );
+            window
+                .focused(cx)
+                .expect("first settings control is focused")
+        });
+        cx.simulate_keystrokes("enter");
+        cx.read_entity(&view, |view, _| assert_eq!(view.activations, vec![0]));
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, _| {
+            assert!(
+                !first.is_focused(window),
+                "Tab must advance to the second control"
+            );
+            assert!(!root.is_focused(window));
+        });
+        cx.simulate_keystrokes("enter");
+        cx.read_entity(&view, |view, _| assert_eq!(view.activations, vec![0, 1]));
+        cx.simulate_keystrokes("shift-tab");
+        cx.update(|window, _| assert!(first.is_focused(window)));
+        cx.simulate_keystrokes("space");
+        cx.read_entity(&view, |view, _| assert_eq!(view.activations, vec![0, 1, 0]));
+        cx.simulate_keystrokes("ctrl-tab");
+        cx.update(|window, _| assert!(first.is_focused(window)));
+
+        view.update(cx, |view, cx| {
+            view.settings = false;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.focus(&first, cx));
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, _| assert!(first.is_focused(window)));
+    }
 
     #[test]
     fn provider_paths_abbreviate_only_the_home_prefix() {

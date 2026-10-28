@@ -179,6 +179,13 @@ fn valid_head(head: &Head) -> bool {
 }
 
 impl GenerationBrowser {
+    pub(super) fn status_summary(&self) -> Option<String> {
+        self.status.as_ref().map(|status| format!(
+            "草稿生成{} · 可授权目标来源 {} 个。生成产出请展开学习与生成详情查看作业；正式采用还需审核或满足自动补丁条件。",
+            if status.enabled { "已启用" } else { "关闭" }, status.sources.len()
+        ))
+    }
+
     pub(super) fn creation_retry_previous(&self) -> Option<(String, String)> {
         let job = self.selected.as_ref()?;
         (!self.selected_stale
@@ -848,7 +855,11 @@ impl Waku {
                     this.deerflow_settings.confirm_manage = None;
                     this.deerflow_request("manage", json!({"operation":"skill.generation.cancel","job_id":id,"expected_state_version":version}), cx);
                 }));
-                group = group.child(df_label("取消说明", "停止该作业及尚未完成的候选审核；已发生的维护用量和已发布版本保留。", theme));
+                group = group.child(df_label(
+                    "取消说明",
+                    "停止该作业及尚未完成的候选审核；已发生的维护用量和已发布版本保留。",
+                    theme,
+                ));
             }
             if !job.proposal_id.is_empty() {
                 let id = job.proposal_id.clone();

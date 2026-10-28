@@ -1,4 +1,5 @@
 //! Bounded learning projections and session-bound action authority, without GPUI or I/O.
+use super::learning_diagnostics::{self, Diagnostics, Queue};
 use super::skills_contract::{Head, PageNav, Target, digest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -27,6 +28,7 @@ pub(super) fn mutation(request: &Value) -> bool {
             "skill.learning.control.set"
                 | "skill.learning.episode.start"
                 | "skill.learning.cancel"
+                | "skill.learning.extraction.retry"
                 | "skill.learning.pattern.ignore"
                 | "skill.learning.pattern.adjudicate"
                 | "skill.learning.creation_retry.enqueue"
@@ -147,10 +149,17 @@ pub(super) struct Status {
     proposal_discovery_enabled: bool,
     #[serde(default)]
     auto_patch_enabled: bool,
+    #[serde(default)]
+    running: Option<bool>,
+    #[serde(default)]
+    pub(super) queue: Option<Queue>,
 }
 
 impl Status {
     fn validate(&self) -> anyhow::Result<()> {
+        if let Some(queue) = &self.queue {
+            queue.validate()?;
+        }
         anyhow::ensure!(
             self.version == "procedural-experience-v1"
                 && matches!(
@@ -181,7 +190,7 @@ impl Status {
     fn summary(&self) -> String {
         let on = |enabled| if enabled { "已启用" } else { "关闭" };
         format!(
-            "提取 {} · 归并 {} · 匹配 {} · 跨会话 {}\n模式 {} · 空闲等待 {} 秒\n此数据目录合计：待处理 {} · 经验 {} · 归并 {} · 匹配 {}\n排查顺序：确认聊天贡献 → 等待空闲提取 → 归并与匹配 → 生成待审核草稿 → 人工发布。数量是全目录累计值，不代表当前聊天已完成；具体等待、失败和额度原因请查看学习作业。",
+            "提取 {} · 归并 {} · 匹配 {} · 跨会话 {}\n模式 {} · 空闲等待 {} 秒\n此数据目录合计：待处理 {} · 经验 {} · 归并 {} · 匹配 {}\n后台执行器{}；在线不代表已有学习产出。数量是全目录累计值，不代表当前聊天已完成。排查顺序：聊天贡献 → 原任务结算与空闲等待 → 提取 → 归并匹配 → 生成 → 审核或合格自动补丁。",
             on(self.enabled),
             on(self.consolidation_enabled),
             on(self.matching_enabled),
@@ -197,7 +206,12 @@ impl Status {
             self.pending_inputs,
             self.experiences,
             self.patterns,
-            self.matches
+            self.matches,
+            match self.running {
+                Some(true) => "在线",
+                Some(false) => "离线",
+                None => "状态未知（当前服务未提供）",
+            }
         )
     }
 }
@@ -419,20 +433,20 @@ struct Match {
     review: Option<PatternReview>,
 }
 
-#[derive(Deserialize)]
-struct Job {
-    id: String,
+#[derive(Clone, Deserialize)]
+pub(super) struct Job {
+    pub(super) id: String,
     episode_id: String,
     #[serde(default)]
     pattern_id: String,
     #[serde(default)]
     pattern_revision: u64,
-    kind: String,
-    state: String,
-    state_version: u64,
+    pub(super) kind: String,
+    pub(super) state: String,
+    pub(super) state_version: u64,
     attempts: u64,
     #[serde(default)]
-    error_code: String,
+    pub(super) error_code: String,
     #[serde(default)]
     deadline: String,
 }
@@ -732,7 +746,7 @@ impl Match {
 }
 
 impl Job {
-    fn row(self, session: &str) -> anyhow::Result<Row> {
+    pub(super) fn row(self, session: &str) -> anyhow::Result<Row> {
         let kind = match self.kind.as_str() {
             "experience_extract" => "经验提取",
             "experience_consolidate" => "经验归并",
@@ -799,6 +813,8 @@ pub(super) struct LearningBrowser {
     pub(super) status: Option<Status>,
     pub(super) status_summary: Option<String>,
     pub(super) control: Option<Control>,
+    pub(super) diagnostics: Option<Diagnostics>,
+    pub(super) diagnostics_expanded: bool,
     pub(super) pane: Pane,
     pub(super) scope: Scope,
     pub(super) rows: Vec<Row>,
@@ -833,6 +849,8 @@ impl LearningBrowser {
         self.status = None;
         self.status_summary = None;
         self.control = None;
+        self.diagnostics = None;
+        self.diagnostics_expanded = false;
         self.scope = Scope::Session;
         self.last_result = None;
         self.reconciliation = None;
@@ -896,6 +914,26 @@ impl LearningBrowser {
         Some(
             json!({"operation":format!("skill.learning.{scope}{}", self.pane.suffix()), "session_id":session, "limit":PAGE_SIZE}),
         )
+    }
+
+    pub(super) fn diagnostics_request(&self) -> Option<Value> {
+        self.session_id
+            .as_deref()
+            .map(learning_diagnostics::request)
+    }
+
+    pub(super) fn extraction_retry_request(&self, job_id: &str) -> Option<Value> {
+        let diagnostics = self.diagnostics.as_ref()?;
+        let control = self.control.as_ref()?;
+        if self.session_id.as_deref() != Some(&diagnostics.session_id)
+            || !control.contribute
+            || control.consent_epoch != diagnostics.consent_epoch
+            || control.session_id != diagnostics.session_id
+            || !self.status.as_ref().is_some_and(|s| s.enabled)
+        {
+            return None;
+        }
+        diagnostics.retry_request(job_id)
     }
 
     pub(super) fn select_row(&mut self, id: &str) {
@@ -1191,6 +1229,13 @@ impl LearningBrowser {
                             .iter()
                             .any(|row| row.cancel.as_ref() == Some(request))
                 }
+                Some("skill.learning.extraction.retry") => {
+                    request["job_id"]
+                        .as_str()
+                        .and_then(|id| self.extraction_retry_request(id))
+                        .as_ref()
+                        == Some(request)
+                }
                 Some("skill.learning.pattern.ignore" | "skill.learning.pattern.adjudicate") => {
                     self.can_review(request)
                 }
@@ -1210,6 +1255,9 @@ impl LearningBrowser {
         }
         if request["operation"] == "skill.learning.control.get" {
             return true;
+        }
+        if request["operation"] == "skill.learning.diagnostics" {
+            return self.diagnostics_request().as_ref() == Some(request);
         }
         if request["operation"] == "skill.learning.creation_retry.prepare" {
             return request["retry"]["previous_generation_id"]
@@ -1277,6 +1325,11 @@ impl LearningBrowser {
         let operation = match pending["operation"].as_str()? {
             "skill.learning.control.set" => "skill.learning.control.get",
             "skill.learning.cancel" => "skill.learning.jobs",
+            "skill.learning.extraction.retry" => {
+                return Some(learning_diagnostics::request(
+                    pending["session_id"].as_str()?,
+                ));
+            }
             // There is no current-boundary query or replay receipt. Never
             // claim that a different read proves episode.start did not run.
             _ => return None,
@@ -1304,7 +1357,10 @@ impl LearningBrowser {
         }
         if self.is_reconciliation(request) {
             self.accept_reconciliation(request, &data)?;
-            if request["operation"] == "skill.learning.jobs" {
+            if matches!(
+                request["operation"].as_str(),
+                Some("skill.learning.jobs" | "skill.learning.diagnostics")
+            ) {
                 return Ok(());
             }
         }
@@ -1312,6 +1368,14 @@ impl LearningBrowser {
             return Ok(());
         }
         match request["operation"].as_str() {
+            Some("skill.learning.diagnostics") => {
+                let session = self
+                    .session_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("请选择原生会话"))?;
+                let diagnostics = Diagnostics::read(data, session)?;
+                self.diagnostics = Some(diagnostics);
+            }
             Some("skill.learning.source.get") => {
                 if self.source_requested.as_ref() != Some(request) || !self.can_begin(request) {
                     return Ok(());
@@ -1344,6 +1408,7 @@ impl LearningBrowser {
                 control.validate(session)?;
                 if self.control.as_ref() != Some(&control) {
                     self.clear_page();
+                    self.diagnostics = None;
                 }
                 self.control = Some(control);
                 if self.scope == Scope::Workspace && !self.workspace_available() {
@@ -1437,7 +1502,20 @@ impl LearningBrowser {
         let session = pending["session_id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("原会话无效"))?;
-        let summary = if request["operation"] == "skill.learning.control.get" {
+        let summary = if request["operation"] == "skill.learning.diagnostics" {
+            let diagnostics = Diagnostics::read(data.clone(), session)?;
+            let found = diagnostics
+                .jobs
+                .into_iter()
+                .find(|j| pending["job_id"] == j.job.id)
+                .map(|j| j.job.row(session).map(|r| r.detail))
+                .transpose()?;
+            format!(
+                "原会话 {session}\n{}\n这是当前状态，不是原重试请求的回执；未找到也不代表原操作未执行。核对后再结束待确认状态，不自动重发。",
+                found
+                    .unwrap_or_else(|| "本次有界诊断未包含原作业；请在学习作业中继续核对。".into())
+            )
+        } else if request["operation"] == "skill.learning.control.get" {
             let control: Control = serde_json::from_value(data.clone())?;
             control.validate(session)?;
             format!(
@@ -1516,6 +1594,27 @@ impl LearningBrowser {
                 (
                     None,
                     "学习作业已取消。已发生用量保留，不删除已保存经验或正式技能。".to_owned(),
+                )
+            }
+            Some("skill.learning.extraction.retry") => {
+                let job: Job = serde_json::from_value(data["job"].clone())?;
+                job.clone().row(session)?;
+                anyhow::ensure!(
+                    request["job_id"] == job.id
+                        && job.kind == "experience_extract"
+                        && job.state == "queued"
+                        && request["expected_state_version"]
+                            .as_u64()
+                            .and_then(|v| v.checked_add(1))
+                            == Some(job.state_version),
+                    "提取重试回执与原作业条件不一致"
+                );
+                (
+                    None,
+                    format!(
+                        "原经验提取作业 {} 已重新排队。原尝试次数、期限及维护用量保留；没有重放原任务工具。",
+                        job.id
+                    ),
                 )
             }
             Some("skill.learning.pattern.ignore" | "skill.learning.pattern.adjudicate") => {
@@ -1618,6 +1717,7 @@ impl LearningBrowser {
         self.pending_generation = None;
         if current {
             self.clear_page();
+            self.diagnostics = None;
             if let Some(control) = control {
                 self.control = Some(control);
             }

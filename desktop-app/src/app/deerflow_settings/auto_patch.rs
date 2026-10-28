@@ -89,7 +89,11 @@ impl Readiness {
                     .needs_attention
                     .zip(self.waiting_candidates)
                     .is_none_or(|(a, w)| a <= self.pending_review && w == self.pending_review - a)
-                && self.reasons.len() <= 8,
+                && self.reasons.len() <= 8
+                && self
+                    .reasons
+                    .iter()
+                    .all(|r| bounded(r, 128) && !r.chars().any(char::is_control)),
             "维护就绪回执无效"
         );
         let state = match self.state.as_str() {
@@ -98,7 +102,7 @@ impl Readiness {
             _ => "自动采用未启用",
         };
         Ok(format!(
-            "后台状态：{state} · 目录版本 {}\n{} / {} 个安装目标具备自动补丁基础条件 · {} 个受管目标缺少可信覆盖\n当前授权来源共有 {} 个待审候选。{}{}候选仍须通过本次证据、评测、预算及版本检查。",
+            "自动采用条件：{state} · 目录版本 {}\n{} / {} 个安装目标具备自动补丁基础条件 · {} 个受管目标缺少可信覆盖\n当前授权来源共有 {} 个待审候选。{}{}候选仍须通过本次证据、评测、预算及版本检查。{}",
             self.catalog_version,
             self.eligible_targets,
             self.installed,
@@ -112,7 +116,26 @@ impl Readiness {
                 "新技能仍需确认；"
             } else {
                 ""
-            }
+            },
+            self.reasons
+                .iter()
+                .map(|code| format!(
+                    "\n{}",
+                    match code.as_str() {
+                        "automatic_publication_disabled" =>
+                            "自动采用未启用；在自动化设置中核对授权并保存应用。".to_owned(),
+                        "trusted_suite_missing" =>
+                            "缺少可信评测覆盖；为目标配置并通过评测，或在需要处理页人工审核。"
+                                .to_owned(),
+                        "some_targets_require_review" =>
+                            "部分目标仍须人工审核；在需要处理页查看具体候选。".to_owned(),
+                        "no_eligible_targets" =>
+                            "尚无符合条件的安装目标；先安装目标技能并配置可信评测，新技能仍需审核。"
+                                .to_owned(),
+                        _ => format!("服务就绪原因 {code}；请按该代码排查。"),
+                    }
+                ))
+                .collect::<String>()
         ))
     }
 }
@@ -230,22 +253,22 @@ impl AutoPatchBrowser {
                 self.needs_attention = status.readiness.as_ref().and_then(|r| r.needs_attention);
                 self.readiness_label = status.readiness.as_ref().map(|r| {
                     match r.state.as_str() {
-                        "ready" => "自动维护 · 已就绪",
-                        "partial" => "自动维护 · 部分可用",
+                        "ready" => "自动采用条件 · 已就绪",
+                        "partial" => "自动采用条件 · 部分可用",
                         _ => "自动采用未启用",
                     }
                     .to_owned()
                 });
                 self.status = Some((
                     format!(
-                        "自动发布{} · 维护任务{}",
+                        "自动发布{} · 后台执行器{}（不代表已有发布产出）",
                         if status.enabled {
                             "已启用"
                         } else {
                             "未启用"
                         },
                         if status.running {
-                            "运行中"
+                            "在线"
                         } else {
                             "未运行"
                         }

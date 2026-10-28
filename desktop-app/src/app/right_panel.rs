@@ -2165,7 +2165,10 @@ impl Waku {
             self.right_panel_pending_terminal_focus = None;
         }
         let body = match self.active_right_panel_surface().cloned() {
-            Some(RightPanelSurface::DeerFlowTasks) => self.render_deerflow_runtime(cx),
+            Some(RightPanelSurface::DeerFlowTasks) => {
+                self.sync_receipt_review_inputs(window, cx);
+                self.render_deerflow_runtime(cx)
+            }
             None => self.render_right_panel_chooser(cx).into_any_element(),
             Some(RightPanelSurface::BackgroundWork { key, .. }) => self
                 .render_background_work_surface(&key, cx)

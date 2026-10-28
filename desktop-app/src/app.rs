@@ -243,6 +243,7 @@ impl SettingsPage {
                 | Self::DeerFlowAdvanced
                 | Self::DeerFlowSkillCenter
                 | Self::Appearance
+                | Self::Daemon
         )
     }
 
@@ -1107,6 +1108,7 @@ pub struct Waku {
     daemon_origins_input: Entity<TextInput>,
     daemon_reconfigure_pending: bool,
     daemon_token_revealed: bool,
+    server_connection: server_connection::ServerConnectionUi,
     settings_focus: FocusHandle,
     onboarding_add_project_focus: FocusHandle,
     onboarding_projectless_focus: FocusHandle,
@@ -1651,14 +1653,13 @@ mod autocomplete;
 mod background_work;
 mod branches;
 mod cancel_drain;
+mod channels;
 mod command_palette;
 mod commit_dialog;
 mod components;
 mod composer;
 mod deerflow_approval;
 mod deerflow_settings;
-mod channels;
-mod schedules;
 mod deerflow_tasks;
 mod drafts;
 mod file_search;
@@ -1667,6 +1668,8 @@ mod image_preview;
 mod render;
 mod right_panel;
 mod runtime;
+mod schedules;
+mod server_connection;
 mod sessions;
 mod settings;
 mod sidebar;
@@ -2064,6 +2067,7 @@ impl Waku {
             input.set_content(daemon_origins, cx);
             input
         });
+        let server_connection = server_connection::ServerConnectionUi::new(window, cx);
         let skills_search = cx.new(|cx| {
             TextInput::new(window, cx)
                 .clear_on_escape()
@@ -2614,6 +2618,18 @@ impl Waku {
                 )
                 .detach();
             }
+            for input in [
+                &server_connection.address_input,
+                &server_connection.token_input,
+            ] {
+                cx.subscribe(input, |this: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
+                        this.server_connection.result = None;
+                        cx.notify();
+                    }
+                })
+                .detach();
+            }
             cx.subscribe(&skills_search, |_: &mut Self, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Edited) {
                     cx.notify();
@@ -2658,6 +2674,15 @@ impl Waku {
             )
             .detach();
 
+            cx.subscribe(
+                &deerflow_settings.model_metadata_search,
+                |this: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
+                        this.deerflow_model_metadata_search(cx);
+                    }
+                },
+            )
+            .detach();
             for (index, input) in deerflow_settings.inputs.iter().enumerate() {
                 cx.subscribe(input, move |this: &mut Self, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Edited) {
@@ -2829,6 +2854,7 @@ impl Waku {
                 daemon_origins_input,
                 daemon_reconfigure_pending: false,
                 daemon_token_revealed: false,
+                server_connection,
                 settings_focus,
                 onboarding_add_project_focus,
                 onboarding_projectless_focus,
@@ -3017,7 +3043,10 @@ impl Waku {
                 right_panel_browsers: HashMap::new(),
                 right_panel_pending_browser_focus: None,
                 scene_overlay_enabled,
-                settings_page: None,
+                settings_page: crate::daemon::startup_connection()
+                    .error
+                    .is_some()
+                    .then_some(SettingsPage::Daemon),
                 skills_catalog: None,
                 skills_scan_generation: 0,
                 skills_scan_pending: false,

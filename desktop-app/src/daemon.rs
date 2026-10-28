@@ -1,32 +1,69 @@
 //! Desktop ownership of the Waku daemon process.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use anyhow::{Context as _, anyhow, bail};
 
+pub mod connection;
+
+#[derive(Clone, Default)]
+pub struct StartupConnection {
+    pub settings: connection::ConnectionSettings,
+    pub error: Option<String>,
+}
+
+static STARTUP_CONNECTION: OnceLock<StartupConnection> = OnceLock::new();
+
+pub fn startup_connection() -> StartupConnection {
+    STARTUP_CONNECTION.get().cloned().unwrap_or_default()
+}
+
 pub fn start_process() -> anyhow::Result<waku_client::DaemonSupervisor> {
+    let mut startup = StartupConnection::default();
+    let saved = connection::ConnectionSettings::default_path().is_file();
+    match connection::ConnectionSettings::load() {
+        Ok(settings) => startup.settings = settings,
+        Err(error) => startup.error = Some(format!("{error:#}")),
+    }
+    // Saved UI preferences supersede the legacy environment-only launcher.
+    // This also lets Save and Restart leave an old SSH-tunnel launch behind.
     let address = std::env::var(waku_client::DAEMON_ADDRESS_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty());
     let token = std::env::var(waku_client::DAEMON_TOKEN_ENV)
         .ok()
         .filter(|value| !value.is_empty());
-    match (address, token) {
-        (Some(address), Some(token)) => {
-            return waku_client::DaemonSupervisor::connect(address.trim(), token);
+    if !saved {
+        match (address, token) {
+            (Some(address), Some(token)) => {
+                startup.settings = connection::ConnectionSettings {
+                    remote: true,
+                    address,
+                    token,
+                };
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                startup.error = Some("服务器地址和 Token 必须同时设置".into());
+            }
+            (None, None) => {}
         }
-        (Some(_), None) => bail!(
-            "{} is set but {} is missing",
-            waku_client::DAEMON_ADDRESS_ENV,
-            waku_client::DAEMON_TOKEN_ENV
-        ),
-        (None, Some(_)) => bail!(
-            "{} is set but {} is missing",
-            waku_client::DAEMON_TOKEN_ENV,
-            waku_client::DAEMON_ADDRESS_ENV
-        ),
-        (None, None) => {}
     }
+    if startup.settings.remote {
+        let remote = startup.settings.validate().and_then(|settings| {
+            waku_client::DaemonSupervisor::connect(&settings.address, settings.token)
+        });
+        match remote {
+            Ok(daemon) => {
+                let _ = STARTUP_CONNECTION.set(startup);
+                return Ok(daemon);
+            }
+            Err(error) => {
+                startup.error = Some(format!("远程连接失败，已进入本地设置以便修复：{error:#}"))
+            }
+        }
+    }
+    let _ = STARTUP_CONNECTION.set(startup);
     let app_settings = waku_client::persistence::load_or_create_app_settings()
         .context("could not load desktop daemon settings")?;
     waku_client::DaemonSupervisor::spawn_configured(
@@ -34,6 +71,24 @@ pub fn start_process() -> anyhow::Result<waku_client::DaemonSupervisor> {
         cfg!(debug_assertions),
         app_settings.daemon_exposure,
     )
+}
+
+/// Runs only on a worker. Authentication plus a settings RPC verifies that
+/// this is a compatible DeerFlow endpoint, rather than just an open TCP port.
+pub fn test_connection(settings: &connection::ConnectionSettings) -> anyhow::Result<()> {
+    let settings = settings.validate()?;
+    let client = waku_client::DaemonClient::connect(&settings.address, settings.token)?;
+    let result = client.request_with_timeout(
+        uuid::Uuid::nil(),
+        uuid::Uuid::nil(),
+        waku_client::Command::GetSettings,
+        std::time::Duration::from_secs(5),
+    );
+    client.disconnect();
+    match result? {
+        waku_client::ResponsePayload::Settings { .. } => Ok(()),
+        _ => Err(anyhow!("服务器返回了不兼容的设置响应")),
+    }
 }
 
 /// Resolve the local host name once during app construction. Settings can

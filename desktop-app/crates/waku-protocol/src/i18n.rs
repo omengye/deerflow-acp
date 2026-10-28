@@ -184,7 +184,10 @@ mod tests {
 
     #[test]
     fn translations_are_complete_and_interpolate_naturally() {
-        assert_eq!(&*rust_i18n::t!("settings.daemon", locale = "en"), "Daemon");
+        assert_eq!(
+            &*rust_i18n::t!("settings.daemon", locale = "en"),
+            "Server connection"
+        );
         assert_eq!(
             &*rust_i18n::t!("daemon.expose_title", locale = "en"),
             "Expose managed daemon"

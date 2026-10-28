@@ -387,6 +387,7 @@ pub(super) struct TaskBrowser {
     pending: Option<Command>,
     next: Option<Action>,
     queued_action: Option<Action>,
+    learning_recovery: Option<(String, Action)>,
     nodes: BTreeMap<Key, CachedNode>,
     task_index: HashMap<String, Key>,
     live_count: usize,
@@ -438,6 +439,7 @@ impl Default for TaskBrowser {
             pending: None,
             next: None,
             queued_action: None,
+            learning_recovery: None,
             nodes: BTreeMap::new(),
             task_index: HashMap::new(),
             live_count: 0,
@@ -484,6 +486,51 @@ impl Default for TaskBrowser {
 }
 
 impl TaskBrowser {
+    fn ready(&mut self, connection_id: String, session_id: String, capabilities: Capabilities) {
+        if !bounded(&connection_id, 128)
+            || !bounded(&session_id, 256)
+            || self.connection == connection_id && self.session == session_id
+        {
+            return;
+        }
+        self.receipts.clear();
+        self.transfer = None;
+        self.save_selecting = false;
+        self.artifact_page = None;
+        if self.session != session_id {
+            self.nodes.clear();
+            self.selected = None;
+            self.root_filter = None;
+            self.uncached_live = false;
+            self.uncached_detached = false;
+            self.partial_view = false;
+            self.loaded = false;
+            self.cursor.clear();
+            self.has_more = false;
+            self.rebuild();
+        }
+        self.pending = None;
+        self.queued_action = None;
+        self.next = None;
+        self.clear_detail();
+        self.stale = true;
+        self.connection = connection_id;
+        self.session = session_id;
+        self.capabilities = capabilities;
+        if self.show_receipts && self.capabilities.tool_receipts {
+            self.next = Some(receipts::list_action(None, true));
+        } else if self.capabilities.tree {
+            self.next = Some(self.list_action(None));
+        }
+        if self
+            .learning_recovery
+            .as_ref()
+            .is_some_and(|(native, _)| native != &self.session)
+        {
+            self.learning_recovery = None;
+        }
+    }
+
     pub(super) fn sync_runtime(&mut self, session: &AgentSession) -> bool {
         if self.runtime_view.sync(session) {
             self.runtime_view.rebuild_agents(&self.nodes);
@@ -504,6 +551,7 @@ impl TaskBrowser {
         self.pending = None;
         self.next = None;
         self.queued_action = None;
+        self.learning_recovery = None;
         self.stale = true;
         self.clear_detail();
         self.transfer = None;
@@ -540,6 +588,92 @@ impl TaskBrowser {
             cursor,
             limit: PAGE_SIZE,
         }
+    }
+    fn queue_learning_recovery(
+        &mut self,
+        native_session: &str,
+        run_id: Option<&str>,
+        receipts: bool,
+    ) -> bool {
+        if !bounded(native_session, 256)
+            || run_id.is_some_and(|run| !bounded(run, 256))
+            || self.learning_recovery.is_some()
+            || self.queued_action.is_some()
+            || self
+                .pending
+                .as_ref()
+                .is_some_and(|command| !matches!(command.action, Action::List { .. }))
+            || self.transfer.is_some()
+            || self.save_selecting
+        {
+            return false;
+        }
+        let action = if receipts {
+            receipts::list_action(None, true)
+        } else if let Some(run) = run_id {
+            Action::Get {
+                root_id: run.to_owned(),
+                node_id: format!("root/{run}"),
+            }
+        } else {
+            Action::List {
+                root_id: None,
+                cursor: None,
+                limit: PAGE_SIZE,
+            }
+        };
+        // A list response validates against its original filter and cursor.
+        // Keep that view unchanged until the in-flight read has completed.
+        self.learning_recovery = Some((native_session.to_owned(), action));
+        true
+    }
+    fn take_learning_recovery(&mut self) -> Option<Action> {
+        if self.connection.is_empty()
+            || self.pending.is_some()
+            || self.queued_action.is_some()
+            || self.transfer.is_some()
+            || self.save_selecting
+        {
+            return None;
+        }
+        let (native, action) = self.learning_recovery.take()?;
+        if native != self.session {
+            return None;
+        }
+        let receipts = matches!(action, Action::ReceiptList { .. });
+        if if receipts {
+            !self.capabilities.tool_receipts
+        } else {
+            !self.capabilities.tree
+        } {
+            self.error = Some("当前服务尚未提供此学习来源核对能力。".into());
+            return None;
+        }
+        self.show_management = true;
+        self.show_receipts = receipts;
+        self.clear_detail();
+        self.next = None;
+        self.refresh_needed = false;
+        if receipts {
+            return Some(action);
+        }
+        self.root_filter = match &action {
+            Action::Get { root_id, .. } => Some(root_id.clone()),
+            Action::List { .. } => None,
+            _ => return None,
+        };
+        self.drop_cached_nodes();
+        self.cursor.clear();
+        self.has_more = false;
+        self.loaded = false;
+        self.partial_view = false;
+        self.traversing = false;
+        // Establish a filtered list before selecting the historical root. The
+        // same filter then applies to polling and cannot evict that selection.
+        if matches!(action, Action::Get { .. }) {
+            self.next = Some(action);
+        }
+        Some(self.list_action(None))
     }
     fn runtime_page_action(&self) -> Option<Action> {
         (self.has_more
@@ -639,7 +773,9 @@ impl TaskBrowser {
                 .is_some_and(|command| matches!(command.action, Action::List { .. }))
     }
     fn controls_busy(&self) -> bool {
-        self.queued_action.is_some() || self.pending.is_some() && !self.refreshing()
+        self.learning_recovery.is_some()
+            || self.queued_action.is_some()
+            || self.pending.is_some() && !self.refreshing()
     }
     fn sync_status(&self) -> &'static str {
         if self.connection.is_empty() {
@@ -694,6 +830,12 @@ impl TaskBrowser {
             session_id: self.session.clone(),
             action,
         };
+        if matches!(
+            command.action,
+            Action::ReceiptList { .. } | Action::ReceiptReconcile { .. }
+        ) {
+            self.receipts.invalidate();
+        }
         self.pending = Some(command.clone());
         self.error = None;
         self.confirmation = None;
@@ -1227,36 +1369,7 @@ impl Waku {
                 session_id,
                 capabilities,
             } => {
-                if !bounded(&connection_id, 128) || !bounded(&session_id, 256) {
-                    return;
-                }
-                if browser.connection != connection_id {
-                    browser.receipts.clear();
-                    browser.transfer = None;
-                    browser.save_selecting = false;
-                    browser.artifact_page = None;
-                    if browser.session != session_id {
-                        browser.nodes.clear();
-                        browser.selected = None;
-                        browser.root_filter = None;
-                        browser.uncached_live = false;
-                        browser.uncached_detached = false;
-                        browser.partial_view = false;
-                        browser.rebuild();
-                    }
-                    browser.pending = None;
-                    browser.queued_action = None;
-                    browser.clear_detail();
-                    browser.stale = true;
-                    browser.connection = connection_id;
-                    browser.session = session_id;
-                    browser.capabilities = capabilities;
-                    if browser.show_receipts && browser.capabilities.tool_receipts {
-                        browser.next = Some(receipts::list_action(None, true));
-                    } else if browser.capabilities.tree {
-                        browser.next = Some(browser.list_action(None));
-                    }
-                }
+                browser.ready(connection_id, session_id, capabilities);
             }
             Event::Reply { command, response } => {
                 if !browser.accepts(&command) {
@@ -1269,6 +1382,7 @@ impl Waku {
                     browser.pending = None;
                     browser.queued_action = None;
                     browser.stale = true;
+                    browser.receipts.invalidate();
                     browser.clear_detail();
                     browser.error = Some(error.to_string());
                 }
@@ -1288,6 +1402,7 @@ impl Waku {
                     transfer.fail(message.clone());
                 }
                 browser.stale = true;
+                browser.receipts.invalidate();
                 browser.clear_detail();
                 if matches!(command.action, Action::ReceiptReconcile { .. }) {
                     browser.receipts.clear();
@@ -1325,6 +1440,20 @@ impl Waku {
             );
         let mut requests = vec![];
         for (session, browser) in &mut self.deerflow_tasks {
+            if browser
+                .learning_recovery
+                .as_ref()
+                .is_some_and(|(native, _)| {
+                    !self.state.sessions.iter().any(|candidate| {
+                        candidate.id == *session
+                            && candidate.provider == ProviderKind::DeerFlow
+                            && matches!(&candidate.provider_cursor,
+                        Some(ProviderResumeCursor::DeerFlow { session_id }) if session_id == native)
+                    })
+                })
+            {
+                browser.learning_recovery = None;
+            }
             if browser.pending.is_some()
                 || browser.connection.is_empty()
                 || browser.transfer.is_some() && browser.queued_action.is_none()
@@ -1336,8 +1465,10 @@ impl Waku {
             let reviewing = browser.show_receipts
                 || browser.confirmation.is_some()
                 || !browser.previews.is_empty()
-                || browser.show_management && browser.receipts.review.is_some();
-            if let Some(action) = browser.queued_action.take() {
+                || browser.show_management && !browser.receipts.reviews.is_empty();
+            if let Some(action) = browser.take_learning_recovery() {
+                requests.push((*session, action));
+            } else if let Some(action) = browser.queued_action.take() {
                 requests.push((*session, action));
             } else if let Some(action) = browser.next.take() {
                 requests.push((*session, action));
@@ -1398,6 +1529,38 @@ impl Waku {
         if has_cursor && !self.runtimes.contains_key(&id) {
             self.start_goal_runtime(id, cx);
         }
+    }
+
+    pub(super) fn open_deerflow_learning_recovery(
+        &mut self,
+        native_session: &str,
+        run_id: Option<&str>,
+        receipts: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.selected_session().filter(|session| {
+            session.provider == ProviderKind::DeerFlow
+                && matches!(&session.provider_cursor,
+                    Some(ProviderResumeCursor::DeerFlow { session_id }) if session_id == native_session)
+        }) else {
+            return;
+        };
+        let id = session.id;
+        let browser = self.deerflow_tasks.entry(id).or_default();
+        if !browser.queue_learning_recovery(native_session, run_id, receipts) {
+            self.show_toast("任务操作仍在处理中，完成后可打开学习来源任务。");
+            cx.notify();
+            return;
+        }
+        let connected = !browser.connection.is_empty() && browser.session == native_session;
+        self.settings_page = None;
+        self.open_right_panel_surface(RightPanelSurface::DeerFlowTasks, cx);
+        if connected {
+            self.maybe_refresh_deerflow_tasks(cx);
+        } else if !self.runtimes.contains_key(&id) {
+            self.start_goal_runtime(id, cx);
+        }
+        cx.notify();
     }
     pub(super) fn render_deerflow_task_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let session = self
@@ -2245,6 +2408,131 @@ mod tests {
     pub(super) fn load(browser: &mut TaskBrowser, nodes: Vec<Node>) {
         let command = browser.begin(browser.list_action(None)).unwrap();
         browser.accept(&command, page(nodes, "")).unwrap();
+    }
+    #[test]
+    fn learning_recovery_waits_for_list_then_pins_historical_root_through_polling() {
+        let mut b = browser();
+        b.root_filter = Some("run".into());
+        let current = node("root/run", "", "root", 0);
+        load(&mut b, vec![current.clone()]);
+        let poll = b.begin(b.list_action(None)).unwrap();
+        assert!(b.queue_learning_recovery("session", Some("older"), false));
+        assert!(b.take_learning_recovery().is_none());
+        assert_eq!(b.root_filter.as_deref(), Some("run"));
+        assert!(b.accepts(&poll));
+        b.accept(&poll, page(vec![current], "")).unwrap();
+
+        let first = b.take_learning_recovery().unwrap();
+        assert_eq!(
+            first,
+            Action::List {
+                root_id: Some("older".into()),
+                cursor: None,
+                limit: PAGE_SIZE
+            }
+        );
+        assert_eq!(b.root_filter.as_deref(), Some("older"));
+        assert!(!b.loaded);
+        assert!(!b.has_more);
+        assert!(b.cursor.is_empty());
+        let mut old = node("root/older", "", "root", 0);
+        old.root_id = "older".into();
+        let command = b.begin(first).unwrap();
+        b.accept(&command, page(vec![old.clone()], "")).unwrap();
+        assert!(b.loaded);
+        let get = b.next.take().unwrap();
+        assert_eq!(
+            get,
+            Action::Get {
+                root_id: "older".into(),
+                node_id: "root/older".into()
+            }
+        );
+        let command = b.begin(get).unwrap();
+        b.accept(&command, Response::Node(old.clone())).unwrap();
+        for _ in 0..2 {
+            let command = b.begin(b.list_action(None)).unwrap();
+            assert!(
+                matches!(&command.action, Action::List { root_id: Some(root), .. } if root == "older")
+            );
+            b.accept(&command, page(vec![old.clone()], "")).unwrap();
+            assert_eq!(b.selected, Some(key(&old)));
+            assert!(b.loaded && !b.stale);
+        }
+    }
+
+    #[test]
+    fn learning_recovery_survives_initial_load_and_matching_ready_only() {
+        let mut b = browser();
+        let initial = b.begin(b.list_action(None)).unwrap();
+        assert!(b.queue_learning_recovery("session", Some("run"), false));
+        assert!(b.take_learning_recovery().is_none());
+        b.accept(&initial, page(vec![], "")).unwrap();
+        assert!(b.take_learning_recovery().is_some());
+
+        let mut b = TaskBrowser::default();
+        assert!(b.queue_learning_recovery("session", Some("run"), false));
+        assert!(b.take_learning_recovery().is_none());
+        b.ready("connected".into(), "session".into(), browser().capabilities);
+        assert!(b.learning_recovery.is_some());
+        assert!(
+            matches!(b.take_learning_recovery(), Some(Action::List { root_id: Some(root), .. }) if root == "run")
+        );
+        assert!(matches!(b.next, Some(Action::Get { .. })));
+
+        let mut b = TaskBrowser::default();
+        assert!(b.queue_learning_recovery("session", Some("run"), false));
+        b.ready(
+            "connected".into(),
+            "other-session".into(),
+            browser().capabilities,
+        );
+        assert!(b.learning_recovery.is_none());
+        assert!(b.take_learning_recovery().is_none());
+        assert!(b.root_filter.is_none());
+        assert!(matches!(b.next, Some(Action::List { root_id: None, .. })));
+    }
+
+    #[test]
+    fn learning_recovery_cannot_replace_pending_or_queued_mutations() {
+        let mut b = browser();
+        load(&mut b, vec![node("root/run", "", "root", 0)]);
+        let mutation = Action::ExecutionResume {
+            run_id: "run".into(),
+            expected_version: 4,
+        };
+        let command = b.begin(mutation.clone()).unwrap();
+        assert!(!b.queue_learning_recovery("session", Some("older"), false));
+        assert!(b.accepts(&command));
+        assert!(b.learning_recovery.is_none());
+        b.pending = None;
+        let poll = b.begin(b.list_action(None)).unwrap();
+        assert!(b.begin(mutation.clone()).is_none());
+        assert!(!b.queue_learning_recovery("session", Some("older"), false));
+        assert_eq!(b.queued_action.as_ref(), Some(&mutation));
+        assert!(b.accepts(&poll));
+        assert!(b.root_filter.is_none());
+    }
+
+    #[test]
+    fn learning_recovery_receipt_navigation_is_read_only_and_keeps_tree_filter() {
+        let mut b = browser();
+        b.capabilities.tool_receipts = true;
+        b.root_filter = Some("run".into());
+        load(&mut b, vec![node("root/run", "", "root", 0)]);
+        let poll = b.begin(b.list_action(None)).unwrap();
+        assert!(b.queue_learning_recovery("session", Some("older"), true));
+        assert!(b.take_learning_recovery().is_none());
+        b.accept(&poll, page(vec![node("root/run", "", "root", 0)], ""))
+            .unwrap();
+        assert_eq!(
+            b.take_learning_recovery(),
+            Some(receipts::list_action(None, true))
+        );
+        assert!(b.show_management && b.show_receipts);
+        assert_eq!(b.root_filter.as_deref(), Some("run"));
+        assert!(b.next.is_none());
+        assert!(b.pending.is_none());
     }
     fn background() -> BackgroundDetail {
         serde_json::from_value(json!({"id":"task","sessionId":"session","rootSessionId":"session","childSessionId":"child","status":"waiting_input","version":4,

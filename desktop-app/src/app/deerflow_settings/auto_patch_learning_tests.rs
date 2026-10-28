@@ -1,6 +1,26 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn auto_patch_readiness_explains_actionable_and_unknown_reasons() {
+    let readiness = json!({"state":"partial","catalog_version":1,"policy_identity":"a".repeat(64),
+        "installed":2,"eligible_targets":1,"missing_suite":1,"pending_review":0,
+        "new_skills_require_review":true,"reasons":["trusted_suite_missing","no_eligible_targets","future_reason"]});
+    let parsed: Readiness = serde_json::from_value(readiness.clone()).unwrap();
+    let summary = parsed.summary().unwrap();
+    assert!(summary.contains("缺少可信评测覆盖"));
+    assert!(summary.contains("先安装目标技能"));
+    assert!(summary.contains("future_reason"));
+    let mut invalid = readiness;
+    invalid["reasons"] = json!(["bad\nreason"]);
+    assert!(
+        serde_json::from_value::<Readiness>(invalid)
+            .unwrap()
+            .summary()
+            .is_err()
+    );
+}
+
 fn options() -> Value {
     json!({"experience_patterns_enabled":true, "max_changed_lines":40, "max_daily_publications":2,
         "observation_hours":72, "min_observations":3, "rollback_failure_threshold":2})

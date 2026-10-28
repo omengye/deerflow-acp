@@ -20,16 +20,33 @@ pub(super) fn list_action(cursor: Option<String>, uncertain_only: bool) -> Actio
 
 struct CachedReceipt {
     receipt: ToolReceipt,
+    target: ReviewTarget,
     evidence: SharedString,
     summary: SharedString,
     guidance: &'static str,
 }
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReviewTarget {
+    session_id: String,
+    run_id: String,
+    tool_call_id: String,
+    expected_version: u64,
+}
+impl From<&ToolReceipt> for ReviewTarget {
+    fn from(receipt: &ToolReceipt) -> Self {
+        Self {
+            session_id: receipt.session_id.clone(),
+            run_id: receipt.run_id.clone(),
+            tool_call_id: receipt.tool_call_id.clone(),
+            expected_version: receipt.version,
+        }
+    }
+}
 pub(super) struct ReviewInputs {
-    index: usize,
+    target: ReviewTarget,
     reviewer: Entity<TextInput>,
     note: Entity<TextInput>,
     evidence: Entity<TextInput>,
-    confirmation: Option<ReceiptReconciliation>,
     show_evidence: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -39,7 +56,14 @@ pub(super) struct ReceiptBrowser {
     page: Option<ReceiptPage>,
     rows: Vec<CachedReceipt>,
     uncertain_only: bool,
-    pub(super) review: Option<ReviewInputs>,
+    fresh: bool,
+    pub(super) reviews: Vec<ReviewInputs>,
+}
+
+fn valid_review_fields(reviewer: &str, note: &str) -> bool {
+    let reviewer = reviewer.trim();
+    let note = note.trim();
+    !reviewer.is_empty() && reviewer.len() <= 256 && !note.is_empty() && note.len() <= 16384
 }
 
 fn receipt_summary(receipt: &ToolReceipt) -> String {
@@ -104,6 +128,23 @@ fn receipt_guidance(tool: &str) -> &'static str {
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
+
+    fn page(receipts: Vec<ToolReceipt>) -> ReceiptPage {
+        ReceiptPage {
+            receipts,
+            next_cursor: String::new(),
+            has_more: false,
+            consistency: "live_keyset".into(),
+        }
+    }
+
+    fn loaded() -> ReceiptBrowser {
+        let mut browser = ReceiptBrowser::default();
+        browser
+            .accept_page("session", None, 4, true, page(vec![receipt()]))
+            .unwrap();
+        browser
+    }
 
     fn receipt() -> ToolReceipt {
         serde_json::from_value(serde_json::json!({
@@ -173,6 +214,200 @@ mod recovery_tests {
             "missing data is not an empty successful query"
         );
     }
+
+    #[test]
+    fn receipt_review_builds_one_exact_submission_for_either_outcome() {
+        let browser = loaded();
+        let target = ReviewTarget::from(&receipt());
+        for outcome in [ReceiptOutcome::Completed, ReceiptOutcome::NoEffect] {
+            let action = browser
+                .review_action(
+                    "session",
+                    &target,
+                    outcome.clone(),
+                    " local-user ",
+                    " Checked the actual file. \n",
+                )
+                .unwrap();
+            let Action::ReceiptReconcile { review } = action else {
+                panic!("a result choice must submit only a receipt review");
+            };
+            assert_eq!(review.run_id, "run");
+            assert_eq!(review.tool_call_id, "call");
+            assert_eq!(review.expected_version, 3);
+            assert_eq!(review.outcome, outcome);
+            assert_eq!(review.reviewer, "local-user");
+            assert_eq!(review.note, "Checked the actual file.");
+        }
+    }
+
+    #[test]
+    fn receipt_review_requires_real_bounded_fields() {
+        let browser = loaded();
+        let target = ReviewTarget::from(&receipt());
+        for (reviewer, note) in [
+            ("", "Checked the file"),
+            (" \n", "Checked the file"),
+            ("local-user", ""),
+            ("local-user", " \t\n"),
+            (&"r".repeat(257), "Checked the file"),
+            ("local-user", &"n".repeat(16385)),
+            ("local-user", &"核".repeat(5462)),
+        ] {
+            assert!(
+                browser
+                    .review_action(
+                        "session",
+                        &target,
+                        ReceiptOutcome::Completed,
+                        reviewer,
+                        note
+                    )
+                    .is_err()
+            );
+        }
+        assert!(valid_review_fields(&"r".repeat(256), &"n".repeat(16384)));
+    }
+
+    #[test]
+    fn receipt_review_rejects_foreign_replaced_terminal_and_stale_targets() {
+        let mut browser = loaded();
+        let target = ReviewTarget::from(&receipt());
+        let review = |browser: &ReceiptBrowser, session: &str, target: &ReviewTarget| {
+            browser.review_action(
+                session,
+                target,
+                ReceiptOutcome::NoEffect,
+                "local-user",
+                "Checked the original target",
+            )
+        };
+        assert!(review(&browser, "other-session", &target).is_err());
+        for wrong in [
+            ReviewTarget {
+                session_id: "other-session".into(),
+                ..target.clone()
+            },
+            ReviewTarget {
+                run_id: "other-run".into(),
+                ..target.clone()
+            },
+            ReviewTarget {
+                tool_call_id: "other-call".into(),
+                ..target.clone()
+            },
+            ReviewTarget {
+                expected_version: 4,
+                ..target.clone()
+            },
+        ] {
+            assert!(review(&browser, "session", &wrong).is_err());
+        }
+        browser.invalidate();
+        assert!(review(&browser, "session", &target).is_err());
+        let mut updated = receipt();
+        updated.version += 1;
+        browser
+            .accept_page("session", None, 4, true, page(vec![updated]))
+            .unwrap();
+        assert!(review(&browser, "session", &target).is_err());
+        let mut terminal = receipt();
+        terminal.state = "completed".into();
+        browser
+            .accept_page("session", None, 4, false, page(vec![terminal]))
+            .unwrap();
+        assert!(review(&browser, "session", &target).is_err());
+        browser.clear();
+        assert!(review(&browser, "session", &target).is_err());
+    }
+
+    #[test]
+    fn receipt_review_disables_duplicates_and_only_queries_after_saving() {
+        let mut browser = super::super::tests::browser();
+        browser.capabilities.tool_receipts = true;
+        browser.receipts = loaded();
+        browser.recovery_required = true;
+        let target = ReviewTarget::from(&receipt());
+        let Action::ReceiptReconcile { review } = browser
+            .receipts
+            .review_action(
+                "session",
+                &target,
+                ReceiptOutcome::NoEffect,
+                "local-user",
+                "Checked original target",
+            )
+            .unwrap()
+        else {
+            panic!("expected review")
+        };
+        assert!(browser.receipt_review_available());
+        let command = browser
+            .begin(Action::ReceiptReconcile {
+                review: review.clone(),
+            })
+            .unwrap();
+        assert!(!browser.receipt_review_available());
+        assert!(browser.begin(command.action.clone()).is_none());
+        let mut reviewed = receipt();
+        reviewed.state = "no_effect".into();
+        reviewed.version += 1;
+        reviewed.review = Some(serde_json::json!({
+            "reviewer": review.reviewer, "note": review.note, "outcome": "no_effect"
+        }));
+        browser
+            .accept(&command, Response::Reconciled { receipt: reviewed })
+            .unwrap();
+        assert!(browser.recovery_required);
+        assert!(!browser.receipt_review_available());
+        assert_eq!(browser.next, Some(list_action(None, true)));
+        let command = browser.begin(browser.next.clone().unwrap()).unwrap();
+        browser
+            .accept(&command, Response::Receipts(page(vec![])))
+            .unwrap();
+        assert!(!browser.recovery_required);
+        assert!(browser.receipts.is_empty());
+        assert!(
+            browser.next.is_none(),
+            "saving must never resume or retry tools"
+        );
+    }
+
+    #[test]
+    fn receipt_review_requires_connection_capability_and_no_queued_work() {
+        let mut browser = super::super::tests::browser();
+        browser.receipts = loaded();
+        assert!(!browser.receipt_review_available());
+        browser.capabilities.tool_receipts = true;
+        assert!(browser.receipt_review_available());
+        browser.next = Some(list_action(None, true));
+        assert!(!browser.receipt_review_available());
+        browser.next = None;
+        browser.queued_action = Some(list_action(None, true));
+        assert!(!browser.receipt_review_available());
+        browser.queued_action = None;
+        browser.save_selecting = true;
+        assert!(!browser.receipt_review_available());
+        browser.save_selecting = false;
+        browser.connection.clear();
+        assert!(!browser.receipt_review_available());
+    }
+
+    #[test]
+    fn receipt_review_ui_has_inline_steps_without_entry_or_second_confirmation() {
+        let source = include_str!("receipts.rs");
+        let implementation = source.rsplit_once("impl Waku {").unwrap().1;
+        assert!(!implementation.contains("open_receipt_review"));
+        assert!(!implementation.contains("prepare_receipt_review"));
+        assert!(!implementation.contains("inputs.confirmation"));
+        assert!(implementation.contains("1. 检查并填写说明"));
+        assert!(implementation.contains("2. 选择实际结果并保存"));
+        assert!(implementation.contains("this.submit_receipt_review("));
+        assert!(
+            include_str!("../right_panel.rs")
+                .contains("self.sync_receipt_review_inputs(window, cx)")
+        );
+    }
 }
 
 fn validate(receipt: &ToolReceipt, session: &str) -> anyhow::Result<SharedString> {
@@ -204,6 +439,43 @@ fn validate(receipt: &ToolReceipt, session: &str) -> anyhow::Result<SharedString
 }
 
 impl ReceiptBrowser {
+    pub(super) fn invalidate(&mut self) {
+        self.fresh = false;
+    }
+
+    fn review_action(
+        &self,
+        session: &str,
+        target: &ReviewTarget,
+        outcome: ReceiptOutcome,
+        reviewer: &str,
+        note: &str,
+    ) -> anyhow::Result<Action> {
+        anyhow::ensure!(
+            self.fresh
+                && target.session_id == session
+                && self
+                    .rows
+                    .iter()
+                    .any(|row| row.target == *target && row.receipt.state == "uncertain"),
+            "操作记录已变化，请刷新后重新核对。"
+        );
+        anyhow::ensure!(
+            valid_review_fields(reviewer, note),
+            "请填写核对人（最多 256 字节）和实际核实说明（最多 16KB）。"
+        );
+        Ok(Action::ReceiptReconcile {
+            review: ReceiptReconciliation {
+                run_id: target.run_id.clone(),
+                tool_call_id: target.tool_call_id.clone(),
+                expected_version: target.expected_version,
+                outcome,
+                reviewer: reviewer.trim().to_owned(),
+                note: note.trim().to_owned(),
+            },
+        })
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.page
             .as_ref()
@@ -253,6 +525,7 @@ impl ReceiptBrowser {
             );
             rows.push(CachedReceipt {
                 receipt: receipt.clone(),
+                target: ReviewTarget::from(receipt),
                 evidence: validate(receipt, session)?,
                 summary: receipt_summary(receipt).into(),
                 guidance: receipt_guidance(&receipt.tool_name),
@@ -262,7 +535,12 @@ impl ReceiptBrowser {
         self.rows = rows; // Keep one page, so arbitrarily long sessions stay bounded.
         self.uncertain_only = uncertain_only;
         self.page = Some(page);
-        self.review = None;
+        self.fresh = true;
+        self.reviews.retain(|inputs| {
+            self.rows
+                .iter()
+                .any(|row| row.receipt.state == "uncertain" && row.target == inputs.target)
+        });
         Ok(())
     }
     pub(super) fn accept_review(
@@ -289,8 +567,29 @@ impl ReceiptBrowser {
                         && r["outcome"] == outcome),
             "核对响应与提交的证据不一致"
         );
-        self.clear();
+        // Keep other drafts only for the exact receipt/version. A fresh query
+        // must establish both the next form and whether recovery is complete.
+        self.reviews.retain(|inputs| {
+            inputs.target.run_id != review.run_id
+                || inputs.target.tool_call_id != review.tool_call_id
+        });
+        self.rows.clear();
+        self.page = None;
+        self.fresh = false;
         Ok(())
+    }
+}
+
+impl TaskBrowser {
+    fn receipt_review_available(&self) -> bool {
+        !self.connection.is_empty()
+            && self.capabilities.tool_receipts
+            && self.receipts.fresh
+            && self.pending.is_none()
+            && self.queued_action.is_none()
+            && self.next.is_none()
+            && self.transfer.is_none()
+            && !self.save_selecting
     }
 }
 
@@ -359,90 +658,105 @@ impl Waku {
         panel.into_any_element()
     }
 
-    fn open_receipt_review(
+    pub(in crate::app) fn sync_receipt_review_inputs(
         &mut self,
-        session: Uuid,
-        index: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(session) = self.state.selected_session else {
+            return;
+        };
         let Some(browser) = self.deerflow_tasks.get(&session) else {
             return;
         };
-        if browser.pending.is_some()
-            || browser.connection.is_empty()
-            || browser
-                .receipts
-                .rows
-                .get(index)
-                .is_none_or(|r| r.receipt.state != "uncertain")
-        {
+        if !browser.show_receipts || !browser.receipt_review_available() {
             return;
         }
-        let reviewer = cx.new(|cx| TextInput::new(window, cx).placeholder("核对人"));
-        reviewer.update(cx, |input, cx| input.set_content("local-user", cx));
-        let note = cx.new(|cx| {
-            TextInput::new(window, cx)
-                .multi_line()
-                .placeholder("填写实际检查的位置、观察到的结果及判断依据")
-        });
-        let evidence = cx.new(|cx| TextInput::new(window, cx).multi_line().read_only(true));
-        evidence.update(cx, |input, cx| {
-            input.set_content(browser.receipts.rows[index].evidence.clone(), cx)
-        });
-        let subscriptions = vec![
-            cx.observe(&reviewer, |_, _, cx| cx.notify()),
-            cx.observe(&note, |_, _, cx| cx.notify()),
-        ];
-        window.focus(&note.read(cx).focus(), cx);
-        self.deerflow_tasks
-            .get_mut(&session)
-            .unwrap()
+        // At most one bounded page of inputs is created, never per frame or
+        // with a focus change that would interrupt typing in the conversation.
+        let missing: Vec<_> = browser
             .receipts
-            .review = Some(ReviewInputs {
-            index,
-            reviewer,
-            note,
-            evidence,
-            confirmation: None,
-            show_evidence: false,
-            _subscriptions: subscriptions,
-        });
-        cx.notify();
+            .rows
+            .iter()
+            .filter(|row| {
+                row.receipt.state == "uncertain"
+                    && !browser
+                        .receipts
+                        .reviews
+                        .iter()
+                        .any(|inputs| inputs.target == row.target)
+            })
+            .map(|row| (row.target.clone(), row.evidence.clone()))
+            .collect();
+        for (target, text) in missing {
+            let reviewer = cx.new(|cx| TextInput::new(window, cx).placeholder("核对人"));
+            reviewer.update(cx, |input, cx| input.set_content("local-user", cx));
+            let note = cx.new(|cx| {
+                TextInput::new(window, cx)
+                    .multi_line()
+                    .placeholder("填写实际检查的位置、观察到的结果及判断依据")
+            });
+            let evidence = cx.new(|cx| TextInput::new(window, cx).multi_line().read_only(true));
+            evidence.update(cx, |input, cx| input.set_content(text, cx));
+            let subscriptions = vec![
+                cx.observe(&reviewer, |_, _, cx| cx.notify()),
+                cx.observe(&note, |_, _, cx| cx.notify()),
+            ];
+            self.deerflow_tasks
+                .get_mut(&session)
+                .unwrap()
+                .receipts
+                .reviews
+                .push(ReviewInputs {
+                    target,
+                    reviewer,
+                    note,
+                    evidence,
+                    show_evidence: false,
+                    _subscriptions: subscriptions,
+                });
+        }
     }
 
-    fn prepare_receipt_review(
+    fn submit_receipt_review(
         &mut self,
         session: Uuid,
+        target: &ReviewTarget,
+        expected_note: &Entity<TextInput>,
         outcome: ReceiptOutcome,
         cx: &mut Context<Self>,
     ) {
-        let Some(browser) = self.deerflow_tasks.get_mut(&session) else {
+        if self.state.selected_session != Some(session) {
             return;
-        };
-        let Some(inputs) = browser.receipts.review.as_mut() else {
-            return;
-        };
-        let Some(row) = browser.receipts.rows.get(inputs.index) else {
-            return;
-        };
-        let reviewer = inputs.reviewer.read(cx).content().trim().to_owned();
-        let note = inputs.note.read(cx).content().trim().to_owned();
-        if reviewer.is_empty() || reviewer.len() > 256 || note.is_empty() || note.len() > 16384 {
-            browser.error =
-                Some("请填写核对人（最多 256 字节）和实际核实说明（最多 16KB）。".into());
-        } else {
-            inputs.confirmation = Some(ReceiptReconciliation {
-                run_id: row.receipt.run_id.clone(),
-                tool_call_id: row.receipt.tool_call_id.clone(),
-                expected_version: row.receipt.version,
-                outcome,
-                reviewer,
-                note,
-            });
-            browser.error = None;
         }
-        cx.notify();
+        let Some(browser) = self.deerflow_tasks.get(&session) else {
+            return;
+        };
+        if !browser.show_receipts || !browser.receipt_review_available() {
+            return;
+        }
+        let Some(inputs) = browser
+            .receipts
+            .reviews
+            .iter()
+            .find(|inputs| inputs.target == *target && inputs.note == *expected_note)
+        else {
+            return;
+        };
+        let action = browser.receipts.review_action(
+            &browser.session,
+            target,
+            outcome,
+            inputs.reviewer.read(cx).content(),
+            inputs.note.read(cx).content(),
+        );
+        match action {
+            Ok(action) => self.request_deerflow_task(session, action, cx),
+            Err(error) => {
+                self.deerflow_tasks.get_mut(&session).unwrap().error = Some(error.to_string());
+                cx.notify();
+            }
+        }
     }
 
     pub(super) fn render_deerflow_receipts(
@@ -452,14 +766,16 @@ impl Waku {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = Theme::current(cx);
-        let disabled = browser.pending.is_some()
+        let disabled = browser.controls_busy()
+            || browser.next.is_some()
             || browser.transfer.is_some()
+            || browser.save_selecting
             || browser.connection.is_empty()
             || !browser.capabilities.tool_receipts;
         let mut panel = div().id("df-tool-receipts").tab_group().flex().flex_col().gap(px(8.0))
             .child(task_text("确认工具结果", theme))
             .child(task_text("上一次操作出错或中断后，可能已经产生了效果。为避免重复操作，需要先确认实际结果。", theme))
-            .child(task_text("1. 查看下方操作及原因。\n2. 检查对应文件、应用或网站，再填写你看到的结果。\n3. 确认完成后，重新发送消息继续。这里不会重试任何工具。", theme))
+            .child(task_text("每项只需两步：检查并填写说明 → 选择实际结果并保存。全部核对完成后，重新发送消息继续；这里不会重试任何工具。", theme))
             .child(div().flex().flex_wrap().gap(px(6.0))
                 .child(task_button("df-receipts-load", "刷新待确认操作", disabled, cx, move |this, _, cx| this.request_deerflow_task(session, list_action(None, true), cx)))
                 .child(task_button("df-receipts-all", "查看全部操作记录", disabled, cx, move |this, _, cx| this.request_deerflow_task(session, list_action(None, false), cx))));
@@ -485,7 +801,7 @@ impl Waku {
                         } else if browser.recovery_required {
                             "本页没有更多操作。请点击「刷新待确认操作」检查是否还有未处理的项目。"
                         } else {
-                            "没有待确认的操作。你可以回到输入框，重新发送消息继续；不会自动重发之前的消息，也不会修复文件权限等原始问题。"
+                            "已全部核对，没有待确认的操作。你可以回到输入框，重新发送消息继续；不会自动重发之前的消息，也不会修复文件权限等原始问题。"
                         }
                     } else {
                         "当前没有操作记录。"
@@ -496,30 +812,39 @@ impl Waku {
             for (index, row) in browser.receipts.rows.iter().enumerate() {
                 let evidence = row.evidence.clone();
                 let mut item = div()
+                    .flex_none()
                     .flex()
                     .flex_col()
-                    .gap(px(4.0))
-                    .child(task_text(row.summary.clone(), theme))
-                    .child(task_button(
-                        SharedString::from(format!("df-receipt-copy-{index}")),
-                        "复制技术详情",
-                        false,
-                        cx,
-                        move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(evidence.to_string()))
-                        },
-                    ));
+                    .gap(px(8.0))
+                    .p(px(10.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.raised)
+                    .child(task_text(row.summary.clone(), theme).text_color(theme.text));
                 if row.receipt.state == "uncertain" {
-                    item = item.child(task_button(
-                        SharedString::from(format!("df-receipt-review-{index}")),
-                        "检查并确认结果…",
-                        disabled,
-                        cx,
-                        move |this, window, cx| {
-                            this.open_receipt_review(session, index, window, cx)
-                        },
-                    ));
+                    if let Some(inputs) = browser
+                        .receipts
+                        .reviews
+                        .iter()
+                        .find(|inputs| inputs.target == row.target)
+                    {
+                        item = item.child(
+                            self.render_receipt_review(session, index, row, inputs, browser, cx),
+                        );
+                    } else {
+                        item = item.child(task_text("正在准备核对表单…", theme));
+                    }
                 }
+                item = item.child(task_button(
+                    SharedString::from(format!("df-receipt-copy-{index}")),
+                    "复制技术详情",
+                    false,
+                    cx,
+                    move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(evidence.to_string()))
+                    },
+                ));
                 panel = panel.child(item);
             }
             if page.has_more {
@@ -536,129 +861,143 @@ impl Waku {
                 ));
             }
         }
-        if let Some(inputs) = &browser.receipts.review {
-            if let Some(row) = browser.receipts.rows.get(inputs.index) {
-                panel = panel
-                    .child(task_text(row.summary.clone(), theme))
-                    .child(task_text(row.guidance, theme))
-                    .child(task_text("已完成：实际结果符合预期。\n完全没有变化：已核实该操作没有产生任何效果。\n只完成一部分或无法判断：暂时不要提交，保留暂停状态。确认不会修复权限或重新执行操作。", theme))
-                    .child(task_button("df-receipt-toggle-details", if inputs.show_evidence { "收起技术详情" } else { "展开技术详情（错误与执行证据）" }, false, cx, move |this, _, cx| {
-                        if let Some(review) = this.deerflow_tasks.get_mut(&session).and_then(|b| b.receipts.review.as_mut()) {
-                            review.show_evidence = !review.show_evidence;
-                        }
-                        cx.notify();
-                    }));
-                if inputs.show_evidence {
-                    panel = panel.child(
-                        div()
-                            .id("df-receipt-evidence")
-                            .h(px(180.0))
-                            .overflow_y_scroll()
-                            .p(px(8.0))
-                            .border_1()
-                            .border_color(theme.border)
-                            .child(inputs.evidence.clone()),
-                    );
-                }
-                panel = panel
-                    .child(task_text("核对人", theme))
-                    .child(TextField::new(
-                        "df-receipt-reviewer",
-                        inputs.reviewer.clone(),
-                    ))
-                    .child(task_text(
-                        "你检查了哪里、看到了什么？（必填，不要填写密码或密钥）",
-                        theme,
-                    ))
-                    .child(
-                        div()
-                            .id("df-receipt-note")
-                            .h(px(100.0))
-                            .overflow_y_scroll()
-                            .p(px(8.0))
-                            .border_1()
-                            .border_color(theme.border)
-                            .child(inputs.note.clone()),
-                    );
-                if let Some(review) = &inputs.confirmation {
-                    let action = Action::ReceiptReconcile {
-                        review: review.clone(),
-                    };
-                    panel = panel
-                        .child(task_text(
-                            format!(
-                                "即将记录：{}\n核对人：{}\n依据：{}",
-                                match review.outcome {
-                                    ReceiptOutcome::Completed => "已确认完成",
-                                    ReceiptOutcome::NoEffect => "已确认未产生效果",
-                                },
-                                review.reviewer,
-                                review.note
-                            ),
-                            theme,
-                        ))
-                        .child(task_button(
-                            "df-receipt-submit",
-                            "确认保存结果（不会重试操作）",
-                            disabled,
-                            cx,
-                            move |this, _, cx| {
-                                this.request_deerflow_task(session, action.clone(), cx)
-                            },
-                        ))
-                        .child(task_button(
-                            "df-receipt-edit",
-                            "返回编辑",
-                            disabled,
-                            cx,
-                            move |this, _, cx| {
-                                if let Some(inputs) = this
-                                    .deerflow_tasks
-                                    .get_mut(&session)
-                                    .and_then(|b| b.receipts.review.as_mut())
-                                {
-                                    inputs.confirmation = None;
-                                }
-                                cx.notify();
-                            },
-                        ));
-                } else {
-                    panel = panel
-                        .child(task_button(
-                            "df-receipt-completed",
-                            "我已检查，操作已完成…",
-                            disabled,
-                            cx,
-                            move |this, _, cx| {
-                                this.prepare_receipt_review(session, ReceiptOutcome::Completed, cx)
-                            },
-                        ))
-                        .child(task_button(
-                            "df-receipt-no-effect",
-                            "我已检查，完全没有变化…",
-                            disabled,
-                            cx,
-                            move |this, _, cx| {
-                                this.prepare_receipt_review(session, ReceiptOutcome::NoEffect, cx)
-                            },
-                        ));
-                }
-                panel = panel.child(task_button(
-                    "df-receipt-cancel",
-                    "暂时无法确认，保持暂停",
-                    disabled,
-                    cx,
-                    move |this, _, cx| {
-                        this.deerflow_tasks
-                            .get_mut(&session)
-                            .unwrap()
-                            .receipts
-                            .review = None;
-                        cx.notify();
-                    },
-                ));
-            }
-        }
         panel.into_any_element()
+    }
+
+    fn render_receipt_review(
+        &self,
+        session: Uuid,
+        index: usize,
+        row: &CachedReceipt,
+        inputs: &ReviewInputs,
+        browser: &TaskBrowser,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let theme = Theme::current(cx);
+        let disabled = !browser.receipt_review_available();
+        let fields_valid = valid_review_fields(
+            inputs.reviewer.read(cx).content(),
+            inputs.note.read(cx).content(),
+        );
+        let target = inputs.target.clone();
+        let expected_note = inputs.note.clone();
+        let mut form = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(
+                task_text("1. 检查并填写说明", theme)
+                    .text_color(theme.text)
+                    .font_weight(FontWeight::SEMIBOLD),
+            )
+            .child(task_text(row.guidance, theme))
+            .child(task_text(
+                "你检查了哪里、看到了什么？（必填，最多 16KB，不要填写密码或密钥）",
+                theme,
+            ))
+            .child(
+                div()
+                    .id(SharedString::from(format!("df-receipt-note-{index}")))
+                    .h(px(100.0))
+                    .overflow_y_scroll()
+                    .p(px(8.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(inputs.note.clone()),
+            )
+            .child(
+                task_text("2. 选择实际结果并保存", theme)
+                    .text_color(theme.text)
+                    .font_weight(FontWeight::SEMIBOLD),
+            )
+            .child(task_text(
+                "点击结果即提交，不会重试工具。只完成一部分或无法判断时，请保持暂停。",
+                theme,
+            ));
+        let mut actions = div().flex().flex_wrap().gap(px(6.0));
+        for (suffix, label, outcome) in [
+            ("completed", "确认已完成", ReceiptOutcome::Completed),
+            ("no-effect", "确认未产生效果", ReceiptOutcome::NoEffect),
+        ] {
+            let target = target.clone();
+            let expected_note = expected_note.clone();
+            actions = actions.child(task_button(
+                SharedString::from(format!("df-receipt-{suffix}-{index}")),
+                label,
+                disabled || !fields_valid,
+                cx,
+                move |this, _, cx| {
+                    this.submit_receipt_review(
+                        session,
+                        &target,
+                        &expected_note,
+                        outcome.clone(),
+                        cx,
+                    )
+                },
+            ));
+        }
+        form = form.child(actions).child(task_button(
+            SharedString::from(format!("df-receipt-cancel-{index}")),
+            "暂时无法确认，保持暂停",
+            disabled,
+            cx,
+            move |this, _, cx| {
+                if this.state.selected_session == Some(session) {
+                    this.open_deerflow_tasks(cx);
+                }
+            },
+        ));
+        if browser.pending.as_ref().is_some_and(|command| {
+            matches!(&command.action, Action::ReceiptReconcile { review }
+                if review.run_id == target.run_id && review.tool_call_id == target.tool_call_id)
+        }) {
+            form = form.child(task_text("正在保存你的核对结果，请勿重复提交…", theme));
+        }
+        if !browser.receipts.fresh && browser.pending.is_none() {
+            form = form.child(task_text("操作记录需要刷新，暂时不能提交。", theme));
+        }
+        form = form.child(task_button(
+            SharedString::from(format!("df-receipt-toggle-details-{index}")),
+            if inputs.show_evidence {
+                "收起技术详情"
+            } else {
+                "展开技术详情（错误、执行证据与核对人）"
+            },
+            false,
+            cx,
+            move |this, _, cx| {
+                if this.state.selected_session == Some(session)
+                    && let Some(inputs) =
+                        this.deerflow_tasks.get_mut(&session).and_then(|browser| {
+                            browser.receipts.reviews.iter_mut().find(|inputs| {
+                                inputs.target == target && inputs.note == expected_note
+                            })
+                        })
+                {
+                    inputs.show_evidence = !inputs.show_evidence;
+                    cx.notify();
+                }
+            },
+        ));
+        if inputs.show_evidence {
+            form = form
+                .child(task_text("核对人（默认 local-user，可修改）", theme))
+                .child(TextField::new(
+                    SharedString::from(format!("df-receipt-reviewer-{index}")),
+                    inputs.reviewer.clone(),
+                ))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("df-receipt-evidence-{index}")))
+                        .h(px(180.0))
+                        .overflow_y_scroll()
+                        .p(px(8.0))
+                        .border_1()
+                        .border_color(theme.border)
+                        .child(inputs.evidence.clone()),
+                );
+        }
+        form
     }
 }

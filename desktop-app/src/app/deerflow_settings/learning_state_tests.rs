@@ -1,5 +1,158 @@
 use super::*;
 
+fn diagnostic_fixture() -> Value {
+    json!({"session_id":"session-a","consent_epoch":2,"contribute":true,"running":true,
+        "queue":{"pending":1,"queued":0,"ready":0,"blocked":1,"skipped":0,"failed":1,
+            "failed_jobs":1,"capture_limited_sessions":0,"reasons":[{"code":"tree_unsettled","count":1}]},
+        "inputs":[{"run_id":"run-a","root_id":"run-a","episode_id":"lep_a","state":"pending",
+            "reason":"tree_unsettled","ended_at":"2026-10-28T01:00:00Z","job_id":"","run_status":"paused"}],
+        "jobs":[{"id":"smj_extract","episode_id":"lep_a","kind":"experience_extract","state":"failed",
+            "state_version":4,"attempts":1,"error_code":"temporary","deadline":"2026-10-29T01:00:00Z",
+            "retryable":true,"retry_reason":""}],"truncated":false})
+}
+
+fn diagnostic_browser() -> LearningBrowser {
+    let mut browser = ready();
+    read(
+        &mut browser,
+        json!({"operation":"skill.learning.control.get","session_id":"session-a"}),
+        control("session-a", 2, true, false),
+    );
+    let query = browser.diagnostics_request().unwrap();
+    read(&mut browser, query, diagnostic_fixture());
+    browser
+}
+
+#[test]
+fn learning_diagnostics_keep_counts_metadata_and_unknown_reasons_visible() {
+    let browser = diagnostic_browser();
+    let diagnostics = browser.diagnostics.unwrap();
+    assert!(diagnostics.queue.summary().contains("失败作业 1"));
+    assert!(
+        diagnostics
+            .queue
+            .reasons_summary()
+            .contains("原任务或子任务尚未结算")
+    );
+    assert!(learning_diagnostics::reason("future_blocker").contains("future_blocker"));
+    let old = ready();
+    assert!(old.status.as_ref().unwrap().queue.is_none());
+    assert!(old.status_summary.unwrap().contains("状态未知"));
+}
+
+#[test]
+fn learning_diagnostics_reject_foreign_overlarge_and_invalid_metadata_atomically() {
+    let mut browser = diagnostic_browser();
+    let query = browser.diagnostics_request().unwrap();
+    for field in ["session_id", "consent_epoch", "inputs", "jobs"] {
+        let mut bad = diagnostic_fixture();
+        bad[field] = match field {
+            "session_id" => json!("session-b"),
+            "consent_epoch" => json!(u64::MAX),
+            "inputs" => json!(vec![
+                bad["inputs"][0].clone();
+                learning_diagnostics::LIMIT + 1
+            ]),
+            _ => {
+                let mut job = bad["jobs"][0].clone();
+                job["state"] = json!("completed");
+                json!([job])
+            }
+        };
+        browser.begin(&query);
+        assert!(browser.accept(&query, bad).is_err(), "{field}");
+        assert_eq!(
+            browser.diagnostics.as_ref().unwrap().session_id,
+            "session-a"
+        );
+    }
+}
+
+#[test]
+fn learning_diagnostics_stale_session_or_selection_cannot_authorize_retry() {
+    let mut browser = diagnostic_browser();
+    let query = browser.diagnostics_request().unwrap();
+    browser.begin(&query);
+    browser.choose_pane(Pane::Jobs);
+    browser.diagnostics = None;
+    browser.accept(&query, diagnostic_fixture()).unwrap();
+    assert!(browser.diagnostics.is_none());
+    browser.begin(&query);
+    browser.set_session(Some("session-b"));
+    browser.accept(&query, diagnostic_fixture()).unwrap();
+    assert!(browser.diagnostics.is_none());
+    assert!(!browser.can_begin(&query));
+}
+
+#[test]
+fn extraction_retry_requires_exact_job_and_current_consent_versions() {
+    let mut browser = diagnostic_browser();
+    let request = browser.extraction_retry_request("smj_extract").unwrap();
+    assert_eq!(
+        request,
+        json!({"operation":"skill.learning.extraction.retry","session_id":"session-a",
+        "job_id":"smj_extract","expected_epoch":2,"expected_state_version":4})
+    );
+    assert!(mutation(&request));
+    assert!(browser.can_begin(&request));
+    for field in [
+        "session_id",
+        "job_id",
+        "expected_epoch",
+        "expected_state_version",
+    ] {
+        let mut changed = request.clone();
+        changed[field] = if field.starts_with("expected_") {
+            json!(9)
+        } else {
+            json!("other")
+        };
+        assert!(!browser.can_begin(&changed), "{field}");
+    }
+    browser.control.as_mut().unwrap().consent_epoch = 3;
+    assert!(browser.extraction_retry_request("smj_extract").is_none());
+    assert!(!browser.can_begin(&request));
+}
+
+#[test]
+fn extraction_retry_unknown_transport_uses_read_only_diagnostics_without_replay() {
+    let mut browser = diagnostic_browser();
+    let request = browser.extraction_retry_request("smj_extract").unwrap();
+    browser.begin(&request);
+    browser.invalidate();
+    assert!(!browser.can_begin(&request));
+    let query = browser.reconciliation_request().unwrap();
+    assert_eq!(query["operation"], "skill.learning.diagnostics");
+    browser.set_session(Some("session-b"));
+    assert!(browser.can_begin(&query));
+    browser.begin(&query);
+    browser.accept(&query, diagnostic_fixture()).unwrap();
+    assert!(browser.diagnostics.is_none());
+    assert_eq!(browser.pending_request(), Some(&request));
+    assert!(
+        browser
+            .reconciliation
+            .as_ref()
+            .unwrap()
+            .contains("不是原重试请求的回执")
+    );
+}
+
+#[test]
+fn extraction_retry_receipt_must_match_original_job_and_version() {
+    let mut browser = diagnostic_browser();
+    let request = browser.extraction_retry_request("smj_extract").unwrap();
+    browser.begin(&request);
+    let mut job = diagnostic_fixture()["jobs"][0].clone();
+    job["state"] = json!("queued");
+    assert!(browser.accept(&request, json!({"job":job})).is_err());
+    job["state_version"] = json!(5);
+    browser.accept(&request, json!({"job":job})).unwrap();
+    assert!(browser.pending_request().is_none());
+    assert!(browser.diagnostics.is_none());
+    assert!(browser.last_result.as_ref().unwrap().contains("已重新排队"));
+}
+
 fn status() -> Value {
     json!({"version":"procedural-experience-v1", "enabled":true, "mode":"shadow", "idle_seconds":300,
         "pending_inputs":0, "experiences":1, "consolidation_enabled":true, "patterns":1,

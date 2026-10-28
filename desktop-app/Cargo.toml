@@ -38,6 +38,7 @@ gpui_platform = { git = "https://github.com/egoist/zed", branch = "waku-webview"
   "x11",
 ] }
 parking_lot = "0.12"
+reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls"] }
 rquickjs = "0.12.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -185,6 +186,7 @@ windows-core = "0.61"
 # graph through GPUI.
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
+  "Win32_Security_Cryptography",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }

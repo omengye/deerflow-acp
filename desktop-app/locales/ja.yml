@@ -78,7 +78,7 @@ settings.general: 一般
 settings.appearance: 外観
 settings.providers: プロバイダー
 settings.usage: 使用状況
-settings.daemon: デーモン
+settings.daemon: サーバー接続
 settings.computer_use: コンピュータ操作
 settings.general_keywords: 一般 ローカル プロジェクト 会話 プライバシー 分析 テレメトリ 匿名 共有 アップデート 自動 バージョン 数学 数式 math latex
 settings.appearance_keywords: 外観 テーマ システム ライト ダーク 言語 英語 中国語 簡体字 日本語 フォント サイズ 文字 エディタ
@@ -1109,3 +1109,40 @@ usage_error.curl_did_not_finish: curl がリクエストを完了しませんで
 usage_error.curl_failed: "curl に失敗しました：%{error}"
 usage_error.unknown_error: 不明なエラー
 usage_error.curl_no_status: curl から HTTP ステータス行が返されませんでした
+
+activity.background_shell: バックグラウンドシェル
+activity.compacted_context: コンテキストを圧縮しました
+activity.compacting_context: コンテキストを圧縮中
+activity.compaction_failed: コンテキストの圧縮に失敗しました
+activity.provider_retrying: リクエストを再試行中
+computer_use.desktop_access: デスクトップへのアクセス
+computer_use.linux_access_description: 現在の Linux デスクトップセッションのアプリを操作します。画面の取得と入力のサポートは、コンポジターとアクセシビリティサービスによって異なります。
+computer_use.windows_access_description: 現在の Windows デスクトップセッションのアプリを操作します。管理者権限で実行されているアプリやセキュアデスクトップへのアクセスは、Windows によって制限される場合があります。
+settings.channels: チャンネル
+settings.channels_keywords: チャンネル WeChat プラグイン ログイン QR メッセージ
+settings.deerflow: 基本設定
+settings.deerflow_advanced: 詳細設定
+settings.deerflow_advanced_keywords: 詳細 サブエージェント ロール メモリ スキル 予算 制限 タイムアウト サービス ログ 診断 データ ソース インポート
+settings.deerflow_keywords: deerflow モデル エージェント メモリ スキル ツール 権限 ACP ランタイム 診断 復旧
+settings.deerflow_models: モデル
+settings.deerflow_models_keywords: モデル プロバイダー API エンドポイント キー 画像 コンテキスト
+settings.deerflow_skill_center: スキル
+settings.deerflow_tools: ツールと権限
+settings.deerflow_tools_keywords: ツール 権限 承認 シェル powershell bash opencli mcp ウェブ プロキシ
+settings.schedules: 定期タスク
+settings.schedules_keywords: スケジュール cron タイマー タスク 定期 時間
+server.title: DeerFlow サーバー
+server.description: このコンピューターで実行するか、WebSocket でリモートサーバーに直接接続します。保存するとデスクトップアプリが再起動します。リモートサービスは動作を続けます。
+server.local: このコンピューター
+server.remote: リモートサーバー
+server.current_local: 現在はこのコンピューターを使用中
+server.current_remote: "現在使用中のリモートサーバー："
+server.address: サーバーアドレス
+server.token_storage: トークンはこのデバイスにのみ保存されます。Windows では現在のユーザー用に暗号化されます。信頼できる LAN では WS、それ以外のネットワークでは WSS を使用してください。
+server.test: 接続をテスト
+server.save_restart: 保存してデスクトップアプリを再起動
+server.connecting: 確認して保存中…
+server.test_success: 接続に成功しました。認証とサーバー設定の読み取りを確認しました。
+server.failed: "サーバー接続を適用できませんでした："
+server.stop_tasks: サーバーを切り替える前に、実行中のタスクを停止してください。
+server.saved_restart_later: 保存しました。実行中のタスクが終了したらデスクトップアプリを再起動してください。

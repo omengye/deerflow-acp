@@ -74,7 +74,7 @@ settings.general: 通用
 settings.appearance: 外观
 settings.providers: 服务商
 settings.usage: 用量
-settings.daemon: 守护进程
+settings.daemon: 服务器连接
 settings.computer_use: 电脑操作
 settings.general_keywords: 通用 本地 项目 对话 隐私 匿名 使用数据 分析 分享 更新 自动 版本 数学 公式 表达式 math latex
 settings.appearance_keywords: 外观 主题 系统 浅色 深色 语言 英语 中文 简体 字号 字体 大小 编辑器
@@ -1071,3 +1071,28 @@ settings.deerflow_models_keywords: 模型 model provider api 地址 密钥 图�
 settings.deerflow_tools_keywords: 工具 tool 权限 审批 命令 powershell bash opencli mcp 网页 代理 proxy
 settings.deerflow_advanced_keywords: 高级 advanced 子代理 角色 记忆 技能 维护 预算 额度 超时 服务 日志 诊断 数据 来源 导入
 settings.deerflow_keywords: deerflow 模型 智能体 长期记忆 技能 工具 权限 ACP 运行 诊断 数据 恢复
+
+server.title: "DeerFlow 服务端"
+server.description: "选择在本机运行，或通过 WebSocket 直接连接远程服务器。保存后重启桌面切换连接，远程服务会保持运行。"
+server.local: "本机运行"
+server.remote: "远程服务器"
+server.current_local: "当前使用：本机服务"
+server.current_remote: "当前使用远程服务器："
+server.address: "服务器地址"
+server.token_storage: "Token 仅保存在本机，Windows 使用当前用户加密保存。可信局域网可使用 WS，其他网络请使用 WSS。"
+server.test: "测试连接"
+server.save_restart: "保存并重启桌面"
+server.connecting: "正在检查并保存…"
+server.test_success: "连接成功，身份验证和服务器设置读取均正常。"
+server.failed: "无法应用服务器连接："
+server.stop_tasks: "切换服务器前，请先停止正在运行的任务。"
+server.saved_restart_later: "连接已保存，请在当前任务结束后重启桌面生效。"
+
+activity.background_shell: 后台终端
+activity.compacted_context: 上下文已压缩
+activity.compacting_context: 正在压缩上下文
+activity.compaction_failed: 上下文压缩失败
+activity.provider_retrying: 正在重试请求
+computer_use.desktop_access: 桌面访问
+computer_use.linux_access_description: 控制当前 Linux 桌面会话中的应用。屏幕捕获和输入支持取决于合成器与辅助功能服务。
+computer_use.windows_access_description: 控制当前 Windows 桌面会话中的应用。Windows 可能限制对以管理员身份运行的应用和安全桌面的访问。

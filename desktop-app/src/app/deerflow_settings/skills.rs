@@ -6,12 +6,44 @@ use serde::Deserialize;
 
 pub(super) const PAGE_SIZE: usize = 20;
 
-pub(super) fn catalog_request(status: &str, name: &str) -> Value {
+pub(super) fn skill_center_load_requests(
+    tab: presentation::SkillCenterTab,
+    session: Option<&str>,
+) -> std::collections::VecDeque<Value> {
+    use presentation::SkillCenterTab;
+    let mut requests =
+        std::collections::VecDeque::from([json!({"operation":"skill.auto_patch.status"})]);
+    if tab == SkillCenterTab::History {
+        requests.push_back(json!({"operation":"skill.learning.status"}));
+        if let Some(session) = session {
+            // A first or changed consent response invalidates derived views.
+            // Read it before loading the discovery, generation and history
+            // snapshots, so that fresh results survive the complete refresh.
+            requests.push_back(json!({
+                "operation":"skill.learning.control.get", "session_id":session
+            }));
+            requests.push_back(learning_diagnostics::request(session));
+        }
+        requests.extend([
+            json!({"operation":"skill.discovery.status"}),
+            json!({"operation":"skill.generation.status"}),
+            json!({"operation":"proposal.history","limit":PAGE_SIZE}),
+            json!({"operation":"skill.auto_patch.list","limit":PAGE_SIZE}),
+        ]);
+    } else if tab == SkillCenterTab::Catalog {
+        requests.push_back(catalog_request("", ""));
+    } else if tab == SkillCenterTab::Review {
+        requests.push_back(json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":PAGE_SIZE}));
+    }
+    requests
+}
+
+pub(super) fn catalog_request(status: &str, search: &str) -> Value {
     let mut request = json!({"operation":"skill.list","limit":PAGE_SIZE,
         "status":if status.is_empty() { "current" } else { status }});
-    let name = name.trim();
-    if !name.is_empty() {
-        request["name"] = json!(name);
+    let search = search.trim();
+    if !search.is_empty() {
+        request["name_contains"] = json!(search);
     }
     request
 }
@@ -116,6 +148,8 @@ pub(super) struct SkillBrowser {
     selected: Option<CatalogDetail>,
     pub(super) catalog_stale: bool,
     pub(super) review_stale: bool,
+    pub(super) proposal_list_stale: bool,
+    pub(super) history_list_stale: bool,
     pub(super) source_review_feedback: Option<(String, String)>,
     pub(super) proposal_nav: PageNav,
     pub(super) history_nav: PageNav,
@@ -246,6 +280,8 @@ impl SkillBrowser {
         self.behavior = None;
         self.behavior_inspector.invalidate();
         self.review_stale = true;
+        self.proposal_list_stale = true;
+        self.history_list_stale = true;
     }
 
     pub(super) fn invalidate(&mut self) {
@@ -260,6 +296,8 @@ impl SkillBrowser {
         self.learning_acknowledgment = false;
         self.catalog_stale = true;
         self.review_stale = true;
+        self.proposal_list_stale = true;
+        self.history_list_stale = true;
         self.selected = None;
         self.rollback = None;
         if self.learning.pending_sources_changed() {
@@ -374,7 +412,10 @@ impl SkillBrowser {
     fn record_source_review_failure(&mut self, request: &Value, code: &str) {
         if request["operation"] == "proposal.source_review" {
             if let Some(id) = request["proposal_id"].as_str() {
-                self.source_review_feedback = Some((id.to_owned(), publication_state::source_review_error(code).into()));
+                self.source_review_feedback = Some((
+                    id.to_owned(),
+                    publication_state::source_review_error(code).into(),
+                ));
             }
         }
     }
@@ -437,8 +478,46 @@ impl SkillBrowser {
             (&mut self.proposal_nav, &data["next_cursor"], "cursor")
         };
         nav.accept(request, next.as_str().unwrap_or(""), field)?;
-        self.review_stale = false;
+        if history {
+            self.history_list_stale = false;
+        } else {
+            self.proposal_list_stale = false;
+        }
         Ok(rows.clone())
+    }
+
+    pub(super) fn normalize_proposal_list(&self, request: &mut Value) {
+        if request["operation"] == "proposal.list" && self.auto_patch.needs_attention.is_none() {
+            if let Some(fields) = request.as_object_mut() {
+                fields.remove("needs_attention");
+            }
+        }
+    }
+
+    pub(super) fn review_refresh_requests(&self, request: &Value, show_more: bool) -> [Value; 2] {
+        // Completing a mutation invalidates the attention count and capability.
+        // Reload status before normalizing a list request, or its cursor-bound
+        // attention filter would be removed as though this were an older host.
+        [
+            json!({"operation":"skill.auto_patch.status"}),
+            self.review_refresh_request(request, show_more),
+        ]
+    }
+
+    fn review_refresh_request(&self, request: &Value, show_more: bool) -> Value {
+        if request["operation"] == "proposal.rollback" {
+            return self
+                .history_nav
+                .current_request()
+                .unwrap_or_else(|| json!({"operation":"proposal.history","limit":PAGE_SIZE}));
+        }
+        self.proposal_nav.current_request().unwrap_or_else(|| {
+            if show_more {
+                json!({"operation":"proposal.list","limit":PAGE_SIZE})
+            } else {
+                json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":PAGE_SIZE})
+            }
+        })
     }
 
     pub(super) fn complete_mutation(&mut self, request: &Value) {
@@ -636,11 +715,7 @@ impl Waku {
                     cx,
                     |this, _, cx| {
                         this.deerflow_settings.skill_browser.abandon_retry();
-                        this.deerflow_request(
-                            "manage",
-                            catalog_request("", ""),
-                            cx,
-                        );
+                        this.deerflow_request("manage", catalog_request("", ""), cx);
                     },
                 ));
         }
@@ -822,20 +897,30 @@ impl Waku {
             } else {
                 &request["expected_state_version"]
             };
-            if matches!(request["operation"].as_str(), Some("proposal.approve" | "proposal.publish_retry"))
-                && saved["id"] == request["proposal_id"]
+            if matches!(
+                request["operation"].as_str(),
+                Some("proposal.approve" | "proposal.publish_retry")
+            ) && saved["id"] == request["proposal_id"]
                 && saved["state_version"].as_u64().is_some_and(|v| v > 0)
                 && saved["approval"]["review"]["ExpectedStateVersion"] == *approval_version
                 && saved["publication"]["state"].is_string()
             {
                 let mut updated = saved.clone();
                 if let Some(old) = &self.deerflow_settings.proposal {
-                    if old["id"] == saved["id"] { updated["diff"] = old["diff"].clone(); }
+                    if old["id"] == saved["id"] {
+                        updated["diff"] = old["diff"].clone();
+                    }
                 }
-                self.deerflow_settings.skill_browser.complete_mutation(request);
+                self.deerflow_settings
+                    .skill_browser
+                    .complete_mutation(request);
                 self.deerflow_settings.notice = Some(publication_state::notice(&updated).into());
                 self.deerflow_settings.proposal = Some(updated);
-                self.deerflow_request("manage", json!({"operation":"proposal.get","proposal_id":saved["id"]}), cx);
+                self.deerflow_request(
+                    "manage",
+                    json!({"operation":"proposal.get","proposal_id":saved["id"]}),
+                    cx,
+                );
                 return;
             }
             if request["operation"] == "proposal.behavior" && code == "not_found" {
@@ -878,10 +963,18 @@ impl Waku {
                     "当前服务不支持此技能管理操作，请使用配套的 Eino Go 服务。"
                 }
                 "not_found" => "技能或提案已不存在，请刷新目录。",
-                "target_content_differs" => "目标目录与候选不一致。保留全部文件，基于当前目录创建新的审核版本。",
-                "source_invalid_or_unavailable" | "source_unavailable" => "源目录无法安全读取或结构无效；未覆盖任何文件。",
-                "source_changed_while_reading" => "读取期间源文件发生变化，请待编辑完成后重新核对。",
-                "source_credentials_require_local_handling" => "目录含疑似凭据，未发送给审核模型，也未修改文件。请将凭据改为外部环境配置后重新审核；不要直接删除原配置。",
+                "target_content_differs" => {
+                    "目标目录与候选不一致。保留全部文件，基于当前目录创建新的审核版本。"
+                }
+                "source_invalid_or_unavailable" | "source_unavailable" => {
+                    "源目录无法安全读取或结构无效；未覆盖任何文件。"
+                }
+                "source_changed_while_reading" => {
+                    "读取期间源文件发生变化，请待编辑完成后重新核对。"
+                }
+                "source_credentials_require_local_handling" => {
+                    "目录含疑似凭据，未发送给审核模型，也未修改文件。请将凭据改为外部环境配置后重新审核；不要直接删除原配置。"
+                }
                 _ => envelope["error"]
                     .as_str()
                     .unwrap_or("技能管理失败，请刷新状态后重试。"),
@@ -991,6 +1084,19 @@ impl Waku {
             return;
         }
         self.deerflow_settings.confirm_manage = None;
+        if operation == "skill.learning.extraction.retry" {
+            if let Some(query) = self
+                .deerflow_settings
+                .skill_browser
+                .learning
+                .diagnostics_request()
+            {
+                self.deerflow_settings
+                    .skill_center_loads
+                    .push_back(json!({"operation":"skill.learning.status"}));
+                self.deerflow_settings.skill_center_loads.push_back(query);
+            }
+        }
         if operation == "skill.get" {
             if let Some(revision) = self.deerflow_settings.skill_browser.rollback.take() {
                 let skill = &self
@@ -1033,6 +1139,7 @@ impl Waku {
                 "skill.learning.control.set" => "学习贡献操作已确认；请刷新历史和待审核提案核对当前来源。",
                 "skill.learning.episode.start" => "新任务边界操作已确认，只影响之后的真实输入。",
                 "skill.learning.cancel" => "学习作业取消已确认；已发生的维护用量保留。",
+                "skill.learning.extraction.retry" => "原经验提取已重新排队；保留原尝试次数、期限和已发生用量。",
                 _ => "技能状态已刷新。",
             }
             .into(),
@@ -1087,14 +1194,14 @@ impl Waku {
                     )
                     .child(df_button(
                         "df-catalog-search-submit",
-                        "按技能名称查询",
+                        "搜索技能",
                         unavailable,
                         false,
                         theme,
                         cx,
                         |this, _, cx| {
-                            let name = this.skills_search.read(cx).content().trim().to_owned();
-                            let request = catalog_request("", &name);
+                            let search = this.skills_search.read(cx).content().to_owned();
+                            let request = catalog_request("", &search);
                             this.deerflow_request("manage", request, cx);
                         },
                     )),
@@ -1103,7 +1210,7 @@ impl Waku {
                 div()
                     .text_size(sp(12.0))
                     .text_color(theme.text_tertiary)
-                    .child("名称精确匹配当前技能；留空查询全部当前技能，不含已删除历史。"),
+                    .child("支持技能名称部分匹配，不区分大小写；留空查询全部当前技能，不含已删除历史。"),
             );
         if browser.catalog_stale {
             group = group.child(df_label(
@@ -1439,24 +1546,41 @@ fn validate_review_result(request: &Value, data: &Value) -> anyhow::Result<()> {
             "回滚结果与请求不一致"
         );
     } else if request["operation"] == "proposal.review_retry" {
-        anyhow::ensure!(data["proposal"]["id"].as_str().is_some_and(|id| !id.is_empty())
-            && data["proposal"]["id"] != request["proposal_id"]
-            && data["proposal"]["review_retry_of"] == request["proposal_id"]
-            && data["proposal"]["state_version"].as_u64().is_some_and(|v| v > 0), "审核重试结果与原提案不一致");
+        anyhow::ensure!(
+            data["proposal"]["id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+                && data["proposal"]["id"] != request["proposal_id"]
+                && data["proposal"]["review_retry_of"] == request["proposal_id"]
+                && data["proposal"]["state_version"]
+                    .as_u64()
+                    .is_some_and(|v| v > 0),
+            "审核重试结果与原提案不一致"
+        );
     } else if request["operation"] == "proposal.source_review" {
-        anyhow::ensure!(data["proposal"]["id"].as_str().is_some_and(|id| !id.is_empty())
-            && data["proposal"]["action"] == "create"
-            && data["proposal"]["state_version"].as_u64().is_some_and(|v| v > 0), "目录审核结果无效");
+        anyhow::ensure!(
+            data["proposal"]["id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+                && data["proposal"]["action"] == "create"
+                && data["proposal"]["state_version"]
+                    .as_u64()
+                    .is_some_and(|v| v > 0),
+            "目录审核结果无效"
+        );
     } else {
-        let publishing = matches!(request["operation"].as_str(), Some("proposal.approve" | "proposal.publish_retry"));
+        let publishing = matches!(
+            request["operation"].as_str(),
+            Some("proposal.approve" | "proposal.publish_retry")
+        );
         if request["operation"] == "proposal.publish_retry" {
-            anyhow::ensure!(data["proposal"]["approval"]["review"]["ExpectedStateVersion"] == request["expected_approval_version"], "发布重试结果与原批准不一致");
+            anyhow::ensure!(
+                data["proposal"]["approval"]["review"]["ExpectedStateVersion"]
+                    == request["expected_approval_version"],
+                "发布重试结果与原批准不一致"
+            );
         }
-        let expected_status = if publishing {
-            "published"
-        } else {
-            "rejected"
-        };
+        let expected_status = if publishing { "published" } else { "rejected" };
         anyhow::ensure!(
             data["proposal"]["id"] == request["proposal_id"]
                 && (data["proposal"]["status"] == expected_status
@@ -1507,7 +1631,14 @@ mod tests {
         assert!(browser.source_review_feedback.is_none());
         browser.transport_failed(&request);
         assert!(browser.mutations_pending());
-        assert!(browser.source_review_feedback.as_ref().unwrap().1.contains("原请求"));
+        assert!(
+            browser
+                .source_review_feedback
+                .as_ref()
+                .unwrap()
+                .1
+                .contains("原请求")
+        );
     }
 
     #[test]
@@ -1532,7 +1663,9 @@ mod tests {
     fn direct_script_approval_retry_preserves_the_exact_risk_decision() {
         let proposal = json!({"id":"p_script","status":"pending_review","state_version":2,
             "base_sha256":null,"script_review_required":true});
-        let request = publication_state::approval_action(&proposal).unwrap().request;
+        let request = publication_state::approval_action(&proposal)
+            .unwrap()
+            .request;
         let mut browser = SkillBrowser::default();
         assert!(browser.can_begin(&request));
         browser.begin(&request);
@@ -1592,23 +1725,36 @@ mod tests {
     }
 
     #[test]
-    fn catalog_defaults_and_name_search_exclude_deleted_history() {
+    fn catalog_partial_name_search_excludes_deleted_history_and_keeps_pagination() {
         let current = catalog_request("", "");
         assert_eq!(
             current,
             json!({"operation":"skill.list","status":"current","limit":20})
         );
         assert_eq!(catalog_request("current", ""), current);
-        let search = catalog_request("", " todo-extract ");
-        assert_eq!(search["status"], "current");
-        assert_eq!(search["name"], "todo-extract");
+        assert_eq!(catalog_request("", " \t\n "), current);
+        for search in ["inst", "insta", "INST", "box-exec"] {
+            let request = catalog_request("", &format!(" {search} "));
+            assert_eq!(request["status"], "current");
+            assert_eq!(request["name_contains"], search);
+            assert!(request.get("name").is_none());
+        }
         for status in ["current", "enabled", "disabled", "deleted"] {
-            let request = catalog_request(status, "research");
+            let request = catalog_request(status, "inst");
             let mut nav = PageNav::default();
             nav.accept(&request, "next", "cursor").unwrap();
             let next = nav.request(true).unwrap();
             assert_eq!(next["status"], status);
-            assert_eq!(next["name"], "research");
+            assert_eq!(next["name_contains"], "inst");
+            nav.accept(&next, "", "cursor").unwrap();
+            assert_eq!(nav.request(false).unwrap(), request);
+            let mut wrong_search = next.clone();
+            wrong_search["name_contains"] = json!("other");
+            assert!(nav.accept(&wrong_search, "", "cursor").is_err());
+            let fresh_search = catalog_request(status, "box");
+            nav.accept(&fresh_search, "", "cursor").unwrap();
+            assert_eq!(nav.page_number(), 1);
+            assert!(nav.request(false).is_none());
         }
     }
 
@@ -1784,6 +1930,108 @@ mod tests {
             browser.proposal_nav.request(true).unwrap()["status"],
             "pending_review"
         );
+    }
+
+    #[test]
+    fn completed_reviews_refresh_the_current_proposal_page() {
+        let proposal = json!({"id":"p1","target":skill()["target"],"state_version":2});
+        let first = json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"source_id":"local","limit":20});
+        for operation in [
+            "proposal.approve",
+            "proposal.publish_retry",
+            "proposal.reject",
+        ] {
+            let mut browser = SkillBrowser::default();
+            browser
+                .accept_review_page(
+                    &first,
+                    &json!({"proposals":[proposal],"next_cursor":"page-two"}),
+                )
+                .unwrap();
+            let second = browser.proposal_nav.request(true).unwrap();
+            browser
+                .accept_review_page(
+                    &second,
+                    &json!({"proposals":[proposal],"next_cursor":"page-three"}),
+                )
+                .unwrap();
+            let mutation =
+                json!({"operation":operation,"proposal_id":"p1","request_key":"original-key"});
+            browser.begin(&mutation);
+            browser.complete_mutation(&mutation);
+            assert!(!browser.mutations_pending());
+            assert!(browser.proposal_list_stale);
+            assert!(browser.auto_patch.needs_attention.is_none());
+            let [status, mut refresh] = browser.review_refresh_requests(&mutation, false);
+            assert_eq!(status, json!({"operation":"skill.auto_patch.status"}));
+            browser.auto_patch.accept(&status, json!({
+                "enabled":false,"running":true,"today":"2026-10-25","published_today":0,"observing":0,
+                "readiness":{"state":"disabled","catalog_version":2,"policy_identity":"a".repeat(64),"installed":1,"eligible_targets":0,"missing_suite":0,"pending_review":0,"needs_attention":0,"waiting_candidates":0,"new_skills_require_review":true,"reasons":[]}
+            })).unwrap();
+            browser.normalize_proposal_list(&mut refresh);
+            assert_eq!(refresh, second);
+            let rows = browser
+                .accept_review_page(&refresh, &json!({"proposals":[],"next_cursor":""}))
+                .unwrap();
+            assert!(rows.is_empty());
+            assert!(!browser.proposal_list_stale);
+            assert!(browser.history_list_stale);
+            assert!(browser.review_stale);
+            assert_eq!(browser.proposal_nav.page_number(), 2);
+            assert_eq!(browser.proposal_nav.request(false), Some(first.clone()));
+        }
+    }
+
+    #[test]
+    fn history_refresh_does_not_validate_stale_proposals() {
+        let mut browser = SkillBrowser::default();
+        let history =
+            json!({"operation":"proposal.history","source_id":"local","name":"test","limit":20});
+        let revision = json!({"version":1,"target":skill()["target"]});
+        browser
+            .accept_review_page(
+                &history,
+                &json!({"revisions":[revision],"revision_next_cursor":"revision-two"}),
+            )
+            .unwrap();
+        let second = browser.history_nav.request(true).unwrap();
+        browser
+            .accept_review_page(&second, &json!({"revisions":[revision]}))
+            .unwrap();
+        let rollback = json!({"operation":"proposal.rollback","request_key":"rollback-key"});
+        browser.begin(&rollback);
+        browser.complete_mutation(&rollback);
+        let refresh = browser.review_refresh_request(&rollback, false);
+        assert_eq!(refresh, second);
+        browser
+            .accept_review_page(&refresh, &json!({"revisions":[revision]}))
+            .unwrap();
+        assert!(!browser.history_list_stale);
+        assert!(browser.proposal_list_stale);
+        assert!(browser.review_stale);
+    }
+
+    #[test]
+    fn proposal_refresh_preserves_all_and_legacy_filters() {
+        let mutation = json!({"operation":"proposal.approve"});
+        let mut browser = SkillBrowser::default();
+        assert_eq!(
+            browser.review_refresh_request(&mutation, true),
+            json!({"operation":"proposal.list","limit":20})
+        );
+        assert_eq!(
+            browser.review_refresh_request(&mutation, false),
+            json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":20})
+        );
+        for query in [
+            json!({"operation":"proposal.list","limit":20}),
+            json!({"operation":"proposal.list","status":"pending_review","limit":20}),
+        ] {
+            browser
+                .accept_review_page(&query, &json!({"proposals":[]}))
+                .unwrap();
+            assert_eq!(browser.review_refresh_request(&mutation, true), query);
+        }
     }
 
     #[test]
