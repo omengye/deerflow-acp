@@ -71,8 +71,7 @@ func (s *Store) QueueMatchOne(ctx context.Context) (bool, error) {
 	WHERE i.state='pending' AND i.sequence>(SELECT cursor FROM df_learning_match_scan WHERE id=1) AND j.state='completed'
  AND NOT EXISTS(SELECT 1 FROM df_learning_pattern_reviews review WHERE review.pattern_id=i.pattern_id
  AND (review.ignored=1 OR review.adjudication_revision=i.revision))
- AND NOT EXISTS(SELECT 1 FROM df_learning_pattern_members m JOIN harness_learning_inputs li ON li.episode_id=m.episode_id
- JOIN harness_runs live ON live.id=li.run_id WHERE m.pattern_id=i.pattern_id AND m.revision=i.revision AND live.status NOT IN ('completed','failed','cancelled'))
+ AND NOT EXISTS(SELECT 1 FROM df_learning_pattern_members o WHERE o.pattern_id=i.pattern_id AND o.revision=i.revision AND `+episodeTailActivePredicate+`)
  AND NOT EXISTS(SELECT 1 FROM df_learning_matches a JOIN df_skill_maintenance_jobs active ON active.id=a.job_id
  WHERE a.pattern_id=i.pattern_id AND active.state IN ('queued','retry','running'))
  ORDER BY i.sequence LIMIT 1`).Scan(&sequence, &id, &revision, &session, &owner)

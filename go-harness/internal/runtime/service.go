@@ -274,7 +274,7 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 		req.Input = prepared.Input
 		for _, c := range req.Input {
 			if c.Type == "image" && !s.Media.SupportsVision(x.Model) {
-				return harness.RunResult{}, errors.Join(fmt.Errorf("%w: the selected model does not support image input", harness.ErrInvalidInput), prepared.Finish(false))
+				return harness.RunResult{}, errors.Join(harness.ErrModelVisionUnavailable, prepared.Finish(false))
 			}
 		}
 	} else {

@@ -45,7 +45,11 @@ func (s *Store) LearningRootObservationsTx(ctx context.Context, tx *sql.Tx, root
 			err = errors.Join(harness.ErrPermissionDenied, err)
 			break
 		}
-		if len(m.Raw) > 2<<20 || !json.Valid(m.Raw) {
+		if len(m.Raw) > 2<<20 {
+			err = errors.Join(harness.ErrInvalidInput, learning.ErrSourceBounds)
+			break
+		}
+		if !json.Valid(m.Raw) {
 			err = harness.ErrInvalidInput
 			break
 		}
@@ -55,7 +59,10 @@ func (s *Store) LearningRootObservationsTx(ctx context.Context, tx *sql.Tx, root
 	if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
-	if len(members) < 1 || len(members) > 9 {
+	if len(members) > 9 {
+		return nil, errors.Join(harness.ErrInvalidInput, learning.ErrSourceBounds)
+	}
+	if len(members) < 1 {
 		return nil, harness.ErrInvalidInput
 	}
 	byID := map[string]learningRootMember{}
@@ -168,7 +175,10 @@ func (s *Store) learningBackgroundEvidenceTx(ctx context.Context, tx *sql.Tx, ro
 	if err = tx.QueryRowContext(ctx, `SELECT t.payload,b.payload,s.payload FROM eino_background_tasks t JOIN harness_background_bindings b ON b.task_id=t.id JOIN harness_background_specs s ON s.task_id=t.id WHERE t.id=?`, m.Run).Scan(&taskBytes, &bindingBytes, &specBytes); err != nil {
 		return nil, err
 	}
-	if len(taskBytes) > 2<<20 || len(bindingBytes) > 32<<10 || len(specBytes) > 128<<10 || !json.Valid(taskBytes) || !json.Valid(bindingBytes) || !json.Valid(specBytes) {
+	if len(taskBytes) > 2<<20 || len(bindingBytes) > 32<<10 || len(specBytes) > 128<<10 {
+		return nil, errors.Join(harness.ErrInvalidInput, learning.ErrSourceBounds)
+	}
+	if !json.Valid(taskBytes) || !json.Valid(bindingBytes) || !json.Valid(specBytes) {
 		return nil, harness.ErrInvalidInput
 	}
 	task, err := readBackgroundNativeTask(ctx, tx, m.Run)

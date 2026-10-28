@@ -134,7 +134,7 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 		return c.managementScheduleSources(ctx, request)
 	case "schedule.create", "schedule.list", "schedule.snapshot", "schedule.preview", "schedule.reschedule", "schedule.status", "schedule.pause", "schedule.history", "schedule.ack", "schedule.delete", "wechat.status", "wechat.history", "wechat.login.start", "wechat.login.poll", "wechat.logout", "wechat.review":
 		return c.managementAutomation(ctx, request)
-	case "skill.learning.status", "skill.learning.control.get", "skill.learning.control.set", "skill.learning.episode.start", "skill.learning.lineage.link", "skill.learning.experiences", "skill.learning.patterns", "skill.learning.matches", "skill.learning.workspace.patterns", "skill.learning.workspace.matches", "skill.learning.jobs", "skill.learning.cancel", "skill.learning.pattern.ignore", "skill.learning.pattern.adjudicate", "skill.learning.creation_retry.prepare", "skill.learning.creation_retry.enqueue", "skill.learning.source.get":
+	case "skill.learning.status", "skill.learning.diagnostics", "skill.learning.extraction.retry", "skill.learning.control.get", "skill.learning.control.set", "skill.learning.episode.start", "skill.learning.lineage.link", "skill.learning.experiences", "skill.learning.patterns", "skill.learning.matches", "skill.learning.workspace.patterns", "skill.learning.workspace.matches", "skill.learning.jobs", "skill.learning.cancel", "skill.learning.pattern.ignore", "skill.learning.pattern.adjudicate", "skill.learning.creation_retry.prepare", "skill.learning.creation_retry.enqueue", "skill.learning.source.get":
 		value, err := c.managementLearning(ctx, request)
 		return value, proposalManagementError(err)
 	case "session.diagnostics":

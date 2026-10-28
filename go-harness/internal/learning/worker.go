@@ -100,10 +100,27 @@ func (s *Store) Status(ctx context.Context) (harness.SkillLearningStatus, error)
 	result := harness.SkillLearningStatus{Version: PolicyVersion, Enabled: s.enabled, Mode: "shadow", IdleSeconds: int64(s.options.Idle / time.Second), ConsolidationEnabled: s.enabled && s.consolidator != nil}
 	result.MatchingEnabled = s.enabled && s.matcher != nil
 	result.CrossSessionEnabled = s.enabled && s.consolidator != nil && s.options.CrossSession
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM harness_learning_outbox WHERE state IN ('pending','queued')`).Scan(&result.Pending)
-	err = errors.Join(err, s.db.QueryRowContext(ctx, `SELECT count(*) FROM df_learning_experiences`).Scan(&result.Experiences))
-	err = errors.Join(err, s.db.QueryRowContext(ctx, `SELECT count(*) FROM df_learning_patterns`).Scan(&result.Patterns))
-	err = errors.Join(err, s.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM df_learning_matches WHERE result_sha<>'')
+	result.Running = s.running()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, err
+	}
+	defer tx.Rollback()
+	cache, err := newDiagnosticCache(ctx, tx)
+	if err != nil {
+		return result, err
+	}
+	result.Queue, err = s.queueStatusTx(ctx, tx, "", cache)
+	if err != nil {
+		return result, err
+	}
+	result.Pending = result.Queue.Pending + result.Queue.Queued
+	err = errors.Join(err, tx.QueryRowContext(ctx, `SELECT count(*) FROM df_learning_experiences`).Scan(&result.Experiences))
+	err = errors.Join(err, tx.QueryRowContext(ctx, `SELECT count(*) FROM df_learning_patterns`).Scan(&result.Patterns))
+	err = errors.Join(err, tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM df_learning_matches WHERE result_sha<>'')
  + (SELECT count(*) FROM df_learning_adjudications)`).Scan(&result.Matches))
-	return result, err
+	if err != nil {
+		return result, err
+	}
+	return result, tx.Commit()
 }

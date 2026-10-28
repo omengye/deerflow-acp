@@ -10,6 +10,26 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
 
+func TestEvolutionQueriesRejectCatalogNameContains(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx := context.Background()
+	query := harness.SkillQuery{NameContains: "rese", Limit: 1}
+	for name, call := range map[string]func() error{
+		"proposals":   func() error { _, err := f.service.QueryProposals(ctx, query); return err },
+		"history":     func() error { _, err := f.service.QueryHistory(ctx, query); return err },
+		"signals":     func() error { _, err := f.service.QuerySignals(ctx, query); return err },
+		"generation":  func() error { _, err := f.service.QueryGeneration(ctx, query); return err },
+		"auto-patch":  func() error { _, err := f.service.QueryAutoPatch(ctx, query); return err },
+		"discoveries": func() error { _, err := f.service.QueryDiscoveries(ctx, query); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := call(); !errors.Is(err, harness.ErrInvalidInput) {
+				t.Fatalf("catalog-only substring filter was not rejected: %v", err)
+			}
+		})
+	}
+}
+
 func TestProposalPagesBindFiltersAndConfiguredSourceIdentity(t *testing.T) {
 	f := newFixture(t, nil)
 	ctx := context.Background()

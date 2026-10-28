@@ -46,11 +46,14 @@ type SkillHistoryPage struct {
 }
 
 // SkillQuery is an operator query over currently configured source identities.
-// Empty source/name selects all configured targets. Cursors bind these filters.
+// Empty filters do not restrict configured targets. Cursors bind these filters.
 type SkillQuery struct {
 	SourceID, Name, Status, Cursor string
-	Limit                          int
-	NeedsAttention                 *bool
+	// NameContains is a case-insensitive literal substring filter for the catalog only.
+	// Name remains an exact filter; both filters apply when both are provided.
+	NameContains   string
+	Limit          int
+	NeedsAttention *bool
 }
 
 type SkillTrigger struct {

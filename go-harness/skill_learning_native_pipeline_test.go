@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/runtime"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skilllearningtest"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
@@ -26,7 +27,13 @@ func TestSkillLearningNativeFollowupResolutionAutomaticReviewAndPublication(t *t
 	nativeLearningPipeline(t, true)
 }
 
-func nativeLearningPipeline(t *testing.T, resolution bool) {
+func TestSkillLearningNativeAutomaticPipelineSurvivesHistoricalUnfinishedTasks(t *testing.T) {
+	for _, status := range []string{"waiting_input", "needs_reconciliation"} {
+		t.Run(status, func(t *testing.T) { nativeLearningPipeline(t, false, status) })
+	}
+}
+
+func nativeLearningPipeline(t *testing.T, resolution bool, historicalStatus ...string) {
 	t.Helper()
 	for _, automatic := range []bool{false, true} {
 		name := "review-draft"
@@ -125,6 +132,7 @@ func nativeLearningPipeline(t *testing.T, resolution bool) {
 				t.Fatalf("%s did not settle; jobs=%s outbox=%s calls=%v context=%v", description, jobs, outbox, provider.Counts(), ctx.Err())
 			}
 			var first harness.Session
+			var historicalRuns []string
 			tasks := 1
 			if automatic {
 				tasks = 2
@@ -142,6 +150,20 @@ func nativeLearningPipeline(t *testing.T, resolution bool) {
 					if _, err = c.SetSkillLearningControl(ctx, session.ID, harness.SkillLearningControlRequest{Contribute: true, WorkspaceShared: &shared}); err != nil {
 						t.Fatal(err)
 					}
+				}
+				if len(historicalStatus) != 0 {
+					// Reproduce an accepted old task with its own unsettled budget
+					// tree. Only the historical run's persisted state is seeded;
+					// all subsequent turns and learning stages run normally.
+					id := runtime.NewID()
+					request := harness.RunRequest{Session: session, RunID: id, RootBudgetID: id, InputID: runtime.NewID(), Input: []harness.Content{{Type: "text", Text: fmt.Sprintf("Independent historical unfinished task %d", task+1)}}}
+					if err := c.service.Store.BeginRun(ctx, request); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := c.store.DB().ExecContext(ctx, `UPDATE harness_runs SET status=? WHERE id=?`, historicalStatus[0], id); err != nil {
+						t.Fatal(err)
+					}
+					historicalRuns = append(historicalRuns, id)
 				}
 				for turn, prompt := range []string{fmt.Sprintf("Inspect JSON document %d using research", task+1), "Correct the previous inspection: read the complete document and verify required fields"} {
 					if result, err := c.Run(ctx, session.ID, []harness.Content{{Type: "text", Text: prompt}}, nil, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
@@ -212,6 +234,16 @@ func nativeLearningPipeline(t *testing.T, resolution bool) {
 				t.Fatal("native pipeline lost source, review or actual comparison boundaries", discovery, proposal)
 			}
 			counts := provider.Counts()
+			for _, run := range historicalRuns {
+				var status string
+				var included int
+				if err := c.store.DB().QueryRowContext(ctx, `SELECT status FROM harness_runs WHERE id=?`, run).Scan(&status); err != nil || status != historicalStatus[0] {
+					t.Fatal("learning changed an unfinished business task", status, err)
+				}
+				if err := c.store.DB().QueryRowContext(ctx, `SELECT count(*) FROM df_learning_extractions WHERE instr(CAST(payload AS TEXT),?)>0`, run).Scan(&included); err != nil || included != 0 {
+					t.Fatal("learning included an unsettled historical source", included, err)
+				}
+			}
 			batches, foreground := tasks, 6*tasks
 			if resolution {
 				batches, foreground = 2*tasks, 4*tasks

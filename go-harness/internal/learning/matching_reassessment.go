@@ -35,8 +35,7 @@ func (s *Store) queueMatchReassessmentTx(ctx context.Context, tx *sql.Tx) (bool,
  AND (SELECT count(*) FROM df_learning_match_reassessments a WHERE a.pattern_id=p.id)<2
  AND NOT EXISTS(SELECT 1 FROM df_learning_matches old JOIN df_skill_maintenance_jobs active ON active.id=old.job_id
  WHERE old.pattern_id=p.id AND active.state IN ('queued','retry','running','cancelled'))
- AND NOT EXISTS(SELECT 1 FROM df_learning_pattern_members member JOIN harness_learning_inputs li ON li.episode_id=member.episode_id
- JOIN harness_runs live ON live.id=li.run_id WHERE member.pattern_id=p.id AND member.revision=i.revision AND live.status NOT IN ('completed','failed','cancelled'))
+ AND NOT EXISTS(SELECT 1 FROM df_learning_pattern_members o WHERE o.pattern_id=p.id AND o.revision=i.revision AND `+episodeTailActivePredicate+`)
  ORDER BY i.sequence LIMIT 1`).Scan(&sequence, &jobID, &created, &firstCreated)
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = tx.ExecContext(ctx, `UPDATE df_learning_match_scan SET cursor=0 WHERE id=1`)

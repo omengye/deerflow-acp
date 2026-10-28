@@ -181,6 +181,10 @@ func (c *Client) managementLearning(ctx context.Context, request localhost.Manag
 	allowed := []string{"session_id"}
 	switch request.Operation {
 	case "skill.learning.control.get", "skill.learning.episode.start":
+	case "skill.learning.diagnostics":
+		allowed = append(allowed, "limit")
+	case "skill.learning.extraction.retry":
+		allowed = append(allowed, "job_id", "expected_epoch", "expected_state_version")
 	case "skill.learning.control.set":
 		allowed = append(allowed, "control")
 	case "skill.learning.pattern.ignore", "skill.learning.pattern.adjudicate":
@@ -209,6 +213,30 @@ func (c *Client) managementLearning(ctx context.Context, request localhost.Manag
 		return nil, err
 	}
 	switch request.Operation {
+	case "skill.learning.diagnostics":
+		limit, err := optionalProposalInteger(request.Fields, "limit", 50)
+		if err != nil || limit < 1 || limit > 100 {
+			return nil, managementInvalid("limit must be 1..100")
+		}
+		return c.learning.Diagnostics(ctx, id, int(limit))
+	case "skill.learning.extraction.retry":
+		job, err := managementID(request.Fields, "job_id")
+		if err != nil {
+			return nil, err
+		}
+		epoch, err := optionalProposalInteger(request.Fields, "expected_epoch", 0)
+		if err != nil || epoch < 1 {
+			return nil, managementInvalid("expected_epoch is required")
+		}
+		version, err := optionalProposalInteger(request.Fields, "expected_state_version", 0)
+		if err != nil || version < 1 {
+			return nil, managementInvalid("expected_state_version is required")
+		}
+		retried, err := c.learning.RetryExtraction(ctx, id, harness.SkillLearningExtractionRetryRequest{JobID: job, ExpectedEpoch: epoch, ExpectedStateVersion: version})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"job": retried}, nil
 	case "skill.learning.source.get":
 		source, err := learningSourceRequest(request.Fields["source"])
 		if err != nil {

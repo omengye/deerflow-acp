@@ -63,12 +63,21 @@ func (c *Client) managementSkillEdits(ctx context.Context, request localhost.Man
 
 func (c *Client) managementSkills(ctx context.Context, request localhost.ManagementRequest) (any, error) {
 	if request.Operation == "skill.list" {
-		if err := proposalFields(request, "source_id", "name", "status", "cursor", "limit"); err != nil {
+		if err := proposalFields(request, "source_id", "name", "name_contains", "status", "cursor", "limit"); err != nil {
 			return nil, err
 		}
 		query, err := managementProposalQuery(request.Fields)
 		if err != nil {
 			return nil, err
+		}
+		if raw, exists := request.Fields["name_contains"]; exists {
+			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				return nil, managementInvalid("name_contains must be a string")
+			}
+			query.NameContains, err = optionalProposalString(request.Fields, "name_contains", 128)
+			if err != nil {
+				return nil, err
+			}
 		}
 		return c.skills.QueryCatalog(ctx, query)
 	}

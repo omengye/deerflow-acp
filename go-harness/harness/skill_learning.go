@@ -357,19 +357,77 @@ type SkillLearningJobPage struct {
 }
 
 type SkillLearningStatus struct {
-	Version                  string `json:"version"`
-	Enabled                  bool   `json:"enabled"`
-	Mode                     string `json:"mode"`
-	IdleSeconds              int64  `json:"idle_seconds"`
-	Pending                  int64  `json:"pending_inputs"`
-	Experiences              int64  `json:"experiences"`
-	ConsolidationEnabled     bool   `json:"consolidation_enabled"`
-	Patterns                 int64  `json:"patterns"`
-	MatchingEnabled          bool   `json:"matching_enabled"`
-	CrossSessionEnabled      bool   `json:"cross_session_enabled"`
-	Matches                  int64  `json:"matches"`
-	ProposalDiscoveryEnabled bool   `json:"proposal_discovery_enabled"`
-	AutoPatchEnabled         bool   `json:"auto_patch_enabled"`
+	Version                  string                   `json:"version"`
+	Enabled                  bool                     `json:"enabled"`
+	Mode                     string                   `json:"mode"`
+	IdleSeconds              int64                    `json:"idle_seconds"`
+	Pending                  int64                    `json:"pending_inputs"`
+	Experiences              int64                    `json:"experiences"`
+	ConsolidationEnabled     bool                     `json:"consolidation_enabled"`
+	Patterns                 int64                    `json:"patterns"`
+	MatchingEnabled          bool                     `json:"matching_enabled"`
+	CrossSessionEnabled      bool                     `json:"cross_session_enabled"`
+	Matches                  int64                    `json:"matches"`
+	ProposalDiscoveryEnabled bool                     `json:"proposal_discovery_enabled"`
+	AutoPatchEnabled         bool                     `json:"auto_patch_enabled"`
+	Running                  bool                     `json:"running"`
+	Queue                    SkillLearningQueueStatus `json:"queue"`
+}
+
+// Queue counts describe captured inputs, except FailedJobs and
+// CaptureLimitedSessions. Ready + Blocked = Pending; queued work is not ready
+// input. These scheduling hints never authorize model calls.
+type SkillLearningQueueStatus struct {
+	Pending                int64                      `json:"pending"`
+	Queued                 int64                      `json:"queued"`
+	Ready                  int64                      `json:"ready"`
+	Blocked                int64                      `json:"blocked"`
+	Skipped                int64                      `json:"skipped"`
+	Failed                 int64                      `json:"failed"`
+	FailedJobs             int64                      `json:"failed_jobs"`
+	CaptureLimitedSessions int64                      `json:"capture_limited_sessions"`
+	Reasons                []SkillLearningQueueReason `json:"reasons"`
+}
+
+type SkillLearningQueueReason struct {
+	Code  string `json:"code"`
+	Count int64  `json:"count"`
+}
+
+type SkillLearningDiagnosticInput struct {
+	RunID     string `json:"run_id"`
+	RootID    string `json:"root_id"`
+	EpisodeID string `json:"episode_id"`
+	State     string `json:"state"`
+	Reason    string `json:"reason"`
+	EndedAt   string `json:"ended_at"`
+	JobID     string `json:"job_id"`
+	RunStatus string `json:"run_status"`
+}
+
+type SkillLearningDiagnosticJob struct {
+	SkillLearningJob
+	Retryable   bool   `json:"retryable"`
+	RetryReason string `json:"retry_reason"`
+}
+
+// Diagnostics is session-scoped host management metadata. It contains no
+// conversation, extracted experience, tool output, model identity or paths.
+type SkillLearningDiagnostics struct {
+	SessionID    string                         `json:"session_id"`
+	ConsentEpoch int64                          `json:"consent_epoch"`
+	Contribute   bool                           `json:"contribute"`
+	Running      bool                           `json:"running"`
+	Queue        SkillLearningQueueStatus       `json:"queue"`
+	Inputs       []SkillLearningDiagnosticInput `json:"inputs"`
+	Jobs         []SkillLearningDiagnosticJob   `json:"jobs"`
+	Truncated    bool                           `json:"truncated"`
+}
+
+type SkillLearningExtractionRetryRequest struct {
+	JobID                string `json:"job_id"`
+	ExpectedEpoch        int64  `json:"expected_epoch"`
+	ExpectedStateVersion int64  `json:"expected_state_version"`
 }
 
 // Extractors receive only a redacted, bounded view. The host verifies every

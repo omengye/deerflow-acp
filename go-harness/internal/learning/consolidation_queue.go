@@ -72,13 +72,12 @@ func (s *Store) QueueConsolidationOne(ctx context.Context) (bool, error) {
 	ctx = withEvidenceCache(ctx, tx)
 	var id, session, owner string
 	err = tx.QueryRowContext(ctx, `SELECT i.experience_id,e.session_id,p.workspace_key FROM df_learning_consolidation_inputs i
- JOIN df_learning_experiences e ON e.id=i.experience_id JOIN df_learning_extractions x ON x.id=e.extraction_id
- JOIN df_learning_episodes p ON p.id=e.episode_id JOIN df_skill_maintenance_jobs extracted ON extracted.id=x.job_id
+ JOIN df_learning_experiences e ON e.id=i.experience_id JOIN df_learning_extractions o ON o.id=e.extraction_id
+ JOIN df_learning_episodes p ON p.id=e.episode_id JOIN df_skill_maintenance_jobs extracted ON extracted.id=o.job_id
  JOIN harness_learning_controls c ON c.session_id=e.session_id
  WHERE i.state='pending' AND i.experience_id>(SELECT cursor FROM df_learning_consolidation_scan WHERE id=1)
- AND c.contribute=1 AND c.epoch=x.epoch AND extracted.state='completed'
- AND NOT EXISTS(SELECT 1 FROM harness_learning_inputs li JOIN harness_runs r ON r.id=li.run_id
- WHERE li.episode_id=e.episode_id AND r.status NOT IN ('completed','failed','cancelled'))
+ AND c.contribute=1 AND c.epoch=o.epoch AND extracted.state='completed'
+ AND NOT (`+episodeTailActivePredicate+`)
  AND NOT EXISTS(SELECT 1 FROM df_learning_consolidations a JOIN df_skill_maintenance_jobs j ON j.id=a.job_id
  WHERE j.state IN ('queued','retry','running') AND (a.session_id=e.session_id OR (? AND
  EXISTS(SELECT 1 FROM harness_learning_sharing sh WHERE sh.session_id=e.session_id AND sh.workspace_shared=1) AND
@@ -226,9 +225,8 @@ func (s *Store) consolidationShortlistTx(ctx context.Context, tx *sql.Tx, sessio
 	result := make([]patternSnapshot, 0, min(len(valid), 8))
 	for _, r := range valid[:min(len(valid), 8)] {
 		var unfinished bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_learning_pattern_members m
- JOIN harness_learning_inputs i ON i.episode_id=m.episode_id JOIN harness_runs r ON r.id=i.run_id
- WHERE m.pattern_id=? AND m.revision=? AND r.status NOT IN ('completed','failed','cancelled'))`, r.id, r.revision).Scan(&unfinished); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_learning_pattern_members o
+ WHERE o.pattern_id=? AND o.revision=? AND `+episodeTailActivePredicate+`)`, r.id, r.revision).Scan(&unfinished); err != nil {
 			return nil, err
 		}
 		if unfinished {

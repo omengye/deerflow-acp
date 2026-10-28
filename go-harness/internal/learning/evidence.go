@@ -38,6 +38,14 @@ type extractionSnapshot struct {
 	View               harness.SkillLearningInput `json:"view"`
 }
 
+// ErrSourceBounds distinguishes bounded-capture rejection from invalid source
+// provenance, including bounds enforced by the host's root evidence reader.
+var ErrSourceBounds = errors.New("learning source exceeds extraction bounds")
+
+func sourceBounds(message string) error {
+	return errors.Join(ErrSourceBounds, invalid(message))
+}
+
 func settledRoot(ctx context.Context, tx *sql.Tx, root string) (bool, error) {
 	var settled bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM budget_roots WHERE id=? AND blocked_reason='' AND held_tokens=0)
@@ -70,7 +78,10 @@ func inputView(ctx context.Context, tx *sql.Tx, src sourceRef) ([]harness.SkillL
 		return nil, err
 	}
 	var input []harness.Content
-	if len(raw) > 2<<20 || digest(raw) != src.InputSHA || json.Unmarshal(raw, &input) != nil {
+	if len(raw) > 2<<20 {
+		return nil, sourceBounds("input exceeds extraction bounds")
+	}
+	if digest(raw) != src.InputSHA || json.Unmarshal(raw, &input) != nil {
 		return nil, invalid("input provenance changed")
 	}
 	var accepted []byte
@@ -115,7 +126,7 @@ func runObservationView(ctx context.Context, tx *sql.Tx, run string, after, fron
 		events++
 		sourceBytes += len(data)
 		if events > 512 || len(data) > 2<<20 || sourceBytes > 4<<20 {
-			err = invalid("episode events exceed extraction bounds")
+			err = sourceBounds("episode events exceed extraction bounds")
 			break
 		}
 		var e harness.RunEvent
@@ -129,7 +140,7 @@ func runObservationView(ctx context.Context, tx *sql.Tx, run string, after, fron
 		}
 		if includeAnswer && e.Kind == "text_delta" && e.AgentName == "deerflow" {
 			if answer.Len()+len(e.Text) > 128<<10 {
-				err = invalid("answer exceeds extraction bounds")
+				err = sourceBounds("answer exceeds extraction bounds")
 				break
 			}
 			answer.WriteString(e.Text)
@@ -160,11 +171,15 @@ func runObservationView(ctx context.Context, tx *sql.Tx, run string, after, fron
 		receipts++
 		sourceBytes += len(data)
 		if receipts > 32 || sourceBytes > 4<<20 {
-			err = invalid("receipts exceed extraction bounds")
+			err = sourceBounds("receipts exceed extraction bounds")
 			break
 		}
 		var receipt harness.ToolReceipt
-		if len(data) > 2<<20 || json.Unmarshal(data, &receipt) != nil || receipt.RunID != run || receipt.SessionID != session || receiptSession != session || receipt.ToolCallID != call || receipt.Version != version || encodedDigest(receipt) != encodedDigest(finalReceipts[call]) {
+		if len(data) > 2<<20 {
+			err = sourceBounds("receipt exceeds extraction bounds")
+			break
+		}
+		if json.Unmarshal(data, &receipt) != nil || receipt.RunID != run || receipt.SessionID != session || receiptSession != session || receipt.ToolCallID != call || receipt.Version != version || encodedDigest(receipt) != encodedDigest(finalReceipts[call]) {
 			err = invalid("receipt provenance changed")
 			break
 		}
@@ -206,8 +221,11 @@ func runObservationView(ctx context.Context, tx *sql.Tx, run string, after, fron
 			return nil, err
 		}
 		reads++
-		if reads > 32 || readSession != session || readRoot != root || !harness.ValidSkillName(ref.SourceID) || !harness.ValidSkillName(ref.Name) {
-			return nil, invalid("skill reads exceed extraction bounds")
+		if reads > 32 {
+			return nil, sourceBounds("skill reads exceed extraction bounds")
+		}
+		if readSession != session || readRoot != root || !harness.ValidSkillName(ref.SourceID) || !harness.ValidSkillName(ref.Name) {
+			return nil, invalid("skill read provenance changed")
 		}
 		ref.Hash = ref.Version
 		refs = append(refs, harness.SkillLearningReference{ID: fmt.Sprintf("skill_read/%d", id), RunID: run, Kind: "skill_read", Skill: &ref, Path: path, Hash: hash, RoleID: role})
@@ -247,44 +265,14 @@ func (s *Store) verifySnapshotEvidenceTx(ctx context.Context, tx *sql.Tx, snap e
 	if epoch != snap.Epoch || !contribute || admission && !enabled || policy != PolicyVersion || workspace != snap.Owner {
 		return harness.ErrPermissionDenied
 	}
-	var active bool
-	if admission {
-		var damaged bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_learning_inputs i JOIN harness_runs r ON r.id=i.run_id
- WHERE i.episode_id=? AND r.status NOT IN ('completed','failed','cancelled')),
- EXISTS(SELECT 1 FROM harness_learning_inputs i JOIN harness_runs r ON r.id=i.run_id
- WHERE i.episode_id=? AND r.status IN ('completed','failed','cancelled') AND NOT EXISTS(
- SELECT 1 FROM harness_learning_outbox o WHERE o.run_id=i.run_id))`, snap.Episode, snap.Episode).Scan(&active, &damaged); err != nil {
-			return err
-		}
-		if damaged {
-			return harness.ErrPermissionDenied
-		}
-	}
 	view := harness.SkillLearningInput{EpisodeID: snap.Episode, References: []harness.SkillLearningReference{}}
 	var prior int64
 	for _, src := range snap.Sources {
-		var live sourceRef
-		var uncertain bool
-		err := tx.QueryRowContext(ctx, `SELECT o.sequence,i.run_id,i.root_id,i.input_id,i.input_sha,i.accepted_sequence,o.frontier,o.epoch,o.status,o.ended_at,o.effects_uncertain
- FROM harness_learning_outbox o JOIN harness_learning_inputs i ON i.run_id=o.run_id
- JOIN harness_runs r ON r.id=i.run_id WHERE o.sequence=? AND i.session_id=? AND i.episode_id=? AND r.status=o.status AND r.updated_at=o.ended_at AND i.epoch=o.epoch
- AND i.policy_version=? AND o.frontier=(SELECT MAX(sequence) FROM harness_events WHERE run_id=i.run_id)`, src.Outbox, snap.Session, snap.Episode, PolicyVersion).Scan(&live.Outbox, &live.Run, &live.Root, &live.Input, &live.InputSHA, &live.Accepted, &live.Frontier, &live.Epoch, &live.Status, &live.Ended, &uncertain)
-		if err != nil {
-			return err
-		}
-		if live != src || live.Epoch != snap.Epoch || uncertain || live.Status == "cancelled" || src.Outbox <= prior {
+		if src.Outbox <= prior {
 			return harness.ErrPermissionDenied
 		}
 		prior = src.Outbox
-		settled, err := settledRoot(ctx, tx, src.Root)
-		if err != nil {
-			return err
-		}
-		if !settled {
-			return harness.ErrPermissionDenied
-		}
-		refs, err := inputView(ctx, tx, src)
+		refs, err := verifiedSourceViewTx(ctx, tx, src, snap.Session, snap.Episode, snap.Epoch)
 		if err != nil {
 			return err
 		}
@@ -298,8 +286,37 @@ func (s *Store) verifySnapshotEvidenceTx(ctx context.Context, tx *sql.Tx, snap e
 	if encodedDigest(view) != encodedDigest(snap.View) {
 		return harness.ErrPermissionDenied
 	}
-	if active {
-		return sourceActiveTx(ctx, tx)
+	if admission {
+		active, err := episodeTailActiveTx(ctx, tx, snap.Episode, snap.Epoch)
+		if err != nil {
+			return err
+		}
+		if active {
+			return sourceActiveTx(ctx, tx)
+		}
 	}
 	return nil
+}
+
+func verifiedSourceViewTx(ctx context.Context, tx *sql.Tx, src sourceRef, session, episode string, epoch int64) ([]harness.SkillLearningReference, error) {
+	var live sourceRef
+	var uncertain bool
+	err := tx.QueryRowContext(ctx, `SELECT o.sequence,i.run_id,i.root_id,i.input_id,i.input_sha,i.accepted_sequence,o.frontier,o.epoch,o.status,o.ended_at,o.effects_uncertain
+ FROM harness_learning_outbox o JOIN harness_learning_inputs i ON i.run_id=o.run_id
+ JOIN harness_runs r ON r.id=i.run_id WHERE o.sequence=? AND i.session_id=? AND i.episode_id=? AND r.status=o.status AND r.updated_at=o.ended_at AND i.epoch=o.epoch
+ AND i.policy_version=? AND o.frontier=(SELECT MAX(sequence) FROM harness_events WHERE run_id=i.run_id)`, src.Outbox, session, episode, PolicyVersion).Scan(&live.Outbox, &live.Run, &live.Root, &live.Input, &live.InputSHA, &live.Accepted, &live.Frontier, &live.Epoch, &live.Status, &live.Ended, &uncertain)
+	if err != nil {
+		return nil, err
+	}
+	if live != src || live.Epoch != epoch || uncertain || live.Status == "cancelled" {
+		return nil, harness.ErrPermissionDenied
+	}
+	settled, err := settledRoot(ctx, tx, src.Root)
+	if err != nil {
+		return nil, err
+	}
+	if !settled {
+		return nil, harness.ErrPermissionDenied
+	}
+	return inputView(ctx, tx, src)
 }

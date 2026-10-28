@@ -88,12 +88,15 @@ func (s *Store) captureRootTx(ctx context.Context, tx *sql.Tx, snap *extractionS
 		if err != nil {
 			return rootEvidenceFailure(err)
 		}
+		if len(members) > 8 {
+			return sourceBounds("root member bounds")
+		}
 		if !validRootMembers(members, src.Run) {
 			return invalid("invalid bounded root evidence")
 		}
 		snap.Roots = append(snap.Roots, rootCapture{Source: src.Run, Members: members})
 		if rootObservationCount(*snap) > 8 {
-			return invalid("root observation bounds")
+			return sourceBounds("root observation bounds")
 		}
 		for _, member := range members {
 			refs, err := runObservationView(ctx, tx, member.Run, 0, member.Frontier, false)

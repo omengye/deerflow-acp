@@ -25,6 +25,9 @@ func validStatus(status string) bool {
 
 func (s *Service) querySources(q harness.SkillQuery, kind string) (map[string]harness.SkillTarget, string, []any, pageCursor, error) {
 	cursor := pageCursor{Kind: kind}
+	if q.NameContains != "" {
+		return nil, "", nil, cursor, invalid("name substring filter is only supported for the catalog")
+	}
 	if q.Limit < 1 || q.Limit > 100 || !validStatus(q.Status) || len(q.Cursor) > 2048 || !bounded(q.SourceID, 128) || !bounded(q.Name, 128) {
 		return nil, "", nil, cursor, invalid("query is invalid")
 	}

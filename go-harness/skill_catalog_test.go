@@ -69,6 +69,18 @@ func TestSkillCatalogAuthenticatedManagement(t *testing.T) {
 		t.Fatalf("catalog: %+v", page)
 	}
 	entry := page.Skills[0]
+	call(map[string]any{"operation": "skill.list", "name_contains": "  EAR  ", "status": "current", "limit": 1}, "", &page)
+	if len(page.Skills) != 1 || page.Skills[0].Target != entry.Target {
+		t.Fatalf("catalog substring filter did not pass through authenticated management: %+v", page)
+	}
+	call(map[string]any{"operation": "skill.list", "name": "rese"}, "", &page)
+	if len(page.Skills) != 0 {
+		t.Fatalf("exact name filter became a substring query: %+v", page)
+	}
+	call(map[string]any{"operation": "skill.list", "name_contains": " \t "}, "", &page)
+	if len(page.Skills) != 1 || page.Skills[0].Target != entry.Target {
+		t.Fatalf("empty substring did not list current catalog: %+v", page)
+	}
 	var detail harness.SkillCatalogDetail
 	call(map[string]any{"operation": "skill.get", "target": entry.Target}, "", &detail)
 	if detail.Skill.Head != entry.Head || detail.CatalogVersion != page.CatalogVersion {
@@ -143,6 +155,19 @@ func TestSkillCatalogManagementRejectsIncompleteAndUnknownFields(t *testing.T) {
 	for _, bad := range []map[string]any{
 		{"operation": "skill.list", "status": "published"},
 		{"operation": "skill.list", "limit": 101},
+		{"operation": "skill.list", "name_contains": nil},
+		{"operation": "skill.list", "name_contains": true},
+		{"operation": "skill.list", "name_contains": 42},
+		{"operation": "skill.list", "name_contains": []string{"rese"}},
+		{"operation": "skill.list", "name_contains": strings.Repeat("x", 129)},
+		{"operation": "skill.list", "name_contains": "rese\x00"},
+		{"operation": "skill.get", "target": entry.Target, "name_contains": "rese"},
+		{"operation": "proposal.list", "name_contains": "rese"},
+		{"operation": "proposal.history", "name_contains": "rese"},
+		{"operation": "skill.signals.list", "name_contains": "rese"},
+		{"operation": "skill.generation.list", "name_contains": "rese"},
+		{"operation": "skill.auto_patch.list", "name_contains": "rese"},
+		{"operation": "skill.discovery.list", "name_contains": "rese"},
 		{"operation": "skill.get", "target": entry.Target, "actor": "forged"},
 		{"operation": "skill.set_enabled", "target": entry.Target, "expected_head": map[string]any{"version": entry.Head.Version, "state_version": entry.Head.StateVersion}, "enabled": false, "request_key": "incomplete-head"},
 		{"operation": "skill.set_enabled", "target": entry.Target, "expected_head": entry.Head, "enabled": "false", "request_key": "string-boolean"},

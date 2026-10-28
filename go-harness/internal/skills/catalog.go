@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
@@ -36,6 +37,10 @@ func (r *Registry) QueryCatalog(ctx context.Context, q harness.SkillQuery) (harn
 	if q.Limit < 1 || q.Limit > 100 || len(q.Cursor) > 2048 || len(q.SourceID) > 128 || q.Name != "" && !validName(q.Name) {
 		return page, invalid("invalid catalog query")
 	}
+	if len(q.NameContains) > 128 || !utf8.ValidString(q.NameContains) || strings.ContainsRune(q.NameContains, 0) {
+		return page, invalid("invalid catalog name substring")
+	}
+	q.NameContains = strings.ToLower(strings.TrimSpace(q.NameContains))
 	if q.Status != "" && q.Status != "current" && q.Status != "enabled" && q.Status != "disabled" && q.Status != "deleted" {
 		return page, invalid("catalog status must be current, enabled, disabled or deleted")
 	}
@@ -58,6 +63,11 @@ func (r *Registry) QueryCatalog(ctx context.Context, q harness.SkillQuery) (harn
 	}
 	filter, _ := json.Marshal([]any{page.Sources, q.Name, q.Status, exportKey})
 	cursor := catalogCursor{Kind: "skill-catalog-v1", Filter: digest(filter)}
+	if q.NameContains != "" {
+		// Keep existing exact-name/list cursors valid when no substring is requested.
+		filter, _ = json.Marshal([]any{cursor.Filter, map[string]string{"name_contains": q.NameContains}})
+		cursor.Filter = digest(filter)
+	}
 	if q.Cursor != "" {
 		var saved catalogCursor
 		data, err := base64.RawURLEncoding.DecodeString(q.Cursor)
@@ -77,6 +87,10 @@ func (r *Registry) QueryCatalog(ctx context.Context, q harness.SkillQuery) (harn
 	if q.Name != "" {
 		where += " AND c.name=?"
 		args = append(args, q.Name)
+	}
+	if q.NameContains != "" {
+		where += " AND instr(c.name, ?)>0"
+		args = append(args, q.NameContains)
 	}
 	switch q.Status {
 	case "current":

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -76,7 +77,7 @@ func TestSkillLearningAutoPatchSDKIndependentStartupGrantAndManagementStatus(t *
 			}
 			data, err := c.ManageLocal(ctx, localhost.ManagementRequest{Operation: "skill.learning.status"})
 			managed, ok := data.(harness.SkillLearningStatus)
-			if err != nil || !ok || managed != status {
+			if err != nil || !ok || !reflect.DeepEqual(managed, status) {
 				t.Fatal("management status differs from trusted SDK", data, status, err)
 			}
 			patch, err := c.SkillAutoPatchStatus(ctx)

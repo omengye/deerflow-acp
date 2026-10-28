@@ -112,8 +112,9 @@ func (s *Store) consolidationEpisodesTx(ctx context.Context, tx *sql.Tx, referen
 
 func episodesReadyTx(ctx context.Context, tx *sql.Tx, episodes string, args ...any) (bool, error) {
 	var busy bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_learning_inputs i JOIN harness_runs r ON r.id=i.run_id
- WHERE i.episode_id IN (`+episodes+`) AND r.status NOT IN ('completed','failed','cancelled'))`, args...).Scan(&busy)
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM
+ (SELECT DISTINCT episode_id,epoch FROM harness_learning_inputs WHERE episode_id IN (`+episodes+`)) o
+ WHERE `+episodeTailActivePredicate+`)`, args...).Scan(&busy)
 	return !busy, err
 }
 

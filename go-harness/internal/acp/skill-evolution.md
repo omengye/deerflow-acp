@@ -98,7 +98,7 @@ use `{ "ok": false, "code": "...", "error": "..." }`. Expected errors include
 | `proposal.approve` | `proposal_id`; optional `expected_state_version`, `expected_base_sha256`, `note` | `proposal`, `catalog_version` |
 | `proposal.reject` | Same review fields | `proposal`, `catalog_version` |
 | `proposal.rollback` | `name`, integer `version`; optional `source_id`, `expected_head`, `request_key`, `note`, full `target` | `revision`, `catalog_version` |
-| `skill.list` | Optional `source_id`, `name`, `status`, `cursor`, `limit` | `skills`, configured `sources`, `catalog_version`, optional `next_cursor` |
+| `skill.list` | Optional `source_id`, `name`, `name_contains`, `status`, `cursor`, `limit` | `skills`, configured `sources`, `catalog_version`, optional `next_cursor` |
 | `skill.get` | Full `target` | `skill`, `catalog_version` |
 | `skill.set_enabled` | Full `target`, full `expected_head`, boolean `enabled`, stable `request_key` | `skill`, `catalog_version`, original `applied_head`, `replayed` |
 | `skill.imports.refresh` | Full `target`, full `expected_head` | `skill`, `catalog_version` after one advisory filesystem check |
@@ -530,8 +530,20 @@ candidate's destination; generation must validate the current target grant.
 
 ### Catalog and durable enablement
 
-`skill.list` status is `enabled`, `disabled` or `deleted`; proposal status names
-are not accepted here. Tombstones remain manageable. Entries expose `target`,
+`skill.list` status is `current`, `enabled`, `disabled` or `deleted`; omitted status
+includes every state. `current` includes enabled and disabled skills but excludes
+deleted history. Proposal status names are not accepted here. Tombstones remain
+manageable. `name` matches the full skill name exactly. The catalog-only
+`name_contains` filter matches a case-insensitive literal substring of the name,
+so `inst`, `INST` and `box-` match `instabox-exec-windows`. It accepts a string of
+up to 128 UTF-8 bytes, trims surrounding whitespace, and treats an empty value as
+no filter. Null, non-string values and NUL characters are invalid; `%` and `_` are
+literal characters, not wildcards. When both name filters are present, both must
+match. Filtering runs before pagination across all configured sources. Other
+management operations reject `name_contains`; other SDK evolution queries reject
+nonempty `SkillQuery.NameContains` values.
+
+Entries expose `target`,
 `head`, optional live `record`, `builtin`, `managed_source`, `overlay_base`,
 `import_observation`, `export` and `can_refresh_import`. Sources describe current
 configured policy, including sources with no installed skills. Bodies, raw source
@@ -543,6 +555,8 @@ identity and the publication catalog revision. Any changed publication revision
 returns `conflict`; restart from page one. Advisory import/export progress does
 not change that revision. Page size is 1–100 (MANAGE defaults to 50); metadata
 pages are bounded to approximately 2 MiB, and clients must follow `next_cursor`.
+Substring cursors bind the normalized keyword; changing or clearing it requires a
+fresh first page. Empty substring queries retain the existing list cursor format.
 
 These new commands require explicit full preconditions; missing, null or unknown
 fields are rejected. `target` has `source_id`, `source_identity`, `name`, `scope`
