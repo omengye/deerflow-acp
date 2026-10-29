@@ -116,8 +116,17 @@ func runMixedRoleTree(t *testing.T, modes string, restart bool, options ...bool)
 		writeTreeModelResponse(w, request.Stream, message, finish)
 	}))
 	defer provider.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	// Setup and reopening the durable SDK can be slow on Windows runners.
+	// Bound each asynchronous wait separately from the whole scenario.
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
+	started := time.Now()
+	phase := "initialize tree"
+	markPhase := func(name string) {
+		t.Helper()
+		phase = name
+		t.Logf("mixed tree phase=%q elapsed=%s", phase, time.Since(started))
+	}
 	depth, concurrent, count := 3, 1, 3
 	limits := harness.BudgetLimits{MaxModelCalls: 30, MaxToolCalls: 12, MaxTokens: 100000, MaxOutputTokens: 128}
 	cfg := Config{DataDir: t.TempDir(), Provider: "openai", Model: "parent", APIKey: "fixture", BaseURL: provider.URL + "/v1", BackgroundWorkers: 1, PermissionMode: harness.PermissionModeOff, Budget: &limits,
@@ -173,11 +182,20 @@ func runMixedRoleTree(t *testing.T, modes string, restart bool, options ...bool)
 	reopened := false
 	updates := make(chan harness.RunResult, 2)
 	updateErrors := make(chan error, 1)
+	wait, stopWait := context.WithTimeout(ctx, 45*time.Second)
+	defer func() { stopWait() }()
+	markPhase("wait for initial tree")
+	fail := func(err error) {
+		t.Helper()
+		t.Fatalf("mixed tree phase=%q elapsed=%s: %v; last=%+v pool=%+v", phase, time.Since(started), err, tasks, client.store.DB().Stats())
+	}
 	for {
-		tasks, err = client.BackgroundTasks(ctx, session.ID, "", 100)
+		var current []harness.BackgroundTask
+		current, err = client.BackgroundTasks(wait, session.ID, "", 100)
 		if err != nil {
-			t.Fatal(err)
+			fail(err)
 		}
+		tasks = current
 		complete := len(tasks) == strings.Count(modes, "B")
 		if restart && !reopened && complete {
 			paused := true
@@ -185,6 +203,8 @@ func runMixedRoleTree(t *testing.T, modes string, restart bool, options ...bool)
 				paused = paused && task.Status == "waiting_input" && task.Interaction != nil
 			}
 			if paused {
+				stopWait()
+				markPhase("reopen paused tree")
 				if err = client.Close(); err != nil {
 					t.Fatal(err)
 				}
@@ -198,6 +218,8 @@ func runMixedRoleTree(t *testing.T, modes string, restart bool, options ...bool)
 					t.Fatal(err)
 				}
 				reopened = true
+				wait, stopWait = context.WithTimeout(ctx, 45*time.Second)
+				markPhase("wait for resumed tree")
 				if automatic {
 					go func() {
 						updateErrors <- client.ServeSessionUpdates(ctx, session.ID, harness.SessionUpdates{Result: func(_ context.Context, result harness.RunResult, err error) error {
@@ -212,7 +234,7 @@ func runMixedRoleTree(t *testing.T, modes string, restart bool, options ...bool)
 		}
 		for _, task := range tasks {
 			if task.Status == "failed" || task.Status == "canceled" || task.BlockedReason != "" {
-				t.Fatalf("mixed task failed: %+v", task)
+				fail(fmt.Errorf("mixed task failed: %+v", task))
 			}
 			complete = complete && task.Status == "completed"
 			if task.Status == "waiting_input" && task.Interaction != nil && task.Interaction.Resumable {
@@ -223,8 +245,8 @@ func runMixedRoleTree(t *testing.T, modes string, restart bool, options ...bool)
 				if leaf && restart && !reopened {
 					continue
 				}
-				if _, err = client.ApproveBackgroundTask(ctx, session.ID, task.ID, harness.TaskApproval{ID: task.Interaction.ID, TaskVersion: task.Version, Decision: harness.AllowOnce}); err != nil {
-					t.Fatal(err)
+				if _, err = client.ApproveBackgroundTask(wait, session.ID, task.ID, harness.TaskApproval{ID: task.Interaction.ID, TaskVersion: task.Version, Decision: harness.AllowOnce}); err != nil {
+					fail(err)
 				}
 			}
 		}
@@ -237,8 +259,8 @@ func runMixedRoleTree(t *testing.T, modes string, restart bool, options ...bool)
 					}
 				case err := <-updateErrors:
 					t.Fatalf("automatic updates stopped: %v", err)
-				case <-ctx.Done():
-					t.Fatal("automatic mixed resume stalled")
+				case <-wait.Done():
+					fail(fmt.Errorf("automatic mixed resume stalled: %w", wait.Err()))
 				}
 				break
 			}
@@ -260,9 +282,9 @@ func runMixedRoleTree(t *testing.T, modes string, restart bool, options ...bool)
 			break
 		}
 		select {
-		case <-ctx.Done():
-			t.Fatalf("mixed tree stalled: %+v", tasks)
-		case <-time.After(10 * time.Millisecond):
+		case <-wait.Done():
+			fail(wait.Err())
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 	rows, err := client.store.DB().QueryContext(ctx, `SELECT id,root_id,parent_id,depth,spec_json FROM harness_agent_invocations WHERE root_id=? ORDER BY depth`, result.Execution.RunID)

@@ -241,7 +241,7 @@ func runBackgroundParentContinuation(t *testing.T, modes string, automatic bool,
 					return task
 				}
 				if task.Status == "failed" || task.Status == "canceled" {
-					t.Fatalf("native task failed: %+v", task)
+					fail(fmt.Errorf("native task failed: %+v", task))
 				}
 				allDone = allDone && task.Status == "completed"
 				if approve && task.Status == "waiting_input" && task.Interaction != nil {
