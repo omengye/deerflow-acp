@@ -177,7 +177,7 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 	case "skill.verify":
 		data, err := c.managementSkillVerify(ctx, request)
 		return data, proposalManagementError(err)
-	case "skill.list", "skill.get", "skill.set_enabled", "skill.imports.refresh", "skill.export.retry":
+	case "skill.list", "skill.get", "skill.set_enabled", "skill.delete", "skill.imports.refresh", "skill.export.retry":
 		data, err := c.managementSkills(ctx, request)
 		return data, proposalManagementError(err)
 	case "skill.edits.list", "skill.edits.reconcile":

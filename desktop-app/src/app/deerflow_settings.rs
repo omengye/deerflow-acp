@@ -1099,7 +1099,7 @@ impl Waku {
                             } else {
                                 this.deerflow_managed(&management_request, data, cx);
                             }
-                            if matches!(management_request["operation"].as_str(), Some("proposal.approve" | "proposal.publish_retry" | "proposal.reject" | "proposal.rollback" | "skill.set_enabled"))
+                            if matches!(management_request["operation"].as_str(), Some("proposal.approve" | "proposal.publish_retry" | "proposal.reject" | "proposal.rollback" | "skill.set_enabled" | "skill.delete"))
                                 && !this.deerflow_settings.skill_center_loads.iter().any(|request| request["operation"] == "skill.auto_patch.status")
                             {
                                 this.deerflow_settings.skill_center_loads.push_back(json!({"operation":"skill.auto_patch.status"}));

@@ -45,6 +45,25 @@ func (r *Registry) SetEnabledChecked(ctx context.Context, request harness.SkillE
 	})
 }
 
+// DeleteChecked removes the installation without model review. This is a
+// host-owned catalog command, not permission for an agent to publish content.
+// Retaining the source also permits removal of read-only builtins.
+func (r *Registry) DeleteChecked(ctx context.Context, request harness.SkillDeletion) (harness.SkillManagementResult, error) {
+	if !validManagementHead(request.Expected) {
+		return harness.SkillManagementResult{}, invalid("deletion requires an existing expected head")
+	}
+	return r.catalogCommand(ctx, request.Target, request.RequestKey, request.Actor, "delete", request, func(p *PublicationTx) (SkillHead, error) {
+		h, err := p.Current()
+		if err != nil {
+			return h, err
+		}
+		if h != request.Expected {
+			return h, harness.ErrSkillConflict
+		}
+		return p.moveHead(h, "", false, true, "", "")
+	})
+}
+
 // RetryExportChecked queues one exact observed export state. A retry of the
 // same request key never resets attempts again, even after exporter progress.
 func (r *Registry) RetryExportChecked(ctx context.Context, request harness.SkillExportRetry) (harness.SkillManagementResult, error) {
@@ -112,6 +131,8 @@ func (r *Registry) catalogCommand(ctx context.Context, target harness.SkillTarge
 		}
 	case harness.SkillExportRetry:
 		expectedApplied = command.Expected
+	case harness.SkillDeletion:
+		expectedApplied = SkillHead{StateVersion: command.Expected.StateVersion + 1, Managed: true}
 	default:
 		return result, invalid("unsupported skill management command")
 	}

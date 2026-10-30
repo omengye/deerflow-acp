@@ -25,6 +25,17 @@ func (r *Registry) refreshSource(p *PublicationTx, dir string, initial *bool) er
 	if err != nil {
 		return err
 	}
+	if head.Managed && !head.Exists {
+		var removed bool
+		if err = p.tx.QueryRowContext(p.ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_management_requests WHERE source_key=? AND name=? AND operation='delete' AND json_extract(applied_head,'$.state_version')=?)`, p.source.identity, p.name, head.StateVersion).Scan(&removed); err != nil {
+			return err
+		}
+		if removed {
+			// A desktop removal must survive startup and advisory source scans.
+			// Only an explicit publication can install a new current version.
+			return p.recordSourceStatus(dir, "deleted", "", "")
+		}
+	}
 	if head.StateVersion == 0 {
 		var guarded bool
 		if err = p.tx.QueryRowContext(p.ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_creation_guards WHERE source_key=? AND name=?)`, p.source.identity, p.name).Scan(&guarded); err != nil {

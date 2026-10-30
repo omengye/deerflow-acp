@@ -452,6 +452,7 @@ func (s *smoke) run() {
 	oldRuntime, cursor := s.startChat(session, nil)
 	s.textAttachment(session, oldRuntime, true)
 	s.skill(session, oldRuntime)
+	checkDeletedSkill := s.directSkillDelete()
 	s.pythonSkill(session, oldRuntime)
 	approvalRuntime, approvalCursor := s.startApproval(approvalSession, nil)
 	s.writeTurn(approvalSession, approvalRuntime, "full-access.txt", "", "", false, false)
@@ -475,6 +476,7 @@ func (s *smoke) run() {
 	saved = object(applied["document"])
 	need(object(array(saved["models"])[0])["display_name"] == "Applied smoke model" && str(object(applied["status"])["apply_error"]) == "", "save-and-apply failed")
 	state = s.settled()
+	checkDeletedSkill()
 	need(state["config_revision"] == saved["config_revision"], "runtime did not apply saved revision")
 	if generation != nil {
 		need(state["applied_generation"].(float64) > generation.(float64), "apply generation did not advance")
@@ -518,6 +520,7 @@ func (s *smoke) run() {
 	}
 	current, _ := s.startChat(session, cursor)
 	s.textAttachment(session, current, false)
+	s.skill(session, current)
 	w.rpc(obj{"type": "closeSession"}, session, current)
 	approvalRuntime, _ = s.startApproval(approvalSession, approvalCursor)
 	s.writeTurn(approvalSession, approvalRuntime, "restored-ask-rejected.txt", "reject_once", "", false, true)

@@ -58,6 +58,15 @@ type SkillEnablement struct {
 	Actor      string      `json:"actor"`
 }
 
+// SkillDeletion removes a catalog installation directly at the operator's
+// request. Immutable versions and source files remain available to old tasks.
+type SkillDeletion struct {
+	Target     SkillTarget `json:"target"`
+	Expected   SkillHead   `json:"expected_head"`
+	RequestKey string      `json:"request_key"`
+	Actor      string      `json:"actor"`
+}
+
 type SkillExportRetry struct {
 	Target        SkillTarget `json:"target"`
 	Expected      SkillHead   `json:"expected_head"`

@@ -88,6 +88,8 @@ func (c *Client) managementSkills(ctx context.Context, request localhost.Managem
 	switch request.Operation {
 	case "skill.set_enabled":
 		allowed = append(allowed, "enabled", "request_key")
+	case "skill.delete":
+		allowed = append(allowed, "request_key")
 	case "skill.export.retry":
 		allowed = append(allowed, "expected_export_token", "request_key")
 	}
@@ -118,6 +120,9 @@ func (c *Client) managementSkills(ctx context.Context, request localhost.Managem
 			return nil, managementInvalid("enabled must be a boolean")
 		}
 		return c.skills.SetEnabledChecked(ctx, harness.SkillEnablement{Target: target, Expected: head, Enabled: *enabled, RequestKey: key, Actor: "desktop"})
+	}
+	if request.Operation == "skill.delete" {
+		return c.skills.DeleteChecked(ctx, harness.SkillDeletion{Target: target, Expected: head, RequestKey: key, Actor: "desktop"})
 	}
 	token, err := managementID(request.Fields, "expected_export_token")
 	if err != nil {

@@ -32,6 +32,16 @@ The host orders before applying the page limit; the desktop normalizes each
 received page once, outside rendering. Old cursors from name/ID ordering must be
 refreshed from the first page.
 
+Installed rows and details include a direct Delete action. One click sends the
+host-owned `skill.delete` command with the observed source/head and a stable
+request key; it performs no model review and opens no confirmation dialog. A
+successful reply removes the current row and refreshes pagination under the same
+search/filter. Unknown results retain the original request for an idempotent retry.
+Deletion removes the installation, including builtins, and persists across source
+scans and restarts. Source files and immutable task snapshots remain intact;
+deleted installation metadata stays available in the existing history filter.
+Model-generated delete proposals continue to use their normal review workflow.
+
 ## Reviews and rollback
 
 Pending and all-proposal lists use `proposal.list`; publication history uses the

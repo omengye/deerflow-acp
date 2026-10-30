@@ -37,6 +37,17 @@ func (c *Client) SetSkillEnabledChecked(ctx context.Context, request harness.Ski
 	return c.skills.SetEnabledChecked(ctx, request)
 }
 
+// DeleteSkillChecked removes a current installation directly. Source files and
+// immutable task snapshots are retained; startup imports cannot undo removal.
+func (c *Client) DeleteSkillChecked(ctx context.Context, request harness.SkillDeletion) (harness.SkillManagementResult, error) {
+	done, err := c.operation()
+	if err != nil {
+		return harness.SkillManagementResult{}, err
+	}
+	defer done()
+	return c.skills.DeleteChecked(ctx, request)
+}
+
 func (c *Client) RefreshSkillImport(ctx context.Context, target harness.SkillTarget, expected harness.SkillHead) (harness.SkillCatalogDetail, error) {
 	done, err := c.operation()
 	if err != nil {

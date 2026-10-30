@@ -117,6 +117,12 @@ impl CatalogSkill {
         request
     }
 
+    fn delete_request(&self) -> Value {
+        let mut request = self.request("skill.delete");
+        request["request_key"] = json!(Uuid::new_v4().to_string());
+        request
+    }
+
     fn export_request(&self) -> Value {
         let mut request = self.request("skill.export.retry");
         request["expected_export_token"] = self.export["stateToken"].clone();
@@ -185,6 +191,7 @@ fn mutation(request: &Value) -> bool {
             request["operation"].as_str(),
             Some(
                 "skill.set_enabled"
+                    | "skill.delete"
                     | "skill.generation.enqueue"
                     | "skill.generation.cancel"
                     | "skill.feedback.submit"
@@ -201,6 +208,15 @@ fn mutation(request: &Value) -> bool {
 }
 
 impl SkillBrowser {
+    fn catalog_refresh_request(&self) -> Value {
+        let mut query = self
+            .catalog_nav
+            .current_request()
+            .unwrap_or_else(|| catalog_request("", ""));
+        query.as_object_mut().unwrap().remove("cursor");
+        query
+    }
+
     pub(super) fn set_learning_session(&mut self, session: Option<&str>) {
         self.learning.set_session(session);
         self.learning.invalidate();
@@ -383,6 +399,13 @@ impl SkillBrowser {
                     expected.enabled = enabled;
                 }
             }
+            if request["operation"] == "skill.delete" {
+                expected.version.clear();
+                expected.state_version += 1;
+                expected.exists = false;
+                expected.enabled = false;
+                expected.managed = true;
+            }
             let applied: Head = serde_json::from_value(data["applied_head"].clone())?;
             anyhow::ensure!(
                 applied == expected && data["replayed"].is_boolean(),
@@ -393,11 +416,19 @@ impl SkillBrowser {
         detail.skill.validate()?;
         let target: Target = serde_json::from_value(request["target"].clone())?;
         anyhow::ensure!(target == detail.skill.target, "技能响应与请求来源不一致");
+        let removed = request["operation"] == "skill.delete" && !detail.skill.head.exists;
+        let show_deleted = self
+            .catalog_nav
+            .current_request()
+            .is_some_and(|query| query["status"] == "deleted");
         if let Some(page) = self.catalog.as_mut() {
             if page.catalog_version != detail.catalog_version {
                 self.catalog_stale = true;
             }
-            if let Some(skill) = page
+            if removed && !show_deleted {
+                page.skills
+                    .retain(|skill| skill.target != detail.skill.target);
+            } else if let Some(skill) = page
                 .skills
                 .iter_mut()
                 .find(|skill| skill.target == detail.skill.target)
@@ -406,7 +437,7 @@ impl SkillBrowser {
                 sort_recent_first(&mut page.skills, CatalogSkill::timestamp);
             }
         }
-        self.selected = Some(detail);
+        self.selected = if removed { None } else { Some(detail) };
         if self.retry.as_ref() == Some(request) {
             self.retry = None;
             self.retry_service = None;
@@ -1074,11 +1105,14 @@ impl Waku {
                 .deerflow_settings
                 .skill_browser
                 .accept_catalog(request, data),
-            "skill.get" | "skill.set_enabled" | "skill.imports.refresh" | "skill.export.retry" => {
-                self.deerflow_settings
-                    .skill_browser
-                    .accept_detail(request, data)
-            }
+            "skill.get"
+            | "skill.set_enabled"
+            | "skill.delete"
+            | "skill.imports.refresh"
+            | "skill.export.retry" => self
+                .deerflow_settings
+                .skill_browser
+                .accept_detail(request, data),
             _ => {
                 if mutation(request) {
                     if let Err(error) = validate_review_result(request, &data) {
@@ -1101,6 +1135,15 @@ impl Waku {
             return;
         }
         self.deerflow_settings.confirm_manage = None;
+        if operation == "skill.delete" {
+            // A mutation expires keyset cursors. Refresh the first page under
+            // the same search/filter after immediately removing the row.
+            let query = self
+                .deerflow_settings
+                .skill_browser
+                .catalog_refresh_request();
+            self.deerflow_settings.skill_center_loads.push_front(query);
+        }
         if operation == "skill.learning.extraction.retry" {
             if let Some(query) = self
                 .deerflow_settings
@@ -1143,6 +1186,7 @@ impl Waku {
         self.deerflow_settings.notice = Some(
             match operation {
                 "skill.set_enabled" => "技能启停状态已保存，对新任务生效。",
+                "skill.delete" => "技能已从列表中删除。",
                 "skill.imports.refresh" => "源变化检查已完成；已发布技能保持当前版本。",
                 "skill.export.retry" => "已提交导出检查与重试；刷新详情可查看结果。",
                 "skill.generation.enqueue" => {
@@ -1174,7 +1218,7 @@ impl Waku {
             state.busy() || state.applying() || state.status["running"].as_bool() != Some(true);
         let mut group = df_group(theme).child(df_label(
             "已安装技能",
-            "默认仅显示当前技能；已删除项保留在历史筛选中。启停立即保存，对新任务生效。",
+            "启停和删除立即生效。删除后不再用于新任务，已有任务保留原快照。",
             theme,
         ));
         let mut filters = div().flex().flex_wrap().gap(px(6.0));
@@ -1267,28 +1311,50 @@ impl Waku {
                 } else {
                     "已停用"
                 };
-                list = list.child(df_button(
-                    SharedString::from(format!("df-skill-{key}")),
-                    format!(
-                        "{} / {} · {status}",
-                        skill.target.source_id, skill.target.name
-                    ),
-                    unavailable,
-                    browser
-                        .selected
-                        .as_ref()
-                        .is_some_and(|detail| detail.skill.target == skill.target),
-                    theme,
-                    cx,
-                    move |this, _, cx| {
-                        this.deerflow_settings.skill_browser.rollback = None;
-                        this.deerflow_request(
-                            "manage",
-                            json!({"operation":"skill.get","target":target}),
-                            cx,
-                        );
-                    },
-                ));
+                let mut row = div().flex().items_center().gap(px(6.0)).child(
+                    df_button(
+                        SharedString::from(format!("df-skill-{key}")),
+                        format!(
+                            "{} / {} · {status}",
+                            skill.target.source_id, skill.target.name
+                        ),
+                        unavailable,
+                        browser
+                            .selected
+                            .as_ref()
+                            .is_some_and(|detail| detail.skill.target == skill.target),
+                        theme,
+                        cx,
+                        move |this, _, cx| {
+                            this.deerflow_settings.skill_browser.rollback = None;
+                            this.deerflow_request(
+                                "manage",
+                                json!({"operation":"skill.get","target":target}),
+                                cx,
+                            );
+                        },
+                    )
+                    .flex_1()
+                    .min_w(px(0.0)),
+                );
+                if skill.head.exists {
+                    let observed = skill.clone();
+                    row = row.child(df_button(
+                        SharedString::from(format!("df-skill-delete-{key}")),
+                        "删除",
+                        unavailable
+                            || state.dirty
+                            || browser.mutations_pending()
+                            || browser.catalog_stale,
+                        false,
+                        theme,
+                        cx,
+                        move |this, _, cx| {
+                            this.deerflow_request("manage", observed.delete_request(), cx);
+                        },
+                    ));
+                }
+                list = list.child(row);
             }
             list = list.child(self.render_skill_page_nav(
                 "catalog",
@@ -1399,6 +1465,18 @@ impl Waku {
                     cx,
                     move |this, _, cx| {
                         this.deerflow_request("manage", observed.enable_request(), cx);
+                    },
+                ));
+                let observed = skill.clone();
+                actions = actions.child(df_button(
+                    "df-skill-detail-delete",
+                    "删除技能",
+                    disabled || browser.catalog_stale,
+                    false,
+                    theme,
+                    cx,
+                    move |this, _, cx| {
+                        this.deerflow_request("manage", observed.delete_request(), cx);
                     },
                 ));
             }
@@ -1780,6 +1858,85 @@ mod tests {
             browser.catalog.as_ref().unwrap().skills[0].target.name,
             "old"
         );
+    }
+
+    #[test]
+    fn direct_skill_delete_removes_the_row_and_retries_the_same_request() {
+        let mut browser = SkillBrowser::default();
+        let entry = skill();
+        let query = catalog_request("current", "res");
+        browser
+            .accept_catalog(
+                &query,
+                json!({"skills":[entry],"sources":[],"catalog_version":3,"next_cursor":"after"}),
+            )
+            .unwrap();
+        let next = browser.catalog_nav.request(true).unwrap();
+        browser
+            .accept_catalog(
+                &next,
+                json!({"skills":[entry],"sources":[],"catalog_version":3}),
+            )
+            .unwrap();
+        let parsed: CatalogSkill = serde_json::from_value(entry.clone()).unwrap();
+        let request = parsed.delete_request();
+        assert_eq!(request["operation"], "skill.delete");
+        assert_eq!(request["target"], entry["target"]);
+        assert_eq!(request["expected_head"], entry["head"]);
+        browser.begin(&request);
+        browser.transport_failed(&request);
+        assert!(browser.is_original_retry(&request));
+        assert!(!browser.can_begin(&parsed.delete_request()));
+        let applied =
+            json!({"version":"","state_version":3,"exists":false,"enabled":false,"managed":true});
+        let mut removed = entry.clone();
+        removed["head"] = applied.clone();
+        removed["record"] = Value::Null;
+        // A missing or forged mutation receipt must not remove the row.
+        assert!(
+            browser
+                .accept_detail(&request, json!({"skill":removed,"catalog_version":4}))
+                .is_err()
+        );
+        assert_eq!(browser.catalog.as_ref().unwrap().skills.len(), 1);
+        browser
+            .accept_detail(
+                &request,
+                json!({"skill":removed,"catalog_version":4,"applied_head":applied,"replayed":true}),
+            )
+            .unwrap();
+        assert!(browser.catalog.as_ref().unwrap().skills.is_empty());
+        assert!(browser.selected.is_none());
+        assert!(!browser.mutations_pending());
+        assert!(browser.catalog_stale);
+        assert_eq!(browser.catalog_refresh_request(), query);
+    }
+
+    #[test]
+    fn direct_skill_delete_replay_does_not_hide_a_later_installation() {
+        let mut browser = SkillBrowser::default();
+        let mut entry = skill();
+        let query = catalog_request("current", "");
+        browser
+            .accept_catalog(
+                &query,
+                json!({"skills":[entry],"sources":[],"catalog_version":3}),
+            )
+            .unwrap();
+        let parsed: CatalogSkill = serde_json::from_value(entry.clone()).unwrap();
+        let request = parsed.delete_request();
+        entry["head"]["state_version"] = json!(4);
+        entry["head"]["managed"] = json!(true);
+        let applied =
+            json!({"version":"","state_version":3,"exists":false,"enabled":false,"managed":true});
+        browser
+            .accept_detail(
+                &request,
+                json!({"skill":entry,"catalog_version":5,"applied_head":applied,"replayed":true}),
+            )
+            .unwrap();
+        assert_eq!(browser.catalog.as_ref().unwrap().skills.len(), 1);
+        assert!(browser.selected.as_ref().unwrap().skill.head.exists);
     }
 
     #[test]

@@ -101,6 +101,7 @@ use `{ "ok": false, "code": "...", "error": "..." }`. Expected errors include
 | `skill.list` | Optional `source_id`, `name`, `name_contains`, `status`, `cursor`, `limit` | `skills`, configured `sources`, `catalog_version`, optional `next_cursor` |
 | `skill.get` | Full `target` | `skill`, `catalog_version` |
 | `skill.set_enabled` | Full `target`, full `expected_head`, boolean `enabled`, stable `request_key` | `skill`, `catalog_version`, original `applied_head`, `replayed` |
+| `skill.delete` | Full `target`, full existing `expected_head`, stable `request_key` | `skill`, `catalog_version`, original deleted `applied_head`, `replayed` |
 | `skill.imports.refresh` | Full `target`, full `expected_head` | `skill`, `catalog_version` after one advisory filesystem check |
 | `skill.export.retry` | Full `target`, full `expected_head`, `expected_export_token`, stable `request_key` | `skill`, `catalog_version`, original `applied_head`, `replayed` |
 | `skill.signals.list` | Optional `source_id`, `name`, `cursor`, `limit` | Root/version `signals`, `catalog_version`, optional `next_cursor` |
@@ -676,6 +677,15 @@ arguments are rejected. Python dependencies/files, credential-like literals and
 invalid local references fail before model review.
 
 ## Model candidate tool and manual review configuration
+
+The desktop's authenticated host management `skill.delete` operation directly
+removes an installed catalog entry without a review proposal or confirmation.
+It verifies the complete observed head/source, atomically records the request
+and deletion, and returns the original applied head on an identical retry.
+The installation remains removed after startup imports or source refreshes.
+This catalog operation also supports builtins because source directories and
+immutable versions used by pinned tasks are retained. Model `skill_manage`
+delete proposals keep their separate review and publication requirements.
 
 `Config.SkillProposalSources` is the explicit source-ID allowlist for model
 candidate submission. A validator is required. The native `skill_manage` tool
