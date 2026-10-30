@@ -452,8 +452,8 @@ func (s *smoke) run() {
 	oldRuntime, cursor := s.startChat(session, nil)
 	s.textAttachment(session, oldRuntime, true)
 	s.skill(session, oldRuntime)
-	checkDeletedSkill := s.directSkillDelete()
 	s.pythonSkill(session, oldRuntime)
+	checkDeletedSkill := s.directSkillDelete()
 	approvalRuntime, approvalCursor := s.startApproval(approvalSession, nil)
 	s.writeTurn(approvalSession, approvalRuntime, "full-access.txt", "", "", false, false)
 	s.toolFailureQuestion(approvalSession, approvalRuntime)
@@ -520,7 +520,6 @@ func (s *smoke) run() {
 	}
 	current, _ := s.startChat(session, cursor)
 	s.textAttachment(session, current, false)
-	s.skill(session, current)
 	w.rpc(obj{"type": "closeSession"}, session, current)
 	approvalRuntime, _ = s.startApproval(approvalSession, approvalCursor)
 	s.writeTurn(approvalSession, approvalRuntime, "restored-ask-rejected.txt", "reject_once", "", false, true)
