@@ -64,6 +64,7 @@ type TaskTreeNode struct {
 	Execution           *TaskTreeExecution           `json:"execution,omitempty"`
 	BackgroundExecution *TaskTreeBackgroundExecution `json:"backgroundExecution,omitempty"`
 	Usage               *TaskTreeUsage               `json:"usage,omitempty"`
+	Budget              *TaskTreeBudget              `json:"budget,omitempty"`
 	Result              *TaskTreeResult              `json:"result,omitempty"`
 	Artifacts           []TaskTreeArtifact           `json:"artifacts,omitempty"`
 	AllowedActions      []string                     `json:"allowedActions"`
@@ -113,6 +114,15 @@ type TaskTreeUsage struct {
 	TotalTokens  int64  `json:"totalTokens"`
 	HeldTokens   int64  `json:"heldTokens"`
 	Estimated    bool   `json:"estimated"`
+}
+
+// Budget is the immutable root policy. Nil means unavailable; zero disables
+// that quota. Descendants share it and never expose a second additive budget.
+type TaskTreeBudget struct {
+	MaxTokens     int64  `json:"maxTokens"`
+	MaxModelCalls int    `json:"maxModelCalls"`
+	MaxToolCalls  int    `json:"maxToolCalls"`
+	StopReason    string `json:"stopReason,omitempty"`
 }
 
 // Nil Result means no safely projected result is available. Text contains only

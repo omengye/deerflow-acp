@@ -70,7 +70,7 @@ func NewSkillModelValidator(ctx context.Context, cfg harness.SkillModelReviewCon
 		}
 		chat, err := newModelWithRetryPolicy(ctx, Config{Provider: route.Provider, APIKey: route.APIKey, BaseURL: route.BaseURL, Model: route.Model, OutputTokenParameter: route.OutputTokenParameter}, route.Model, true)
 		if err != nil {
-			return nil, skillReviewError("cannot construct configured review model")
+			return nil, &harness.SkillValidationFailure{Code: "review_configuration_error", Stage: "validation", DetailCode: "model_initialization_failed"}
 		}
 		r.models[i] = chat
 	}

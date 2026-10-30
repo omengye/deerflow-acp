@@ -29,7 +29,8 @@ func ProbeModel(ctx context.Context, provider, name, baseURL, apiKey string, par
 }
 
 func newModel(ctx context.Context, cfg Config, name string) (model.ToolCallingChatModel, error) {
-	return newModelWithRetryPolicy(ctx, cfg, name, false)
+	// Tracked model calls own bounded retries and meter every HTTP attempt.
+	return newModelWithRetryPolicy(ctx, cfg, name, true)
 }
 
 // Maintenance workers own their bounded, persisted retries. Provider SDK

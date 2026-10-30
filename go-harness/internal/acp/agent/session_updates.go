@@ -43,7 +43,7 @@ func (a *Agent) startSessionUpdates(sessionID string) {
 		}()
 		var reported bool
 		var operationID, runID string
-		err := a.service.ServeSessionUpdates(ctx, a.owner, sessionID, harness.SessionUpdates{
+		err := a.service.ServeSessionUpdates(a.userInputContext(ctx), a.owner, sessionID, harness.SessionUpdates{
 			Started: func(ctx context.Context, state harness.ExecutionState) error {
 				operationID, runID = rand.Text(), state.RunID
 				return a.connectionError(ctx, a.peer.Notify(ctx, updatedExecutionMethod, map[string]any{

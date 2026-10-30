@@ -39,18 +39,22 @@ type Message struct {
 }
 
 type Session struct {
-	ID              string    `json:"id"`
-	CWD             string    `json:"cwd"`
-	Title           string    `json:"title,omitempty"`
-	Mode            string    `json:"mode"`
-	Model           string    `json:"model"`
-	ReasoningEffort string    `json:"reasoningEffort,omitempty"`
-	ThinkingMode    string    `json:"thinkingMode,omitempty"`
-	ApprovalMode    string    `json:"approvalMode"`
-	Subagents       bool      `json:"subagents"`
-	ConfigVersion   int64     `json:"configVersion"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	ID               string    `json:"id"`
+	CWD              string    `json:"cwd"`
+	Title            string    `json:"title,omitempty"`
+	Mode             string    `json:"mode"`
+	Model            string    `json:"model"`
+	ReasoningEffort  string    `json:"reasoningEffort,omitempty"`
+	ThinkingMode     string    `json:"thinkingMode,omitempty"`
+	ApprovalMode     string    `json:"approvalMode"`
+	Subagents        bool      `json:"subagents"`
+	ConfigVersion    int64     `json:"configVersion"`
+	BudgetVersion    int64     `json:"budgetVersion,omitempty"`
+	MaxRunTokens     int64     `json:"maxRunTokens,omitempty"`
+	MaxRunModelCalls int       `json:"maxRunModelCalls,omitempty"`
+	MaxRunToolCalls  int       `json:"maxRunToolCalls,omitempty"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 // RetentionPolicy controls automatic cleanup of detached sessions. A zero
@@ -111,6 +115,7 @@ type RunEvent struct {
 	Plan         []PlanEntry     `json:"plan,omitempty"`
 	Timing       *ModelTiming    `json:"timing,omitempty"`
 	Receipt      *ToolReceipt    `json:"receipt,omitempty"`
+	Steering     *SteeringRecord `json:"steering,omitempty"`
 }
 
 // ModelTiming contains operational metadata only, never request or response text.
@@ -123,13 +128,15 @@ type ModelTiming struct {
 }
 
 type PermissionRequest struct {
-	ID            string          `json:"id"`
-	SessionID     string          `json:"sessionId"`
-	RunID         string          `json:"runId"`
-	ConfigVersion int64           `json:"configVersion"`
-	ToolCallID    string          `json:"toolCallId"`
-	ToolName      string          `json:"toolName"`
-	Arguments     json.RawMessage `json:"arguments"`
+	ID            string `json:"id"`
+	SessionID     string `json:"sessionId"`
+	RunID         string `json:"runId"`
+	ConfigVersion int64  `json:"configVersion"`
+	ToolCallID    string `json:"toolCallId"`
+	ToolName      string `json:"toolName"`
+	// TrustedBuiltin is assigned by engine constructors, never tool metadata.
+	TrustedBuiltin bool            `json:"trustedBuiltin,omitempty"`
+	Arguments      json.RawMessage `json:"arguments"`
 }
 
 type PermissionDecision string

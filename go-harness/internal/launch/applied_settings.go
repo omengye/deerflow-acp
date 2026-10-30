@@ -79,6 +79,13 @@ func appliedSettings(document map[string]any, cfg *deerflow.Config, maxConnectio
 		output = cfg.Budget.MaxOutputTokens
 	}
 	add("/runtime/max_output_tokens", output, "max-output-tokens", "local_acp.max_output_tokens")
+	limits := harness.DefaultBudgetLimits()
+	if cfg.Budget != nil {
+		limits = *cfg.Budget
+	}
+	add("/runtime/max_run_tokens", limits.MaxTokens, "max-tokens", "local_acp.max_run_tokens")
+	add("/runtime/max_model_calls", limits.MaxModelCalls, "max-model-calls", "local_acp.max_model_calls")
+	add("/runtime/max_tool_calls", limits.MaxToolCalls, "max-tool-calls", "local_acp.max_tool_calls")
 	add("/runtime/queue_timeout_seconds", cfg.QueueTimeout.Seconds(), "queue-timeout", "local_acp.queue_timeout_seconds")
 	if cfg.Budget != nil {
 		add("/runtime/run_timeout_seconds", cfg.Budget.Timeout.Seconds(), "run-timeout", "local_acp.run_timeout_seconds", "api.chat_request_timeout")
@@ -86,10 +93,6 @@ func appliedSettings(document map[string]any, cfg *deerflow.Config, maxConnectio
 	add("/runtime/permission_mode", cfg.PermissionMode, "", "local_acp.permission_mode")
 	add("/runtime/tool_allowlist", cfg.ToolPolicy.Allowlist, "", "local_acp.tool_allowlist")
 	add("/runtime/tool_denylist", cfg.ToolPolicy.Denylist, "", "local_acp.tool_denylist")
-	add("/runtime/session_cleanup_enabled", cfg.Retention.Enabled, "session-cleanup-enabled", "local_acp.session_cleanup_enabled")
-	add("/runtime/inactive_session_retention_days", cfg.Retention.InactiveDays, "inactive-session-retention-days", "local_acp.inactive_session_retention_days")
-	add("/runtime/closed_session_retention_days", cfg.Retention.ClosedDays, "closed-session-retention-days", "local_acp.closed_session_retention_days")
-	add("/runtime/session_cleanup_interval_seconds", cfg.Retention.CheckInterval.Seconds(), "session-cleanup-interval", "local_acp.session_cleanup_interval_seconds")
 	memoryOverride := ""
 	if cfg.MemoryExtraction && explicit["memory-extraction"] {
 		memoryOverride = "memory-extraction"

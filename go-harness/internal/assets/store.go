@@ -46,15 +46,16 @@ type record struct {
 // Prepared keeps snapshots pinned until the accepting transaction completes.
 // Call Finish exactly once, including after an Attach or transaction failure.
 type Prepared struct {
-	Input      []harness.Content
-	store      *Store
-	session    harness.Session
-	records    []record
-	refs       []harness.AssetRef
-	toolImages bool
-	owner      *ArtifactOwner
-	once       sync.Once
-	finishErr  error
+	Input          []harness.Content
+	store          *Store
+	session        harness.Session
+	records        []record
+	refs           []harness.AssetRef
+	toolImages     bool
+	owner          *ArtifactOwner
+	once           sync.Once
+	finishErr      error
+	forkReferences map[string]string
 }
 
 func NewStore(ctx context.Context, path string, db *sql.DB) (*Store, error) {
@@ -110,6 +111,7 @@ CREATE TABLE IF NOT EXISTS harness_document_text (asset_id TEXT PRIMARY KEY REFE
 CREATE INDEX IF NOT EXISTS harness_assets_session ON harness_assets(session_id);
 CREATE TABLE IF NOT EXISTS harness_input_assets (input_id TEXT NOT NULL REFERENCES harness_inputs(id),asset_id TEXT NOT NULL REFERENCES harness_assets(id),PRIMARY KEY(input_id,asset_id));
 CREATE TABLE IF NOT EXISTS harness_artifacts (session_id TEXT NOT NULL REFERENCES harness_sessions(id),run_id TEXT NOT NULL REFERENCES harness_runs(id),tool_call_id TEXT NOT NULL,asset_id TEXT NOT NULL REFERENCES harness_assets(id),PRIMARY KEY(run_id,tool_call_id,asset_id));
+CREATE TABLE IF NOT EXISTS harness_history_artifacts (session_id TEXT NOT NULL REFERENCES harness_sessions(id) ON DELETE CASCADE,asset_id TEXT NOT NULL REFERENCES harness_assets(id) ON DELETE CASCADE,PRIMARY KEY(session_id,asset_id));
 CREATE TABLE IF NOT EXISTS harness_artifact_owners (
  asset_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT NOT NULL, tool_call_id TEXT NOT NULL,
  root_id TEXT NOT NULL, root_session_id TEXT NOT NULL, node_id TEXT NOT NULL,
@@ -329,11 +331,16 @@ func (s *Store) LocalURI(ctx context.Context, sessionID string, ref harness.Asse
 	if _, err := s.resolve(ctx, sessionID, ref); err != nil {
 		return "", err
 	}
+	return s.localURI(ref), nil
+}
+
+// localURI only formats a reference already verified by the calling operation.
+func (s *Store) localURI(ref harness.AssetRef) string {
 	p := filepath.ToSlash(filepath.Join(s.path, ref.ID+".blob"))
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
 	}
-	return (&url.URL{Scheme: "file", Path: p}).String(), nil
+	return (&url.URL{Scheme: "file", Path: p}).String()
 }
 
 // CleanupOrphans is serialized with preparation and commit. The store's root

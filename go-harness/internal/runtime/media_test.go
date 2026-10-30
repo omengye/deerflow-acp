@@ -44,7 +44,7 @@ func TestGeneratedImageEventFailureRollsBackAsset(t *testing.T) {
 
 func TestViewImageTrustedReadOnlyPermissionAndFailureReceipt(t *testing.T) {
 	for _, x := range []harness.Session{{Mode: "plan"}, {ApprovalMode: harness.ApprovalReadOnly}} {
-		decision, handled := configuredPermission(x, harness.PermissionRequest{ToolName: "view_image"})
+		decision, handled := configuredPermission(x, harness.PermissionRequest{ToolName: "view_image", TrustedBuiltin: true})
 		if !handled || decision != harness.AllowOnce {
 			t.Fatalf("trusted image inspection denied: %v %v", decision, handled)
 		}

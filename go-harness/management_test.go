@@ -150,7 +150,7 @@ func TestLocalManagementDeletesDetachedSessionAndPrivateState(t *testing.T) {
 	}
 }
 
-func TestLocalManagementDeleteRejectsBackgroundAndUnresolvedReceipt(t *testing.T) {
+func TestLocalManagementDeleteRejectsBackgroundAndActiveReceiptButAllowsTerminalUnknown(t *testing.T) {
 	ctx := context.Background()
 	c, err := Open(ctx, Config{DataDir: t.TempDir(), Engine: engineFunc(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
 		return harness.RunResult{StopReason: "end_turn"}, nil
@@ -194,13 +194,13 @@ func TestLocalManagementDeleteRejectsBackgroundAndUnresolvedReceipt(t *testing.T
 	if _, err = c.store.DB().ExecContext(ctx, `DELETE FROM eino_background_tasks WHERE id='task-fixture'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = c.store.DB().ExecContext(ctx, `INSERT INTO harness_tool_receipts(run_id,tool_call_id,session_id,state,version,receipt) VALUES(?,'call-fixture',?,'uncertain',1,x'7b7d')`, runID, x.ID); err != nil {
+	if _, err = c.store.DB().ExecContext(ctx, `INSERT INTO harness_tool_receipts(run_id,tool_call_id,session_id,state,version,receipt) VALUES(?,'call-fixture',?,'started',1,x'7b7d')`, runID, x.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = c.ManageLocal(ctx, request); err == nil {
-		t.Fatal("unresolved receipt was deleted")
+		t.Fatal("active receipt was deleted")
 	}
-	if _, err = c.store.DB().ExecContext(ctx, `UPDATE harness_tool_receipts SET state='completed' WHERE run_id=?`, runID); err != nil {
+	if _, err = c.store.DB().ExecContext(ctx, `UPDATE harness_tool_receipts SET state='uncertain' WHERE run_id=?`, runID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = c.ManageLocal(ctx, request); err != nil {

@@ -151,7 +151,8 @@ for configuration, SDK/ACP management and remaining phases.
 
 Native file writes now require the version returned by `read_file` before
 overwriting existing content. A bounded no-progress guard stops repeated identical
-observations as incomplete, and the lead agent has session-local `task_note`,
+successful observations as incomplete; ordinary tool failures are left to agent
+recovery without a fixed retry count. The lead agent has session-local `task_note`,
 `history_search` and `history_read` tools. These add no Goal mode or auxiliary
 model requests. See [contracts and limits](../docs/harness-reliability-20261012.md),
 including the compatibility boundary for older paused executions.
@@ -166,17 +167,29 @@ can be canceled. Cancellation retains session ownership until cleanup and final
 persistence finish.
 
 Both executables run a session retention sweep at startup and every hour by
-default. Detached sessions explicitly closed with `session/close` are retained
-for 30 days; other detached sessions expire 30 days after their last activity.
+default. Detached sessions explicitly closed with `session/close` are archived
+after 30 days; other detached sessions are archived 30 days after their last activity.
 `--closed-session-retention-days`, `--inactive-session-retention-days`, and
 `--session-cleanup-interval` set those limits; `--session-cleanup-enabled=false`
-disables automatic deletion. Zero closed days permits cleanup at the next sweep.
-Attached or running sessions, nonterminal or uncertain background task graphs,
-unhandled background notifications, and sessions with unreconciled tool receipts
-are preserved. A successful `session/load` reopens a
-closed session and restarts its inactivity clock. Embedded SDK clients leave
+disables automatic archival and cache maintenance. Zero closed days permits
+archival at the next sweep. Archival preserves conversation history, attachments,
+artifacts, execution evidence and budgets; only regenerable artifact digest
+caches are evicted. Desktop host configuration defaults to five days.
+Attached or running sessions, nonterminal background task graphs, unhandled
+background notifications, active execution attempts, unsettled budget work,
+pending/started receipts and storage faults still prevent archival. An `uncertain`
+receipt belonging to a terminal run does not require human review before archival
+or explicit deletion; the session and its task graph must still satisfy the
+terminal-state, activity and accounting checks. Archival retains that evidence.
+A successful `session/load` reopens a
+closed or archived session and restarts its inactivity clock without executing
+a model or replaying tools. Embedded SDK clients leave
 retention disabled unless `Config.Retention` is explicitly configured; hosts
-can call `Client.CleanupExpiredSessions` for a single sweep.
+can call `Client.ArchiveExpiredSessions` for a single sweep. The legacy
+`Client.CleanupExpiredSessions` name remains an archival alias. Explicit
+`session/delete` remains a permanent, guarded deletion operation. Branch and
+rewind keep their stricter history checks: pending, started or uncertain receipts
+can still block those operations even after ordinary conversation can continue.
 
 Native workspace tools provide read, list, search, write, and edit. Plan and
 read_only modes expose trusted local read tools without prompts. Other modes
@@ -190,11 +203,21 @@ host capabilities; they are not security isolation. See
 [command lifecycle and providers](internal/sandbox/README.md) and
 [shared CLI flags](internal/launch/sandbox.md).
 
-Every external tool has a durable receipt. Its `started` transition commits before the
-tool runs. Unknown outcomes block another run until the owner explicitly reviews
-the receipt. Review never executes a tool. The SDK exposes `ListToolReceipts` and
-`ReconcileToolReceipt`; ACP advertises the corresponding namespaced extensions.
-See [receipt queries and reconciliation](internal/acp/receipts.md).
+Every external tool has a durable receipt. Its `started` transition commits before
+the tool runs. Ordinary tool failures return available output and explicit outcome
+uncertainty to the agent, which chooses whether to investigate, retry, change
+approach or clearly end the turn. Recovery has no fixed retry count; existing
+budgets, permissions, user cancellation and storage/accounting protections still
+apply. If information or confirmation is needed, the agent asks in ordinary chat
+and ends the turn. The user's reply starts a new run in the same conversation.
+Old calls and unsafe checkpoints are never automatically replayed.
+
+Desktop execution records are read only, with error details and copying. Unknown
+receipts retain their original evidence and are not relabeled as success or no
+effect. ACP advertises only `_deerflow/tool_receipts/list`; the former reconcile
+RPC is retired and returns MethodNotFound. The SDK's historical reconciliation
+method remains for compatibility but is not required by desktop conversation.
+See [read-only receipts and agent recovery](internal/acp/receipts.md).
 
 `Client.HistoryPage` and ACP `_deerflow/history/list` provide bounded event pages
 with a stable snapshot cursor. Standard `session/load` still replays the complete
@@ -272,8 +295,9 @@ Neither rejected summary is inserted into history, and the 16 KiB acceptance
 limit remains enforced. Exhausted validation returns ACP `context_compaction`
 with safe reason/finish/size/attempt metadata, not summary text. Completed tool
 effects are not replayed. A failed old checkpoint may be unresumable even when
-all receipts are settled; review those effects and issue a new continuation
-instead of forcing checkpoint replay. The desktop persists terminal errors
+all receipts are settled. A new message lets the agent assess the existing
+evidence in a new run; it does not force checkpoint replay or ask the user to
+certify tool outcomes. The desktop persists terminal errors
 even after partial assistant output.
 
 Both executables allow two concurrent foreground runs across sessions by default.

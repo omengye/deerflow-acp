@@ -41,12 +41,13 @@ func TestStartRetentionRunsImmediateSweepAndJoins(t *testing.T) {
 		if listErr != nil {
 			t.Fatal(listErr)
 		}
-		if len(value.(map[string]any)["sessions"].([]map[string]any)) == 0 {
+		items := value.(map[string]any)["sessions"].([]map[string]any)
+		if len(items) == 1 && !items[0]["cleanup_eligible"].(bool) {
 			return
 		}
 		select {
 		case <-deadline:
-			t.Fatal("startup retention sweep did not delete closed session")
+			t.Fatal("startup retention sweep did not archive closed session")
 		case <-time.After(20 * time.Millisecond):
 		}
 	}

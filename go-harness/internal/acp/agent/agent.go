@@ -19,17 +19,18 @@ import (
 )
 
 type Agent struct {
-	service      *hr.Service
-	owner        string
-	peer         *protocol.Peer
-	mu           sync.Mutex
-	initialized  bool
-	capabilities acp.ClientCapabilities
-	subagents    map[subagentKey]bool
-	contentIDs   map[contentKey]contentState
-	updatesCtx   context.Context
-	updates      map[string]*sessionUpdatePump
-	updatesWG    sync.WaitGroup
+	service       *hr.Service
+	owner         string
+	peer          *protocol.Peer
+	mu            sync.Mutex
+	initialized   bool
+	capabilities  acp.ClientCapabilities
+	userInputSlot chan struct{}
+	subagents     map[subagentKey]bool
+	contentIDs    map[contentKey]contentState
+	updatesCtx    context.Context
+	updates       map[string]*sessionUpdatePump
+	updatesWG     sync.WaitGroup
 }
 
 type subagentKey struct{ sessionID, runID, callID string }
@@ -165,11 +166,18 @@ func mapError(err error) (mapped error) {
 		return rpcError(protocol.InvalidParams, "Invalid request parameters")
 	case errors.Is(err, harness.ErrModelResponseInvalid):
 		return &protocol.Error{Code: -32026, Message: "模型返回的流式数据不完整或格式异常，本轮已停止。请检查已执行的工具结果后再继续。", Data: map[string]any{"kind": "model_response_invalid", "automaticReplay": false}}
+	case errors.Is(err, harness.ErrModelRateLimited):
+		var persistence interface{ PersistenceFailure() bool }
+		if errors.As(err, &persistence) && persistence.PersistenceFailure() {
+			return err
+		}
+		return &protocol.Error{Code: -32027, Message: "模型服务请求受到限流，本轮已停止。请稍后重试或切换模型；已完成的工具结果已保留，请检查结果后再继续。", Data: map[string]any{"kind": "model_rate_limited", "automaticReplay": false}}
 	}
 	return err
 }
 
 func (a *Agent) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+	ctx = a.userInputContext(ctx)
 	result, err := a.handle(ctx, method, raw)
 	return result, mapError(err)
 }
@@ -195,6 +203,7 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		httpMCP, sseMCP := a.service.MCPCapabilities()
 		response := map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"name": "deerflow-go", "title": "DeerFlow Go Harness", "version": "0.1.0-dev"}, "authMethods": []any{}, "agentCapabilities": map[string]any{"loadSession": true, "promptCapabilities": map[string]bool{"image": a.service.ImageInputEnabled(), "audio": false, "embeddedContext": a.service.Assets != nil}, "mcpCapabilities": map[string]bool{"http": httpMCP, "sse": sseMCP}, "sessionCapabilities": map[string]any{"list": map[string]any{}, "close": map[string]any{}, "resume": map[string]any{}, "delete": map[string]any{}}}, "_meta": map[string]any{"deerflow": map[string]any{"toolReceipts": receiptCapabilities(), "history": map[string]any{"version": 1, "listMethod": historyListMethod}, "artifacts": map[string]any{"version": 1, "listMethod": listArtifactsMethod}}}}
 		response["_meta"].(map[string]any)["deerflow"].(map[string]any)["goals"] = map[string]any{"version": 1, "command": "/goal", "maxAutoContinuations": 3}
+		response["_meta"].(map[string]any)["deerflow"].(map[string]any)["sessionBudget"] = sessionBudgetCapabilities()
 		if a.service.Assets != nil {
 			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["documents"] = map[string]any{"version": 1, "formats": []string{"pdf", "docx", "xlsx", "csv", "tsv"}, "maxDocumentBytes": 8 << 20, "maxDocumentTotalBytes": 16 << 20, "pdfDependency": "pdftotext", "ocr": false}
 		}
@@ -206,6 +215,10 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		}
 		if a.service.DurableExecutionsEnabled() {
 			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["executions"] = executionCapabilities()
+			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["conversation"] = conversationCapabilities()
+		}
+		if a.service.SteeringEnabled() {
+			response["_meta"].(map[string]any)["deerflow"].(map[string]any)["steering"] = steeringCapabilities()
 		}
 		if a.service.Background != nil {
 			caps := backgroundCapabilities(a.service.Background)
@@ -232,6 +245,10 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		return nil, rpcError(protocol.InvalidRequest, "initialize must complete first")
 	}
 	switch method {
+	case submitSteeringMethod, listSteeringMethod:
+		return a.steeringRequest(ctx, method, raw)
+	case getSessionBudgetMethod, setSessionBudgetMethod:
+		return a.sessionBudgetRequest(ctx, method, raw)
 	case getLearningControlMethod, setLearningControlMethod, listExperiencesMethod, listExperiencePatternsMethod, listExperienceMatchesMethod, listLearningJobsMethod, startLearningEpisodeMethod, cancelLearningMethod:
 		return a.learningRequest(ctx, method, raw)
 	case taskTreeListMethod, taskTreeGetMethod, taskTreeCancelMethod:
@@ -252,9 +269,11 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		return a.executionRequest(ctx, method, raw)
 	case historyListMethod:
 		return a.historyRequest(ctx, raw)
+	case conversationTurnsMethod, conversationForkMethod, conversationRewindMethod:
+		return a.conversationRequest(ctx, method, raw)
 	case listArtifactsMethod:
 		return a.artifactRequest(ctx, raw)
-	case listReceiptsMethod, reconcileReceiptMethod:
+	case listReceiptsMethod:
 		return a.receiptRequest(ctx, method, raw)
 	case pendingExternalPromptMethod, ackExternalPromptMethod:
 		return a.externalPromptRequest(ctx, method, raw)
@@ -428,7 +447,11 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err := decode(raw, &req); err != nil {
 			return nil, err
 		}
-		return nil, a.service.Cancel(ctx, a.owner, string(req.SessionId))
+		err := a.service.Cancel(ctx, a.owner, string(req.SessionId))
+		if err == nil {
+			a.notifySteeringStates(ctx, string(req.SessionId), "")
+		}
+		return nil, err
 	default:
 		return nil, rpcError(protocol.MethodNotFound, "Method not found")
 	}
@@ -474,6 +497,11 @@ func (a *Agent) connectionError(ctx context.Context, err error) error {
 func (a *Agent) emit(ctx context.Context, e harness.RunEvent) error {
 	var update map[string]any
 	switch e.Kind {
+	case "steering_updated":
+		if e.Steering == nil {
+			return nil
+		}
+		return a.peer.NotifyAsync(ctx, updatedSteeringMethod, e.Steering)
 	case "subagent_start", "subagent_resumed", "subagent_suspended", "subagent_end":
 		return a.emitSubagent(ctx, e)
 	case "user_message":

@@ -79,3 +79,21 @@ func TestSkillManageValidationFeedbackKeepsSpecificLegacyFailure(t *testing.T) {
 		t.Fatalf("projection hid a specific host failure or invented a transport cause: %+v", result)
 	}
 }
+
+func TestSkillManageValidationFeedbackIncludesSafeFailureDetails(t *testing.T) {
+	p := harness.SkillProposal{ID: "p_failure", Status: "failed", Origin: "manual_agent", StateVersion: 3,
+		ValidationFailure: &harness.SkillValidationFailure{Code: "review_response_invalid", Stage: "security", DetailCode: "invalid_json", Retryable: true, ResponseDigest: strings.Repeat("a", 64), ResponseBytes: 120},
+		Evaluation:        harness.SkillValidationReport{Security: "unavailable", Behavior: "not_run"}}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(skillManageResult(p)), &result); err != nil {
+		t.Fatal(err)
+	}
+	failure, ok := result["validation_failure"].(map[string]any)
+	if !ok || failure["detail_code"] != "invalid_json" || failure["response_digest"] != strings.Repeat("a", 64) || failure["response_bytes"] != float64(120) || result["review_retry_available"] != true {
+		t.Fatalf("safe request failure detail was omitted: %+v", result)
+	}
+	p.ReviewRetryOf = "p_original"
+	if err := json.Unmarshal([]byte(skillManageResult(p)), &result); err != nil || result["review_retry_of"] != p.ReviewRetryOf || result["review_retry_available"] != false {
+		t.Fatalf("successor offered an unbounded retry: %+v %v", result, err)
+	}
+}

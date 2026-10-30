@@ -23,7 +23,7 @@ func (a *BackgroundInteractionAttempt) ResolvePolicyPermission(ctx context.Conte
 		}
 		if p.ToolName == "skill_edit" {
 			decision, handled = harness.RejectOnce, true
-		} else if req.Session.Mode != "plan" && req.Session.ApprovalMode != harness.ApprovalReadOnly && !a.store.PermissionMode.RequiresPermission(p.ToolName) {
+		} else if req.Session.Mode != "plan" && req.Session.ApprovalMode != harness.ApprovalReadOnly && !a.store.PermissionMode.RequiresToolPermission(p.ToolName, p.TrustedBuiltin) {
 			decision, handled = harness.AllowOnce, true
 		} else {
 			decision, handled = configuredPermission(req.Session, p)

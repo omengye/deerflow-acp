@@ -122,6 +122,10 @@ func TestSafeToolFailureLetsModelCorrectAndContinueSameRun(t *testing.T) {
 		{"not_executed", harness.MarkToolNotExecuted(errors.New("bad argument")), harness.ReceiptNotExecuted},
 		{"no_effect", harness.MarkToolNoEffect(errors.New("read failed")), harness.ReceiptNoEffect},
 		{"confirmed_failure", harness.MarkToolExecutionFailed(errors.New("command exited with code 7")), harness.ReceiptFailed},
+		{"unknown_failure", errors.New("transport disconnected after request"), harness.ReceiptUncertain},
+		{"unknown_command", harness.ErrCommandUncertain, harness.ReceiptUncertain},
+		{"tool_deadline", context.DeadlineExceeded, harness.ReceiptUncertain},
+		{"tool_local_cancel", context.Canceled, harness.ReceiptUncertain},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			item := &correctingReceiptTool{first: test.first}
@@ -156,6 +160,9 @@ func TestSafeToolFailureLetsModelCorrectAndContinueSameRun(t *testing.T) {
 			states := map[string]harness.ReceiptState{}
 			for _, receipt := range receipts {
 				states[receipt.ToolCallID] = receipt.State
+				if receipt.ToolCallID == "bad-call" && !receipt.AgentRecoverable {
+					t.Fatalf("failed receipt was not routed to agent recovery: %+v", receipt)
+				}
 			}
 			if states["bad-call"] != test.state || states["good-call"] != harness.ReceiptCompleted {
 				t.Fatalf("receipt states=%v", states)
@@ -188,6 +195,8 @@ func TestTypedToolFailureEvidenceSurvivesEinoWrappers(t *testing.T) {
 		{"native_read", fmt.Errorf("adapter: %w", harness.MarkToolNoEffect(cause)), harness.ReceiptNoEffect},
 		{"confirmed_failure", fmt.Errorf("adapter: %w", harness.MarkToolExecutionFailed(cause)), harness.ReceiptFailed},
 		{"cleanup_failure", errors.Join(harness.MarkToolExecutionFailed(cause), errors.New("cleanup failed")), harness.ReceiptUncertain},
+		{"mixed_not_executed", errors.Join(harness.MarkToolNotExecuted(cause), errors.New("other effect unknown")), harness.ReceiptUncertain},
+		{"mixed_no_effect", errors.Join(harness.MarkToolNoEffect(cause), errors.New("other effect unknown")), harness.ReceiptUncertain},
 		{"unknown", cause, harness.ReceiptUncertain},
 		{"uncertainty_wins", errors.Join(harness.MarkToolNotExecuted(cause), harness.ErrCommandUncertain), harness.ReceiptUncertain},
 	} {
@@ -195,11 +204,11 @@ func TestTypedToolFailureEvidenceSurvivesEinoWrappers(t *testing.T) {
 			s, x, _ := runtimeWithReceiptTool(t, &receiptEffectTool{run: func(context.Context) (string, error) { return "", test.err }})
 			_, _ = s.Run(context.Background(), "owner", x.ID, []harness.Content{{Type: "text", Text: "run"}}, nil, approveReceiptTool)
 			receipts, err := s.ListToolReceipts(context.Background(), "owner", x.ID)
-			if err != nil || len(receipts) != 1 || receipts[0].State != test.want {
+			if err != nil || len(receipts) != 1 || receipts[0].State != test.want || !receipts[0].AgentRecoverable {
 				t.Fatalf("receipt=%+v err=%v", receipts, err)
 			}
 			_, err = s.Run(context.Background(), "owner", x.ID, []harness.Content{{Type: "text", Text: "continue"}}, nil, approveReceiptTool)
-			if errors.Is(err, harness.ErrReconciliationRequired) != (test.want == harness.ReceiptUncertain) {
+			if err != nil {
 				t.Fatalf("incorrect next-prompt gate: %v", err)
 			}
 		})
@@ -262,7 +271,7 @@ func TestReceiptCommitPrecedesEffectsAndFailureDoesNotReplay(t *testing.T) {
 	if err != nil || len(receipts) != 1 || receipts[0].State != harness.ReceiptUncertain || !strings.Contains(receipts[0].Error, confirmationErr.Error()) {
 		t.Fatalf("effect failure receipt=%+v error=%v", receipts, err)
 	}
-	if _, err := s.Run(ctx, "owner", x.ID, []harness.Content{{Type: "text", Text: "continue"}}, nil, approveReceiptTool); !errors.Is(err, harness.ErrReconciliationRequired) || calls.Load() != 1 {
+	if _, err := s.Run(ctx, "owner", x.ID, []harness.Content{{Type: "text", Text: "continue"}}, nil, approveReceiptTool); err != nil || calls.Load() != 1 {
 		t.Fatalf("unconfirmed effect replayed: %v calls=%d", err, calls.Load())
 	}
 }
@@ -295,10 +304,7 @@ func TestStreamingToolReceiptPreservesLateFailureAndOutput(t *testing.T) {
 			}
 			s, x, _ := runtimeWithReceiptTool(t, underlying)
 			_, runErr := s.Run(ctx, "owner", x.ID, []harness.Content{{Type: "text", Text: "stream"}}, nil, approveReceiptTool)
-			if fail && !errors.Is(runErr, underlying.lateErr) {
-				t.Fatalf("late failure discarded: %v", runErr)
-			}
-			if !fail && runErr != nil {
+			if runErr != nil {
 				t.Fatal(runErr)
 			}
 			receipts, err := s.ListToolReceipts(ctx, "owner", x.ID)
@@ -318,6 +324,9 @@ func TestStreamingToolReceiptPreservesLateFailureAndOutput(t *testing.T) {
 			}
 			if fail && !strings.Contains(receipts[0].Error, underlying.lateErr.Error()) {
 				t.Fatalf("false completion before source teardown: %+v", receipts[0])
+			}
+			if fail && !receipts[0].AgentRecoverable {
+				t.Fatal("stream failure did not enter agent recovery")
 			}
 		})
 	}

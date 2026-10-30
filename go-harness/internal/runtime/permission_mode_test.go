@@ -7,7 +7,7 @@ import (
 )
 
 func TestDeploymentPermissionPrecedesSessionApprovalChoice(t *testing.T) {
-	request := harness.PermissionRequest{ToolName: "read_file"}
+	request := harness.PermissionRequest{ToolName: "read_file", TrustedBuiltin: true}
 	for _, tc := range []struct {
 		mode     harness.PermissionMode
 		approval string
@@ -31,7 +31,7 @@ func TestDeploymentPermissionPrecedesSessionApprovalChoice(t *testing.T) {
 	}
 	readOnly := &Service{PermissionMode: harness.PermissionModeOff}
 	for _, session := range []harness.Session{{Mode: "plan"}, {ApprovalMode: harness.ApprovalReadOnly}} {
-		got, handled := readOnly.configuredPermission(session, harness.PermissionRequest{ToolName: "read_tool_output"})
+		got, handled := readOnly.configuredPermission(session, harness.PermissionRequest{ToolName: "read_tool_output", TrustedBuiltin: true})
 		if !handled || got != harness.AllowOnce {
 			t.Fatalf("read_tool_output was unavailable in %q/%q: %s %t", session.Mode, session.ApprovalMode, got, handled)
 		}
@@ -47,7 +47,7 @@ func TestGlobalApprovalPreservesRestrictedToolsAndExplicitEdits(t *testing.T) {
 		s := &Service{PermissionMode: mode}
 		x := harness.Session{ApprovalMode: harness.ApprovalGlobal}
 		for _, name := range []string{"skill", "skill_inspect", "list_directory", "bash", "web_fetch", "write_file", "skill_edit"} {
-			got, handled := s.configuredPermission(x, harness.PermissionRequest{ToolName: name})
+			got, handled := s.configuredPermission(x, harness.PermissionRequest{ToolName: name, TrustedBuiltin: true})
 			wantAllowed := name != "skill_edit" && !mode.RequiresPermission(name)
 			if handled != wantAllowed || (handled && got != harness.AllowOnce) {
 				t.Errorf("mode=%s tool=%s decision=%s handled=%t", mode, name, got, handled)

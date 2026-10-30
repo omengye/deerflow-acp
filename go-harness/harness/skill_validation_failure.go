@@ -1,5 +1,11 @@
 package harness
 
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
 // SkillValidationFailure is host-selected diagnostic metadata, not approval
 // evidence. Retryable permits consideration of a bounded retry under the same
 // authorization and budget; it neither schedules one nor resets a failed job.
@@ -45,6 +51,9 @@ func (f *SkillValidationFailure) Error() string {
 	case "review_input_too_large":
 		return "The candidate review input exceeds the configured bounds."
 	case "review_configuration_error":
+		if f.DetailCode == "model_initialization_failed" {
+			return "The configured review model could not be initialized. Check its provider and request options."
+		}
 		return "The review configuration or request options are invalid."
 	case "review_response_invalid":
 		return "The review response is invalid or refers to different content; no decision was accepted."
@@ -53,10 +62,64 @@ func (f *SkillValidationFailure) Error() string {
 	case "review_refused":
 		return "The review provider refused the request; no decision was accepted and review retry is not permitted."
 	case "review_request_failed":
+		if message := reviewRequestFailureMessage(f.DetailCode); message != "" {
+			return message
+		}
 		return "The review model request failed; this does not establish a content rejection."
 	case "review_temporarily_unavailable":
+		if message := reviewRequestFailureMessage(f.DetailCode); message != "" {
+			return message
+		}
 		return "The review model request encountered a transient network, rate-limit or service failure."
 	default:
 		return "Candidate validation is incomplete. Inspect the report; do not infer a source outage."
 	}
+}
+
+// Only host-selected categories and bounded numeric HTTP statuses are rendered.
+// Provider messages, bodies, URLs and arbitrary detail strings are never echoed.
+func reviewRequestFailureMessage(detail string) string {
+	switch detail {
+	case "connection_interrupted":
+		return "The review connection ended before a decision was available. A bounded review retry may be considered."
+	case "network_timeout":
+		return "The review network request timed out before a decision was available."
+	case "network_temporarily_unavailable":
+		return "The review request encountered a temporary network failure before a decision was available."
+	case "hostname_not_found":
+		return "The configured review endpoint hostname could not be resolved. Check the endpoint configuration."
+	case "network_error":
+		return "The review request could not reach its endpoint. The network failure was not classified as transient."
+	}
+	if !strings.HasPrefix(detail, "http_") {
+		return ""
+	}
+	status, err := strconv.Atoi(strings.TrimPrefix(detail, "http_"))
+	if err != nil || status < 400 || status > 599 {
+		return ""
+	}
+	reason := "The provider rejected the review request."
+	switch status {
+	case 400, 422:
+		reason = "The provider rejected the review request as invalid. Check the review model and request options."
+	case 401:
+		reason = "The review provider rejected authentication. Check the configured credentials."
+	case 403:
+		reason = "The review provider denied access. Check account and model permissions."
+	case 404:
+		reason = "The review endpoint or model was not found. Check the endpoint and model configuration."
+	case 405:
+		reason = "The review endpoint does not accept this request method. Check the endpoint configuration."
+	case 408:
+		reason = "The provider timed out the review request."
+	case 413:
+		reason = "The provider rejected the review request as too large."
+	case 429:
+		reason = "The provider limited the review request. Check rate limits and account capacity."
+	default:
+		if status >= 500 {
+			reason = "The review provider returned a service error."
+		}
+	}
+	return fmt.Sprintf("%s (HTTP %d.) No content review decision was accepted.", reason, status)
 }

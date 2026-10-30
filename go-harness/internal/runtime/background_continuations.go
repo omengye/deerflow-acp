@@ -351,7 +351,7 @@ func checkBackgroundContinuationSourceTx(ctx context.Context, tx *sql.Tx, b back
 		return continuationConflict("original background host terminal state changed")
 	}
 	var uncertain bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE run_id=? AND state IN ('started','uncertain')) OR EXISTS(SELECT 1 FROM harness_background_execution_failures WHERE task_id=? AND persistence_failure<>0)`, host.TaskID, host.TaskID).Scan(&uncertain); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE run_id=? AND `+unsettledReceiptSQL("")+`) OR EXISTS(SELECT 1 FROM harness_background_execution_failures WHERE task_id=? AND persistence_failure<>0)`, host.TaskID, host.TaskID).Scan(&uncertain); err != nil {
 		return err
 	}
 	if uncertain {

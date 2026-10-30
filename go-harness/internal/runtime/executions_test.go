@@ -443,7 +443,7 @@ func TestExecutionStartupPreservesValidWaitAndBlocksAdvancedFailedAttempt(t *tes
 			}
 			want := harness.ExecutionWaitingInput
 			if advanced {
-				want = harness.ExecutionNeedsReconciliation
+				want = harness.ExecutionFailed
 			}
 			if state.Status != want || state.Resumable == advanced {
 				t.Fatalf("recovered=%+v", state)

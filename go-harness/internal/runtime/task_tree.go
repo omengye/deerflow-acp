@@ -398,7 +398,9 @@ func (s *Store) taskTreeRootTx(ctx context.Context, tx *sql.Tx, n harness.TaskTr
 	n.Mode, n.Role = "root", "lead"
 	var run, created, updated string
 	u := &harness.TaskTreeUsage{Scope: "root_total"}
-	err := tx.QueryRowContext(ctx, `SELECT r.root_run_id,r.revision,r.model_calls,r.tool_calls,r.spent_tokens,r.held_tokens,r.blocked_reason,h.status,h.created_at,h.updated_at,s.model FROM budget_roots r JOIN harness_runs h ON h.id=r.root_run_id JOIN harness_sessions s ON s.id=r.session_id WHERE r.id=? AND r.session_id=?`, n.RootID, n.RootSessionID).Scan(&run, &n.Version, &u.ModelCalls, &u.ToolCalls, &u.TotalTokens, &u.HeldTokens, &n.BlockedReason, &n.Status, &created, &updated, &n.Model)
+	var limitsJSON []byte
+	var stopReason string
+	err := tx.QueryRowContext(ctx, `SELECT r.root_run_id,r.revision,r.model_calls,r.tool_calls,r.spent_tokens,r.held_tokens,r.blocked_reason,h.status,h.created_at,h.updated_at,s.model,r.limits_json,h.stop_reason FROM budget_roots r JOIN harness_runs h ON h.id=r.root_run_id JOIN harness_sessions s ON s.id=r.session_id WHERE r.id=? AND r.session_id=?`, n.RootID, n.RootSessionID).Scan(&run, &n.Version, &u.ModelCalls, &u.ToolCalls, &u.TotalTokens, &u.HeldTokens, &n.BlockedReason, &n.Status, &created, &updated, &n.Model, &limitsJSON, &stopReason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return n, harness.ErrNotFound
 	}
@@ -406,6 +408,11 @@ func (s *Store) taskTreeRootTx(ctx context.Context, tx *sql.Tx, n harness.TaskTr
 		return n, err
 	}
 	n.CreatedAt, n.UpdatedAt = treeTime(created), treeTime(updated)
+	var limits harness.BudgetLimits
+	if err = json.Unmarshal(limitsJSON, &limits); err != nil {
+		return n, err
+	}
+	n.Budget = &harness.TaskTreeBudget{MaxTokens: limits.MaxTokens, MaxModelCalls: limits.MaxModelCalls, MaxToolCalls: limits.MaxToolCalls, StopReason: stopReason}
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(CASE WHEN usage_json IS NOT NULL THEN json_extract(CAST(usage_json AS TEXT),'$.inputTokens') ELSE 0 END),0),COALESCE(SUM(CASE WHEN usage_json IS NOT NULL THEN json_extract(CAST(usage_json AS TEXT),'$.outputTokens') ELSE 0 END),0),COALESCE(MAX(CASE WHEN state<>'settled' OR COALESCE(json_extract(CAST(usage_json AS TEXT),'$.estimated'),0)=1 THEN 1 ELSE 0 END),0) FROM budget_reservations WHERE root_id=? AND kind='model'`, n.RootID).Scan(&u.InputTokens, &u.OutputTokens, &u.Estimated)
 	if err != nil {
 		return n, err

@@ -37,6 +37,41 @@ New prompts and session configuration changes are blocked by a waiting run.
 Permission response time does not consume the active execution time budget.
 Each actual tool call is charged once across its pause and continuation.
 
+## Questions in the desktop conversation
+
+A desktop client advertises
+`clientCapabilities._meta.deerflow.userInput` as
+`{"version":1,"requestMethod":"_deerflow/ask_user_question"}`. Only an attached
+connection advertising this capability supplies the native `ask_user_question`
+tool. The v1 bridge forwards this bidirectional extension; clients without the
+capability, including the v2 bridge facade, retain ordinary text questions.
+
+Model arguments contain `questions` (1–4), each with `question`, optional
+`header`, optional `options` (`label` and optional `description`, at most 8), and
+optional `multiSelect`. Omitting options permits free text. The host assigns
+question IDs and sends `sessionId`, `runId`, `toolCallId`, and the normalized
+questions in `_deerflow/ask_user_question`. The desktop returns either
+`{"outcome":"cancelled"}` or
+`{"outcome":"accepted","answers":[{"questionId":"q1","answers":["value"]}]}`.
+Every question must have exactly one answer entry; single-choice questions
+accept one value, and multiple-choice questions accept up to eight values.
+
+The existing desktop question panel supports choices and custom text. Each
+connection serializes question forms, and responses bind to the original
+question IDs. Answers are conversation data and never authorize another tool
+or alter approval policy. Only the trusted native question tool skips a separate
+permission prompt. Tool-policy filtering and tool-call budgets still apply.
+
+Questions are live root-conversation interactions: delegated agents return
+missing information to the root agent, which owns the question form. Questions
+use the active turn's time budget and do not create an approval checkpoint that
+survives reconnection.
+Stop, disconnect, or prompt completion closes the pending form; a new message
+can continue the conversation without replaying the old question. Questions
+outside an active desktop prompt are cancelled, so automatic-only continuation
+can fall back to ordinary text. Completed answers remain in normal tool history.
+Other unavailable tool names still return corrective feedback to the model.
+
 ## Recovery errors
 
 | Code | Meaning |
@@ -56,6 +91,18 @@ remains available in local diagnostics. This error does not retry the model or
 replay tools: `automaticReplay` remains false, and attached execution metadata
 still determines whether the saved run can resume. Partial output is not a
 successful result; inspect completed tool results before continuing.
+
+Model HTTP 429 errors are reported as `-32027` with `kind: model_rate_limited`
+and a safe Chinese explanation. The native agent retries a model request only
+when the provider rejects it before opening a response stream: at most three
+additional attempts, waiting 1, 2, and 4 seconds. Each attempt uses the shared
+model-call/token budget and settles before another is admitted. Cancellation
+interrupts the wait; budget or persistence failures stop further requests.
+Provider SDK retries are disabled for these models to avoid unmetered attempts.
+Auxiliary models keep their caller-owned retry policies. A stream that has
+already opened is never replayed, and the agent run and completed tools are
+never restarted by this retry policy. `automaticReplay` remains false, with
+execution metadata preserved if the requests still fail.
 
 Checkpoints pin accepted input, session configuration, resource versions,
 native history, business event cursor, tool receipts, and budget identity. A

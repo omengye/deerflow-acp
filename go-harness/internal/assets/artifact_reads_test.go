@@ -93,6 +93,31 @@ func TestArtifactReadRangesAndImmutableSnapshot(t *testing.T) {
 	}
 }
 
+func TestArtifactDigestCacheEvictionPreservesAndRebuildsArtifact(t *testing.T) {
+	f := newAssetFixture(t)
+	data := bytes.Repeat([]byte("archive-cache"), 100000)
+	ref := commitReadArtifact(t, f, data)
+	ctx := context.Background()
+	if _, err := f.assets.ReadArtifactRange(ctx, f.session.ID, ref, 0, 19); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.assets.EvictArtifactReadCache([]string{"unrelated"}); got != 0 {
+		t.Fatalf("evicted another asset: %d", got)
+	}
+	if got := f.assets.EvictArtifactReadCache([]string{ref.ID}); got != 64 {
+		t.Fatalf("released digest bytes=%d, want 64", got)
+	}
+	if got := f.assets.EvictArtifactReadCache([]string{ref.ID}); got != 0 {
+		t.Fatalf("repeat eviction=%d", got)
+	}
+	if got, err := f.assets.ReadArtifactRange(ctx, f.session.ID, ref, 0, 19); err != nil || !bytes.Equal(got, data[:19]) {
+		t.Fatalf("artifact after cache eviction: %x %v", got, err)
+	}
+	if got := f.assets.EvictArtifactReadCache([]string{ref.ID}); got != 64 {
+		t.Fatalf("digest cache not rebuilt: %d", got)
+	}
+}
+
 func TestArtifactReadRejectsSnapshotTampering(t *testing.T) {
 	const block = 1024 * 1024
 	for _, tc := range []struct {

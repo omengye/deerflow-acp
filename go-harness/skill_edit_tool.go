@@ -15,6 +15,7 @@ import (
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
 type skillInspectInput struct {
@@ -31,6 +32,7 @@ type preparedSkillEdit struct {
 	Review *harness.SkillEditReview `json:"host_review,omitempty"`
 }
 type installedSkillTool struct {
+	toolidentity.Native
 	info     *schema.ToolInfo
 	registry *skills.Registry
 	run      harness.RunRequest
@@ -42,13 +44,13 @@ func newInstalledSkillTools(registry *skills.Registry, req harness.RunRequest, r
 	if err != nil {
 		return nil, err
 	}
-	tools := []tool.BaseTool{&installedSkillTool{inspect, registry, req, refs}}
+	tools := []tool.BaseTool{&installedSkillTool{toolidentity.Builtin(inspect.Name), inspect, registry, req, refs}}
 	if editable {
 		info, err := utils.GoStruct2ToolInfo[skillEditInput]("skill_edit", "Edit the authoritative installed directory, never a workspace copy or database-only overlay. First inspect, then prepare a bounded multi-file edit, then apply its edit_id. Apply ALWAYS requires explicit host confirmation of the exact redacted diff and target; general session permission is insufficient. Existing Python/scripts are structurally validated, never executed. Prepared is NOT applied. Only status=applied AND live_matches=true AND source_matches=true confirms success. Each new ordinary turn re-reads the source directory; this execution/resume stays pinned. skill_manage proposes autonomous evolution candidates; a proposal alone does not change files.")
 		if err != nil {
 			return nil, err
 		}
-		tools = append(tools, &installedSkillTool{info, registry, req, refs})
+		tools = append(tools, &installedSkillTool{toolidentity.Builtin(info.Name), info, registry, req, refs})
 	}
 	return tools, nil
 }

@@ -17,6 +17,7 @@ type fakeModel struct {
 	mu           sync.Mutex
 	requests     []obj
 	plans        map[string]obj
+	rateLimits   map[string]*rateLimitPlan
 	server       *httptest.Server
 	logPath, key string
 }
@@ -124,7 +125,14 @@ func (f *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	call := f.planned(body)
+	limited := f.rateLimited(body)
 	f.mu.Unlock()
+	if limited {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(obj{"error": obj{"message": "Too many requests for this free model; fixture-private-rate-limit", "type": "rate_limit_error", "code": "rate_limit_exceeded"}})
+		return
+	}
 	if body["stream"] == true {
 		messages := array(body["messages"])
 		for i := len(messages) - 1; i >= 0; i-- {
@@ -146,6 +154,15 @@ func (f *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	content := reply
+	for i := len(array(body["messages"])) - 1; i >= 0; i-- {
+		message := object(array(body["messages"])[i])
+		if message["role"] == "user" {
+			if strings.Contains(messageText(message), "smoke-recovery-question") {
+				content = "Which file should I read?"
+			}
+			break
+		}
+	}
 	for _, v := range array(body["messages"]) {
 		m := object(v)
 		if m["role"] == "system" && strings.Contains(messageText(m), "Extract only durable facts") {

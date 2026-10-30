@@ -53,17 +53,18 @@ func validateSkillProposalSources(cfg Config, registry *skills.Registry) error {
 }
 
 type skillManageInput struct {
-	Action        string            `json:"action" jsonschema:"required,enum=create,enum=edit,enum=patch,enum=write_file,enum=remove_file,enum=delete,enum=get,description=Propose a candidate change or get your own proposal. The host publishes under current automatic or operator-review policy; a candidate is not an installation."`
-	Source        string            `json:"source,omitempty" jsonschema:"description=For an existing skill, omit to use its pinned source. An explicit source must match that skill. For create, choose an authorized destination when several are available."`
-	Name          string            `json:"name,omitempty" jsonschema:"description=Skill name for a candidate mutation"`
-	ProposalID    string            `json:"proposal_id,omitempty" jsonschema:"description=Your own proposal ID for action get"`
-	Reason        string            `json:"reason,omitempty" jsonschema:"description=The reusable problem and requirements this change must solve. Review models evaluate this together with the candidate; preserve unmet requirements when revising."`
-	Content       *string           `json:"content,omitempty" jsonschema:"description=Complete SKILL.md content for create/edit or support file text for write_file"`
-	Files         map[string]string `json:"files,omitempty" jsonschema:"description=Complete UTF-8 file package for create/edit, including SKILL.md and all support files. Cannot be mixed with content/path/patch fields. Never write a draft into the final installation directory."`
-	Path          string            `json:"path,omitempty" jsonschema:"description=Canonical relative support-file path for write_file/remove_file; never SKILL.md"`
-	Find          *string           `json:"find,omitempty" jsonschema:"description=Exact nonempty SKILL.md text for patch"`
-	Replace       *string           `json:"replace,omitempty" jsonschema:"description=Replacement text for patch; can be empty"`
-	ExpectedCount *int              `json:"expected_count,omitempty" jsonschema:"description=Optional exact total occurrence count for patch; without it replace the first match"`
+	Action               string            `json:"action" jsonschema:"required,enum=create,enum=edit,enum=patch,enum=write_file,enum=remove_file,enum=delete,enum=get,enum=review_retry,description=Propose a candidate change, inspect your own proposal, or request a controlled review retry when review_retry_available is true. A retry preserves the candidate and is not approval or publication."`
+	Source               string            `json:"source,omitempty" jsonschema:"description=For an existing skill, omit to use its pinned source. An explicit source must match that skill. For create, choose an authorized destination when several are available."`
+	Name                 string            `json:"name,omitempty" jsonschema:"description=Skill name for a candidate mutation"`
+	ProposalID           string            `json:"proposal_id,omitempty" jsonschema:"description=Your own proposal ID for get or review_retry"`
+	ExpectedStateVersion *int64            `json:"expected_state_version,omitempty" jsonschema:"description=Required for review_retry: state_version observed from get. Cannot be used with other actions."`
+	Reason               string            `json:"reason,omitempty" jsonschema:"description=The reusable problem and requirements this change must solve. Review models evaluate this together with the candidate; preserve unmet requirements when revising."`
+	Content              *string           `json:"content,omitempty" jsonschema:"description=Complete SKILL.md content for create/edit or support file text for write_file"`
+	Files                map[string]string `json:"files,omitempty" jsonschema:"description=Complete UTF-8 file package for create/edit, including SKILL.md and all support files. Cannot be mixed with content/path/patch fields. Never write a draft into the final installation directory."`
+	Path                 string            `json:"path,omitempty" jsonschema:"description=Canonical relative support-file path for write_file/remove_file; never SKILL.md"`
+	Find                 *string           `json:"find,omitempty" jsonschema:"description=Exact nonempty SKILL.md text for patch"`
+	Replace              *string           `json:"replace,omitempty" jsonschema:"description=Replacement text for patch; can be empty"`
+	ExpectedCount        *int              `json:"expected_count,omitempty" jsonschema:"description=Optional exact total occurrence count for patch; without it replace the first match"`
 }
 
 type skillManageTool struct {
@@ -121,7 +122,8 @@ func newSkillManageTool(ctx context.Context, cfg Config, registry *skills.Regist
 	if err != nil {
 		return nil, err
 	}
-	info.Desc += " Read skill-creator before authoring. Keep drafts outside installation roots and submit the complete files map. get requires a returned proposal_id; it is not a skill lookup. Never edit harness.db, registry tables or runtime state with SQL or shell commands, including after a tool failure. Only published=true establishes publication; availability_verified=true establishes next-turn body loading, not script execution."
+	info.Desc += " Read skill-creator before authoring. Keep drafts outside installation roots and submit the complete files map. get requires a returned proposal_id; it is not a skill lookup. review_retry requires your own proposal_id and its observed state_version as expected_state_version, and creates at most one successor with identical source, content, base and reason. Inspect that returned proposal_id with get; stop if the successor fails. Content rejection cannot be retried unchanged. Publication retries remain host-only and require a recorded approval. Never edit harness.db, registry tables or runtime state with SQL or shell commands, including after a tool failure. Only published=true establishes publication; availability_verified=true establishes next-turn body loading, not script execution."
+	info.Desc += " The host may allow a further full review after an HTTP 404 only when the operator has changed the reviewer configuration. Do not change model configuration to evade a verdict; get must report review_retry_available=true."
 	return &skillManageTool{info: info, service: cfg.skillEvolution, run: req, targets: targets, refs: slices.Clone(refs), builtin: builtin, registry: registry, selection: cfg.SkillSelection, dataDir: cfg.DataDir, readAllowed: cfg.ToolPolicy.Allows("skill") || cfg.ToolPolicy.Allows("read_skill_file")}, nil
 }
 
@@ -189,6 +191,8 @@ func skillManageResult(p harness.SkillProposal) string {
 	if p.PublicationError != "" {
 		code, stage, retryable = p.PublicationError, "publication", false
 		feedback.NextAction = "Publication is blocked. Preserve the source directory and use the operator's current-source review workflow; never overwrite files to match an old approval."
+	} else if p.Approval != nil && (p.Status == "pending_review" || p.Status == "publishing") {
+		feedback.NextAction = "An approval is already recorded, but publication has not completed. Ask the operator to inspect proposal.get and use proposal.publish_retry with the original approval version. Do not request another approval or resubmit the candidate."
 	}
 	data, _ := json.Marshal(map[string]any{
 		"ok": true, "proposal_id": p.ID, "status": p.Status, "action": p.Action,
@@ -196,10 +200,13 @@ func skillManageResult(p harness.SkillProposal) string {
 		"base_sha256": p.Base.Version, "candidate_sha256": p.CandidateVersion,
 		"security": p.Evaluation.Security, "quality": feedback.Quality, "behavior": p.Evaluation.Behavior,
 		"model_checks": feedback.Checks, "error": message, "error_code": code, "failure_stage": stage,
-		"retryable": retryable, "next_action": feedback.NextAction, "review_note": p.ReviewNote,
+		"validation_failure": feedback.Failure, "review_retry_of": p.ReviewRetryOf,
+		"review_retry_available": evolution.CanRetryReview(p),
+		"retryable":              retryable, "next_action": feedback.NextAction, "review_note": p.ReviewNote,
 		"requires_operator_review": p.Status == "pending_review" && p.Approval == nil, "live_skill_changed": false,
 		"script_review_required": p.ScriptReviewRequired, "scripts_execution_verified": p.Evaluation.IsolatedScripts,
 		"approval_recorded": p.Approval != nil, "published": p.Status == "published",
+		"publication":              proposalPublication(p),
 		"file_publication_pending": p.FilePublicationPending,
 		"source_identity":          p.Target.SourceIdentity, "availability_verified": false,
 	})
@@ -209,6 +216,15 @@ func skillManageResult(p harness.SkillProposal) string {
 func (t *skillManageTool) result(ctx context.Context, p harness.SkillProposal, role *agents.Invocation) string {
 	var result map[string]any
 	_ = json.Unmarshal([]byte(skillManageResult(p)), &result)
+	result["review_retry_available"] = t.service != nil && t.service.ReviewRetryAvailable(p)
+	if result["review_retry_available"] == true {
+		result["next_action"] = "Use skill_manage review_retry with this proposal_id and state_version as expected_state_version. The host creates at most one budgeted successor with identical source, content, base and reason. Inspect its returned proposal_id with get; stop if it fails. This does not approve or publish."
+		if !evolution.CanRetryReview(p) {
+			result["next_action"] = "The host confirms the reviewer configuration changed after the recorded HTTP 404 failure. Use skill_manage review_retry with this proposal_id and state_version as expected_state_version to repeat the complete review under the current configuration. This creates at most one identical successor, preserves ownership and does not approve or publish."
+		}
+	} else if evolution.CanRetryReview(p) {
+		result["next_action"] = "This review failure permits a controlled retry, but the host's budgeted review maintenance is unavailable. Ask the operator to restore it. Do not resubmit unchanged content with another request key or source."
+	}
 	result["data_dir"], result["session_id"] = t.dataDir, t.run.Session.ID
 	result["availability_scope"], result["execution_checked"] = "next_turn", false
 	roleCanRead := role == nil || slices.Contains(role.Spec.Skills, p.SkillName) && (role.Spec.Tools.Allows("skill") || role.Spec.Tools.Allows("read_skill_file"))
@@ -290,12 +306,15 @@ func (t *skillManageTool) InvokableRun(ctx context.Context, args string, _ ...to
 	if err != nil {
 		return "", harness.MarkToolNotExecuted(err)
 	}
-	if input.Action == "get" {
+	if input.Action == "get" || input.Action == "review_retry" {
 		if strings.TrimSpace(input.ProposalID) == "" {
-			return skillManageFailure("invalid_request", "get requires the proposal_id returned by create/edit. It cannot discover or publish a directory. Submit a complete candidate, or ask the operator to inspect the running host; never write registry tables.")
+			return skillManageFailure("invalid_request", input.Action+" requires the proposal_id returned by create/edit. It cannot discover or publish a directory. Submit a complete candidate, or ask the operator to inspect the running host; never write registry tables.")
 		}
 		if input.Name != "" || input.Source != "" || input.Content != nil || input.Files != nil || input.Path != "" || input.Find != nil || input.Replace != nil || input.ExpectedCount != nil || input.Reason != "" {
-			return skillManageFailure("invalid_request", "get accepts only proposal_id.")
+			return skillManageFailure("invalid_request", "get accepts only proposal_id; review_retry also requires expected_state_version. Candidate content and reason cannot change during retry.")
+		}
+		if input.Action == "get" && input.ExpectedStateVersion != nil || input.Action == "review_retry" && (input.ExpectedStateVersion == nil || *input.ExpectedStateVersion < 1) {
+			return skillManageFailure("invalid_request", "review_retry requires the state_version observed from get as expected_state_version; get accepts only proposal_id.")
 		}
 		p, err := t.service.Get(ctx, input.ProposalID)
 		if err != nil || !t.owns(p, author, role) {
@@ -304,15 +323,18 @@ func (t *skillManageTool) InvokableRun(ctx context.Context, args string, _ ...to
 			}
 			return skillManageFailure("not_found", "Proposal is not available to this agent.")
 		}
-		return t.result(ctx, p, role), nil
+		if input.Action == "get" {
+			return t.result(ctx, p, role), nil
+		}
+		return t.retryReview(ctx, p, *input.ExpectedStateVersion, author, role)
 	}
 	switch input.Action {
 	case "create", "edit", "patch", "write_file", "remove_file", "delete":
 	default:
-		return skillManageFailure("invalid_request", "Only candidate mutations and get are supported. This tool cannot approve, reject or roll back skills.")
+		return skillManageFailure("invalid_request", "Only candidate mutations, get and review_retry are supported. This tool cannot approve, publish, reject or roll back skills.")
 	}
-	if input.ProposalID != "" || strings.TrimSpace(input.Reason) == "" {
-		return skillManageFailure("invalid_request", "A mutation requires a reason and cannot supply proposal_id.")
+	if input.ProposalID != "" || input.ExpectedStateVersion != nil || strings.TrimSpace(input.Reason) == "" {
+		return skillManageFailure("invalid_request", "A mutation requires a reason and cannot supply proposal_id or expected_state_version.")
 	}
 	target, targetError := t.mutationTarget(input, role)
 	if targetError != "" {

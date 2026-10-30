@@ -193,7 +193,13 @@ type trackedModel struct {
 	role           bool
 }
 
-func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (result *schema.Message, resultErr error) {
+func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	return retryRejectedModel(ctx, m, func(work context.Context) (*schema.Message, error) {
+		return m.generateAttempt(work, input, opts...)
+	})
+}
+
+func (m *trackedModel) generateAttempt(ctx context.Context, input []*schema.Message, opts ...model.Option) (result *schema.Message, resultErr error) {
 	input = m.budget.inputWithBudgetAdvice(ctx, input)
 	opts = roleModelOptions(m.settings, opts)
 	opts = m.tuning.beforeReservation(opts)
@@ -226,6 +232,11 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 		return nil, err
 	}
 	endModel := beginRoleActivity(ctx, "model")
+	if err = m.applySteering(ctx, input); err != nil {
+		endModel()
+		complete = true
+		return nil, err
+	}
 	reservation.startedAt = time.Now()
 	observe := func(chunk *schema.Message) error {
 		if chunk != nil && reservation.firstTokenAt.IsZero() && (chunk.Content != "" || len(chunk.ToolCalls) > 0) {
@@ -258,6 +269,12 @@ func (m *trackedModel) Generate(ctx context.Context, input []*schema.Message, op
 	return msg, nil
 }
 func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return retryRejectedModel(ctx, m, func(work context.Context) (*schema.StreamReader[*schema.Message], error) {
+		return m.streamAttempt(work, input, opts...)
+	})
+}
+
+func (m *trackedModel) streamAttempt(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	input = m.budget.inputWithBudgetAdvice(ctx, input)
 	opts = roleModelOptions(m.settings, opts)
 	opts = m.tuning.beforeReservation(opts)
@@ -291,13 +308,19 @@ func (m *trackedModel) Stream(ctx context.Context, input []*schema.Message, opts
 		return nil, err
 	}
 	endModel := beginRoleActivity(ctx, "model")
+	if err = m.applySteering(ctx, input); err != nil {
+		endModel()
+		m.settle(ctx, reservation, true)
+		finish()
+		return nil, err
+	}
 	reservation.startedAt = time.Now()
 	source, err := m.inner.Stream(ctx, input, opts...)
 	if err != nil {
 		endModel()
-		m.settle(ctx, reservation, false)
+		settlementErr := m.settle(ctx, reservation, false)
 		finish()
-		return nil, m.modelError(err)
+		return nil, errors.Join(m.modelError(err), settlementErr)
 	}
 	if source == nil {
 		endModel()

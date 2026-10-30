@@ -246,6 +246,12 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 	if s.Engine == nil {
 		return harness.RunResult{}, fmt.Errorf("model engine is not configured")
 	}
+	if err = withExecutionTransaction(ctx, s.Store, func(tx *sql.Tx) error {
+		_, err := s.Store.closeFailedTaskWaitTx(ctx, tx, owner, id, true)
+		return err
+	}); err != nil {
+		return harness.RunResult{}, err
+	}
 	if err = s.Store.requireNoWaitingExecution(ctx, id); err != nil {
 		return harness.RunResult{}, err
 	}

@@ -28,6 +28,7 @@ type ExecutionNativeHead struct {
 }
 type ExecutionManifest struct {
 	Version                                                           int `json:"version"`
+	AgentRecoveryVersion                                              int `json:"agentRecoveryVersion,omitempty"`
 	SessionID, RunID, InputID                                         string
 	SourceKind, SourceSHA                                             string
 	CheckpointID, CheckpointSHA, ConfigSHA, InputSHA, ReceiptFrontier string
@@ -77,7 +78,7 @@ func executionEventCursor(ctx context.Context, tx *sql.Tx, sessionID string) (in
 }
 func executionReceiptFrontier(ctx context.Context, tx *sql.Tx, sessionID, runID string) (string, error) {
 	var unsafe bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts r WHERE r.session_id=? AND ((r.state='uncertain' AND (r.run_id=? OR NOT `+receiptRunCancelled+`)) OR (r.run_id=? AND r.state='started')))`, sessionID, runID, runID).Scan(&unsafe); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts r WHERE r.session_id=? AND ((`+unmanagedUncertainReceiptSQL("r")+` AND (r.run_id=? OR NOT `+receiptRunEnded+`)) OR (r.run_id=? AND r.state='started')))`, sessionID, runID, runID).Scan(&unsafe); err != nil {
 		return "", err
 	}
 	if unsafe {
@@ -194,6 +195,7 @@ func (s *Store) SuspendExecutionTx(ctx context.Context, tx *sql.Tx, lease Execut
 	m := ExecutionManifest{Version: 1, SessionID: row.State.SessionID, RunID: row.State.RunID, InputID: row.State.InputID, SourceKind: row.SourceKind, SourceSHA: row.SourceSHA, CheckpointID: cp.ID, CheckpointSHA: executionDigest(cp.Data), ConfigSHA: executionConfigDigest(row.Config), InputSHA: row.InputDigest, Interrupts: append([]ExecutionInterruptBinding(nil), cp.Interrupts...)}
 	if len(cp.TaskWaits) > 0 {
 		m.Version = 2
+		m.AgentRecoveryVersion = 1
 		m.TaskWaits = append([]interaction.TaskWaitBinding(nil), cp.TaskWaits...)
 	}
 	m.NativeHead, err = executionNativeHead(ctx, tx, row.State.SessionID)

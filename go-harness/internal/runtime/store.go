@@ -48,13 +48,22 @@ CREATE TABLE IF NOT EXISTS harness_tool_reconciliations (run_id TEXT NOT NULL, t
 	if err = migrateSessionRetention(ctx, db); err != nil {
 		return nil, err
 	}
+	if err = migrateConversation(ctx, db); err != nil {
+		return nil, err
+	}
 	if err = migrateSessionThinking(ctx, db); err != nil {
+		return nil, err
+	}
+	if err = migrateSessionBudget(ctx, db); err != nil {
 		return nil, err
 	}
 	if err = migrateSessionReasoning(ctx, db); err != nil {
 		return nil, err
 	}
 	if err = migrateExecutions(ctx, db); err != nil {
+		return nil, err
+	}
+	if err = migrateSteering(ctx, db); err != nil {
 		return nil, err
 	}
 	if err = migrateContinuations(ctx, db); err != nil {
@@ -104,7 +113,7 @@ type scanner interface{ Scan(...any) error }
 func scanSession(row scanner) (harness.Session, error) {
 	var x harness.Session
 	var created, updated string
-	err := row.Scan(&x.ID, &x.CWD, &x.Title, &x.Mode, &x.Model, &created, &updated, &x.ApprovalMode, &x.Subagents, &x.ConfigVersion, &x.ReasoningEffort, &x.ThinkingMode)
+	err := row.Scan(&x.ID, &x.CWD, &x.Title, &x.Mode, &x.Model, &created, &updated, &x.ApprovalMode, &x.Subagents, &x.ConfigVersion, &x.ReasoningEffort, &x.ThinkingMode, &x.MaxRunTokens, &x.MaxRunModelCalls, &x.MaxRunToolCalls, &x.BudgetVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return x, harness.ErrNotFound
 	}
@@ -119,7 +128,7 @@ func scanSession(row scanner) (harness.Session, error) {
 	return x, err
 }
 func (s *Store) Session(ctx context.Context, id string) (harness.Session, error) {
-	return scanSession(s.db.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,''),COALESCE(c.thinking_mode,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, id))
+	return scanSession(s.db.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,''),COALESCE(c.thinking_mode,''),COALESCE(c.max_run_tokens,0),COALESCE(c.max_run_model_calls,0),COALESCE(c.max_run_tool_calls,0),COALESCE(c.budget_version,0) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, id))
 }
 
 // ManagementSession resolves an existing foreground session without requiring
@@ -135,7 +144,7 @@ func (s *Store) List(ctx context.Context, cwd, cursor string, limit int) ([]harn
 	if err != nil {
 		return nil, err
 	}
-	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,''),COALESCE(c.thinking_mode,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE (?='' OR s.cwd=?) AND s.id>?`
+	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,''),COALESCE(c.thinking_mode,''),COALESCE(c.max_run_tokens,0),COALESCE(c.max_run_model_calls,0),COALESCE(c.max_run_tool_calls,0),COALESCE(c.budget_version,0) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id WHERE (?='' OR s.cwd=?) AND s.id>?`
 	if children {
 		query += ` AND NOT EXISTS(SELECT 1 FROM harness_background_specs b WHERE b.child_session_id=s.id)`
 	}
@@ -166,7 +175,7 @@ func (s *Store) ListForManagement(ctx context.Context, limit int) ([]harness.Ses
 	if err != nil {
 		return nil, err
 	}
-	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,''),COALESCE(c.thinking_mode,'') FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id`
+	query := `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,COALESCE(c.approval_mode,'ask'),COALESCE(c.subagents,1),COALESCE(c.version,1),COALESCE(c.reasoning_effort,''),COALESCE(c.thinking_mode,''),COALESCE(c.max_run_tokens,0),COALESCE(c.max_run_model_calls,0),COALESCE(c.max_run_tool_calls,0),COALESCE(c.budget_version,0) FROM harness_sessions s LEFT JOIN harness_session_configs c ON c.session_id=s.id`
 	if children {
 		query += ` WHERE NOT EXISTS(SELECT 1 FROM harness_background_specs b WHERE b.child_session_id=s.id)`
 	}
@@ -211,7 +220,7 @@ func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest, prepared .
 		if req.RootBudgetID == "" || req.RootBudgetID != req.RunID {
 			return fmt.Errorf("%w: new run requires its own root budget", harness.ErrInvalidInput)
 		}
-		if err = s.BudgetLedger.CreateRootTx(ctx, tx, budget.RootSpec{RootBudgetID: req.RootBudgetID, SessionID: req.Session.ID, RootRunID: req.RunID, Limits: s.BudgetLimits}); err != nil {
+		if err = s.BudgetLedger.CreateRootTx(ctx, tx, budget.RootSpec{RootBudgetID: req.RootBudgetID, SessionID: req.Session.ID, RootRunID: req.RunID, Limits: req.Session.EffectiveBudget(s.BudgetLimits)}); err != nil {
 			return err
 		}
 		if err = s.BudgetLedger.BeginAttemptTx(ctx, tx, foregroundBudgetScope(req)); err != nil {
@@ -304,7 +313,7 @@ func (s *Store) Append(ctx context.Context, e harness.RunEvent, stores ...*asset
 	return e, err
 }
 func (s *Store) History(ctx context.Context, id string) ([]harness.RunEvent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sequence,event FROM harness_events WHERE session_id=? ORDER BY sequence`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT sequence,event FROM harness_events e WHERE session_id=? AND NOT EXISTS(SELECT 1 FROM harness_conversation_hidden_events h WHERE h.session_id=e.session_id AND e.sequence BETWEEN h.first_sequence AND h.last_sequence) ORDER BY sequence`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -356,8 +365,16 @@ func (s *Store) Finish(ctx context.Context, id, reason string, runErr error, sco
 	if _, err = tx.ExecContext(ctx, `UPDATE harness_runs SET status=?,stop_reason=?,error=?,updated_at=? WHERE id=?`, status, reason, detail, now, id); err != nil {
 		return err
 	}
+	if err = rejectPendingSteeringTx(ctx, tx, id, "execution_ended"); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE harness_sessions SET updated_at=? WHERE id=(SELECT session_id FROM harness_runs WHERE id=?)`, now, id); err != nil {
 		return err
+	}
+	if status == "completed" {
+		if err = captureConversationTurnTx(ctx, tx, id); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -378,7 +395,7 @@ func (s *Store) Decide(ctx context.Context, id string, d harness.PermissionDecis
 }
 
 // ReconcileInterrupted never blindly replays model turns or external effects.
-// It preserves the accepted input for later explicit reconciliation.
+// It preserves the accepted input and failure evidence for the next user turn.
 func (s *Store) ReconcileInterrupted(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -416,7 +433,7 @@ func (s *Store) ReconcileInterrupted(ctx context.Context) error {
 	if err = settleOpenReceipts(ctx, tx, "", "process stopped before a final tool receipt"); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE harness_runs SET status='needs_reconciliation',error='process stopped before final run receipt',updated_at=? WHERE status='running'`, timestamp())
+	_, err = tx.ExecContext(ctx, `UPDATE harness_runs SET status='failed',stop_reason='interrupted',error='process stopped before final run receipt',updated_at=? WHERE status='running'`, timestamp())
 	if err != nil {
 		return fmt.Errorf("reconcile runs: %w", err)
 	}

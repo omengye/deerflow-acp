@@ -262,7 +262,7 @@ func TestDurableRuntimeStartupChecksInterruptedBudgetBeforeResume(t *testing.T) 
 				t.Fatal(err)
 			}
 			if inFlight {
-				if state.Status != harness.ExecutionNeedsReconciliation || state.Resumable {
+				if state.Status != harness.ExecutionFailed || state.Resumable {
 					t.Fatal("unresolved model reservation resumed", state)
 				}
 			} else {

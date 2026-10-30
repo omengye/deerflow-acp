@@ -2,8 +2,12 @@ package evolution
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -84,11 +88,11 @@ func TestProposalPagesBindFiltersAndConfiguredSourceIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	page, err := f.service.QueryHistory(ctx, harness.SkillQuery{Limit: 1})
-	if err != nil || len(page.Publications) != 1 || page.Next == "" || page.Publications[0].Action != "baseline" {
+	if err != nil || len(page.Publications) != 1 || page.Next == "" || page.Publications[0].ProposalID != first.ID {
 		t.Fatalf("history first: %+v %v", page, err)
 	}
 	next, err := f.service.QueryHistory(ctx, harness.SkillQuery{Limit: 1, Cursor: page.Next})
-	if err != nil || len(next.Publications) != 1 || next.Next != "" || next.Publications[0].ProposalID != first.ID {
+	if err != nil || len(next.Publications) != 1 || next.Next != "" || next.Publications[0].Action != "baseline" {
 		t.Fatalf("history second: %+v %v", next, err)
 	}
 	if _, err = f.service.QueryProposals(ctx, harness.SkillQuery{Limit: 1, Cursor: page.Next}); !errors.Is(err, harness.ErrInvalidInput) {
@@ -122,6 +126,143 @@ func TestProposalPagesBindFiltersAndConfiguredSourceIdentity(t *testing.T) {
 	}
 	if _, err = f.service.QueryProposals(ctx, harness.SkillQuery{Limit: 1, Status: "pending_review", Cursor: cursor}); !errors.Is(err, harness.ErrInvalidInput) {
 		t.Fatalf("old source cursor accepted: %v", err)
+	}
+}
+
+func TestProposalRecentPaginationUsesUpdatesFallbackAndStableTies(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx := context.Background()
+	var proposals []Proposal
+	for i := range 7 {
+		proposals = append(proposals, f.submit(t, f.request(t, fmt.Sprintf("order-%d", i), fmt.Sprintf("Candidate %d", i))))
+	}
+	sort.Slice(proposals, func(i, j int) bool { return proposals[i].ID < proposals[j].ID })
+	for i, at := range []string{
+		"2026-10-30T08:00:00.1Z",
+		"2026-10-30T08:00:00.120000001Z",
+		"2026-10-30T08:00:00.12Z",
+		"2026-10-30T08:00:00.12Z",
+		"2026-10-30T08:00:00Z",
+		"0001-01-01T00:00:00Z",
+		"0001-01-01T00:00:00Z",
+	} {
+		if _, err := f.db.DB().Exec(`UPDATE df_skill_proposals SET payload=json_set(payload,'$.updated_at',?,'$.created_at',?) WHERE id=?`, at, at, proposals[i].ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A missing update falls back to creation. Missing both and Go zero time
+	// remain valid historical metadata and are stably ordered after known dates.
+	if _, err := f.db.DB().Exec(`UPDATE df_skill_proposals SET payload=json_remove(payload,'$.updated_at') WHERE id=?`, proposals[2].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.DB().Exec(`UPDATE df_skill_proposals SET payload=json_remove(payload,'$.updated_at','$.created_at') WHERE id=?`, proposals[5].ID); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{proposals[1].ID, proposals[2].ID, proposals[3].ID, proposals[0].ID, proposals[4].ID, proposals[5].ID, proposals[6].ID}
+	var firstCursor string
+	for _, limit := range []int{1, 2, 100} {
+		q := harness.SkillQuery{Limit: limit}
+		var got []string
+		for range len(want) + 1 {
+			page, err := f.service.QueryProposals(ctx, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, proposal := range page.Proposals {
+				got = append(got, proposal.ID)
+			}
+			if firstCursor == "" {
+				firstCursor = page.Next
+			}
+			q.Cursor = page.Next
+			if page.Next == "" {
+				break
+			}
+		}
+		if !slices.Equal(got, want) || q.Cursor != "" {
+			t.Fatalf("limit=%d got=%v want=%v continuation=%q", limit, got, want, q.Cursor)
+		}
+	}
+	assertRecentCursorRejectsOldKind(t, firstCursor, "proposals", func(cursor string) error {
+		_, err := f.service.QueryProposals(ctx, harness.SkillQuery{Limit: 1, Cursor: cursor})
+		return err
+	})
+}
+
+func TestHistoryRecentPaginationUsesTimeBeforeRevision(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx := context.Background()
+	for i := range 5 {
+		proposal := f.submit(t, f.request(t, fmt.Sprintf("history-%d", i), fmt.Sprintf("History %d", i)))
+		if _, err := f.service.Approve(ctx, proposal.ID, review(proposal)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, at := range []string{
+		"2026-10-30T08:00:00.1Z",
+		"0001-01-01T00:00:00Z",
+		"2026-10-30T08:00:00.120000001Z",
+		"2026-10-30T08:00:00.12Z",
+		"2026-10-30T08:00:00.12Z",
+		"0001-01-01T00:00:00Z",
+	} {
+		if _, err := f.db.DB().Exec(`UPDATE df_skill_publications SET payload=json_set(payload,'$.created_at',?) WHERE revision=?`, at, i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.db.DB().Exec(`UPDATE df_skill_publications SET payload=json_remove(payload,'$.created_at') WHERE revision=6`); err != nil {
+		t.Fatal(err)
+	}
+	want := []int64{3, 5, 4, 1, 6, 2}
+	var firstCursor string
+	for _, limit := range []int{1, 2, 100} {
+		q := harness.SkillQuery{Limit: limit}
+		var got []int64
+		for range len(want) + 1 {
+			page, err := f.service.QueryHistory(ctx, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, publication := range page.Publications {
+				got = append(got, publication.Revision)
+			}
+			if firstCursor == "" {
+				firstCursor = page.Next
+			}
+			q.Cursor = page.Next
+			if page.Next == "" {
+				break
+			}
+		}
+		if !slices.Equal(got, want) || q.Cursor != "" {
+			t.Fatalf("limit=%d got=%v want=%v continuation=%q", limit, got, want, q.Cursor)
+		}
+	}
+	assertRecentCursorRejectsOldKind(t, firstCursor, "history", func(cursor string) error {
+		_, err := f.service.QueryHistory(ctx, harness.SkillQuery{Limit: 1, Cursor: cursor})
+		return err
+	})
+}
+
+func assertRecentCursorRejectsOldKind(t *testing.T, encoded, oldKind string, query func(string) error) {
+	t.Helper()
+	data, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cursor pageCursor
+	if err := json.Unmarshal(data, &cursor); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{oldKind, cursor.Kind} {
+		invalidCursor := cursor
+		invalidCursor.Kind = kind
+		if kind == cursor.Kind {
+			invalidCursor.Time = "invalid"
+		}
+		if err := query(encodeCursor(invalidCursor)); !errors.Is(err, harness.ErrInvalidInput) {
+			t.Fatalf("accepted obsolete/invalid time cursor: %v", err)
+		}
 	}
 }
 

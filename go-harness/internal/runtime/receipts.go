@@ -128,6 +128,12 @@ func (s *Store) appendToolEvent(ctx context.Context, e harness.RunEvent, stores 
 			}
 			receipt.Result, receipt.ResultTruncated = boundedReceiptResult(append(receipt.Result, e.Content...), receipt.ResultTruncated)
 		case "tool_end":
+			// This marker is host supplied by the engine after an invocation
+			// returns a tool error. It does not certify its external effects.
+			// Pending/started events and arbitrary tool output cannot set it.
+			if e.Status == "failed" && e.Receipt != nil {
+				receipt.AgentRecoverable = e.Receipt.AgentRecoverable
+			}
 			if e.Status == "failed" && e.Receipt != nil {
 				switch e.Receipt.FailureCode {
 				case "network", "permission", "quota", "cancelled", "uncertain", "unknown", "rate_limit", "remote":
@@ -327,14 +333,32 @@ func (s *Store) ListToolReceipts(ctx context.Context, sessionID string) ([]harne
 	return result, rows.Err()
 }
 
-// Cancellation ends the old execution, not the conversation. Keep uncertain
-// receipts for review, but do not require review before a fresh user turn.
-// The receipt's owning run must be durably cancelled, not merely interrupted.
-const receiptRunCancelled = `EXISTS(SELECT 1 FROM harness_runs stopped WHERE stopped.id=r.run_id AND stopped.session_id=r.session_id AND stopped.status='cancelled' AND stopped.stop_reason='cancelled')`
+// A cancelled or failed execution is historical work, not a session lock.
+// Uncertain receipts remain immutable evidence and still forbid replay of the
+// old checkpoint; a fresh user turn may inspect that evidence and continue.
+const receiptRunEnded = `EXISTS(SELECT 1 FROM harness_runs stopped WHERE stopped.id=r.run_id AND stopped.session_id=r.session_id AND (stopped.status='failed' OR (stopped.status='cancelled' AND stopped.stop_reason='cancelled')))`
+
+// Only static aliases chosen by runtime call sites are accepted here.
+// An uncertain terminal ToolResult can be handled by the agent without being
+// reclassified as a successful operation or permission to replay its call ID.
+func unmanagedUncertainReceiptSQL(alias string) string {
+	if alias != "" {
+		alias += "."
+	}
+	return "(" + alias + "state='uncertain' AND COALESCE(json_extract(" + alias + "receipt,'$.agentRecoverable'),0)=0)"
+}
+
+func unsettledReceiptSQL(alias string) string {
+	prefix := alias
+	if prefix != "" {
+		prefix += "."
+	}
+	return "(" + prefix + "state='started' OR " + unmanagedUncertainReceiptSQL(alias) + ")"
+}
 
 func stoppedToolRecoveryContext(ctx context.Context, q executionQuery, sessionID string) (context.Context, error) {
 	var stopped bool
-	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_runs WHERE session_id=? AND status='cancelled' AND stop_reason='cancelled')`, sessionID).Scan(&stopped); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_runs WHERE session_id=? AND (status='failed' OR (status='cancelled' AND stop_reason='cancelled')))`, sessionID).Scan(&stopped); err != nil {
 		return ctx, err
 	}
 	if stopped {
@@ -345,7 +369,7 @@ func stoppedToolRecoveryContext(ctx context.Context, q executionQuery, sessionID
 
 func (s *Store) requireReconciled(ctx context.Context, sessionID string) error {
 	var uncertain bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts r WHERE r.session_id=? AND r.state='uncertain' AND NOT `+receiptRunCancelled+`)`, sessionID).Scan(&uncertain); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts r WHERE r.session_id=? AND `+unmanagedUncertainReceiptSQL("r")+` AND NOT `+receiptRunEnded+`)`, sessionID).Scan(&uncertain); err != nil {
 		return err
 	}
 	if uncertain {

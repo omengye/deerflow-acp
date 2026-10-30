@@ -231,6 +231,7 @@ func (s *smoke) startChat(session string, cursor any) (string, any) {
 	if cursor != nil {
 		need(string(jsonBytes(actual)) == string(jsonBytes(cursor)), "reconnect changed native session")
 	}
+	s.sessionBudgetRead(session, runtime, actual, cursor != nil)
 	start := s.fake.count()
 	s.prompt(session, runtime, marker+": Reply with the local smoke test phrase only.")
 	events := []obj{}
@@ -348,6 +349,30 @@ func (s *smoke) cancelThenChat(session, runtime string) {
 	}
 }
 
+func (s *smoke) toolFailureQuestion(session, runtime string) {
+	marker, failedCall := s.fake.plan("read_file", obj{"path": "missing-" + uuid() + ".txt"})
+	start := s.fake.count()
+	s.prompt(session, runtime, marker+": smoke-recovery-question; read this file or ask which file to use.")
+	var events []obj
+	finished := object(s.waku.event(runtime, "turnFinished", &events, nil))
+	question := ""
+	for _, event := range events {
+		if event["kind"] == "textDelta" {
+			question += str(event["payload"])
+		}
+	}
+	need(finished["success"] == true && strings.Contains(question, "Which file should I read?"), "tool error did not reach an ordinary chat question: %v", finished)
+	failed := toolResult(s.fake.since(start), failedCall)
+	need(failed != nil && strings.Contains(messageText(failed), "Tool failed:"), "model did not receive the tool error")
+	marker, nextCall := s.fake.plan("read_file", obj{"path": "full-access.txt"})
+	start = s.fake.count()
+	s.prompt(session, runtime, marker+": Use full-access.txt.")
+	finished = object(s.waku.event(runtime, "turnFinished", nil, nil))
+	result := toolResult(s.fake.since(start), nextCall)
+	need(finished["success"] == true && result != nil && strings.Contains(messageText(result), "Isolated approval fixture"), "ordinary answer did not continue after tool failure")
+	s.log("Tool failure reaches chat; ordinary user answer continues with a new call", obj{"question_in_chat": true, "manual_review": false})
+}
+
 func (s *smoke) writeTurn(session, runtime, name, decision, content string, cachedReject, prior bool) string {
 	need(filepath.Base(name) == name && name != "." && name != "..", "invalid write fixture name")
 	path := filepath.Join(s.workspace, name)
@@ -430,6 +455,7 @@ func (s *smoke) run() {
 	s.pythonSkill(session, oldRuntime)
 	approvalRuntime, approvalCursor := s.startApproval(approvalSession, nil)
 	s.writeTurn(approvalSession, approvalRuntime, "full-access.txt", "", "", false, false)
+	s.toolFailureQuestion(approvalSession, approvalRuntime)
 	s.setApproval(approvalSession, approvalRuntime, "ask")
 	s.cancelThenChat(approvalSession, approvalRuntime)
 	s.writeTurn(approvalSession, approvalRuntime, "ask-rejected.txt", "reject_once", "", false, false)

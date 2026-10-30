@@ -86,14 +86,14 @@ func TestRuntimeNativeDurablePermissionAllowAndDeny(t *testing.T) {
 	}
 }
 
-func TestRuntimePermissionModesGateSafeToolBeforeEffect(t *testing.T) {
+func TestRuntimePermissionModesGateUnknownToolBeforeEffect(t *testing.T) {
 	for _, tc := range []struct {
 		mode         harness.PermissionMode
 		wantApproval int32
 		wantEffect   int32
 	}{
 		{harness.PermissionModeOff, 0, 1},
-		{harness.PermissionModeDangerous, 0, 1},
+		{harness.PermissionModeDangerous, 1, 0},
 		{harness.PermissionModeAll, 1, 0},
 	} {
 		t.Run(string(tc.mode), func(t *testing.T) {

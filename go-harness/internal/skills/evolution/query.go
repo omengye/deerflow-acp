@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
@@ -13,6 +14,25 @@ import (
 type pageCursor struct {
 	Kind, Filter, Key, Name string
 	Revision                int64
+	Time                    string `json:",omitempty"`
+}
+
+const (
+	proposalCursorKind = "proposals-recent-v2"
+	historyCursorKind  = "history-recent-v2"
+	// These timestamps are host-generated UTC RFC3339Nano. Trimming Z keeps
+	// fractional seconds in exact chronological order, unlike raw RFC3339 or
+	// SQLite's floating-point date conversion. Zero/missing times go last.
+	proposalTimeOrder = `COALESCE(NULLIF(NULLIF(rtrim(json_extract(p.payload,'$.updated_at'),'Z'),''),'0001-01-01T00:00:00'),NULLIF(rtrim(json_extract(p.payload,'$.created_at'),'Z'),'0001-01-01T00:00:00'),'')`
+	historyTimeOrder  = `COALESCE(NULLIF(rtrim(json_extract(payload,'$.created_at'),'Z'),'0001-01-01T00:00:00'),'')`
+)
+
+func validPageTime(value string) bool {
+	if value == "" {
+		return true
+	}
+	at, err := time.Parse(time.RFC3339Nano, value+"Z")
+	return err == nil && !at.IsZero() && at.UTC().Format(time.RFC3339Nano) == value+"Z"
 }
 
 func validStatus(status string) bool {
@@ -52,7 +72,7 @@ func (s *Service) querySources(q harness.SkillQuery, kind string) (map[string]ha
 		Name, Status string
 	}{sources, q.Name, q.Status})
 	if q.NeedsAttention != nil {
-		if kind != "proposals" {
+		if kind != proposalCursorKind {
 			return nil, "", nil, cursor, invalid("attention filter is only supported for proposals")
 		}
 		cursor.Filter = encodedHash([]any{cursor.Filter, *q.NeedsAttention, s.autoPatchPolicyIdentity()})
@@ -62,6 +82,9 @@ func (s *Service) querySources(q harness.SkillQuery, kind string) (map[string]ha
 		data, err := base64.RawURLEncoding.DecodeString(q.Cursor)
 		if err != nil || json.Unmarshal(data, &saved) != nil || saved.Kind != kind || saved.Filter != cursor.Filter || !bounded(saved.Key, 256) || !bounded(saved.Name, 128) || saved.Revision < 0 {
 			return nil, "", nil, cursor, invalid("cursor does not match query")
+		}
+		if (kind == proposalCursorKind || kind == historyCursorKind) && !validPageTime(saved.Time) {
+			return nil, "", nil, cursor, invalid("cursor time is invalid")
 		}
 		cursor = saved
 	}
@@ -98,12 +121,14 @@ func (s *Service) QueryProposals(ctx context.Context, q harness.SkillQuery) (har
 	if q.NeedsAttention != nil && q.Status != "pending_review" {
 		return page, invalid("attention filter requires pending_review")
 	}
-	allowed, where, args, cursor, err := s.querySources(q, "proposals")
+	allowed, where, args, cursor, err := s.querySources(q, proposalCursorKind)
 	if err != nil {
 		return page, err
 	}
-	where += " AND id>?"
-	args = append(args, cursor.Key)
+	if q.Cursor != "" {
+		where += " AND (" + proposalTimeOrder + "<? OR (" + proposalTimeOrder + "=? AND id>?))"
+		args = append(args, cursor.Time, cursor.Time, cursor.Key)
+	}
 	if q.Status != "" {
 		where += " AND status=?"
 		args = append(args, q.Status)
@@ -123,17 +148,18 @@ func (s *Service) QueryProposals(ctx context.Context, q harness.SkillQuery) (har
 	if err = tx.QueryRowContext(ctx, `SELECT revision FROM df_skill_catalog WHERE id=1`).Scan(&page.CatalogVersion); err != nil {
 		return page, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM df_skill_proposals p WHERE `+where+` ORDER BY id LIMIT ?`, args...)
+	rows, err := tx.QueryContext(ctx, `SELECT id,`+proposalTimeOrder+` FROM df_skill_proposals p WHERE `+where+` ORDER BY `+proposalTimeOrder+` DESC,id LIMIT ?`, args...)
 	if err != nil {
 		return page, err
 	}
-	var ids []string
+	type proposalKey struct{ id, time string }
+	var keys []proposalKey
 	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
+		var key proposalKey
+		if err = rows.Scan(&key.id, &key.time); err != nil {
 			break
 		}
-		ids = append(ids, id)
+		keys = append(keys, key)
 	}
 	if err == nil {
 		err = rows.Err()
@@ -143,12 +169,12 @@ func (s *Service) QueryProposals(ctx context.Context, q harness.SkillQuery) (har
 		return page, err
 	}
 	bytesUsed := 0
-	for _, id := range ids {
+	for _, key := range keys {
 		if len(page.Proposals) == q.Limit {
 			page.Next = encodeCursor(cursor)
 			break
 		}
-		p, err := readProposal(ctx, tx, id)
+		p, err := readProposal(ctx, tx, key.id)
 		if err != nil {
 			return page, err
 		}
@@ -156,7 +182,7 @@ func (s *Service) QueryProposals(ctx context.Context, q harness.SkillQuery) (har
 			return page, harness.ErrPermissionDenied
 		}
 		if p.Status == "pending_review" {
-			p.Disposition, err = s.proposalDispositionTx(ctx, tx, id)
+			p.Disposition, err = s.proposalDispositionTx(ctx, tx, key.id)
 			if err != nil {
 				return page, err
 			}
@@ -172,7 +198,7 @@ func (s *Service) QueryProposals(ctx context.Context, q harness.SkillQuery) (har
 		}
 		bytesUsed += len(data)
 		page.Proposals = append(page.Proposals, p)
-		cursor.Key = id
+		cursor.Key, cursor.Time = key.id, key.time
 	}
 	return page, tx.Commit()
 }
@@ -182,12 +208,15 @@ func (s *Service) QueryHistory(ctx context.Context, q harness.SkillQuery) (harne
 	if q.Status != "" {
 		return page, invalid("history does not accept a proposal status")
 	}
-	allowed, where, args, cursor, err := s.querySources(q, "history")
+	allowed, where, args, cursor, err := s.querySources(q, historyCursorKind)
 	if err != nil {
 		return page, err
 	}
-	where += ` AND (source_key>? OR (source_key=? AND name>?) OR (source_key=? AND name=? AND revision>?))`
-	args = append(args, cursor.Key, cursor.Key, cursor.Name, cursor.Key, cursor.Name, cursor.Revision, q.Limit+1)
+	if q.Cursor != "" {
+		where += ` AND (` + historyTimeOrder + `<? OR (` + historyTimeOrder + `=? AND (source_key>? OR (source_key=? AND name>?) OR (source_key=? AND name=? AND revision<?))))`
+		args = append(args, cursor.Time, cursor.Time, cursor.Key, cursor.Key, cursor.Name, cursor.Key, cursor.Name, cursor.Revision)
+	}
+	args = append(args, q.Limit+1)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return page, err
@@ -196,7 +225,7 @@ func (s *Service) QueryHistory(ctx context.Context, q harness.SkillQuery) (harne
 	if err = tx.QueryRowContext(ctx, `SELECT revision FROM df_skill_catalog WHERE id=1`).Scan(&page.CatalogVersion); err != nil {
 		return page, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT source_key,name,revision,payload FROM df_skill_publications WHERE `+where+` ORDER BY source_key,name,revision LIMIT ?`, args...)
+	rows, err := tx.QueryContext(ctx, `SELECT source_key,name,revision,payload,`+historyTimeOrder+` FROM df_skill_publications WHERE `+where+` ORDER BY `+historyTimeOrder+` DESC,source_key,name,revision DESC LIMIT ?`, args...)
 	if err != nil {
 		return page, err
 	}
@@ -206,10 +235,10 @@ func (s *Service) QueryHistory(ctx context.Context, q harness.SkillQuery) (harne
 			page.Next = encodeCursor(cursor)
 			break
 		}
-		var source, name string
+		var source, name, at string
 		var revision int64
 		var data []byte
-		if err = rows.Scan(&source, &name, &revision, &data); err != nil {
+		if err = rows.Scan(&source, &name, &revision, &data, &at); err != nil {
 			break
 		}
 		target, ok := allowed[source]
@@ -229,7 +258,7 @@ func (s *Service) QueryHistory(ctx context.Context, q harness.SkillQuery) (harne
 		}
 		bytesUsed += len(data)
 		page.Publications = append(page.Publications, p)
-		cursor.Key, cursor.Name, cursor.Revision = source, name, revision
+		cursor.Key, cursor.Name, cursor.Revision, cursor.Time = source, name, revision, at
 	}
 	if err == nil {
 		err = rows.Err()

@@ -28,7 +28,7 @@ func (s *Store) endExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease Exe
 	switch kind {
 	case harness.ExecutionStopCompleted:
 		var open bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE run_id=? AND state IN ('pending','started','uncertain'))`, row.State.RunID).Scan(&open); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE run_id=? AND (state='pending' OR `+unsettledReceiptSQL("")+`))`, row.State.RunID).Scan(&open); err != nil {
 			return row.State, err
 		}
 		if open {
@@ -50,7 +50,7 @@ func (s *Store) endExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease Exe
 				return row.State, harness.ErrExecutionConflict
 			}
 			var unsafe bool
-			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND (state IN ('started','uncertain') OR (run_id=? AND state='pending')))`, row.State.SessionID, row.State.RunID).Scan(&unsafe); err != nil {
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND (`+unsettledReceiptSQL("")+` OR (run_id=? AND state='pending')))`, row.State.SessionID, row.State.RunID).Scan(&unsafe); err != nil {
 				return row.State, err
 			}
 			if !unsafe {
@@ -64,7 +64,9 @@ func (s *Store) endExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease Exe
 		if validation == nil {
 			status = harness.ExecutionWaitingInput
 		} else if errors.Is(validation, harness.ErrExecutionUnresumable) || errors.Is(validation, harness.ErrReconciliationRequired) || errors.Is(validation, harness.ErrExecutionConflict) {
-			status = harness.ExecutionNeedsReconciliation
+			// A failed turn with no replayable checkpoint is terminal. Keep its
+			// error and unknown receipts, but allow a fresh conversation turn.
+			status = harness.ExecutionFailed
 			blocked = validation.Error()
 		} else {
 			return row.State, validation
@@ -73,6 +75,9 @@ func (s *Store) endExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease Exe
 		return row.State, executionInvalid("invalid execution attempt outcome")
 	}
 	if status != harness.ExecutionWaitingInput {
+		if err = rejectPendingSteeringTx(ctx, tx, row.State.RunID, "execution_ended"); err != nil {
+			return row.State, err
+		}
 		if err = settleOpenReceipts(ctx, tx, row.State.RunID, "execution attempt ended before a final tool receipt"); err != nil {
 			return row.State, err
 		}
@@ -105,6 +110,11 @@ func (s *Store) endExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease Exe
 	if err = executionAudit(ctx, tx, lease, "attempt_ended", map[string]any{"reason": kind, "status": status, "detail": truncateUTF8(detail, 4096)}); err != nil {
 		return row.State, err
 	}
+	if status == harness.ExecutionCompleted {
+		if err = captureConversationTurnTx(ctx, tx, row.State.RunID); err != nil {
+			return row.State, err
+		}
+	}
 	row, err = readExecution(ctx, tx, row.State.SessionID, row.State.RunID)
 	row.State.Resumable = status == harness.ExecutionWaitingInput && err == nil
 	return row.State, err
@@ -128,6 +138,9 @@ func (s *Store) CancelExecutionTx(ctx context.Context, tx *sql.Tx, sessionID, ow
 		return row.State, harness.ErrExecutionConflict
 	}
 	if err = stopAutomaticRootTx(ctx, tx, row); err != nil {
+		return row.State, err
+	}
+	if err = rejectPendingSteeringTx(ctx, tx, row.State.RunID, "execution_cancelled"); err != nil {
 		return row.State, err
 	}
 	if err = settleOpenReceipts(ctx, tx, row.State.RunID, "waiting execution explicitly cancelled"); err != nil {
@@ -164,17 +177,20 @@ type ExecutionRecovery struct {
 }
 
 func (s *Store) blockRecoveredExecutionTx(ctx context.Context, tx *sql.Tx, scope budget.Scope) error {
-	const reason = "interrupted budget attempt requires reconciliation"
+	const reason = "interrupted execution ended with unresolved budget accounting"
 	if err := settleOpenReceipts(ctx, tx, scope.MemberID, reason); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE harness_execution_intents SET state='cancelled',version=version+1,updated_at=? WHERE run_id=? AND state='pending'`, timestamp(), scope.MemberID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE harness_executions SET status='needs_reconciliation',version=version+1,blocked_reason=?,updated_at=? WHERE run_id=?`, reason, timestamp(), scope.MemberID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM eino_checkpoints WHERE id=?`, "harness/turn/v1/"+scope.MemberID); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE harness_runs SET status='needs_reconciliation',error=?,updated_at=? WHERE id=?`, reason, timestamp(), scope.MemberID)
+	if _, err := tx.ExecContext(ctx, `UPDATE harness_executions SET status='failed',version=version+1,blocked_reason=?,updated_at=? WHERE run_id=?`, reason, timestamp(), scope.MemberID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE harness_runs SET status='failed',stop_reason='interrupted',error=?,updated_at=? WHERE id=?`, reason, timestamp(), scope.MemberID)
 	return err
 }
 
@@ -218,11 +234,17 @@ func (s *Store) RecoverExecutionsTx(ctx context.Context, tx *sql.Tx) ([]Executio
 			if !errors.Is(validation, harness.ErrExecutionUnresumable) && !errors.Is(validation, harness.ErrExecutionConflict) && !errors.Is(validation, harness.ErrReconciliationRequired) {
 				return nil, validation
 			}
-			status, blocked = harness.ExecutionNeedsReconciliation, validation.Error()
+			status, blocked = harness.ExecutionFailed, validation.Error()
+			if err = rejectPendingSteeringTx(ctx, tx, id.run, "execution_unresumable"); err != nil {
+				return nil, err
+			}
 			if err = settleOpenReceipts(ctx, tx, id.run, "process stopped without a matching resumable checkpoint"); err != nil {
 				return nil, err
 			}
 			if _, err = tx.ExecContext(ctx, `UPDATE harness_execution_intents SET state='cancelled',version=version+1,updated_at=? WHERE run_id=? AND state='pending'`, timestamp(), id.run); err != nil {
+				return nil, err
+			}
+			if _, err = tx.ExecContext(ctx, `DELETE FROM eino_checkpoints WHERE id=?`, "harness/turn/v1/"+id.run); err != nil {
 				return nil, err
 			}
 		}

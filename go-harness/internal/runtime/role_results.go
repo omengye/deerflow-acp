@@ -38,7 +38,7 @@ func migrateRoleResults(ctx context.Context, db *sql.DB) error {
 // Only a saved private continuation can produce a parent-facing summary. The
 // private transcript remains in its role context and never enters this inbox.
 func publishRoleResultTx(ctx context.Context, tx *sql.Tx, state harness.ExecutionState, succeeded bool) error {
-	if state.Status != harness.ExecutionCompleted && state.Status != harness.ExecutionFailed {
+	if (state.Status != harness.ExecutionCompleted && state.Status != harness.ExecutionFailed) || state.BlockedReason != "" {
 		return nil
 	}
 	row, err := readExecution(ctx, tx, state.SessionID, state.RunID)
@@ -51,7 +51,7 @@ func publishRoleResultTx(ctx context.Context, tx *sql.Tx, state harness.Executio
 	}
 	role := source.ParentRole.Context.Invocation
 	result := roleResult{SourceRunID: state.RunID, SourceSHA: row.SourceSHA, RoleID: role.ID, RecipientRole: role.ParentID, Succeeded: succeeded,
-		Result: "The delegated continuation failed. Review its execution before deciding whether to retry."}
+		Result: "The delegated continuation failed. Inspect its recorded error and execution evidence, then decide whether a safe retry, a different approach, or a question to the user is needed. Do not replay an unconfirmed external operation."}
 	if succeeded {
 		saved, err := readRoleContextTx(ctx, tx, source.RootBudgetID, role.ID, 0)
 		if err != nil {
@@ -102,7 +102,7 @@ func readRoleResultTx(ctx context.Context, tx *sql.Tx, b background.Binding, spe
 	if err != nil {
 		return result, err
 	}
-	if row.SourceSHA != result.SourceSHA || (row.State.Status != harness.ExecutionCompleted && row.State.Status != harness.ExecutionFailed) {
+	if row.SourceSHA != result.SourceSHA || row.State.BlockedReason != "" || (row.State.Status != harness.ExecutionCompleted && row.State.Status != harness.ExecutionFailed) {
 		return result, continuationConflict("role result execution changed")
 	}
 	source, err := loadContinuationSource(ctx, tx, row)

@@ -66,12 +66,11 @@ func Describe() Schema {
 		numeric("runtime", "max_active_connections", "integer", 16, 1, 128),
 		numeric("runtime", "max_active_runs", "integer", 2, 1, 128),
 		numeric("runtime", "max_output_tokens", "integer", harness.DefaultBudgetLimits().MaxOutputTokens, 0, 1<<30),
+		numeric("runtime", "max_run_tokens", "integer", 0, 0, 1<<53-1),
+		numeric("runtime", "max_model_calls", "integer", 0, 0, 1<<31-1),
+		numeric("runtime", "max_tool_calls", "integer", 0, 0, 1<<31-1),
 		executionTimeoutField("runtime", "run_timeout_seconds", 0),
 		executionTimeoutField("runtime", "queue_timeout_seconds", 0),
-		{Path: "/runtime/session_cleanup_enabled", Type: "boolean", Default: true},
-		numeric("runtime", "inactive_session_retention_days", "integer", 30, 1, 3650),
-		numeric("runtime", "closed_session_retention_days", "integer", 30, 0, 3650),
-		numeric("runtime", "session_cleanup_interval_seconds", "number", 3600, 60, 86400),
 		{Path: "/runtime/permission_mode", Type: "string", Default: "dangerous", Enum: []string{"off", "dangerous", "all"}},
 		{Path: "/runtime/memory_scope", Type: "string", Default: "workspace", Enum: []string{"workspace", "session", "global"}},
 		{Path: "/runtime/enable_bash", Type: "boolean", Default: false},
@@ -108,14 +107,11 @@ func Describe() Schema {
 	schema := Schema{Version: Version, Sections: []string{"runtime", "memory", "models", "subagents", "tools", "sandbox", "skill_evolution", "skill_sources"}, Fields: fields}
 	schema.HostSettings = []HostSetting{{ConfigPath: "mcp.host_recipes", Apply: "restart", Edit: "host_yaml", Description: "Explicit host-owned MCP recipes for exact workspaces; credentials are excluded from desktop and execution snapshots."}}
 	schema.HostSettings = append(schema.HostSettings, HostSetting{ConfigPath: "memory.single_user", Apply: "restart", Edit: "host_yaml", Description: "One persistent personal profile, explicit memory tools and durable extraction."}, HostSetting{ConfigPath: "memory.embedding_url", Apply: "restart", Edit: "host_yaml", Description: "Private embedding service URL; never exposed to model tools."}, HostSetting{ConfigPath: "memory.embedding_model", Apply: "restart", Edit: "host_yaml", Description: "Pinned embedding model identity. Indexes can be rebuilt from current facts."})
-	schema.HostSettings = append(schema.HostSettings, HostSetting{ConfigPath: "local_acp.max_run_tokens", Apply: "restart", Edit: "host_yaml", Description: "Optional aggregate task token budget shared by all agents; 0 (default) disables. Context windows and per-request output caps are separate."})
 	schema.HostSettings = append(schema.HostSettings,
 		HostSetting{ConfigPath: "local_acp.goal_auto_continue", Apply: "restart", Edit: "host_yaml", Description: "Enable at most 3 evidence-based native goal continuations; /goal works without auto-continuation. Calls share the run budget."},
 		HostSetting{ConfigPath: "wechat", Apply: "migration", Edit: "channels", Description: "Legacy iLink configuration is imported once into the host channel store. Use Settings > Channels or channel.* management for independent enablement, workspace and login. Credentials never enter the configuration document."},
 		HostSetting{ConfigPath: "local_acp.max_artifact_size_mib", Apply: "restart", Edit: "host_yaml", Description: "Maximum size of each output artifact in MiB; positive integer, default 500. Applies to presentation and reads."},
 		HostSetting{ConfigPath: "local_acp.max_iterations", Apply: "restart", Edit: "host_yaml", Description: "Optional model/tool iterations per agent run; 0 (default) disables."},
-		HostSetting{ConfigPath: "local_acp.max_model_calls", Apply: "restart", Edit: "host_yaml", Description: "Optional model calls shared by the main and child agents; 0 (default) disables."},
-		HostSetting{ConfigPath: "local_acp.max_tool_calls", Apply: "restart", Edit: "host_yaml", Description: "Optional tool calls shared by the main and child agents; 0 (default) disables."},
 	)
 	schema.Hash = digest(schema)
 	return schema
@@ -197,6 +193,22 @@ func ValidateDraft(section string, document map[string]any) error {
 // ValidateNative checks only present native settings. Unknown retained fields
 // remain migration input. YAML null means unset, as in the launch decoder.
 func ValidateNative(document map[string]any) error {
+	// Retention remains a host-only maintenance policy. Hiding its desktop
+	// projection must not remove native configuration validation.
+	maintenance := []Field{
+		{Path: "/local_acp/session_cleanup_enabled", Type: "boolean"},
+		numeric("local_acp", "inactive_session_retention_days", "integer", 5, 1, 3650),
+		numeric("local_acp", "closed_session_retention_days", "integer", 5, 0, 3650),
+		numeric("local_acp", "session_cleanup_interval_seconds", "number", 3600, 60, 86400),
+	}
+	local, _ := document["local_acp"].(map[string]any)
+	for _, field := range maintenance {
+		if value, exists := local[strings.TrimPrefix(field.Path, "/local_acp/")]; exists && value != nil {
+			if err := validate(field, value); err != nil {
+				return err
+			}
+		}
+	}
 	if _, err := ArtifactSizeLimitMiB(document); err != nil {
 		return err
 	}

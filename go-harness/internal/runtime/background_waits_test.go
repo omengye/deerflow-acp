@@ -266,19 +266,38 @@ func TestBackgroundWaitTargetsRemainOwnedAndCertain(t *testing.T) {
 	if ready, err := f.permissions.ReadyWakeups(context.Background()); err != nil || len(ready) != 0 {
 		t.Fatalf("uncertain child woke parent: %+v %v", ready, err)
 	}
-	if _, err := f.native.DB().Exec(`UPDATE harness_background_bindings SET blocked_reason='' WHERE task_id=?`, child.Spec.ID); err != nil {
-		t.Fatal(err)
+	parent, err := f.native.Tasks().Get(context.Background(), f.binding.TaskID)
+	if err != nil || parent.Status != bt.StatusFailed || len(parent.Checkpoint) != 0 {
+		t.Fatal("terminal blocked dependency left its parent waiting", parent, err)
 	}
-	readyWait(t, f)
 }
 
 func TestBackgroundWaitUncertainReceiptRequiresReconciliation(t *testing.T) {
-	for _, state := range []harness.ReceiptState{harness.ReceiptStarted, harness.ReceiptUncertain} {
-		t.Run(string(state), func(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		state       harness.ReceiptState
+		recoverable bool
+	}{
+		{"started", harness.ReceiptStarted, false},
+		{"legacy_unknown", harness.ReceiptUncertain, false},
+		{"recoverable_unknown", harness.ReceiptUncertain, true},
+		{"started_marker_cannot_waive_execution", harness.ReceiptStarted, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			f, child := pausedWaitFixture(t)
-			finishWaitTarget(t, f, child)
 			ctx := context.Background()
-			receipt := harness.ToolReceipt{RunID: child.Spec.ID, SessionID: child.Spec.ID + "/session", ToolCallID: "external-write", ToolName: "host_opencli", State: state, Version: 1}
+			if tc.recoverable && tc.state == harness.ReceiptUncertain {
+				running, err := f.native.Tasks().Start(ctx, &bt.StartTaskRequest{TaskID: child.Spec.ID, ExpectedVersion: child.Version})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = f.native.Tasks().Fail(ctx, &bt.FailTaskRequest{TaskID: child.Spec.ID, ExpectedVersion: running.Version, Error: "tool failed with unconfirmed effects"}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				finishWaitTarget(t, f, child)
+			}
+			receipt := harness.ToolReceipt{RunID: child.Spec.ID, SessionID: child.Spec.ID + "/session", ToolCallID: "external-write", ToolName: "host_opencli", State: tc.state, Version: 1, AgentRecoverable: tc.recoverable}
 			// addWaitTarget only registers native ancestry. Add the minimal
 			// private session/run rows needed for a real receipt's foreign keys.
 			if _, err := f.native.DB().Exec(`INSERT INTO harness_sessions(id,cwd,title,mode,model,created_at,updated_at) SELECT ?,cwd,title,mode,model,created_at,updated_at FROM harness_sessions WHERE id=?`, receipt.SessionID, f.binding.ChildSessionID); err != nil {
@@ -294,8 +313,27 @@ func TestBackgroundWaitUncertainReceiptRequiresReconciliation(t *testing.T) {
 			if _, err = f.native.DB().Exec(`INSERT INTO harness_tool_receipts VALUES(?,?,?,?,?,?)`, receipt.RunID, receipt.ToolCallID, receipt.SessionID, receipt.State, receipt.Version, data); err != nil {
 				t.Fatal(err)
 			}
+			if tc.recoverable && tc.state == harness.ReceiptUncertain {
+				readyWait(t, f)
+				stored, err := readReceipt(ctx, f.native.DB(), receipt.SessionID, receipt.RunID, receipt.ToolCallID)
+				if err != nil || stored.State != harness.ReceiptUncertain || stored.Review != nil {
+					t.Fatal("parent wake changed child execution evidence", err)
+				}
+				return
+			}
 			if ready, err := f.permissions.ReadyWakeups(ctx); err != nil || len(ready) != 0 {
 				t.Fatalf("unreconciled child woke parent: %+v %v", ready, err)
+			}
+			if tc.state == harness.ReceiptUncertain {
+				parent, err := f.native.Tasks().Get(ctx, f.binding.TaskID)
+				if err != nil || parent.Status != bt.StatusFailed || len(parent.Checkpoint) != 0 {
+					t.Fatal("terminal unknown child left parent waiting", parent, err)
+				}
+				stored, err := readReceipt(ctx, f.native.DB(), receipt.SessionID, receipt.RunID, receipt.ToolCallID)
+				if err != nil || stored.State != harness.ReceiptUncertain || stored.Version != receipt.Version {
+					t.Fatal("failed waiter rewrote child evidence", stored, err)
+				}
+				return
 			}
 			receipt.State, receipt.Version = harness.ReceiptCompleted, 2
 			data, err = json.Marshal(receipt)

@@ -305,13 +305,21 @@ func main() {
 		}
 	}
 	var packagePath, cache, python string
-	var fixture, legacy bool
+	var fixture, legacy, rateLimitOnly, userInputOnly bool
 	flag.StringVar(&packagePath, "package", "", "fresh extracted Windows Go desktop package")
-	flag.StringVar(&cache, "cache", ".build-cache/desktop-smoke", "isolated output root; must not be inside the supplied package")
+	// The fixture intentionally has no Git on PATH. Keep its ordinary chat
+	// workspace outside the source checkout so it cannot inherit repository refs.
+	flag.StringVar(&cache, "cache", filepath.Join(os.TempDir(), "deerflow-desktop-smoke"), "isolated output root; must not be inside the supplied package")
 	flag.BoolVar(&fixture, "mcp-fixture", false, "run the isolated stdio MCP fixture")
 	flag.BoolVar(&legacy, "legacy-empty-mcp-policy", false, "verify legacy enabled MCP with no executable allowlist")
+	flag.BoolVar(&rateLimitOnly, "rate-limit-only", false, "validate packaged model 429 retry and desktop errors using only isolated local fixtures")
+	flag.BoolVar(&userInputOnly, "user-input-only", false, "validate packaged desktop questions, answers and cancellation using only isolated local fixtures")
 	flag.StringVar(&python, "python", "", "optional operator-selected python.exe for pinned skill execution smoke; never installed or bundled")
 	flag.Parse()
+	if rateLimitOnly && userInputOnly {
+		fmt.Fprintln(os.Stderr, "select only one focused smoke mode")
+		os.Exit(2)
+	}
 	if fixture {
 		if e := serveMCP(os.Stdin, os.Stdout); e != nil {
 			fmt.Fprintln(os.Stderr, e)
@@ -352,7 +360,17 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("Isolated smoke logs:", s.logs)
-	err := safe(func() { s.prepare(); s.run(); s.report["ok"] = true })
+	err := safe(func() {
+		s.prepare()
+		if userInputOnly {
+			s.runUserInput()
+		} else if rateLimitOnly {
+			s.runRateLimits()
+		} else {
+			s.run()
+		}
+		s.report["ok"] = true
+	})
 	if err != nil {
 		s.report["error"] = err.Error()
 		os.WriteFile(filepath.Join(s.logs, "failure.txt"), []byte(err.Error()), 0600)

@@ -140,7 +140,7 @@ func backgroundContinuationTargetTx(ctx context.Context, tx *sql.Tx, b backgroun
 	}
 	var uncertain, occupied bool
 	if err = tx.QueryRowContext(ctx, `SELECT
- EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state IN ('started','uncertain')) OR
+ EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND `+unsettledReceiptSQL("")+`) OR
  EXISTS(SELECT 1 FROM harness_background_execution_failures WHERE task_id=? AND persistence_failure<>0),
  EXISTS(SELECT 1 FROM harness_background_child_leases WHERE child_session_id=?) OR
  EXISTS(SELECT 1 FROM budget_attempts WHERE member_id=? AND state IN ('active','unknown')) OR

@@ -18,6 +18,7 @@ func TestReviewRetryIsBoundedImmutableAndIdempotent(t *testing.T) {
 	configureBehavior(t, f.service, &fixtureBehaviorEvaluator{id: "retry-behavior"}, behaviorSuite())
 	request := f.request(t, "failed-review", "Verify sources with a clear result.")
 	request.Origin = "manual_agent"
+	request.Author = "model/original-session-owner"
 	p, err := f.service.Submit(ctx, request)
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +64,7 @@ func TestReviewRetryIsBoundedImmutableAndIdempotent(t *testing.T) {
 		id = next
 	}
 	next, err := f.service.Get(ctx, id)
-	if err != nil || next.ID == p.ID || next.ReviewRetryOf != p.ID || next.CandidateVersion != p.CandidateVersion || next.Base != p.Base || next.Origin != p.Origin || next.Status != "validating" {
+	if err != nil || next.ID == p.ID || next.ReviewRetryOf != p.ID || next.CandidateVersion != p.CandidateVersion || next.Base != p.Base || next.Origin != p.Origin || next.Author != p.Author || next.Reason != p.Reason || next.Status != "validating" {
 		t.Fatalf("%+v %v", next, err)
 	}
 	old, _ := f.service.Get(ctx, p.ID)
@@ -122,5 +123,39 @@ func TestScriptPackageNeverAutomaticallyPublishesEvenWithAcknowledgment(t *testi
 	saved, _ := f.service.Get(context.Background(), p.ID)
 	if saved.Approval != nil || saved.Status != "pending_review" {
 		t.Fatal("automatic approval recorded")
+	}
+}
+
+func TestReviewRetryLegacyRequestFailureRequiresExplicitUnclassifiedRecord(t *testing.T) {
+	legacy := Proposal{Status: "failed", Origin: "manual_agent", ValidationFailure: &harness.SkillValidationFailure{Code: "review_request_failed", Stage: "security"}}
+	if !CanRetryReview(legacy) || legacy.ValidationFailure.Retryable {
+		t.Fatal("legacy retry must be allowed without inventing a transient classification")
+	}
+	for _, detail := range []string{"cause_unavailable", "unknown_request_failure", "http_401", "authentication_failed", "provider_refusal"} {
+		p := legacy
+		p.ValidationFailure = &harness.SkillValidationFailure{Code: "review_request_failed", Stage: "security", DetailCode: detail}
+		if CanRetryReview(p) {
+			t.Fatal("classified request failure retried", detail)
+		}
+	}
+	for _, mode := range []string{"approval", "successor", "automatic", "security", "quality", "behavior"} {
+		p := legacy
+		switch mode {
+		case "approval":
+			p.Approval = &harness.SkillApproval{}
+		case "successor":
+			p.ReviewRetryOf = "p_original"
+		case "automatic":
+			p.Origin = "generated"
+		case "security":
+			p.Evaluation.Security = "failed"
+		case "quality":
+			p.Evaluation.ModelChecks = []harness.SkillModelCheck{{Stage: "quality", Passed: false}}
+		case "behavior":
+			p.Evaluation.Behavior = "failed"
+		}
+		if CanRetryReview(p) {
+			t.Fatal("legacy recovery bypassed guard", mode)
+		}
 	}
 }

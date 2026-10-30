@@ -22,7 +22,13 @@ func sourceTarget(s *source, name string) harness.SkillTarget {
 type catalogCursor struct {
 	Kind, Filter, Name, Source string
 	Revision                   int64
+	Time                       string `json:",omitempty"`
 }
+
+// Install timestamps are written by the host in UTC. Removing Z preserves
+// nanosecond order for variable fractional precision without floating point.
+// Missing installs (deleted skills) and Go's zero time sort after live records.
+const catalogTimeOrder = `COALESCE(NULLIF(rtrim(i.updated_at,'Z'),'0001-01-01T00:00:00'),'')`
 
 // QueryCatalog pages only configured source identities. A cursor pins the
 // publication revision and filters; advisory exporter progress does not expire it.
@@ -62,7 +68,7 @@ func (r *Registry) QueryCatalog(ctx context.Context, q harness.SkillQuery) (harn
 		exportKey = r.export.key
 	}
 	filter, _ := json.Marshal([]any{page.Sources, q.Name, q.Status, exportKey})
-	cursor := catalogCursor{Kind: "skill-catalog-v1", Filter: digest(filter)}
+	cursor := catalogCursor{Kind: "skill-catalog-recent-v2", Filter: digest(filter)}
 	if q.NameContains != "" {
 		// Keep existing exact-name/list cursors valid when no substring is requested.
 		filter, _ = json.Marshal([]any{cursor.Filter, map[string]string{"name_contains": q.NameContains}})
@@ -71,7 +77,7 @@ func (r *Registry) QueryCatalog(ctx context.Context, q harness.SkillQuery) (harn
 	if q.Cursor != "" {
 		var saved catalogCursor
 		data, err := base64.RawURLEncoding.DecodeString(q.Cursor)
-		if err != nil || json.Unmarshal(data, &saved) != nil || saved.Kind != cursor.Kind || saved.Filter != cursor.Filter || !validName(saved.Name) || allowed[saved.Source] == nil || saved.Revision < 0 {
+		if err != nil || json.Unmarshal(data, &saved) != nil || saved.Kind != cursor.Kind || saved.Filter != cursor.Filter || !validName(saved.Name) || allowed[saved.Source] == nil || saved.Revision < 0 || !validCatalogTime(saved.Time) {
 			return page, invalid("catalog cursor does not match query")
 		}
 		cursor = saved
@@ -102,8 +108,11 @@ func (r *Registry) QueryCatalog(ctx context.Context, q harness.SkillQuery) (harn
 	case "deleted":
 		where += " AND c.deleted=1"
 	}
-	where += " AND (c.name>? OR (c.name=? AND c.source_key>?))"
-	args = append(args, cursor.Name, cursor.Name, cursor.Source, q.Limit+1)
+	if q.Cursor != "" {
+		where += " AND (" + catalogTimeOrder + "<? OR (" + catalogTimeOrder + "=? AND (c.name>? OR (c.name=? AND c.source_key>?))))"
+		args = append(args, cursor.Time, cursor.Time, cursor.Name, cursor.Name, cursor.Source)
+	}
+	args = append(args, q.Limit+1)
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return page, err
@@ -116,15 +125,15 @@ func (r *Registry) QueryCatalog(ctx context.Context, q harness.SkillQuery) (harn
 		return page, harness.ErrSkillConflict
 	}
 	cursor.Revision = page.CatalogVersion
-	rows, err := tx.QueryContext(ctx, `SELECT c.source_key,c.name FROM df_skill_control c LEFT JOIN df_skill_installs i ON i.source_key=c.source_key AND i.name=c.name WHERE `+where+` ORDER BY c.name,c.source_key LIMIT ?`, args...)
+	rows, err := tx.QueryContext(ctx, `SELECT c.source_key,c.name,`+catalogTimeOrder+` FROM df_skill_control c LEFT JOIN df_skill_installs i ON i.source_key=c.source_key AND i.name=c.name WHERE `+where+` ORDER BY `+catalogTimeOrder+` DESC,c.name,c.source_key LIMIT ?`, args...)
 	if err != nil {
 		return page, err
 	}
-	type key struct{ source, name string }
+	type key struct{ source, name, time string }
 	var keys []key
 	for rows.Next() {
 		var k key
-		if err = rows.Scan(&k.source, &k.name); err != nil {
+		if err = rows.Scan(&k.source, &k.name, &k.time); err != nil {
 			break
 		}
 		keys = append(keys, k)
@@ -165,9 +174,17 @@ func (r *Registry) QueryCatalog(ctx context.Context, q harness.SkillQuery) (harn
 		}
 		bytesUsed += len(encoded) + 1
 		page.Skills = append(page.Skills, entry)
-		cursor.Name, cursor.Source = k.name, k.source
+		cursor.Name, cursor.Source, cursor.Time = k.name, k.source, k.time
 	}
 	return page, tx.Commit()
+}
+
+func validCatalogTime(value string) bool {
+	if value == "" {
+		return true
+	}
+	at, err := time.Parse(time.RFC3339Nano, value+"Z")
+	return err == nil && !at.IsZero() && at.UTC().Format(time.RFC3339Nano) == value+"Z"
 }
 
 func encodeCatalogCursor(c catalogCursor) string {

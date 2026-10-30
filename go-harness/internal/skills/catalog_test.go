@@ -2,11 +2,15 @@ package skills
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
@@ -43,7 +47,8 @@ func TestCatalogPaginationFiltersAndStaleCursors(t *testing.T) {
 	if err != nil || first.Next == "" || len(first.Sources) != 2 {
 		t.Fatalf("first: %+v %v", first, err)
 	}
-	lastName := ""
+	var lastTime time.Time
+	seenDeleted := false
 	for {
 		page, err := r.QueryCatalog(ctx, q)
 		if err != nil || len(page.Skills) != 1 {
@@ -51,10 +56,18 @@ func TestCatalogPaginationFiltersAndStaleCursors(t *testing.T) {
 		}
 		e := page.Skills[0]
 		key := e.Target.SourceID + "/" + e.Target.Name
-		if seen[key] || e.Target.Name < lastName {
+		if seen[key] {
 			t.Fatalf("duplicate or unordered item: %+v", e)
 		}
-		seen[key], lastName = true, e.Target.Name
+		seen[key] = true
+		if e.Record != nil {
+			if seenDeleted || !lastTime.IsZero() && e.Record.InstalledAt.After(lastTime) {
+				t.Fatalf("catalog is not newest first: %+v", e)
+			}
+			lastTime = e.Record.InstalledAt
+		} else {
+			seenDeleted = true
+		}
 		if !e.Head.Exists && (e.Record != nil || e.Head.StateVersion == 0) {
 			t.Fatalf("invalid tombstone: %+v", e)
 		}
@@ -122,6 +135,82 @@ func TestCatalogPaginationFiltersAndStaleCursors(t *testing.T) {
 	page, err = r2.QueryCatalog(ctx, harness.SkillQuery{SourceID: "a", Limit: 100})
 	if err != nil || len(page.Skills) != 0 {
 		t.Fatalf("rebound source exposed former records: %+v %v", page, err)
+	}
+}
+
+func TestCatalogRecentPaginationKeepsFractionalTimesTiesAndTombstones(t *testing.T) {
+	ctx := context.Background()
+	cfg := harness.SkillsConfig{Sources: []harness.SkillSource{
+		{ID: "a", Root: t.TempDir(), Scope: harness.SkillScopeGlobal},
+		{ID: "b", Root: t.TempDir(), Scope: harness.SkillScopeGlobal},
+	}}
+	r, db := registry(t, cfg)
+	for _, item := range []struct{ source, name, at string }{
+		{"a", "alpha", "2026-10-30T08:00:00.1Z"},
+		{"a", "zeta", "2026-10-30T08:00:00.12Z"},
+		{"b", "zeta", "2026-10-30T08:00:00.12Z"},
+		{"a", "newest", "2026-10-30T08:00:00.120000001Z"},
+		{"a", "whole", "2026-10-30T08:00:00Z"},
+		{"a", "zero", "0001-01-01T00:00:00Z"},
+		{"a", "removed", "2026-10-31T08:00:00Z"},
+	} {
+		source := r.sources[item.source]
+		writeSkill(t, source.config.Root, item.name, item.name)
+		installEnabled(t, r, item.source, item.name)
+		if _, err := db.DB().Exec(`UPDATE df_skill_installs SET updated_at=? WHERE source_key=? AND name=?`, item.at, source.identity, item.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Delete(ctx, "a", "removed"); err != nil {
+		t.Fatal(err)
+	}
+	ties := []string{"a/zeta", "b/zeta"}
+	if r.sources["a"].identity > r.sources["b"].identity {
+		slices.Reverse(ties)
+	}
+	want := append([]string{"a/newest"}, ties...)
+	want = append(want, "a/alpha", "a/whole", "a/removed", "a/zero")
+	var firstCursor string
+	for _, limit := range []int{1, 2, 100} {
+		q := harness.SkillQuery{Limit: limit}
+		var got []string
+		for range len(want) + 1 {
+			page, err := r.QueryCatalog(ctx, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range page.Skills {
+				got = append(got, entry.Target.SourceID+"/"+entry.Target.Name)
+			}
+			if firstCursor == "" {
+				firstCursor = page.Next
+			}
+			q.Cursor = page.Next
+			if page.Next == "" {
+				break
+			}
+		}
+		if !slices.Equal(got, want) || q.Cursor != "" {
+			t.Fatalf("limit=%d order=%v want=%v continuation=%q", limit, got, want, q.Cursor)
+		}
+	}
+	data, err := base64.RawURLEncoding.DecodeString(firstCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cursor catalogCursor
+	if err := json.Unmarshal(data, &cursor); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"skill-catalog-v1", cursor.Kind} {
+		invalidCursor := cursor
+		invalidCursor.Kind = kind
+		if kind == cursor.Kind {
+			invalidCursor.Time = "invalid"
+		}
+		if _, err := r.QueryCatalog(ctx, harness.SkillQuery{Limit: 1, Cursor: encodeCatalogCursor(invalidCursor)}); !errors.Is(err, harness.ErrInvalidInput) {
+			t.Fatalf("accepted obsolete/invalid time cursor: %v", err)
+		}
 	}
 }
 

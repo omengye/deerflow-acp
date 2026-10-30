@@ -6,32 +6,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
 
-	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/acp/protocol"
 )
 
 const (
 	listReceiptsMethod         = "_deerflow/tool_receipts/list"
-	reconcileReceiptMethod     = "_deerflow/tool_receipts/reconcile"
 	reconciliationRequiredCode = -32010
 	receiptConflictCode        = -32011
 )
 
 func receiptCapabilities() map[string]any {
-	return map[string]any{"version": 1, "listMethod": listReceiptsMethod, "reconcileMethod": reconcileReceiptMethod, "pagination": "live_keyset"}
+	return map[string]any{"version": 1, "listMethod": listReceiptsMethod, "pagination": "live_keyset"}
 }
 
 func receiptRecoveryError(conflict bool) error {
 	code, kind := reconciliationRequiredCode, "reconciliation_required"
-	message := "Uncertain tool effects require review. List the tool receipts, verify the external outcome, and explicitly reconcile before sending another prompt."
+	message := "The previous execution could not finish safely. Its results were preserved and no tool was replayed."
 	if conflict {
 		code, kind = receiptConflictCode, "receipt_conflict"
-		message = "Tool receipt evidence changed or conflicts with this request. List the receipts again and review the current version; no tool was replayed."
+		message = "Tool execution evidence changed or conflicts with this request. Refresh the execution state; no tool was replayed."
 	}
-	return &protocol.Error{Code: code, Message: message, Data: map[string]any{"kind": kind, "listMethod": listReceiptsMethod, "reconcileMethod": reconcileReceiptMethod, "automaticReplay": false}}
+	return &protocol.Error{Code: code, Message: message, Data: map[string]any{"kind": kind, "listMethod": listReceiptsMethod, "automaticReplay": false}}
 }
 
 func (a *Agent) receiptRequest(ctx context.Context, method string, raw json.RawMessage) (any, error) {
@@ -39,13 +36,7 @@ func (a *Agent) receiptRequest(ctx context.Context, method string, raw json.RawM
 	if len(raw) > 128*1024 || rejectDuplicateKeys(raw) != nil {
 		return invalid()
 	}
-	keys := []string{"sessionId"}
-	if method == reconcileReceiptMethod {
-		keys = append(keys, "review")
-	} else {
-		keys = append(keys, "limit", "cursor", "uncertainOnly")
-	}
-	fields, err := strictObject(raw, keys...)
+	fields, err := strictObject(raw, "sessionId", "limit", "cursor", "uncertainOnly")
 	if err != nil {
 		return invalid()
 	}
@@ -78,56 +69,7 @@ func (a *Agent) receiptRequest(ctx context.Context, method string, raw json.RawM
 		}
 		return map[string]any{"receipts": receipts}, nil
 	}
-	reviewFields, err := strictObject(fields["review"], "runId", "toolCallId", "expectedVersion", "outcome", "reviewer", "note", "result")
-	if err != nil {
-		return invalid()
-	}
-	var review harness.ToolReconciliation
-	if err := json.Unmarshal(fields["review"], &review); err != nil {
-		return invalid()
-	}
-	if !validID(review.RunID, 256) || !validID(review.ToolCallID, 1024) || review.ExpectedVersion < 1 || strings.TrimSpace(review.Reviewer) == "" || len(review.Reviewer) > 256 || strings.TrimSpace(review.Note) == "" || len(review.Note) > 16384 || (review.Outcome != harness.ReceiptCompleted && review.Outcome != harness.ReceiptNoEffect) {
-		return invalid()
-	}
-	if result, exists := reviewFields["result"]; exists {
-		var parts []json.RawMessage
-		trimmed := bytes.TrimSpace(result)
-		if len(trimmed) == 0 || trimmed[0] != '[' || json.Unmarshal(result, &parts) != nil || len(parts) > 128 {
-			return invalid()
-		}
-		bytesLeft := 64 * 1024
-		for _, part := range parts {
-			if _, err := strictObject(part, "type", "text", "uri", "mimeType", "name"); err != nil {
-				return invalid()
-			}
-			var content harness.Content
-			if json.Unmarshal(part, &content) != nil {
-				return invalid()
-			}
-			bytesLeft -= len(content.Text) + len(content.URI) + len(content.MimeType) + len(content.Name)
-			if bytesLeft < 0 {
-				return invalid()
-			}
-			switch content.Type {
-			case "text":
-				if content.Text == "" || content.URI != "" || content.MimeType != "" || content.Name != "" {
-					return invalid()
-				}
-			case "resource_link":
-				u, parseErr := url.Parse(content.URI)
-				if parseErr != nil || !u.IsAbs() || u.Scheme == "deerflow-asset" || content.Text != "" || len(content.URI) > 4096 || len(content.Name) > 1024 || len(content.MimeType) > 256 {
-					return invalid()
-				}
-			default:
-				return invalid()
-			}
-		}
-	}
-	receipt, err := a.service.ReconcileToolReceipt(ctx, a.owner, sessionID, review)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"receipt": receipt}, nil
+	return nil, rpcError(protocol.MethodNotFound, "Method not found")
 }
 
 func validID(value string, max int) bool {

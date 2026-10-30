@@ -129,6 +129,26 @@ type pendingPrompt struct {
 	ArgumentsSHA string `json:"arguments_sha,omitempty"`
 }
 
+// Local session state is host persistence, not a recoverable remote tool
+// failure. Keep the marker through wrapped transport errors and errors.Join.
+type sessionPersistenceError struct {
+	operation string
+	cause     error
+}
+
+func (e *sessionPersistenceError) Error() string {
+	return "external ACP session " + e.operation + " failed: " + e.cause.Error()
+}
+func (e *sessionPersistenceError) Unwrap() error            { return e.cause }
+func (e *sessionPersistenceError) PersistenceFailure() bool { return true }
+
+func sessionPersistenceFailure(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &sessionPersistenceError{operation: operation, cause: err}
+}
+
 func (t *invokeTool) InvokableRun(ctx context.Context, args string, _ ...tool.Option) (string, error) {
 	var input invokeInput
 	decoder := json.NewDecoder(strings.NewReader(args))
@@ -156,10 +176,10 @@ func (t *invokeTool) InvokableRun(ctx context.Context, args string, _ ...tool.Op
 	lock.Lock()
 	defer lock.Unlock()
 	if err := os.MkdirAll(workspace, 0700); err != nil {
-		return "", err
+		return "", sessionPersistenceFailure("workspace creation", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(stateFile), 0700); err != nil {
-		return "", err
+		return "", sessionPersistenceFailure("state directory creation", err)
 	}
 	policyBytes, err := json.Marshal(struct {
 		Config   harness.ACPAgentConfig
@@ -172,13 +192,16 @@ func (t *invokeTool) InvokableRun(ctx context.Context, args string, _ ...tool.Op
 	var state sessionState
 	if raw, readErr := readSessionState(stateFile); readErr == nil {
 		if err := json.Unmarshal(raw, &state); err != nil {
-			return "", fmt.Errorf("external ACP session state is corrupt: %w", err)
+			return "", sessionPersistenceFailure("state decode", err)
 		}
-		if state.Policy != policy || state.SessionID == "" || len(state.SessionID) > 512 {
-			return "", errors.New("external ACP agent configuration changed; existing session requires reconciliation")
+		if state.SessionID == "" || len(state.SessionID) > 512 {
+			return "", sessionPersistenceFailure("state validation", errors.New("invalid remote session identity"))
+		}
+		if state.Policy != policy {
+			return "", errors.New("external ACP agent configuration changed; the previous remote session cannot be reused")
 		}
 		if state.Pending != nil {
-			return "", fmt.Errorf("%w: external ACP prompt %s has no committed terminal receipt; reconcile the remote session before sending another prompt", harness.ErrCommandUncertain, state.Pending.ID)
+			return "", fmt.Errorf("%w: external ACP prompt %s has no committed terminal receipt; inspect its remote state before choosing another action, and do not replay the old prompt", harness.ErrCommandUncertain, state.Pending.ID)
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return "", readErr
@@ -239,7 +262,7 @@ func (t *invokeTool) InvokableRun(ctx context.Context, args string, _ ...tool.Op
 		}
 		var current sessionState
 		if err := json.Unmarshal(raw, &current); err != nil {
-			return err
+			return sessionPersistenceFailure("completion state decode", err)
 		}
 		if current.SessionID != result.SessionID || current.Policy != policy || current.Pending == nil || current.Pending.ID != promptID || current.Pending.PromptSHA != promptDigest {
 			return fmt.Errorf("%w: external ACP prompt completion state changed", harness.ErrCommandUncertain)
@@ -268,7 +291,8 @@ func (t *invokeTool) InvokableRun(ctx context.Context, args string, _ ...tool.Op
 	return result.Text, nil
 }
 
-func writeSessionState(path string, data []byte) error {
+func writeSessionState(path string, data []byte) (err error) {
+	defer func() { err = sessionPersistenceFailure("state write", err) }()
 	file, err := os.CreateTemp(filepath.Dir(path), ".external-session-*")
 	if err != nil {
 		return err
@@ -292,7 +316,8 @@ func writeSessionState(path string, data []byte) error {
 	return os.Rename(file.Name(), path)
 }
 
-func readSessionState(path string) ([]byte, error) {
+func readSessionState(path string) (data []byte, err error) {
+	defer func() { err = sessionPersistenceFailure("state read", err) }()
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err

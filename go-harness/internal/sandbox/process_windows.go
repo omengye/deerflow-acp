@@ -12,7 +12,16 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-type windowsTree struct{ job windows.Handle }
+type windowsTree struct {
+	job   windows.Handle
+	owned []windowsOwnedProcess
+}
+
+type windowsOwnedProcess struct {
+	pid     uint32
+	handle  windows.Handle
+	created uint64
+}
 
 func newProcessTree(cmd *exec.Cmd, limits harness.CommandLimits) (processTree, error) {
 	job, err := windows.CreateJobObject(nil, nil)
@@ -46,14 +55,22 @@ func newProcessTree(cmd *exec.Cmd, limits harness.CommandLimits) (processTree, e
 }
 
 func (t *windowsTree) afterStart(cmd *exec.Cmd) error {
-	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_INFORMATION, false, uint32(cmd.Process.Pid))
+	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_INFORMATION|windows.SYNCHRONIZE, false, uint32(cmd.Process.Pid))
 	if err != nil {
 		return err
 	}
-	defer windows.CloseHandle(process)
 	if err = windows.AssignProcessToJobObject(t.job, process); err != nil {
+		windows.CloseHandle(process)
 		return err
 	}
+	created, _, err := processLifetime(process)
+	if err != nil {
+		windows.CloseHandle(process)
+		return err
+	}
+	// Keep the leader's identity after Cmd.Wait closes its handle. Packaged
+	// execution aliases may activate brokered children outside this Job.
+	t.owned = append(t.owned, windowsOwnedProcess{uint32(cmd.Process.Pid), process, created})
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
 	if err != nil {
 		return err
@@ -81,6 +98,10 @@ func (t *windowsTree) afterStart(cmd *exec.Cmd) error {
 }
 
 func (t *windowsTree) terminate() error {
+	// Discover brokered children before the Job kills their parents. Retained
+	// handles and creation/exit times prevent a stale parent PID from claiming
+	// an unrelated process. Job termination remains the primary cleanup path.
+	discoveryErr := t.discoverDescendants()
 	// ActiveProcesses can reach zero just before the process handles become
 	// signalled. Retain handles to known members and wait for actual exit too.
 	members, enumerationErr := t.members()
@@ -89,10 +110,12 @@ func (t *windowsTree) terminate() error {
 			_ = windows.CloseHandle(handle)
 		}
 	}()
-	if err := windows.TerminateJobObject(t.job, 1); err != nil {
-		return errors.Join(enumerationErr, err)
-	}
+	jobErr := windows.TerminateJobObject(t.job, 1)
 	deadline := time.Now().Add(cleanupTimeout)
+	cleanupErr := t.terminateDescendants(deadline)
+	if err := errors.Join(discoveryErr, enumerationErr, jobErr, cleanupErr); err != nil {
+		return err
+	}
 	for _, handle := range members {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -121,6 +144,116 @@ func (t *windowsTree) terminate() error {
 			return fmt.Errorf("Job still has active processes after termination")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func processLifetime(handle windows.Handle) (created, exited uint64, err error) {
+	var start, end, kernel, user windows.Filetime
+	if err = windows.GetProcessTimes(handle, &start, &end, &kernel, &user); err != nil {
+		return 0, 0, err
+	}
+	return uint64(start.HighDateTime)<<32 | uint64(start.LowDateTime),
+		uint64(end.HighDateTime)<<32 | uint64(end.LowDateTime), nil
+}
+
+func (t *windowsTree) discoverDescendants() error {
+	if len(t.owned) == 0 {
+		return nil
+	}
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(snapshot)
+	children := make(map[uint32][]uint32)
+	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	for err = windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
+		children[entry.ParentProcessID] = append(children[entry.ParentProcessID], entry.ProcessID)
+	}
+	if err != windows.ERROR_NO_MORE_FILES {
+		return err
+	}
+	known := make(map[uint32]bool, len(t.owned))
+	for _, process := range t.owned {
+		known[process.pid] = true
+	}
+	for i := 0; i < len(t.owned); i++ {
+		parent := t.owned[i]
+		_, exited, err := processLifetime(parent.handle)
+		if err != nil {
+			return err
+		}
+		for _, pid := range children[parent.pid] {
+			if known[pid] {
+				continue
+			}
+			handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, pid)
+			if err == windows.ERROR_INVALID_PARAMETER {
+				continue // The process exited between the snapshot and OpenProcess.
+			}
+			if err != nil {
+				return fmt.Errorf("open command descendant %d: %w", pid, err)
+			}
+			created, _, err := processLifetime(handle)
+			if err != nil {
+				windows.CloseHandle(handle)
+				return err
+			}
+			if !withinParentLifetime(created, parent.created, exited) {
+				windows.CloseHandle(handle)
+				continue
+			}
+			if len(t.owned) >= 16384 {
+				windows.CloseHandle(handle)
+				return fmt.Errorf("command descendant enumeration exceeds safety bound")
+			}
+			t.owned = append(t.owned, windowsOwnedProcess{pid, handle, created})
+			known[pid] = true
+		}
+	}
+	return nil
+}
+
+func withinParentLifetime(child, parent, exited uint64) bool {
+	return child >= parent && (exited == 0 || child <= exited)
+}
+
+func (t *windowsTree) terminateDescendants(deadline time.Time) error {
+	for {
+		// Children first; holding every handle also pins the identities until
+		// the final snapshot accounts for children spawned during cleanup.
+		for i := len(t.owned) - 1; i >= 0; i-- {
+			handle := t.owned[i].handle
+			state, err := windows.WaitForSingleObject(handle, 0)
+			if err != nil {
+				return err
+			}
+			if state == windows.WAIT_OBJECT_0 {
+				continue
+			}
+			// A Job kill or natural exit may already be in progress. Windows
+			// can deny a second TerminateProcess before the handle signals;
+			// the bounded exit wait, not that race, decides confirmation.
+			terminateErr := windows.TerminateProcess(handle, 1)
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return errors.Join(terminateErr, fmt.Errorf("command descendant exit was not confirmed"))
+			}
+			state, err = windows.WaitForSingleObject(handle, uint32(remaining.Milliseconds()))
+			if err != nil {
+				return err
+			}
+			if state != windows.WAIT_OBJECT_0 {
+				return errors.Join(terminateErr, fmt.Errorf("command descendant exit was not confirmed"))
+			}
+		}
+		previous := len(t.owned)
+		if err := t.discoverDescendants(); err != nil {
+			return err
+		}
+		if len(t.owned) == previous {
+			return nil
+		}
 	}
 }
 
@@ -153,5 +286,12 @@ func (t *windowsTree) members() ([]windows.Handle, error) {
 	}
 	return nil, fmt.Errorf("Job member enumeration exceeds safety bound")
 }
-func (t *windowsTree) close() error { return windows.CloseHandle(t.job) }
-func defaultContainerUser() string  { return "1000:1000" }
+func (t *windowsTree) close() error {
+	var result error
+	for _, process := range t.owned {
+		result = errors.Join(result, windows.CloseHandle(process.handle))
+	}
+	t.owned = nil
+	return errors.Join(result, windows.CloseHandle(t.job))
+}
+func defaultContainerUser() string { return "1000:1000" }

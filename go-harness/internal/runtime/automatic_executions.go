@@ -210,6 +210,22 @@ func (s *Service) ServeSessionUpdates(parent context.Context, owner, sessionID s
 			}
 			return err
 		}
+		closed, err := s.closeFailedTaskWait(ctx, owner, sessionID)
+		if errors.Is(err, harness.ErrBusy) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if closed != nil {
+			if handlers.Result == nil {
+				return errFailedTaskWait
+			}
+			if err = handlers.Result(ctx, harness.RunResult{StopReason: "failed", Execution: closed}, errFailedTaskWait); err != nil {
+				return err
+			}
+			continue
+		}
 		state, err := s.Execution(ctx, owner, sessionID, "")
 		if errors.Is(err, harness.ErrNotFound) {
 			continue

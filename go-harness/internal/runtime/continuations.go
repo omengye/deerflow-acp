@@ -143,7 +143,7 @@ func readContinuationOrigin(ctx context.Context, tx *sql.Tx, sessionID, taskID s
 		return b, spec, "", "", continuationConflict("original budget binding changed")
 	}
 	var uncertain bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state IN ('started','uncertain'))`, child).Scan(&uncertain); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND `+unsettledReceiptSQL("")+`)`, child).Scan(&uncertain); err != nil {
 		return b, spec, "", "", err
 	}
 	if uncertain {
@@ -344,7 +344,7 @@ func (s *Service) beginContinuationTx(ctx context.Context, tx *sql.Tx, owner, se
 		}
 	}
 	var occupied, uncertain bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_runs WHERE session_id=? AND status='running'),EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state='uncertain')`, sessionID, sessionID).Scan(&occupied, &uncertain)
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_runs WHERE session_id=? AND status='running'),EXISTS(SELECT 1 FROM harness_tool_receipts r WHERE session_id=? AND `+unmanagedUncertainReceiptSQL("r")+` AND NOT `+receiptRunEnded+`)`, sessionID, sessionID).Scan(&occupied, &uncertain)
 	if err != nil {
 		return
 	}

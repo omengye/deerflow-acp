@@ -32,7 +32,7 @@ func TestCancelledToolAllowsFreshPromptWithoutReplayingEffect(t *testing.T) {
 				if call > 0 {
 					assertClosedToolHistory(t, input)
 					for _, message := range input {
-						if message.Role == schema.System && strings.Contains(message.Content, "stopped tool calls") {
+						if message.Role == schema.System && strings.Contains(message.Content, "stopped or failed tool calls") {
 							warned.Store(true)
 						}
 					}
@@ -82,7 +82,7 @@ func TestCancelledToolAllowsFreshPromptWithoutReplayingEffect(t *testing.T) {
 				t.Fatal("cancel did not join the tool")
 			}
 			receipts, err := s.ListToolReceipts(ctx, "owner", session.ID)
-			if err != nil || len(receipts) != 1 || receipts[0].State != harness.ReceiptUncertain {
+			if err != nil || len(receipts) != 1 || receipts[0].State != harness.ReceiptUncertain || receipts[0].AgentRecoverable {
 				t.Fatalf("stopped effect was falsely certified: %+v %v", receipts, err)
 			}
 			stopped := receipts[0]

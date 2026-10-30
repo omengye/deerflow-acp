@@ -67,6 +67,35 @@ func (c *artifactReadCache) put(key artifactReadKey, blocks [][sha256.Size]byte)
 	c.entries[0] = artifactReadDigest{key, blocks}
 }
 
+// EvictArtifactReadCache releases only verified block digests for the asset IDs
+// selected from durable session ownership. A future read revalidates the full
+// immutable file and reconstructs the cache. The lifecycle lock waits for
+// in-flight readers; neither shared files nor any durable reference is removed.
+// The return value is the number of digest bytes released from the cache.
+func (s *Store) EvictArtifactReadCache(assetIDs []string) int {
+	ids := make(map[string]bool, len(assetIDs))
+	for _, id := range assetIDs {
+		ids[id] = true
+	}
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	s.artifactReads.mu.Lock()
+	defer s.artifactReads.mu.Unlock()
+	entries := s.artifactReads.entries
+	retained, released := 0, 0
+	for _, entry := range entries {
+		if ids[entry.key.id] {
+			released += len(entry.blocks) * sha256.Size
+			continue
+		}
+		entries[retained] = entry
+		retained++
+	}
+	clear(entries[retained:])
+	s.artifactReads.entries = entries[:retained]
+	return released
+}
+
 // ReadArtifactRange binds every returned byte to the saved immutable digest.
 // A cache miss verifies the complete file and records 1 MiB block digests;
 // subsequent reads verify all complete blocks covering the requested range.

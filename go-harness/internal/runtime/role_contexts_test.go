@@ -302,7 +302,7 @@ func TestRoleResultPublicationRollsBackContextExecutionAndInboxTogether(t *testi
 }
 
 func TestRoleResultOrdinaryFailureCannotHideOtherErrorsOrUncertainEffects(t *testing.T) {
-	for _, failure := range []string{"provider", "storage", "uncertain"} {
+	for _, failure := range []string{"provider", "storage", "uncertain", "recoverable_uncertain"} {
 		t.Run(failure, func(t *testing.T) {
 			f, a := newRoleResultFixture(t)
 			ctx := context.Background()
@@ -310,7 +310,7 @@ func TestRoleResultOrdinaryFailureCannotHideOtherErrorsOrUncertainEffects(t *tes
 			if failure == "storage" {
 				runErr = errors.Join(runErr, errors.New("storage failed"))
 			}
-			if failure == "uncertain" {
+			if failure == "uncertain" || failure == "recoverable_uncertain" {
 				for _, kind := range []string{"tool_start", "tool_execute"} {
 					status := "pending"
 					if kind == "tool_execute" {
@@ -320,13 +320,19 @@ func TestRoleResultOrdinaryFailureCannotHideOtherErrorsOrUncertainEffects(t *tes
 						t.Fatal(err)
 					}
 				}
+				if failure == "recoverable_uncertain" {
+					if _, err := f.s.Append(ctx, harness.RunEvent{SessionID: a.lease.Scope.SessionID, RunID: a.lease.Scope.MemberID, Kind: "tool_end", Status: "failed", ToolName: "write_file", ToolCallID: "unconfirmed", Text: "effects unconfirmed", Receipt: &harness.ToolReceipt{AgentRecoverable: true}}); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			result, err := a.service.finishExecutionAttempt(ctx, a.lease, harness.RunResult{}, runErr, nil)
-			wantStatus, wantResults := harness.ExecutionNeedsReconciliation, 0
-			if failure == "provider" {
+			wantStatus, wantResults := harness.ExecutionFailed, 0
+			propagated := failure == "provider" || failure == "recoverable_uncertain"
+			if propagated {
 				wantStatus, wantResults = harness.ExecutionFailed, 1
 			}
-			if result.Execution == nil || result.Execution.Status != wantStatus || (err == nil) != (failure == "provider") {
+			if result.Execution == nil || result.Execution.Status != wantStatus || (err == nil) != propagated {
 				t.Fatalf("failure %s: %+v %v", failure, result, err)
 			}
 			assertRoleContextCounts(t, f, 0, 1)

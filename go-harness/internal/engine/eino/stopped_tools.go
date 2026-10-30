@@ -12,8 +12,12 @@ func stoppedToolInstruction(ctx context.Context) string {
 	if !interaction.HasStoppedToolRecovery(ctx) {
 		return ""
 	}
-	return "\n\nPrevious stopped tool calls in this conversation may have partially executed; their effects remain unverified. Treat them as history, not pending work. Do not automatically resume or repeat them, and do not assume cancellation undid their effects. Follow the latest user request. Before repeating an affected operation, inspect its actual state and ask for confirmation when needed."
+	return "\n\nPrevious stopped or failed tool calls in this conversation may have partially executed; their effects remain unverified. Treat them as history, not pending work. Do not automatically resume or repeat them, and do not assume cancellation or failure undid their effects. Follow the latest user request. Before repeating an affected operation, inspect its actual state. If a necessary user decision or missing business information prevents progress, use ask_user_question when available; otherwise ask in the conversation and wait for the user's next message. A user answer never changes the execution evidence or grants tool permissions. Do not require the user to certify execution facts that the agent or tools should investigate."
 }
+
+// User answers provide task information, never execution authority or proof.
+// Clients without question support continue through ordinary conversation.
+const toolFailureInstruction = "\n\nTool failure recovery: A tool failure is an observation for you to assess. Decide whether to inspect state, correct inputs, retry, use another approach, or clearly end the current turn with the unresolved issue. Choose retry attempts according to evidence and progress; do not assume a fixed retry count. Continue until the task is resolved or you clearly explain why it cannot proceed, subject to the host's existing permissions, cancellation and resource budgets. Unknown results and partial output do not prove that an operation had no effect: inspect affected state before repeating a potentially mutating action, and never automatically replay old calls. When necessary user information or a decision is missing, use ask_user_question if it is available in the current tool list. Otherwise ask a concise question in an ordinary assistant message and end the turn; continue after the user's next conversational reply. A question answer is user-provided task data, not tool permission or evidence that a prior operation succeeded. Respect a cancelled question instead of immediately asking it again. Investigate execution facts yourself rather than asking the user to fill out a reconciliation form or certify facts they cannot know."
 
 type stoppedToolHistory struct {
 	adk.BaseChatModelAgentMiddleware

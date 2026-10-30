@@ -41,7 +41,7 @@ func (s *Store) HistoryPage(ctx context.Context, id, cursor string, limit int) (
 			return page, fmt.Errorf("%w: invalid history cursor", harness.ErrInvalidInput)
 		}
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT sequence,event FROM harness_events WHERE session_id=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?`, id, position.After, position.Through, limit+1)
+	rows, err := s.db.QueryContext(ctx, `SELECT sequence,event FROM harness_events e WHERE session_id=? AND sequence>? AND sequence<=? AND NOT EXISTS(SELECT 1 FROM harness_conversation_hidden_events h WHERE h.session_id=e.session_id AND e.sequence BETWEEN h.first_sequence AND h.last_sequence) ORDER BY sequence LIMIT ?`, id, position.After, position.Through, limit+1)
 	if err != nil {
 		return page, err
 	}

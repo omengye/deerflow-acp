@@ -412,7 +412,10 @@ func (s *Store) AbortRun(runID string) error {
 }
 
 func (s *Store) ListArtifacts(ctx context.Context, sessionID string) ([]harness.Content, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT a.metadata FROM harness_artifacts r JOIN harness_assets a ON a.id=r.asset_id WHERE r.session_id=? ORDER BY r.rowid`, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT a.metadata FROM harness_assets a JOIN (
+ SELECT asset_id FROM harness_artifacts WHERE session_id=?
+ UNION SELECT asset_id FROM harness_history_artifacts WHERE session_id=?
+) r ON a.id=r.asset_id WHERE a.session_id=? ORDER BY a.rowid`, sessionID, sessionID, sessionID)
 	if err != nil {
 		return nil, err
 	}

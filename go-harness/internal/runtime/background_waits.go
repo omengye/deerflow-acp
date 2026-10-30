@@ -18,8 +18,9 @@ import (
 )
 
 type backgroundWaitManifest struct {
-	Frontier backgroundPermissionManifest
-	Waits    []interaction.TaskWaitBinding
+	Frontier             backgroundPermissionManifest
+	Waits                []interaction.TaskWaitBinding
+	AgentRecoveryVersion int `json:"agentRecoveryVersion,omitempty"`
 }
 
 func (a *BackgroundInteractionAttempt) StageTaskWaits(ctx context.Context, bindings []interaction.TaskWaitBinding) error {
@@ -117,7 +118,7 @@ func checkTaskWaits(ctx context.Context, tx *sql.Tx, owner background.Binding, w
 			return false, harness.ErrPermissionDenied
 		}
 		var uncertain bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state IN ('started','uncertain'))`, binding.ChildSessionID).Scan(&uncertain); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND `+unsettledReceiptSQL("")+`)`, binding.ChildSessionID).Scan(&uncertain); err != nil {
 			return false, err
 		}
 		ready = ready && terminalBackgroundStatus(status) && blocked == "" && !uncertain
@@ -175,7 +176,7 @@ func (s *BackgroundInteractionStore) captureTaskWait(ctx context.Context, tx *sq
 	if err != nil {
 		return true, err
 	}
-	data, err = json.Marshal(backgroundWaitManifest{Frontier: frontier, Waits: waits})
+	data, err = json.Marshal(backgroundWaitManifest{Frontier: frontier, Waits: waits, AgentRecoveryVersion: 1})
 	if err != nil {
 		return true, err
 	}
@@ -249,8 +250,14 @@ func (s *BackgroundInteractionStore) ReadyWakeups(ctx context.Context) ([]backgr
 					return nil
 				}
 				done, err := checkTaskWaits(ctx, tx, m.Frontier.Binding, m.Waits)
-				if err != nil || !done {
+				if err != nil {
 					return err
+				}
+				if closed, err := s.closeFailedBackgroundWaitTx(ctx, tx, m, task); err != nil || closed {
+					return err
+				}
+				if !done {
+					return nil
 				}
 				if err = s.validateFrontier(ctx, tx, m.Frontier, task); err != nil {
 					return err

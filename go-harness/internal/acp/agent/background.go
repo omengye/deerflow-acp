@@ -57,7 +57,7 @@ func backgroundError(err error) error {
 	case errors.Is(err, harness.ErrReceiptConflict):
 		return receiptRecoveryError(true)
 	case errors.Is(err, harness.ErrBackgroundUncertain), errors.Is(err, harness.ErrExecutionUnresumable):
-		code, kind, message = backgroundUncertainCode, "task_reconciliation_required", "Task execution cannot safely continue. Read the task and review its tool receipts."
+		code, kind, message = backgroundUncertainCode, "task_reconciliation_required", "Task execution could not finish safely. Its execution records were preserved and no tool was replayed."
 	case errors.Is(err, harness.ErrInvalidInput):
 		return rpcError(protocol.InvalidParams, "Invalid task parameters")
 	case errors.Is(err, harness.ErrResourcesWaiting):

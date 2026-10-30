@@ -58,6 +58,18 @@ func TestDurableBudgetRejectsMissingOrDifferentScope(t *testing.T) {
 	}
 }
 
+func TestDurableBudgetRetainsTaskSnapshotAcrossHostChanges(t *testing.T) {
+	limits := harness.BudgetLimits{MaxTokens: 1000, MaxModelCalls: 2, MaxToolCalls: 3, MaxOutputTokens: 100}
+	_, ledger, req, scope := durableFixture(t, "session-budget", limits)
+	for _, host := range []harness.BudgetLimits{{MaxTokens: 2000, MaxModelCalls: 10}, {MaxTokens: 100, MaxModelCalls: 1}} {
+		engine := &Engine{config: Config{Budget: host, BudgetLedger: ledger}}
+		budget, err := engine.newBudget(durablebudget.WithScope(context.Background(), scope), req)
+		if err != nil || budget.limits != limits {
+			t.Fatalf("resume replaced immutable root policy: %+v %v", budget, err)
+		}
+	}
+}
+
 func TestDurableBudgetCountsDeniedToolsAndSettlesAllHolds(t *testing.T) {
 	limits := harness.BudgetLimits{MaxModelCalls: 3, MaxToolCalls: 1, MaxTokens: 100000, MaxOutputTokens: 40}
 	_, ledger, req, scope := durableFixture(t, "denied", limits)

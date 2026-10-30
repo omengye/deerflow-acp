@@ -55,6 +55,9 @@ func (m *outputTokenModel) Stream(ctx context.Context, input []*schema.Message, 
 		input = openAIToolImageMessages(input)
 	}
 	stream, err := m.inner.Stream(ctx, input, m.options(opts)...)
+	if stream == nil {
+		err = rejectedRateLimitRequest(err)
+	}
 	return stream, classifyModelContextError(err)
 }
 

@@ -68,7 +68,7 @@ func TestBackgroundDeploymentPermissionModes(t *testing.T) {
 		wantHandled bool
 	}{
 		{"off-write", harness.PermissionModeOff, "write_file", true},
-		{"dangerous-read", harness.PermissionModeDangerous, "read_file", true},
+		{"dangerous-unknown-read", harness.PermissionModeDangerous, "read_file", false},
 		{"dangerous-write", harness.PermissionModeDangerous, "write_file", false},
 		{"all-read", harness.PermissionModeAll, "read_file", false},
 	} {
@@ -136,7 +136,7 @@ func TestBackgroundPermissionSuspendAfterApproval(t *testing.T) {
 func TestConfiguredPermissionReadOnlyBackgroundQueries(t *testing.T) {
 	for _, session := range []harness.Session{{Mode: "plan"}, {ApprovalMode: harness.ApprovalReadOnly}} {
 		for name, want := range map[string]harness.PermissionDecision{"task_status": harness.AllowOnce, "task_wait": harness.AllowOnce, "task_cancel": harness.RejectOnce, "background_agent": harness.RejectOnce} {
-			got, handled := configuredPermission(session, harness.PermissionRequest{ToolName: name})
+			got, handled := configuredPermission(session, harness.PermissionRequest{ToolName: name, TrustedBuiltin: true})
 			if !handled || got != want {
 				t.Fatalf("mode=%s approval=%s tool=%s got=%s handled=%t", session.Mode, session.ApprovalMode, name, got, handled)
 			}

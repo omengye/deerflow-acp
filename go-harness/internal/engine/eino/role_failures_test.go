@@ -106,18 +106,26 @@ func TestConfiguredRoleFailureReturnsToParentAfterJoining(t *testing.T) {
 	}
 }
 
-func TestConfiguredRoleUncertainToolStillStopsParent(t *testing.T) {
-	for _, effectErr := range []error{errors.New("effect was started but confirmation was lost"), harness.ErrCommandUncertain, errors.Join(harness.MarkToolNotExecuted(errors.New("preflight failed")), errors.New("receipt storage failed"))} {
+func TestConfiguredRoleUncertainToolReturnsToAgent(t *testing.T) {
+	for _, effectErr := range []error{errors.New("effect was started but confirmation was lost"), harness.ErrCommandUncertain} {
 		t.Run(fmt.Sprint(effectErr), func(t *testing.T) {
-			fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+			fake := &scriptedModel{stream: func(_ context.Context, call int, input []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
 				if call == 0 {
 					return delegateReaderMessage(), nil
 				}
 				if call == 1 {
 					return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "unknown-effect", Type: "function", Function: schema.FunctionCall{Name: "read_workspace", Arguments: `{}`}}}}}), nil
 				}
-				t.Error("parent or child continued after uncertain tool failure")
-				return textStream("unexpected"), nil
+				if call == 2 {
+					seen := false
+					for _, message := range input {
+						seen = seen || message.Role == schema.Tool && strings.Contains(message.Content, effectErr.Error()) && strings.Contains(message.Content, "effects are unconfirmed")
+					}
+					if !seen {
+						t.Error("child did not receive uncertain tool evidence")
+					}
+				}
+				return textStream("Unable to verify the result; stopping this attempt."), nil
 			}}
 			underlying := &receiptEffectTool{run: func(context.Context) (string, error) { return "", effectErr }}
 			e, err := New(context.Background(), Config{ChatModel: fake, Tools: []tool.BaseTool{underlying}, Subagents: &harness.SubagentsConfig{CustomAgents: map[string]harness.AgentConfig{"reader": {Description: "reader", SystemPrompt: "read"}}}})
@@ -125,8 +133,8 @@ func TestConfiguredRoleUncertainToolStillStopsParent(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = e.Run(context.Background(), request("unknown-child-effect"), nil, allowTool)
-			if !errors.Is(err, effectErr) {
-				t.Fatalf("uncertain error lost: %v", err)
+			if err != nil || fake.calls != 4 {
+				t.Fatalf("agent could not handle uncertain effect: calls=%d err=%v", fake.calls, err)
 			}
 		})
 	}

@@ -12,12 +12,14 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
 type imageInput struct {
 	Path string `json:"path" jsonschema:"required,description=Image file within this session's workspace"`
 }
 type imageTool struct {
+	toolidentity.Native
 	info *schema.ToolInfo
 	load func(context.Context, string, string) (*schema.ToolResult, error)
 }
@@ -33,7 +35,7 @@ func ViewImageTool(load func(context.Context, string, string) (*schema.ToolResul
 	if err != nil {
 		return nil, err
 	}
-	return &imageTool{info: info, load: load}, nil
+	return &imageTool{Native: toolidentity.Builtin("view_image"), info: info, load: load}, nil
 }
 func (t *imageTool) Info(context.Context) (*schema.ToolInfo, error) { return t.info, nil }
 func (t *imageTool) InvokableRun(ctx context.Context, args *schema.ToolArgument, _ ...tool.Option) (*schema.ToolResult, error) {

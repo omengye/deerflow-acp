@@ -10,7 +10,13 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
+
+type nativeInvokable struct {
+	tool.InvokableTool
+	toolidentity.Native
+}
 
 // inferTool keeps Eino's generated schema while making argument rejection a
 // verified pre-execution failure. The decoder runs before the native function.
@@ -26,7 +32,7 @@ func inferTool[T, D any](name, description string, invoke utils.InvokeFunc[T, D]
 		}
 		return result, err
 	}
-	return utils.InferTool(name, description, wrapped, utils.WithUnmarshalArguments(func(_ context.Context, raw string) (any, error) {
+	inner, err := utils.InferTool(name, description, wrapped, utils.WithUnmarshalArguments(func(_ context.Context, raw string) (any, error) {
 		var input T
 		if !strings.HasPrefix(strings.TrimSpace(raw), "{") {
 			return nil, harness.MarkToolNotExecuted(errors.New("tool input must be exactly one JSON object"))
@@ -42,4 +48,8 @@ func inferTool[T, D any](name, description string, invoke utils.InvokeFunc[T, D]
 		}
 		return input, nil
 	}))
+	if err != nil {
+		return nil, err
+	}
+	return &nativeInvokable{inner, toolidentity.Builtin(name)}, nil
 }

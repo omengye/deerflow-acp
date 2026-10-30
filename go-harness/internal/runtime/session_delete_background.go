@@ -199,7 +199,7 @@ func prepareBackgroundGraphTx(ctx context.Context, tx *sql.Tx, parent string, ta
 		for _, check := range []struct{ query, id string }{
 			{`SELECT EXISTS(SELECT 1 FROM harness_background_child_leases WHERE task_id=?)`, b.id},
 			{`SELECT EXISTS(SELECT 1 FROM eino_task_notifications WHERE task_id=?)`, b.id},
-			{`SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state IN ('pending','started','uncertain'))`, b.child},
+			{sessionCleanupReceiptBlockerSQL, b.child},
 			{`SELECT EXISTS(SELECT 1 FROM budget_attempts WHERE member_id=? AND state IN ('active','unknown'))`, b.id},
 			{`SELECT EXISTS(SELECT 1 FROM budget_reservations WHERE member_id=? AND state IN ('reserved','dispatched','unknown'))`, b.id},
 		} {

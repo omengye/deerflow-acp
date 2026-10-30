@@ -78,19 +78,22 @@ const (
 // successful receipts and never authorize automatic replay.
 // ArgumentsSummary contains parameter names/types, never argument values.
 type ToolReceipt struct {
-	SessionID        string         `json:"sessionId"`
-	RunID            string         `json:"runId"`
-	ToolCallID       string         `json:"toolCallId"`
-	ToolName         string         `json:"toolName"`
-	ArgumentsDigest  string         `json:"argumentsDigest"`
-	ArgumentsSummary string         `json:"argumentsSummary"`
-	ConfigVersion    int64          `json:"configVersion"`
-	Attempt          int            `json:"attempt"`
-	State            ReceiptState   `json:"state"`
-	Result           []Content      `json:"result,omitempty"`
-	ResultTruncated  bool           `json:"resultTruncated,omitempty"`
-	Error            string         `json:"error,omitempty"`
-	FailureCode      string         `json:"failureCode,omitempty"`
+	SessionID        string       `json:"sessionId"`
+	RunID            string       `json:"runId"`
+	ToolCallID       string       `json:"toolCallId"`
+	ToolName         string       `json:"toolName"`
+	ArgumentsDigest  string       `json:"argumentsDigest"`
+	ArgumentsSummary string       `json:"argumentsSummary"`
+	ConfigVersion    int64        `json:"configVersion"`
+	Attempt          int          `json:"attempt"`
+	State            ReceiptState `json:"state"`
+	Result           []Content    `json:"result,omitempty"`
+	ResultTruncated  bool         `json:"resultTruncated,omitempty"`
+	Error            string       `json:"error,omitempty"`
+	FailureCode      string       `json:"failureCode,omitempty"`
+	// AgentRecoverable means the host routed this failure into agent recovery.
+	// It does not certify the effects or prove that a model consumed the result.
+	AgentRecoverable bool           `json:"agentRecoverable,omitempty"`
 	Version          int64          `json:"version"`
 	CreatedAt        time.Time      `json:"createdAt"`
 	UpdatedAt        time.Time      `json:"updatedAt"`

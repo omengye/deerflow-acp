@@ -14,7 +14,7 @@ func migrateSessionRetention(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	retentionColumn := false
+	retentionColumn, archiveColumn := false, false
 	for rows.Next() {
 		var ordinal, required, primary int
 		var name, kind string
@@ -24,6 +24,9 @@ func migrateSessionRetention(ctx context.Context, db *sql.DB) error {
 		}
 		if name == "closed_at" {
 			retentionColumn = true
+		}
+		if name == "archived_at" {
+			archiveColumn = true
 		}
 	}
 	if err == nil {
@@ -38,6 +41,11 @@ func migrateSessionRetention(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 	}
+	if !archiveColumn {
+		if _, err = db.ExecContext(ctx, `ALTER TABLE harness_sessions ADD COLUMN archived_at TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
 	_, err = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS harness_sessions_retention ON harness_sessions(closed_at,updated_at)`)
 	return err
 }
@@ -49,7 +57,7 @@ func (s *Store) MarkClosed(ctx context.Context, id string) error {
 }
 
 func (s *Store) MarkOpen(ctx context.Context, id string) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE harness_sessions SET closed_at='',updated_at=? WHERE id=?`, timestamp(), id)
+	result, err := s.db.ExecContext(ctx, `UPDATE harness_sessions SET closed_at='',archived_at='',updated_at=? WHERE id=?`, timestamp(), id)
 	return sessionUpdateResult(result, err)
 }
 
@@ -98,7 +106,7 @@ func (s *Store) ExpiredSessionIDsPage(ctx context.Context, now time.Time, policy
 	if children {
 		childFilter = ` AND NOT EXISTS(SELECT 1 FROM harness_background_specs b WHERE b.child_session_id=s.id)`
 	}
-	query := `SELECT s.id,s.closed_at,s.updated_at FROM harness_sessions s WHERE s.id>?` + childFilter + ` ORDER BY s.id LIMIT ?`
+	query := `SELECT s.id,s.closed_at,s.updated_at FROM harness_sessions s WHERE s.id>? AND s.archived_at=''` + childFilter + ` ORDER BY s.id LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, query, after, limit)
 	if err != nil {
 		return nil, "", err
@@ -143,7 +151,7 @@ func (s *Store) ExpiredSessionIDsPage(ctx context.Context, now time.Time, policy
 // foreground reconnects. A missing row is harmless after a prior deletion.
 func (s *Store) IsExpiredSession(ctx context.Context, id string, now time.Time, policy harness.RetentionPolicy) (bool, error) {
 	var closed, updated string
-	err := s.db.QueryRowContext(ctx, `SELECT closed_at,updated_at FROM harness_sessions WHERE id=?`, id).Scan(&closed, &updated)
+	err := s.db.QueryRowContext(ctx, `SELECT closed_at,updated_at FROM harness_sessions WHERE id=? AND archived_at=''`, id).Scan(&closed, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -161,15 +169,15 @@ func (s *Store) IsExpiredSession(ctx context.Context, id string, now time.Time, 
 	return !when.After(now.UTC().AddDate(0, 0, -days)), nil
 }
 
-// IsCleanupEligible is an inventory hint. The actual purge repeats all checks
-// under a deletion reservation, since task bindings and receipts may change.
+// IsCleanupEligible is an inventory hint. Archiving repeats the checks under
+// a cleanup reservation, since task bindings and receipts may change.
 func (s *Store) IsCleanupEligible(ctx context.Context, id string, now time.Time, policy harness.RetentionPolicy) (bool, error) {
 	expired, err := s.IsExpiredSession(ctx, id, now, policy)
 	if err != nil || !expired {
 		return false, err
 	}
 	var unresolved bool
-	if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state IN ('pending','started','uncertain'))`, id).Scan(&unresolved); err != nil || unresolved {
+	if err = s.db.QueryRowContext(ctx, sessionCleanupReceiptBlockerSQL, id).Scan(&unresolved); err != nil || unresolved {
 		return false, err
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -179,6 +187,12 @@ func (s *Store) IsCleanupEligible(ctx context.Context, id string, now time.Time,
 	defer tx.Rollback()
 	tables, err := sessionTables(ctx, tx)
 	if err != nil {
+		return false, err
+	}
+	if err = checkArchiveExecutionTx(ctx, tx, id, tables); err != nil {
+		if errors.Is(err, harness.ErrBusy) {
+			return false, nil
+		}
 		return false, err
 	}
 	_, _, err = prepareBackgroundGraphTx(ctx, tx, id, tables, true)

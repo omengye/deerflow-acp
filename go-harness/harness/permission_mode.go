@@ -1,9 +1,6 @@
 package harness
 
-import (
-	"fmt"
-	"strings"
-)
+import "fmt"
 
 // PermissionMode is the deployment's default ACP approval policy. The empty
 // value preserves the Go SDK's original behavior (approve configured tools).
@@ -24,31 +21,22 @@ func (m PermissionMode) Validate() error {
 	}
 }
 
-// RequiresPermission classifies tools for the deployment-level policy. Session
-// approval choices apply only after this classification.
+// PermissionPolicyVersion is bound into every execution contract. Changing
+// classification invalidates checkpoints created under an older policy.
+const PermissionPolicyVersion = "trusted-builtins-v1"
+
+// RequiresPermission classifies an exact host-owned built-in identity. Engine
+// callers must use RequiresToolPermission for tools from external sources.
 func (m PermissionMode) RequiresPermission(name string) bool {
-	name = strings.ToLower(name)
 	switch m {
 	case PermissionModeOff:
 		return false
 	case PermissionModeDangerous:
 		switch name {
-		case "skill", "skill_inspect", "list_directory", "schedule_read":
-			// Exact built-in names only; skill execution/editing is a separate tool.
-			return false
-		case "ask_clarification", "list_uploaded_files", "list_attachments", "memory_search", "task", "tool_search", "task_note":
-			return false
-		}
-		if name == "ls" || containsToolKind(name, "read", "view", "list_file") {
-			return false
-		}
-		if containsToolKind(name, "write", "edit", "patch", "create_file", "replace", "delete", "remove", "move", "rename", "fetch", "web", "http", "browser") {
-			return true
-		}
-		if name == "glob" || containsToolKind(name, "search", "query", "grep", "find") {
-			return false
-		}
-		if containsToolKind(name, "think", "task", "subagent") {
+		case "skill", "skill_inspect", "read_skill_file", "schedule_read",
+			"ls", "list_directory", "read_file", "read_tool_output", "view_image",
+			"search_files", "glob", "grep", "list_attachments", "read_attachment", "analyze_attachment",
+			"search_memory", "history_search", "history_read", "task_note", "task", "task_status", "task_wait":
 			return false
 		}
 		return true
@@ -57,12 +45,9 @@ func (m PermissionMode) RequiresPermission(name string) bool {
 	}
 }
 
-func containsToolKind(name string, parts ...string) bool {
-	name = strings.ToLower(name)
-	for _, part := range parts {
-		if strings.Contains(name, part) {
-			return true
-		}
+func (m PermissionMode) RequiresToolPermission(name string, trustedBuiltin bool) bool {
+	if m == PermissionModeOff {
+		return false
 	}
-	return false
+	return !trustedBuiltin || m.RequiresPermission(name)
 }

@@ -17,11 +17,15 @@ func TestStoppedUncertainReceiptOnlyUnblocksNewRuns(t *testing.T) {
 			s, req := receiptFixture(t)
 			appendReceiptEvent(t, s, req, "tool_start", "old-effect", "execute")
 			appendReceiptEvent(t, s, req, "tool_execute", "old-effect", "execute")
-			if err := s.Store.Finish(ctx, req.RunID, reason, nil); err != nil {
+			var runErr error
+			if reason == "failed" || reason == "interrupted" {
+				runErr = errors.New("execution ended without confirmed effects")
+			}
+			if err := s.Store.Finish(ctx, req.RunID, reason, runErr); err != nil {
 				t.Fatal(err)
 			}
 			err := s.Store.requireReconciled(ctx, req.Session.ID)
-			allowed := reason == "cancelled"
+			allowed := reason == "cancelled" || runErr != nil
 			if (err == nil) != allowed || !allowed && !errors.Is(err, harness.ErrReconciliationRequired) {
 				t.Fatalf("new-run admission for %s: %v", reason, err)
 			}
@@ -44,7 +48,7 @@ func TestStoppedUncertainReceiptOnlyUnblocksNewRuns(t *testing.T) {
 				t.Fatalf("stopped uncertainty lost: %+v %v", receipts, err)
 			}
 			if allowed {
-				// One stopped run must not waive an unrelated unresolved failure.
+				// One ended run must not migrate an unrelated legacy failure.
 				req.RunID, req.InputID = "other-run", "other-input"
 				if err := s.Store.BeginRun(ctx, req); err != nil {
 					t.Fatal(err)
@@ -52,6 +56,9 @@ func TestStoppedUncertainReceiptOnlyUnblocksNewRuns(t *testing.T) {
 				appendReceiptEvent(t, s, req, "tool_start", "other-effect", "execute")
 				appendReceiptEvent(t, s, req, "tool_execute", "other-effect", "execute")
 				if err := s.Store.Finish(ctx, req.RunID, "end_turn", errors.New("unconfirmed failure")); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.Store.db.Exec(`UPDATE harness_runs SET status='needs_reconciliation' WHERE id=?`, req.RunID); err != nil {
 					t.Fatal(err)
 				}
 				if err := s.Store.requireReconciled(ctx, req.Session.ID); !errors.Is(err, harness.ErrReconciliationRequired) {

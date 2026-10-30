@@ -21,6 +21,7 @@ import (
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
 const backgroundToolWaitLimit = 10 * time.Second
@@ -49,6 +50,7 @@ type backgroundTaskWaitInput struct {
 }
 
 type backgroundTool struct {
+	toolidentity.Native
 	resolveRole      func(string) (agents.Spec, error)
 	roles            *agents.Catalog
 	tree             bool
@@ -250,6 +252,7 @@ func newBackgroundTools(ctx context.Context, req harness.RunRequest, state json.
 	out := make([]tool.BaseTool, 0, len(infos))
 	for _, info := range infos {
 		instance := base
+		instance.Native = toolidentity.Builtin(info.Name)
 		instance.info = info
 		out = append(out, &instance)
 	}

@@ -22,7 +22,7 @@ func StartRetention(parent context.Context, client *deerflow.Client, policy harn
 		defer ticker.Stop()
 		for {
 			sweepCtx, stopSweep := context.WithTimeout(ctx, 10*time.Minute)
-			_, err := client.CleanupExpiredSessions(sweepCtx)
+			_, err := client.ArchiveExpiredSessions(sweepCtx)
 			stopSweep()
 			if err != nil && ctx.Err() == nil && report != nil {
 				report(err)

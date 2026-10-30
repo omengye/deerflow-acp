@@ -36,7 +36,7 @@ func (s *Store) Goal(ctx context.Context, session string) (*harness.Goal, error)
 	}
 	g.Status = "active"
 	var complete bool
-	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_goal_runs g JOIN harness_runs r ON r.id=g.run_id WHERE g.session_id=? AND g.goal_id=? AND r.status='completed' AND r.stop_reason='end_turn' AND json_extract(g.evaluation,'$.status')='achieved' AND NOT EXISTS(SELECT 1 FROM harness_tool_receipts t WHERE t.run_id=r.id AND t.state IN ('pending','started','uncertain')))`, session, g.ID).Scan(&complete)
+	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_goal_runs g JOIN harness_runs r ON r.id=g.run_id WHERE g.session_id=? AND g.goal_id=? AND r.status='completed' AND r.stop_reason='end_turn' AND json_extract(g.evaluation,'$.status')='achieved' AND NOT EXISTS(SELECT 1 FROM harness_tool_receipts t WHERE t.run_id=r.id AND (t.state='pending' OR `+unsettledReceiptSQL("t")+`)))`, session, g.ID).Scan(&complete)
 	if complete {
 		g.Status = "achieved"
 	}
@@ -66,11 +66,12 @@ func (s *Store) GoalForRun(ctx context.Context, req harness.RunRequest) (*harnes
 }
 
 func (s *Store) RecordGoalEvaluation(ctx context.Context, req harness.RunRequest, a harness.GoalAttempt, evaluation harness.GoalEvaluation, progress string, continued bool) error {
-	// Model judgment cannot override an uncertain or failed native receipt.
-	// In particular, a rejected permission is not an invitation to retry it.
+	// A processed tool error may precede a successful repair. Preserve the
+	// failure's receipt while allowing the agent to evaluate later evidence.
+	// Unfinished calls and errors never delivered as ToolResults still block.
 	if continued || evaluation.Status == "achieved" {
 		var blocked bool
-		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE run_id=? AND (state IN ('pending','started','uncertain','failed','not_executed') OR COALESCE(json_extract(receipt,'$.error'),'')<>''))`, req.RunID).Scan(&blocked); err != nil {
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE run_id=? AND (state IN ('pending','started') OR (COALESCE(json_extract(receipt,'$.agentRecoverable'),0)=0 AND (state IN ('uncertain','failed','not_executed') OR COALESCE(json_extract(receipt,'$.error'),'')<>''))))`, req.RunID).Scan(&blocked); err != nil {
 			return err
 		}
 		if blocked {

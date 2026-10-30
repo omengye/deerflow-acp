@@ -40,7 +40,7 @@ func itemFor(req harness.RunRequest) turnItem {
 	return turnItem{InputID: inputID, SessionID: req.Session.ID, ConfigVersion: req.Session.ConfigVersion, Model: req.Session.Model, ReasoningEffort: req.Session.ReasoningEffort, ThinkingMode: req.Session.ThinkingMode, Mode: req.Session.Mode, ApprovalMode: req.Session.ApprovalMode, Subagents: req.Session.Subagents, Workspace: req.Session.CWD, RootBudgetID: req.RootBudgetID}
 }
 
-func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawMessage) (string, error) {
+func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawMessage, trusted ...map[string]bool) (string, error) {
 	var policy *harness.ToolPolicy
 	if e.config.ToolPolicy.Allowlist != nil || len(e.config.ToolPolicy.Denylist) > 0 {
 		policy = &e.config.ToolPolicy
@@ -62,7 +62,9 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 		ContextWindows                        map[string]int           `json:",omitempty"`
 		ContextPolicy                         string
 		ModelThinking                         map[string]harness.ThinkingConfig `json:",omitempty"`
-	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.OutputTokenParameter, e.config.ModelRoutes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode, e.config.Subagents, e.config.ContextWindows, "adaptive-window-compaction-v3/output-parameter-v1/output-continuation-v1/stopped-tool-followup-v1/progress-v1/continuity-v1", e.config.ModelThinking})
+		PermissionPolicy                      string
+		TrustedBuiltins                       []map[string]bool
+	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.OutputTokenParameter, e.config.ModelRoutes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode, e.config.Subagents, e.config.ContextWindows, "adaptive-window-compaction-v3/output-parameter-v1/output-continuation-v1/stopped-tool-followup-v1/unknown-tool-feedback-v1/user-input-v1/progress-v1/continuity-v1/steering-v1", e.config.ModelThinking, harness.PermissionPolicyVersion, trusted})
 	if err != nil {
 		return "", fmt.Errorf("encode execution contract: %w", err)
 	}

@@ -186,6 +186,9 @@ func (s *Service) clearDecisions(owner, id string) {
 // namespaced tool names cannot impersonate these reserved built-in local tools.
 func configuredPermission(x harness.Session, p harness.PermissionRequest) (harness.PermissionDecision, bool) {
 	if x.Mode == "plan" || x.ApprovalMode == harness.ApprovalReadOnly {
+		if !p.TrustedBuiltin {
+			return harness.RejectOnce, true
+		}
 		switch p.ToolName {
 		case "read_file", "read_tool_output", "read_attachment", "analyze_attachment", "list_attachments", "list_directory", "search_files", "skill", "skill_inspect", "read_skill_file", "view_image", "search_memory", "task_status", "task_wait", "schedule_read":
 			return harness.AllowOnce, true
@@ -216,7 +219,7 @@ func (s *Service) configuredPermission(x harness.Session, p harness.PermissionRe
 	if harness.ExplicitSkillEditApproval(p) {
 		return configuredPermission(x, p)
 	}
-	if !s.PermissionMode.RequiresPermission(p.ToolName) {
+	if !s.PermissionMode.RequiresToolPermission(p.ToolName, p.TrustedBuiltin) {
 		return harness.AllowOnce, true
 	}
 	return configuredPermission(x, p)
@@ -239,7 +242,7 @@ func (s *Store) SaveConfig(ctx context.Context, x harness.Session) error {
 	if n == 0 {
 		return harness.ErrNotFound
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO harness_session_configs(session_id,approval_mode,subagents,version,reasoning_effort,thinking_mode) VALUES(?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET approval_mode=excluded.approval_mode,subagents=excluded.subagents,version=excluded.version,reasoning_effort=excluded.reasoning_effort,thinking_mode=excluded.thinking_mode`, x.ID, x.ApprovalMode, x.Subagents, x.ConfigVersion, x.ReasoningEffort, x.ThinkingMode)
+	_, err = tx.ExecContext(ctx, `INSERT INTO harness_session_configs(session_id,approval_mode,subagents,version,reasoning_effort,thinking_mode,max_run_tokens,max_run_model_calls,max_run_tool_calls,budget_version) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET approval_mode=excluded.approval_mode,subagents=excluded.subagents,version=excluded.version,reasoning_effort=excluded.reasoning_effort,thinking_mode=excluded.thinking_mode,max_run_tokens=excluded.max_run_tokens,max_run_model_calls=excluded.max_run_model_calls,max_run_tool_calls=excluded.max_run_tool_calls,budget_version=excluded.budget_version`, x.ID, x.ApprovalMode, x.Subagents, x.ConfigVersion, x.ReasoningEffort, x.ThinkingMode, x.MaxRunTokens, x.MaxRunModelCalls, x.MaxRunToolCalls, x.BudgetVersion)
 	if err != nil {
 		return err
 	}

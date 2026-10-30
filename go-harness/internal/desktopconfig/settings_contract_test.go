@@ -25,10 +25,9 @@ func TestSettingsContractSaveIsConsumedByNativeLaunch(t *testing.T) {
 	runtime["max_active_runs"] = 3
 	runtime["run_timeout_seconds"] = .125
 	runtime["queue_timeout_seconds"] = .5
-	runtime["session_cleanup_enabled"] = true
-	runtime["inactive_session_retention_days"] = 7
-	runtime["closed_session_retention_days"] = 0
-	runtime["session_cleanup_interval_seconds"] = 60.5
+	runtime["max_run_tokens"] = 50000
+	runtime["max_model_calls"] = 25
+	runtime["max_tool_calls"] = 80
 	runtime["permission_mode"] = "all"
 	runtime["memory_scope"] = "session"
 	runtime["tool_allowlist"] = []string{}
@@ -52,8 +51,11 @@ func TestSettingsContractSaveIsConsumedByNativeLaunch(t *testing.T) {
 	if connections != 128 || cfg.MaxActiveRuns != 3 || cfg.Budget.Timeout != 125*time.Millisecond || cfg.QueueTimeout != 500*time.Millisecond {
 		t.Fatal("saved limits not consumed")
 	}
-	if !cfg.Retention.Enabled || cfg.Retention.InactiveDays != 7 || cfg.Retention.ClosedDays != 0 || cfg.Retention.CheckInterval != 60500*time.Millisecond {
-		t.Fatal("saved retention not consumed")
+	if cfg.Budget.MaxTokens != 50000 || cfg.Budget.MaxModelCalls != 25 || cfg.Budget.MaxToolCalls != 80 {
+		t.Fatal("saved task budget not consumed")
+	}
+	if cfg.Retention.Enabled || cfg.Retention.InactiveDays != 30 || cfg.Retention.ClosedDays != 30 || cfg.Retention.CheckInterval != time.Hour {
+		t.Fatal("hidden host retention was changed by settings save")
 	}
 	if cfg.PermissionMode != harness.PermissionModeAll || cfg.MemoryScope != harness.MemorySession || cfg.MemoryMode != "middleware" || cfg.MemoryEnabled == nil || !*cfg.MemoryEnabled || !cfg.MemoryExtraction || cfg.MemoryInjectionEnabled == nil || *cfg.MemoryInjectionEnabled || cfg.MemoryRetrievalEnabled == nil || *cfg.MemoryRetrievalEnabled {
 		t.Fatal("saved permissions/memory not consumed")

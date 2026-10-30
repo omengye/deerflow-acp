@@ -304,7 +304,8 @@ func TestBudgetLimitAndEstimatedUsageUseStableProtocolMetadata(t *testing.T) {
 
 func TestExplicitApprovalModesAndPlanGuard(t *testing.T) {
 	f := newFixture(t, engineFunc(func(ctx context.Context, req harness.RunRequest, emit harness.EventHandler, permission harness.PermissionHandler) (harness.RunResult, error) {
-		decision, err := callTestPermission(ctx, emit, permission, harness.PermissionRequest{ToolCallID: "call", ToolName: req.Input[0].Text, Arguments: json.RawMessage(`{}`)})
+		name := req.Input[0].Text
+		decision, err := callTestPermission(ctx, emit, permission, harness.PermissionRequest{ToolCallID: "call", ToolName: name, Arguments: json.RawMessage(`{}`), TrustedBuiltin: name == "read_file" || name == "search_files" || name == "write_file"})
 		if err != nil {
 			return harness.RunResult{}, err
 		}

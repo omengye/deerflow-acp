@@ -16,6 +16,8 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 	harnesstools "github.com/omengye/deerflow-acp/go-harness/internal/tools"
 )
 
@@ -160,7 +162,17 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		}
 		tools = append(tools, readOutput)
 	}
+	// User questions belong to the attached root agent. Child cancellation must
+	// not leave a desktop form open while its parent continues the same turn.
+	if userInput, ok := interaction.UserInput(ctx); ok && len(role) == 0 && !IsDelegatedToolContext(ctx) {
+		question, err := harnesstools.AskUserQuestionTool(req, userInput)
+		if err != nil {
+			return p, fmt.Errorf("user question tool: %w", err)
+		}
+		tools = append(tools, question)
+	}
 	protected := make(map[string]bool, len(tools))
+	trusted := make(map[string]bool, len(tools))
 	preparers := make(map[string]harness.ToolArgumentPreparer)
 	rootContext := e.config.TaskContextStore != nil && len(role) == 0
 	if rootContext {
@@ -187,10 +199,10 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		if !e.config.ToolPolicy.Allows(info.Name) {
 			continue
 		}
-		if info.Name == "task" && !e.config.DisableSubAgent && !(req.Session.ConfigVersion > 0 && !req.Session.Subagents) {
+		if info.Name == "task" {
 			return p, errors.New("tool name task is reserved for native Eino delegation")
 		}
-		if info.Name == "write_todos" {
+		if info.Name == "write_todos" || info.Name == "skill" {
 			return p, errors.New("tool name write_todos is reserved for native Eino planning")
 		}
 		if seenTools[info.Name] {
@@ -200,7 +212,8 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		if prepare, ok := t.(harness.ToolArgumentPreparer); ok {
 			preparers[info.Name] = prepare
 		}
-		protected[info.Name] = e.config.PermissionMode.RequiresPermission(info.Name) || req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
+		trusted[info.Name] = toolidentity.IsBuiltin(t, info.Name)
+		protected[info.Name] = e.config.PermissionMode.RequiresToolPermission(info.Name, trusted[info.Name]) || req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
 		contracts = append(contracts, info)
 		allowedTools = append(allowedTools, t)
 	}
@@ -208,12 +221,11 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	// DeepAgent injects these native tools after ToolsNodeConfig is assembled.
 	// Govern them through the same middleware when the host policy requires it.
 	for _, name := range []string{"task", "write_todos", "skill"} {
-		if e.config.ToolPolicy.Allows(name) && e.config.PermissionMode != "" && e.config.PermissionMode.RequiresPermission(name) {
-			protected[name] = true
-		}
+		trusted[name] = true
+		protected[name] = req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly || e.config.PermissionMode != "" && e.config.PermissionMode.RequiresPermission(name)
 	}
 	var err error
-	p.Contract, err = e.executionContract(contracts, extensions.State)
+	p.Contract, err = e.executionContract(contracts, extensions.State, trusted)
 	if err != nil {
 		return p, err
 	}
@@ -287,7 +299,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 			durableWait = true
 		}
 	}
-	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, preparers: preparers, durableTaskWait: durableWait, io: ioLifecycle, budget: b, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore}
+	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, trusted: trusted, permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, preparers: preparers, durableTaskWait: durableWait, io: ioLifecycle, budget: b, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore}
 	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), extensions.Handlers...)
 	if extensions.ModelHandlerFactory != nil || extensions.PostRunFactory != nil {
 		privateMedia := *media
@@ -323,7 +335,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		}
 		handlers = append(handlers, compaction)
 	}
-	handlers = append(handlers, &outputContinuationHistory{}, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel]}, mw)
+	handlers = append(handlers, &steeringHistory{}, &outputContinuationHistory{}, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel]}, mw)
 	delegationEnabled := !e.config.DisableSubAgent && e.config.ToolPolicy.Allows("task") && !(req.Session.ConfigVersion > 0 && !req.Session.Subagents)
 	var children []adk.Agent
 	if e.roles != nil && delegationEnabled {
@@ -340,10 +352,10 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		retryPolicy = goalRetryPolicy(retryPolicy, e.config.GoalStore, req, goal, metered, e.config.GoalAutoContinue, sink)
 	}
 	p.Agent, err = deep.New(ctx, &deep.Config{
-		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend + stoppedToolInstruction(ctx),
+		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend + toolFailureInstruction + stoppedToolInstruction(ctx),
 		ChatModel: chatModel, MaxIteration: nativeMaxIterations(e.config.MaxIterations),
 		ModelRetryConfig: retryPolicy,
-		ToolsConfig:      adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}},
+		ToolsConfig:      adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools, UnknownToolsHandler: unavailableToolHandler}},
 		Handlers:         handlers, WithoutWriteTodos: !e.config.ToolPolicy.Allows("write_todos"),
 		SubAgents:              children,
 		WithoutGeneralSubAgent: !delegationEnabled || e.roles != nil,

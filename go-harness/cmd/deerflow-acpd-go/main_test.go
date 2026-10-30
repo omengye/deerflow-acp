@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,6 +98,17 @@ func TestDaemonRetentionOnRestartHonorsExplicitFlag(t *testing.T) {
 		t.Fatal(line)
 	}
 	first.wait(t, true)
+	// Seed only the isolated fixture database. Retention must preserve history
+	// even when the explicit zero-day flag archives it on daemon restart.
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, "harness.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	history := []byte(`{"kind":"text_delta","text":"retained history"}`)
+	if _, err = db.Exec(`INSERT INTO harness_events(session_id,run_id,event) VALUES(?,?,?)`, session.ID, "retention-fixture", history); err != nil {
+		t.Fatal(err)
+	}
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	config := "local_acp:\n  session_cleanup_enabled: true\n  closed_session_retention_days: 30\nmodels:\n  - name: fixture\n    use: langchain_openai:ChatOpenAI\n    model: fixture-model\n"
@@ -109,6 +121,17 @@ func TestDaemonRetentionOnRestartHonorsExplicitFlag(t *testing.T) {
 	for {
 		inventory := manageDaemon(t, ep, "session.list")
 		if !bytes.Contains(inventory["sessions"], []byte(session.ID)) {
+			t.Fatalf("startup retention deleted session instead of archiving: %+v", inventory)
+		}
+		var archived string
+		if err = db.QueryRow(`SELECT archived_at FROM harness_sessions WHERE id=?`, session.ID).Scan(&archived); err != nil {
+			t.Fatal(err)
+		}
+		if archived != "" {
+			var preserved []byte
+			if err = db.QueryRow(`SELECT event FROM harness_events WHERE session_id=? AND run_id=?`, session.ID, "retention-fixture").Scan(&preserved); err != nil || !bytes.Equal(history, preserved) {
+				t.Fatalf("archive changed history: %s, %v", preserved, err)
+			}
 			break
 		}
 		if time.Now().After(deadline) {
@@ -707,8 +730,63 @@ func TestExistingRustBridge(t *testing.T) {
 		}
 	}()
 	acp := &rpcClient{in: in, out: json.NewDecoder(out)}
-	acp.success(t, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}})
-	acp.success(t, "session/new", map[string]any{"cwd": t.TempDir(), "mcpServers": []any{}})
+	initialized := acp.success(t, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}})
+	var capabilities struct {
+		Meta struct {
+			DeerFlow map[string]json.RawMessage `json:"deerflow"`
+		} `json:"_meta"`
+	}
+	if err := json.Unmarshal(initialized, &capabilities); err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []string{"conversation", "steering", "sessionBudget"} {
+		if !bytes.Contains(capabilities.Meta.DeerFlow[capability], []byte(`"version":1`)) {
+			t.Fatalf("Bridge lost %s capability: %s", capability, initialized)
+		}
+	}
+	workspace := t.TempDir()
+	created := acp.success(t, "session/new", map[string]any{"cwd": workspace, "mcpServers": []any{}})
+	var session struct {
+		ID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(created, &session); err != nil || session.ID == "" {
+		t.Fatalf("Bridge session identity: %s %v", created, err)
+	}
+	var budget harness.SessionBudget
+	if err := json.Unmarshal(acp.success(t, "_deerflow/session/budget/get", map[string]any{"sessionId": session.ID}), &budget); err != nil || budget.Version < 1 {
+		t.Fatalf("Bridge budget: %+v %v", budget, err)
+	}
+	budgetRequest := harness.SessionBudgetRequest{SessionID: session.ID, ExpectedVersion: budget.Version, OperationID: "bridge-budget", Limits: harness.TaskBudget{MaxTokens: 100, MaxModelCalls: 2, MaxToolCalls: 3}}
+	savedBudget := acp.success(t, "_deerflow/session/budget/set", budgetRequest)
+	if repeat := acp.success(t, "_deerflow/session/budget/set", budgetRequest); !bytes.Equal(savedBudget, repeat) {
+		t.Fatal("Bridge budget retry was not idempotent")
+	}
+	if err := json.Unmarshal(savedBudget, &budget); err != nil || budget.Requested != budgetRequest.Limits {
+		t.Fatalf("Bridge budget did not preserve limits: %s %v", savedBudget, err)
+	}
+	var history struct {
+		Head  string            `json:"headEventId"`
+		Turns []json.RawMessage `json:"turns"`
+	}
+	if err := json.Unmarshal(acp.success(t, "_deerflow/history/turns", map[string]any{"sessionId": session.ID}), &history); err != nil || len(history.Turns) != 0 {
+		t.Fatalf("Bridge empty history: %+v %v", history, err)
+	}
+	forkRequest := map[string]any{"sessionId": session.ID, "expectedHeadEventId": history.Head, "targetEventId": "", "operationId": "bridge-fork"}
+	forked := acp.success(t, "_deerflow/history/fork", forkRequest)
+	var fork struct {
+		ID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(forked, &fork); err != nil || fork.ID == "" || fork.ID == session.ID {
+		t.Fatalf("Bridge fork identity: %s %v", forked, err)
+	}
+	if repeated := acp.success(t, "_deerflow/history/fork", forkRequest); !bytes.Equal(forked, repeated) {
+		t.Fatal("Bridge fork retry created another conversation")
+	}
+	acp.success(t, "session/load", map[string]any{"sessionId": fork.ID, "cwd": workspace, "mcpServers": []any{}})
+	acp.success(t, "session/delete", map[string]any{"sessionId": fork.ID})
+	if repeat := acp.request(t, "_deerflow/history/fork", forkRequest); len(repeat.Error) == 0 {
+		t.Fatal("Bridge fork retry resurrected the deleted target")
+	}
 	_ = in.Close()
 	if err = proxy.Wait(); err != nil {
 		t.Fatalf("Bridge proxy: %v %s", err, diagnostics.String())

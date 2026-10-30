@@ -17,6 +17,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
 func (e *Engine) prepareRoleAgents(ctx context.Context, req harness.RunRequest, parentChat model.ToolCallingChatModel, available []tool.BaseTool, extensions RunExtensions, budget *runBudget, sink *eventSink, lifecycle *runIO, permissions harness.PermissionHandler, parentMedia *mediaProjection) ([]adk.Agent, error) {
@@ -206,6 +207,7 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 	}
 	selected := make([]tool.BaseTool, 0, len(available))
 	protected := map[string]bool{}
+	trusted := map[string]bool{}
 	preparers := map[string]harness.ToolArgumentPreparer{}
 	ownedBackground := map[string]bool{}
 	addTool := func(t tool.BaseTool) error {
@@ -214,6 +216,11 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 			return err
 		}
 		if !spec.Tools.Allows(info.Name) {
+			return nil
+		}
+		if info.Name == "ask_user_question" && toolidentity.IsBuiltin(t, info.Name) {
+			// A child returns missing information to its root; its independent
+			// timeout cannot own a desktop form that outlives that child.
 			return nil
 		}
 		// Background capabilities currently belong to the attached parent.
@@ -234,7 +241,8 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 		if prepare, ok := t.(harness.ToolArgumentPreparer); ok {
 			preparers[info.Name] = prepare
 		}
-		protected[info.Name] = e.config.PermissionMode.RequiresPermission(info.Name) || req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
+		trusted[info.Name] = toolidentity.IsBuiltin(t, info.Name)
+		protected[info.Name] = e.config.PermissionMode.RequiresToolPermission(info.Name, trusted[info.Name]) || req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
 		return nil
 	}
 	for _, t := range available {
@@ -302,6 +310,7 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 		return nil, fmt.Errorf("subagent %s: skill selection requires a pinned skill factory", name)
 	}
 	for _, native := range []string{"skill", "write_todos", "task"} {
+		trusted[native] = true
 		if spec.Tools.Allows(native) && e.config.PermissionMode != "" {
 			protected[native] = e.config.PermissionMode.RequiresPermission(native)
 		}
@@ -337,12 +346,12 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 	handlers = append(handlers,
 		&outputContinuationHistory{},
 		&modelLifecycle{io: lifecycle, budget: budget, sink: sink, media: &media, settings: spec.ModelSettings, tuning: tuning, role: true, contextWindow: e.config.ContextWindows[spec.Model]},
-		&toolMiddleware{sink: sink, permissions: permissions, protected: protected, preparers: preparers, policy: roleToolPolicy(spec, len(children) > 0, ownedBackground), permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, durableTaskWait: ownedBackground["task_wait"], io: lifecycle, budget: budget, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore})
+		&toolMiddleware{sink: sink, permissions: permissions, protected: protected, trusted: trusted, preparers: preparers, policy: roleToolPolicy(spec, len(children) > 0, ownedBackground), permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, durableTaskWait: ownedBackground["task_wait"], io: lifecycle, budget: budget, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore})
 	child, err := deep.New(ctx, &deep.Config{
-		Name: name, Description: spec.Description, Instruction: e.config.Instruction + "\n\n" + spec.Instruction + extensions.InstructionAppend + stoppedToolInstruction(ctx),
+		Name: name, Description: spec.Description, Instruction: e.config.Instruction + "\n\n" + spec.Instruction + extensions.InstructionAppend + toolFailureInstruction + stoppedToolInstruction(ctx),
 		ChatModel: chat, MaxIteration: nativeMaxIterations(spec.MaxTurns),
 		ModelRetryConfig: outputContinuationPolicy(compaction),
-		ToolsConfig:      adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: selected}},
+		ToolsConfig:      adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: selected, UnknownToolsHandler: unavailableToolHandler}},
 		Handlers:         handlers, SubAgents: children, WithoutGeneralSubAgent: true, WithoutWriteTodos: !spec.Tools.Allows("write_todos"),
 	})
 	if err != nil {

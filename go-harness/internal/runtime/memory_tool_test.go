@@ -9,7 +9,7 @@ import (
 
 func TestMemorySearchIsTrustedOnlyByItsBuiltInName(t *testing.T) {
 	for _, session := range []harness.Session{{Mode: "plan"}, {ApprovalMode: harness.ApprovalReadOnly}} {
-		decision, handled := configuredPermission(session, harness.PermissionRequest{ToolName: "search_memory"})
+		decision, handled := configuredPermission(session, harness.PermissionRequest{ToolName: "search_memory", TrustedBuiltin: true})
 		if !handled || decision != harness.AllowOnce {
 			t.Fatalf("read-only memory search denied: %s %v", decision, handled)
 		}

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
 )
 
@@ -211,8 +212,12 @@ func TestReceiptRecoveryAfterDatabaseReopen(t *testing.T) {
 	if err = store.ReconcileInterrupted(ctx); err != nil {
 		t.Fatal(err)
 	}
-	restarted := NewService(store, testEngine(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
-		t.Error("interrupted tool was replayed")
+	engineCalls := 0
+	restarted := NewService(store, testEngine(func(ctx context.Context, fresh harness.RunRequest, _ harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
+		engineCalls++
+		if fresh.RunID == req.RunID || fresh.InputID == req.InputID || !interaction.HasStoppedToolRecovery(ctx) {
+			t.Error("fresh prompt reused the interrupted execution or lacked history repair")
+		}
 		return harness.RunResult{}, nil
 	}), "test")
 	if _, err = restarted.Load(ctx, "new-owner", x.ID, x.CWD, false, nil); err != nil {
@@ -222,8 +227,15 @@ func TestReceiptRecoveryAfterDatabaseReopen(t *testing.T) {
 	if err != nil || len(receipts) != 1 || receipts[0].State != harness.ReceiptUncertain || receipts[0].ConfigVersion != x.ConfigVersion {
 		t.Fatalf("reopened receipts=%+v error=%v", receipts, err)
 	}
-	if _, err := restarted.Run(ctx, "new-owner", x.ID, []harness.Content{{Type: "text", Text: "continue"}}, nil, nil); !errors.Is(err, harness.ErrReconciliationRequired) {
-		t.Fatalf("restarted run=%v", err)
+	if engineCalls != 0 {
+		t.Fatal("startup or load automatically replayed the interrupted turn")
+	}
+	if _, err := restarted.Run(ctx, "new-owner", x.ID, []harness.Content{{Type: "text", Text: "continue"}}, nil, nil); err != nil || engineCalls != 1 {
+		t.Fatalf("fresh prompt after interrupted run=%v calls=%d", err, engineCalls)
+	}
+	preserved, err := readReceipt(ctx, store.db, x.ID, req.RunID, "effect")
+	if err != nil || preserved.State != harness.ReceiptUncertain || preserved.Version != receipts[0].Version || preserved.Review != nil {
+		t.Fatal("fresh prompt changed unknown execution evidence", preserved, err)
 	}
 }
 
@@ -264,12 +276,15 @@ func TestReceiptRecoveryDistinguishesUnexecutedAndUncertain(t *testing.T) {
 		t.Fatalf("recovery repeated terminal events: %d -> %d (%v)", len(history), len(after), err)
 	}
 	engineCalls := 0
-	s.Engine = testEngine(func(context.Context, harness.RunRequest, harness.EventHandler, harness.PermissionHandler) (harness.RunResult, error) {
+	s.Engine = testEngine(func(ctx context.Context, fresh harness.RunRequest, _ harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
 		engineCalls++
+		if fresh.RunID == req.RunID || fresh.InputID == req.InputID || !interaction.HasStoppedToolRecovery(ctx) {
+			t.Error("fresh input reused interrupted execution")
+		}
 		return harness.RunResult{}, nil
 	})
-	if _, err := s.Run(ctx, "owner", req.Session.ID, []harness.Content{{Type: "text", Text: "continue"}}, nil, nil); !errors.Is(err, harness.ErrReconciliationRequired) || engineCalls != 0 {
-		t.Fatalf("uncertain effects replayed: %v calls=%d", err, engineCalls)
+	if _, err := s.Run(ctx, "owner", req.Session.ID, []harness.Content{{Type: "text", Text: "continue"}}, nil, nil); err != nil || engineCalls != 1 {
+		t.Fatalf("fresh conversation was blocked: %v calls=%d", err, engineCalls)
 	}
 }
 

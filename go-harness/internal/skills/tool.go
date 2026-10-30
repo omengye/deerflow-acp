@@ -11,11 +11,17 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
-func (s *Snapshot) ReadFileTool() tool.InvokableTool { return &readFileTool{snapshot: s} }
+func (s *Snapshot) ReadFileTool() tool.InvokableTool {
+	return &readFileTool{Native: toolidentity.Builtin("read_skill_file"), snapshot: s}
+}
 
-type readFileTool struct{ snapshot *Snapshot }
+type readFileTool struct {
+	toolidentity.Native
+	snapshot *Snapshot
+}
 
 func (t *readFileTool) Info(context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{

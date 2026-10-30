@@ -71,7 +71,7 @@ func (s *Service) ContinuationResourceSource(ctx context.Context, owner, rootSes
 			return harness.ErrPermissionDenied
 		}
 		var uncertain bool
-		if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state IN ('started','uncertain'))`, rootSession).Scan(&uncertain); e != nil {
+		if e := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts r WHERE session_id=? AND (r.state='started' OR (`+unmanagedUncertainReceiptSQL("r")+` AND NOT `+receiptRunEnded+`)))`, rootSession).Scan(&uncertain); e != nil {
 			return e
 		}
 		if uncertain {

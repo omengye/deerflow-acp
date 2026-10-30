@@ -130,6 +130,12 @@ func proposalProjection(p harness.SkillProposal) map[string]any {
 	if p.Base.Exists {
 		result["base_sha256"] = p.Base.Version
 	}
+	result["publication"] = proposalPublication(p)
+	result["review_retry_available"] = evolution.CanRetryReview(p)
+	return result
+}
+
+func proposalPublication(p harness.SkillProposal) map[string]any {
 	state, code, retry := "not_approved", p.PublicationError, false
 	if p.Approval != nil {
 		switch p.Status {
@@ -145,9 +151,7 @@ func proposalProjection(p harness.SkillProposal) map[string]any {
 	} else if p.Status == "published" || p.Status == "publishing" {
 		state = p.Status
 	}
-	result["publication"] = map[string]any{"state": state, "error_code": code, "retryable": retry}
-	result["review_retry_available"] = evolution.CanRetryReview(p)
-	return result
+	return map[string]any{"state": state, "error_code": code, "retryable": retry}
 }
 
 func proposalProjections(proposals []harness.SkillProposal) []map[string]any {

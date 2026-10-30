@@ -17,6 +17,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	acpclient "github.com/omengye/deerflow-acp/go-harness/internal/acp/client"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
 type toolMiddleware struct {
@@ -24,6 +25,7 @@ type toolMiddleware struct {
 	sink            *eventSink
 	permissions     harness.PermissionHandler
 	protected       map[string]bool
+	trusted         map[string]bool
 	preparers       map[string]harness.ToolArgumentPreparer
 	policy          *harness.ToolPolicy
 	permissionMode  harness.PermissionMode
@@ -43,11 +45,19 @@ type toolMiddleware struct {
 // Run after tool-providing middleware so a role's allowlist also governs
 // dynamically injected tools, not just ToolsNodeConfig.
 func (m *toolMiddleware) BeforeAgent(ctx context.Context, input *adk.ChatModelAgentContext[*schema.Message]) (context.Context, *adk.ChatModelAgentContext[*schema.Message], error) {
-	if m.policy == nil {
-		return ctx, input, nil
+	if m.trusted == nil {
+		m.trusted = make(map[string]bool)
+	}
+	if m.protected == nil {
+		m.protected = make(map[string]bool)
 	}
 	copy := *input
 	copy.Tools = make([]tool.BaseTool, 0, len(input.Tools))
+	available := make(map[string]bool, len(input.Tools))
+	delegated := IsDelegatedToolContext(ctx)
+	if delegated {
+		copy.Instruction += "\n\nUser questions belong to the parent agent. If user information or a decision is missing, return the question to the parent so it can ask the user. Do not call ask_user_question from this delegated task."
+	}
 	for _, t := range input.Tools {
 		info, err := t.Info(ctx)
 		if err != nil {
@@ -56,12 +66,27 @@ func (m *toolMiddleware) BeforeAgent(ctx context.Context, input *adk.ChatModelAg
 		if info == nil || info.Name == "" {
 			return ctx, nil, harness.ErrInvalidInput
 		}
-		if !m.policy.Allows(info.Name) {
+		// DeepAgent's default child shares the root's tools and middleware.
+		// Filter per invocation rather than mutating that shared tool set.
+		if delegated && info.Name == "ask_user_question" && toolidentity.IsBuiltin(t, info.Name) {
 			continue
 		}
+		if m.policy != nil && !m.policy.Allows(info.Name) {
+			continue
+		}
+		// Only the engine-reserved DeepAgent tools lack a native constructor
+		// marker. All other dynamically supplied tools must prove provenance.
+		switch info.Name {
+		case "task", "skill", "write_todos":
+			m.protected[info.Name] = m.readOnly || m.permissionMode != "" && m.permissionMode.RequiresToolPermission(info.Name, m.trusted[info.Name])
+		default:
+			m.trusted[info.Name] = toolidentity.IsBuiltin(t, info.Name)
+			m.protected[info.Name] = m.readOnly || m.permissionMode.RequiresToolPermission(info.Name, m.trusted[info.Name])
+		}
 		copy.Tools = append(copy.Tools, t)
+		available[info.Name] = true
 	}
-	return ctx, &copy, nil
+	return context.WithValue(ctx, availableToolsKey{}, available), &copy, nil
 }
 
 func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args string) error {
@@ -72,7 +97,7 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 	if m.policy != nil && !m.policy.Allows(tc.Name) {
 		return harness.MarkToolNotExecuted(harness.ErrPermissionDenied)
 	}
-	if m.nativeDelegation(tc) {
+	if m.nativeDelegation(ctx, tc) {
 		// Eino's task endpoint is a resumable orchestration boundary. Its child
 		// models and actual tools own the effect admissions and receipts. Giving
 		// this boundary a started effect receipt would make every safe child
@@ -174,16 +199,18 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Approval may wait on a human. Only admitted effect I/O owns a role slot;
-	// holding it around the permission callback can deadlock sibling roles.
-	release, err := beginRoleWork(ctx)
-	if err != nil {
-		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
-			return harness.MarkToolNotExecuted(ctx.Err())
+	// Human interaction does not occupy a role's effect-I/O slot. In
+	// particular a question must not prevent sibling roles from making progress.
+	if !m.userQuestion(tc.Name) {
+		release, err := beginRoleWork(ctx)
+		if err != nil {
+			if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+				return harness.MarkToolNotExecuted(ctx.Err())
+			}
+			return err
 		}
-		return err
+		m.permits.Store(tc, release)
 	}
-	m.permits.Store(tc, release)
 	if value, ok := m.grants.Load(tc); ok {
 		first, err := m.budget.ledger.MarkDispatched(ctx, value.(durablebudget.Reservation))
 		if err != nil {
@@ -200,12 +227,15 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 	return nil
 }
 
-func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, content []harness.Content, err error) error {
+func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, content []harness.Content, err error, agentRecovery ...bool) error {
+	recoverable := len(agentRecovery) > 0 && agentRecovery[0] && m.recoverableFailure(ctx, tc, err)
 	if done, started := m.executing.LoadAndDelete(tc); started {
 		done.(func())()
-		m.io.recordUnconfirmedEffect(err)
+		if !recoverable {
+			m.io.recordUnconfirmedEffect(err)
+		}
 	}
-	if m.nativeDelegation(tc) {
+	if m.nativeDelegation(ctx, tc) {
 		m.sink.mu.Lock()
 		started := m.sink.delegations[tc.CallID]
 		m.sink.mu.Unlock()
@@ -242,16 +272,16 @@ func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, conten
 	if err != nil {
 		status = "failed"
 		content = append(content, harness.Content{Type: "text", Text: err.Error()})
-		receipt = &harness.ToolReceipt{Error: err.Error(), FailureCode: toolFailureCode(err)}
+		receipt = &harness.ToolReceipt{Error: err.Error(), FailureCode: toolFailureCode(err), AgentRecoverable: recoverable && settleErr == nil}
 		var notExecuted *harness.ToolNotExecutedError
 		var noEffect *harness.ToolNoEffectError
 		var executedFailure *harness.ToolExecutionFailedError
-		if !errors.Is(err, harness.ErrCommandUncertain) {
+		if certifiedToolOutcome(err) {
 			if errors.As(err, &notExecuted) {
 				receipt.State = harness.ReceiptNotExecuted
 			} else if errors.As(err, &noEffect) {
 				receipt.State = harness.ReceiptNoEffect
-			} else if errors.As(err, &executedFailure) && certifiedToolOutcome(err) {
+			} else if errors.As(err, &executedFailure) {
 				receipt.State = harness.ReceiptFailed
 			}
 		}
@@ -261,12 +291,27 @@ func (m *toolMiddleware) finish(ctx context.Context, tc *adk.ToolContext, conten
 	return errors.Join(settleErr, m.sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "tool_end", ToolCallID: tc.CallID, ToolName: tc.Name, Status: status, Content: content, Receipt: receipt}))
 }
 
-func (m *toolMiddleware) nativeDelegation(tc *adk.ToolContext) bool {
-	return tc.Name == "task" || m.durableTaskWait && tc.Name == "task_wait"
+func (m *toolMiddleware) nativeDelegation(ctx context.Context, tc *adk.ToolContext) bool {
+	return !unavailableTool(ctx, tc.Name) && (tc.Name == "task" || m.durableTaskWait && tc.Name == "task_wait")
 }
 
 func (m *toolMiddleware) requiresPermission(name string) bool {
-	return name == "skill_edit" || m.protected[name] || (m.policy != nil && (m.readOnly || m.permissionMode.RequiresPermission(name)))
+	// A user answer is input, never a grant to execute another tool. Only the
+	// host constructor's identity exempts this interaction from approval prompts.
+	if m.userQuestion(name) {
+		return false
+	}
+	if name == "skill_edit" || m.readOnly {
+		return true
+	}
+	if protected, known := m.protected[name]; known {
+		return protected
+	}
+	return (m.policy != nil || m.permissionMode != "") && m.permissionMode.RequiresToolPermission(name, m.trusted[name])
+}
+
+func (m *toolMiddleware) userQuestion(name string) bool {
+	return name == "ask_user_question" && m.trusted[name]
 }
 
 func (m *toolMiddleware) askPermission(ctx context.Context, request harness.PermissionRequest) (harness.PermissionDecision, error) {
@@ -276,7 +321,7 @@ func (m *toolMiddleware) askPermission(ctx context.Context, request harness.Perm
 }
 
 func (m *toolMiddleware) begin(ctx context.Context, tc *adk.ToolContext) (context.Context, func(), error) {
-	if m.nativeDelegation(tc) {
+	if m.nativeDelegation(ctx, tc) {
 		parent, _ := ctx.Value(roleWorkKey{}).(roleWork)
 		identity, err := json.Marshal([]string{m.sink.request.RunID, parent.id, tc.CallID})
 		if err != nil {
@@ -302,27 +347,32 @@ func (m *toolMiddleware) begin(ctx context.Context, tc *adk.ToolContext) (contex
 	}, nil
 }
 
-// A failed tool call may be returned to the model only when the tool supplied
-// trustworthy evidence of a terminal outcome, rejection, or no effects.
-// Cancellation and uncertain command termination must still stop the run.
+// Operation failures belong to the agent, including unknown effects. Host
+// cancellation, admission, persistence and interrupt errors remain control flow.
+// This is called only for the tool endpoint's error, never a host callback error.
 func recoverableToolFailure(ctx context.Context, err error) bool {
-	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, harness.ErrCommandUncertain) || isPermissionInterrupt(err) {
+	// A tool's private context (or remote operation) may be cancelled while
+	// the owning run is still active. Only the owning context and native
+	// control markers establish user/run cancellation at this boundary.
+	if err == nil || ctx.Err() != nil || errors.Is(err, adk.ErrStreamCanceled) || isPermissionInterrupt(err) {
 		return false
 	}
-	remaining, removed := removeErrorLeaves(err, func(leaf error) bool {
-		switch leaf.(type) {
-		case *harness.ToolNotExecutedError, *harness.ToolNoEffectError, *harness.ToolExecutionFailedError:
-			return true
-		}
-		return false
-	})
-	return removed && remaining == nil
+	var quota *budgetError
+	var durableQuota *durablebudget.LimitError
+	var persistence interface{ PersistenceFailure() bool }
+	var nativeCancel *adk.CancelError
+	var nativeInterrupt *adk.InterruptError
+	return !errors.As(err, &quota) && !errors.As(err, &durableQuota) && !errors.As(err, &persistence) && !errors.As(err, &nativeCancel) && !errors.As(err, &nativeInterrupt) &&
+		!errors.Is(err, durablebudget.ErrScope) && !errors.Is(err, durablebudget.ErrConflict) && !errors.Is(err, durablebudget.ErrUnknown) && !errors.Is(err, durablebudget.ErrClock) && !errors.Is(err, harness.ErrReceiptConflict)
 }
 
 func failedToolModelText(output string, err error) string {
 	var executedFailure *harness.ToolExecutionFailedError
-	if errors.As(err, &executedFailure) {
+	if errors.As(err, &executedFailure) && certifiedToolOutcome(err) {
 		return "Tool failed: " + err.Error() + "\nThe tool execution has ended. Partial effects may have occurred; inspect the output and any affected state before retrying. Do not assume a rollback.\nTool output: " + output
+	}
+	if !certifiedToolOutcome(err) {
+		return "Tool failed: " + err.Error() + "\nExecution outcome and effects are unconfirmed. Partial effects may have occurred, and this result is not proof of success, failure without effects, or rollback. Inspect available evidence and affected state before deciding whether another attempt is appropriate.\nTool output: " + output
 	}
 	if output == "" {
 		return "Tool failed: " + err.Error()
@@ -347,6 +397,9 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 			return "", err
 		}
 		defer finish()
+		if unavailableTool(ctx, tc.Name) {
+			return m.rejectUnavailableTool(ctx, tc, args)
+		}
 		if prepare := m.preparers[tc.Name]; prepare != nil {
 			args, err = prepare.PrepareToolArguments(ctx, args)
 			if err != nil {
@@ -500,7 +553,10 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 			err = errors.Join(err, snapshotErr)
 			recoverable = recoverable && snapshotErr == nil
 		}
-		if emitErr := m.finish(ctx, tc, []harness.Content{{Type: "text", Text: output}}, err); emitErr != nil {
+		if tc.Name == "skill_manage" && m.io.failure() != nil {
+			recoverable = false
+		}
+		if emitErr := m.finish(ctx, tc, []harness.Content{{Type: "text", Text: output}}, err, recoverable); emitErr != nil {
 			return "", errors.Join(err, emitErr)
 		}
 		if err == nil && externalCommit != nil {
@@ -554,15 +610,20 @@ func (m *toolMiddleware) WrapStreamableToolCall(_ context.Context, next adk.Stre
 		}
 		stream, err := next(ctx, args, opts...)
 		if err != nil {
+			var output string
+			var evidence interface{ ToolResult() string }
+			if errors.As(err, &evidence) {
+				output = evidence.ToolResult()
+			}
 			recoverable := m.recoverableFailure(ctx, tc, err)
 			modelOutput := ""
 			if recoverable {
 				var snapshotErr error
-				modelOutput, snapshotErr = m.modelToolOutput(ctx, failedToolModelText("", err))
+				modelOutput, snapshotErr = m.modelToolOutput(ctx, failedToolModelText(output, err))
 				recoverable = snapshotErr == nil
 				err = errors.Join(err, snapshotErr)
 			}
-			if finishErr := m.finish(ctx, tc, nil, err); finishErr != nil {
+			if finishErr := m.finish(ctx, tc, []harness.Content{{Type: "text", Text: output}}, err, recoverable); finishErr != nil {
 				return nil, errors.Join(err, finishErr)
 			}
 			if recoverable {
@@ -571,7 +632,9 @@ func (m *toolMiddleware) WrapStreamableToolCall(_ context.Context, next adk.Stre
 			return nil, err
 		}
 		handedOff = true
-		return relayToolStream(ctx, m, tc, stream, finish, func(chunk string) []harness.Content { return []harness.Content{{Type: "text", Text: chunk}} }), nil
+		return relayToolStream(ctx, m, tc, stream, finish, func(chunk string) []harness.Content { return []harness.Content{{Type: "text", Text: chunk}} }, func(err error) (string, error) {
+			return m.modelToolOutput(ctx, "\n"+failedToolModelText("", err))
+		}), nil
 	}, nil
 }
 
@@ -643,7 +706,7 @@ func (m *toolMiddleware) WrapEnhancedInvokableToolCall(_ context.Context, next a
 			err = errors.Join(err, snapshotErr)
 			recoverable = recoverable && snapshotErr == nil
 		}
-		if emitErr := m.finish(ctx, tc, fullContent, err); emitErr != nil {
+		if emitErr := m.finish(ctx, tc, fullContent, err, recoverable); emitErr != nil {
 			return nil, errors.Join(err, emitErr)
 		}
 		if recoverable {
@@ -676,15 +739,23 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 		}
 		stream, err := next(ctx, args, opts...)
 		if err != nil {
-			recoverable := m.recoverableFailure(ctx, tc, err)
+			var output *schema.ToolResult
+			var evidence interface{ EnhancedToolResult() *schema.ToolResult }
+			if errors.As(err, &evidence) {
+				output = evidence.EnhancedToolResult()
+			}
+			var mediaErr error
+			output, mediaErr = normalizeToolImages(ctx, output, m.sink.request, tc.CallID, m.images)
+			recoverable := mediaErr == nil && m.recoverableFailure(ctx, tc, err)
+			err = errors.Join(err, mediaErr)
 			var modelOutput *schema.ToolResult
 			if recoverable {
 				var snapshotErr error
-				modelOutput, snapshotErr = m.modelEnhancedToolOutput(ctx, failedEnhancedToolResult(nil, err))
+				modelOutput, snapshotErr = m.modelEnhancedToolOutput(ctx, failedEnhancedToolResult(output, err))
 				recoverable = snapshotErr == nil
 				err = errors.Join(err, snapshotErr)
 			}
-			if finishErr := m.finish(ctx, tc, nil, err); finishErr != nil {
+			if finishErr := m.finish(ctx, tc, enhancedContent(output), err, recoverable); finishErr != nil {
 				return nil, errors.Join(err, finishErr)
 			}
 			if recoverable {
@@ -693,7 +764,9 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 			return nil, err
 		}
 		handedOff = true
-		return relayToolStream(ctx, m, tc, stream, finish, enhancedContent, func(result *schema.ToolResult) (*schema.ToolResult, error) {
+		return relayToolStream(ctx, m, tc, stream, finish, enhancedContent, func(err error) (*schema.ToolResult, error) {
+			return m.modelEnhancedToolOutput(ctx, failedEnhancedToolResult(nil, err))
+		}, func(result *schema.ToolResult) (*schema.ToolResult, error) {
 			return normalizeToolImages(ctx, result, m.sink.request, tc.CallID, m.images)
 		}), nil
 	}, nil
@@ -702,27 +775,41 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 // Complete the durable tool receipt before exposing terminal EOF to Eino.
 // Errors after effects began, including errors while draining cleanup, remain
 // failures even if earlier chunks looked successful.
-func relayToolStream[T any](ctx context.Context, m *toolMiddleware, tc *adk.ToolContext, source *schema.StreamReader[T], release func(), content func(T) []harness.Content, project ...func(T) (T, error)) *schema.StreamReader[T] {
+func relayToolStream[T any](ctx context.Context, m *toolMiddleware, tc *adk.ToolContext, source *schema.StreamReader[T], release func(), content func(T) []harness.Content, failureResult func(error) (T, error), project ...func(T) (T, error)) *schema.StreamReader[T] {
 	reader, writer := schema.Pipe[T](1)
 	go func() {
 		var terminal error
+		var hostFailure bool
 		var terminalImages []harness.Content
 		defer func() {
 			if source != nil {
 				source.Close()
 			}
 			terminal = errors.Join(terminal, ctx.Err())
-			if finishErr := m.finish(ctx, tc, terminalImages, terminal); finishErr != nil {
-				terminal = errors.Join(terminal, finishErr)
+			recoverable := !hostFailure && m.recoverableFailure(ctx, tc, terminal)
+			var modelFailure T
+			if recoverable {
+				var projectionErr error
+				modelFailure, projectionErr = failureResult(terminal)
+				terminal = errors.Join(terminal, projectionErr)
+				recoverable = projectionErr == nil
 			}
-			m.io.recordError(terminal)
+			if finishErr := m.finish(ctx, tc, terminalImages, terminal, recoverable); finishErr != nil {
+				terminal = errors.Join(terminal, finishErr)
+				recoverable = false
+			}
+			if recoverable {
+				writer.Send(modelFailure, nil)
+			} else if terminal != nil {
+				m.io.recordError(terminal)
+				var zero T
+				writer.Send(zero, terminal)
+			}
 			release()
 			writer.Close()
 		}()
 		if source == nil {
 			terminal = errors.New("tool returned a nil stream")
-			var zero T
-			writer.Send(zero, terminal)
 			return
 		}
 		draining := false
@@ -733,11 +820,7 @@ func relayToolStream[T any](ctx context.Context, m *toolMiddleware, tc *adk.Tool
 			}
 			if err != nil {
 				terminal = errors.Join(terminal, err)
-				if !draining {
-					var zero T
-					writer.Send(zero, err)
-					draining = true
-				}
+				draining = true
 				continue
 			}
 			if draining {
@@ -751,8 +834,7 @@ func relayToolStream[T any](ctx context.Context, m *toolMiddleware, tc *adk.Tool
 			}
 			if err != nil {
 				terminal = errors.Join(terminal, err)
-				var zero T
-				writer.Send(zero, err)
+				hostFailure = true
 				draining = true
 				continue
 			}
@@ -769,7 +851,7 @@ func relayToolStream[T any](ctx context.Context, m *toolMiddleware, tc *adk.Tool
 			}
 			if err = m.sink.emit(ctx, harness.RunEvent{Kind: "tool_update", ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress", Content: liveContent}); err != nil {
 				terminal = errors.Join(terminal, err)
-				writer.Send(chunk, err)
+				hostFailure = true
 				draining = true
 				continue
 			}
@@ -780,6 +862,7 @@ func relayToolStream[T any](ctx context.Context, m *toolMiddleware, tc *adk.Tool
 			}
 			if writer.Send(chunk, nil) {
 				terminal = errors.Join(terminal, context.Canceled)
+				hostFailure = true
 				draining = true
 			}
 		}

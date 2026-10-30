@@ -424,7 +424,7 @@ func TestSDKNotificationContinuationSourceTamperBlocksResume(t *testing.T) {
 	}
 	f.reopen(t)
 	state, err := f.c.Execution(f.ctx, f.sess.ID, before.RunID)
-	if err != nil || state.Status != harness.ExecutionNeedsReconciliation || state.Resumable || state.BlockedReason == "" {
+	if err != nil || state.Status != harness.ExecutionFailed || state.Resumable || !strings.Contains(state.BlockedReason, "continuation source identity or digest changed") {
 		t.Fatalf("tampered source presented as resumable=%+v err=%v", state, err)
 	}
 	_, err = f.c.ResumeExecution(f.ctx, f.sess.ID, harness.ResumeExecutionRequest{RunID: before.RunID, ExpectedVersion: before.Version}, nil, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {

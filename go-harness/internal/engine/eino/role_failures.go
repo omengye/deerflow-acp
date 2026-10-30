@@ -75,6 +75,7 @@ func recoverableRoleTimeout(err error) bool {
 }
 
 func (m *trackedModel) modelError(err error) error {
+	err = classifyModelRateLimitError(err)
 	err = classifyModelContextError(err)
 	err = classifyModelResponseError(err)
 	if err == nil || !m.role {
@@ -109,10 +110,19 @@ func recoverableRoleCause(err error) bool {
 }
 
 func (m *toolMiddleware) recoverableFailure(ctx context.Context, tc *adk.ToolContext, err error) bool {
-	if recoverableToolFailure(ctx, err) {
+	if m.io != nil && m.io.parent != nil && m.io.parent.Err() != nil {
+		return false
+	}
+	if !m.nativeDelegation(ctx, tc) {
+		return recoverableToolFailure(ctx, err)
+	}
+	// Native orchestration can reject a delegation before dispatch (for
+	// example, its task-count limit). Preserve those certified results while
+	// refusing to downgrade arbitrary scheduler or persistence errors.
+	if certifiedToolOutcome(err) && recoverableToolFailure(ctx, err) {
 		return true
 	}
-	if !m.nativeDelegation(tc) || err == nil || ctx.Err() != nil {
+	if err == nil || ctx.Err() != nil {
 		return false
 	}
 	remaining, removed := removeErrorLeaves(err, func(leaf error) bool {

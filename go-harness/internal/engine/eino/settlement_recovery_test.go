@@ -47,14 +47,14 @@ func testRuntimeUnsettledModel(t *testing.T, cancelAtTool bool) {
 		t.Fatalf("settlement failure was hidden: result=%+v err=%v", result, err)
 	}
 	state, readErr := s.Execution(context.Background(), "owner", session.ID, "")
-	if readErr != nil || state.Status != harness.ExecutionNeedsReconciliation || state.Resumable {
+	if readErr != nil || state.Status != harness.ExecutionFailed || state.Resumable {
 		t.Fatalf("failed model settlement stranded execution: state=%+v err=%v runErr=%v", state, readErr, err)
 	}
 	if result.Execution == nil || result.Execution.Status != state.Status {
 		t.Fatalf("response did not report persisted recovery state: %+v", result)
 	}
 	var status, attemptState, outcome string
-	if err := native.DB().QueryRow(`SELECT status FROM harness_runs WHERE id=?`, state.RunID).Scan(&status); err != nil || status != "needs_reconciliation" {
+	if err := native.DB().QueryRow(`SELECT status FROM harness_runs WHERE id=?`, state.RunID).Scan(&status); err != nil || status != "failed" {
 		t.Fatalf("run was left active: status=%s err=%v", status, err)
 	}
 	if err := native.DB().QueryRow(`SELECT state,outcome FROM budget_attempts WHERE id=?`, state.AttemptID).Scan(&attemptState, &outcome); err != nil || attemptState != "unknown" || outcome != "interrupted" {
@@ -67,6 +67,9 @@ func testRuntimeUnsettledModel(t *testing.T, cancelAtTool bool) {
 	}
 	if fake.calls != 1 {
 		t.Fatalf("failed model call was replayed: calls=%d", fake.calls)
+	}
+	if _, resumeErr := s.ResumeExecution(context.Background(), "owner", session.ID, harness.ResumeExecutionRequest{RunID: state.RunID, ExpectedVersion: state.Version}, nil, nil); !errors.Is(resumeErr, harness.ErrExecutionConflict) {
+		t.Fatalf("ended run with unsettled budget became resumable: %v", resumeErr)
 	}
 	if effects.Load() != 0 {
 		t.Fatal("unapproved tool executed during cancellation")

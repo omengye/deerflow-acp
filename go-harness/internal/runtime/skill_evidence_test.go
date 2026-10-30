@@ -135,7 +135,7 @@ func TestSkillOutcomeOutboxCommitsWithForegroundTerminal(t *testing.T) {
 	}
 }
 
-func TestSkillOutcomeWaitReconciliationAndCancellationStayDistinct(t *testing.T) {
+func TestSkillOutcomeWaitFailureAndCancellationStayDistinct(t *testing.T) {
 	f := newExecutionFixture(t)
 	f.pending(t)
 	state := f.suspend(t)
@@ -155,8 +155,8 @@ func TestSkillOutcomeWaitReconciliationAndCancellationStayDistinct(t *testing.T)
 		_, err := other.s.EndExecutionAttemptTx(context.Background(), tx, other.lease, harness.ExecutionStopFailed, "provider error with private details")
 		return err
 	})
-	if got := evidenceCount(t, other.s.db, "harness_skill_outcomes"); got != 0 {
-		t.Fatal("reconciliation state counted as a task outcome")
+	if err := other.s.db.QueryRow(`SELECT status FROM harness_skill_outcomes WHERE run_id=?`, other.req.RunID).Scan(&status); err != nil || status != "failed" || evidenceCount(t, other.s.db, "harness_skill_outcomes") != 1 {
+		t.Fatal("ended fault was not recorded as a failed outcome", status, err)
 	}
 }
 

@@ -311,7 +311,7 @@ func (s *BackgroundExecutionStore) BindTx(ctx context.Context, tx *sql.Tx, bindi
 		if _, err = tx.ExecContext(ctx, `INSERT INTO harness_sessions(id,cwd,title,mode,model,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, child.ID, child.CWD, child.Title, child.Mode, child.Model, child.CreatedAt.Format(time.RFC3339Nano), child.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO harness_session_configs(session_id,approval_mode,subagents,version) VALUES(?,?,?,?)`, child.ID, child.ApprovalMode, child.Subagents, child.ConfigVersion); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO harness_session_configs(session_id,approval_mode,subagents,version,max_run_tokens,max_run_model_calls,max_run_tool_calls) VALUES(?,?,?,?,?,?,?)`, child.ID, child.ApprovalMode, child.Subagents, child.ConfigVersion, child.MaxRunTokens, child.MaxRunModelCalls, child.MaxRunToolCalls); err != nil {
 			return err
 		}
 	} else {
@@ -498,7 +498,7 @@ func (s *BackgroundExecutionStore) Load(ctx context.Context, binding background.
 }
 
 func backgroundChildPolicy(ctx context.Context, q receiptQuery, binding background.Binding, spec BackgroundExecutionSpec) (harness.Session, error) {
-	child, err := scanSession(q.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,c.approval_mode,c.subagents,c.version,c.reasoning_effort,c.thinking_mode FROM harness_sessions s JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, binding.ChildSessionID))
+	child, err := scanSession(q.QueryRowContext(ctx, `SELECT s.id,s.cwd,s.title,s.mode,s.model,s.created_at,s.updated_at,c.approval_mode,c.subagents,c.version,c.reasoning_effort,c.thinking_mode,c.max_run_tokens,c.max_run_model_calls,c.max_run_tool_calls,c.budget_version FROM harness_sessions s JOIN harness_session_configs c ON c.session_id=s.id WHERE s.id=?`, binding.ChildSessionID))
 	if err != nil {
 		return child, err
 	}
@@ -672,7 +672,7 @@ func (s *BackgroundExecutionStore) TransitionTx(ctx context.Context, tx *sql.Tx,
 
 func backgroundReceiptFrontier(ctx context.Context, tx *sql.Tx, scope background.TaskScope, completing bool) error {
 	var open bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND (state='uncertain' OR (run_id=? AND (state='started' OR (? AND state='pending')))))`, scope.Binding.ChildSessionID, scope.Binding.TaskID, completing).Scan(&open)
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND (`+unmanagedUncertainReceiptSQL("")+` OR (run_id=? AND (state='started' OR (? AND state='pending')))))`, scope.Binding.ChildSessionID, scope.Binding.TaskID, completing).Scan(&open)
 	if err != nil {
 		return err
 	}

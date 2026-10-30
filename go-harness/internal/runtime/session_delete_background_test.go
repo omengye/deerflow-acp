@@ -38,6 +38,9 @@ func completedGraphFixture(t *testing.T) *backgroundHostFixture {
 	if _, err = f.native.DB().ExecContext(ctx, `DELETE FROM eino_task_notifications WHERE task_id=?`, f.binding.TaskID); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.store.Finish(ctx, f.binding.OriginRunID, "end_turn", nil, foregroundBudgetScope(harness.RunRequest{Session: f.spec.Parent, RunID: f.binding.OriginRunID, RootBudgetID: f.binding.RootBudgetID})); err != nil {
+		t.Fatal(err)
+	}
 	return f
 }
 
@@ -111,6 +114,9 @@ func TestDeleteTerminalBackgroundGraphAtomically(t *testing.T) {
 func TestAutomaticRetentionWaitsForBackgroundInbox(t *testing.T) {
 	f := completedGraphFixture(t)
 	ctx := context.Background()
+	if err := f.store.Finish(ctx, f.binding.OriginRunID, "end_turn", nil, foregroundBudgetScope(harness.RunRequest{Session: f.spec.Parent, RunID: f.binding.OriginRunID, RootBudgetID: f.binding.RootBudgetID})); err != nil {
+		t.Fatal(err)
+	}
 	policy := harness.RetentionPolicy{Enabled: true, ClosedDays: 30, InactiveDays: 30, CheckInterval: time.Hour}
 	old := time.Now().UTC().Add(-31 * 24 * time.Hour).Format(time.RFC3339Nano)
 	if _, err := f.native.DB().ExecContext(ctx, `UPDATE harness_sessions SET closed_at=?,updated_at=? WHERE id=?`, old, old, f.binding.ParentSessionID); err != nil {
@@ -239,6 +245,9 @@ func nestedGraphFixture(t *testing.T) (*backgroundHostFixture, []background.Bind
 		t.Fatal(err)
 	}
 	if _, err := f.native.DB().ExecContext(ctx, `DELETE FROM eino_task_notifications`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Finish(ctx, f.binding.OriginRunID, "end_turn", nil, foregroundBudgetScope(harness.RunRequest{Session: f.spec.Parent, RunID: f.binding.OriginRunID, RootBudgetID: f.binding.RootBudgetID})); err != nil {
 		t.Fatal(err)
 	}
 	return f, bindings

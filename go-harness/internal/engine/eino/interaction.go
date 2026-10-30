@@ -95,7 +95,7 @@ func toolBudgetDigest(name, args string) string {
 }
 
 func (m *toolMiddleware) requestFor(tc *adk.ToolContext, arguments json.RawMessage) harness.PermissionRequest {
-	return harness.PermissionRequest{ID: m.sink.request.RunID + "/" + tc.CallID, SessionID: m.sink.request.Session.ID, RunID: m.sink.request.RunID, ConfigVersion: m.sink.request.Session.ConfigVersion, ToolCallID: tc.CallID, ToolName: tc.Name, Arguments: append(json.RawMessage(nil), arguments...)}
+	return harness.PermissionRequest{ID: m.sink.request.RunID + "/" + tc.CallID, SessionID: m.sink.request.Session.ID, RunID: m.sink.request.RunID, ConfigVersion: m.sink.request.Session.ConfigVersion, ToolCallID: tc.CallID, ToolName: tc.Name, TrustedBuiltin: m.trusted[tc.Name], Arguments: append(json.RawMessage(nil), arguments...)}
 }
 
 // admitTool handles the one-time logical tool admission. A native permission

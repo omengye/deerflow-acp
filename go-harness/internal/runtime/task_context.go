@@ -168,7 +168,7 @@ func (s *Store) SearchTaskHistory(ctx context.Context, req harness.RunRequest, q
 	if before == 0 || before > page.Through+1 {
 		before = page.Through + 1
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT sequence,event FROM harness_events WHERE session_id=? AND sequence<? AND sequence<=? ORDER BY sequence DESC LIMIT 257`, req.Session.ID, before, page.Through)
+	rows, err := tx.QueryContext(ctx, `SELECT sequence,event FROM harness_events e WHERE session_id=? AND sequence<? AND sequence<=? AND NOT EXISTS(SELECT 1 FROM harness_conversation_hidden_events h WHERE h.session_id=e.session_id AND e.sequence BETWEEN h.first_sequence AND h.last_sequence) ORDER BY sequence DESC LIMIT 257`, req.Session.ID, before, page.Through)
 	if err != nil {
 		return page, err
 	}
@@ -226,7 +226,7 @@ func (s *Store) ReadTaskHistory(ctx context.Context, req harness.RunRequest, id 
 		return out, err
 	}
 	var raw []byte
-	err = tx.QueryRowContext(ctx, `SELECT event FROM harness_events WHERE session_id=? AND sequence=? AND sequence<=?`, req.Session.ID, id, horizon).Scan(&raw)
+	err = tx.QueryRowContext(ctx, `SELECT event FROM harness_events e WHERE session_id=? AND sequence=? AND sequence<=? AND NOT EXISTS(SELECT 1 FROM harness_conversation_hidden_events h WHERE h.session_id=e.session_id AND e.sequence BETWEEN h.first_sequence AND h.last_sequence)`, req.Session.ID, id, horizon).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, harness.ErrNotFound
 	}

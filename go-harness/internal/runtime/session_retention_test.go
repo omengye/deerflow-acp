@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -10,6 +11,84 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
 )
+
+func TestArchiveProtectsUnfinishedDurableRuns(t *testing.T) {
+	for _, status := range []string{"pending", "running", "waiting_input", "suspending", "resuming", "needs_reconciliation", "future_state"} {
+		t.Run(status, func(t *testing.T) {
+			ctx := context.Background()
+			native, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer native.Close()
+			store, err := NewStore(ctx, native.DB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			x, err := store.CreateSession(ctx, t.TempDir(), "fixture")
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := time.Now().UTC().AddDate(0, 0, -6).Format(time.RFC3339Nano)
+			if _, err = native.DB().Exec(`UPDATE harness_sessions SET updated_at=? WHERE id=?`, old, x.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = native.DB().Exec(`INSERT INTO harness_runs(id,session_id,input_id,status,created_at,updated_at) VALUES('run',?,'input',?,?,?)`, x.ID, status, old, old); err != nil {
+				t.Fatal(err)
+			}
+			policy := harness.RetentionPolicy{Enabled: true, ClosedDays: 5, InactiveDays: 5, CheckInterval: time.Hour}
+			if archived, _, err := store.archiveSession(ctx, x.ID, time.Now().UTC(), policy); archived || !errors.Is(err, harness.ErrBusy) {
+				t.Fatalf("unfinished run archived: %v %v", archived, err)
+			}
+		})
+	}
+}
+
+func TestArchiveTransactionFailureAndReopen(t *testing.T) {
+	ctx := context.Background()
+	native, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer native.Close()
+	store, err := NewStore(ctx, native.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, err := store.CreateSession(ctx, t.TempDir(), "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().AddDate(0, 0, -6).Format(time.RFC3339Nano)
+	if _, err = native.DB().Exec(`UPDATE harness_sessions SET updated_at=? WHERE id=?`, old, x.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = native.DB().Exec(`CREATE TRIGGER archive_fault BEFORE UPDATE OF archived_at ON harness_sessions BEGIN SELECT RAISE(ABORT,'archive fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	policy := harness.RetentionPolicy{Enabled: true, ClosedDays: 5, InactiveDays: 5, CheckInterval: time.Hour}
+	if archived, _, err := store.archiveSession(ctx, x.ID, time.Now().UTC(), policy); err == nil || archived {
+		t.Fatalf("archive fault ignored: %v %v", archived, err)
+	}
+	if expired, err := store.IsExpiredSession(ctx, x.ID, time.Now().UTC(), policy); err != nil || !expired {
+		t.Fatalf("failed archive lost retry candidate: %v %v", expired, err)
+	}
+	if _, err = native.DB().Exec(`DROP TRIGGER archive_fault`); err != nil {
+		t.Fatal(err)
+	}
+	if archived, _, err := store.archiveSession(ctx, x.ID, time.Now().UTC(), policy); err != nil || !archived {
+		t.Fatalf("retry archive: %v %v", archived, err)
+	}
+	if again, _, err := store.archiveSession(ctx, x.ID, time.Now().UTC(), policy); err != nil || again {
+		t.Fatalf("repeated archive: %v %v", again, err)
+	}
+	if err = store.MarkOpen(ctx, x.ID); err != nil {
+		t.Fatal(err)
+	}
+	if expired, err := store.IsExpiredSession(ctx, x.ID, time.Now().UTC(), policy); err != nil || expired {
+		t.Fatalf("reopened archive immediately expired: %v %v", expired, err)
+	}
+}
 
 func TestSessionRetentionMigratesExistingStore(t *testing.T) {
 	ctx := context.Background()

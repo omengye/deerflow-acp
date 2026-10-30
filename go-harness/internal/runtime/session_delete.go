@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -43,7 +44,7 @@ func (s *Store) purgeSession(ctx context.Context, id string, automatic bool) (bo
 		return false, nil, err
 	}
 	var unresolved bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state IN ('pending','started','uncertain'))`, id).Scan(&unresolved); err != nil {
+	if err = tx.QueryRowContext(ctx, sessionCleanupReceiptBlockerSQL, id).Scan(&unresolved); err != nil {
 		return false, nil, err
 	}
 	if unresolved {
@@ -51,6 +52,19 @@ func (s *Store) purgeSession(ctx context.Context, id string, automatic bool) (bo
 	}
 	var paths []string
 	targets := append(children, id)
+	// A disconnected process can leave durable attempts or budget holds even
+	// when the coordinator is idle. Explicit deletion additionally accepts an
+	// inactive, matching legacy fault; automatic archival remains stricter.
+	for _, target := range targets {
+		if automatic {
+			err = checkArchiveExecutionTx(ctx, tx, target, tables)
+		} else {
+			err = checkDeleteExecutionTx(ctx, tx, target, tables)
+		}
+		if err != nil {
+			return false, nil, err
+		}
+	}
 	for _, target := range targets {
 		if err = learning.ForgetSessionTx(ctx, tx, target); err != nil {
 			return false, nil, err
@@ -83,6 +97,8 @@ func (s *Store) purgeSession(ctx context.Context, id string, automatic bool) (bo
 	// Delete leaf rows before their parents. Optional subsystems create tables
 	// only when configured; every query here has a fixed, audited table name.
 	steps := []struct{ table, query string }{
+		{"harness_session_budget_changes", `DELETE FROM harness_session_budget_changes WHERE session_id=?`},
+		{"harness_steering", `DELETE FROM harness_steering WHERE session_id=?`},
 		{"harness_goals", `DELETE FROM harness_goals WHERE session_id=?`},
 		{"harness_goal_runs", `DELETE FROM harness_goal_runs WHERE session_id=?`},
 		{"harness_wechat_threads", `DELETE FROM harness_wechat_threads WHERE session_id=?`},
@@ -193,40 +209,30 @@ func (s *Service) DeleteSession(ctx context.Context, id string) (bool, error) {
 			err = s.Assets.RemoveOrphans(ctx, paths)
 		}
 		if err != nil {
-			return alreadyDeleted, err
+			return alreadyDeleted, postDeletionError(err)
 		}
 	}
 	if s.SessionCleanup != nil {
 		err = errors.Join(err, s.SessionCleanup(id))
 	}
-	return alreadyDeleted, err
+	return alreadyDeleted, postDeletionError(err)
 }
 
-// DeleteExpiredSession repeats the age check under the same reconnect fence
-// used for the purge. A session revived after candidate discovery survives.
+// Cleanup follows the durable purge. Do not unwrap a cleanup error into a
+// pre-delete busy/permission/receipt refusal: callers must retain their delete
+// intent and retry, since the business rows have already gone.
+func postDeletionError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("session deletion committed; resource cleanup incomplete: %v", err)
+}
+
+// DeleteExpiredSession is retained for source compatibility. Automatic expiry
+// now archives and releases regenerable caches; it never purges user history.
+// Deprecated: use ArchiveExpiredSession.
 func (s *Service) DeleteExpiredSession(ctx context.Context, id string, now time.Time, policy harness.RetentionPolicy) (bool, error) {
-	release, err := s.Coordinator.ReserveCleanup(id)
-	if err != nil {
-		return false, err
-	}
-	defer release()
-	expired, err := s.Store.IsExpiredSession(ctx, id, now, policy)
-	if err != nil || !expired {
-		return false, err
-	}
-	_, paths, err := s.Store.purgeSession(ctx, id, true)
-	if err != nil {
-		return false, err
-	}
-	if s.Assets != nil {
-		if err = s.Assets.RemoveOrphans(ctx, paths); err != nil {
-			return true, err
-		}
-	}
-	if s.SessionCleanup != nil {
-		err = errors.Join(err, s.SessionCleanup(id))
-	}
-	return true, err
+	return s.ArchiveExpiredSession(ctx, id, now, policy)
 }
 
 // DeleteAttachedSession handles ACP deletion of an idle session owned by the
@@ -276,11 +282,11 @@ func (s *Service) DeleteAttachedSession(ctx context.Context, owner, id string) (
 			err = s.Assets.RemoveOrphans(cleanup, paths)
 		}
 		if err != nil {
-			return alreadyDeleted, err
+			return alreadyDeleted, postDeletionError(err)
 		}
 	}
 	if s.SessionCleanup != nil {
 		err = errors.Join(err, s.SessionCleanup(id))
 	}
-	return alreadyDeleted, err
+	return alreadyDeleted, postDeletionError(err)
 }

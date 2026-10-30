@@ -188,6 +188,7 @@ func (s *Service) runDurableNew(ctx context.Context, owner string, req harness.R
 }
 
 func (s *Service) driveExecution(ctx context.Context, req harness.RunRequest, lease ExecutionLease, bindings []ExecutionResumeBinding, emit harness.EventHandler, approve harness.PermissionHandler) (harness.RunResult, error) {
+	defer s.publishSteeringStates(req.Session.ID, req.RunID, emit)
 	if err := s.notifyAutomaticExecutionStarted(ctx, lease); err != nil {
 		return s.finishExecutionAttempt(ctx, lease, harness.RunResult{}, err, nil)
 	}
@@ -264,6 +265,9 @@ func (s *Service) executeAttempt(ctx context.Context, req harness.RunRequest, le
 	runCtx := context.WithValue(ctx, taskActorKey{}, harness.TaskActor{OwnerID: lease.OwnerID, SessionID: req.Session.ID})
 	runCtx, stopHeartbeat := keepBudgetAlive(budget.WithScope(runCtx, lease.Scope), s.Store.BudgetLedger, lease.Scope)
 	runCtx = interaction.WithExecutionHooks(runCtx, interaction.ExecutionHooks{Broker: a, Targets: targets, Cancellations: cancellations, StageCheckpoint: a.stage, InputSource: inputSource, TaskWaitsEnabled: true, WaitTargets: waitTargets})
+	if inputSource == nil {
+		runCtx = s.steeringContext(runCtx, lease, emit)
+	}
 	var result harness.RunResult
 	var runErr error
 	// Native tools still use the checkpoint broker. This live handler serves
@@ -338,7 +342,7 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 				return err
 			}
 			// Joined I/O with unsettled usage must not roll the business state
-			// back to running. Retain every hold and fence replay for review.
+			// back to running. Retain every hold and fence the old execution.
 			budgetRecoveryErr = err
 			if err = s.Store.blockRecoveredExecutionTx(persist, tx, lease.Scope); err != nil {
 				return err
@@ -370,7 +374,7 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 			}
 		}
 		if state.Status != harness.ExecutionWaitingInput {
-			if roleFailure && state.Status == harness.ExecutionFailed {
+			if roleFailure && state.Status == harness.ExecutionFailed && state.BlockedReason == "" {
 				result.StopReason = "role_failed"
 			}
 			if result.StopReason == "" {
@@ -393,7 +397,7 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 		return result, errors.Join(runErr, &runPersistenceError{err: err})
 	}
 	result.Execution = &state
-	if roleFailure && state.Status == harness.ExecutionFailed {
+	if roleFailure && state.Status == harness.ExecutionFailed && state.BlockedReason == "" && budgetRecoveryErr == nil {
 		return result, nil
 	}
 	return result, runErr
@@ -627,6 +631,7 @@ func (s *Service) ResumeExecution(ctx context.Context, owner, sessionID string, 
 	defer releaseSlot()
 	lease, bindings, err := s.prepareExecutionResume(ctx, owner, sessionID, request, approve)
 	if err != nil {
+		defer s.publishSteeringStates(sessionID, request.RunID, emit)
 		return s.waitingExecutionResult(ctx, owner, sessionID, request.RunID, err)
 	}
 	var req harness.RunRequest
@@ -636,6 +641,7 @@ func (s *Service) ResumeExecution(ctx context.Context, owner, sessionID string, 
 		return err
 	})
 	if err != nil {
+		defer s.publishSteeringStates(sessionID, request.RunID, emit)
 		return s.finishExecutionAttempt(ctx, lease, harness.RunResult{}, err, nil)
 	}
 	return s.driveExecution(ctx, req, lease, bindings, emit, approve)

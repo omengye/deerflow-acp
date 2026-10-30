@@ -16,6 +16,7 @@ import (
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
 type scheduleReadInput struct {
@@ -35,6 +36,7 @@ type scheduleWriteInput struct {
 	Notify           *bool              `json:"notify,omitempty" jsonschema:"description=Notify the trusted source conversation on completion, defaults true for channels"`
 }
 type scheduleTool struct {
+	toolidentity.Native
 	client *Client
 	run    harness.RunRequest
 	source automation.Source
@@ -66,7 +68,7 @@ func (c *Client) scheduleTools(ctx context.Context, req harness.RunRequest) ([]t
 	if err != nil {
 		return nil, "", err
 	}
-	items := []tool.BaseTool{&scheduleTool{c, req, source, read}, &scheduleTool{c, req, source, write}}
+	items := []tool.BaseTool{&scheduleTool{toolidentity.Builtin(read.Name), c, req, source, read}, &scheduleTool{toolidentity.Builtin(write.Name), c, req, source, write}}
 	instruction := "\nDeerFlow supports native scheduled tasks through schedule_read and schedule_manage (including Buzz and WeChat conversations). Use these tools for reminders, future or recurring agent work, not shell scripts or claims that future work is unsupported. Requires the local daemon to remain running, not an open chat. Read status for the current clock and authorization. Never claim a task was saved or a notification delivered without a tool receipt. Only the foreground user may request schedule management; do not delegate it.\n"
 	return items, instruction, nil
 }

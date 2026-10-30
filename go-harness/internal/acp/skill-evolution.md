@@ -556,7 +556,8 @@ returns `conflict`; restart from page one. Advisory import/export progress does
 not change that revision. Page size is 1–100 (MANAGE defaults to 50); metadata
 pages are bounded to approximately 2 MiB, and clients must follow `next_cursor`.
 Substring cursors bind the normalized keyword; changing or clearing it requires a
-fresh first page. Empty substring queries retain the existing list cursor format.
+fresh first page. Empty substring queries use the same recent-first catalog
+cursor as an ordinary list. Cursors from the older name ordering must be refreshed.
 
 These new commands require explicit full preconditions; missing, null or unknown
 fields are rejected. `target` has `source_id`, `source_identity`, `name`, `scope`
@@ -684,7 +685,9 @@ subsets are checked again at invocation. Workspace sources must match the run's
 workspace; global sources also require `SkillSelection.IncludeGlobal`.
 
 The model can propose `create`, `edit`, `patch`, `write_file`, `remove_file` or
-`delete`, or `get` its own proposal's status. It cannot approve, reject, roll
+`delete`, `get` its own proposal's status, or request `review_retry` for an
+eligible owned proposal with its observed `expected_state_version`.
+It cannot approve, reject, roll
 back, choose authorship or provide a base version. The host takes the live head
 only when it still matches the pinned visible skill version. New skills require
 an absent target. Model-generated proposal IDs and permissions cannot grant
@@ -708,15 +711,52 @@ history for that.
 
 The model tool returns `quality`, bounded/sanitized `model_checks` (stage,
 passed, reason, reason_redacted and input_hash), `error_code`, `failure_stage`,
-`retryable` and `next_action` for both submission and `get`. `ok: true` means
+`validation_failure` (including its safe `detail_code`), `retryable`,
+`review_retry_available`, `review_retry_of` and `next_action` for both submission
+and `get`. `ok: true` means
 the request was handled, not that the candidate passed. Model explanations are
 untrusted evidence, never instructions or approval authority. Security/quality
 rejections are distinct from incomplete, invalid, unavailable and transient
 review requests. New failures persist `validation_failure` outside the immutable
 evaluation digest. Legacy reports are projected without rewriting their saved
 evidence; a missing quality decision is `unknown` unless its not-run/unavailable
-state is known. Historical generic errors do not prove an outage or authorize
-retry. Old tool receipts remain unchanged; a fresh `get` exposes the projection.
+state is known. Historical generic errors do not prove an outage. Old tool
+receipts remain unchanged; a fresh `get` exposes the current recovery options.
+
+`review_retry` uses the same native maintenance queue and budget as the host
+`proposal.review_retry` operation. It creates at most one successor, preserving
+the original candidate, source, base, reason, trigger and session/role ownership.
+The failed proposal and its evidence remain unchanged. Duplicate requests return
+that successor; it cannot start another retry under unchanged review configuration.
+Current source authorization
+and the unchanged base are checked again. Full security, quality and configured
+behavior reviews still run, and publication still requires its normal approval.
+Any recorded content rejection prevents this retry.
+
+Legacy manual proposals with `review_request_failed` and no `detail_code` may
+use this one explicit re-review because their original transport cause was not
+saved. Their `retryable: false` is not rewritten or treated as an automatic
+retry instruction. New unknown failures have `detail_code: cause_unavailable`
+and remain ineligible; classified authentication/configuration failures also
+require host correction. A failed HTTP 404 review can be retried after the host
+changes the effective reviewer identity, including a changed global default model
+inherited by the reviewer. The failed report must bind the same candidate and
+base, and neither an approval nor any content rejection can be present. This
+also allows a previously retried candidate to be reviewed once under the corrected
+configuration; repeated requests return its existing successor. A changed setting
+does not itself establish that the provider works or that the skill is approved.
+HTTP and network detail codes contain only fixed host
+categories, never provider response bodies, endpoints or credentials.
+
+`review_response_incomplete` with `detail_code: output_truncated` means the
+provider reported its output limit before a complete decision was accepted.
+Inspect the proposal's maintenance receipts alongside
+`skill_evolution.validation.max_output_tokens`; a successful model lookup does
+not establish that this separate review allowance is sufficient. Reasoning-capable
+providers may count reasoning against the same allowance. Operators can adjust
+this bounded setting and apply the configuration while retaining inherited model
+selectors and the existing daily maintenance budget. This does not approve a
+candidate, relax response validation, or automatically resubmit failed records.
 
 The reviewer evaluates the submission reason as well as the complete content;
 changing reason is not an equivalent review, even with the same candidate hash.

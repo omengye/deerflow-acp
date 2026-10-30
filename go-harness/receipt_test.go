@@ -11,7 +11,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
-func TestSDKReceiptRecoveryRequiresLoadAndExplicitReview(t *testing.T) {
+func TestSDKReceiptRecoveryPreservesEvidenceAndOptionalReviewAfterLoad(t *testing.T) {
 	ctx := context.Background()
 	var effects atomic.Int32
 	engine := engineFunc(func(ctx context.Context, req harness.RunRequest, emit harness.EventHandler, permission harness.PermissionHandler) (harness.RunResult, error) {
@@ -79,8 +79,12 @@ func TestSDKReceiptRecoveryRequiresLoadAndExplicitReview(t *testing.T) {
 	if _, err := reopened.LoadSession(ctx, x.ID, cwd, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reopened.Run(ctx, x.ID, []harness.Content{{Type: "text", Text: "new request"}}, nil, nil); !errors.Is(err, harness.ErrReconciliationRequired) {
-		t.Fatalf("SDK skipped unresolved effect: %v", err)
+	if _, err := reopened.Run(ctx, x.ID, []harness.Content{{Type: "text", Text: "new request"}}, nil, nil); err != nil {
+		t.Fatalf("terminal uncertainty blocked a fresh request: %v", err)
+	}
+	retained, err := reopened.ListToolReceipts(ctx, x.ID)
+	if err != nil || len(retained) != 1 || retained[0].State != harness.ReceiptUncertain || retained[0].Review != nil || retained[0].Version != r.Version || retained[0].Error != r.Error || effects.Load() != 1 {
+		t.Fatalf("fresh request changed failure evidence or replayed a tool: receipts=%+v effects=%d err=%v", retained, effects.Load(), err)
 	}
 	reconciled, err := reopened.ReconcileToolReceipt(ctx, x.ID, review)
 	if err != nil || reconciled.State != harness.ReceiptCompleted || reconciled.Review == nil || reconciled.Review.Note != review.Note || effects.Load() != 1 {

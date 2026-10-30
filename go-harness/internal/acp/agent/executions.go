@@ -31,7 +31,7 @@ func executionRecoveryError(code int) error {
 	if code == executionConflictCode {
 		kind, message = "execution_conflict", "Execution state changed. Read the current state and use its version for the next request."
 	} else if code == executionUnresumableCode {
-		kind, message = "execution_unresumable", "Execution cannot resume with the current checkpoint, resources, or tool evidence. Read its state and review outstanding tool receipts."
+		kind, message = "execution_unresumable", "The previous execution cannot resume safely with its current checkpoint, resources, or tool evidence. Its execution records were preserved and no tool was replayed."
 	}
 	return &protocol.Error{Code: code, Message: message, Data: map[string]any{"kind": kind, "getMethod": getExecutionMethod, "resumeMethod": resumeExecutionMethod, "cancelMethod": cancelExecutionMethod, "automaticReplay": false}}
 }
@@ -78,7 +78,11 @@ func (a *Agent) executionRequest(ctx context.Context, method string, raw json.Ra
 	case getExecutionMethod:
 		return a.service.Execution(ctx, a.owner, req.SessionID, req.RunID)
 	case cancelExecutionMethod:
-		return a.service.CancelExecution(ctx, a.owner, req.SessionID, harness.CancelExecutionRequest{RunID: req.RunID, ExpectedVersion: req.ExpectedVersion})
+		result, err := a.service.CancelExecution(ctx, a.owner, req.SessionID, harness.CancelExecutionRequest{RunID: req.RunID, ExpectedVersion: req.ExpectedVersion})
+		if err == nil {
+			a.notifySteeringStates(ctx, req.SessionID, req.RunID)
+		}
+		return result, err
 	case resumeExecutionMethod:
 		return a.runResponse(func(emit harness.EventHandler) (harness.RunResult, error) {
 			return a.service.ResumeExecution(hr.WithTransportCancellation(ctx), a.owner, req.SessionID, harness.ResumeExecutionRequest{RunID: req.RunID, ExpectedVersion: req.ExpectedVersion}, emit, a.permission)

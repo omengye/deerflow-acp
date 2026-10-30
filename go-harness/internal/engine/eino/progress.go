@@ -18,10 +18,11 @@ import (
 const progressStateKey = "deerflow_progress_v1"
 
 type progressState struct {
-	Last    string   `json:"last"`
-	Recent  []string `json:"recent"`
-	Warning string   `json:"warning"`
-	Warned  bool     `json:"warned"`
+	Last     string   `json:"last"`
+	Recent   []string `json:"recent"`
+	Failures []bool   `json:"failures,omitempty"`
+	Warning  string   `json:"warning"`
+	Warned   bool     `json:"warned"`
 }
 
 type noProgressError struct{}
@@ -61,7 +62,7 @@ func (*progressGuard) BeforeModelRewriteState(ctx context.Context, state *adk.Ch
 		return ctx, state, err
 	}
 	advanceProgress(&s, state.Messages)
-	stop := repeatedCycles(s.Recent) >= 5 && s.Warned
+	stop := repeatedCycles(s.Recent) >= 5 && s.Warned && !hasRecoveryObservations(s)
 	s.Warned = s.Warning != ""
 	encoded, err := json.Marshal(s)
 	if err == nil {
@@ -110,11 +111,12 @@ func advanceProgress(s *progressState, messages []*schema.Message) {
 		}
 		s.Last = m.ToolCallID
 		if m.ToolName == "task_wait" || m.ToolName == "task_status" {
-			s.Recent, s.Warning, s.Warned = nil, "", false
+			s.Recent, s.Failures, s.Warning, s.Warned = nil, nil, "", false
 			continue
 		}
 		// Successful mutations/commands may change state despite returning "OK".
-		eligible := strings.HasPrefix(m.Content, "Tool failed:") || strings.HasPrefix(m.Content, "Tool permission denied;")
+		failed := strings.Contains(m.Content, "Tool failed:") || strings.HasPrefix(m.Content, "Tool permission denied;")
+		eligible := failed
 		switch m.ToolName {
 		case "read_file", "search_files", "web_search", "web_fetch", "glob", "grep", "ls", "list_directory", "history_search":
 			eligible = true
@@ -122,22 +124,39 @@ func advanceProgress(s *progressState, messages []*schema.Message) {
 		arguments, known := args[m.ToolCallID]
 		if !eligible || !known {
 			s.Recent = nil
+			s.Failures = nil
 			s.Warning = ""
 			s.Warned = false
 			continue
 		}
 		b, _ := json.Marshal([]string{m.ToolName, arguments, m.Content})
 		s.Recent = append(s.Recent, fmt.Sprintf("%x", sha256.Sum256(b)))
+		s.Failures = append(s.Failures, failed)
 		if len(s.Recent) > 20 {
 			s.Recent = s.Recent[len(s.Recent)-20:]
 		}
+		if len(s.Failures) > 20 {
+			s.Failures = s.Failures[len(s.Failures)-20:]
+		}
 		if repeatedCycles(s.Recent) >= 3 {
-			s.Warning = "Progress warning: the same tool calls and observations are repeating without new evidence. Change the approach or explain the blocker. Do not repeat failed side effects blindly. Continued identical cycles will stop this run as incomplete."
+			s.Warning = "Progress warning: the same tool calls and observations are repeating without new evidence. Assess whether another attempt is useful, change the approach, ask for necessary information, or clearly explain the blocker. Inspect possible partial effects before repeating a mutation."
+			if !hasRecoveryObservations(*s) {
+				s.Warning += " Continued identical observations will stop this run as incomplete."
+			}
 		} else {
 			s.Warning = ""
 			s.Warned = false
 		}
 	}
+}
+
+func hasRecoveryObservations(s progressState) bool {
+	for _, failed := range s.Failures {
+		if failed {
+			return true
+		}
+	}
+	return false
 }
 
 func repeatedCycles(values []string) int {

@@ -65,7 +65,7 @@ func (b *runBudget) durableIdentity(ctx context.Context) (*durablebudget.Identit
 }
 
 func (e *Engine) newBudget(ctx context.Context, req harness.RunRequest) (*runBudget, error) {
-	b := &runBudget{limits: e.config.Budget, startedAt: time.Now()}
+	b := &runBudget{limits: req.Session.EffectiveBudget(e.config.Budget), startedAt: time.Now()}
 	if e.config.BudgetLedger == nil {
 		return b, nil
 	}
@@ -80,9 +80,10 @@ func (e *Engine) newBudget(ctx context.Context, req harness.RunRequest) (*runBud
 	if err != nil {
 		return nil, err
 	}
-	if s.Limits != e.config.Budget {
-		return nil, fmt.Errorf("%w: engine budget policy differs from immutable root", durablebudget.ErrConflict)
-	}
+	// The host validated and snapshotted the task policy when its root was
+	// created. Resume keeps that exact policy and spent counters even when
+	// host defaults or session preferences changed in the meantime.
+	b.limits = s.Limits
 	b.ledger, b.scope, b.elapsed = e.config.BudgetLedger, scope, s.Elapsed
 	return b, nil
 }

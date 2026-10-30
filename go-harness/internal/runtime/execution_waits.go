@@ -103,7 +103,7 @@ func checkExecutionTaskWaits(ctx context.Context, tx *sql.Tx, row executionRow, 
 			}
 		}
 		var uncertain bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND state IN ('started','uncertain'))`, binding.ChildSessionID).Scan(&uncertain); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_tool_receipts WHERE session_id=? AND `+unsettledReceiptSQL("")+`)`, binding.ChildSessionID).Scan(&uncertain); err != nil {
 			return false, err
 		}
 		ready = ready && terminalBackgroundStatus(status) && blocked == "" && !uncertain
