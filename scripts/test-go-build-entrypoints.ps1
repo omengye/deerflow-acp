@@ -38,6 +38,37 @@ param([string]$Configuration,[string]$OutputDirectory,[string]$DesktopTargetDire
     }
     . (Join-Path $PSScriptRoot 'go-package-inputs.ps1')
     Assert-GoRepositorySources -RepositoryRoot $repository
+    $inputRepo = Join-Path $fixture 'source-inputs'
+    New-Item -ItemType Directory -Path $inputRepo | Out-Null
+    & git -C $inputRepo init --quiet
+    Assert-Fixture ($LASTEXITCODE -eq 0) 'Cannot initialize source-input fixture'
+    foreach ($name in @('deploy/docker/example/deploy.py', 'deploy/docker/example/requirements.txt', 'tests/test_weather_cma_forecast.py', 'tests/requirements.txt', 'skills/example/scripts/helper.py')) {
+        $file = Join-Path $inputRepo $name
+        New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($file)) -Force | Out-Null
+        Set-Content -LiteralPath $file -Value '# Standalone source; not a desktop host input' -Encoding utf8
+    }
+    # Check both tracked and untracked standalone sources with the real Git
+    # enumeration, while preserving all host/dependency/runtime exclusions.
+    & git -C $inputRepo add -- deploy/docker/example/deploy.py
+    Assert-Fixture ($LASTEXITCODE -eq 0) 'Cannot stage source-input fixture'
+    Assert-GoRepositorySources -RepositoryRoot $inputRepo
+    foreach ($name in @(
+        'main.py', 'go-harness/cmd/legacy.py', 'bridge/build.py',
+        'desktop-app/scripts/prepare.py', 'scripts/legacy.py', 'resources/runtime/server.py',
+        'pyproject.toml', 'requirements-dev.txt', 'go-harness/poetry.lock',
+        'scripts/setup.py', 'desktop-app/uv.lock', 'resources/requirements.txt',
+        'resources/.venv/runtime.py', 'go-harness/__pycache__/test.pyc',
+        'resources/runtime.whl', 'tests-extra/test_fake.py', 'deploy/docker-extra/deploy.py'
+    )) {
+        $file = Join-Path $inputRepo $name
+        New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($file)) -Force | Out-Null
+        Set-Content -LiteralPath $file -Value 'fixture' -Encoding utf8
+        $rejected = $false
+        try { Assert-GoRepositorySources -RepositoryRoot $inputRepo } catch { $rejected = $_.Exception.Message.Contains($name) }
+        Assert-Fixture $rejected "Python host/dependency/runtime input accepted: $name"
+        Remove-Item -LiteralPath $file
+    }
+    Assert-GoRepositorySources -RepositoryRoot $inputRepo
     $skills = Join-Path $fixture 'skills'
     New-Item -ItemType Directory -Path $skills | Out-Null
     Set-Content -LiteralPath (Join-Path $skills 'SKILL.md') -Value '# Native skill' -Encoding utf8
@@ -65,7 +96,7 @@ param([string]$Configuration,[string]$OutputDirectory,[string]$DesktopTargetDire
     $rejected = $false
     try { Assert-GoBundledSkills -Source $skills } catch { $rejected = $true }
     Assert-Fixture $rejected 'Runtime environment accepted'
-    Write-Host 'Go build entry points: syntax, delegation, Python skill source acceptance and runtime exclusion passed.'
+    Write-Host 'Go build entry points: syntax, delegation, standalone source scope, Python skill source acceptance and runtime exclusion passed.'
 } finally {
     $resolvedFixture = [IO.Path]::GetFullPath($fixture)
     if ($resolvedFixture.StartsWith([IO.Path]::GetFullPath($cache) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {

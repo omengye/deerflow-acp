@@ -175,7 +175,8 @@ not install a personal skill, search endpoint or credential. Uncovered skills,
 new skills and executable support changes still require review. A fresh profile
 can therefore show partial automation until eligible managed skills exist.
 No startup model calls are made for this setup. Inactive/closed backend sessions are
-cleaned after five days. Adjust these defaults in Settings if needed.
+archived after five days, preserving history and evicting regenerable caches.
+This maintenance runs in the background and is configured by the host, not Settings.
 No personal credentials or proxies are bundled. Brave web search requires its
 own optional API key; it cannot use the model API key.
 Models use provider=openai/claude; sandbox uses provider=local. Native tools are
@@ -212,7 +213,7 @@ $forbiddenEntries = Get-ChildItem -LiteralPath $outputRoot -Recurse -Force | Whe
     ($_.Extension -in @('.py', '.pyw') -and -not $_.FullName.StartsWith((Join-Path $packageResources 'skills') + '\', [StringComparison]::OrdinalIgnoreCase))
 }
 if ($forbiddenEntries) { throw "Unexpected Python runtime component in package: $($forbiddenEntries[0].FullName)" }
-$sourceRecord['python_source_dependency_inputs'] = 'skill_sources_only_host_independent'
+$sourceRecord['python_source_dependency_inputs'] = 'host_and_package_inputs_checked_nonpackaged_deployments_and_tests_excluded'
 $sourceRecord['python_runtime_in_package'] = 'checked_absent'
 $sourceRecord | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $outputRoot "BUILD_SOURCE.json") -Encoding utf8
 if ($CreateZip) {

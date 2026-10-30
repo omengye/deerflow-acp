@@ -17,14 +17,23 @@ function Assert-GoRepositorySources {
         if (-not (Test-Path -LiteralPath $absolute -PathType Leaf)) { continue }
         $name = [IO.Path]::GetFileName($absolute).ToLowerInvariant()
         $extension = [IO.Path]::GetExtension($name)
+        $relative = $path.Replace('\', '/')
+        $runtimePath = $relative -match '(?i)(^|/)(\.venv|site-packages|__pycache__|conda-meta)(/|$)'
+        $dependencyFile = $name -in @('pyproject.toml', 'uv.lock', 'pipfile', 'pipfile.lock', 'poetry.lock', 'setup.py', '.python-version', 'tox.ini', 'pytest.ini') -or
+            $name -match '^requirements(?:[-_.].*)?\.(?:txt|in)$'
         # Skill source is optional user functionality, not a Go host dependency.
-        $skillSource = $path.Replace('\', '/').StartsWith('skills/', [StringComparison]::OrdinalIgnoreCase)
+        $skillSource = $relative.StartsWith('skills/', [StringComparison]::OrdinalIgnoreCase)
         if ($skillSource -and $extension -notin @('.pyc', '.pyo', '.pyd', '.whl', '.pyz') -and
-            $path.Replace('\', '/') -notmatch '(?i)(^|/)(\.venv|site-packages|__pycache__|conda-meta)(/|$)') { continue }
+            -not $runtimePath) { continue }
+        # The desktop assembler neither builds nor copies deployment operations
+        # or standalone skill tests. Dependencies of those separate projects
+        # are not host inputs. Keep checking every other directory, including
+        # root manifests, host/build entry points and all packaged resources.
+        $independentSource = $relative.StartsWith('deploy/docker/', [StringComparison]::OrdinalIgnoreCase) -or
+            $relative.StartsWith('tests/', [StringComparison]::OrdinalIgnoreCase)
+        if ($independentSource) { continue }
         if ($extension -in @('.py', '.pyw', '.pyc', '.pyo', '.pyd', '.whl', '.pyz') -or
-            $name -in @('pyproject.toml', 'uv.lock', 'pipfile', 'pipfile.lock', 'poetry.lock', 'setup.py', '.python-version', 'tox.ini', 'pytest.ini') -or
-            $name -match '^requirements(?:[-_.].*)?\.(?:txt|in)$' -or
-            $path.Replace('\', '/') -match '(?i)(^|/)(\.venv|site-packages|__pycache__|conda-meta)(/|$)') {
+            $dependencyFile -or $runtimePath) {
             $violations += $path
         }
     }

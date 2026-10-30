@@ -177,7 +177,9 @@ Assert-Manifest $userData $before
 $result = [ordered]@{source=$source; target=$target; backup=$backup; exe_count=$names.Count; user_data_files=$before.Count; user_data_verified=$true; skill_creator_updated=[bool]($SkillCreatorExpectedHash -or $creatorExpected); programs_before=$oldPrograms}
 $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $backup 'deployment.json') -Encoding utf8NoBOM
 if ($Restart) {
-    $desktop = Start-Process -FilePath (Join-Path $target 'deerflow-desktop.exe') -WorkingDirectory $target -WindowStyle Hidden -PassThru
+    # -Restart reopens the interactive desktop. A hidden startup suppresses
+    # its main window even though the backend starts successfully.
+    $desktop = Start-Process -FilePath (Join-Path $target 'deerflow-desktop.exe') -WorkingDirectory $target -WindowStyle Normal -PassThru
     Write-Output "Desktop started: PID $($desktop.Id)"
     if ($RefreshBundledWeChat) {
         $pluginHash = (Get-FileHash -LiteralPath (Join-Path $source 'deerflow-channel-wechat.exe') -Algorithm SHA256).Hash
