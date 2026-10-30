@@ -89,6 +89,7 @@ tools:
 | `host_opencli` | Go 参数数组调用已安装的 OpenCLI，带站点白名单、权限、输出上限和进程回收 |
 | `bash` | 复用 Go shell 执行器；Windows 默认采用 PowerShell 语法，WSL/Docker 可显式配置 |
 | `skill_run` | 对当前会话固定的技能版本检查 Python 环境或执行 `.py` 入口；复用命令权限、超时和回执，不自动安装依赖 |
+| `ask_user_question` | 仅在当前客户端声明提问能力时提供；支持选项与自由文本，回答不代替工具授权，停止或断连会取消问题 |
 
 文件工具接受工作区相对路径、工作区内的绝对路径及 `/mnt/acp-workspace/...`。
 文本附件单文件最多 1 MiB，每条消息最多 8 个、合计 4 MiB；支持 TXT、Markdown、CSV、TSV、JSON、YAML、LOG，不支持 PDF、Office、目录或 OCR。附件快照与工作区文件工具是两条独立授权路径，附件不授予任意宿主目录访问权。
@@ -116,6 +117,11 @@ SDK 原有的 `list_directory/search_files/edit_file/execute` 工具仍可用。
 上述 `tools` 配置；仍受工具策略控制。笔记按会话持久化，历史检索仅覆盖本会话可见
 事件，不开放隐藏推理或跨会话内容。重复观察保护、笔记上限和恢复兼容性见
 [harness 可靠性说明](harness-reliability-20261012.md)。
+
+`ask_user_question` 无需加入静态工具配置。桌面通过连接能力协商启用它，
+没有对应能力的服务器客户端使用普通对话提问。问题属于当前轮次，不作为跨重连
+审批检查点；其他不存在的工具调用返回未执行的纠正结果，避免直接中断整个会话。
+请求与回答边界见[交互提问协议](../go-harness/internal/acp/executions.md#questions-in-the-desktop-conversation)。
 
 Windows 的 PowerShell `execute` 只向模型提供 `script/timeout_seconds` 参数，
 例如 `{"script":"& 'curl.exe' '-s' 'https://example.com'"}`。该后端不接受
@@ -145,7 +151,7 @@ OpenCLI 本身仍需预先安装，它使用 Node.js，不需要 Python。Window
 Windows 子进程使用隐藏窗口和 Job Object；取消或超时会终止并等待整个进程树。
 执行策略摘要进入 checkpoint，配置变化时会拒绝恢复旧执行；密钥不进入 checkpoint。
 
-## 工具失败与回执恢复
+## 工具失败、代理恢复与只读执行记录
 
 原生工具的 JSON 解码错误、参数校验拒绝和命令启动前拒绝会记录为
 `not_executed`。原生只读工具正常返回的失败记录为 `no_effect`，不会阻止后续提示。
@@ -153,17 +159,31 @@ Windows 子进程使用隐藏窗口和 Job Object；取消或超时会终止并�
 清理成功，会记录为 `failed`。错误、退出码和输出返回模型，模型可以在同一轮
 检查结果、修正命令并继续回复，下一条提示也不会因此被拦截。失败可能已经产生
 部分效果，模型应先检查受影响的状态；运行时不会自动重放命令或假定已经回滚。
-文件操作缺少终态证据、外部命令未确认终止、通信或清理失败仍保留 `uncertain`，
-需要核实实际结果。用户取消和会话级超时继续停止当前执行。
+文件操作缺少终态证据、外部命令未确认终止、通信或清理失败仍保留 `uncertain`。
+普通工具失败的可用输出和不确定性返回代理，由代理判断是否调查、修正、重试或
+换用方案，直到解决问题或明确结束当前轮次；不设工具失败的固定重试次数。
+`agentRecoverable: true` 表示宿主已将终态工具失败交给代理处理，不证明外部效果
+已确定，也不保证模型已消费结果。预算、权限、用户停止及存储保护继续适用；
+存储失败、未结算账本和审批中断仍由宿主控制流处理。用户取消和会话级超时
+继续停止当前执行。
 新增只读工具在进程崩溃后没有终止证据时，仍保留 `uncertain`；SDK 扩展工具
 不会仅因使用这些新增工具的名称就获得“无效果”的判定。
 
-遇到 `reconciliation_required` 时，可通过当前 ACP 连接调用
-`_deerflow/tool_receipts/list`，核实目标文件或外部操作，再调用
-`_deerflow/tool_receipts/reconcile`，提交最新版本及核实说明。
-重连时先以原工作目录 `session/resume`。核对只记录审查结果，不会重放工具。
-完整参数见源码 `go-harness/internal/acp/receipts.md`。
-升级不会自动改写历史 `uncertain` 回执，历史记录仍需按实际证据完成审查。
+需要用户补充信息或确认时，代理在普通对话中提问并结束当前轮次。用户在主输入框
+回复后，同一会话携带历史开始新一轮执行；宿主不会自动重放旧调用或不安全的
+检查点，代理须依据已有证据决定是否发起新的尝试。
+
+工具回执的 ACP 接口仅提供 `_deerflow/tool_receipts/list` 只读查询。重连时以原
+工作目录 `session/resume` 或 `session/load` 附着原会话；查询支持分页，桌面可查看
+错误详情并复制完整记录。`_deerflow/tool_receipts/reconcile` 已退役，调用返回 MethodNotFound，桌面
+不再提供人工核对表单。旧 `reconciliation_required` 错误按执行中断兼容显示，
+不会要求用户证明工具成功或未产生效果。完整约定见
+[只读工具记录与代理恢复](../go-harness/internal/acp/receipts.md)。
+
+升级不会批量改写历史 `uncertain` 回执。选定的旧故障运行只能经显式宿主恢复，
+校验会话、运行及预期版本，确认无活动执行和未结算账本后关闭旧运行并失效其
+检查点；原始错误和未知证据保留。归档或删除终态会话不依赖人工核对，仍执行
+活动、账本与任务图保护；分支和回退继续保守处理未知回执。
 
 ## 更新桌面包
 

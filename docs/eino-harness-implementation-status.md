@@ -1,5 +1,7 @@
 # Eino Harness / ACP 实施状态
 
+2026-10-30 更新：工具故障由代理根据错误、输出和结果不确定性决定调查、重试、换用方案或明确结束当前轮次，不设工具失败的固定重试次数。需要信息或确认时在普通对话中提问，用户回复后以同一会话历史开始新运行。桌面工具记录只读；ACP 仅声明 `_deerflow/tool_receipts/list`，原 reconcile RPC 已退役。未知回执和原始证据保持不变，预算、权限、停止、存储与账本保护仍保留。归档与显式删除要求终态且无活动执行或账本挂起，不再依赖人工核对；分支与回退仍保守拒绝未知回执。下文有关人工对账门禁、双回执 RPC 和自动删除的历史表述已由此约定替代，现行细节见[只读工具记录与代理恢复](../go-harness/internal/acp/receipts.md)及 [Go harness 当前执行路径](../go-harness/README.md#current-execution-path)。
+
 2026-10-10 更新：独立 Ark 适配器及其依赖已移除，当前模型请求统一使用流式传输；下文依赖基线为历史记录，现行约定见[模型流式审计](model-streaming-audit-20261010.md)。
 
 本文件保留原完整 V1 方案及历史验证记录。2026-10-02 起本分支明确采用 Eino/Go 单运行时；Python 运行、兼容入口和双后端回退已从当前交付范围移除。最新功能、当前手测包及未完成验收以 [子代理与技能自进化实施记录](eino-subagents-skill-evolution-status.md) 为准。
@@ -73,8 +75,8 @@ go test -race -p=2 -timeout=5m ./internal/... ./
 ## 第三阶段装配
 
 - 工具回执与领域事件同事务。`tool_execute` 是唯一执行边界，提交失败不能触发工具；重复 call ID 不重复执行。流式工具的晚到错误及部分输出保留。
-- `pending/started/completed/not_executed/uncertain/no_effect` 分别保存。崩溃后不盲目重放；不确定结果需要 owner 在会话空闲时显式对账。审阅带版本检查与独立审计，不覆盖原始证据。
-- ACP 声明 `_deerflow/tool_receipts/list` 和 `_deerflow/tool_receipts/reconcile`。业务错误提供稳定提示与恢复方法，内部 joined error 不直接透传。
+- `pending/started/completed/not_executed/uncertain/no_effect` 分别保存。该阶段曾要求 owner 对不确定结果显式对账；2026-10-30 已取消这条人工门禁，未知结果仍按原始证据保留，旧调用不自动重放。
+- 该阶段曾声明查询与核对两个 ACP 方法；2026-10-30 起只保留 `_deerflow/tool_receipts/list`，`_deerflow/tool_receipts/reconcile` 已退役并返回 MethodNotFound。当前故障处理走代理恢复和普通对话。
 - Eino 原生 TurnLoop 已替代直接 Runner 入口。目前每次调用处理一个已持久化的前台输入，尚不是长期会话或后台通知调度器。
 - 检查点写入/删除延迟到完整执行、事件落库、I/O 和资源清理之后；拒绝恢复、内层编码损坏或模型/清理失败保留旧检查点。保存预算计数、活动执行时长及 extension state。暂停期间不计执行超时。
 - 检查点格式为 `harness/turn/v1/<runID>` 对应的版本化 JSON envelope，内部保存 Eino 原生字节。早期 `harness/run/...` raw Runner 及未包装 TurnLoop 开发格式不迁移、不自动重放。
@@ -297,6 +299,8 @@ assets/runtime/ACP、engine 以及根 SDK/launch/tools 分别通过限定包 rac
 - 本批整模块 `go test -count=1 ./...`、ACP/MCP/SQLite 聚焦 race 测试，以及 Linux amd64 无 CGO 全模块构建通过。整模块并行运行曾暴露测试夹具时序问题：MCP fixture 启动限时由 300 ms 放宽至 3 s；上游通知 outbox conformance 的 20 ms 租约改用夹具显式推进的固定时钟，避免调度延迟造成虚假租约丢失。运行时代码未因这两处测试调整而改变。
 
 ## 第二十四阶段会话删除
+
+以下三阶段记录的是当时的删除与保留期实现。2026-10-30 的现行行为为：自动到期处理归档并清理可再生缓存，显式删除仍执行永久清理；终态运行的 `uncertain` 回执不再单独阻止归档或删除。运行、执行及后台任务图必须满足终态、无活动租约或执行、账本已结算及通知等保护，不能据此放宽分支或回退的历史校验。
 
 - 本地 `MANAGE session.delete` 和 ACP `session/delete` 清除普通前台会话。协调器在持久清理及资产回收期间阻止重连；ACP 持有者可将空闲附着会话原子转换为删除预留，其他连接不能删除正在附着的会话。未知会话删除幂等成功。
 - 删除事务按外键顺序清除会话输入、事件、执行、检查点、回执、预算、会话记忆及内部资产引用。提交后仅回收已无数据库引用的内部快照；工作区文件与 workspace/user 记忆保留。存在关联后台任务或未对账工具回执时拒绝删除，避免留下孤立任务或丢失未知副作用证据。
