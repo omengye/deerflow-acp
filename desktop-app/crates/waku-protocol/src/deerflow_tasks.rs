@@ -7,6 +7,8 @@ use ts_rs::TS;
 #[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
+    #[serde(default)]
+    pub session_budget: bool,
     pub tree: bool,
     pub cancel: bool,
     pub permission: bool,
@@ -49,13 +51,16 @@ pub struct ApprovalDecision {
     rename_all_fields = "camelCase"
 )]
 pub enum Action {
+    BudgetGet,
+    BudgetSet {
+        expected_version: u64,
+        operation_id: String,
+        limits: TaskBudget,
+    },
     ReceiptList {
         cursor: Option<String>,
         limit: u32,
         uncertain_only: bool,
-    },
-    ReceiptReconcile {
-        review: ReceiptReconciliation,
     },
     List {
         root_id: Option<String>,
@@ -170,6 +175,7 @@ pub struct Node {
     pub background_execution: Option<BackgroundExecutionReference>,
     pub resources: Option<Resources>,
     pub usage: Option<Usage>,
+    pub budget: Option<Budget>,
     pub result: Option<TaskResult>,
     #[serde(default)]
     pub artifacts: Vec<Artifact>,
@@ -200,6 +206,18 @@ pub struct Usage {
     pub total_tokens: u64,
     pub held_tokens: u64,
     pub estimated: bool,
+}
+
+/// Immutable root quota shared by descendants. None means the host has not
+/// supplied it; a zero limit means unlimited.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Budget {
+    pub max_tokens: u64,
+    pub max_model_calls: u64,
+    pub max_tool_calls: u64,
+    #[serde(default)]
+    pub stop_reason: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -344,8 +362,8 @@ pub struct ExecutionReference {
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum Response {
+    Budget(SessionBudget),
     Receipts(ReceiptPage),
-    Reconciled { receipt: ToolReceipt },
     Page(Page),
     Node(Node),
     Background(BackgroundDetail),
@@ -356,22 +374,22 @@ pub enum Response {
     Artifacts(ArtifactPage),
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReceiptOutcome {
-    Completed,
-    NoEffect,
+#[derive(Clone, Debug, Default, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskBudget {
+    pub max_tokens: u64,
+    pub max_model_calls: u64,
+    pub max_tool_calls: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ReceiptReconciliation {
-    pub run_id: String,
-    pub tool_call_id: String,
-    pub expected_version: u64,
-    pub outcome: ReceiptOutcome,
-    pub reviewer: String,
-    pub note: String,
+pub struct SessionBudget {
+    pub session_id: String,
+    pub version: u64,
+    pub requested: TaskBudget,
+    pub host: TaskBudget,
+    pub effective: TaskBudget,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -381,14 +399,6 @@ pub struct ReceiptPage {
     pub next_cursor: String,
     pub has_more: bool,
     pub consistency: String,
-}
-
-pub const RECEIPT_REVIEW_MESSAGE: &str = "需要确认上一次操作的结果，才能继续对话。\n某个工具执行出错或被中断，系统暂时无法确认它是否已完成。为避免重复删除、写入或发送，已暂停后续操作。\n点击对话上方的「确认工具结果」，查看原因并确认实际结果。确认不会重试工具；完成后请重新发送消息。\n如果无法确认，请选择「暂时无法确认」，不要猜测。";
-
-pub fn needs_receipt_review(message: &str) -> bool {
-    message.starts_with("需要确认上一次操作的结果")
-        || message.contains("reconciliation_required")
-        || message.contains("Uncertain tool effects require review")
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -407,6 +417,8 @@ pub struct ToolReceipt {
     pub result: Vec<Value>,
     #[serde(default)]
     pub result_truncated: bool,
+    #[serde(default)]
+    pub agent_recoverable: bool,
     #[serde(default)]
     pub error: String,
     pub review: Option<Value>,

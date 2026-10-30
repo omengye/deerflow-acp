@@ -42,7 +42,7 @@ fn attach_driver(
     session_id: Uuid,
     event_wake: smol::channel::Sender<()>,
 ) -> anyhow::Result<Option<(AgentSession, PreparedDriver)>> {
-    let Some(session) = waku_client::persistence::hydrate_session(&daemon, session_id)? else {
+    let Some(mut session) = waku_client::persistence::hydrate_session(&daemon, session_id)? else {
         return Ok(None);
     };
     let client = daemon.client();
@@ -50,14 +50,27 @@ fn attach_driver(
     let waku_client::ResponsePayload::SessionRuntime {
         runtime_id,
         supports_steer,
+        conversation_capability,
+        deerflow_ready,
+        pending_history,
     } = response
     else {
         anyhow::bail!("Waku daemon returned an invalid runtime attachment response");
     };
+    if let Some(operation) = pending_history {
+        waku_client::WorkspaceClient::restore_pending_history(session_id, &operation);
+    }
     let Some(runtime_id) = runtime_id else {
         return Ok(None);
     };
+    session.conversation_capability = conversation_capability;
     let (event_tx, events) = driver::event_channel(event_wake);
+    if let Some(supported) = conversation_capability {
+        let _ = event_tx.send(DriverEvent::ConversationCapability { supported });
+    }
+    if let Some(ready) = deerflow_ready {
+        let _ = event_tx.send(DriverEvent::DeerFlowTasks(ready));
+    }
     let handle = driver::attach_remote(
         daemon,
         client,
@@ -160,6 +173,11 @@ pub(super) fn merge_remote_session_catalog(
 /// Perform every blocking operation between accepting a submission and
 /// starting its provider. This function is called only from the background
 /// executor; the UI thread owns applying the returned workspace afterward.
+enum PreparedGoalRuntime {
+    Attached(AgentSession, PreparedDriver),
+    Started(PreparedSubmission),
+}
+
 fn prepare_submission(
     workspace_client: waku_client::WorkspaceClient,
     project: Project,
@@ -250,6 +268,7 @@ struct MessageRewindRequest {
 }
 
 struct PreparedMessageRewind {
+    authoritative_session: Option<AgentSession>,
     provider_rewind_cursor: Option<ProviderResumeCursor>,
     claude_fork: Option<waku_client::provider_session::ProviderSessionFork>,
     prepared_driver: Option<PreparedDriver>,
@@ -260,6 +279,23 @@ struct PreparedMessageRewind {
 fn perform_message_rewind(
     mut request: MessageRewindRequest,
 ) -> Result<PreparedMessageRewind, String> {
+    if request.provider == ProviderKind::DeerFlow {
+        let (session, cleanup_error) = request
+            .workspace_client
+            .rewind_session_to_message(
+                request.session_id,
+                request.retained_turn_count.saturating_add(1),
+            )
+            .map_err(|error| error.to_string())?;
+        return Ok(PreparedMessageRewind {
+            provider_rewind_cursor: session.provider_cursor.clone(),
+            authoritative_session: Some(session),
+            claude_fork: None,
+            prepared_driver: None,
+            reset_native_session: false,
+            cleanup_error,
+        });
+    }
     let session_id = request.session_id;
     let turn_start_ref =
         checkpoint::turn_start_ref(session_id, request.retained_turn_count.saturating_add(1));
@@ -382,6 +418,7 @@ fn perform_message_rewind(
     .map(|error| error.to_string());
 
     Ok(PreparedMessageRewind {
+        authoritative_session: None,
         provider_rewind_cursor,
         claude_fork,
         prepared_driver,
@@ -711,6 +748,17 @@ fn fork_response_with_driver(
 
 fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedResponseFork, String> {
     let provider = request.source.provider;
+    if provider == ProviderKind::DeerFlow {
+        let (forked, checkpoint_warning) = request
+            .workspace_client
+            .fork_session_from_response(request.source.id, request.turn_count)
+            .map_err(|error| error.to_string())?;
+        return Ok(PreparedResponseFork {
+            forked,
+            prepared_driver: None,
+            checkpoint_warning,
+        });
+    }
     let native_fork = (|| -> anyhow::Result<ProviderForkResult> {
         match provider {
             ProviderKind::Claude => {
@@ -1210,6 +1258,9 @@ impl Waku {
                 }
             }
             Ok(None) => {
+                // Attach restores a pending history action even without a
+                // provider process. Notify so the exact retry becomes usable.
+                cx.notify();
                 let busy = self
                     .state
                     .sessions
@@ -1916,6 +1967,11 @@ impl Waku {
         if self.state.selected_session != Some(session_id)
             || !matches!(source.status, SessionStatus::Idle | SessionStatus::Failed)
             || !source.provider.supports_conversation_fork()
+            || !waku_client::WorkspaceClient::fork_action_enabled(
+                session_id,
+                turn_count,
+                source.conversation_actions_enabled(),
+            )
             || source
                 .turns
                 .get(turn_count.saturating_sub(1))
@@ -2121,6 +2177,7 @@ impl Waku {
             session_id,
             message_id,
             turn_count,
+            ..
         } = action;
         let Some((message_index, initial_message, attachments)) = self
             .state
@@ -2129,6 +2186,11 @@ impl Waku {
             .find(|session| {
                 session.id == session_id
                     && session.provider.supports_conversation_rollback()
+                    && waku_client::WorkspaceClient::rewind_action_enabled(
+                        session_id,
+                        turn_count,
+                        session.conversation_actions_enabled(),
+                    )
                     && matches!(session.status, SessionStatus::Idle | SessionStatus::Failed)
             })
             .and_then(|session| {
@@ -2299,6 +2361,11 @@ impl Waku {
         }
         let rollback_turns = source.provider_turns_after(retained_turn_count);
         if !source.provider.supports_conversation_rollback()
+            || !waku_client::WorkspaceClient::rewind_action_enabled(
+                session_id,
+                turn_count,
+                source.conversation_actions_enabled(),
+            )
             || (rollback_turns > 0 && source.provider_cursor.is_none())
         {
             self.show_toast(tr!(
@@ -2513,6 +2580,7 @@ impl Waku {
             }
         };
         let PreparedMessageRewind {
+            authoritative_session,
             provider_rewind_cursor,
             claude_fork,
             mut prepared_driver,
@@ -2543,7 +2611,9 @@ impl Waku {
             Vec::new()
         };
         if let Some(session) = self.state.session_mut(session_id) {
-            if let Some(fork) = &claude_fork {
+            if let Some(authoritative) = authoritative_session {
+                *session = authoritative;
+            } else if let Some(fork) = &claude_fork {
                 for turn in session.turns.iter_mut().take(retained_turn_count) {
                     if let Some(remapped) = turn
                         .provider_resume_at
@@ -2871,6 +2941,7 @@ impl Waku {
             .find(|session| session.id == session_id)
         else {
             self.pending_goal_operations.remove(&session_id);
+            self.fail_deerflow_budget_connection(session_id, "会话已不存在".into());
             return;
         };
         let project_id = session.project_id;
@@ -2889,6 +2960,10 @@ impl Waku {
             .cloned()
         else {
             self.pending_goal_operations.remove(&session_id);
+            self.fail_deerflow_budget_connection(
+                session_id,
+                tr!("errors.prepare_task_project_not_found"),
+            );
             self.show_toast(tr!("errors.prepare_task_project_not_found"));
             cx.notify();
             return;
@@ -2911,11 +2986,21 @@ impl Waku {
             .unwrap_or_else(|| tr!("goal.title"));
         self.goal_runtime_starts.insert(session_id);
         cx.notify();
+        let daemon = self.daemon.clone();
+        let event_wake = self.event_wake_tx.clone();
         let workspace_client = waku_client::WorkspaceClient::new(self.daemon.client());
         cx.spawn(async move |waku, cx| {
             let prepared = cx
                 .background_executor()
                 .spawn(async move {
+                    if let Some((session, prepared)) =
+                        attach_driver(daemon, session_id, event_wake)?
+                    {
+                        return Ok(PreparedGoalRuntime::Attached(session, prepared));
+                    }
+                    if waku_client::WorkspaceClient::has_pending_history(session_id) {
+                        anyhow::bail!("会话历史操作的结果尚未确认，请重试原回合的分叉或回退操作");
+                    }
                     prepare_submission(
                         workspace_client,
                         project,
@@ -2925,10 +3010,23 @@ impl Waku {
                         &naming_prompt,
                         next_turn_count,
                     )
+                    .map(PreparedGoalRuntime::Started)
                 })
                 .await;
-            let _ = waku.update(cx, move |waku, cx| {
-                waku.finish_goal_runtime_start(session_id, prepared, cx);
+            let _ = waku.update(cx, move |waku, cx| match prepared {
+                Ok(PreparedGoalRuntime::Attached(session, driver)) => {
+                    if !waku.goal_runtime_starts.remove(&session_id) {
+                        return;
+                    }
+                    waku.runtime_attach_pending.insert(session_id);
+                    waku.finish_runtime_attachment(session_id, Ok(Some((session, driver))), cx);
+                    waku.drain_pending_goal_operations(session_id);
+                    cx.notify();
+                }
+                Ok(PreparedGoalRuntime::Started(prepared)) => {
+                    waku.finish_goal_runtime_start(session_id, Ok(prepared), cx)
+                }
+                Err(error) => waku.finish_goal_runtime_start(session_id, Err(error), cx),
             });
         })
         .detach();
@@ -2952,6 +3050,7 @@ impl Waku {
                 self.pending_goal_operations.remove(&session_id);
                 self.pending_deerflow_approvals.remove(&session_id);
                 self.unwind_unconfirmed_pursuit_turn(session_id);
+                self.fail_deerflow_budget_connection(session_id, error.to_string());
                 self.show_toast(error.to_string());
                 self.drain_queued_message(session_id, cx);
                 cx.notify();
@@ -2998,11 +3097,20 @@ impl Waku {
                     self.install_prepared_driver(session_id, prepared);
                 }
             }
-            None => self.drain_pending_goal_operations(session_id),
+            None => {
+                if !self.runtimes.contains_key(&session_id) {
+                    self.fail_deerflow_budget_connection(
+                        session_id,
+                        tr!("errors.prepared_runtime_unavailable"),
+                    );
+                }
+                self.drain_pending_goal_operations(session_id);
+            }
             Some(Err(error)) => {
                 self.pending_goal_operations.remove(&session_id);
                 self.pending_deerflow_approvals.remove(&session_id);
                 self.unwind_unconfirmed_pursuit_turn(session_id);
+                self.fail_deerflow_budget_connection(session_id, error.to_string());
                 self.show_toast(error.to_string());
                 self.drain_queued_message(session_id, cx);
                 cx.notify();
@@ -3095,6 +3203,19 @@ impl Waku {
         let Some(session) = self.selected_session().cloned() else {
             return;
         };
+        if session.provider == ProviderKind::DeerFlow
+            && (!session.is_busy() || !self.session_can_steer(&session))
+        {
+            if let Some(current) = self.state.session_mut(session.id) {
+                current.apply_steering_update(&waku_client::model::SteeringUpdate {
+                    request_id: Uuid::new_v4().to_string(), run_id: String::new(),
+                    status: "rejected".into(), message: submission.prompt,
+                    reason: "The current run is no longer available for intervention. Submit explicitly as a new turn to continue.".into(),
+                });
+            }
+            cx.notify();
+            return;
+        }
         if !session.is_busy() {
             self.submit_composer_submission(submission, cx);
             return;
@@ -3486,6 +3607,7 @@ impl Waku {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.submission_preparations.remove(&session_id);
+                self.fail_deerflow_budget_connection(session_id, error.to_string());
                 self.track_active_turn_outcome(
                     session_id,
                     crate::analytics::TurnOutcome::PreparationFailed,
@@ -3626,6 +3748,7 @@ impl Waku {
             ),
             Err(error) => {
                 failed_to_start = true;
+                self.fail_deerflow_budget_connection(session_id, error.to_string());
                 let message = tr!("errors.start_agent", error = error);
                 if let Some(session) = self.state.session_mut(session_id) {
                     session.status = SessionStatus::Failed;
@@ -3777,6 +3900,9 @@ impl Waku {
                         | DriverEvent::PromptSubmitted { .. }
                         | DriverEvent::SteerAccepted { .. }
                         | DriverEvent::SteerRejected { .. }
+                        | DriverEvent::SteeringCapability { .. }
+                        | DriverEvent::ConversationCapability { .. }
+                        | DriverEvent::SteeringUpdated(_)
                         | DriverEvent::TurnFinished { .. }
                         | DriverEvent::Error(_)
                         | DriverEvent::ProcessExited

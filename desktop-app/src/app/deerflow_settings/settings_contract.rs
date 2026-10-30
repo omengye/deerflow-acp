@@ -539,8 +539,7 @@ fn expected_type(path: &str) -> Option<&'static str> {
         | "/runtime/memory_scope"
         | "/runtime/prompt_overlay"
         | "/memory/mode" => Some("string"),
-        "/runtime/session_cleanup_enabled"
-        | "/runtime/enable_bash"
+        "/runtime/enable_bash"
         | "/memory/enabled"
         | "/memory/include_global"
         | "/memory/injection_enabled"
@@ -548,11 +547,10 @@ fn expected_type(path: &str) -> Option<&'static str> {
         "/runtime/max_active_connections"
         | "/runtime/max_output_tokens"
         | "/runtime/max_active_runs"
-        | "/runtime/inactive_session_retention_days"
-        | "/runtime/closed_session_retention_days" => Some("integer"),
-        "/runtime/run_timeout_seconds"
-        | "/runtime/queue_timeout_seconds"
-        | "/runtime/session_cleanup_interval_seconds" => Some("number"),
+        | "/runtime/max_run_tokens"
+        | "/runtime/max_model_calls"
+        | "/runtime/max_tool_calls" => Some("integer"),
+        "/runtime/run_timeout_seconds" | "/runtime/queue_timeout_seconds" => Some("number"),
         "/runtime/tool_allowlist" | "/runtime/tool_denylist" => Some("string_array"),
         _ => None,
     }

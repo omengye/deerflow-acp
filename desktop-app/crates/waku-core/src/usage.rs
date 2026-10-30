@@ -2,24 +2,21 @@
 //! Claude's OAuth credential (macOS keychain first, then
 //! `~/.claude/.credentials.json`) calls `api.anthropic.com/api/oauth/usage`; Codex's
 //! `~/.codex/auth.json` token calls the ChatGPT backend's usage endpoint;
-//! OpenCode Go's API key calls `opencode.ai/zen/go/v1/usage`; Grok answers
-//! the `x.ai/billing` extension request on a short-lived `grok agent stdio`
-//! probe. Payload shapes were verified against live responses or the
-//! providers' own schemas, not guessed.
+//! OpenCode Go's API key calls `opencode.ai/zen/go/v1/usage`. Payload shapes
+//! were verified against provider responses or schemas.
 //!
 //! Everything in this module blocks on subprocesses and the network and must
 //! run on the background executor. Render reads only the parsed snapshot the
 //! app entity stores.
 
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::Write as _;
 use std::process::Stdio;
 
 #[cfg(target_os = "macos")]
 use std::process::Command;
-use std::time::Duration;
 
 use anyhow::{Context as _, anyhow};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
@@ -289,158 +286,6 @@ fn parse_opencode_go_plan_usage(body: &Value) -> Option<PlanUsage> {
     })
 }
 
-/// Fetch Grok's plan usage by asking the agent itself: a short-lived
-/// `grok agent stdio` process answers the `x.ai/billing` extension request
-/// with the account's monthly quota. Blocking, bounded by timeouts, and the
-/// probe process is always torn down.
-pub fn fetch_grok_plan_usage(binary: &std::path::Path) -> anyhow::Result<PlanUsage> {
-    let mut command = crate::command_env::command(binary);
-    let command = command
-        .args(["agent", "stdio"])
-        .env("GROK_OAUTH2_REFERRER", "waku")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child =
-        crate::command_env::spawn(command).context(tr!("usage_error.start_grok_probe"))?;
-    let result = grok_billing_over_stdio(&mut child);
-    // The probe has no shutdown request; ending it is the protocol.
-    let _ = child.kill();
-    let _ = child.wait();
-    result.and_then(|billing| parse_grok_billing(&billing))
-}
-
-fn grok_billing_over_stdio(child: &mut std::process::Child) -> anyhow::Result<Value> {
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow!(tr!("usage_error.grok_stdin_unavailable")))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!(tr!("usage_error.grok_stdout_unavailable")))?;
-    let (lines_tx, lines) = crossbeam_channel::unbounded::<Value>();
-    std::thread::Builder::new()
-        .name("waku-grok-usage-probe".into())
-        .spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Ok(value) = serde_json::from_str::<Value>(&line)
-                    && lines_tx.send(value).is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .context(tr!("usage_error.start_grok_reader"))?;
-
-    let mut send = |id: u64, method: &str, params: Value| -> anyhow::Result<()> {
-        let message = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        serde_json::to_writer(&mut stdin, &message)?;
-        stdin.write_all(b"\n")?;
-        stdin.flush()?;
-        Ok(())
-    };
-    let wait_for = |id: u64| -> anyhow::Result<Value> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            let remaining = deadline
-                .checked_duration_since(std::time::Instant::now())
-                .ok_or_else(|| anyhow!(tr!("usage_error.grok_billing_timeout")))?;
-            let message = lines
-                .recv_timeout(remaining)
-                .map_err(|_| anyhow!(tr!("usage_error.grok_billing_timeout")))?;
-            if message.get("id").and_then(Value::as_u64) != Some(id) {
-                continue;
-            }
-            if let Some(error) = message.pointer("/error/message").and_then(Value::as_str) {
-                return Err(anyhow!(tr!("usage_error.grok_answered", error = error)));
-            }
-            return Ok(message.get("result").cloned().unwrap_or(Value::Null));
-        }
-    };
-
-    // The same initialize the ACP session sends; billing is only served on an
-    // initialized connection.
-    send(
-        1,
-        "initialize",
-        json!({
-            "protocolVersion": "1",
-            "clientCapabilities": {
-                "fs": {"readTextFile": false, "writeTextFile": false},
-                "terminal": false
-            }
-        }),
-    )?;
-    wait_for(1)?;
-    send(2, "_x.ai/billing", json!({}))?;
-    wait_for(2)
-}
-
-/// Map `_x.ai/billing` into the panel's rows. Verified live: current builds
-/// wrap the billing config in a `config` object beside `subscription_tier`,
-/// and unified-billing accounts may report a period without any percent
-/// meter — the tier still names the plan then. Older flat shapes carry
-/// `monthlyLimit`/`usage` totals instead of `creditUsagePercent`.
-fn parse_grok_billing(billing: &Value) -> anyhow::Result<PlanUsage> {
-    let config = billing
-        .get("config")
-        .filter(|config| config.is_object())
-        .unwrap_or(billing);
-    let plan_label = billing
-        .get("subscription_tier")
-        .or_else(|| config.get("subscription_tier"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|tier| !tier.is_empty())
-        .map(str::to_owned);
-    let percent = config
-        .get("creditUsagePercent")
-        .and_then(Value::as_f64)
-        .or_else(|| {
-            let limit = config
-                .pointer("/monthlyLimit/val")
-                .and_then(Value::as_f64)
-                .filter(|limit| *limit > 0.0)?;
-            let used = config
-                .pointer("/usage/totalUsed/val")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0);
-            Some(used * 100.0 / limit)
-        });
-
-    let mut windows = Vec::new();
-    if let Some(percent) = percent {
-        let label = match config
-            .pointer("/currentPeriod/type")
-            .and_then(Value::as_str)
-        {
-            Some(period) if period.contains("WEEKLY") => tr!("usage.weekly_limit"),
-            Some(period) if period.contains("DAILY") => tr!("usage.daily_limit"),
-            _ => tr!("usage.monthly_limit"),
-        };
-        let resets_at = config
-            .get("billingPeriodEnd")
-            .or_else(|| config.pointer("/currentPeriod/end"))
-            .or_else(|| config.pointer("/billingCycle/billingPeriodEnd"))
-            .and_then(Value::as_str)
-            .and_then(|end| chrono::DateTime::parse_from_rfc3339(end).ok())
-            .map(|date| date.timestamp());
-        windows.push(PlanWindow {
-            label,
-            percent: percent.clamp(0.0, 100.0),
-            resets_at,
-        });
-    }
-    if plan_label.is_none() && windows.is_empty() {
-        return Err(anyhow!(tr!("usage_error.grok_no_billing_data")));
-    }
-    Ok(PlanUsage {
-        plan_label,
-        windows,
-    })
-}
-
 /// Map the ChatGPT backend's usage response (primary/secondary windows in
 /// seconds, plus model-scoped `additional_rate_limits`) into the panel's
 /// rows.
@@ -618,8 +463,8 @@ fn parse_credentials(payload: &str) -> anyhow::Result<OauthCredentials> {
 
 /// GET `url` with the given header lines. Headers travel to curl as a config
 /// on stdin, never on argv, so bearer tokens cannot show up in the process
-/// table. Shared with the usage-history rate-table fetch.
-pub fn http_get(url: &str, headers: &[String]) -> anyhow::Result<(u16, String)> {
+/// table.
+fn http_get(url: &str, headers: &[String]) -> anyhow::Result<(u16, String)> {
     let mut child = crate::command_env::plain_command(CURL_PATH)
         .args(["-sS", "--max-time", "15", "-D", "-", "-K", "-", url])
         .stdin(Stdio::piped())
@@ -1096,64 +941,6 @@ mod tests {
             }))),
             None
         );
-    }
-
-    #[test]
-    fn grok_billing_maps_to_a_monthly_window() {
-        // Older flat shape (CodexBar's GrokBillingResponse fixture).
-        let billing: Value = serde_json::from_str(
-            r#"{
-                "billingCycle": {
-                    "billingPeriodStart": "2026-05-01T00:00:00Z",
-                    "billingPeriodEnd": "2026-06-01T00:00:00Z"
-                },
-                "monthlyLimit": {"val": 99900},
-                "usage": {"includedUsed": {"val": 49950}, "totalUsed": {"val": 49950}}
-            }"#,
-        )
-        .unwrap();
-        let usage = parse_grok_billing(&billing).expect("the monthly lane should map");
-        assert_eq!(usage.windows.len(), 1);
-        assert_eq!(usage.windows[0].label, "Monthly limit");
-        assert_eq!(usage.windows[0].percent, 50.0);
-        assert_eq!(usage.windows[0].resets_at, Some(1_780_272_000));
-        // Nothing reported means signed out, not a zero-width meter.
-        assert!(parse_grok_billing(&serde_json::json!({"usage": {}})).is_err());
-    }
-
-    #[test]
-    fn grok_unified_billing_keeps_the_tier_without_meters() {
-        // Captured live from `_x.ai/billing` on 2026-08-07: the config is
-        // enveloped, the period is weekly, and no percent meter is exposed.
-        let billing: Value = serde_json::from_str(
-            r#"{
-                "config": {
-                    "currentPeriod": {
-                        "type": "USAGE_PERIOD_TYPE_WEEKLY",
-                        "start": "2026-08-06T15:32:05.102798+00:00",
-                        "end": "2026-08-13T15:32:05.102798+00:00"
-                    },
-                    "onDemandCap": {"val": 0},
-                    "isUnifiedBillingUser": true,
-                    "billingPeriodStart": "2026-08-06T15:32:05.102798+00:00",
-                    "billingPeriodEnd": "2026-08-13T15:32:05.102798+00:00"
-                },
-                "subscription_tier": "X Premium"
-            }"#,
-        )
-        .unwrap();
-        let usage = parse_grok_billing(&billing).expect("the tier alone still labels the plan");
-        assert_eq!(usage.plan_label.as_deref(), Some("X Premium"));
-        assert!(usage.windows.is_empty());
-
-        // The same envelope with a percent produces a weekly lane.
-        let mut with_percent = billing.clone();
-        with_percent["config"]["creditUsagePercent"] = serde_json::json!(37.5);
-        let usage = parse_grok_billing(&with_percent).unwrap();
-        assert_eq!(usage.windows.len(), 1);
-        assert_eq!(usage.windows[0].label, "Weekly limit");
-        assert_eq!(usage.windows[0].percent, 37.5);
-        assert!(usage.windows[0].resets_at.is_some());
     }
 
     #[test]

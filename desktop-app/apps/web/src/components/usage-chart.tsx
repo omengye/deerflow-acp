@@ -7,8 +7,6 @@ import type { UsageHistory } from '@waku/client'
 import { scaleUtc } from 'd3-scale'
 import { useI18n, type AppLocale } from '@/lib/i18n'
 
-export type UsageMetric = 'cost' | 'tokens'
-
 interface UsageChartRow {
   id: string
   date: Date
@@ -18,10 +16,8 @@ interface UsageChartRow {
 
 export function UsageTrendChart({
   history,
-  metric,
 }: {
   history: UsageHistory
-  metric: UsageMetric
 }) {
   const { locale, t } = useI18n()
   const rows: UsageChartRow[] = history.daily.flatMap((day) => {
@@ -31,13 +27,13 @@ export function UsageTrendChart({
         id: `claude-${day.day}`,
         date,
         provider: 'Claude Code',
-        value: metric === 'cost' ? day.byProvider[0].costUsd : day.byProvider[0].totalTokens,
+        value: day.byProvider[0].totalTokens,
       },
       {
         id: `codex-${day.day}`,
         date,
         provider: 'Codex',
-        value: metric === 'cost' ? day.byProvider[1].costUsd : day.byProvider[1].totalTokens,
+        value: day.byProvider[1].totalTokens,
       },
     ]
   })
@@ -90,9 +86,7 @@ export function UsageTrendChart({
           count: 4,
           size: 0,
           padding: 8,
-          format: (value) => metric === 'cost'
-            ? formatCompactMoney(value, locale)
-            : formatCompactNumber(value, locale),
+          format: (value) => formatCompactNumber(value, locale),
         },
         tickLabels: { fontSize: 10 },
       },
@@ -117,9 +111,9 @@ export function UsageTrendChart({
   return (
     <Chart
       ariaDescription={t('usage.chart_description', {
-        metric: t(metric === 'cost' ? 'usage.cost' : 'usage.processed_tokens'),
+        metric: t('usage.processed_tokens'),
       })}
-      ariaLabel={t(metric === 'cost' ? 'usage.daily_cost' : 'usage.daily_processed_tokens')}
+      ariaLabel={t('usage.daily_processed_tokens')}
       className="waku-usage-chart"
       definition={definition}
       height={188}
@@ -134,16 +128,6 @@ function parseUsageDay(day: string) {
 
 function formatChartDay(value: Date, locale: AppLocale) {
   return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(value)
-}
-
-function formatCompactMoney(value: number, locale: AppLocale) {
-  if (!value) return '$0'
-  return new Intl.NumberFormat(locale, {
-    style: 'currency',
-    currency: 'USD',
-    notation: value >= 1_000 ? 'compact' : 'standard',
-    maximumFractionDigits: value < 10 ? 1 : 0,
-  }).format(value)
 }
 
 function formatCompactNumber(value: number, locale: AppLocale) {

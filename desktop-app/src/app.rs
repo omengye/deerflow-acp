@@ -269,11 +269,6 @@ enum UsageViewMode {
 }
 
 /// Which unit the Usage page's headline and chart read in.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum UsageMetric {
-    Cost,
-    Tokens,
-}
 
 /// Which table the Usage page's breakdown section shows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -842,6 +837,7 @@ fn traits_choice(theme: Theme, label: String, is_default: bool, selected: bool) 
 #[derive(Clone, Copy, Debug)]
 struct UserMessageAction {
     session_id: Uuid,
+    enabled: bool,
     /// The prompt that opened the turn. A turn can hold several user messages
     /// once a steer lands in it, and only the opening one is a rewind
     /// boundary, so this is what the editor and the rewind both address.
@@ -1186,7 +1182,7 @@ pub struct Waku {
     /// Providers whose turn settled since the last fetch, so the meters have
     /// moved.
     plan_usage_stale: HashSet<ProviderKind>,
-    /// The settings Usage page's snapshot: historical token/cost usage
+    /// The settings Usage page's snapshot: historical token usage
     /// scanned from provider transcripts off-thread. Frames read only this.
     usage_history: Option<crate::usage_history::UsageHistory>,
     /// The window a scan is currently in flight for, so a repeat request for
@@ -1200,7 +1196,6 @@ pub struct Waku {
     /// The selected window for the daily and project views; the statement
     /// view fixes its own.
     usage_window: crate::usage_history::UsageWindow,
-    usage_metric: UsageMetric,
     usage_breakdown: UsageBreakdown,
     /// Scroll position of the monthly statement card, which scrolls
     /// internally like the projects card so the two list views feel alike.
@@ -1215,9 +1210,9 @@ pub struct Waku {
     /// Indices into `usage_history.projects` the filter leaves visible — the
     /// row builder reads only this.
     usage_projects_rows: RefCell<Vec<usize>>,
-    /// `(peak value, rank-by-cost)` for the visible rows' bars, refreshed
+    /// Peak token count for the visible rows' bars, refreshed
     /// once per frame rather than per row.
-    usage_projects_scale: Cell<(f64, bool)>,
+    usage_projects_scale: Cell<f64>,
     /// Hovered or keyboard-selected day index on the Usage page's chart.
     usage_chart_hover: Option<usize>,
     /// The chart plot's window bounds, written during paint so the mouse-move
@@ -2909,7 +2904,6 @@ impl Waku {
                 usage_history_scanned_at: None,
                 usage_view: UsageViewMode::Daily,
                 usage_window: crate::usage_history::UsageWindow::TrailingDays(30),
-                usage_metric: UsageMetric::Cost,
                 usage_breakdown: UsageBreakdown::Model,
                 usage_months_scroll: ScrollHandle::new(),
                 usage_months_scrollbar: ScrollbarState::new(),
@@ -2917,7 +2911,7 @@ impl Waku {
                 usage_projects_list,
                 usage_projects_scrollbar: ScrollbarState::new(),
                 usage_projects_rows: RefCell::new(Vec::new()),
-                usage_projects_scale: Cell::new((0.0, true)),
+                usage_projects_scale: Cell::new(0.0),
                 usage_chart_hover: None,
                 usage_chart_bounds: Rc::default(),
                 computer_use_app_icons: RefCell::new(HashMap::new()),

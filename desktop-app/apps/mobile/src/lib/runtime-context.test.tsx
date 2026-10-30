@@ -69,7 +69,7 @@ function fixture(options: { attached?: boolean } = {}) {
         case 'hydrateSession':
           return { type: 'session', session: await hydration.promise };
         case 'attachSession':
-          return { type: 'sessionRuntime', runtimeId: options.attached === false ? null : 'runtime', supportsSteer: true };
+          return { type: 'sessionRuntime', runtimeId: options.attached === false ? null : 'runtime', supportsSteer: true, conversationCapability: null, deerflowReady: null, pendingHistory: null };
         case 'getSettings':
           return { type: 'settings', settings: {
             provider_binary_overrides: {}, disabled_providers: [],

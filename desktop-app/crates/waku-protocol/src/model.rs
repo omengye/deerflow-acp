@@ -117,11 +117,12 @@ impl ProviderKind {
         }
     }
 
-    /// Kimi Code, Fx, and DeerFlow are deliberately absent from this list and
+    /// Kimi Code and Fx are deliberately absent from this list and
     /// [`Self::supports_conversation_fork`]. Kimi's ACP `session/fork` copies a
-    /// whole session and takes no turn count. Fx and DeerFlow expose no
-    /// turn-aware fork or truncation method, so they cannot reproduce Waku's
+    /// whole session and takes no turn count. Fx exposes no
+    /// turn-aware fork or truncation method, so it cannot reproduce Waku's
     /// "drop the last N turns" semantics without corrupting history.
+    /// DeerFlow also requires a capability confirmed by its attached runtime.
     pub fn supports_conversation_rollback(self) -> bool {
         matches!(
             self,
@@ -129,6 +130,7 @@ impl ProviderKind {
                 | Self::Claude
                 | Self::Codex
                 | Self::Cursor
+                | Self::DeerFlow
                 | Self::DeepSeek
                 | Self::OpenCode
                 | Self::OpenCode2
@@ -145,6 +147,7 @@ impl ProviderKind {
                 | Self::Claude
                 | Self::Codex
                 | Self::Cursor
+                | Self::DeerFlow
                 | Self::DeepSeek
                 | Self::OpenCode
                 | Self::OpenCode2
@@ -964,6 +967,9 @@ pub struct RuntimeEventCursor {
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 pub struct AgentSession {
     pub id: Uuid,
+    /// Daemon-owned conversation revision; rejects stale projections after rewind.
+    #[serde(default)]
+    pub history_revision: u64,
     /// A title explicitly chosen by the user. [`Self::DEFAULT_TITLE`] means
     /// no explicit title has been set, so [`Self::auto_title`] may be shown.
     pub title: String,
@@ -1004,6 +1010,9 @@ pub struct AgentSession {
     pub last_reply_at: Option<u64>,
     #[serde(default)]
     pub provider_cursor: Option<ProviderResumeCursor>,
+    /// Capability confirmed by the currently attached runtime. Never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_capability: Option<bool>,
     /// Slash commands the provider reported for this session's live process,
     /// kept so a resumed session still completes them before its next
     /// handshake.
@@ -1056,6 +1065,7 @@ impl AgentSession {
         let now = unix_time();
         Self {
             id: Uuid::new_v4(),
+            history_revision: 0,
             title: Self::DEFAULT_TITLE.to_owned(),
             auto_title: None,
             project_id,
@@ -1074,6 +1084,7 @@ impl AgentSession {
             last_reply_at: None,
             detail_loaded: true,
             provider_cursor: None,
+            conversation_capability: None,
             available_commands: Vec::new(),
             thread_goal: None,
             context_usage: None,
@@ -1094,6 +1105,7 @@ impl AgentSession {
     pub fn list_projection(&self) -> Self {
         Self {
             id: self.id,
+            history_revision: self.history_revision,
             title: self.title.clone(),
             auto_title: self.auto_title.clone(),
             project_id: self.project_id,
@@ -1111,6 +1123,7 @@ impl AgentSession {
             updated_at: self.updated_at,
             last_reply_at: self.last_reply_at,
             provider_cursor: None,
+            conversation_capability: None,
             available_commands: Vec::new(),
             thread_goal: None,
             context_usage: None,
@@ -1122,6 +1135,10 @@ impl AgentSession {
             queued_messages: Vec::new(),
             detail_loaded: false,
         }
+    }
+
+    pub fn conversation_actions_enabled(&self) -> bool {
+        self.provider != ProviderKind::DeerFlow || self.conversation_capability == Some(true)
     }
 
     pub fn is_busy(&self) -> bool {
@@ -1570,6 +1587,36 @@ impl AgentSession {
         id
     }
 
+    /// Stable request identity makes replay and status updates idempotent.
+    /// Rejected intervention text stays visible and is never auto-queued.
+    pub fn apply_steering_update(&mut self, update: &SteeringUpdate) {
+        let Ok(id) = Uuid::parse_str(&update.request_id) else {
+            return;
+        };
+        let label = match update.status.as_str() {
+            "accepted" => "Intervention accepted · awaiting next model decision",
+            "applied" => "Intervention applied",
+            "rejected" => "Intervention rejected",
+            "pending" => "Submitting intervention",
+            _ => "Intervention status unknown · reconnect to check",
+        };
+        let visible = if update.reason.is_empty() {
+            format!("{label}\n\n{}", update.message)
+        } else {
+            format!("{label}: {}\n\n{}", update.reason, update.message)
+        };
+        if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
+            message.display_content = Some(visible);
+        } else {
+            let mut message = Message::new(MessageRole::User, update.message.clone());
+            message.id = id;
+            message.turn_id = self.active_turn_id();
+            message.display_content = Some(visible);
+            self.messages.push(message);
+        }
+        self.updated_at = unix_time();
+    }
+
     pub fn truncate_after_turn(&mut self, turn_count: usize) {
         let retained = self
             .turns
@@ -1638,6 +1685,7 @@ impl AgentSession {
         fork.created_at = now;
         fork.updated_at = now;
         fork.provider_cursor = Some(provider_cursor);
+        fork.conversation_capability = None;
         fork.provider_session_id = None;
         // A fork snapshots the conversation, not the pending follow-ups its
         // source session is still holding for the live agent.
@@ -1866,6 +1914,17 @@ impl ActivityKind {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SteeringUpdate {
+    pub request_id: String,
+    pub run_id: String,
+    pub status: String,
+    pub message: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
 #[derive(Clone, Debug)]
 pub enum DriverEvent {
     DeerFlowTasks(crate::deerflow_tasks::Event),
@@ -1942,6 +2001,13 @@ pub enum DriverEvent {
     },
     ComputerUseUpdated(crate::computer_use::ComputerUseState),
     /// The provider accepted a steering message into the running turn.
+    SteeringCapability {
+        supported: bool,
+    },
+    ConversationCapability {
+        supported: bool,
+    },
+    SteeringUpdated(SteeringUpdate),
     SteerAccepted {
         message: String,
     },
@@ -3558,6 +3624,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deerflow_history_requires_current_runtime_confirmation() {
+        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::DeerFlow);
+        assert!(!session.conversation_actions_enabled());
+        session.conversation_capability = Some(false);
+        assert!(!session.conversation_actions_enabled());
+        session.conversation_capability = Some(true);
+        assert!(session.conversation_actions_enabled());
+        assert!(!session.list_projection().conversation_actions_enabled());
+        session.conversation_capability = None;
+        assert!(!session.conversation_actions_enabled());
+        let codex = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
+        assert!(codex.conversation_actions_enabled());
+    }
+
+    #[test]
     fn legacy_plan_access_mode_loads_as_supervised() {
         let mode: RuntimeMode = serde_json::from_str(r#""plan""#).unwrap();
 
@@ -4200,6 +4281,7 @@ mod tests {
             ProviderKind::Codex,
             ProviderKind::Cursor,
             ProviderKind::DeepSeek,
+            ProviderKind::DeerFlow,
             ProviderKind::OpenCode,
             ProviderKind::OpenCode2,
             ProviderKind::Grok,
@@ -4209,7 +4291,7 @@ mod tests {
             assert!(provider.supports_conversation_fork());
             assert!(provider.supports_conversation_rollback());
         }
-        for provider in [ProviderKind::Fx, ProviderKind::Kimi, ProviderKind::DeerFlow] {
+        for provider in [ProviderKind::Fx, ProviderKind::Kimi] {
             assert!(!provider.supports_conversation_fork());
             assert!(!provider.supports_conversation_rollback());
         }

@@ -647,10 +647,22 @@ const SEARCH_TARGETS: &[SearchSeed] = &[
         "queue 排队 超时"
     ),
     target!(
-        "会话保留天数",
-        "/runtime/inactive_session_retention_days",
+        "任务累计 Token 上限",
+        "/runtime/max_run_tokens",
         Runtime,
-        "retention cleanup 会话 保留 清理"
+        "token budget 任务 预算 累计 限额"
+    ),
+    target!(
+        "任务模型调用上限",
+        "/runtime/max_model_calls",
+        Runtime,
+        "model calls budget 模型 调用 预算 次数"
+    ),
+    target!(
+        "任务工具调用上限",
+        "/runtime/max_tool_calls",
+        Runtime,
+        "tool calls budget 工具 调用 预算 次数"
     ),
     target!(
         "附加系统指令",

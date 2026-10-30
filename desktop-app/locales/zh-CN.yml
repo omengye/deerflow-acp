@@ -81,7 +81,7 @@ settings.appearance_keywords: 外观 主题 系统 浅色 深色 语言 英语 �
 settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 检测 claude codex cursor opencode opencode2 amp grok pi deerflow
 settings.skills: 技能
 settings.skills_keywords: 技能 技能库 智能体 禁用 启用 删除 claude codex cursor opencode pi amp 共享
-settings.usage_keywords: 用量 令牌 费用 支出 缓存 每日 图表 模型 明细 历史 claude codex
+settings.usage_keywords: 用量 令牌 缓存 每日 图表 模型 明细 历史 claude codex
 settings.daemon_keywords: 守护进程 服务 远程 网页 网络 暴露 来源 令牌 端口 websocket
 settings.computer_use_keywords: 电脑操作 屏幕录制 辅助功能 应用 控制 codex
 settings.back: 返回
@@ -624,6 +624,7 @@ errors.change_branch: "无法切换分支：%{error}"
 errors.capture_pre_turn_checkpoint: "无法创建任务开始前的检查点：%{error}"
 errors.capture_turn_checkpoint: "无法创建本轮任务的检查点：%{error}"
 errors.save_local_state: "无法保存本地状态：%{error}"
+errors.delete_session: "删除会话失败：%{error}"
 errors.task_project_not_found: 找不到该任务所属的项目
 errors.provider_native_session_unavailable: "%{provider} 的原生会话不可用"
 errors.provider_native_thread_unavailable: "%{provider} 的原生线程不可用"
@@ -935,16 +936,11 @@ usage.projects: 项目
 usage.scanning: 正在扫描服务商的对话记录…
 usage.rescan: 重新扫描服务商的对话记录
 usage.range: "%{start} 至 %{end}"
-usage.full_api_rate_note: "* 按完整 API 费率估算"
 usage.sessions_summary: 汇总 %{count} 个任务的输入、缓存读取和输出
-usage.raw_token_cost: 原始令牌费用
 usage.processed_tokens_upper: 已处理令牌
-usage.cost_share: 占费用的 %{share} · %{tokens} 个令牌
-usage.token_share: 占令牌的 %{share} · %{cost}
+usage.token_share: "占令牌的 %{share}"
 usage.no_activity_window: 所选时段内没有活动
-usage.cost_upper: 费用
 usage.tokens_upper: 令牌
-usage.daily_cost: 每日费用
 usage.daily_processed_tokens: 每日已处理令牌
 usage.model_upper: 模型
 usage.day_upper: 日期
@@ -953,12 +949,10 @@ usage.no_projects_match: 没有符合筛选条件的项目
 usage.by_project: 按项目
 usage.projects_caption: "%{projects} · %{tokens} 个令牌 · %{sessions}"
 usage.projects_shown: "共 %{projects}，当前显示 %{shown} 个"
-usage.percent_of_cost: 占费用的 %{share}
 usage.token_count: "%{count} 个令牌"
 usage.last_active: 最后活跃于 %{date}
-usage.show_models: 查看 %{models}的费用明细
+usage.show_models: 查看 %{models} 的令牌明细
 usage.other_sessions: 其他任务
-usage.rates_unavailable: 模型费率暂不可用；费率表加载完成前，相关费用会显示为未定价
 usage.total: 总计
 usage.processed_tokens: 已处理令牌
 usage.per_active_day: 每个活跃日 %{count}
@@ -968,23 +962,15 @@ usage.uncached_input: 未缓存输入
 usage.cache_writes: "%{count} 个缓存写入令牌"
 usage.output: 输出
 usage.includes_reasoning: 其中推理令牌 %{count}
-usage.cache_savings: 缓存节省
-usage.raw_cost_multiple: 相当于原始令牌费用的 %{multiple} 倍
-usage.vs_full_input_rates: 与完整输入费率相比
 usage.model: 模型
-usage.cost: 费用
 usage.share: 占比
 usage.tokens: 令牌
 usage.day: 日期
-usage.cost_quality: 费用可信度
-usage.provider_reported: 服务商报告
-usage.model_priced: 按模型定价
-usage.unpriced: 未定价
 usage.no_activity_12_months: 过去 12 个月内没有活动
 usage.last_12_months: 过去 12 个月
 usage.so_far: 截至目前
 usage.no_activity: 没有活动
-usage.models_by_spend: "%{models} · 按费用排序"
+usage.models_by_tokens: "%{models} · 按令牌排序"
 usage.tokens_and_sessions: "%{tokens} 个令牌 · %{sessions}"
 usage.month_caption: "%{tokens} 个令牌 · %{sessions} · %{days}"
 usage.last_7_days: 过去 7 天
@@ -1037,13 +1023,6 @@ usage_error.codex_access_token_missing: Codex auth.json 中没有访问令牌；
 usage_error.opencode_go_key_rejected: OpenCode Go API 密钥无法读取用量（HTTP %{status}）；请重新连接 OpenCode Go
 usage_error.opencode_go_not_entitled: OpenCode Go 用量需要有效的 OpenCode Go 订阅
 usage_error.no_rate_limit_windows: 用量接口未返回任何速率限制周期
-usage_error.start_grok_probe: 无法启动 `grok agent stdio`
-usage_error.grok_stdin_unavailable: Grok 的标准输入不可用
-usage_error.grok_stdout_unavailable: Grok 的标准输出不可用
-usage_error.start_grok_reader: 无法启动 Grok 探测读取器
-usage_error.grok_billing_timeout: Grok 未在规定时间内响应账单请求
-usage_error.grok_answered: "Grok 返回：%{error}"
-usage_error.grok_no_billing_data: Grok 未返回账单数据；请运行 `grok` 登录
 usage_error.claude_credentials_missing: 钥匙串和 ~/.claude 中均未找到 Claude Code 凭据
 usage_error.run_security: 无法运行 /usr/bin/security
 usage_error.keychain_item_missing: 钥匙串中没有 %{service} 项

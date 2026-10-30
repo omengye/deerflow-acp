@@ -91,6 +91,8 @@ fn connect_remote(
     let client_updates = daemon.subscribe_clients();
     let active_client = Arc::new(Mutex::new(initial_client.clone()));
     let forwarding_client = active_client.clone();
+    let supports_steer = Arc::new(AtomicBool::new(supports_steer));
+    let forwarding_steer = supports_steer.clone();
     let closed = Arc::new(AtomicBool::new(false));
     let forwarding_closed = closed.clone();
     let (shutdown, forwarding_shutdown) = bounded(1);
@@ -128,6 +130,9 @@ fn connect_remote(
                                 )),
                             };
                             let process_exited = matches!(&event, DriverEvent::ProcessExited);
+                            if let DriverEvent::SteeringCapability { supported } = &event {
+                                forwarding_steer.store(*supported, Ordering::Release);
+                            }
                             if forwarding_events.send(event).is_err()
                                 || forwarding_events
                                     .send(DriverEvent::RuntimeEventCursorAdvanced(cursor))
@@ -168,11 +173,29 @@ fn connect_remote(
                     uuid::Uuid::nil(),
                     waku_client::Command::AttachSession,
                 );
+                if let Ok(waku_client::ResponsePayload::SessionRuntime {
+                    pending_history: Some(operation),
+                    ..
+                }) = &attached
+                {
+                    waku_client::WorkspaceClient::restore_pending_history(session_id, operation);
+                }
                 match attached {
                     Ok(waku_client::ResponsePayload::SessionRuntime {
                         runtime_id: Some(attached_runtime_id),
+                        supports_steer,
+                        conversation_capability,
+                        deerflow_ready,
                         ..
                     }) if attached_runtime_id == runtime_id => {
+                        forwarding_steer.store(supports_steer, Ordering::Release);
+                        if let Some(supported) = conversation_capability {
+                            let _ = forwarding_events
+                                .send(DriverEvent::ConversationCapability { supported });
+                        }
+                        if let Some(ready) = deerflow_ready {
+                            let _ = forwarding_events.send(DriverEvent::DeerFlowTasks(ready));
+                        }
                         *forwarding_client.lock() = replacement.clone();
                         client = replacement;
                         remote_events = client.subscribe(session_id, runtime_id);
@@ -216,7 +239,7 @@ struct RemoteDriverControl {
     client: Arc<Mutex<waku_client::DaemonClient>>,
     session_id: uuid::Uuid,
     runtime_id: uuid::Uuid,
-    supports_steer: bool,
+    supports_steer: Arc<AtomicBool>,
     events: DriverEventSender,
     closed: Arc<AtomicBool>,
     shutdown: Sender<()>,
@@ -262,7 +285,7 @@ impl DriverControl for RemoteDriverControl {
     }
 
     fn supports_steer(&self) -> bool {
-        self.supports_steer
+        self.supports_steer.load(Ordering::Acquire)
     }
 
     fn steer(&self, prompt: String) {

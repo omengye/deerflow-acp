@@ -1958,6 +1958,24 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
                 ),
                 ("max_active_runs", "同时运行任务数", "1–128", Kind::Integer),
                 (
+                    "max_run_tokens",
+                    "任务累计 Token 上限",
+                    "主任务与子代理共享；0 不设累计限额。重启后用于新任务，已有任务保留原预算与用量。",
+                    Kind::Integer,
+                ),
+                (
+                    "max_model_calls",
+                    "任务模型调用上限",
+                    "主任务与子代理共享；0 不限次数。重启后用于新任务。",
+                    Kind::Integer,
+                ),
+                (
+                    "max_tool_calls",
+                    "任务工具调用上限",
+                    "主任务与子代理共享，失败调用也计入；0 不限次数。重启后用于新任务。",
+                    Kind::Integer,
+                ),
+                (
                     "max_output_tokens",
                     "单次模型输出上限",
                     "包含推理和正文 tokens；默认 4096，0 不设宿主上限，仍受模型、角色及上下文限制。修改后重启生效。",
@@ -1975,24 +1993,6 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
                     "0 默认不限时；正数显式限制等待，最多 315360000 秒",
                     Kind::Number,
                 ),
-                (
-                    "session_cleanup_enabled",
-                    "清理过期会话",
-                    "清理规则同时影响会话恢复",
-                    Kind::Bool,
-                ),
-                (
-                    "inactive_session_retention_days",
-                    "不活跃会话保留天数",
-                    "1–3650",
-                    Kind::Integer,
-                ),
-                (
-                    "closed_session_retention_days",
-                    "已关闭会话保留天数",
-                    "0–3650",
-                    Kind::Integer,
-                ),
             ] {
                 add(format!("/runtime/{key}"), label, hint, kind);
             }
@@ -2002,12 +2002,6 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
                     "附加系统指令",
                     "在默认指令上追加，最多 65536 个字符",
                     Kind::Multiline,
-                );
-                add(
-                    "/runtime/session_cleanup_interval_seconds".into(),
-                    "会话清理间隔（秒）",
-                    "60–86400",
-                    Kind::Number,
                 );
             }
         }

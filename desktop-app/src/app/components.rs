@@ -258,16 +258,21 @@ pub(super) fn render_message_footer(
             });
         });
     let mut footer = div()
+        .id(SharedString::from(format!("message-actions-{message_id}")))
+        .tab_group()
         .w_full()
         .h(px(27.0))
         .flex()
         .items_center()
         .gap(px(1.0))
-        .when(!force_visible, |element| {
-            element
-                .invisible()
-                .group_hover(group_name, |element| element.visible())
-        })
+        .when(
+            !force_visible && assistant_message_action.is_none() && user_message_action.is_none(),
+            |element| {
+                element
+                    .invisible()
+                    .group_hover(group_name, |element| element.visible())
+            },
+        )
         .when(!align_right, |element| element.ml(-px(7.0)))
         .when(align_right, |element| element.justify_end());
 
@@ -277,6 +282,7 @@ pub(super) fn render_message_footer(
         footer = footer.child(copy_button);
         if let Some(action) = assistant_message_action {
             let fork_waku = waku.clone();
+            let keyboard_fork_waku = waku.clone();
             let fork_icon = if action.preparing {
                 motion::spin(icon("icons/loader-circle.svg", 14.0, footer_color))
             } else {
@@ -284,6 +290,8 @@ pub(super) fn render_message_footer(
             };
             let fork_button = div()
                 .id(SharedString::from(format!("fork-response-{message_id}")))
+                .tab_index(0)
+                .focus_visible(|element| element.bg(theme.overlay_strong))
                 .w(px(27.0))
                 .h(px(27.0))
                 .rounded(px(8.0))
@@ -295,14 +303,30 @@ pub(super) fn render_message_footer(
                     element.opacity(0.45)
                 })
                 .child(fork_icon)
-                .tooltip(Tooltip::text(if action.enabled {
-                    tr_cow!("session.fork_task")
-                } else {
+                .tooltip(Tooltip::text(if action.preparing {
                     tr_cow!("session.forking_task")
+                } else if !action.enabled {
+                    std::borrow::Cow::Borrowed("请先连接运行时确认分叉/回退能力；当前尚未确认支持")
+                } else {
+                    tr_cow!("session.fork_task")
                 }));
             footer = footer.child(if action.enabled {
                 fork_button
                     .hover(|element| element.bg(theme.overlay_strong))
+                    .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                        if !event.keystroke.modifiers.modified()
+                            && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                        {
+                            let _ = keyboard_fork_waku.update(cx, |this, cx| {
+                                this.fork_session_from_response(
+                                    action.session_id,
+                                    action.turn_count,
+                                    cx,
+                                )
+                            });
+                            cx.stop_propagation();
+                        }
+                    })
                     .on_click(move |_, _, cx| {
                         let _ = fork_waku.update(cx, |this, cx| {
                             this.fork_session_from_response(
@@ -320,12 +344,15 @@ pub(super) fn render_message_footer(
     }
 
     if let Some(action) = user_message_action {
+        let keyboard_edit_waku = waku.clone();
         let edit_waku = waku;
         footer = footer.child(
             div()
                 .id(SharedString::from(format!(
                     "user-message-action-{message_id}"
                 )))
+                .tab_index(0)
+                .focus_visible(|element| element.bg(theme.overlay_strong))
                 .w(px(27.0))
                 .h(px(27.0))
                 .rounded(px(8.0))
@@ -333,13 +360,33 @@ pub(super) fn render_message_footer(
                 .items_center()
                 .justify_center()
                 .cursor_default()
-                .hover(|element| element.bg(theme.overlay_strong))
+                .when(!action.enabled, |element| element.opacity(0.45))
+                .when(action.enabled, |element| {
+                    element.hover(|element| element.bg(theme.overlay_strong))
+                })
                 .child(icon("icons/rewind.svg", 14.0, footer_color))
-                .tooltip(Tooltip::text(tr_cow!("session.revert_to_here")))
-                .on_click(move |_, window, cx| {
-                    let _ = edit_waku.update(cx, |this, cx| {
-                        this.begin_message_edit(action, window, cx);
-                    });
+                .tooltip(Tooltip::text(if action.enabled {
+                    tr_cow!("session.revert_to_here")
+                } else {
+                    std::borrow::Cow::Borrowed("请先连接运行时确认分叉/回退能力；当前尚未确认支持")
+                }))
+                .when(action.enabled, |element| {
+                    element
+                        .on_click(move |_, window, cx| {
+                            let _ = edit_waku.update(cx, |this, cx| {
+                                this.begin_message_edit(action, window, cx);
+                            });
+                        })
+                        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                            if !event.keystroke.modifiers.modified()
+                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            {
+                                let _ = keyboard_edit_waku.update(cx, |this, cx| {
+                                    this.begin_message_edit(action, window, cx)
+                                });
+                                cx.stop_propagation();
+                            }
+                        })
                 }),
         );
     }
@@ -947,7 +994,8 @@ fn message_menu_items(
                     this.begin_message_edit(action, window, cx);
                 });
             })
-            .icon("icons/rewind.svg"),
+            .icon("icons/rewind.svg")
+            .disabled(!action.enabled),
         );
     }
 
@@ -956,10 +1004,10 @@ fn message_menu_items(
         items.push(MenuItem::Separator);
         items.push(
             MenuItem::new(
-                if action.enabled {
-                    tr!("session.fork_task_title")
-                } else {
+                if action.preparing {
                     tr!("session.forking_task_title")
+                } else {
+                    tr!("session.fork_task_title")
                 },
                 move |_, cx| {
                     let _ = waku.update(cx, |this, cx| {

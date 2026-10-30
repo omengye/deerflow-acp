@@ -72,6 +72,9 @@ export function reduceRuntimeEvent(
   }
 
   switch (kind) {
+    case 'conversationCapability':
+      session.conversation_capability = (payload as { supported?: boolean })?.supported === true
+      break
     case 'connected':
       session.provider_cursor = (payload as ProviderResumeCursor | null) ?? null
       if (
@@ -294,6 +297,7 @@ export function reduceRuntimeEvent(
       break
     }
     case 'processExited':
+      session.conversation_capability = null
       result.settled = settleTurn(
         session,
         'failed',

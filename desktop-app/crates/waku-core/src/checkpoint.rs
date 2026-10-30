@@ -143,6 +143,17 @@ pub fn capture_ref(cwd: &Path, git_ref: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Different subdirectories of one Git worktree share a history admission
+/// fence. Separate Git worktrees retain separate worktree identities.
+pub(crate) fn workspace_root(cwd: &Path) -> anyhow::Result<PathBuf> {
+    let root = match git_output(cwd, ["rev-parse", "--show-toplevel"]) {
+        Ok(root) if !root.trim().is_empty() => PathBuf::from(root.trim()),
+        _ => cwd.to_owned(),
+    };
+    root.canonicalize()
+        .context("the workspace path is unavailable")
+}
+
 /// Capture the current worktree and untracked files as a dangling commit.
 ///
 /// This shares the checkpoint path's isolated temporary index, so it never
@@ -362,8 +373,75 @@ fn commit_tree(
 }
 
 pub fn restore_ref(cwd: &Path, git_ref: &str) -> anyhow::Result<()> {
+    let current = capture_worktree_commit(cwd)?;
+    restore_snapshot(cwd, git_ref, &current)
+}
+
+pub fn same_tree(cwd: &Path, left: &str, right: &str) -> anyhow::Result<bool> {
+    let left = git_output(cwd, ["rev-parse", "--verify", &format!("{left}^{{tree}}")])?;
+    let right = git_output(cwd, ["rev-parse", "--verify", &format!("{right}^{{tree}}")])?;
+    Ok(left.trim() == right.trim())
+}
+
+/// Refuse to overwrite edits made since the operation's accepted snapshot.
+/// Staged changes belong to the user and are never reset by this path.
+pub fn restore_ref_if_unchanged(cwd: &Path, git_ref: &str, expected: &str) -> anyhow::Result<()> {
+    let staged = git_output(cwd, ["diff", "--cached", "--name-only", "--", "."])?;
+    if !staged.trim().is_empty() {
+        bail!("The workspace has staged changes; preserve them before rewinding");
+    }
+    let current = capture_worktree_commit(cwd)?;
+    if !same_tree(cwd, &current, expected)? {
+        bail!("The workspace changed after the rewind was prepared; no files were restored");
+    }
+    restore_snapshot(cwd, git_ref, expected)
+}
+
+fn restore_snapshot(cwd: &Path, git_ref: &str, expected: &str) -> anyhow::Result<()> {
     let commit = resolve_ref(cwd, git_ref)
         .ok_or_else(|| anyhow!("checkpoint `{git_ref}` is unavailable"))?;
+    // Only remove paths that are explicitly present in the accepted snapshot
+    // and absent from the target. Unrecorded and ignored files are preserved.
+    let deleted = git_output(
+        cwd,
+        [
+            "diff",
+            "--relative",
+            "--name-only",
+            "--diff-filter=D",
+            "-z",
+            expected,
+            &commit,
+            "--",
+            ".",
+        ],
+    )?;
+    let root = cwd.canonicalize()?;
+    let removals = deleted
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            let relative = Path::new(path);
+            if relative.is_absolute()
+                || relative
+                    .components()
+                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
+            {
+                bail!("checkpoint contains an invalid removal path");
+            }
+            let path = root.join(relative);
+            if path.exists()
+                && !path
+                    .parent()
+                    .ok_or_else(|| anyhow!("invalid checkpoint path"))?
+                    .canonicalize()?
+                    .starts_with(&root)
+            {
+                bail!("checkpoint removal escapes the workspace");
+            }
+            Ok(path)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
     git_output(
         cwd,
         [
@@ -376,7 +454,17 @@ pub fn restore_ref(cwd: &Path, git_ref: &str) -> anyhow::Result<()> {
             ".",
         ],
     )?;
-    git_output(cwd, ["clean", "-fd", "--", "."])?;
+    for path in removals {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("could not remove checkpoint-owned file {}", path.display())
+                });
+            }
+        }
+    }
     if has_head(cwd) {
         git_output(cwd, ["reset", "--quiet", "--", "."])?;
     }
@@ -453,7 +541,7 @@ pub fn delete_session_refs(
 /// to know how many turns are stored. This is the remote-safe deletion path:
 /// the daemon enumerates its own repository refs as the authority.
 pub fn delete_all_session_refs(cwd: &Path, session_id: Uuid) -> anyhow::Result<()> {
-    let refs = session_checkpoint_ref_commits(cwd, session_id);
+    let refs = session_checkpoint_ref_commits_strict(cwd, session_id)?;
     let mut commands = String::new();
     for turn_count in refs.turns.keys() {
         commands.push_str(&format!(
@@ -532,40 +620,118 @@ fn session_checkpoint_ref_commits(cwd: &Path, session_id: Uuid) -> SessionCheckp
             &format!("{prefix}*"),
         ],
     )
-    .map(|output| {
-        let mut refs = SessionCheckpointRefs::default();
-        for line in output.lines() {
-            let Some((refname, commit)) = line.trim().split_once(' ') else {
-                continue;
-            };
-            let Some(suffix) = refname.strip_prefix(prefix.as_str()) else {
-                continue;
-            };
-            let target = if let Some(turn_count) = suffix.strip_prefix("turn-start-") {
-                turn_count
-                    .parse()
-                    .ok()
-                    .map(|turn_count| (&mut refs.starts, turn_count))
-            } else if let Some(turn_count) = suffix.strip_prefix("turn-diff-") {
-                turn_count
-                    .parse()
-                    .ok()
-                    .map(|turn_count| (&mut refs.diff_bases, turn_count))
-            } else if let Some(turn_count) = suffix.strip_prefix("turn-") {
-                turn_count
-                    .parse()
-                    .ok()
-                    .map(|turn_count| (&mut refs.turns, turn_count))
-            } else {
-                None
-            };
-            if let Some((target, turn_count)) = target {
-                target.insert(turn_count, commit.to_owned());
+    .map(|output| parse_session_checkpoint_refs(&prefix, &output))
+    .unwrap_or_default()
+}
+
+// Deletion cannot interpret a failed inventory as an empty repository. A
+// removed workspace or a directory outside Git has no reachable refs to clean.
+fn session_checkpoint_ref_commits_strict(
+    cwd: &Path,
+    session_id: Uuid,
+) -> anyhow::Result<SessionCheckpointRefs> {
+    match std::fs::metadata(cwd) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SessionCheckpointRefs::default());
+        }
+        Err(error) => return Err(error).context("cannot inspect checkpoint workspace"),
+    }
+    let prefix = format!("refs/waku/session-{session_id}-");
+    let output = crate::command_env::plain_command("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            &format!("{prefix}*"),
+        ])
+        .env("LC_ALL", "C")
+        .current_dir(cwd)
+        .output();
+    let output = match output {
+        Ok(output) => output,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && !may_have_checkpoint_repository(cwd)? =>
+        {
+            // Git is optional for ordinary chat directories. Only accept the
+            // missing executable when there is no repository to leave behind.
+            return Ok(SessionCheckpointRefs::default());
+        }
+        Err(error) => return Err(error).context("failed to enumerate session checkpoint refs"),
+    };
+    if !output.status.success() {
+        let error = command_error(&output);
+        if error.starts_with("fatal: not a git repository") {
+            // A broken or inaccessible checkout must not masquerade as a
+            // plain directory merely because Git cannot open its metadata.
+            if may_have_checkpoint_repository(cwd)? {
+                bail!("could not enumerate session checkpoint refs: {error}");
+            }
+            return Ok(SessionCheckpointRefs::default());
+        }
+        bail!("could not enumerate session checkpoint refs: {error}");
+    }
+    Ok(parse_session_checkpoint_refs(
+        &prefix,
+        &String::from_utf8_lossy(&output.stdout),
+    ))
+}
+
+// This is a conservative fallback when Git cannot identify the repository,
+// not a replacement for Git discovery. Include worktree gitfiles, symlinks,
+// bare repositories and explicit repository environment overrides.
+fn may_have_checkpoint_repository(cwd: &Path) -> anyhow::Result<bool> {
+    if ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+    {
+        return Ok(true);
+    }
+    let canonical = fs::canonicalize(cwd).context("cannot resolve checkpoint workspace")?;
+    for directory in canonical.ancestors() {
+        for marker in [".git", "HEAD", "objects", "refs"] {
+            match fs::symlink_metadata(directory.join(marker)) {
+                Ok(_) => return Ok(true),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("cannot inspect checkpoint repository"),
             }
         }
-        refs
-    })
-    .unwrap_or_default()
+    }
+    Ok(false)
+}
+
+fn parse_session_checkpoint_refs(prefix: &str, output: &str) -> SessionCheckpointRefs {
+    let mut refs = SessionCheckpointRefs::default();
+    for line in output.lines() {
+        let Some((refname, commit)) = line.trim().split_once(' ') else {
+            continue;
+        };
+        let Some(suffix) = refname.strip_prefix(prefix) else {
+            continue;
+        };
+        let target = if let Some(turn_count) = suffix.strip_prefix("turn-start-") {
+            turn_count
+                .parse()
+                .ok()
+                .map(|turn_count| (&mut refs.starts, turn_count))
+        } else if let Some(turn_count) = suffix.strip_prefix("turn-diff-") {
+            turn_count
+                .parse()
+                .ok()
+                .map(|turn_count| (&mut refs.diff_bases, turn_count))
+        } else if let Some(turn_count) = suffix.strip_prefix("turn-") {
+            turn_count
+                .parse()
+                .ok()
+                .map(|turn_count| (&mut refs.turns, turn_count))
+        } else {
+            None
+        };
+        if let Some((target, turn_count)) = target {
+            target.insert(turn_count, commit.to_owned());
+        }
+    }
+    refs
 }
 
 /// Applies a batch of ref updates through one `git update-ref --stdin`.
@@ -773,6 +939,91 @@ fn command_error(output: &Output) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn session_ref_deletion_without_git_distinguishes_plain_and_git_workspaces() {
+        const FIXTURE: &str = "WAKU_TEST_CHECKPOINT_NO_GIT_ROOT";
+        if let Some(root) = std::env::var_os(FIXTURE) {
+            let root = PathBuf::from(root);
+            let error = crate::command_env::plain_command("git")
+                .arg("--version")
+                .output()
+                .expect_err("fixture must not have Git available");
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+            let session = Uuid::new_v4();
+            delete_all_session_refs(&root.join("plain"), session).unwrap();
+            for name in ["checkout", "bare", "worktree"] {
+                assert!(
+                    delete_all_session_refs(&root.join(name), session).is_err(),
+                    "{name} must remain retryable while Git is unavailable"
+                );
+            }
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("waku-no-git-{}", Uuid::new_v4()));
+        for name in ["plain", "checkout", "bare", "worktree", "empty-path"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+        }
+        git_ok(&root.join("checkout"), &["init", "--quiet"]);
+        git_ok(&root.join("bare"), &["init", "--quiet", "--bare"]);
+        fs::write(root.join("worktree/.git"), b"gitdir: missing-checkout\n").unwrap();
+        let output = crate::command_env::plain_command(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "checkpoint::tests::session_ref_deletion_without_git_distinguishes_plain_and_git_workspaces",
+                "--nocapture",
+            ])
+            .env(FIXTURE, &root)
+            .env("PATH", root.join("empty-path"))
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn strict_session_ref_deletion_preserves_failures_and_allows_missing_workspaces() {
+        let directory = diverged_repository();
+        let session = Uuid::new_v4();
+        capture_turn(&directory, session, 0).unwrap();
+        let reference = checkpoint_ref(session, 0);
+        assert!(has_ref(&directory, &reference));
+        let config_path = directory.join(".git/config");
+        let config = fs::read(&config_path).unwrap();
+        fs::write(&config_path, b"[invalid-config\n").unwrap();
+        assert!(
+            delete_all_session_refs(&directory, session).is_err(),
+            "failed enumeration must not confirm cleanup"
+        );
+        fs::write(&config_path, config).unwrap();
+        assert!(has_ref(&directory, &reference));
+        let lock = directory.join(".git").join(format!("{reference}.lock"));
+        fs::write(&lock, b"fixture lock").unwrap();
+        assert!(
+            delete_all_session_refs(&directory, session).is_err(),
+            "failed ref deletion must remain retryable"
+        );
+        assert!(has_ref(&directory, &reference));
+        fs::remove_file(lock).unwrap();
+        delete_all_session_refs(&directory, session).unwrap();
+        assert!(!has_ref(&directory, &reference));
+        delete_all_session_refs(&directory.join("removed-workspace"), session).unwrap();
+        fs::remove_dir_all(&directory).unwrap();
+        // A project directory removed outside Waku cannot trap local deletion.
+        delete_all_session_refs(&directory, session).unwrap();
+        fs::create_dir_all(&directory).unwrap();
+        delete_all_session_refs(&directory, session).unwrap();
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
     fn git_ok(cwd: &Path, args: &[&str]) {
         let status = crate::command_env::plain_command("git")
             .args(args)
@@ -813,6 +1064,37 @@ mod tests {
         git_ok(&directory, &["add", "main-only.txt"]);
         git_ok(&directory, &["commit", "--quiet", "-m", "main"]);
         directory
+    }
+
+    #[test]
+    fn guarded_restore_rejects_manual_edits_and_preserves_ignored_files() {
+        let directory = diverged_repository();
+        git_ok(&directory, &["config", "core.autocrlf", "false"]);
+        fs::write(directory.join(".gitignore"), "private-cache/\n").unwrap();
+        let baseline = capture_worktree_commit(&directory).unwrap();
+        fs::write(directory.join("tool-output.txt"), "tool-created\n").unwrap();
+        fs::write(directory.join("shared.txt"), "agent edit\n").unwrap();
+        let expected = capture_worktree_commit(&directory).unwrap();
+        fs::write(directory.join("human-note.txt"), "keep this\n").unwrap();
+        assert!(restore_ref_if_unchanged(&directory, &baseline, &expected).is_err());
+        assert_eq!(
+            fs::read_to_string(directory.join("shared.txt")).unwrap(),
+            "agent edit\n"
+        );
+        fs::remove_file(directory.join("human-note.txt")).unwrap();
+        fs::create_dir_all(directory.join("private-cache")).unwrap();
+        fs::write(directory.join("private-cache/keep.txt"), "private\n").unwrap();
+        restore_ref_if_unchanged(&directory, &baseline, &expected).unwrap();
+        assert!(!directory.join("tool-output.txt").exists());
+        assert_eq!(
+            fs::read_to_string(directory.join("shared.txt")).unwrap(),
+            "shared\n"
+        );
+        assert_eq!(
+            fs::read_to_string(directory.join("private-cache/keep.txt")).unwrap(),
+            "private\n"
+        );
+        fs::remove_dir_all(directory).ok();
     }
 
     #[test]

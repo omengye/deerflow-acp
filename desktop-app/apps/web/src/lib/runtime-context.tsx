@@ -22,6 +22,7 @@ import {
 import { toast } from 'sonner'
 import { useDaemon } from './daemon-context'
 import { translate, useI18n } from './i18n'
+import { historyActionEnabled as canUseHistoryAction, historyKey, hasPendingHistoryForSession, restorePendingHistory, type HistoryAction } from './history-retry'
 import {
   attachSession as attachDaemonSession,
   beginTurn,
@@ -112,6 +113,9 @@ interface RuntimeContextValue {
   responseForks: Record<string, number | undefined>
   messageRewinds: Record<string, number | undefined>
   attachSession: (session: AgentSession) => Promise<boolean>
+  connectSession: (session: AgentSession) => Promise<void>
+  hasPendingHistory: (sessionId: string, kind: HistoryAction, turnCount: number) => boolean
+  historyActionEnabled: (session: AgentSession, kind: HistoryAction, turnCount: number) => boolean
   sendPrompt: (
     session: AgentSession,
     prompt: string,
@@ -164,6 +168,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const projectionPersistTimers = useRef(new Map<string, number>())
   const saveGenerations = useRef(new Map<string, number>())
   const sendPromptRef = useRef<RuntimeContextValue['sendPrompt'] | null>(null)
+  const pendingHistoryOperations = useRef(new Map<string, string>())
+  const [, refreshHistoryRetries] = useState(0)
   const pendingSteers = useRef(
     new Map<
       string,
@@ -470,7 +476,29 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
             }))
           }
         }
-        if (event.event.kind === 'steerAccepted') {
+        if (event.event.kind === 'steeringCapability') {
+          const capability = event.event.payload as { supported?: boolean }
+          entry.supportsSteer = capability.supported === true
+          setRuntimes((previous) => ({ ...previous, [session.id]: publicRuntime(entry) }))
+        } else if (event.event.kind === 'steeringUpdated') {
+          const update = event.event.payload as { requestId: string; runId: string; status: string; message: string; reason?: string }
+          if (typeof update.requestId === 'string' && typeof update.message === 'string') {
+            const existing = current.messages.find((message) => message.id === update.requestId)
+            if (!existing) {
+              const pending = pendingSteers.current.get(session.id)
+              const index = pending?.findIndex((item) => item.providerPrompt === update.message) ?? -1
+              if (index >= 0) pending?.splice(index, 1)
+            }
+            const label = ({ pending: 'Submitting intervention', accepted: 'Intervention accepted · awaiting next model decision', applied: 'Intervention applied', rejected: 'Intervention rejected' } as Record<string, string>)[update.status] ?? 'Intervention status unknown · reconnect to check'
+            const display_content = `${label}${update.reason ? `: ${update.reason}` : ''}\n\n${update.message}`
+            current = {
+              ...current,
+              messages: existing
+                ? current.messages.map((message) => message.id === update.requestId ? { ...message, display_content } : message)
+                : [...current.messages, { id: update.requestId, turn_id: current.turns.at(-1)?.id ?? null, role: 'user', content: update.message, display_content, attachments: [], created_at: Math.floor(Date.now() / 1000), streaming: false }],
+            }
+          }
+        } else if (event.event.kind === 'steerAccepted') {
           const payload = event.event.payload as { message?: string }
           const pending = pendingSteers.current.get(session.id)?.shift()
           if (pending) {
@@ -581,13 +609,22 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       const request = (async () => {
         const attached = await attachDaemonSession(client, session.id)
         if (!client.connected) return false
-        if (!attached || entries.current.has(session.id)) {
+        if (restorePendingHistory(pendingHistoryOperations.current, session.id, attached.pendingHistory)) {
+          refreshHistoryRetries((version) => version + 1)
+        }
+        if (!attached.runtimeId || entries.current.has(session.id)) {
+          if (!attached.runtimeId) {
+            queryClient.setQueryData<AgentSession>(daemonKeys.session(config.address, session.id), (current) =>
+              current ? { ...current, conversation_capability: null } : current)
+          }
           return entries.current.has(session.id)
         }
         const current = queryClient.getQueryData<AgentSession>(
           daemonKeys.session(config.address, session.id),
         ) ?? session
         const runtime = subscribe(current, attached.runtimeId)
+        queryClient.setQueryData<AgentSession>(daemonKeys.session(config.address, session.id), (cached) =>
+          ({ ...(cached ?? current), conversation_capability: attached.conversationCapability }))
         if (entries.current.get(session.id) !== runtime) return false
         runtime.supportsSteer = attached.supportsSteer
         runtime.starting = false
@@ -805,7 +842,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
    * socket serializes the start request ahead of the goal command.
    */
   const sendGoalOperation = useCallback(
-    async (inputSession: AgentSession, operation: GoalOperation) => {
+    async (inputSession: AgentSession, operation: GoalOperation | null) => {
       if (!client || !config || phase !== 'connected') {
         throw new Error(translate(localeRef.current, 'errors.daemon_disconnected'))
       }
@@ -820,8 +857,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       // objective also leaves a persistent transcript record — the centered
       // pill a system message renders as. Pushed turn-less so it survives an
       // unwound pursuit.
-      const activating = operation.kind === 'set' && operation.status === 'active'
-      const objective = operation.kind === 'set' ? operation.objective : null
+      const activating = operation?.kind === 'set' && operation.status === 'active'
+      const objective = operation?.kind === 'set' ? operation.objective : null
       const idle = !['connecting', 'working', 'waiting', 'background'].includes(currentSession.status)
         && currentSession.turns.at(-1)?.status !== 'running'
       const now = Math.floor(Date.now() / 1_000)
@@ -896,13 +933,17 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         }
         const attached = entries.current.get(currentSession.id)
         if (attached) {
-          await client.notify({ type: 'goal', operation }, currentSession.id, attached.runtimeId)
+          if (operation) await client.notify({ type: 'goal', operation }, currentSession.id, attached.runtimeId)
           return
         }
       } catch (error) {
         if (restoreOnFailure) cacheSession(restoreOnFailure)
         throw error
       }
+
+      // A read-only attach may have restored an uncertain history operation
+      // whose process has exited. Its original button can retry without Start.
+      if (!operation && hasPendingHistoryForSession(pendingHistoryOperations.current, currentSession.id)) return
 
       const state = await loadTaskState(client)
       const project = state.projects.find((item) => item.id === currentSession.project_id)
@@ -937,7 +978,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       }
       // A fresh worktree task names its branch after the first prompt; when
       // the goal arrives first, the objective is that intent.
-      const namingPrompt = operation.kind === 'set' && operation.objective
+      const namingPrompt = operation?.kind === 'set' && operation.objective
         ? operation.objective
         : 'goal'
       let session = await materializeWorktree(
@@ -983,7 +1024,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
           ...current,
           [session.id]: publicRuntime(runtime),
         }))
-        await client.notify({ type: 'goal', operation }, session.id, runtimeId)
+        if (operation) await client.notify({ type: 'goal', operation }, session.id, runtimeId)
       } catch (error) {
         removeRuntime(session.id)
         if (restoreOnFailure) cacheSession(restoreOnFailure)
@@ -1026,6 +1067,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         session.status === 'idle' ||
         session.status === 'failed'
       ) {
+        if (session.provider === 'deerFlow') {
+          throw new Error('The current run is no longer available for intervention. Submit explicitly as a new turn to continue.')
+        }
         await sendPrompt(session, prompt, attachments, providerPrompt)
         return
       }
@@ -1187,6 +1231,10 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
 
   const forkSessionFromResponse = useCallback(
     async (session: AgentSession, turnCount: number) => {
+      if (!canUseHistoryAction(pendingHistoryOperations.current, session.id, 'fork', turnCount,
+        session.provider !== 'deerFlow' || session.conversation_capability === true)) {
+        throw new Error('请先连接运行时确认会话分叉/回退能力；当前尚未确认支持')
+      }
       if (!client || !config || phase !== 'connected') {
         throw new Error(translate(localeRef.current, 'errors.daemon_disconnected'))
       }
@@ -1194,11 +1242,14 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         throw new Error(translate(localeRef.current, 'errors.task_already_forking'))
       }
       responseForksInFlight.current.set(session.id, turnCount)
+      const operationKey = historyKey(session.id, 'fork', turnCount)
+      const operationId = pendingHistoryOperations.current.get(operationKey) ?? crypto.randomUUID()
+      pendingHistoryOperations.current.set(operationKey, operationId)
       setResponseForks((current) => ({ ...current, [session.id]: turnCount }))
       try {
         const runtime = entries.current.get(session.id)
         const response = await client.request(
-          { type: 'forkSessionFromResponse', turnCount },
+          { type: 'forkSessionFromResponse', turnCount, operationId },
           session.id,
           runtime?.runtimeId,
         )
@@ -1208,6 +1259,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
             actual: response.type,
           }))
         }
+        pendingHistoryOperations.current.delete(operationKey)
         cacheSession(response.session)
         await queryClient.invalidateQueries({
           queryKey: daemonKeys.taskState(config.address),
@@ -1216,6 +1268,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
           session: response.session,
           checkpointWarning: response.checkpointWarning,
         }
+      } catch (error) {
+        if (errorMessage(error).startsWith('rejected:')) {
+          pendingHistoryOperations.current.delete(operationKey)
+        }
+        throw error
       } finally {
         responseForksInFlight.current.delete(session.id)
         setResponseForks((current) => removeRecordKey(current, session.id))
@@ -1231,6 +1288,10 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       prompt: string,
       attachments: MessageAttachment[] = [],
     ) => {
+      if (!canUseHistoryAction(pendingHistoryOperations.current, session.id, 'rewind', turnCount,
+        session.provider !== 'deerFlow' || session.conversation_capability === true)) {
+        throw new Error('请先连接运行时确认会话分叉/回退能力；当前尚未确认支持')
+      }
       if (!client || !config || phase !== 'connected') {
         throw new Error(translate(localeRef.current, 'errors.daemon_disconnected'))
       }
@@ -1238,13 +1299,16 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         throw new Error(translate(localeRef.current, 'errors.task_already_rewinding'))
       }
       messageRewindsInFlight.current.set(session.id, turnCount)
+      const operationKey = historyKey(session.id, 'rewind', turnCount)
+      const operationId = pendingHistoryOperations.current.get(operationKey) ?? crypto.randomUUID()
+      pendingHistoryOperations.current.set(operationKey, operationId)
       setMessageRewinds((current) => ({ ...current, [session.id]: turnCount }))
       try {
         const pendingPersistence = persistenceTails.current.get(session.id)
         if (pendingPersistence) await pendingPersistence
         const runtime = entries.current.get(session.id)
         const response = await client.request(
-          { type: 'rewindSessionToMessage', turnCount },
+          { type: 'rewindSessionToMessage', turnCount, operationId },
           session.id,
           runtime?.runtimeId,
         )
@@ -1254,6 +1318,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
             actual: response.type,
           }))
         }
+        pendingHistoryOperations.current.delete(operationKey)
 
         removeRuntime(session.id)
         cacheSession(response.session)
@@ -1276,6 +1341,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
           session: response.session,
           cleanupWarning: response.cleanupWarning,
         }
+      } catch (error) {
+        if (errorMessage(error).startsWith('rejected:')) {
+          pendingHistoryOperations.current.delete(operationKey)
+        }
+        throw error
       } finally {
         messageRewindsInFlight.current.delete(session.id)
         setMessageRewinds((current) => removeRecordKey(current, session.id))
@@ -1321,6 +1391,10 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     responseForks,
     messageRewinds,
     attachSession,
+    connectSession: (session) => sendGoalOperation(session, null),
+    hasPendingHistory: (sessionId, kind, turnCount) => pendingHistoryOperations.current.has(historyKey(sessionId, kind, turnCount)),
+    historyActionEnabled: (session, kind, turnCount) => canUseHistoryAction(pendingHistoryOperations.current,
+      session.id, kind, turnCount, session.provider !== 'deerFlow' || session.conversation_capability === true),
     sendPrompt,
     sendGoalOperation,
     steerPrompt,

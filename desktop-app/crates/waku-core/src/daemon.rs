@@ -1,5 +1,8 @@
 //! Provider backend and driver-event wire translation for `waku-daemon`.
 
+mod session_deletion;
+mod session_history;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -20,7 +23,7 @@ use crate::computer_use::{ComputerTarget, ComputerUsePhase, ComputerUseState};
 use crate::driver::{self, DriverHandle, DriverStartOptions, SessionOptions};
 use crate::model::{
     ActivityKind, AgentSession, Checkpoint, CheckpointStatus, DriverEvent, PermissionOption,
-    Project, ProviderKind, ProviderResumeCursor, SessionStatus,
+    ProviderKind, ProviderResumeCursor, SessionStatus,
 };
 use crate::persistence::{ComposerDraftStore, PersistedState, StateStore};
 use crate::settings::DaemonSettingsStore;
@@ -49,14 +52,19 @@ pub struct WakuBackend {
     #[cfg(all(test, unix))]
     terminal_shell: Option<alacritty_terminal::tty::Shell>,
     settings: DaemonSettingsStore,
-    task_store: StateStore,
-    task_state: Mutex<PersistedState>,
-    removed_session_ids: Mutex<HashSet<Uuid>>,
+    task_store: Arc<StateStore>,
+    task_state: Arc<Mutex<PersistedState>>,
+    removed_session_ids: Arc<Mutex<HashSet<Uuid>>>,
+    session_lifecycle_locks: Arc<Mutex<HashMap<Uuid, Arc<Mutex<()>>>>>,
+    workspace_admission_locks: Arc<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>>,
+    active_workspace_prompts: Arc<Mutex<HashMap<Uuid, (Uuid, PathBuf)>>>,
+    runtime_workspaces: Arc<Mutex<HashMap<Uuid, (Uuid, PathBuf)>>>,
+    conversation_capabilities: Arc<Mutex<HashMap<Uuid, (Uuid, bool)>>>,
+    deerflow_ready: Arc<Mutex<HashMap<Uuid, (Uuid, waku_protocol::deerflow_tasks::Event)>>>,
     composer_drafts: ComposerDraftStore,
     attachments: AttachmentStore,
     usage_scan_cache: Mutex<crate::usage_history::ScanCache>,
     checkpoint_capture_locks: Mutex<HashMap<(PathBuf, Uuid, usize), Arc<Mutex<()>>>>,
-    usage_rates_dir: std::path::PathBuf,
     default_cwd: std::path::PathBuf,
 }
 
@@ -67,6 +75,11 @@ impl WakuBackend {
             .context("could not load Waku task database")?;
         migrate_projectless_state(&task_store, &mut task_state)?;
         let composer_drafts = ComposerDraftStore::for_state_path(task_store.path());
+        if let Some(directory) = task_store.path().parent() {
+            if let Err(error) = crate::usage_history::remove_legacy_price_cache(directory) {
+                eprintln!("could not remove obsolete model price cache: {error}");
+            }
+        }
         let attachments = AttachmentStore::new(
             task_store
                 .path()
@@ -74,28 +87,36 @@ impl WakuBackend {
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("attachments"),
         );
-        let usage_rates_dir = task_store
-            .path()
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .to_owned();
-        Ok(Self {
+        let removed_session_ids = task_store
+            .session_deletions()?
+            .into_iter()
+            .map(|deletion| deletion.session_id)
+            .collect();
+        let backend = Self {
             deerflow: crate::deerflow_config::DeerFlowService::default(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             terminals: Mutex::new(HashMap::new()),
             #[cfg(all(test, unix))]
             terminal_shell: None,
             settings,
-            task_store,
-            task_state: Mutex::new(task_state),
-            removed_session_ids: Mutex::new(HashSet::new()),
+            task_store: Arc::new(task_store),
+            task_state: Arc::new(Mutex::new(task_state)),
+            removed_session_ids: Arc::new(Mutex::new(removed_session_ids)),
+            session_lifecycle_locks: Arc::new(Mutex::new(HashMap::new())),
+            workspace_admission_locks: Arc::new(Mutex::new(HashMap::new())),
+            active_workspace_prompts: Arc::new(Mutex::new(HashMap::new())),
+            runtime_workspaces: Arc::new(Mutex::new(HashMap::new())),
+            conversation_capabilities: Arc::new(Mutex::new(HashMap::new())),
+            deerflow_ready: Arc::new(Mutex::new(HashMap::new())),
             composer_drafts,
             attachments,
             usage_scan_cache: Mutex::new(HashMap::new()),
             checkpoint_capture_locks: Mutex::new(HashMap::new()),
-            usage_rates_dir,
             default_cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-        })
+        };
+        backend.start_deletion_recovery()?;
+        backend.start_history_recovery()?;
+        Ok(backend)
     }
 
     #[cfg(all(test, unix))]
@@ -228,18 +249,79 @@ impl Backend for WakuBackend {
     fn handle(&self, request: Request, events: EventSink) -> anyhow::Result<ResponsePayload> {
         let session_id = request.session_id;
         let runtime_id = request.runtime_id;
+        // Start, prompt and deletion of one desktop identity share a fence.
+        // The daemon worker owns this lock; no UI/render thread waits on it.
+        let lifecycle_lock = self
+            .session_lifecycle_locks
+            .lock()
+            .entry(session_id)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let _lifecycle = lifecycle_lock.lock();
+        if !matches!(
+            &request.command,
+            Command::RemoveSession | Command::CloseSession
+        ) && self.removed_session_ids.lock().contains(&session_id)
+        {
+            bail!("会话正在删除或已删除，请重试删除以完成操作");
+        }
+        if !matches!(
+            &request.command,
+            Command::ForkSessionFromResponse { .. }
+                | Command::RewindSessionToMessage { .. }
+                | Command::AttachSession
+                | Command::CloseSession
+                | Command::HydrateSession { .. }
+        ) && self.history_pending(session_id)?
+        {
+            bail!(
+                "A conversation history operation is pending; retry the original fork or rewind to reconcile it"
+            );
+        }
+        // A rewind's eligibility check, intent, workspace restore, and commit
+        // share the same fence used to admit work into this Git worktree.
+        let workspace_admission = self.history_admission_lock(session_id, &request.command)?;
+        let _workspace_admission = workspace_admission.as_ref().map(|(lock, _)| lock.lock());
+        if let Some((_, cwd)) = &workspace_admission {
+            if !matches!(
+                &request.command,
+                Command::ForkSessionFromResponse { .. } | Command::RewindSessionToMessage { .. }
+            ) && self.history_workspace_pending(cwd)?
+            {
+                bail!(
+                    "The workspace has a pending conversation rewind; retry it before starting work"
+                );
+            }
+        }
         match request.command {
             Command::AttachSession => {
+                let pending_history = self.pending_history_operation(session_id)?;
                 let sessions = self.sessions.lock();
                 let Some((runtime_id, driver)) = sessions.get(&session_id) else {
                     return Ok(ResponsePayload::SessionRuntime {
                         runtime_id: None,
                         supports_steer: false,
+                        conversation_capability: None,
+                        deerflow_ready: None,
+                        pending_history,
                     });
                 };
                 Ok(ResponsePayload::SessionRuntime {
                     runtime_id: Some(*runtime_id),
                     supports_steer: driver.supports_steer(),
+                    conversation_capability: self
+                        .conversation_capabilities
+                        .lock()
+                        .get(&session_id)
+                        .filter(|(id, _)| id == runtime_id)
+                        .map(|(_, supported)| *supported),
+                    deerflow_ready: self
+                        .deerflow_ready
+                        .lock()
+                        .get(&session_id)
+                        .filter(|(id, _)| id == runtime_id)
+                        .map(|(_, ready)| ready.clone()),
+                    pending_history,
                 })
             }
             Command::GetSettings => Ok(ResponsePayload::Settings {
@@ -280,7 +362,6 @@ impl Backend for WakuBackend {
             }
             Command::FetchPlanUsage {
                 provider,
-                binary_override,
                 cli_version,
             } => {
                 let usage = match provider {
@@ -293,16 +374,7 @@ impl Backend for WakuBackend {
                     crate::model::ProviderKind::OpenCode => {
                         crate::usage::fetch_opencode_go_plan_usage()?
                     }
-                    crate::model::ProviderKind::Grok => {
-                        ensure_shell_environment();
-                        let probe = match binary_override.as_deref() {
-                            override_value => {
-                                crate::model::provider_probe(provider, override_value)
-                            }
-                        };
-                        let binary = probe.path.ok_or_else(|| anyhow!("grok is not installed"))?;
-                        Some(crate::usage::fetch_grok_plan_usage(&binary)?)
-                    }
+                    crate::model::ProviderKind::Grok => None,
                     _ => bail!("provider has no plan usage fetcher"),
                 };
                 Ok(ResponsePayload::PlanUsage { usage })
@@ -316,10 +388,8 @@ impl Backend for WakuBackend {
                 window,
                 project_roots,
             } => {
-                let rates = crate::usage_history::load_rate_table(&self.usage_rates_dir);
                 let history = crate::usage_history::scan(
                     &mut self.usage_scan_cache.lock(),
-                    &rates,
                     window,
                     &project_roots,
                 );
@@ -389,11 +459,18 @@ impl Backend for WakuBackend {
                     .map(|session| session.id)
                     .collect::<Vec<_>>();
                 for mut session in sessions {
+                    if self.history_pending(session.id)? {
+                        continue;
+                    }
                     if let Some(existing) = state
                         .sessions
                         .iter_mut()
                         .find(|existing| existing.id == session.id)
                     {
+                        self.task_store.hydrate(existing)?;
+                        if session.history_revision != existing.history_revision {
+                            continue;
+                        }
                         if session_projection_precedes(
                             existing,
                             &session,
@@ -437,33 +514,7 @@ impl Backend for WakuBackend {
                 Ok(ResponsePayload::TaskStateSaved { sessions })
             }
             Command::RemoveSession => {
-                {
-                    let mut state = self.task_state.lock();
-                    self.removed_session_ids.lock().insert(session_id);
-                    let project_id = state
-                        .sessions
-                        .iter()
-                        .find(|session| session.id == session_id)
-                        .map(|session| session.project_id);
-                    state.sessions.retain(|session| session.id != session_id);
-                    if let Some(project_id) = project_id {
-                        let remove_project = state
-                            .projects
-                            .iter()
-                            .find(|project| project.id == project_id)
-                            .is_some_and(Project::is_projectless)
-                            && !state
-                                .sessions
-                                .iter()
-                                .any(|session| session.project_id == project_id);
-                        if remove_project {
-                            state.projects.retain(|project| project.id != project_id);
-                        }
-                    }
-                    self.task_store.save(&mut state)?;
-                }
-                let removed = self.sessions.lock().remove(&session_id);
-                drop(removed);
+                self.deletion_context().remove_session(session_id)?;
                 Ok(ResponsePayload::Ack)
             }
             Command::HydrateSession { session_id } => {
@@ -653,11 +704,18 @@ impl Backend for WakuBackend {
             Command::LoadComposerDrafts => Ok(ResponsePayload::ComposerDrafts {
                 drafts: self.composer_drafts.load()?,
             }),
-            Command::SaveComposerDrafts { drafts, generation } => {
+            Command::SaveComposerDrafts {
+                mut drafts,
+                generation,
+            } => {
+                let blocked = self.removed_session_ids.lock();
+                drafts.sessions.retain(|id, _| !blocked.contains(id));
                 self.composer_drafts.save(drafts, generation)?;
                 Ok(ResponsePayload::Ack)
             }
-            Command::ApplyComposerDraftChanges { changes } => {
+            Command::ApplyComposerDraftChanges { mut changes } => {
+                let blocked = self.removed_session_ids.lock();
+                changes.retain(|change| !matches!(change.target, crate::persistence::ComposerDraftTarget::Session { session_id } if blocked.contains(&session_id)));
                 self.composer_drafts.apply_changes(changes)?;
                 Ok(ResponsePayload::Ack)
             }
@@ -696,17 +754,23 @@ impl Backend for WakuBackend {
                 self.task_store.blob_sweep()();
                 Ok(ResponsePayload::Ack)
             }
-            Command::ForkSessionFromResponse { turn_count } => {
+            Command::ForkSessionFromResponse {
+                turn_count,
+                operation_id,
+            } => {
                 let (session, checkpoint_warning) =
-                    self.fork_session_from_response(session_id, turn_count)?;
+                    self.fork_session_from_response(session_id, turn_count, operation_id)?;
                 Ok(ResponsePayload::SessionForked {
                     session,
                     checkpoint_warning,
                 })
             }
-            Command::RewindSessionToMessage { turn_count } => {
+            Command::RewindSessionToMessage {
+                turn_count,
+                operation_id,
+            } => {
                 let (session, cleanup_warning) =
-                    self.rewind_session_to_message(session_id, turn_count)?;
+                    self.rewind_session_to_message(session_id, turn_count, operation_id)?;
                 Ok(ResponsePayload::SessionRewound {
                     session,
                     cleanup_warning,
@@ -783,8 +847,16 @@ impl Backend for WakuBackend {
                 Ok(ResponsePayload::Ack)
             }
             Command::Start { options } => {
+                let workspace_identity = session_history::workspace_identity(&options.cwd)?;
+                if self.history_workspace_pending(&options.cwd)? {
+                    bail!(
+                        "The workspace has a pending conversation rewind; reconcile it before starting work"
+                    );
+                }
                 let previous = self.sessions.lock().remove(&session_id);
                 drop(previous);
+                self.conversation_capabilities.lock().remove(&session_id);
+                self.deerflow_ready.lock().remove(&session_id);
                 let provider = decode_enum(&options.provider)?;
                 let options = DriverStartOptions {
                     binary: options.binary,
@@ -811,13 +883,102 @@ impl Backend for WakuBackend {
                 self.sessions
                     .lock()
                     .insert(session_id, (runtime_id, handle));
+                self.runtime_workspaces
+                    .lock()
+                    .insert(session_id, (runtime_id, workspace_identity.clone()));
                 let runtimes = Arc::downgrade(&self.sessions);
+                let active_workspace_prompts = self.active_workspace_prompts.clone();
+                let runtime_workspaces = self.runtime_workspaces.clone();
+                let conversation_capabilities = self.conversation_capabilities.clone();
+                let deerflow_ready = self.deerflow_ready.clone();
                 let forwarding = std::thread::Builder::new()
                     .name(format!("waku-daemon-events-{session_id}"))
                     .spawn(move || {
                         while let Ok(event) = event_receiver.recv() {
                             let exited = matches!(event, DriverEvent::ProcessExited);
+                            if matches!(event, DriverEvent::TurnStarted) {
+                                if runtime_workspaces
+                                    .lock()
+                                    .get(&session_id)
+                                    .is_some_and(|(id, _)| *id == runtime_id)
+                                {
+                                    active_workspace_prompts.lock().insert(
+                                        session_id,
+                                        (runtime_id, workspace_identity.clone()),
+                                    );
+                                }
+                            }
+                            if let DriverEvent::DeerFlowTasks(task_event) = &event {
+                                if let Some(runtimes) = runtimes.upgrade() {
+                                    let runtimes = runtimes.lock();
+                                    if runtimes
+                                        .get(&session_id)
+                                        .is_some_and(|(id, _)| *id == runtime_id)
+                                    {
+                                        match task_event {
+                                            waku_protocol::deerflow_tasks::Event::Ready {
+                                                ..
+                                            } => {
+                                                deerflow_ready.lock().insert(
+                                                    session_id,
+                                                    (runtime_id, task_event.clone()),
+                                                );
+                                            }
+                                            waku_protocol::deerflow_tasks::Event::Invalidated {
+                                                ..
+                                            } => {
+                                                deerflow_ready.lock().remove(&session_id);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                            if let DriverEvent::ConversationCapability { supported } = &event {
+                                if let Some(runtimes) = runtimes.upgrade() {
+                                    let runtimes = runtimes.lock();
+                                    if runtimes
+                                        .get(&session_id)
+                                        .is_some_and(|(id, _)| *id == runtime_id)
+                                    {
+                                        conversation_capabilities
+                                            .lock()
+                                            .insert(session_id, (runtime_id, *supported));
+                                    }
+                                }
+                            }
+                            if matches!(
+                                event,
+                                DriverEvent::TurnFinished { .. } | DriverEvent::ProcessExited
+                            ) {
+                                remove_finished_runtime(
+                                    &active_workspace_prompts,
+                                    session_id,
+                                    runtime_id,
+                                );
+                            }
                             if exited {
+                                remove_finished_runtime(
+                                    &runtime_workspaces,
+                                    session_id,
+                                    runtime_id,
+                                );
+                                {
+                                    let mut capabilities = conversation_capabilities.lock();
+                                    if capabilities
+                                        .get(&session_id)
+                                        .is_some_and(|(id, _)| *id == runtime_id)
+                                    {
+                                        capabilities.remove(&session_id);
+                                    }
+                                    let mut ready = deerflow_ready.lock();
+                                    if ready
+                                        .get(&session_id)
+                                        .is_some_and(|(id, _)| *id == runtime_id)
+                                    {
+                                        ready.remove(&session_id);
+                                    }
+                                }
                                 if let Some(runtimes) = runtimes.upgrade() {
                                     remove_finished_runtime(&runtimes, session_id, runtime_id);
                                 }
@@ -837,6 +998,7 @@ impl Backend for WakuBackend {
                     });
                 if let Err(error) = forwarding {
                     remove_finished_runtime(&self.sessions, session_id, runtime_id);
+                    remove_finished_runtime(&self.runtime_workspaces, session_id, runtime_id);
                     return Err(error).context("could not start daemon event forwarding thread");
                 }
                 Ok(ResponsePayload::Started { supports_steer })
@@ -851,6 +1013,8 @@ impl Backend for WakuBackend {
                         .flatten()
                 };
                 drop(removed);
+                remove_finished_runtime(&self.runtime_workspaces, session_id, runtime_id);
+                remove_finished_runtime(&self.active_workspace_prompts, session_id, runtime_id);
                 Ok(ResponsePayload::Ack)
             }
             command => {
@@ -878,6 +1042,43 @@ impl Backend for WakuBackend {
                     ..
                 } = &command
                 {
+                    let cwd = {
+                        let state = self.task_state.lock();
+                        state
+                            .sessions
+                            .iter()
+                            .find(|session| session.id == session_id)
+                            .and_then(|session| {
+                                session.workspace.path().map(Path::to_path_buf).or_else(|| {
+                                    state
+                                        .projects
+                                        .iter()
+                                        .find(|project| project.id == session.project_id)
+                                        .map(|project| project.path.clone())
+                                })
+                            })
+                    }
+                    .or_else(|| {
+                        self.runtime_workspaces
+                            .lock()
+                            .get(&session_id)
+                            .filter(|(id, _)| *id == runtime_id)
+                            .map(|(_, path)| path.clone())
+                    });
+                    if cwd
+                        .as_ref()
+                        .is_some_and(|cwd| self.history_workspace_pending(cwd).unwrap_or(true))
+                    {
+                        bail!(
+                            "The workspace has a pending conversation rewind; reconcile it before sending a new message"
+                        );
+                    }
+                    if let Some(cwd) = &cwd {
+                        self.active_workspace_prompts.lock().insert(
+                            session_id,
+                            (runtime_id, session_history::workspace_identity(cwd)?),
+                        );
+                    }
                     // Publish the submission into the runtime's event stream
                     // before the provider can start the turn. Every attached
                     // client mirrors the user message and its turn from this
@@ -885,11 +1086,18 @@ impl Backend for WakuBackend {
                     // the only record of the prompt — a follower that only
                     // knew the provider's `turnStarted` used to persist a
                     // projection without it, erasing the message for everyone.
-                    events.send(event_to_wire(DriverEvent::PromptSubmitted {
+                    if let Err(error) = events.send(event_to_wire(DriverEvent::PromptSubmitted {
                         message: prompt.clone(),
                         turn_id: turn_id.unwrap_or_else(Uuid::new_v4),
                         message_id: message_id.unwrap_or_else(Uuid::new_v4),
-                    })?)?;
+                    })?) {
+                        remove_finished_runtime(
+                            &self.active_workspace_prompts,
+                            session_id,
+                            runtime_id,
+                        );
+                        return Err(error.into());
+                    }
                 }
                 handle_driver_command(&driver, command)
             }
@@ -1012,7 +1220,19 @@ impl WakuBackend {
         &self,
         session_id: Uuid,
         turn_count: usize,
+        operation_id: Option<Uuid>,
     ) -> anyhow::Result<(AgentSession, Option<String>)> {
+        if self
+            .task_state
+            .lock()
+            .sessions
+            .iter()
+            .any(|session| session.id == session_id && session.provider == ProviderKind::DeerFlow)
+        {
+            return self
+                .deerflow_history_mutation(session_id, turn_count, "fork", operation_id)
+                .map(|session| (session, None));
+        }
         let (source, cwd, fork_title) = {
             let mut state = self.task_state.lock();
             let source_index = state
@@ -1100,7 +1320,19 @@ impl WakuBackend {
         &self,
         session_id: Uuid,
         turn_count: usize,
+        operation_id: Option<Uuid>,
     ) -> anyhow::Result<(AgentSession, Option<String>)> {
+        if self
+            .task_state
+            .lock()
+            .sessions
+            .iter()
+            .any(|session| session.id == session_id && session.provider == ProviderKind::DeerFlow)
+        {
+            return self
+                .deerflow_history_mutation(session_id, turn_count, "rewind", operation_id)
+                .map(|session| (session, None));
+        }
         let (source, cwd) = {
             let mut state = self.task_state.lock();
             let source_index = state
@@ -1821,7 +2053,7 @@ fn fork_provider_session(
             None,
         ),
         ProviderSessionForkRequest::DeerFlow { .. } => {
-            bail!("DeerFlow ACP does not support conversation forking");
+            bail!("DeerFlow forks require the daemon's native history operation")
         }
     };
     Ok(ProviderSessionFork {
@@ -2059,6 +2291,13 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
             "promptSubmitted",
             json!({ "message": message, "turnId": turn_id, "messageId": message_id }),
         ),
+        DriverEvent::SteeringCapability { supported } => {
+            ("steeringCapability", json!({ "supported": supported }))
+        }
+        DriverEvent::ConversationCapability { supported } => {
+            ("conversationCapability", json!({ "supported": supported }))
+        }
+        DriverEvent::SteeringUpdated(update) => ("steeringUpdated", serde_json::to_value(update)?),
         DriverEvent::SteerAccepted { message } => ("steerAccepted", json!({ "message": message })),
         DriverEvent::SteerRejected { message, reason } => (
             "steerRejected",
@@ -2152,6 +2391,13 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 message_id: submitted.message_id,
             }
         }
+        "steeringCapability" => DriverEvent::SteeringCapability {
+            supported: payload["supported"].as_bool().unwrap_or(false),
+        },
+        "conversationCapability" => DriverEvent::ConversationCapability {
+            supported: payload["supported"].as_bool().unwrap_or(false),
+        },
+        "steeringUpdated" => DriverEvent::SteeringUpdated(serde_json::from_value(payload)?),
         "steerAccepted" => {
             let steer: AcceptedSteerWire = serde_json::from_value(payload)?;
             DriverEvent::SteerAccepted {

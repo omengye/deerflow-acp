@@ -324,11 +324,14 @@ fn branch_picker_pins_selection_and_filters_by_name() {
 }
 
 #[test]
-fn receipt_recovery_instructions_survive_compaction() {
+fn obsolete_receipt_review_error_becomes_a_normal_conversation_interruption() {
     let raw = "Uncertain tool effects require review.: {\n\"automaticReplay\": false,\n\"kind\": \"reconciliation_required\",\n\"listMethod\": \"_deerflow/tool_receipts/list\",\n\"reconcileMethod\": \"_deerflow/tool_receipts/reconcile\"\n}\nmore diagnostics";
     let message = compact_driver_error(raw);
-    assert!(message.contains("确认工具结果"));
-    assert!(message.contains("暂时无法确认"));
+    assert!(message.contains("上次运行已中断"));
+    assert!(message.contains("结果尚不确定"));
+    assert!(message.contains("在对话中发送消息"));
+    assert!(!message.contains("确认工具结果"));
+    assert!(!message.contains("核对"));
     assert!(!message.contains("listMethod"));
     assert_eq!(compact_driver_error(&message), message);
 }

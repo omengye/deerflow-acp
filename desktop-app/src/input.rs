@@ -838,6 +838,12 @@ impl TextInput {
         self.focus_handle.clone()
     }
 
+    /// Opt a form input into its enclosing group's keyboard traversal.
+    pub fn tab_stop(mut self, index: isize) -> Self {
+        self.focus_handle = self.focus_handle.tab_index(index).tab_stop(true);
+        self
+    }
+
     pub fn is_visually_focused(&self, window: &Window) -> bool {
         self.focus_handle.is_focused(window) || self.context_menu_preserves_visual_focus()
     }

@@ -111,6 +111,13 @@ impl DriverHandle {
         self.inner.cancel();
     }
 
+    pub fn delete_session(
+        &self,
+        expected_native_session_id: String,
+    ) -> Receiver<Result<(), String>> {
+        self.inner.delete_session(expected_native_session_id)
+    }
+
     pub fn cancel_computer_use(&self) {
         self.inner.cancel_computer_use();
     }
@@ -164,9 +171,24 @@ impl DriverHandle {
     pub fn fork(&self, turns_to_remove: usize) -> anyhow::Result<ProviderResumeCursor> {
         self.inner.fork(turns_to_remove)
     }
+
+    pub(crate) fn deerflow_history(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.inner.deerflow_history(method, params)
+    }
 }
 
 pub trait DriverControl: Send + Sync {
+    fn deerflow_history(
+        &self,
+        _method: &str,
+        _params: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        anyhow::bail!("native conversation history is not supported by this transport")
+    }
     fn prompt(&self, prompt: String);
     fn prompt_with_attachments(
         &self,
@@ -183,6 +205,13 @@ pub trait DriverControl: Send + Sync {
     /// `DriverEvent::SteerRejected`.
     fn steer(&self, _prompt: String) {}
     fn cancel(&self);
+    fn delete_session(&self, _expected_native_session_id: String) -> Receiver<Result<(), String>> {
+        let (reply, result) = crossbeam_channel::bounded(1);
+        let _ = reply.send(Err(
+            "Session deletion is not supported by this transport".into()
+        ));
+        result
+    }
     fn cancel_computer_use(&self) {}
     fn refresh_background_work(&self) {}
     fn deerflow_tasks(&self, _command: waku_protocol::deerflow_tasks::Command) {}

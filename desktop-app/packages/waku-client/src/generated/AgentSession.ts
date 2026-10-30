@@ -15,6 +15,10 @@ import type { TranscriptBlock } from "./TranscriptBlock";
 
 export type AgentSession = { id: string,
 /**
+ * Daemon-owned conversation revision; rejects stale projections after rewind.
+ */
+history_revision: number,
+/**
  * A title explicitly chosen by the user. [`Self::DEFAULT_TITLE`] means
  * no explicit title has been set, so [`Self::auto_title`] may be shown.
  */
@@ -48,6 +52,10 @@ updated_at: number,
  * then refreshed when the turn settles, whatever its outcome.
  */
 last_reply_at?: number | null, provider_cursor: ProviderResumeCursor | null,
+/**
+ * Capability confirmed by the currently attached runtime. Never persisted.
+ */
+conversation_capability?: boolean | null,
 /**
  * Slash commands the provider reported for this session's live process,
  * kept so a resumed session still completes them before its next

@@ -109,6 +109,13 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
             "promptSubmitted",
             json!({ "message": message, "turnId": turn_id, "messageId": message_id }),
         ),
+        DriverEvent::SteeringCapability { supported } => {
+            ("steeringCapability", json!({ "supported": supported }))
+        }
+        DriverEvent::ConversationCapability { supported } => {
+            ("conversationCapability", json!({ "supported": supported }))
+        }
+        DriverEvent::SteeringUpdated(update) => ("steeringUpdated", serde_json::to_value(update)?),
         DriverEvent::SteerAccepted { message } => ("steerAccepted", json!({ "message": message })),
         DriverEvent::SteerRejected { message, reason } => (
             "steerRejected",
@@ -202,6 +209,13 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 message_id: submitted.message_id,
             }
         }
+        "steeringCapability" => DriverEvent::SteeringCapability {
+            supported: payload["supported"].as_bool().unwrap_or(false),
+        },
+        "conversationCapability" => DriverEvent::ConversationCapability {
+            supported: payload["supported"].as_bool().unwrap_or(false),
+        },
+        "steeringUpdated" => DriverEvent::SteeringUpdated(serde_json::from_value(payload)?),
         "steerAccepted" => {
             let steer: AcceptedSteerWire = serde_json::from_value(payload)?;
             DriverEvent::SteerAccepted {
@@ -330,6 +344,17 @@ mod tests {
             assert_eq!(wire.kind, "toolApprovalChanged");
             assert!(
                 matches!(event_from_wire(wire).unwrap(), DriverEvent::ToolApprovalChanged(actual) if actual == mode)
+            );
+        }
+    }
+
+    #[test]
+    fn conversation_capability_round_trip_preserves_refusal() {
+        for supported in [false, true] {
+            let wire = event_to_wire(DriverEvent::ConversationCapability { supported }).unwrap();
+            assert_eq!(wire.kind, "conversationCapability");
+            assert!(
+                matches!(event_from_wire(wire).unwrap(), DriverEvent::ConversationCapability { supported: actual } if actual == supported)
             );
         }
     }

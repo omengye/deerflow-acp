@@ -89,3 +89,19 @@ export const sessionDetails = sqliteTable("session_details", {
   sessionId: text("session_id").primaryKey(),
   data: text("data").notNull(),
 });
+
+/** Durable cross-backend deletion intent; completed rows are tombstones. */
+export const sessionDeletions = sqliteTable("session_deletions", {
+  sessionId: text("session_id").primaryKey(),
+  operationId: text("operation_id").notNull(),
+  nativeSessionId: text("native_session_id"),
+  workspacePath: text("workspace_path"),
+  turnCount: integer("turn_count").notNull(),
+  stage: text("stage").notNull(),
+});
+
+/** Restartable provider-history operations; the request identity is immutable. */
+export const sessionHistoryOperations = sqliteTable("session_history_operations", {
+  sessionId: text("session_id").primaryKey(),
+  data: text("data").notNull(),
+});

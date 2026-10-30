@@ -1,7 +1,7 @@
-//! The settings Usage page: historical token and cost usage across provider
+//! The settings Usage page: historical token usage across provider
 //! transcripts, mirroring T3 Code's usage dashboard — a windowed headline with
 //! per-provider share bars, a layered daily chart, a metric strip, a
-//! model/day breakdown, and cost quality. Data comes from
+//! model/day breakdown. Data comes from
 //! [`crate::usage_history`], scanned by the daemon; frames read only the
 //! snapshot stored on the entity.
 
@@ -12,8 +12,8 @@ use gpui::{PathBuilder, relative};
 
 use super::*;
 use crate::usage_history::{
-    self, MONTHLY_WINDOW, MonthSlice, PricingStatus, ProjectSlice, ProviderDay, UsageHistory,
-    UsageProvider, UsageWindow, WINDOW_CHOICES,
+    self, MONTHLY_WINDOW, MonthSlice, ProjectSlice, ProviderDay, UsageHistory, UsageProvider,
+    UsageWindow, WINDOW_CHOICES,
 };
 
 /// Rendered chart height, matching T3's `h-56` plot.
@@ -217,7 +217,7 @@ impl Waku {
                 .into_any_element();
         };
 
-        if !history.errors.is_empty() || history.pricing == PricingStatus::Unavailable {
+        if !history.errors.is_empty() {
             page = page.child(usage_notices(history, &theme));
         }
 
@@ -239,8 +239,7 @@ impl Waku {
                         .flex()
                         .items_start()
                         .gap(px(32.0))
-                        .child(self.render_usage_breakdown(history, &theme, cx))
-                        .child(usage_quality_panel(history, &theme)),
+                        .child(self.render_usage_breakdown(history, &theme, cx)),
                 ),
             UsageViewMode::Monthly => page.child(usage_month_list(
                 self,
@@ -425,27 +424,18 @@ impl Waku {
             .child(refresh)
     }
 
-    /// The headline figure in the active metric plus one share bar per
-    /// provider. The summary follows the chart toggle so the headline and the
-    /// series always read the same units.
+    /// Processed tokens and each provider's share of the selected window.
     fn render_usage_summary(
         &self,
         history: &UsageHistory,
         theme: &Theme,
         _cx: &mut Context<Self>,
     ) -> Div {
-        let metric = self.usage_metric;
-        let headline = match metric {
-            UsageMetric::Cost => format!("{}*", format_usd(history.cost_usd)),
-            UsageMetric::Tokens => format_tokens_compact(history.total_tokens as f64),
-        };
-        let caption = match metric {
-            UsageMetric::Cost => tr!("usage.full_api_rate_note"),
-            UsageMetric::Tokens => tr!(
-                "usage.sessions_summary",
-                count = format_count(history.sessions)
-            ),
-        };
+        let headline = format_tokens_compact(history.total_tokens as f64);
+        let caption = tr!(
+            "usage.sessions_summary",
+            count = format_count(history.sessions)
+        );
 
         let mut column = div()
             .w(px(300.0))
@@ -462,10 +452,7 @@ impl Waku {
                         div()
                             .text_size(sp(12.5))
                             .text_color(theme.text_tertiary)
-                            .child(match metric {
-                                UsageMetric::Cost => tr!("usage.raw_token_cost"),
-                                UsageMetric::Tokens => tr!("usage.processed_tokens_upper"),
-                            }),
+                            .child(tr!("usage.processed_tokens_upper")),
                     )
                     .child(
                         div()
@@ -482,35 +469,15 @@ impl Waku {
                     ),
             );
 
-        // Ranked by whatever the toggle is showing, so the bars always
-        // descend.
+        // Providers are ranked by processed tokens.
         let mut providers = history.providers.clone();
-        if metric == UsageMetric::Tokens {
-            providers.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
-        }
+        providers.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
         for provider in &providers {
             let kind = provider_kind(provider.provider);
             let color = provider_color(theme, kind);
-            let share = match metric {
-                UsageMetric::Cost => provider.cost_share,
-                UsageMetric::Tokens => provider.token_share,
-            };
-            let value = match metric {
-                UsageMetric::Cost => format_usd(provider.cost_usd),
-                UsageMetric::Tokens => format_tokens_compact(provider.total_tokens as f64),
-            };
-            let detail = match metric {
-                UsageMetric::Cost => tr!(
-                    "usage.cost_share",
-                    share = format_percent(share),
-                    tokens = format_tokens_compact(provider.total_tokens as f64)
-                ),
-                UsageMetric::Tokens => tr!(
-                    "usage.token_share",
-                    share = format_percent(share),
-                    cost = format_usd(provider.cost_usd)
-                ),
-            };
+            let share = provider.token_share;
+            let value = format_tokens_compact(provider.total_tokens as f64);
+            let detail = tr!("usage.token_share", share = format_percent(share));
             column = column.child(
                 div()
                     .flex()
@@ -571,7 +538,7 @@ impl Waku {
         column
     }
 
-    /// The chart header (title, metric toggle, legend), the layered daily
+    /// The chart header (title and legend), the layered daily
     /// chart, and its x-axis labels.
     fn render_usage_chart_column(
         &self,
@@ -579,48 +546,6 @@ impl Waku {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Div {
-        let metric = self.usage_metric;
-        let mut toggle = div()
-            .rounded(px(7.0))
-            .border_1()
-            .border_color(theme.border_strong)
-            .flex()
-            .overflow_hidden();
-        for (option, label) in [
-            (UsageMetric::Cost, tr!("usage.cost_upper")),
-            (UsageMetric::Tokens, tr!("usage.tokens_upper")),
-        ] {
-            let selected = metric == option;
-            toggle = toggle.child(
-                div()
-                    .id(SharedString::from(format!("usage-metric-{label}")))
-                    .tab_index(0)
-                    .focus_visible(|style| style.border_1().border_color(theme.accent))
-                    .h(px(22.0))
-                    .px(px(9.0))
-                    .flex()
-                    .items_center()
-                    .cursor_default()
-                    .text_size(sp(12.5))
-                    .text_color(if selected {
-                        theme.text
-                    } else {
-                        theme.text_secondary
-                    })
-                    .when(selected, |element| element.bg(theme.overlay))
-                    .when(!selected, |element| {
-                        element.hover(|element| element.text_color(theme.text))
-                    })
-                    .child(label)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if this.usage_metric != option {
-                            this.usage_metric = option;
-                            cx.notify();
-                        }
-                    })),
-            );
-        }
-
         let mut legend = div().flex().items_center().gap(px(14.0));
         for provider in UsageProvider::ALL {
             let kind = provider_kind(provider);
@@ -664,12 +589,8 @@ impl Waku {
                             .text_size(sp(12.5))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text)
-                            .child(match metric {
-                                UsageMetric::Cost => tr!("usage.daily_cost"),
-                                UsageMetric::Tokens => tr!("usage.daily_processed_tokens"),
-                            }),
+                            .child(tr!("usage.daily_processed_tokens")),
                     )
-                    .child(toggle)
                     .child(legend),
             )
             .child(self.render_usage_chart(history, &days, theme, cx))
@@ -713,7 +634,6 @@ impl Waku {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Div {
-        let metric = self.usage_metric;
         let day_count = days.len();
         // One column per day, per provider in ALL order. The chart paths and
         // the hover readout both consume this, so the number under the cursor
@@ -726,10 +646,7 @@ impl Waku {
                     slice
                         .map(|slice| {
                             let entry = slice.by_provider[provider.index()];
-                            match metric {
-                                UsageMetric::Cost => entry.cost_usd,
-                                UsageMetric::Tokens => entry.total_tokens as f64,
-                            }
+                            entry.total_tokens as f64
                         })
                         .unwrap_or(0.0)
                 };
@@ -744,10 +661,7 @@ impl Waku {
             .flat_map(|bands| bands.iter().copied())
             .fold(0.0_f64, f64::max);
         let (scale_max, ticks) = nice_scale(peak, CHART_TICKS);
-        let format_value = move |value: f64| match metric {
-            UsageMetric::Cost => format_usd(value),
-            UsageMetric::Tokens => format_tokens_compact(value),
-        };
+        let format_value = move |value: f64| format_tokens_compact(value);
         // Fraction of the plot height for a value, shared by the canvas, the
         // gutter labels, and nothing else.
         let to_fraction = move |value: f64| -> f32 {
@@ -968,7 +882,6 @@ impl Waku {
                         } else {
                             index as f32 / (day_count - 1) as f32
                         },
-                        metric,
                         theme,
                     ))
                 },
@@ -1064,7 +977,6 @@ impl Waku {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Div {
-        let by_cost = rank_by_cost(history);
         let filter = self
             .usage_project_filter
             .read(cx)
@@ -1090,15 +1002,9 @@ impl Waku {
         let peak = indices
             .iter()
             .filter_map(|index| history.projects.get(*index))
-            .map(|project| {
-                if by_cost {
-                    project.cost_usd
-                } else {
-                    project.total_tokens as f64
-                }
-            })
+            .map(|project| project.total_tokens as f64)
             .fold(0.0_f64, f64::max);
-        self.usage_projects_scale.set((peak, by_cost));
+        self.usage_projects_scale.set(peak);
         self.sync_usage_project_rows(&indices);
 
         let caption = if filter.is_empty() {
@@ -1203,7 +1109,7 @@ impl Waku {
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text)
                                             .child(SharedString::from(usage_headline_value(
-                                                history, by_cost,
+                                                history,
                                             ))),
                                     )
                                     .child(
@@ -1260,7 +1166,7 @@ impl Waku {
     /// as an empty row for that frame rather than panicking.
     fn usage_project_row(&self, row: usize, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::current(cx);
-        let (peak, by_cost) = self.usage_projects_scale.get();
+        let peak = self.usage_projects_scale.get();
         let colors = usage_provider_colors(&theme);
         let rows = self.usage_projects_rows.borrow();
         let last = row + 1 == rows.len();
@@ -1276,16 +1182,12 @@ impl Waku {
         };
 
         let (name, path_caption) = self.usage_project_identity(project);
-        let row_value = if by_cost {
-            project.cost_usd
-        } else {
-            project.total_tokens as f64
-        };
+        let row_value = project.total_tokens as f64;
         let mut caption_parts = Vec::new();
-        if by_cost && project.cost_share > 0.0 {
+        if project.token_share > 0.0 {
             caption_parts.push(tr!(
-                "usage.percent_of_cost",
-                share = format_percent(project.cost_share)
+                "usage.token_share",
+                share = format_percent(project.token_share)
             ));
         }
         caption_parts.push(tr!(
@@ -1302,7 +1204,7 @@ impl Waku {
                 self.usage_history_generation
             ),
             &project.top_models,
-            project.cost_usd,
+            project.total_tokens,
             &theme,
             cx,
         );
@@ -1346,11 +1248,7 @@ impl Waku {
                             .text_size(sp(14.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text)
-                            .child(SharedString::from(usage_value_label(
-                                project.cost_usd,
-                                project.total_tokens,
-                                by_cost,
-                            ))),
+                            .child(SharedString::from(usage_value_label(project.total_tokens))),
                     ),
             )
             .child(
@@ -1370,7 +1268,6 @@ impl Waku {
                     (row_value / peak) as f32
                 },
                 &project.by_provider,
-                by_cost,
             )))
             .child(
                 div()
@@ -1378,7 +1275,7 @@ impl Waku {
                     .flex()
                     .items_center()
                     .gap(px(12.0))
-                    .child(usage_provider_values(&theme, &project.by_provider, by_cost))
+                    .child(usage_provider_values(&theme, &project.by_provider))
                     .child(div().flex_1())
                     .when_some(models_control, |element, control| element.child(control)),
             )
@@ -1391,8 +1288,8 @@ impl Waku {
     fn usage_models_control(
         &self,
         id: impl Into<SharedString>,
-        top_models: &[(String, f64)],
-        total_cost: f64,
+        top_models: &[(String, u64)],
+        total_tokens: u64,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -1432,7 +1329,7 @@ impl Waku {
             move |_| {
                 open_models
                     .as_ref()
-                    .map(|models| usage_models_menu_items(models.clone(), total_cost))
+                    .map(|models| usage_models_menu_items(models.clone(), total_tokens))
                     .unwrap_or_default()
             },
         ))
@@ -1468,7 +1365,7 @@ impl Waku {
 /* ------------------------------------------------------------------------- */
 
 /// Says plainly when the totals are incomplete: an unreadable transcript
-/// directory, or no rate table to price against.
+/// directory.
 fn usage_notices(history: &UsageHistory, theme: &Theme) -> Div {
     let mut notice = div()
         .mt(px(14.0))
@@ -1485,9 +1382,7 @@ fn usage_notices(history: &UsageHistory, theme: &Theme) -> Div {
     for error in &history.errors {
         notice = notice.child(SharedString::from(error.clone()));
     }
-    if history.pricing == PricingStatus::Unavailable {
-        notice = notice.child(tr!("usage.rates_unavailable"));
-    }
+
     notice
 }
 
@@ -1497,7 +1392,6 @@ fn usage_chart_readout(
     history: &UsageHistory,
     day: NaiveDate,
     fraction: f32,
-    metric: UsageMetric,
     theme: &Theme,
 ) -> Div {
     let slice = history.day(day);
@@ -1505,17 +1399,11 @@ fn usage_chart_readout(
         slice
             .map(|slice| {
                 let entry = slice.by_provider[provider.index()];
-                match metric {
-                    UsageMetric::Cost => entry.cost_usd,
-                    UsageMetric::Tokens => entry.total_tokens as f64,
-                }
+                entry.total_tokens as f64
             })
             .unwrap_or(0.0)
     };
-    let format_value = |value: f64| match metric {
-        UsageMetric::Cost => format_usd(value),
-        UsageMetric::Tokens => format_tokens_compact(value),
-    };
+    let format_value = |value: f64| format_tokens_compact(value);
 
     let mut readout = div()
         .absolute()
@@ -1593,7 +1481,7 @@ fn usage_chart_readout(
     )
 }
 
-/// The five-figure strip under the chart: token mix and cache economics.
+/// The four-figure strip under the chart: total, input, cache, and output tokens.
 fn usage_metric_strip(history: &UsageHistory, theme: &Theme) -> Div {
     let active_days = history
         .daily
@@ -1611,19 +1499,7 @@ fn usage_metric_strip(history: &UsageHistory, theme: &Theme) -> Div {
     } else {
         history.totals.cached_input as f64 / observed_input as f64
     };
-    let savings_detail = if history.cost_usd > 0.0 {
-        tr!(
-            "usage.raw_cost_multiple",
-            multiple = format!(
-                "{:.1}",
-                history.quality.cache_savings_usd / history.cost_usd
-            )
-        )
-    } else {
-        tr!("usage.vs_full_input_rates")
-    };
-
-    let tiles: [(String, String, String); 5] = [
+    let tiles: [(String, String, String); 4] = [
         (
             tr!("usage.processed_tokens"),
             format_tokens_compact(history.total_tokens as f64),
@@ -1655,11 +1531,6 @@ fn usage_metric_strip(history: &UsageHistory, theme: &Theme) -> Div {
                 "usage.includes_reasoning",
                 count = format_tokens_compact(history.totals.reasoning as f64)
             ),
-        ),
-        (
-            tr!("usage.cache_savings"),
-            format_usd(history.quality.cache_savings_usd),
-            savings_detail,
         ),
     ];
 
@@ -1729,7 +1600,7 @@ fn usage_cell(width: f32, text: String, color: Hsla) -> Div {
         .child(SharedString::from(text))
 }
 
-/// Per-model costs, largest first.
+/// Per-model tokens, largest first.
 fn usage_model_table(history: &UsageHistory, theme: &Theme) -> Div {
     let mut table = div().flex().flex_col().text_size(sp(12.5)).child(
         div()
@@ -1742,7 +1613,6 @@ fn usage_model_table(history: &UsageHistory, theme: &Theme) -> Div {
             .text_size(sp(12.5))
             .text_color(theme.text_tertiary)
             .child(div().flex_1().min_w_0().child(tr!("usage.model")))
-            .child(usage_cell(84.0, tr!("usage.cost"), theme.text_tertiary))
             .child(usage_cell(64.0, tr!("usage.share"), theme.text_tertiary))
             .child(usage_cell(84.0, tr!("usage.tokens"), theme.text_tertiary)),
     );
@@ -1780,10 +1650,9 @@ fn usage_model_table(history: &UsageHistory, theme: &Theme) -> Div {
                                 .child(SharedString::from(model.model.clone())),
                         ),
                 )
-                .child(usage_cell(84.0, format_usd(model.cost_usd), theme.text))
                 .child(usage_cell(
                     64.0,
-                    format_percent(model.cost_share),
+                    format_percent(model.token_share),
                     theme.text_tertiary,
                 ))
                 .child(usage_cell(
@@ -1796,7 +1665,7 @@ fn usage_model_table(history: &UsageHistory, theme: &Theme) -> Div {
     table
 }
 
-/// The most recent active days, newest first, with per-provider cost columns.
+/// The most recent active days, newest first, with per-provider token columns.
 fn usage_day_table(history: &UsageHistory, theme: &Theme) -> Div {
     let mut header = div()
         .pb(px(7.0))
@@ -1815,9 +1684,7 @@ fn usage_day_table(history: &UsageHistory, theme: &Theme) -> Div {
             theme.text_tertiary,
         ));
     }
-    header = header
-        .child(usage_cell(84.0, tr!("usage.total"), theme.text_tertiary))
-        .child(usage_cell(84.0, tr!("usage.tokens"), theme.text_tertiary));
+    header = header.child(usage_cell(84.0, tr!("usage.tokens"), theme.text_tertiary));
 
     let mut table = div().flex().flex_col().text_size(sp(12.5)).child(header);
     if history.daily.is_empty() {
@@ -1841,75 +1708,17 @@ fn usage_day_table(history: &UsageHistory, theme: &Theme) -> Div {
         for provider in UsageProvider::ALL {
             row = row.child(usage_cell(
                 84.0,
-                format_usd(day.by_provider[provider.index()].cost_usd),
+                format_tokens_compact(day.by_provider[provider.index()].total_tokens as f64),
                 theme.text_tertiary,
             ));
         }
-        table = table.child(
-            row.child(usage_cell(84.0, format_usd(day.cost_usd), theme.text))
-                .child(usage_cell(
-                    84.0,
-                    format_tokens_compact(day.total_tokens as f64),
-                    theme.text_tertiary,
-                )),
-        );
+        table = table.child(row.child(usage_cell(
+            84.0,
+            format_tokens_compact(day.total_tokens as f64),
+            theme.text_tertiary,
+        )));
     }
     table
-}
-
-/// How much of the window's cost is provider-reported, table-priced, or
-/// unpriced — the reader's confidence in the headline number.
-fn usage_quality_panel(history: &UsageHistory, theme: &Theme) -> Div {
-    let row = |label: String, value: String| {
-        div()
-            .py(px(8.0))
-            .border_b_1()
-            .border_color(theme.border)
-            .flex()
-            .items_center()
-            .gap(px(12.0))
-            .text_size(sp(12.5))
-            .child(div().flex_1().text_color(theme.text_secondary).child(label))
-            .child(
-                div()
-                    .text_color(theme.text)
-                    .child(SharedString::from(value)),
-            )
-    };
-    div()
-        .w(px(240.0))
-        .flex_none()
-        .flex()
-        .flex_col()
-        .gap(px(10.0))
-        .child(
-            div()
-                .text_size(sp(12.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
-                .child(tr!("usage.cost_quality")),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .child(row(
-                    tr!("usage.provider_reported"),
-                    format_percent(history.quality.provider_reported_share),
-                ))
-                .child(row(
-                    tr!("usage.model_priced"),
-                    format_percent(history.quality.model_priced_share),
-                ))
-                .child(row(
-                    tr!("usage.unpriced"),
-                    format_percent(history.quality.unpriced_share),
-                ))
-                .child(row(
-                    tr!("usage.cache_savings"),
-                    format_usd(history.quality.cache_savings_usd),
-                )),
-        )
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2084,12 +1893,6 @@ fn usage_skeleton(view: UsageViewMode, theme: &Theme) -> AnyElement {
 /* Monthly statement and shared list vocabulary                              */
 /* ------------------------------------------------------------------------- */
 
-/// Whether the lists rank by cost, falling back to tokens when nothing in
-/// the window could be priced so the bars still mean something.
-fn rank_by_cost(history: &UsageHistory) -> bool {
-    history.cost_usd > 0.0
-}
-
 fn usage_provider_colors(theme: &Theme) -> [Hsla; 2] {
     [
         provider_color(theme, ProviderKind::Claude),
@@ -2098,20 +1901,12 @@ fn usage_provider_colors(theme: &Theme) -> [Hsla; 2] {
 }
 
 /// The period total in the ranking unit.
-fn usage_headline_value(history: &UsageHistory, by_cost: bool) -> String {
-    if by_cost {
-        format_usd(history.cost_usd)
-    } else {
-        format_tokens_compact(history.total_tokens as f64)
-    }
+fn usage_headline_value(history: &UsageHistory) -> String {
+    format_tokens_compact(history.total_tokens as f64)
 }
 
-fn usage_value_label(cost_usd: f64, total_tokens: u64, by_cost: bool) -> String {
-    if by_cost {
-        format_usd(cost_usd)
-    } else {
-        format_tokens_compact(total_tokens as f64)
-    }
+fn usage_value_label(total_tokens: u64) -> String {
+    format_tokens_compact(total_tokens as f64)
 }
 
 /// The card's lead-in row: what the list covers on the left, the period
@@ -2174,11 +1969,10 @@ fn usage_split_bar(
     colors: [Hsla; 2],
     length: f32,
     by_provider: &[ProviderDay; 2],
-    by_cost: bool,
 ) -> Div {
     let values = [
-        usage_provider_value(&by_provider[0], by_cost),
-        usage_provider_value(&by_provider[1], by_cost),
+        usage_provider_value(&by_provider[0]),
+        usage_provider_value(&by_provider[1]),
     ];
     let sum = values[0] + values[1];
     let length = if length > 0.0 {
@@ -2212,21 +2006,17 @@ fn usage_split_bar(
         .child(bar)
 }
 
-fn usage_provider_value(entry: &ProviderDay, by_cost: bool) -> f64 {
-    if by_cost {
-        entry.cost_usd
-    } else {
-        entry.total_tokens as f64
-    }
+fn usage_provider_value(entry: &ProviderDay) -> f64 {
+    entry.total_tokens as f64
 }
 
 /// Per-provider amounts with their marks, skipping providers absent from
 /// the row.
-fn usage_provider_values(theme: &Theme, by_provider: &[ProviderDay; 2], by_cost: bool) -> Div {
+fn usage_provider_values(theme: &Theme, by_provider: &[ProviderDay; 2]) -> Div {
     let mut row = div().flex().items_center().gap(px(14.0));
     for provider in UsageProvider::ALL {
         let entry = by_provider[provider.index()];
-        if entry.total_tokens == 0 && entry.cost_usd <= 0.0 {
+        if entry.total_tokens == 0 {
             continue;
         }
         let kind = provider_kind(provider);
@@ -2245,11 +2035,7 @@ fn usage_provider_values(theme: &Theme, by_provider: &[ProviderDay; 2], by_cost:
                     div()
                         .text_size(sp(12.5))
                         .text_color(theme.text_secondary)
-                        .child(SharedString::from(usage_value_label(
-                            entry.cost_usd,
-                            entry.total_tokens,
-                            by_cost,
-                        ))),
+                        .child(SharedString::from(usage_value_label(entry.total_tokens))),
                 ),
         );
     }
@@ -2257,7 +2043,7 @@ fn usage_provider_values(theme: &Theme, by_provider: &[ProviderDay; 2], by_cost:
 }
 
 /// "claude-fable-5 · gpt-5.3-codex · +2" — the row's heaviest models.
-fn usage_top_models_label(top_models: &[(String, f64)]) -> Option<String> {
+fn usage_top_models_label(top_models: &[(String, u64)]) -> Option<String> {
     if top_models.is_empty() {
         return None;
     }
@@ -2276,10 +2062,13 @@ fn usage_top_models_label(top_models: &[(String, f64)]) -> Option<String> {
 /// Lazily built contents of a row's model dropdown. A single custom menu row
 /// owns the scrolling list so projects with many models do not grow the card
 /// past the window.
-fn usage_models_menu_items(top_models: Rc<Vec<(String, f64)>>, total_cost: f64) -> Vec<MenuItem> {
+fn usage_models_menu_items(top_models: Rc<Vec<(String, u64)>>, total_tokens: u64) -> Vec<MenuItem> {
     let count = top_models.len() as u64;
-    let header = if total_cost > 0.0 {
-        tr!("usage.models_by_spend", models = count_noun(count, "model"))
+    let header = if total_tokens > 0 {
+        tr!(
+            "usage.models_by_tokens",
+            models = count_noun(count, "model")
+        )
     } else {
         count_noun(count, "model")
     };
@@ -2294,7 +2083,7 @@ fn usage_models_menu_items(top_models: Rc<Vec<(String, f64)>>, total_cost: f64) 
                 .overflow_y_scroll()
                 .flex()
                 .flex_col();
-            for (index, (name, cost_usd)) in top_models.iter().enumerate() {
+            for (index, (name, tokens)) in top_models.iter().enumerate() {
                 rows = rows.child(
                     div()
                         .min_h(px(34.0))
@@ -2314,25 +2103,22 @@ fn usage_models_menu_items(top_models: Rc<Vec<(String, f64)>>, total_cost: f64) 
                                 .text_color(theme.text_secondary)
                                 .child(SharedString::from(name.clone())),
                         )
-                        .when(total_cost > 0.0, |element| {
+                        .when(total_tokens > 0, |element| {
                             element.child(
                                 div()
                                     .flex_none()
                                     .flex()
                                     .flex_col()
                                     .items_end()
-                                    .child(
-                                        div()
-                                            .text_size(sp(12.5))
-                                            .text_color(theme.text)
-                                            .child(SharedString::from(format_usd(*cost_usd))),
-                                    )
+                                    .child(div().text_size(sp(12.5)).text_color(theme.text).child(
+                                        SharedString::from(format_tokens_compact(*tokens as f64)),
+                                    ))
                                     .child(
                                         div()
                                             .text_size(sp(12.5))
                                             .text_color(theme.text_ghost)
                                             .child(SharedString::from(format_percent(
-                                                *cost_usd / total_cost,
+                                                *tokens as f64 / total_tokens as f64,
                                             ))),
                                     ),
                             )
@@ -2352,7 +2138,6 @@ fn usage_month_strip(
     history: &UsageHistory,
     first_day: NaiveDate,
     peak: f64,
-    by_cost: bool,
     colors: [Hsla; 2],
 ) -> impl IntoElement {
     let day_count = usage_history::days_in_month(first_day);
@@ -2363,8 +2148,8 @@ fn usage_month_strip(
                 .day(day)
                 .map(|slice| {
                     [
-                        usage_provider_value(&slice.by_provider[0], by_cost),
-                        usage_provider_value(&slice.by_provider[1], by_cost),
+                        usage_provider_value(&slice.by_provider[0]),
+                        usage_provider_value(&slice.by_provider[1]),
                     ]
                 })
                 .unwrap_or([0.0, 0.0])
@@ -2420,15 +2205,8 @@ fn usage_month_list(
     scrollbar_state: &Rc<ScrollbarState>,
     cx: &mut Context<Waku>,
 ) -> Div {
-    let by_cost = rank_by_cost(history);
     let colors = usage_provider_colors(theme);
-    let month_value = |month: &MonthSlice| {
-        if by_cost {
-            month.cost_usd
-        } else {
-            month.total_tokens as f64
-        }
-    };
+    let month_value = |month: &MonthSlice| month.total_tokens as f64;
     let peak = history
         .months
         .iter()
@@ -2437,13 +2215,7 @@ fn usage_month_list(
     let day_peak = history
         .daily
         .iter()
-        .map(|day| {
-            if by_cost {
-                day.cost_usd
-            } else {
-                day.total_tokens as f64
-            }
-        })
+        .map(|day| day.total_tokens as f64)
         .fold(0.0_f64, f64::max);
     let current_month = usage_history::first_of_month(history.until_day);
 
@@ -2458,7 +2230,7 @@ fn usage_month_list(
                     let models_control = waku.usage_models_control(
                         format!("usage-month-models-{first_day}"),
                         &month.top_models,
-                        month.cost_usd,
+                        month.total_tokens,
                         theme,
                         cx,
                     );
@@ -2467,7 +2239,6 @@ fn usage_month_list(
                         month,
                         theme,
                         colors,
-                        by_cost,
                         peak,
                         day_peak,
                         *first_day == current_month,
@@ -2503,7 +2274,7 @@ fn usage_month_list(
                     tokens = format_tokens_compact(history.total_tokens as f64),
                     sessions = count_noun(history.sessions, "session")
                 ),
-                usage_headline_value(history, by_cost),
+                usage_headline_value(history),
             )
             .flex_none(),
         )
@@ -2532,18 +2303,13 @@ fn usage_month_row(
     month: &MonthSlice,
     theme: &Theme,
     colors: [Hsla; 2],
-    by_cost: bool,
     peak: f64,
     day_peak: f64,
     current: bool,
     last: bool,
     models_control: Option<AnyElement>,
 ) -> Div {
-    let value = if by_cost {
-        month.cost_usd
-    } else {
-        month.total_tokens as f64
-    };
+    let value = month.total_tokens as f64;
     div()
         .py(px(13.0))
         .when(!last, |element| {
@@ -2578,11 +2344,7 @@ fn usage_month_row(
                         .text_size(sp(14.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text)
-                        .child(SharedString::from(usage_value_label(
-                            month.cost_usd,
-                            month.total_tokens,
-                            by_cost,
-                        ))),
+                        .child(SharedString::from(usage_value_label(month.total_tokens))),
                 ),
         )
         .child(
@@ -2609,7 +2371,6 @@ fn usage_month_row(
                     history,
                     month.first_day,
                     day_peak,
-                    by_cost,
                     colors,
                 )),
         )
@@ -2622,7 +2383,6 @@ fn usage_month_row(
                 (value / peak) as f32
             },
             &month.by_provider,
-            by_cost,
         )))
         .child(
             div()
@@ -2630,7 +2390,7 @@ fn usage_month_row(
                 .flex()
                 .items_center()
                 .gap(px(12.0))
-                .child(usage_provider_values(theme, &month.by_provider, by_cost))
+                .child(usage_provider_values(theme, &month.by_provider))
                 .child(div().flex_1())
                 .when_some(models_control, |element, control| element.child(control)),
         )
@@ -2676,7 +2436,7 @@ struct CurveSegment {
 
 /// Monotone cubic tangents (Fritsch–Carlson). Plain cubic smoothing
 /// overshoots on spiky daily data and would dip the area below zero between
-/// points, which reads as negative spend; this variant is shape-preserving,
+/// points, which reads as negative token counts; this variant is shape-preserving,
 /// so a smoothed series never leaves the range of its samples.
 fn monotone_tangents(points: &[(f32, f32)]) -> Vec<f32> {
     let count = points.len();
@@ -2793,10 +2553,6 @@ fn group_thousands(number: &str) -> String {
         Some(fraction) => format!("{grouped}.{fraction}"),
         None => grouped,
     }
-}
-
-fn format_usd(value: f64) -> String {
-    format!("${}", group_thousands(&format!("{:.2}", value.max(0.0))))
 }
 
 fn format_count(value: u64) -> String {
@@ -2920,9 +2676,9 @@ mod tests {
     #[test]
     fn model_summary_names_the_hidden_count() {
         let models = vec![
-            ("gpt-5.6-sol".to_owned(), 30.0),
-            ("claude-fable-5".to_owned(), 20.0),
-            ("gpt-5.6-luna".to_owned(), 10.0),
+            ("gpt-5.6-sol".to_owned(), 30),
+            ("claude-fable-5".to_owned(), 20),
+            ("gpt-5.6-luna".to_owned(), 10),
         ];
 
         assert_eq!(usage_top_models_label(&[]), None);
@@ -2934,13 +2690,6 @@ mod tests {
             usage_top_models_label(&models).as_deref(),
             Some("gpt-5.6-sol · claude-fable-5 · +1")
         );
-    }
-
-    #[test]
-    fn currency_groups_thousands() {
-        assert_eq!(format_usd(0.0), "$0.00");
-        assert_eq!(format_usd(1_234.5), "$1,234.50");
-        assert_eq!(format_usd(1_234_567.891), "$1,234,567.89");
     }
 
     #[test]

@@ -688,7 +688,7 @@ impl Waku {
                 "skill_quality_success" => "操作者确认技能有帮助",
                 "skill_quality_failure" => "操作者确认技能质量导致失败",
                 "pending" => "仍在归集证据",
-                "uncertain_effect" | "uncertain" => "工具副作用待核对",
+                "uncertain_effect" | "uncertain" => "工具执行结果不确定",
                 "cancelled" => "任务取消",
                 "budget" | "quota" => "预算或额度限制",
                 "network" => "网络故障",

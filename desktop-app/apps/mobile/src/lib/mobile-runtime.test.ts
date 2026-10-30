@@ -247,6 +247,7 @@ describe('mobile runtime projection', () => {
 function session(overrides: Partial<AgentSession> = {}): AgentSession {
   return {
     id: 'session',
+    history_revision: 0,
     title: 'New task',
     auto_title: null,
     project_id: 'p',

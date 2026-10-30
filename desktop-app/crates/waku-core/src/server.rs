@@ -1245,6 +1245,103 @@ fn write_json<S: io::Read + io::Write, T: serde::Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_client_cannot_restore_messages_or_queued_work_after_a_rewind() {
+        use crate::daemon::WakuBackend;
+        use crate::model::{QueuedMessage, TurnStatus};
+        use crate::persistence::{PersistedState, StateStore};
+        use crate::settings::DaemonSettingsStore;
+        let root = std::env::temp_dir().join(format!("waku-history-revision-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = StateStore::daemon(root.join("app.db"));
+        let mut state = PersistedState::fresh(root.clone());
+        let session = &mut state.sessions[0];
+        session.provider_cursor = Some(crate::model::ProviderResumeCursor::DeerFlow {
+            session_id: "native-test".into(),
+        });
+        session.begin_turn("removed by the authoritative rewind");
+        session.finish_active_turn(TurnStatus::Completed);
+        session
+            .queued_messages
+            .push(QueuedMessage::new("must not run again"));
+        let mut stale = session.clone();
+        session.truncate_after_turn(0);
+        session.queued_messages.clear();
+        session.history_revision = 1;
+        store.save(&mut state).unwrap();
+        let backend = WakuBackend::new(
+            DaemonSettingsStore::open(root.join("settings.json")).unwrap(),
+            store,
+        )
+        .unwrap();
+        // A later wall-clock timestamp must not defeat the daemon revision.
+        stale.updated_at += 100;
+        let response = backend
+            .handle(
+                Request {
+                    request_id: Uuid::new_v4(),
+                    session_id: Uuid::nil(),
+                    runtime_id: Uuid::nil(),
+                    command: Command::SaveTaskState {
+                        projects: state.projects.clone(),
+                        live_session_ids: vec![stale.id],
+                        sessions: vec![stale],
+                    },
+                },
+                EventSink {
+                    session_id: Uuid::nil(),
+                    runtime_id: Uuid::nil(),
+                    hub: Arc::new(Hub::default()),
+                },
+            )
+            .unwrap();
+        let ResponsePayload::TaskStateSaved { sessions } = response else {
+            panic!("expected saved projection");
+        };
+        assert_eq!(sessions[0].history_revision, 1);
+        assert!(sessions[0].messages.is_empty());
+        assert!(sessions[0].queued_messages.is_empty());
+        let store = StateStore::daemon(root.join("app.db"));
+        let mut loaded = store.load().unwrap();
+        store.hydrate(&mut loaded.sessions[0]).unwrap();
+        assert_eq!(loaded.sessions[0].history_revision, 1);
+        assert!(loaded.sessions[0].messages.is_empty());
+        assert!(loaded.sessions[0].queued_messages.is_empty());
+        let source_id = loaded.sessions[0].id;
+        let history_operation_id = Uuid::new_v4();
+        store.save_history_operation(source_id, &json!({"completed":false,"kind":"rewind","turn_count":1,"request":{"operationId":history_operation_id}})).unwrap();
+        let response = backend
+            .handle(
+                Request {
+                    request_id: Uuid::new_v4(),
+                    session_id: source_id,
+                    runtime_id: Uuid::nil(),
+                    command: Command::AttachSession,
+                },
+                EventSink {
+                    session_id: source_id,
+                    runtime_id: Uuid::nil(),
+                    hub: Arc::new(Hub::default()),
+                },
+            )
+            .unwrap();
+        let ResponsePayload::SessionRuntime {
+            runtime_id,
+            pending_history: Some(pending),
+            ..
+        } = response
+        else {
+            panic!("readonly attach must expose pending recovery without starting a runtime");
+        };
+        assert!(runtime_id.is_none());
+        assert_eq!(pending.kind, "rewind");
+        assert_eq!(pending.turn_count, 1);
+        assert_eq!(pending.operation_id, history_operation_id);
+        drop(backend);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[cfg(unix)]
     use crate::daemon::WakuBackend;
     #[cfg(unix)]
@@ -1282,6 +1379,9 @@ mod tests {
                 Command::AttachSession => Ok(ResponsePayload::SessionRuntime {
                     runtime_id: self.runtimes.lock().get(&session_id).copied(),
                     supports_steer: true,
+                    conversation_capability: None,
+                    deerflow_ready: None,
+                    pending_history: None,
                 }),
                 Command::GetSettings => Ok(ResponsePayload::Settings {
                     settings: DaemonSettings::default(),
@@ -1674,6 +1774,7 @@ mod tests {
             ResponsePayload::SessionRuntime {
                 runtime_id: Some(attached),
                 supports_steer: true,
+                ..
             } if attached == runtime_id
         ));
         let late_events = late.subscribe(session_id, runtime_id);
@@ -1710,6 +1811,7 @@ mod tests {
             ResponsePayload::SessionRuntime {
                 runtime_id: None,
                 supports_steer: true,
+                ..
             }
         ));
         let stale_events = after_close.subscribe(session_id, runtime_id);
@@ -1805,6 +1907,7 @@ mod tests {
             ResponsePayload::SessionRuntime {
                 runtime_id: Some(attached),
                 supports_steer: true,
+                ..
             } if attached == runtime_id
         ));
 

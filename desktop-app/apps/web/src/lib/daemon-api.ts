@@ -109,14 +109,12 @@ export async function hydrateSession(
 export async function attachSession(
   client: WakuClient,
   sessionId: string,
-): Promise<{ runtimeId: string; supportsSteer: boolean } | null> {
+): Promise<Extract<ResponsePayload, { type: 'sessionRuntime' }>> {
   const response = expectResponse(
     await client.request({ type: 'attachSession' }, sessionId),
     'sessionRuntime',
   )
-  return response.runtimeId
-    ? { runtimeId: response.runtimeId, supportsSteer: response.supportsSteer }
-    : null
+  return response
 }
 
 export async function searchSessionMessages(
@@ -240,14 +238,12 @@ export async function loadUsageHistory(
 export async function fetchPlanUsage(
   client: WakuClient,
   provider: ProviderKind,
-  settings: DaemonSettings,
   version: string | null,
 ): Promise<PlanUsage | null> {
   const response = expectResponse(
     await client.request({
       type: 'fetchPlanUsage',
       provider,
-      binaryOverride: settings.provider_binary_overrides?.[provider] ?? null,
       cliVersion: version,
     }),
     'planUsage',
@@ -637,6 +633,7 @@ export function createSession(
   return {
     id: crypto.randomUUID(),
     title: 'New task',
+    history_revision: 0,
     auto_title: null,
     project_id: projectId,
     workspace: isolated ? { kind: 'newWorktree' } : { kind: 'local' },

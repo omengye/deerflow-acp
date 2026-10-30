@@ -28,6 +28,29 @@ pub(super) fn digest(value: &str) -> bool {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
+/// Use the first usable timestamp, so an update time takes precedence over a
+/// creation time. Go's zero time represents unavailable metadata as well.
+pub(super) fn first_timestamp<'a>(
+    values: impl IntoIterator<Item = &'a Value>,
+) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    values.into_iter().find_map(|value| {
+        chrono::DateTime::parse_from_rfc3339(value.as_str()?)
+            .ok()
+            .filter(|time| {
+                time.timestamp() != -62_135_596_800 || time.timestamp_subsec_nanos() != 0
+            })
+    })
+}
+
+/// Sort bounded response pages once when received, never during rendering.
+/// Stable ties preserve the service's pagination order; unknown times go last.
+pub(super) fn sort_recent_first<T>(
+    rows: &mut [T],
+    timestamp: impl Fn(&T) -> Option<chrono::DateTime<chrono::FixedOffset>>,
+) {
+    rows.sort_by_cached_key(|row| std::cmp::Reverse(timestamp(row)));
+}
+
 // Navigation commits only after a valid response. Keep one page and a bounded
 // cursor stack instead of accumulating history on the render path.
 #[derive(Default)]
@@ -114,6 +137,40 @@ impl PageNav {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_first_compares_instants_and_keeps_unknown_times_stable() {
+        let mut rows = vec![
+            json!({"id":"unknown-first"}),
+            json!({"id":"fraction-short","updated_at":"2026-10-30T08:00:00.1Z"}),
+            json!({"id":"offset-newest","updated_at":"2026-10-30T07:30:00-01:00"}),
+            json!({"id":"fraction-long","updated_at":"2026-10-30T08:00:00.12Z"}),
+            json!({"id":"same-instant","updated_at":"2026-10-30T16:00:00.120+08:00"}),
+            json!({"id":"invalid","updated_at":"not a date"}),
+            json!({"id":"zero","updated_at":"0001-01-01T00:00:00Z"}),
+            json!({"id":"created-fallback","updated_at":"invalid","created_at":"2026-10-30T08:01:00Z"}),
+            json!({"id":"zero-fallback","updated_at":"0001-01-01T00:00:00Z","created_at":"2026-10-30T08:02:00Z"}),
+        ];
+        sort_recent_first(&mut rows, |row| {
+            first_timestamp([&row["updated_at"], &row["created_at"]])
+        });
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "offset-newest",
+                "zero-fallback",
+                "created-fallback",
+                "fraction-long",
+                "same-instant",
+                "fraction-short",
+                "unknown-first",
+                "invalid",
+                "zero"
+            ]
+        );
+    }
 
     #[test]
     fn page_navigation_keeps_query_and_commits_only_valid_cursors() {

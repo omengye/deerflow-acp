@@ -1876,7 +1876,6 @@ const PLAN_USAGE_PROVIDERS: AgentSession['provider'][] = [
   'claude',
   'codex',
   'openCode',
-  'grok',
 ]
 
 function UsageMeter({
@@ -1904,7 +1903,7 @@ function UsageMeter({
   const supportsPlanUsage = PLAN_USAGE_PROVIDERS.includes(session.provider)
   const plan = useQuery({
     queryKey: daemonKeys.planUsage(config?.address ?? 'disconnected', session.provider),
-    queryFn: () => fetchPlanUsage(client!, session.provider, settings.data!, providerVersion),
+    queryFn: () => fetchPlanUsage(client!, session.provider, providerVersion),
     enabled: open && Boolean(client && config && settings.data && supportsPlanUsage),
     staleTime: 30_000,
   })

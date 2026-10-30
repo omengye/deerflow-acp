@@ -5,7 +5,9 @@ mod approvals;
 mod artifacts;
 mod receipts;
 pub(super) mod runtime_view;
+mod session_budget;
 use crate::ui::ActivationExt;
+use session_budget::BudgetLoadState;
 use std::collections::BTreeMap;
 use waku_protocol::deerflow_tasks::{
     Action, ApprovalDecision, Artifact, ArtifactPage, BackgroundDetail, CancelScope, Capabilities,
@@ -97,7 +99,7 @@ fn status_label(status: &str) -> &str {
         "completed" => "已完成",
         "failed" => "失败",
         "cancelled" | "canceled" => "已取消",
-        "needs_reconciliation" => "等待核对工具结果",
+        "needs_reconciliation" => "已中断 · 结果尚不确定",
         "unavailable" => "历史状态不可用",
         _ => status,
     }
@@ -105,7 +107,7 @@ fn status_label(status: &str) -> &str {
 fn is_terminal(status: &str) -> bool {
     matches!(
         status,
-        "completed" | "failed" | "cancelled" | "canceled" | "unavailable"
+        "completed" | "failed" | "cancelled" | "canceled" | "unavailable" | "needs_reconciliation"
     )
 }
 
@@ -255,6 +257,54 @@ impl CachedNode {
                 usage.held_tokens,
                 if usage.estimated { "（估算）" } else { "" }
             ));
+            if let Some(budget) = &node.budget {
+                anyhow::ensure!(
+                    node.mode == "root"
+                        && [
+                            budget.max_tokens,
+                            budget.max_model_calls,
+                            budget.max_tool_calls
+                        ]
+                        .into_iter()
+                        .all(version)
+                        && budget.stop_reason.len() <= 128,
+                    "任务预算无效"
+                );
+                for (label, limit, used, reserved) in [
+                    (
+                        "Token",
+                        budget.max_tokens,
+                        usage.total_tokens,
+                        usage.held_tokens,
+                    ),
+                    ("模型调用", budget.max_model_calls, usage.model_calls, 0),
+                    ("工具调用", budget.max_tool_calls, usage.tool_calls, 0),
+                ] {
+                    lines.push(if limit == 0 {
+                        format!("{label}：已用 {used} · 不设限额")
+                    } else {
+                        format!(
+                            "{label}：已用 {used} / 上限 {limit} · 剩余 {}{}",
+                            limit.saturating_sub(used).saturating_sub(reserved),
+                            if reserved > 0 {
+                                "（已扣除预留）"
+                            } else {
+                                ""
+                            }
+                        )
+                    });
+                }
+                if !budget.stop_reason.is_empty() {
+                    let reason = match budget.stop_reason.as_str() {
+                        "max_tokens" => "累计 Token 预算已耗尽",
+                        "max_turn_requests" => "模型或工具调用额度已耗尽",
+                        "cancelled" => "执行已取消或达到时限",
+                        "end_turn" => "本轮已完成",
+                        other => other,
+                    };
+                    lines.push(format!("停止原因：{reason}"));
+                }
+            }
         } else {
             lines.push("用量：宿主未提供可归属的记录".into());
         }
@@ -381,6 +431,13 @@ struct Preview {
     decision: Option<Decision>,
 }
 pub(super) struct TaskBrowser {
+    budget: Option<waku_protocol::deerflow_tasks::SessionBudget>,
+    budget_inputs: Option<[Entity<TextInput>; 3]>,
+    budget_retry: Option<Action>,
+    budget_open_requested: bool,
+    budget_state: BudgetLoadState,
+    budget_request_started: Option<Instant>,
+    budget_panel_visible: bool,
     connection: String,
     session: String,
     capabilities: Capabilities,
@@ -397,7 +454,6 @@ pub(super) struct TaskBrowser {
     pub(super) runtime_view: runtime_view::RuntimeView,
     show_management: bool,
     show_receipts: bool,
-    pub(super) recovery_required: bool,
     uncached_live: bool,
     uncached_detached: bool,
     partial_view: bool,
@@ -433,6 +489,13 @@ pub(super) struct TaskBrowser {
 impl Default for TaskBrowser {
     fn default() -> Self {
         Self {
+            budget: None,
+            budget_inputs: None,
+            budget_retry: None,
+            budget_open_requested: false,
+            budget_state: BudgetLoadState::Idle,
+            budget_request_started: None,
+            budget_panel_visible: false,
             connection: String::new(),
             session: String::new(),
             capabilities: Capabilities::default(),
@@ -449,7 +512,6 @@ impl Default for TaskBrowser {
             runtime_view: Default::default(),
             show_management: false,
             show_receipts: false,
-            recovery_required: false,
             uncached_live: false,
             uncached_detached: false,
             partial_view: false,
@@ -487,10 +549,12 @@ impl Default for TaskBrowser {
 
 impl TaskBrowser {
     fn ready(&mut self, connection_id: String, session_id: String, capabilities: Capabilities) {
-        if !bounded(&connection_id, 128)
-            || !bounded(&session_id, 256)
-            || self.connection == connection_id && self.session == session_id
-        {
+        if !bounded(&connection_id, 128) || !bounded(&session_id, 256) {
+            return;
+        }
+        if self.connection == connection_id && self.session == session_id {
+            self.capabilities = capabilities;
+            self.budget_ready();
             return;
         }
         self.receipts.clear();
@@ -498,6 +562,9 @@ impl TaskBrowser {
         self.save_selecting = false;
         self.artifact_page = None;
         if self.session != session_id {
+            self.budget = None;
+            self.budget_inputs = None;
+            self.budget_retry = None;
             self.nodes.clear();
             self.selected = None;
             self.root_filter = None;
@@ -517,8 +584,9 @@ impl TaskBrowser {
         self.connection = connection_id;
         self.session = session_id;
         self.capabilities = capabilities;
+        self.budget_ready();
         if self.show_receipts && self.capabilities.tool_receipts {
-            self.next = Some(receipts::list_action(None, true));
+            self.next = Some(receipts::list_action(None, false));
         } else if self.capabilities.tree {
             self.next = Some(self.list_action(None));
         }
@@ -546,6 +614,12 @@ impl TaskBrowser {
         self.detached_count > 0 || self.uncached_detached
     }
     fn disconnect(&mut self) {
+        self.budget_request_started = None;
+        if !matches!(self.budget_state, BudgetLoadState::Idle) {
+            self.budget_open_requested = false;
+            self.budget_state =
+                BudgetLoadState::Error("连接已断开，资源上限尚未同步。可重试读取。".into());
+        }
         self.receipts.clear();
         self.connection.clear();
         self.pending = None;
@@ -646,7 +720,7 @@ impl TaskBrowser {
         } else {
             !self.capabilities.tree
         } {
-            self.error = Some("当前服务尚未提供此学习来源核对能力。".into());
+            self.error = Some("当前服务尚未提供此学习来源记录查询能力。".into());
             return None;
         }
         self.show_management = true;
@@ -791,10 +865,9 @@ impl TaskBrowser {
         }
     }
     fn begin(&mut self, action: Action) -> Option<Command> {
-        let supported = if matches!(
-            action,
-            Action::ReceiptList { .. } | Action::ReceiptReconcile { .. }
-        ) {
+        let supported = if matches!(action, Action::BudgetGet | Action::BudgetSet { .. }) {
+            self.capabilities.session_budget
+        } else if matches!(action, Action::ReceiptList { .. }) {
             self.capabilities.tool_receipts
         } else {
             self.capabilities.tree
@@ -808,6 +881,9 @@ impl TaskBrowser {
         if self.refreshing() && !matches!(action, Action::List { .. }) {
             // The ACP driver is serial. Retain the explicit, version-bound
             // action and send it after the harmless poll, never concurrently.
+            if matches!(action, Action::BudgetSet { .. }) {
+                self.budget_state = BudgetLoadState::QueuedSave;
+            }
             self.queued_action = Some(action);
             self.confirmation = None;
             return None;
@@ -830,13 +906,22 @@ impl TaskBrowser {
             session_id: self.session.clone(),
             action,
         };
-        if matches!(
-            command.action,
-            Action::ReceiptList { .. } | Action::ReceiptReconcile { .. }
-        ) {
+        if matches!(command.action, Action::ReceiptList { .. }) {
             self.receipts.invalidate();
         }
         self.pending = Some(command.clone());
+        match command.action {
+            Action::BudgetGet => {
+                self.budget_open_requested = false;
+                self.budget_state = BudgetLoadState::Loading;
+                self.budget_request_started = Some(Instant::now());
+            }
+            Action::BudgetSet { .. } => {
+                self.budget_state = BudgetLoadState::Saving;
+                self.budget_request_started = Some(Instant::now());
+            }
+            _ => {}
+        }
         self.error = None;
         self.confirmation = None;
         self.last_refresh = Instant::now();
@@ -900,6 +985,21 @@ impl TaskBrowser {
     fn accept(&mut self, command: &Command, response: Response) -> anyhow::Result<()> {
         anyhow::ensure!(self.accepts(command), "任务响应已过期");
         match (&command.action, response) {
+            (Action::BudgetGet | Action::BudgetSet { .. }, Response::Budget(budget)) => {
+                anyhow::ensure!(
+                    budget.session_id == self.session
+                        && budget.version > 0
+                        && version(budget.version),
+                    "任务预算响应身份无效"
+                );
+                self.budget = Some(budget);
+                if matches!(command.action, Action::BudgetSet { .. }) {
+                    self.budget_inputs = None;
+                }
+                self.budget_retry = None;
+                self.budget_state = BudgetLoadState::Ready;
+                self.budget_request_started = None;
+            }
             (
                 Action::ReceiptList {
                     cursor,
@@ -915,14 +1015,6 @@ impl TaskBrowser {
                     *uncertain_only,
                     page,
                 )?;
-                if *uncertain_only && cursor.as_ref().is_none_or(String::is_empty) {
-                    self.recovery_required = !self.receipts.is_empty();
-                }
-            }
-            (Action::ReceiptReconcile { review }, Response::Reconciled { receipt }) => {
-                self.receipts
-                    .accept_review(&self.session, review, receipt)?;
-                self.next = Some(receipts::list_action(None, true));
             }
             (
                 Action::ArtifactList {
@@ -1335,6 +1427,18 @@ impl Waku {
             .get(&session)
             .map(|runtime| runtime.driver.clone())
         else {
+            if matches!(action, Action::BudgetGet) {
+                self.request_session_budget(session, cx);
+            } else if matches!(action, Action::BudgetSet { .. }) {
+                self.deerflow_tasks
+                    .entry(session)
+                    .or_default()
+                    .fail_budget_request(
+                        &action,
+                        "连接已断开，尚未确认保存结果。请重新读取资源上限。".into(),
+                    );
+                cx.notify();
+            }
             return;
         };
         let Some(command) = self
@@ -1376,6 +1480,7 @@ impl Waku {
                     return;
                 }
                 if let Err(error) = browser.accept(&command, response) {
+                    browser.fail_budget_request(&command.action, error.to_string());
                     if let Some(transfer) = &browser.transfer {
                         transfer.fail(error.to_string());
                     }
@@ -1395,6 +1500,14 @@ impl Waku {
                 if !browser.accepts(&command) {
                     return;
                 }
+                browser.fail_budget_request(
+                    &command.action,
+                    format!(
+                        "{}（{}）",
+                        message.chars().take(4000).collect::<String>(),
+                        code
+                    ),
+                );
                 browser.pending = None;
                 browser.queued_action = None;
                 browser.next = None;
@@ -1404,10 +1517,6 @@ impl Waku {
                 browser.stale = true;
                 browser.receipts.invalidate();
                 browser.clear_detail();
-                if matches!(command.action, Action::ReceiptReconcile { .. }) {
-                    browser.receipts.clear();
-                    browser.next = Some(receipts::list_action(None, true));
-                }
                 browser.error = Some(format!(
                     "{}（{}）",
                     message.chars().take(4000).collect::<String>(),
@@ -1438,6 +1547,23 @@ impl Waku {
                 self.active_right_panel_surface(),
                 Some(RightPanelSurface::DeerFlowTasks)
             );
+        let mut budget_reads = vec![];
+        for (session, browser) in &mut self.deerflow_tasks {
+            let panel_visible = visible && selected == Some(*session);
+            let can_connect = self.runtimes.contains_key(session)
+                || self.state.sessions.iter().any(|candidate| {
+                    candidate.id == *session && candidate.provider_cursor.is_some()
+                });
+            if browser.observe_budget_panel(panel_visible, can_connect) {
+                budget_reads.push(*session);
+            }
+            if browser.expire_budget_connection() || browser.expire_budget_request() {
+                cx.notify();
+            }
+        }
+        for session in budget_reads {
+            self.request_session_budget(session, cx);
+        }
         let mut requests = vec![];
         for (session, browser) in &mut self.deerflow_tasks {
             if browser
@@ -1464,12 +1590,13 @@ impl Waku {
             // The pinned decision card remains visible across all subpages.
             let reviewing = browser.show_receipts
                 || browser.confirmation.is_some()
-                || !browser.previews.is_empty()
-                || browser.show_management && !browser.receipts.reviews.is_empty();
+                || !browser.previews.is_empty();
             if let Some(action) = browser.take_learning_recovery() {
                 requests.push((*session, action));
             } else if let Some(action) = browser.queued_action.take() {
                 requests.push((*session, action));
+            } else if browser.budget_open_requested && browser.capabilities.session_budget {
+                requests.push((*session, Action::BudgetGet));
             } else if let Some(action) = browser.next.take() {
                 requests.push((*session, action));
             } else if browser.refresh_needed && !reviewing {
@@ -1516,18 +1643,12 @@ impl Waku {
             .sync_runtime(session);
         self.deerflow_tasks.entry(id).or_default().show_receipts = false;
         self.open_right_panel_surface(RightPanelSurface::DeerFlowTasks, cx);
-        if let Some(browser) = self.deerflow_tasks.get(&id) {
-            if browser.pending.is_none()
-                && browser.capabilities.tree
-                && !browser.connection.is_empty()
-            {
-                let action = browser.list_action(None);
-                self.request_deerflow_task(id, action, cx);
-                return;
-            }
-        }
-        if has_cursor && !self.runtimes.contains_key(&id) {
-            self.start_goal_runtime(id, cx);
+        self.deerflow_tasks
+            .entry(id)
+            .or_default()
+            .budget_panel_visible = true;
+        if has_cursor || self.runtimes.contains_key(&id) {
+            self.request_session_budget(id, cx);
         }
     }
 
@@ -1583,20 +1704,6 @@ impl Waku {
                     cx,
                     |this, _, cx| this.open_deerflow_tasks(cx),
                 ))
-                .when(
-                    self.deerflow_tasks
-                        .get(&session.id)
-                        .is_some_and(|b| b.recovery_required),
-                    |element| {
-                        element.child(task_button(
-                            "deerflow-receipt-recovery-chip",
-                            "确认工具结果",
-                            false,
-                            cx,
-                            |this, _, cx| this.open_deerflow_receipts(cx),
-                        ))
-                    },
-                )
                 .into_any_element(),
         )
     }
@@ -1608,6 +1715,8 @@ impl Waku {
             .size_full()
             .flex()
             .flex_col()
+            .children(self.render_conversation_capability(cx))
+            .children(self.render_session_budget(cx))
             .children(attention.map(|card| div().flex_none().px(px(12.0)).pt(px(12.0)).child(card)))
             .child(div().flex_1().min_h_0().overflow_hidden().child(body))
             .into_any_element()
@@ -1619,7 +1728,7 @@ impl Waku {
             .and_then(|session| self.deerflow_tasks.get(&session))
             .is_some_and(|browser| browser.show_receipts)
         {
-            return self.render_deerflow_receipt_recovery(cx);
+            return self.render_deerflow_receipt_history(cx);
         }
         let management = self
             .state
@@ -1790,12 +1899,8 @@ impl Waku {
             .gap(px(8.0));
         if browser.capabilities.tool_receipts {
             detail = detail.child(task_button(
-                "df-task-review-results",
-                if browser.recovery_required {
-                    "有操作结果需要核对 · 打开核对页面"
-                } else {
-                    "查看操作记录 / 核对执行结果"
-                },
+                "df-task-execution-records",
+                "查看工具执行记录",
                 false,
                 cx,
                 |this, _, cx| this.open_deerflow_receipts(cx),
@@ -2323,11 +2428,10 @@ mod tests {
         }
     }
     #[test]
-    fn receipt_recovery_only_clears_after_a_fresh_empty_first_page() {
+    fn receipt_history_queries_do_not_schedule_execution_or_resume() {
         use waku_protocol::deerflow_tasks::ReceiptPage;
         let mut b = browser();
         b.capabilities.tool_receipts = true;
-        b.recovery_required = true;
         let command = b.begin(receipts::list_action(None, false)).unwrap();
         b.accept(
             &command,
@@ -2339,10 +2443,7 @@ mod tests {
             }),
         )
         .unwrap();
-        assert!(
-            b.recovery_required,
-            "all-records view cannot clear a recovery warning"
-        );
+        assert!(b.next.is_none());
         let command = b.begin(receipts::list_action(None, true)).unwrap();
         b.accept(
             &command,
@@ -2354,19 +2455,18 @@ mod tests {
             }),
         )
         .unwrap();
-        assert!(!b.recovery_required);
         assert!(
             b.next.is_none(),
             "reading receipts must not resume or replay anything"
         );
     }
     #[test]
-    fn receipt_recovery_is_hidden_until_needed_and_is_session_scoped() {
+    fn uncertain_receipt_history_does_not_open_or_gate_the_conversation() {
         use waku_protocol::deerflow_tasks::ReceiptPage;
         let mut b = browser();
         let other = browser();
         b.capabilities.tool_receipts = true;
-        assert!(!b.recovery_required);
+        assert!(!b.show_receipts);
         let command = b.begin(receipts::list_action(None, true)).unwrap();
         let receipt = serde_json::from_value(json!({
             "sessionId": "session", "runId": "run", "toolCallId": "call",
@@ -2385,16 +2485,22 @@ mod tests {
             }),
         )
         .unwrap();
-        assert!(b.recovery_required);
         assert!(
-            !other.recovery_required,
-            "another session must not inherit the warning"
+            !b.show_receipts,
+            "reading uncertain evidence must not navigate away from chat"
         );
+        assert!(
+            b.next.is_none(),
+            "history inspection must not schedule recovery work"
+        );
+        assert!(
+            b.pending.is_none(),
+            "a receipt query must not leave a control pending"
+        );
+        assert!(!b.controls_busy());
+        assert!(!other.show_receipts);
         b.disconnect();
-        assert!(
-            b.recovery_required,
-            "disconnecting does not resolve uncertain effects"
-        );
+        assert!(!b.show_receipts);
     }
     fn page(nodes: Vec<Node>, cursor: &str) -> Response {
         Response::Page(Page {
@@ -2818,6 +2924,25 @@ mod tests {
         let mut b = browser();
         b.insert(node("root/run", "", "root", 0)).unwrap();
         assert!(b.insert(node("bad", "root/run", "foreground", 3)).is_err());
+    }
+    #[test]
+    fn legacy_receipt_blocked_history_is_interrupted_without_claiming_a_tool_outcome() {
+        let mut legacy = node("worker", "root/run", "background", 1);
+        legacy.status = "needs_reconciliation".into();
+        let mut b = browser();
+        load(&mut b, vec![legacy]);
+        assert_eq!(b.live_count, 0);
+        assert_eq!(b.detached_count, 0);
+        assert_eq!(b.child_active_count, 0);
+        assert_eq!(
+            b.nodes.values().next().unwrap().node.status,
+            "needs_reconciliation"
+        );
+        assert_eq!(
+            status_label("needs_reconciliation"),
+            "已中断 · 结果尚不确定"
+        );
+        assert!(b.next.is_none());
     }
     #[test]
     fn deerflow_tree_permission_requires_exact_preview_and_explicit_decision() {

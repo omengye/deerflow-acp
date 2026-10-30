@@ -326,7 +326,7 @@ impl Waku {
                 match result {
                     Ok(waku_client::ResponsePayload::Ack) => this.forget_session(session_id, cx),
                     Ok(_) => this.show_toast("删除会话返回了无法识别的响应"),
-                    Err(error) => this.show_toast(tr!("errors.save_local_state", error = error)),
+                    Err(error) => this.show_toast(tr!("errors.delete_session", error = error)),
                 }
                 cx.notify();
             });
@@ -913,6 +913,9 @@ impl Waku {
     }
 
     pub(super) fn reset_session_runtime(&mut self, session_id: Uuid) {
+        if let Some(session) = self.state.session_mut(session_id) {
+            session.conversation_capability = None;
+        }
         self.deerflow_approval_states.remove(&session_id);
         self.pending_deerflow_approvals.remove(&session_id);
         if let Some(runtime) = self.runtimes.remove(&session_id) {

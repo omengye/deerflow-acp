@@ -86,6 +86,7 @@ export function createSession(
   const now = clock.nowSeconds();
   return {
     id: clock.randomUUID(),
+    history_revision: 0,
     title: 'New task',
     auto_title: null,
     project_id: projectId,

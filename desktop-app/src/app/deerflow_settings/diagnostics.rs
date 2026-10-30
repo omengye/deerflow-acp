@@ -9,7 +9,7 @@ pub(super) fn render(data: &Value, theme: Theme) -> AnyElement {
             .unwrap_or_else(|| "未记录".into())
     };
     let mut group = df_group(theme).child(df_label("执行诊断", format!(
-        "会话 {}\n运行 {} · 状态 {} · 采样时 {}\n执行 {} · 停止 {} · 阻塞 {}\n根任务累计：模型 {} 次 · 工具 {} 次 · 已用 {} token · 预留 {} token · 待核对 {} 条",
+        "会话 {}\n运行 {} · 状态 {} · 采样时 {}\n执行 {} · 停止 {} · 阻塞 {}\n根任务累计：模型 {} 次 · 工具 {} 次 · 已用 {} token · 预留 {} token · 结果不确定 {} 条",
         text("session_id"), text("run_id"), text("status"), text("phase"), text("execution_status"), text("stop_reason"), text("blocked_reason"),
         number("model_calls"),number("tool_calls"),number("spent_tokens"),number("held_tokens"),number("unreconciled_receipts")), theme));
     if let Some(rows) = data["model_timings"].as_array() {

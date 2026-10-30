@@ -1,6 +1,7 @@
 //! Cached projections and bounded pages for the Go skill management service.
 //! All requests use the parent's background executor and generation guard.
 pub(super) use super::skills_contract::{Head, PageNav, Target, digest};
+use super::skills_contract::{first_timestamp, sort_recent_first};
 use super::*;
 use serde::Deserialize;
 
@@ -66,6 +67,12 @@ struct CatalogSkill {
 }
 
 impl CatalogSkill {
+    fn timestamp(&self) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+        // installedAt reflects the current publication/install update. Export
+        // retries are advisory progress and must not move a skill to the top.
+        first_timestamp([&self.record["installedAt"]])
+    }
+
     fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.target.source_id.is_empty()
@@ -335,7 +342,7 @@ impl SkillBrowser {
     }
 
     fn accept_catalog(&mut self, request: &Value, data: Value) -> anyhow::Result<()> {
-        let page: CatalogPage = serde_json::from_value(data)?;
+        let mut page: CatalogPage = serde_json::from_value(data)?;
         anyhow::ensure!(
             page.skills.len() <= PAGE_SIZE && page.sources.len() <= 32,
             "技能目录超出分页限制"
@@ -343,6 +350,7 @@ impl SkillBrowser {
         for skill in &page.skills {
             skill.validate()?;
         }
+        sort_recent_first(&mut page.skills, CatalogSkill::timestamp);
         self.catalog_nav
             .accept(request, &page.next_cursor, "cursor")?;
         if let Some(selected) = self.selected.as_mut() {
@@ -395,6 +403,7 @@ impl SkillBrowser {
                 .find(|skill| skill.target == detail.skill.target)
             {
                 *skill = detail.skill.clone();
+                sort_recent_first(&mut page.skills, CatalogSkill::timestamp);
             }
         }
         self.selected = Some(detail);
@@ -483,7 +492,15 @@ impl SkillBrowser {
         } else {
             self.proposal_list_stale = false;
         }
-        Ok(rows.clone())
+        let mut rows = rows.clone();
+        sort_recent_first(&mut rows, |row| {
+            if history {
+                first_timestamp([&row["created_at"]])
+            } else {
+                first_timestamp([&row["updated_at"], &row["created_at"]])
+            }
+        });
+        Ok(rows)
     }
 
     pub(super) fn normalize_proposal_list(&self, request: &mut Value) {
@@ -1722,6 +1739,77 @@ mod tests {
             "record":{"description":"Research sources","enabled":true},
             "builtin":true,"managed_source":false,"can_refresh_import":false
         })
+    }
+
+    #[test]
+    fn skill_lists_recent_first_catalog_refresh_uses_install_time() {
+        let mut old = skill();
+        old["target"]["name"] = json!("old");
+        old["record"]["installedAt"] = json!("2026-10-29T08:00:00Z");
+        let mut recent = skill();
+        recent["target"]["name"] = json!("recent");
+        recent["record"]["installedAt"] = json!("2026-10-30T08:00:00Z");
+        let mut unknown = skill();
+        unknown["target"]["name"] = json!("unknown");
+        let mut browser = SkillBrowser::default();
+        browser
+            .accept_catalog(
+                &catalog_request("", ""),
+                json!({"skills":[unknown,old,recent],"sources":[],"catalog_version":3}),
+            )
+            .unwrap();
+        assert_eq!(
+            browser
+                .catalog
+                .as_ref()
+                .unwrap()
+                .skills
+                .iter()
+                .map(|skill| skill.target.name.as_str())
+                .collect::<Vec<_>>(),
+            ["recent", "old", "unknown"]
+        );
+        old["record"]["installedAt"] = json!("2026-10-31T08:00:00Z");
+        browser
+            .accept_detail(
+                &json!({"operation":"skill.get","target":old["target"]}),
+                json!({"skill":old,"catalog_version":3}),
+            )
+            .unwrap();
+        assert_eq!(
+            browser.catalog.as_ref().unwrap().skills[0].target.name,
+            "old"
+        );
+    }
+
+    #[test]
+    fn skill_lists_recent_first_review_and_history_use_their_own_times() {
+        let target = skill()["target"].clone();
+        let mut browser = SkillBrowser::default();
+        let rows = browser.accept_review_page(
+            &json!({"operation":"proposal.list","limit":20}),
+            &json!({"proposals":[
+                {"id":"old","state_version":1,"target":target,"updated_at":"2026-10-28T00:00:00Z","created_at":"2026-10-27T00:00:00Z"},
+                {"id":"unknown","state_version":1,"target":target},
+                {"id":"updated","state_version":1,"target":target,"updated_at":"2026-10-30T00:00:00Z","created_at":"2026-10-20T00:00:00Z"},
+                {"id":"created","state_version":1,"target":target,"created_at":"2026-10-29T00:00:00Z"}
+            ]}),
+        ).unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["updated", "created", "old", "unknown"]
+        );
+        let rows = browser.accept_review_page(
+            &json!({"operation":"proposal.history","limit":20}),
+            &json!({"revisions":[
+                {"version":1,"target":target,"created_at":"2026-10-28T00:00:00Z","updated_at":"2026-10-31T00:00:00Z"},
+                {"version":2,"target":target,"created_at":"2026-10-30T00:00:00Z"}
+            ]}),
+        ).unwrap();
+        assert_eq!(rows[0]["version"], 2);
+        assert_eq!(rows[1]["version"], 1);
     }
 
     #[test]

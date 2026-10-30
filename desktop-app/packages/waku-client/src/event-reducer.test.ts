@@ -19,6 +19,16 @@ const SUBMISSION = {
   messageId: '20000000-0000-4000-8000-000000000002',
 }
 
+test('conversation support requires a live handshake and clears on process exit', () => {
+  const session = { ...idleSession(), provider: 'deerFlow' as const }
+  expect(session.conversation_capability).not.toBe(true)
+  const confirmed = apply(session, 'conversationCapability', { supported: true })
+  expect(confirmed.conversation_capability).toBe(true)
+  expect(apply(confirmed, 'conversationCapability', { supported: false }).conversation_capability).toBe(false)
+  expect(apply(confirmed, 'conversationCapability', {}).conversation_capability).toBe(false)
+  expect(apply(confirmed, 'processExited', null).conversation_capability).toBeNull()
+})
+
 test('DeerFlow confirms thinking independently of the remembered effort', () => {
   const session = apply(idleSession(), 'deerflowModelsChanged', {
     model: 'fixture', reasoningEffort: 'high', thinkingMode: 'off', models: [],
@@ -239,6 +249,7 @@ function idleSession(): AgentSession {
 function runningSession(): AgentSession {
   return {
     id: 'session',
+    history_revision: 0,
     title: 'New task',
     project_id: 'project',
     workspace: { kind: 'local' },

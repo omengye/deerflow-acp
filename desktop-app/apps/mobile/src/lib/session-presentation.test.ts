@@ -335,6 +335,7 @@ function turn(overrides: Partial<AgentTurn> & Pick<AgentTurn, 'id' | 'status'>):
 function session(overrides: Partial<AgentSession>): AgentSession {
   return {
     id: 'session',
+    history_revision: 0,
     title: 'Task',
     project_id: 'project',
     provider: 'codex',

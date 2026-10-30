@@ -534,6 +534,40 @@ impl Waku {
                     Self::upsert_computer_use_preview(session_id, runtime, state, cx);
                 }
             }
+            DriverEvent::SteeringCapability { .. } => {
+                cx.notify();
+            }
+            DriverEvent::ConversationCapability { supported } => {
+                if let Some(session) = self.state.session_mut(session_id) {
+                    session.conversation_capability = Some(supported);
+                }
+                cx.notify();
+            }
+            DriverEvent::SteeringUpdated(update) => {
+                let exists = self
+                    .state
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .is_some_and(|session| {
+                        session
+                            .messages
+                            .iter()
+                            .any(|message| message.id.to_string() == update.request_id)
+                    });
+                if !exists {
+                    if let Some(index) = runtime
+                        .pending_steers
+                        .iter()
+                        .position(|submission| submission.prompt == update.message)
+                    {
+                        runtime.pending_steers.remove(index);
+                    }
+                }
+                if let Some(session) = self.state.session_mut(session_id) {
+                    session.apply_steering_update(&update);
+                }
+            }
             DriverEvent::SteerAccepted { message } => {
                 let submission = runtime
                     .pending_steers
@@ -777,17 +811,8 @@ impl Waku {
                 }
             }
             DriverEvent::Error(error) => {
-                if waku_protocol::deerflow_tasks::needs_receipt_review(&error)
-                    && self.state.sessions.iter().any(|session| {
-                        session.id == session_id && session.provider == ProviderKind::DeerFlow
-                    })
-                {
-                    self.deerflow_tasks
-                        .entry(session_id)
-                        .or_default()
-                        .recovery_required = true;
-                }
                 let error = compact_driver_error(&error);
+                self.fail_deerflow_budget_connection(session_id, error.clone());
                 runtime.last_driver_error = Some(error.clone());
                 if self.state.selected_session == Some(session_id) {
                     self.show_toast(error.clone());
@@ -814,6 +839,9 @@ impl Waku {
                 }
             }
             DriverEvent::ProcessExited => {
+                if let Some(session) = self.state.session_mut(session_id) {
+                    session.conversation_capability = None;
+                }
                 self.disconnect_deerflow_tasks(session_id);
                 self.pending_deerflow_approvals.remove(&session_id);
                 self.deerflow_approval_states.remove(&session_id);
@@ -1002,10 +1030,14 @@ pub(super) fn stream_delta_text(event: &DriverEvent, kind: StreamDeltaKind) -> O
 }
 
 pub(super) fn compact_driver_error(error: &str) -> String {
-    // Older daemons return a JSON error whose instructions were cut off by the
-    // generic six-line limit. Normalize before truncating.
-    if waku_protocol::deerflow_tasks::needs_receipt_review(error) {
-        return waku_protocol::deerflow_tasks::RECEIPT_REVIEW_MESSAGE.to_owned();
+    // Historical errors may contain obsolete instructions for the removed
+    // result-review form. Keep their uncertainty without directing users there.
+    if error.contains("needs_reconciliation")
+        || error.contains("reconciliation_required")
+        || error.contains("ReceiptReconciliationRequired")
+        || error.contains("Uncertain tool effects require review")
+    {
+        return "上次运行已中断，部分工具结果尚不确定。可在对话中发送消息，由代理根据现有记录继续处理。".to_owned();
     }
     const MAX_LINES: usize = 6;
     const MAX_CHARS: usize = 800;

@@ -1,12 +1,10 @@
-//! Historical token and cost usage for the settings Usage page, scanned from
+//! Historical token usage for the settings Usage page, scanned from
 //! the provider CLIs' own on-disk session transcripts (Claude Code's
 //! `~/.claude/projects` and Codex's `~/.codex/sessions`) the way T3 Code and
-//! `ccusage` do it, so usage covers turns driven outside Waku too. Costs are
-//! priced against LiteLLM's model rate table, fetched at most daily and cached
-//! beside the app database.
+//! `ccusage` do it, so usage covers turns driven outside Waku too.
 //!
-//! Everything here blocks on the filesystem and (for the rate table) the
-//! network, and must run on the background executor. Render reads only the
+//! Everything here blocks on the filesystem and must run on the background
+//! executor. Render reads only the
 //! [`UsageHistory`] snapshot the app entity stores. Transcripts are
 //! append-only, so parsed records are memoised per file by `(size, mtime)` in
 //! a [`ScanCache`] the caller owns; warm rescans only reparse changed files.
@@ -20,9 +18,8 @@ use chrono::{Datelike as _, Local, NaiveDate, TimeZone as _, Utc};
 use serde_json::Value;
 
 pub use waku_protocol::usage_history::{
-    CostQuality, DaySlice, MONTHLY_WINDOW, ModelSlice, MonthSlice, PricingStatus, ProjectSlice,
-    ProviderDay, ProviderSlice, TokenTotals, UsageHistory, UsageProvider, UsageWindow,
-    WINDOW_CHOICES,
+    DaySlice, MONTHLY_WINDOW, ModelSlice, MonthSlice, ProjectSlice, ProviderDay, ProviderSlice,
+    TokenTotals, UsageHistory, UsageProvider, UsageWindow, WINDOW_CHOICES,
 };
 
 /// Files whose mtime predates the window start by more than this are skipped
@@ -30,11 +27,34 @@ pub use waku_protocol::usage_history::{
 /// before local midnight on the window's first day.
 const MTIME_SLACK: Duration = Duration::from_secs(36 * 3600);
 
-const LITELLM_RATES_URL: &str =
-    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
-const RATES_CACHE_FILE: &str = "usage-model-rates.json";
-/// Rates move rarely; a day-old table keeps the page working offline.
-const RATES_TTL: Duration = Duration::from_secs(24 * 3600);
+/// One-time compatibility cleanup. This exact file contained only downloaded
+/// model prices; transcripts and token scan data are never traversed.
+pub(crate) fn remove_legacy_price_cache(state_directory: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(state_directory.join("usage-model-rates.json")) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn legacy_price_cleanup_preserves_other_usage_files() {
+    let directory =
+        std::env::temp_dir().join(format!("waku-price-migration-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("usage-model-rates.json"), b"obsolete").unwrap();
+    std::fs::write(directory.join("usage-history.json"), b"tokens").unwrap();
+    remove_legacy_price_cache(&directory).unwrap();
+    remove_legacy_price_cache(&directory).unwrap();
+    assert!(!directory.join("usage-model-rates.json").exists());
+    assert_eq!(
+        std::fs::read(directory.join("usage-history.json")).unwrap(),
+        b"tokens"
+    );
+    std::fs::remove_file(directory.join("usage-history.json")).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+}
 
 /// One usage event parsed out of a transcript line.
 #[derive(Clone, Debug)]
@@ -48,7 +68,6 @@ pub struct UsageRecord {
     /// not say.
     pub project: String,
     pub totals: TokenTotals,
-    pub reported_cost_usd: Option<f64>,
     /// Key for cross-file de-duplication, or `None` when the record is
     /// inherently unique and needs no dedup.
     pub dedupe_key: Option<String>,
@@ -133,10 +152,6 @@ fn parse_claude_line(line: &str) -> Option<UsageRecord> {
             // Anthropic folds thinking tokens into output without a breakout.
             reasoning: 0,
         },
-        reported_cost_usd: record
-            .get("costUSD")
-            .and_then(Value::as_f64)
-            .filter(|cost| cost.is_finite()),
         dedupe_key,
     })
 }
@@ -347,110 +362,10 @@ fn parse_codex_line(line: &str, state: &mut CodexScanState) -> Option<UsageRecor
         session_id: state.session_id.clone(),
         project: state.cwd.clone(),
         totals,
-        // Codex does not report cost in the rollout.
-        reported_cost_usd: None,
         // Fork copies were suppressed while parsing the physical rollout, so
         // surviving events are unique and need no global deduplication.
         dedupe_key: None,
     })
-}
-
-/* ------------------------------------------------------------------------- */
-/* Pricing                                                                   */
-/* ------------------------------------------------------------------------- */
-
-/// USD per token at the base tier. Tiered variants (long-context, flex,
-/// batch) are deliberately ignored: transcripts don't record which tier
-/// served a request, so anything else would be a guess dressed as precision.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ModelRate {
-    pub input: f64,
-    pub output: f64,
-    pub cache_read: f64,
-    pub cache_creation: f64,
-}
-
-#[derive(Clone, Debug)]
-pub struct RateTable {
-    pub rates: HashMap<String, ModelRate>,
-    pub status: PricingStatus,
-}
-
-impl RateTable {
-    pub fn unavailable() -> Self {
-        Self {
-            rates: HashMap::new(),
-            status: PricingStatus::Unavailable,
-        }
-    }
-}
-
-/// Models never priced regardless of the table: `<synthetic>` marks locally
-/// generated messages that were never billed, and bare family names are
-/// ambiguous across generations, so they report as unpriced instead of
-/// guessing one.
-const UNPRICEABLE_MODELS: [&str; 6] = [
-    "<synthetic>",
-    "synthetic",
-    "opus",
-    "sonnet",
-    "haiku",
-    "fable",
-];
-
-/// Canonicalises a model name for lookup: strips a `provider/` prefix
-/// (LiteLLM publishes both `claude-opus-5` and `anthropic/claude-opus-5`) and
-/// lowercases, since transcripts are inconsistent about casing.
-fn normalize_model_name(model: &str) -> String {
-    let trimmed = model.trim().to_ascii_lowercase();
-    match trimmed.rfind('/') {
-        Some(slash) => trimmed[slash + 1..].to_owned(),
-        None => trimmed,
-    }
-}
-
-fn lookup_rate<'a>(table: &'a RateTable, model: &str) -> Option<&'a ModelRate> {
-    let normalized = normalize_model_name(model);
-    if normalized.is_empty() || UNPRICEABLE_MODELS.contains(&normalized.as_str()) {
-        return None;
-    }
-    table.rates.get(&normalized)
-}
-
-/// Projects the LiteLLM document into a rate table. Entries without both an
-/// input and an output rate are dropped: a half-priced model would silently
-/// under-report cost, which is worse than reporting it as unpriced.
-fn parse_rate_table(document: &Value) -> HashMap<String, ModelRate> {
-    let mut table = HashMap::new();
-    let Some(entries) = document.as_object() else {
-        return table;
-    };
-    let finite = |value: Option<&Value>| value.and_then(Value::as_f64).filter(|v| v.is_finite());
-    for (name, entry) in entries {
-        let Some(entry) = entry.as_object() else {
-            continue;
-        };
-        let Some(input) = finite(entry.get("input_cost_per_token")) else {
-            continue;
-        };
-        let Some(output) = finite(entry.get("output_cost_per_token")) else {
-            continue;
-        };
-        table.insert(
-            normalize_model_name(name),
-            ModelRate {
-                input,
-                output,
-                // Anthropic bills cache reads at a discount and writes at a
-                // premium. When a model omits them, cached input is priced as
-                // plain input rather than as free.
-                cache_read: finite(entry.get("cache_read_input_token_cost")).unwrap_or(input),
-                cache_creation: finite(entry.get("cache_creation_input_token_cost"))
-                    .unwrap_or(input),
-            },
-        );
-    }
-    table
 }
 
 fn unix_time_ms() -> i64 {
@@ -458,88 +373,6 @@ fn unix_time_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
         .unwrap_or(0)
-}
-
-fn read_rates_cache(path: &Path) -> Option<(i64, HashMap<String, ModelRate>)> {
-    let document: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    let fetched_at_ms = document.get("fetched_at_ms")?.as_i64()?;
-    let mut rates = HashMap::new();
-    for (name, entry) in document.get("rates")?.as_object()? {
-        let values = entry.as_array()?;
-        let field = |index: usize| values.get(index).and_then(Value::as_f64);
-        rates.insert(
-            name.clone(),
-            ModelRate {
-                input: field(0)?,
-                output: field(1)?,
-                cache_read: field(2)?,
-                cache_creation: field(3)?,
-            },
-        );
-    }
-    Some((fetched_at_ms, rates))
-}
-
-fn write_rates_cache(path: &Path, fetched_at_ms: i64, rates: &HashMap<String, ModelRate>) {
-    let entries: serde_json::Map<String, Value> = rates
-        .iter()
-        .map(|(name, rate)| {
-            (
-                name.clone(),
-                serde_json::json!([
-                    rate.input,
-                    rate.output,
-                    rate.cache_read,
-                    rate.cache_creation
-                ]),
-            )
-        })
-        .collect();
-    let document = serde_json::json!({ "fetched_at_ms": fetched_at_ms, "rates": entries });
-    // Best effort: a cache that fails to write only costs the next scan a
-    // refetch.
-    let _ = std::fs::write(path, document.to_string());
-}
-
-/// Load the LiteLLM rate table, preferring the on-disk snapshot while it is
-/// within TTL, refetching otherwise, and degrading to the stale snapshot or an
-/// empty table rather than failing the scan. Blocking: disk plus up to one
-/// HTTPS round trip. Never call from the UI thread.
-pub fn load_rate_table(cache_dir: &Path) -> RateTable {
-    let cache_path = cache_dir.join(RATES_CACHE_FILE);
-    let disk = read_rates_cache(&cache_path).filter(|(_, rates)| !rates.is_empty());
-    let now_ms = unix_time_ms();
-    if let Some((fetched_at_ms, rates)) = &disk
-        && now_ms.saturating_sub(*fetched_at_ms) < RATES_TTL.as_millis() as i64
-    {
-        return RateTable {
-            rates: rates.clone(),
-            status: PricingStatus::Cached,
-        };
-    }
-
-    let fetched =
-        crate::usage::http_get(LITELLM_RATES_URL, &["Accept: application/json".to_owned()])
-            .ok()
-            .filter(|(status, _)| *status == 200)
-            .and_then(|(_, body)| serde_json::from_str::<Value>(&body).ok())
-            .map(|document| parse_rate_table(&document))
-            .filter(|rates| !rates.is_empty());
-
-    match (fetched, disk) {
-        (Some(rates), _) => {
-            write_rates_cache(&cache_path, now_ms, &rates);
-            RateTable {
-                rates,
-                status: PricingStatus::Fresh,
-            }
-        }
-        (None, Some((_, rates))) => RateTable {
-            rates,
-            status: PricingStatus::Cached,
-        },
-        (None, None) => RateTable::unavailable(),
-    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -676,32 +509,20 @@ fn read_transcript_records(path: &Path, provider: UsageProvider) -> Option<Vec<U
 /* Aggregation                                                               */
 /* ------------------------------------------------------------------------- */
 
-#[derive(Clone, Copy, PartialEq)]
-enum CostSource {
-    Reported,
-    Priced,
-    Unpriced,
-}
-
 #[derive(Default)]
 struct Bucket {
     totals: TokenTotals,
-    cost_usd: f64,
-    cache_savings_usd: f64,
     records: u64,
-    unpriced_records: u64,
-    reported_records: u64,
 }
 
 /// Per-project accumulation, keyed by the resolved project path.
 #[derive(Default)]
 struct ProjectAccumulator {
-    cost_usd: f64,
     total_tokens: u64,
     by_provider: [ProviderDay; 2],
     sessions: HashSet<(UsageProvider, String)>,
-    /// Cost per model, for the row's "top models" caption.
-    models: HashMap<String, f64>,
+    /// Tokens per model, for the row's "top models" caption.
+    models: HashMap<String, u64>,
     last_day: Option<NaiveDate>,
 }
 
@@ -755,7 +576,7 @@ impl Aggregator {
             .unwrap_or_else(|| cwd.to_owned())
     }
 
-    fn add(&mut self, record: &UsageRecord, rates: &RateTable) {
+    fn add(&mut self, record: &UsageRecord) {
         if let Some(key) = &record.dedupe_key {
             if !self.seen.insert(key.clone()) {
                 return;
@@ -769,38 +590,12 @@ impl Aggregator {
             return;
         }
 
-        let (cost_usd, source) = match record.reported_cost_usd {
-            Some(cost) => (cost, CostSource::Reported),
-            None => match lookup_rate(rates, &record.model) {
-                Some(rate) => (
-                    record.totals.uncached_input as f64 * rate.input
-                        + record.totals.cached_input as f64 * rate.cache_read
-                        + record.totals.cache_creation as f64 * rate.cache_creation
-                        + record.totals.output as f64 * rate.output,
-                    CostSource::Priced,
-                ),
-                None => (0.0, CostSource::Unpriced),
-            },
-        };
-        // What the cached input would have cost at full input rates, minus
-        // what it actually cost. Drives the "cache savings" figure.
-        let cache_savings_usd = lookup_rate(rates, &record.model)
-            .map(|rate| record.totals.cached_input as f64 * (rate.input - rate.cache_read))
-            .unwrap_or(0.0);
-
         let bucket = self
             .buckets
             .entry((day, record.provider, record.model.clone()))
             .or_default();
         bucket.totals.add(&record.totals);
-        bucket.cost_usd += cost_usd;
-        bucket.cache_savings_usd += cache_savings_usd;
         bucket.records += 1;
-        match source {
-            CostSource::Unpriced => bucket.unpriced_records += 1,
-            CostSource::Reported => bucket.reported_records += 1,
-            CostSource::Priced => {}
-        }
         if !record.session_id.is_empty() {
             self.sessions
                 .insert((record.provider, record.session_id.clone()));
@@ -814,16 +609,14 @@ impl Aggregator {
         let tokens = record.totals.total();
         let project_key = self.resolve_project(&record.project);
         let project = self.projects.entry(project_key).or_default();
-        project.cost_usd += cost_usd;
         project.total_tokens += tokens;
-        project.by_provider[record.provider.index()].cost_usd += cost_usd;
         project.by_provider[record.provider.index()].total_tokens += tokens;
         if !record.session_id.is_empty() {
             project
                 .sessions
                 .insert((record.provider, record.session_id.clone()));
         }
-        *project.models.entry(record.model.clone()).or_default() += cost_usd;
+        *project.models.entry(record.model.clone()).or_default() += tokens;
         project.last_day = Some(project.last_day.map_or(day, |last| last.max(day)));
     }
 }
@@ -831,13 +624,8 @@ impl Aggregator {
 /// Scan every provider's transcripts for `window` ending today and derive
 /// the page snapshot. `project_roots` are the app's known project paths, used
 /// to attribute working directories to projects. Blocking; run on the
-/// background executor with the caller-owned `cache` and a loaded rate table.
-pub fn scan(
-    cache: &mut ScanCache,
-    rates: &RateTable,
-    window: UsageWindow,
-    project_roots: &[PathBuf],
-) -> UsageHistory {
+/// background executor with the caller-owned `cache`.
+pub fn scan(cache: &mut ScanCache, window: UsageWindow, project_roots: &[PathBuf]) -> UsageHistory {
     let started = Instant::now();
     let (since_day, until_day) = window.bounds(Local::now().date_naive());
     // Local midnight on the window's first day; a DST gap falls back to the
@@ -906,7 +694,7 @@ pub fn scan(
                 },
             };
             for record in records {
-                aggregator.add(record, rates);
+                aggregator.add(record);
             }
         }
     }
@@ -916,7 +704,6 @@ pub fn scan(
         window,
         since_day,
         until_day,
-        rates.status,
         scanned_files,
         skipped_files,
         errors,
@@ -930,89 +717,71 @@ fn derive_history(
     window: UsageWindow,
     since_day: NaiveDate,
     until_day: NaiveDate,
-    pricing: PricingStatus,
     scanned_files: usize,
     skipped_files: usize,
     errors: Vec<String>,
     scan_duration: Duration,
 ) -> UsageHistory {
     let mut totals = TokenTotals::default();
-    let mut cost_usd = 0.0;
-    let mut cache_savings_usd = 0.0;
     let mut records = 0;
-    let mut unpriced_records = 0;
-    let mut reported_records = 0;
-    let mut providers: HashMap<UsageProvider, (f64, u64)> = HashMap::new();
-    let mut models: HashMap<(UsageProvider, String), (f64, u64)> = HashMap::new();
+    let mut providers: HashMap<UsageProvider, u64> = HashMap::new();
+    let mut models: HashMap<(UsageProvider, String), u64> = HashMap::new();
     let mut daily: HashMap<NaiveDate, DaySlice> = HashMap::new();
-    let mut month_models: HashMap<(NaiveDate, String), f64> = HashMap::new();
+    let mut month_models: HashMap<(NaiveDate, String), u64> = HashMap::new();
 
     for ((day, provider, model), bucket) in &aggregator.buckets {
         let tokens = bucket.totals.total();
         totals.add(&bucket.totals);
-        cost_usd += bucket.cost_usd;
-        cache_savings_usd += bucket.cache_savings_usd;
         records += bucket.records;
-        unpriced_records += bucket.unpriced_records;
-        reported_records += bucket.reported_records;
-
-        let provider_entry = providers.entry(*provider).or_default();
-        provider_entry.0 += bucket.cost_usd;
-        provider_entry.1 += tokens;
-
-        let model_entry = models.entry((*provider, model.clone())).or_default();
-        model_entry.0 += bucket.cost_usd;
-        model_entry.1 += tokens;
-
+        *providers.entry(*provider).or_default() += tokens;
+        *models.entry((*provider, model.clone())).or_default() += tokens;
         let day_entry = daily.entry(*day).or_insert_with(|| DaySlice {
             day: *day,
-            cost_usd: 0.0,
             total_tokens: 0,
             by_provider: [ProviderDay::default(); 2],
         });
-        day_entry.cost_usd += bucket.cost_usd;
         day_entry.total_tokens += tokens;
-        day_entry.by_provider[provider.index()].cost_usd += bucket.cost_usd;
         day_entry.by_provider[provider.index()].total_tokens += tokens;
-
         *month_models
             .entry((first_of_month(*day), model.clone()))
-            .or_default() += bucket.cost_usd;
+            .or_default() += tokens;
     }
 
     let total_tokens = totals.total();
-    let share = |part: f64, whole: f64| if whole == 0.0 { 0.0 } else { part / whole };
-
+    let share = |part: u64| {
+        if total_tokens == 0 {
+            0.0
+        } else {
+            part as f64 / total_tokens as f64
+        }
+    };
     let mut provider_slices: Vec<ProviderSlice> = providers
         .into_iter()
-        .map(
-            |(provider, (provider_cost, provider_tokens))| ProviderSlice {
-                provider,
-                cost_usd: provider_cost,
-                total_tokens: provider_tokens,
-                cost_share: share(provider_cost, cost_usd),
-                token_share: share(provider_tokens as f64, total_tokens as f64),
-            },
-        )
+        .map(|(provider, tokens)| ProviderSlice {
+            provider,
+            total_tokens: tokens,
+            token_share: share(tokens),
+        })
         .collect();
-    provider_slices.sort_by(|a, b| b.cost_usd.total_cmp(&a.cost_usd));
-
+    provider_slices.sort_by(|a, b| {
+        b.total_tokens
+            .cmp(&a.total_tokens)
+            .then(a.provider.index().cmp(&b.provider.index()))
+    });
     let mut model_slices: Vec<ModelSlice> = models
         .into_iter()
-        .map(
-            |((provider, model), (model_cost, model_tokens))| ModelSlice {
-                provider,
-                model,
-                cost_usd: model_cost,
-                total_tokens: model_tokens,
-                cost_share: share(model_cost, cost_usd),
-            },
-        )
+        .map(|((provider, model), tokens)| ModelSlice {
+            provider,
+            model,
+            total_tokens: tokens,
+            token_share: share(tokens),
+        })
         .collect();
     model_slices.sort_by(|a, b| {
-        b.cost_usd
-            .total_cmp(&a.cost_usd)
-            .then(b.total_tokens.cmp(&a.total_tokens))
+        b.total_tokens
+            .cmp(&a.total_tokens)
+            .then(a.model.cmp(&b.model))
+            .then(a.provider.index().cmp(&b.provider.index()))
     });
 
     let mut day_slices: Vec<DaySlice> = daily.into_values().collect();
@@ -1026,17 +795,14 @@ fn derive_history(
             .entry(first_of_month(day.day))
             .or_insert_with(|| MonthSlice {
                 first_day: first_of_month(day.day),
-                cost_usd: 0.0,
                 total_tokens: 0,
                 by_provider: [ProviderDay::default(); 2],
                 sessions: 0,
                 active_days: 0,
                 top_models: Vec::new(),
             });
-        month.cost_usd += day.cost_usd;
         month.total_tokens += day.total_tokens;
         for index in 0..month.by_provider.len() {
-            month.by_provider[index].cost_usd += day.by_provider[index].cost_usd;
             month.by_provider[index].total_tokens += day.by_provider[index].total_tokens;
         }
         if day.total_tokens > 0 {
@@ -1048,49 +814,48 @@ fn derive_history(
             month.sessions += 1;
         }
     }
-    for ((first_day, model), model_cost) in month_models {
+    for ((first_day, model), model_tokens) in month_models {
         if let Some(month) = months.get_mut(&first_day) {
-            month.top_models.push((model, model_cost));
+            month.top_models.push((model, model_tokens));
         }
     }
     let mut month_slices: Vec<MonthSlice> = months.into_values().collect();
     month_slices.sort_by_key(|slice| slice.first_day);
     for month in &mut month_slices {
-        month.top_models.sort_by(|a, b| b.1.total_cmp(&a.1));
+        month
+            .top_models
+            .sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     }
 
     let mut project_slices: Vec<ProjectSlice> = aggregator
         .projects
         .into_iter()
         .map(|(path, project)| {
-            let mut top_models: Vec<(String, f64)> = project.models.into_iter().collect();
-            top_models.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let mut top_models: Vec<(String, u64)> = project.models.into_iter().collect();
+            top_models.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
             ProjectSlice {
                 path,
-                cost_usd: project.cost_usd,
                 total_tokens: project.total_tokens,
                 by_provider: project.by_provider,
                 sessions: project.sessions.len() as u64,
-                cost_share: share(project.cost_usd, cost_usd),
+                token_share: share(project.total_tokens),
                 last_day: project.last_day,
                 top_models,
             }
         })
         .collect();
     project_slices.sort_by(|a, b| {
-        b.cost_usd
-            .total_cmp(&a.cost_usd)
-            .then(b.total_tokens.cmp(&a.total_tokens))
+        b.total_tokens
+            .cmp(&a.total_tokens)
+            .then(a.path.cmp(&b.path))
     });
 
-    let record_share = |part: u64| share(part as f64, records as f64);
     UsageHistory {
         window,
         since_day,
         until_day,
         totals,
         total_tokens,
-        cost_usd,
         records,
         sessions: aggregator.sessions.len() as u64,
         providers: provider_slices,
@@ -1098,13 +863,6 @@ fn derive_history(
         daily: day_slices,
         months: month_slices,
         projects: project_slices,
-        quality: CostQuality {
-            provider_reported_share: record_share(reported_records),
-            model_priced_share: record_share(records - reported_records - unpriced_records),
-            unpriced_share: record_share(unpriced_records),
-            cache_savings_usd,
-        },
-        pricing,
         scanned_files,
         skipped_files,
         errors,
@@ -1157,23 +915,6 @@ pub fn days_in_month(first_day: NaiveDate) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn rate_table(entries: &[(&str, ModelRate)]) -> RateTable {
-        RateTable {
-            rates: entries
-                .iter()
-                .map(|(name, rate)| ((*name).to_owned(), *rate))
-                .collect(),
-            status: PricingStatus::Fresh,
-        }
-    }
-
-    const FLAT_RATE: ModelRate = ModelRate {
-        input: 1e-6,
-        output: 2e-6,
-        cache_read: 1e-7,
-        cache_creation: 1.25e-6,
-    };
 
     fn codex_meta(
         timestamp: &str,
@@ -1232,7 +973,7 @@ mod tests {
     fn claude_lines_parse_usage_and_dedupe_key() {
         // Shape captured from a live transcript on 2026-08-08.
         let line = r#"{"type":"assistant","timestamp":"2026-08-08T15:18:37.487Z",
-            "requestId":"req_1","sessionId":"session-1","costUSD":null,
+            "requestId":"req_1","sessionId":"session-1","costUSD":123.45,
             "cwd":"/Users/me/dev/waku",
             "message":{"id":"msg_1","model":"claude-fable-5",
             "usage":{"input_tokens":2,"cache_creation_input_tokens":50700,
@@ -1244,7 +985,6 @@ mod tests {
         assert_eq!(record.session_id, "session-1");
         assert_eq!(record.project, "/Users/me/dev/waku");
         assert_eq!(record.dedupe_key.as_deref(), Some("msg_1:req_1"));
-        assert_eq!(record.reported_cost_usd, None);
         assert_eq!(record.totals.uncached_input, 2);
         assert_eq!(record.totals.cache_creation, 50700);
         assert_eq!(record.totals.output, 1238);
@@ -1419,8 +1159,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregation_dedupes_across_files_and_prices_records() {
-        let rates = rate_table(&[("claude-fable-5", FLAT_RATE)]);
+    fn aggregation_dedupes_across_files_and_counts_tokens() {
         let record = UsageRecord {
             provider: UsageProvider::Claude,
             timestamp_ms: Local::now().timestamp_millis(),
@@ -1434,22 +1173,20 @@ mod tests {
                 output: 500,
                 reasoning: 0,
             },
-            reported_cost_usd: None,
             dedupe_key: Some("msg:req".to_owned()),
         };
         let today = Local::now().date_naive();
         let roots = [PathBuf::from("/Users/me/dev/waku")];
         let mut aggregator = Aggregator::new(today - chrono::Days::new(29), today, &roots);
-        aggregator.add(&record, &rates);
+        aggregator.add(&record);
         // The same message copied into a forked session's transcript.
-        aggregator.add(&record, &rates);
+        aggregator.add(&record);
 
         let history = derive_history(
             aggregator,
             UsageWindow::TrailingDays(30),
             today - chrono::Days::new(29),
             today,
-            PricingStatus::Fresh,
             1,
             0,
             Vec::new(),
@@ -1458,14 +1195,8 @@ mod tests {
         assert_eq!(history.records, 1);
         assert_eq!(history.sessions, 1);
         assert_eq!(history.total_tokens, 13_500);
-        let expected_cost = 1_000.0 * 1e-6 + 10_000.0 * 1e-7 + 2_000.0 * 1.25e-6 + 500.0 * 2e-6;
-        assert!((history.cost_usd - expected_cost).abs() < 1e-9);
-        // Savings: cached input at full rate minus the cache-read rate.
-        let expected_savings = 10_000.0 * (1e-6 - 1e-7);
-        assert!((history.quality.cache_savings_usd - expected_savings).abs() < 1e-9);
         assert_eq!(history.daily.len(), 1);
         assert_eq!(history.providers.len(), 1);
-        assert!((history.quality.model_priced_share - 1.0).abs() < f64::EPSILON);
 
         // The subdirectory cwd resolved to its containing project root, and
         // the month fold carries the same totals as the single active day.
@@ -1474,7 +1205,7 @@ mod tests {
         assert_eq!(project.path, "/Users/me/dev/waku");
         assert_eq!(project.sessions, 1);
         assert_eq!(project.total_tokens, 13_500);
-        assert!((project.cost_share - 1.0).abs() < f64::EPSILON);
+        assert!((project.token_share - 1.0).abs() < f64::EPSILON);
         assert_eq!(project.last_day, Some(today));
         assert_eq!(project.top_models[0].0, "claude-fable-5");
         assert_eq!(history.months.len(), 1);
@@ -1487,8 +1218,92 @@ mod tests {
     }
 
     #[test]
+    fn token_rankings_preserve_cache_and_reasoning_without_monetary_fields() {
+        let today = Local::now().date_naive();
+        let mut aggregator = Aggregator::new(today, today, &[]);
+        for (provider, model, project, input, cached, output, reasoning) in [
+            (
+                UsageProvider::Claude,
+                "claude-fable-5",
+                "/small",
+                100,
+                200,
+                50,
+                0,
+            ),
+            (
+                UsageProvider::Codex,
+                "gpt-5.3-codex",
+                "/large",
+                400,
+                500,
+                100,
+                40,
+            ),
+        ] {
+            aggregator.add(&UsageRecord {
+                provider,
+                timestamp_ms: Local::now().timestamp_millis(),
+                model: model.to_owned(),
+                session_id: project.to_owned(),
+                project: project.to_owned(),
+                totals: TokenTotals {
+                    uncached_input: input,
+                    cached_input: cached,
+                    output,
+                    reasoning,
+                    ..TokenTotals::default()
+                },
+                dedupe_key: None,
+            });
+        }
+        let history = derive_history(
+            aggregator,
+            UsageWindow::TrailingDays(1),
+            today,
+            today,
+            2,
+            0,
+            Vec::new(),
+            Duration::ZERO,
+        );
+        assert_eq!(
+            history.total_tokens, 1_350,
+            "reasoning is already included in output"
+        );
+        assert_eq!(history.totals.cached_input, 700);
+        assert_eq!(history.totals.reasoning, 40);
+        assert_eq!(history.providers[0].provider, UsageProvider::Codex);
+        assert_eq!(history.models[0].model, "gpt-5.3-codex");
+        assert_eq!(history.projects[0].path, "/large");
+        assert_eq!(
+            history.months[0].top_models[0],
+            ("gpt-5.3-codex".to_owned(), 1_000)
+        );
+        assert!(
+            (history
+                .providers
+                .iter()
+                .map(|entry| entry.token_share)
+                .sum::<f64>()
+                - 1.0)
+                .abs()
+                < 1e-9
+        );
+        let serialized = serde_json::to_string(&history).unwrap();
+        for removed in [
+            "costUsd",
+            "costShare",
+            "pricing",
+            "quality",
+            "cacheSavingsUsd",
+        ] {
+            assert!(!serialized.contains(removed), "obsolete field {removed}");
+        }
+    }
+
+    #[test]
     fn months_and_projects_split_across_boundaries() {
-        let rates = rate_table(&[("claude-fable-5", FLAT_RATE)]);
         let today = Local::now().date_naive();
         // Two months back so both records always land inside the window even
         // on the first of a month.
@@ -1507,18 +1322,16 @@ mod tests {
                 uncached_input: 100,
                 ..TokenTotals::default()
             },
-            reported_cost_usd: None,
             dedupe_key: None,
         };
-        aggregator.add(&record(0, "session-now", "/a"), &rates);
-        aggregator.add(&record(45, "session-then", "/b"), &rates);
+        aggregator.add(&record(0, "session-now", "/a"));
+        aggregator.add(&record(45, "session-then", "/b"));
 
         let history = derive_history(
             aggregator,
             MONTHLY_WINDOW,
             since,
             today,
-            PricingStatus::Fresh,
             0,
             0,
             Vec::new(),
@@ -1528,8 +1341,8 @@ mod tests {
         assert!(history.months[0].first_day < history.months[1].first_day);
         assert_eq!(history.months[1].sessions, 1);
         assert_eq!(history.projects.len(), 2);
-        // Equal costs tie-break by tokens; both carry half the total each.
-        assert!((history.projects[0].cost_share - 0.5).abs() < 1e-9);
+        // Equal token totals are ordered by path; both carry half the total each.
+        assert!((history.projects[0].token_share - 0.5).abs() < 1e-9);
         assert!(
             history
                 .month(first_of_month(today))
@@ -1538,8 +1351,7 @@ mod tests {
     }
 
     #[test]
-    fn out_of_window_and_unpriced_records_are_classified() {
-        let rates = RateTable::unavailable();
+    fn out_of_window_records_are_excluded() {
         let today = Local::now().date_naive();
         let roots: [PathBuf; 0] = [];
         let mut aggregator = Aggregator::new(today, today, &roots);
@@ -1553,20 +1365,18 @@ mod tests {
                 uncached_input: 100,
                 ..TokenTotals::default()
             },
-            reported_cost_usd: None,
             dedupe_key: None,
         };
-        aggregator.add(&record, &rates);
+        aggregator.add(&record);
         // Ten days ago falls outside a one-day window.
         record.timestamp_ms -= 10 * 86_400_000;
-        aggregator.add(&record, &rates);
+        aggregator.add(&record);
 
         let history = derive_history(
             aggregator,
             UsageWindow::TrailingDays(1),
             today,
             today,
-            PricingStatus::Unavailable,
             0,
             0,
             Vec::new(),
@@ -1574,51 +1384,7 @@ mod tests {
         );
         assert_eq!(history.records, 1);
         assert_eq!(history.sessions, 0, "an empty session id is not a session");
-        assert!((history.quality.unpriced_share - 1.0).abs() < f64::EPSILON);
-        assert_eq!(history.cost_usd, 0.0);
-    }
-
-    #[test]
-    fn model_names_normalize_and_family_names_stay_unpriced() {
-        assert_eq!(
-            normalize_model_name("anthropic/Claude-Fable-5"),
-            "claude-fable-5"
-        );
-        assert_eq!(normalize_model_name("  gpt-5.3-codex "), "gpt-5.3-codex");
-        let rates = rate_table(&[("fable", FLAT_RATE), ("claude-fable-5", FLAT_RATE)]);
-        assert!(
-            lookup_rate(&rates, "Fable").is_none(),
-            "bare family names are ambiguous"
-        );
-        assert!(lookup_rate(&rates, "<synthetic>").is_none());
-        assert!(lookup_rate(&rates, "anthropic/claude-fable-5").is_some());
-    }
-
-    #[test]
-    fn rate_tables_parse_and_round_trip_through_the_disk_cache() {
-        let document: Value = serde_json::from_str(
-            r#"{
-                "claude-fable-5": {"input_cost_per_token": 1e-6, "output_cost_per_token": 2e-6,
-                    "cache_read_input_token_cost": 1e-7, "cache_creation_input_token_cost": 1.25e-6},
-                "no-output-rate": {"input_cost_per_token": 1e-6},
-                "gpt-5.3-codex": {"input_cost_per_token": 3e-6, "output_cost_per_token": 9e-6}
-            }"#,
-        )
-        .unwrap();
-        let rates = parse_rate_table(&document);
-        assert_eq!(rates.len(), 2, "half-priced models are dropped");
-        // Missing cache rates fall back to the input rate, not to free.
-        assert_eq!(rates["gpt-5.3-codex"].cache_read, 3e-6);
-
-        let dir = std::env::temp_dir().join(format!("waku-usage-rates-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(RATES_CACHE_FILE);
-        write_rates_cache(&path, 12345, &rates);
-        let (fetched_at_ms, restored) = read_rates_cache(&path).expect("cache round-trips");
-        assert_eq!(fetched_at_ms, 12345);
-        assert_eq!(restored.len(), rates.len());
-        assert_eq!(restored["claude-fable-5"], rates["claude-fable-5"]);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(history.total_tokens, 100);
     }
 
     #[test]

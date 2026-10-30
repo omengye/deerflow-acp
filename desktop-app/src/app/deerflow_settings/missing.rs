@@ -18,7 +18,7 @@ fn status_label(status: &str) -> Option<&'static str> {
         "completed" => "已完成",
         "failed" => "失败",
         "cancelled" => "已取消",
-        "needs_reconciliation" => "待核对工具结果",
+        "needs_reconciliation" => "已中断 · 结果尚不确定",
         _ => return None,
     })
 }

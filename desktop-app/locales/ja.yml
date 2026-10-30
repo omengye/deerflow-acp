@@ -85,7 +85,7 @@ settings.appearance_keywords: 外観 テーマ システム ライト ダーク 
 settings.providers_keywords: プロバイダー エージェント モデル CLI バージョン インストール 検出 claude codex cursor opencode opencode2 amp grok pi deerflow
 settings.skills: スキル
 settings.skills_keywords: スキル ライブラリ エージェント 無効 有効 削除 claude codex cursor opencode pi amp 共有
-settings.usage_keywords: 使用状況 トークン コスト 支出 キャッシュ 日別 グラフ モデル 内訳 履歴 claude codex
+settings.usage_keywords: 使用状況 トークン キャッシュ 日別 グラフ モデル 内訳 履歴 claude codex
 settings.daemon_keywords: デーモン サーバー リモート ウェブ ネットワーク 公開 オリジン トークン ポート websocket
 settings.computer_use_keywords: コンピュータ 操作 画面収録 アクセシビリティ アプリ 制御 codex
 settings.back: 戻る
@@ -659,6 +659,7 @@ errors.change_branch: "ブランチを変更できませんでした：%{error}"
 errors.capture_pre_turn_checkpoint: "ターン開始前のチェックポイントを取得できませんでした：%{error}"
 errors.capture_turn_checkpoint: "ターンのチェックポイントを取得できませんでした：%{error}"
 errors.save_local_state: "ローカルの状態を保存できませんでした：%{error}"
+errors.delete_session: "セッションを削除できませんでした：%{error}"
 errors.task_project_not_found: タスクのプロジェクトが見つかりませんでした
 errors.provider_native_session_unavailable: "%{provider} のネイティブセッションは利用できません"
 errors.provider_native_thread_unavailable: "%{provider} のネイティブスレッドは利用できません"
@@ -986,16 +987,11 @@ usage.projects: プロジェクト
 usage.scanning: プロバイダーの会話記録をスキャン中…
 usage.rescan: プロバイダーの会話記録を再スキャン
 usage.range: "%{start}〜%{end}"
-usage.full_api_rate_note: "* API の通常料金で請求された場合"
 usage.sessions_summary: "%{count} セッションの入力、キャッシュ読み込み、出力の合計"
-usage.raw_token_cost: 元のトークンコスト
 usage.processed_tokens_upper: 処理済みトークン
-usage.cost_share: "コストの %{share} · %{tokens} トークン"
-usage.token_share: "トークンの %{share} · %{cost}"
+usage.token_share: "トークンの %{share}"
 usage.no_activity_window: この期間のアクティビティはありません
-usage.cost_upper: コスト
 usage.tokens_upper: トークン
-usage.daily_cost: 日別コスト
 usage.daily_processed_tokens: 日別の処理済みトークン
 usage.model_upper: モデル
 usage.day_upper: 日付
@@ -1004,12 +1000,10 @@ usage.no_projects_match: フィルタに一致するプロジェクトはあり�
 usage.by_project: プロジェクト別
 usage.projects_caption: "%{projects} · %{tokens} トークン · %{sessions}"
 usage.projects_shown: "%{projects} 件中 %{shown} 件を表示"
-usage.percent_of_cost: "コストの %{share}"
 usage.token_count: "%{count} トークン"
 usage.last_active: 最終利用 %{date}
-usage.show_models: "%{models} の支出詳細を表示"
+usage.show_models: "%{models} のトークン詳細を表示"
 usage.other_sessions: その他のセッション
-usage.rates_unavailable: モデルの料金を取得できないため、料金表が読み込まれるまでコストは未算出として表示されます
 usage.total: 合計
 usage.processed_tokens: 処理済みトークン
 usage.per_active_day: "アクティブな 1 日あたり %{count}"
@@ -1019,23 +1013,15 @@ usage.uncached_input: キャッシュなしの入力
 usage.cache_writes: "キャッシュ書き込み %{count}"
 usage.output: 出力
 usage.includes_reasoning: "うち推論 %{count}"
-usage.cache_savings: キャッシュによる節約
-usage.raw_cost_multiple: "元のトークンコストの %{multiple} 倍"
-usage.vs_full_input_rates: 通常の入力料金との比較
 usage.model: モデル
-usage.cost: コスト
 usage.share: 割合
 usage.tokens: トークン
 usage.day: 日付
-usage.cost_quality: コストの信頼度
-usage.provider_reported: プロバイダー報告値
-usage.model_priced: モデル料金から算出
-usage.unpriced: 未算出
 usage.no_activity_12_months: 過去 12 か月間のアクティビティはありません
 usage.last_12_months: 過去 12 か月
 usage.so_far: 現在まで
 usage.no_activity: アクティビティなし
-usage.models_by_spend: "%{models} · 支出順"
+usage.models_by_tokens: "%{models} · トークン順"
 usage.tokens_and_sessions: "%{tokens} トークン · %{sessions}"
 usage.month_caption: "%{tokens} トークン · %{sessions} · %{days}"
 usage.last_7_days: 過去 7 日間
@@ -1089,13 +1075,6 @@ usage_error.codex_access_token_missing: Codex の auth.json にアクセスト�
 usage_error.opencode_go_key_rejected: OpenCode Go API キーでは使用量を取得できません（HTTP %{status}）。OpenCode Go に再接続してください
 usage_error.opencode_go_not_entitled: OpenCode Go の使用量には有効な OpenCode Go サブスクリプションが必要です
 usage_error.no_rate_limit_windows: 使用量 API からレート制限期間が返されませんでした
-usage_error.start_grok_probe: "`grok agent stdio` を起動できませんでした"
-usage_error.grok_stdin_unavailable: Grok の標準入力を利用できません
-usage_error.grok_stdout_unavailable: Grok の標準出力を利用できません
-usage_error.start_grok_reader: Grok のプローブリーダーを起動できませんでした
-usage_error.grok_billing_timeout: Grok は時間内に課金リクエストへ応答しませんでした
-usage_error.grok_answered: "Grok からの応答：%{error}"
-usage_error.grok_no_billing_data: Grok から課金データが返されませんでした。`grok` を実行してログインしてください
 usage_error.claude_credentials_missing: キーチェーンにも ~/.claude にも Claude Code の認証情報がありません
 usage_error.run_security: /usr/bin/security を実行できませんでした
 usage_error.keychain_item_missing: キーチェーンに %{service} の項目がありません

@@ -67,10 +67,25 @@ impl Waku {
                 .into_any_element();
         };
         let query = browser.diagnostics_request();
-        body = body.child(df_label(format!("此聊天：{}", state.skills_session_title),
-            "诊断只读取运行与作业元数据。任务未结算时应核对原任务；开始新目标不会解锁或回填历史输入。", theme))
-            .child(df_button("df-learning-diagnostics-refresh", "刷新此聊天诊断", unavailable || query.is_none(), false, theme, cx,
-                move |this, _, cx| { if let Some(query) = &query { this.deerflow_request("manage", query.clone(), cx); } }));
+        body = body
+            .child(df_label(
+                format!("此聊天：{}", state.skills_session_title),
+                "诊断显示运行与作业状态。任务未结束或执行结果不确定时，相应输入暂不用于学习。",
+                theme,
+            ))
+            .child(df_button(
+                "df-learning-diagnostics-refresh",
+                "刷新此聊天诊断",
+                unavailable || query.is_none(),
+                false,
+                theme,
+                cx,
+                move |this, _, cx| {
+                    if let Some(query) = &query {
+                        this.deerflow_request("manage", query.clone(), cx);
+                    }
+                },
+            ));
         let Some(diagnostics) = &browser.diagnostics else {
             return body
                 .child(df_label(
@@ -165,7 +180,7 @@ impl Waku {
                 let run_id = input.run_id.clone();
                 body = body.child(df_button(
                     SharedString::from(format!("df-learning-task-{index}")),
-                    "打开原任务核对 / 恢复",
+                    "查看原任务",
                     unavailable,
                     false,
                     theme,
@@ -183,7 +198,7 @@ impl Waku {
                 let run_id = input.run_id.clone();
                 body = body.child(df_button(
                     SharedString::from(format!("df-learning-receipt-{index}")),
-                    "核对待确认回执",
+                    "查看结果不确定的执行记录",
                     unavailable,
                     false,
                     theme,

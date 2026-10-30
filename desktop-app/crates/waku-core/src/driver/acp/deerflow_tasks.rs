@@ -153,6 +153,11 @@ pub(super) fn flush_early_updates(
 }
 
 impl NotificationState {
+    pub(super) fn steering_target(&self) -> Option<(String, u64)> {
+        self.active
+            .as_ref()
+            .map(|(run, _, version)| (run.clone(), *version))
+    }
     fn valid_new_start(&self, params: &Value) -> bool {
         let execution = &params["execution"];
         let (Some(run), Some(operation)) =
@@ -274,6 +279,11 @@ fn capabilities(value: &Value) -> Capabilities {
         && tree["listMethod"] == "_deerflow/tasks/tree"
         && tree["getMethod"] == "_deerflow/tasks/tree/get";
     Capabilities {
+        session_budget: value["_meta"]["deerflow"]["sessionBudget"]["version"] == 1
+            && value["_meta"]["deerflow"]["sessionBudget"]["getMethod"]
+                == "_deerflow/session/budget/get"
+            && value["_meta"]["deerflow"]["sessionBudget"]["setMethod"]
+                == "_deerflow/session/budget/set",
         tree: supported,
         cancel: supported && tree["cancelMethod"] == "_deerflow/tasks/tree/cancel",
         permission: background["version"] == 1
@@ -292,7 +302,6 @@ fn capabilities(value: &Value) -> Capabilities {
             && tree["artifactListMethod"] == "_deerflow/tasks/tree/artifacts/list",
         tool_receipts: receipts["version"] == 1
             && receipts["listMethod"] == "_deerflow/tool_receipts/list"
-            && receipts["reconcileMethod"] == "_deerflow/tool_receipts/reconcile"
             && receipts["pagination"] == "live_keyset",
     }
 }
@@ -341,12 +350,11 @@ impl TaskConnection {
                 && uuid::Uuid::parse_str(&command.request_id).is_ok(),
             "任务连接已变化，请刷新"
         );
-        let receipt_action = matches!(
-            command.action,
-            Action::ReceiptList { .. } | Action::ReceiptReconcile { .. }
-        );
+        let receipt_action = matches!(command.action, Action::ReceiptList { .. });
         anyhow::ensure!(
-            if receipt_action {
+            if matches!(command.action, Action::BudgetGet | Action::BudgetSet { .. }) {
+                self.capabilities.session_budget
+            } else if receipt_action {
                 self.capabilities.tool_receipts
             } else {
                 self.capabilities.tree
@@ -354,6 +362,26 @@ impl TaskConnection {
             "当前服务未声明所需控制能力"
         );
         let (method, mut params) = match &command.action {
+            Action::BudgetGet => ("_deerflow/session/budget/get", json!({})),
+            Action::BudgetSet {
+                expected_version,
+                operation_id,
+                limits,
+            } => {
+                anyhow::ensure!(
+                    *expected_version > 0
+                        && *expected_version <= i64::MAX as u64
+                        && uuid::Uuid::parse_str(operation_id).is_ok()
+                        && limits.max_tokens <= i64::MAX as u64
+                        && limits.max_model_calls <= i32::MAX as u64
+                        && limits.max_tool_calls <= i32::MAX as u64,
+                    "任务预算参数无效"
+                );
+                (
+                    "_deerflow/session/budget/set",
+                    json!({"expectedVersion":expected_version,"operationId":operation_id,"limits":limits}),
+                )
+            }
             Action::ReceiptList {
                 cursor,
                 limit,
@@ -368,25 +396,6 @@ impl TaskConnection {
                     params["cursor"] = json!(cursor);
                 }
                 ("_deerflow/tool_receipts/list", params)
-            }
-            Action::ReceiptReconcile { review } => {
-                anyhow::ensure!(
-                    !review.run_id.is_empty()
-                        && review.run_id.len() <= 256
-                        && !review.tool_call_id.is_empty()
-                        && review.tool_call_id.len() <= 1024
-                        && review.expected_version > 0
-                        && review.expected_version <= i64::MAX as u64
-                        && !review.reviewer.trim().is_empty()
-                        && review.reviewer.len() <= 256
-                        && !review.note.trim().is_empty()
-                        && review.note.len() <= 16384,
-                    "核对需要当前版本、核对人和实际核实说明"
-                );
-                (
-                    "_deerflow/tool_receipts/reconcile",
-                    json!({"review":review}),
-                )
             }
             Action::List {
                 root_id,
@@ -785,10 +794,10 @@ fn response(action: &Action, data: Value) -> anyhow::Result<Response> {
         "task response exceeds bounds"
     );
     Ok(match action {
+        Action::BudgetGet | Action::BudgetSet { .. } => {
+            Response::Budget(serde_json::from_value(data)?)
+        }
         Action::ReceiptList { .. } => Response::Receipts(serde_json::from_value(data)?),
-        Action::ReceiptReconcile { .. } => Response::Reconciled {
-            receipt: serde_json::from_value(data["receipt"].clone())?,
-        },
         Action::List { .. } => Response::Page(serde_json::from_value(data)?),
         Action::Get { .. } | Action::Cancel { .. } => Response::Node(serde_json::from_value(data)?),
         Action::Permission { .. } => Response::Permission(data),
@@ -809,10 +818,9 @@ fn response(action: &Action, data: Value) -> anyhow::Result<Response> {
 mod tests {
     use super::*;
     #[test]
-    fn deerflow_receipt_recovery_uses_owning_connection_and_explicit_evidence() {
-        use waku_protocol::deerflow_tasks::{ReceiptOutcome, ReceiptReconciliation};
+    fn deerflow_receipts_are_read_only_and_bound_to_the_owning_connection() {
         let caps = capabilities(
-            &json!({"_meta":{"deerflow":{"toolReceipts":{"version":1,"pagination":"live_keyset","listMethod":"_deerflow/tool_receipts/list","reconcileMethod":"_deerflow/tool_receipts/reconcile"}}}}),
+            &json!({"_meta":{"deerflow":{"toolReceipts":{"version":1,"pagination":"live_keyset","listMethod":"_deerflow/tool_receipts/list"}}}}),
         );
         assert!(caps.tool_receipts && !caps.tree);
         let state = TaskConnection {
@@ -837,25 +845,6 @@ mod tests {
         command.session_id = "foreign".into();
         assert!(state.request(&command).is_err());
         command.session_id = state.session.clone();
-        command.action = Action::ReceiptReconcile {
-            review: ReceiptReconciliation {
-                run_id: "run".into(),
-                tool_call_id: "call".into(),
-                expected_version: 3,
-                outcome: ReceiptOutcome::NoEffect,
-                reviewer: "operator".into(),
-                note: String::new(),
-            },
-        };
-        assert!(state.request(&command).is_err());
-        if let Action::ReceiptReconcile { review } = &mut command.action {
-            review.note = "Checked target file; no write occurred".into();
-        }
-        let (method, params) = state.request(&command).unwrap();
-        assert_eq!(method, "_deerflow/tool_receipts/reconcile");
-        assert_eq!(params["review"]["expectedVersion"], 3);
-        assert_eq!(params["review"]["outcome"], "no_effect");
-        assert!(params.get("automaticReplay").is_none());
     }
     #[test]
     fn deerflow_automatic_stream_and_permission_wait_for_the_old_prompt_response() {
@@ -1343,6 +1332,41 @@ mod tests {
         assert!(state.request(&command).is_err());
         command.session_id = state.session.clone();
         command.connection_id = "old".into();
+        assert!(state.request(&command).is_err());
+    }
+
+    #[test]
+    fn session_budget_requests_require_capability_and_bound_session() {
+        let mut state = TaskConnection {
+            id: "connection".into(),
+            session: "native".into(),
+            capabilities: Capabilities::default(),
+            pending: Arc::new(AtomicBool::new(false)),
+        };
+        let mut command = Command {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            connection_id: state.id.clone(),
+            session_id: state.session.clone(),
+            action: Action::BudgetGet,
+        };
+        assert!(state.request(&command).is_err());
+        state.capabilities.session_budget = true;
+        let (method, params) = state.request(&command).unwrap();
+        assert_eq!(method, "_deerflow/session/budget/get");
+        assert_eq!(params["sessionId"], "native");
+        command.action = Action::BudgetSet {
+            expected_version: 2,
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            limits: waku_protocol::deerflow_tasks::TaskBudget {
+                max_tokens: 1000,
+                max_model_calls: 2,
+                max_tool_calls: 0,
+            },
+        };
+        let (method, params) = state.request(&command).unwrap();
+        assert_eq!(method, "_deerflow/session/budget/set");
+        assert_eq!(params["limits"]["maxTokens"], 1000);
+        command.session_id = "other".into();
         assert!(state.request(&command).is_err());
     }
 

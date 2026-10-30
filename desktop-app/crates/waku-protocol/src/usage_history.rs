@@ -137,21 +137,11 @@ impl TokenTotals {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub enum PricingStatus {
-    Fresh,
-    Cached,
-    Unavailable,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSlice {
     pub provider: UsageProvider,
-    pub cost_usd: f64,
     pub total_tokens: u64,
-    pub cost_share: f64,
     pub token_share: f64,
 }
 
@@ -160,15 +150,13 @@ pub struct ProviderSlice {
 pub struct ModelSlice {
     pub provider: UsageProvider,
     pub model: String,
-    pub cost_usd: f64,
     pub total_tokens: u64,
-    pub cost_share: f64,
+    pub token_share: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderDay {
-    pub cost_usd: f64,
     pub total_tokens: u64,
 }
 
@@ -176,43 +164,31 @@ pub struct ProviderDay {
 #[serde(rename_all = "camelCase")]
 pub struct DaySlice {
     pub day: NaiveDate,
-    pub cost_usd: f64,
     pub total_tokens: u64,
     pub by_provider: [ProviderDay; 2],
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct CostQuality {
-    pub provider_reported_share: f64,
-    pub model_priced_share: f64,
-    pub unpriced_share: f64,
-    pub cache_savings_usd: f64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct MonthSlice {
     pub first_day: NaiveDate,
-    pub cost_usd: f64,
     pub total_tokens: u64,
     pub by_provider: [ProviderDay; 2],
     pub sessions: u64,
     pub active_days: u32,
-    pub top_models: Vec<(String, f64)>,
+    pub top_models: Vec<(String, u64)>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectSlice {
     pub path: String,
-    pub cost_usd: f64,
     pub total_tokens: u64,
     pub by_provider: [ProviderDay; 2],
     pub sessions: u64,
-    pub cost_share: f64,
+    pub token_share: f64,
     pub last_day: Option<NaiveDate>,
-    pub top_models: Vec<(String, f64)>,
+    pub top_models: Vec<(String, u64)>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -223,7 +199,6 @@ pub struct UsageHistory {
     pub until_day: NaiveDate,
     pub totals: TokenTotals,
     pub total_tokens: u64,
-    pub cost_usd: f64,
     pub records: u64,
     pub sessions: u64,
     pub providers: Vec<ProviderSlice>,
@@ -231,8 +206,6 @@ pub struct UsageHistory {
     pub daily: Vec<DaySlice>,
     pub months: Vec<MonthSlice>,
     pub projects: Vec<ProjectSlice>,
-    pub quality: CostQuality,
-    pub pricing: PricingStatus,
     pub scanned_files: usize,
     pub skipped_files: usize,
     pub errors: Vec<String>,

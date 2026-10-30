@@ -67,12 +67,14 @@ type NavigationTurn = {
 type ResponseForkAction = {
   turnCount: number
   pending: boolean
+  enabled: boolean
   onFork: (turnCount: number) => void
 }
 
 type MessageRewindAction = {
   turnCount: number
   pending: boolean
+  enabled: boolean
   onBegin: () => void
 }
 
@@ -92,6 +94,8 @@ export function Transcript({
   onCopyToComposer,
   onForkResponse,
   onRewindMessage,
+  onConnectSession,
+  historyActionEnabled,
   forkingTurnCount,
   rewindTurnCounts = [],
   rewindingTurnCount,
@@ -103,6 +107,8 @@ export function Transcript({
   onOpenBackgroundWork?: (key: BackgroundWorkKey) => void
   onCopyToComposer?: (content: string) => void
   onForkResponse?: (turnCount: number) => void
+  onConnectSession?: () => Promise<void>
+  historyActionEnabled?: (kind: 'fork' | 'rewind', turnCount: number) => boolean
   onRewindMessage?: (
     turnCount: number,
     prompt: string,
@@ -128,6 +134,9 @@ export function Transcript({
   const [railFits, setRailFits] = useState(false)
   const [activeTurnIndex, setActiveTurnIndex] = useState(() => Math.max(0, session.turns.length - 1))
   const [messageEdit, setMessageEdit] = useState<MessageEdit | null>(null)
+  const [connectingCapabilities, setConnectingCapabilities] = useState(false)
+  const [capabilityError, setCapabilityError] = useState<string | null>(null)
+  const conversationEnabled = session.provider !== 'deerFlow' || session.conversation_capability === true
   const items = buildTranscriptItems(session, expandedTurns, new Set(rewindTurnCounts))
   const itemIndexesByMessage = new Map<string, number>()
   items.forEach((item, index) => {
@@ -209,6 +218,18 @@ export function Transcript({
   return (
     <TranscriptLinkContext.Provider value={onOpenLink ?? (() => false)}>
       <div className="relative min-h-0 flex-1" ref={root}>
+      {!conversationEnabled && (
+        <div className="absolute left-1/2 top-2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-lg bg-background px-3 py-2 text-xs shadow">
+          <span>{capabilityError ?? (session.conversation_capability === false ? '当前运行时不支持会话分叉/回退' : '连接运行时后确认会话分叉/回退能力')}</span>
+          {session.conversation_capability == null && onConnectSession && (
+            <button className="rounded px-2 py-1 outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-45" disabled={connectingCapabilities} type="button" onClick={() => {
+              setConnectingCapabilities(true)
+              setCapabilityError(null)
+              void onConnectSession().catch((error: unknown) => setCapabilityError(String(error))).finally(() => setConnectingCapabilities(false))
+            }}>{connectingCapabilities ? '正在连接' : '连接并确认'}</button>
+          )}
+        </div>
+      )}
       {empty ? (
         <div className="absolute inset-0 grid place-items-center pb-8">
           <div className="text-center">
@@ -246,6 +267,8 @@ export function Transcript({
               item={item}
               locale={locale}
               sessionId={session.id}
+              conversationEnabled={conversationEnabled}
+              historyActionEnabled={historyActionEnabled}
               t={t}
               onCopyToComposer={onCopyToComposer}
               onOpenBackgroundWork={onOpenBackgroundWork}
@@ -726,6 +749,8 @@ function TranscriptItemView({
   backgroundWork,
   locale,
   sessionId,
+  conversationEnabled,
+  historyActionEnabled,
   t,
   onToggleTurn,
   onReviewChanges,
@@ -743,6 +768,8 @@ function TranscriptItemView({
   backgroundWork: BackgroundWorkItem[]
   locale: AppLocale
   sessionId: string
+  conversationEnabled: boolean
+  historyActionEnabled?: (kind: 'fork' | 'rewind', turnCount: number) => boolean
   t: Translator
   onToggleTurn: (turnId: string) => void
   onReviewChanges?: (source: ReviewDiffSource) => void
@@ -815,6 +842,7 @@ function TranscriptItemView({
           ? {
               turnCount: item.forkTurnCount,
               pending: forkingTurnCount === item.forkTurnCount,
+              enabled: historyActionEnabled?.('fork', item.forkTurnCount) ?? conversationEnabled,
               onFork: onForkResponse,
             }
           : undefined}
@@ -822,6 +850,7 @@ function TranscriptItemView({
           ? {
               turnCount: item.rewindTurnCount,
               pending: rewindingTurnCount === item.rewindTurnCount,
+              enabled: historyActionEnabled?.('rewind', item.rewindTurnCount) ?? conversationEnabled,
               onBegin: () => onBeginMessageEdit(item.message, item.rewindTurnCount!),
             }
           : undefined}
@@ -1243,8 +1272,8 @@ function MessageFooter({
         <button
           aria-label={t(rewindAction.pending ? 'session.reverting_message' : 'session.revert_to_here')}
           className="grid size-[27px] place-items-center rounded-lg outline-none hover:bg-accent hover:text-[var(--text-secondary)] focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-45"
-          disabled={rewindAction.pending}
-          title={t(rewindAction.pending ? 'session.reverting_message' : 'session.revert_to_here')}
+          disabled={rewindAction.pending || !rewindAction.enabled}
+          title={!rewindAction.enabled ? '当前未确认会话分叉/回退能力' : t(rewindAction.pending ? 'session.reverting_message' : 'session.revert_to_here')}
           type="button"
           onClick={rewindAction.onBegin}
         >
@@ -1258,8 +1287,8 @@ function MessageFooter({
         <button
           aria-label={t(forkAction.pending ? 'session.forking_task' : 'session.fork_task')}
           className="grid size-[27px] place-items-center rounded-lg outline-none hover:bg-accent hover:text-[var(--text-secondary)] focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-45"
-          disabled={forkAction.pending}
-          title={t(forkAction.pending ? 'session.forking_task' : 'session.fork_task')}
+          disabled={forkAction.pending || !forkAction.enabled}
+          title={!forkAction.enabled ? '当前未确认会话分叉/回退能力' : t(forkAction.pending ? 'session.forking_task' : 'session.fork_task')}
           type="button"
           onClick={() => forkAction.onFork(forkAction.turnCount)}
         >
@@ -1339,7 +1368,7 @@ function MessageContextMenu({
                 <ContextMenu.Separator className="waku-menu-separator" />
                 <ContextMenu.Item
                   className="waku-menu-item"
-                  disabled={rewindAction.pending}
+                  disabled={rewindAction.pending || !rewindAction.enabled}
                   onClick={rewindAction.onBegin}
                 >
                   <WakuIcon
@@ -1355,7 +1384,7 @@ function MessageContextMenu({
                 <ContextMenu.Separator className="waku-menu-separator" />
                 <ContextMenu.Item
                   className="waku-menu-item"
-                  disabled={forkAction.pending}
+                  disabled={forkAction.pending || !forkAction.enabled}
                   onClick={() => forkAction.onFork(forkAction.turnCount)}
                 >
                   <WakuIcon

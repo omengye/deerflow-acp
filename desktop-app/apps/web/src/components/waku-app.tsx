@@ -101,6 +101,8 @@ export function WakuApp() {
   const { client, config } = useDaemon()
   const {
     attachSession,
+    connectSession,
+    historyActionEnabled,
     backgroundWork,
     closeSession,
     forkSessionFromResponse,
@@ -1093,6 +1095,8 @@ export function WakuApp() {
               rewindingTurnCount={messageRewinds[current.id]}
               rewindTurnCounts={sessionTurnRefs.data ?? []}
               session={current}
+              onConnectSession={() => connectSession(current)}
+              historyActionEnabled={(kind, turnCount) => historyActionEnabled(current, kind, turnCount)}
               onCopyToComposer={(text) => setComposerPrefill((previous) => ({
                 sessionId: current.id,
                 text,

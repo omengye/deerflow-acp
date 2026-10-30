@@ -252,6 +252,7 @@ describe('desktop transcript language', () => {
 
 function transcriptSession(): AgentSession {
   return {
+    history_revision: 0,
     id: 'session',
     title: 'New Task',
     project_id: 'project',

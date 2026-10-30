@@ -13,6 +13,8 @@
 //! deserialize a transcript. The schema is defined in `db/schema.ts` and
 //! applied by [`apply_migrations`].
 
+mod history;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
@@ -888,6 +890,16 @@ struct Storage {
     saved_app_state: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SessionDeletion {
+    pub session_id: Uuid,
+    pub operation_id: Uuid,
+    pub native_session_id: Option<String>,
+    pub workspace_path: Option<PathBuf>,
+    pub turn_count: usize,
+    pub stage: String,
+}
+
 pub struct StateStore {
     path: PathBuf,
     /// Client-local navigation and layout state stored beside the preview
@@ -991,6 +1003,131 @@ impl StateStore {
             .map_err(to_io_error)?;
         apply_migrations(&connection)?;
         Ok(connection)
+    }
+
+    pub(crate) fn session_deletions(&self) -> io::Result<Vec<SessionDeletion>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT session_id,operation_id,native_session_id,workspace_path,turn_count,stage FROM session_deletions ORDER BY session_id",
+        ).map_err(to_io_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(to_io_error)?;
+        rows.map(|row| {
+            let (session, operation, native_session_id, workspace, count, stage) =
+                row.map_err(to_io_error)?;
+            if !matches!(stage.as_str(), "pending" | "backend_deleted" | "completed") || count < 0 {
+                return Err(io::Error::other("invalid session deletion record"));
+            }
+            Ok(SessionDeletion {
+                session_id: Uuid::parse_str(&session).map_err(to_io_error)?,
+                operation_id: Uuid::parse_str(&operation).map_err(to_io_error)?,
+                native_session_id,
+                workspace_path: workspace.map(PathBuf::from),
+                turn_count: count as usize,
+                stage,
+            })
+        })
+        .collect()
+    }
+
+    /// The operation and provider mapping are immutable once the backend may
+    /// have observed them. FULL sync makes intent durable before the RPC.
+    pub(crate) fn begin_session_deletion(&self, deletion: &SessionDeletion) -> io::Result<()> {
+        let connection = self.open()?;
+        connection
+            .execute_batch("PRAGMA synchronous = FULL;")
+            .map_err(to_io_error)?;
+        connection.execute(
+            "INSERT INTO session_deletions(session_id,operation_id,native_session_id,workspace_path,turn_count,stage) VALUES(?1,?2,?3,?4,?5,'pending')",
+            params![deletion.session_id.to_string(), deletion.operation_id.to_string(), deletion.native_session_id,
+                deletion.workspace_path.as_ref().map(|path| path.to_string_lossy()), deletion.turn_count as i64],
+        ).map_err(to_io_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn mark_session_backend_deleted(
+        &self,
+        deletion: &SessionDeletion,
+    ) -> io::Result<()> {
+        let connection = self.open()?;
+        connection
+            .execute_batch("PRAGMA synchronous = FULL;")
+            .map_err(to_io_error)?;
+        let changed = connection.execute(
+            "UPDATE session_deletions SET stage='backend_deleted' WHERE session_id=?1 AND operation_id=?2 AND stage='pending'",
+            params![deletion.session_id.to_string(), deletion.operation_id.to_string()],
+        ).map_err(to_io_error)?;
+        if changed != 1 {
+            return Err(io::Error::other("session deletion identity changed"));
+        }
+        Ok(())
+    }
+
+    /// Only a definite backend refusal, before any deletion, may undo intent.
+    pub(crate) fn cancel_session_deletion(&self, deletion: &SessionDeletion) -> io::Result<()> {
+        let connection = self.open()?;
+        connection
+            .execute_batch("PRAGMA synchronous = FULL;")
+            .map_err(to_io_error)?;
+        let changed = connection.execute(
+            "DELETE FROM session_deletions WHERE session_id=?1 AND operation_id=?2 AND stage='pending'",
+            params![deletion.session_id.to_string(), deletion.operation_id.to_string()],
+        ).map_err(to_io_error)?;
+        if changed != 1 {
+            return Err(io::Error::other("session deletion cannot be cancelled"));
+        }
+        Ok(())
+    }
+
+    /// Local rows and the permanent tombstone commit together. Never use a
+    /// stale client snapshot to infer that a provider session was deleted.
+    pub(crate) fn complete_session_deletion(&self, deletion: &SessionDeletion) -> io::Result<()> {
+        let mut guard = self.storage.lock();
+        let connection = self.open()?;
+        connection
+            .execute_batch("PRAGMA synchronous = FULL;")
+            .map_err(to_io_error)?;
+        let transaction = connection.unchecked_transaction().map_err(to_io_error)?;
+        let changed = transaction.execute(
+            "UPDATE session_deletions SET stage='completed' WHERE session_id=?1 AND operation_id=?2 AND stage IN ('backend_deleted','completed')",
+            params![deletion.session_id.to_string(), deletion.operation_id.to_string()],
+        ).map_err(to_io_error)?;
+        if changed != 1 {
+            return Err(io::Error::other("backend deletion has not been confirmed"));
+        }
+        let id = deletion.session_id.to_string();
+        transaction
+            .execute("DELETE FROM messages WHERE session_id=?1", [&id])
+            .map_err(to_io_error)?;
+        transaction
+            .execute("DELETE FROM session_details WHERE session_id=?1", [&id])
+            .map_err(to_io_error)?;
+        transaction
+            .execute("DELETE FROM sessions WHERE id=?1", [&id])
+            .map_err(to_io_error)?;
+        history::invalidate_deleted_history_result(&transaction, &id).map_err(to_io_error)?;
+        transaction
+            .execute(
+                "DELETE FROM session_history_operations WHERE session_id=?1",
+                [&id],
+            )
+            .map_err(to_io_error)?;
+        transaction.commit().map_err(to_io_error)?;
+        if let Some(storage) = guard.as_mut() {
+            storage.persisted_sessions.remove(&deletion.session_id);
+            storage.written_messages.remove(&deletion.session_id);
+        }
+        Ok(())
     }
 
     pub fn load_or_fresh(&self, cwd: PathBuf) -> PersistedState {
@@ -1135,7 +1272,7 @@ impl StateStore {
             .prepare(
                 "SELECT id, project_id, title, auto_title, provider, model, status,
                         created_at, updated_at, last_reply_at
-                 FROM sessions ORDER BY updated_at",
+                 FROM sessions WHERE NOT EXISTS(SELECT 1 FROM session_deletions d WHERE d.session_id=sessions.id AND d.stage='completed') ORDER BY updated_at",
             )
             .map_err(to_io_error)?;
         let mut persisted_sessions = HashSet::new();
@@ -1238,6 +1375,7 @@ impl StateStore {
             return Ok(());
         };
         let stored = serde_json::from_str::<AgentSession>(&data).map_err(to_io_error)?;
+        session.history_revision = stored.history_revision;
         session.transcript_blocks = stored.transcript_blocks;
         session.turns = stored.turns;
         session.queued_messages = stored.queued_messages;
@@ -1330,6 +1468,19 @@ impl StateStore {
             .unchecked_transaction()
             .map_err(to_io_error)?;
 
+        let deletion_stages = {
+            let mut statement = transaction
+                .prepare("SELECT session_id,stage FROM session_deletions")
+                .map_err(to_io_error)?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(to_io_error)?
+                .collect::<Result<HashMap<_, _>, _>>()
+                .map_err(to_io_error)?
+        };
+
         let projects = serde_json::to_string(&state.projects).map_err(to_io_error)?;
         let projects_fingerprint = fingerprint(&projects);
         if projects_fingerprint != storage.saved_projects {
@@ -1366,6 +1517,9 @@ impl StateStore {
             .filter(|session| session.has_started())
         {
             live.insert(session.id);
+            if deletion_stages.contains_key(&session.id.to_string()) {
+                continue;
+            }
             // A skeleton's empty transcript means "not fetched", not "empty".
             // Its promoted list columns may still have changed (for example,
             // an inactive sidebar row was renamed), so update only those and
@@ -1416,6 +1570,12 @@ impl StateStore {
             .collect::<Vec<_>>();
         for id in removed {
             let key = id.to_string();
+            if deletion_stages
+                .get(&key)
+                .is_some_and(|stage| stage != "completed")
+            {
+                continue;
+            }
             transaction
                 .execute("DELETE FROM sessions WHERE id = ?1", params![key])
                 .map_err(to_io_error)?;
@@ -1520,6 +1680,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
     ) = row;
     Some(AgentSession {
         id: Uuid::parse_str(&id).ok()?,
+        history_revision: 0,
         title,
         auto_title,
         project_id: Uuid::parse_str(&project_id).ok()?,
@@ -1538,6 +1699,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         updated_at: updated_at as u64,
         last_reply_at: last_reply_at.map(|at| at as u64),
         provider_cursor: None,
+        conversation_capability: None,
         available_commands: Vec::new(),
         thread_goal: None,
         context_usage: None,
@@ -1585,6 +1747,7 @@ fn session_data(session: &AgentSession) -> io::Result<String> {
     let mut value = serde_json::to_value(session).map_err(to_io_error)?;
     if let Some(object) = value.as_object_mut() {
         object.remove("messages");
+        object.remove("conversation_capability");
     }
     serde_json::to_string(&value).map_err(to_io_error)
 }
@@ -1808,6 +1971,17 @@ fn normalize_computer_app_grants(grants: &mut Vec<ComputerAppGrant>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_storage_cannot_reuse_a_previous_runtime_capability() {
+        let mut session = AgentSession::new(Uuid::new_v4(), ProviderKind::DeerFlow);
+        session.conversation_capability = Some(true);
+        let saved = session_data(&session).unwrap();
+        assert!(!saved.contains("conversation_capability"));
+        let loaded: AgentSession = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.conversation_capability, None);
+        assert!(!loaded.conversation_actions_enabled());
+    }
     use crate::model::{
         ActivityItem, ActivityKind, FavoriteModel, MessageRole, ReasoningBlock, TranscriptBlock,
     };

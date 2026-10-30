@@ -24,6 +24,14 @@ IPC. Rendering reads cached projections. Cursor navigation replaces the displaye
 page rather than appending an unbounded row collection. Publication changes mark
 catalog navigation stale; exporter progress alone does not invalidate its cursor.
 
+The catalog, proposal lists and publication history show the most recent entries
+first across pages. Catalog ordering uses the current installation update time,
+proposals use update time with creation time as a fallback, and history uses
+publication time. Missing timestamps sort last, with stable identity tie-breakers.
+The host orders before applying the page limit; the desktop normalizes each
+received page once, outside rendering. Old cursors from name/ID ordering must be
+refreshed from the first page.
+
 ## Reviews and rollback
 
 Pending and all-proposal lists use `proposal.list`; publication history uses the

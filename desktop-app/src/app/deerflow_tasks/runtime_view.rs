@@ -419,9 +419,9 @@ mod tests {
 fn agent_rank(node: &Node) -> usize {
     match node.status.as_str() {
         "running" | "resuming" | "cancelling" | "suspending" if node.waiting.is_none() => 0,
-        "waiting_input" | "suspended" | "needs_reconciliation" => 1,
+        "waiting_input" | "suspended" => 1,
         "queued" | "pending" => 2,
-        "failed" => 3,
+        "failed" | "needs_reconciliation" => 3,
         "completed" => 4,
         "cancelled" | "canceled" => 5,
         _ if node.waiting.is_some() => 1,

@@ -167,7 +167,7 @@ settings.skills:
 settings.skills_keywords:
   en: skills skill library agent disable enable delete claude codex cursor opencode pi amp shared
 settings.usage_keywords:
-  en: usage tokens cost spend cache daily chart model breakdown history claude codex
+  en: usage tokens cache daily chart model breakdown history claude codex
 settings.daemon_keywords:
   en: daemon server remote web network expose origin token port websocket
 settings.computer_use_keywords:
@@ -1297,6 +1297,8 @@ errors.capture_turn_checkpoint:
   en: "Could not capture the turn checkpoint: %{error}"
 errors.save_local_state:
   en: "Could not save local state: %{error}"
+errors.delete_session:
+  en: "Could not delete the session: %{error}"
 errors.task_project_not_found:
   en: The task's project could not be found
 errors.provider_native_session_unavailable:
@@ -1939,26 +1941,16 @@ usage.rescan:
   en: Rescan provider transcripts
 usage.range:
   en: "%{start} to %{end}"
-usage.full_api_rate_note:
-  en: "* if billed at full API rate"
 usage.sessions_summary:
   en: Input, cache reads and output across %{count} sessions
-usage.raw_token_cost:
-  en: RAW TOKEN COST
 usage.processed_tokens_upper:
   en: PROCESSED TOKENS
-usage.cost_share:
-  en: "%{share} of cost · %{tokens} tokens"
 usage.token_share:
-  en: "%{share} of tokens · %{cost}"
+  en: "%{share} of tokens"
 usage.no_activity_window:
   en: No activity in this window
-usage.cost_upper:
-  en: COST
 usage.tokens_upper:
   en: TOKENS
-usage.daily_cost:
-  en: Daily cost
 usage.daily_processed_tokens:
   en: Daily processed tokens
 usage.model_upper:
@@ -1975,18 +1967,14 @@ usage.projects_caption:
   en: "%{projects} · %{tokens} tokens · %{sessions}"
 usage.projects_shown:
   en: "%{shown} of %{projects} shown"
-usage.percent_of_cost:
-  en: "%{share} of cost"
 usage.token_count:
   en: "%{count} tokens"
 usage.last_active:
   en: last active %{date}
 usage.show_models:
-  en: Show %{models} with spend details
+  en: Show %{models} with token details
 usage.other_sessions:
   en: Other sessions
-usage.rates_unavailable:
-  en: Model rates are unavailable, so costs read as unpriced until the rate table loads
 usage.total:
   en: Total
 usage.processed_tokens:
@@ -2005,30 +1993,14 @@ usage.output:
   en: Output
 usage.includes_reasoning:
   en: includes %{count} reasoning
-usage.cache_savings:
-  en: Cache savings
-usage.raw_cost_multiple:
-  en: "%{multiple}x the raw token cost"
-usage.vs_full_input_rates:
-  en: vs full input rates
 usage.model:
   en: Model
-usage.cost:
-  en: Cost
 usage.share:
   en: Share
 usage.tokens:
   en: Tokens
 usage.day:
   en: Day
-usage.cost_quality:
-  en: Cost quality
-usage.provider_reported:
-  en: Provider reported
-usage.model_priced:
-  en: Model priced
-usage.unpriced:
-  en: Unpriced
 usage.no_activity_12_months:
   en: No activity in the last 12 months
 usage.last_12_months:
@@ -2037,8 +2009,8 @@ usage.so_far:
   en: so far
 usage.no_activity:
   en: No activity
-usage.models_by_spend:
-  en: "%{models} · by spend"
+usage.models_by_tokens:
+  en: "%{models} · by tokens"
 usage.tokens_and_sessions:
   en: "%{tokens} tokens · %{sessions}"
 usage.month_caption:
@@ -2145,20 +2117,6 @@ usage_error.opencode_go_not_entitled:
   en: OpenCode Go usage needs an active OpenCode Go subscription
 usage_error.no_rate_limit_windows:
   en: The usage endpoint reported no rate-limit windows
-usage_error.start_grok_probe:
-  en: Failed to start `grok agent stdio`
-usage_error.grok_stdin_unavailable:
-  en: Grok stdin is unavailable
-usage_error.grok_stdout_unavailable:
-  en: Grok stdout is unavailable
-usage_error.start_grok_reader:
-  en: Failed to start the Grok probe reader
-usage_error.grok_billing_timeout:
-  en: Grok did not answer the billing request in time
-usage_error.grok_answered:
-  en: "Grok answered: %{error}"
-usage_error.grok_no_billing_data:
-  en: Grok reported no billing data; run `grok` to sign in
 usage_error.claude_credentials_missing:
   en: No Claude Code credentials in the keychain or ~/.claude
 usage_error.run_security:

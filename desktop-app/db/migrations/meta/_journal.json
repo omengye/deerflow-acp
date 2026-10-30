@@ -22,6 +22,20 @@
       "when": 1786435875650,
       "tag": "0002_cute_miracleman",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1793265503942,
+      "tag": "0003_moaning_paper_doll",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1793266434028,
+      "tag": "0004_native_history_operations",
+      "breakpoints": true
     }
   ]
 }

@@ -15,18 +15,16 @@ const USAGE_METER_MENU_ID: &str = "usage-meter";
 
 /// Providers with an account-level plan fetcher. Codex additionally refreshes
 /// live from its own stream notifications.
-pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 4] = [
+pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 3] = [
     ProviderKind::Claude,
     ProviderKind::Codex,
     ProviderKind::OpenCode,
-    ProviderKind::Grok,
 ];
 
 /// Refresh cadences for the plan snapshots. Quota moves only when turns run,
 /// so idle refreshes stay rare; a settled turn or a just-opened panel asks
-/// sooner. Grok's fetch spawns a probe process, so its idle cadence is wider.
+/// sooner.
 const PLAN_USAGE_REFRESH: Duration = Duration::from_secs(300);
-const PLAN_USAGE_REFRESH_GROK: Duration = Duration::from_secs(600);
 const PLAN_USAGE_REFRESH_STALE: Duration = Duration::from_secs(30);
 const PLAN_USAGE_RETRY: Duration = Duration::from_secs(90);
 
@@ -51,8 +49,6 @@ impl Waku {
                 PLAN_USAGE_RETRY
             } else if self.plan_usage_stale.contains(&provider) {
                 PLAN_USAGE_REFRESH_STALE
-            } else if provider == ProviderKind::Grok {
-                PLAN_USAGE_REFRESH_GROK
             } else {
                 PLAN_USAGE_REFRESH
             };
@@ -71,7 +67,6 @@ impl Waku {
                 .get(&ProviderKind::Claude)
                 .cloned()
                 .flatten();
-            let binary_override = self.state.provider_binary_overrides.get(&provider).cloned();
             let daemon = self.daemon.client();
             cx.background_executor()
                 .spawn(async move {
@@ -80,7 +75,6 @@ impl Waku {
                         Uuid::nil(),
                         waku_client::Command::FetchPlanUsage {
                             provider,
-                            binary_override,
                             cli_version: claude_version,
                         },
                     ) {

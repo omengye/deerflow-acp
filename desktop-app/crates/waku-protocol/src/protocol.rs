@@ -19,11 +19,20 @@ use crate::usage::PlanUsage;
 use crate::usage_history::{UsageHistory, UsageWindow};
 use crate::workspace::{WorkspaceOperation, WorkspaceResult};
 
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 12;
 pub const MAX_WIRE_MESSAGE_BYTES: usize = 48 * 1024 * 1024;
 pub const DAEMON_TOKEN_ENV: &str = "WAKU_DAEMON_TOKEN";
 pub const DAEMON_ADDRESS_ENV: &str = "WAKU_DAEMON_ADDRESS";
 pub const APP_EXECUTABLE_ENV: &str = "WAKU_APP_EXECUTABLE";
+
+/// The only history action a client may retry while native outcome recovery is pending.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingHistoryOperation {
+    pub kind: String,
+    pub turn_count: usize,
+    pub operation_id: Uuid,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -176,7 +185,6 @@ pub enum Command {
     },
     FetchPlanUsage {
         provider: ProviderKind,
-        binary_override: Option<String>,
         cli_version: Option<String>,
     },
     ProbeComputerPermissions {
@@ -260,12 +268,16 @@ pub enum Command {
     /// daemon host and must move together for remote clients.
     ForkSessionFromResponse {
         turn_count: usize,
+        #[serde(default)]
+        operation_id: Option<Uuid>,
     },
     /// Restore a task and its provider conversation to immediately before a
     /// prior user message. The client can then submit the edited replacement
     /// as an ordinary new turn.
     RewindSessionToMessage {
         turn_count: usize,
+        #[serde(default)]
+        operation_id: Option<Uuid>,
     },
     ForkProviderSession {
         request: ProviderSessionForkRequest,
@@ -422,6 +434,11 @@ pub enum ResponsePayload {
     SessionRuntime {
         runtime_id: Option<Uuid>,
         supports_steer: bool,
+        #[serde(default)]
+        conversation_capability: Option<bool>,
+        #[serde(default)]
+        deerflow_ready: Option<crate::deerflow_tasks::Event>,
+        pending_history: Option<PendingHistoryOperation>,
     },
     Started {
         supports_steer: bool,
@@ -633,12 +650,15 @@ mod tests {
 
     #[test]
     fn response_fork_command_uses_stable_camel_case_fields() {
-        let json =
-            serde_json::to_value(Command::ForkSessionFromResponse { turn_count: 7 }).unwrap();
+        let json = serde_json::to_value(Command::ForkSessionFromResponse {
+            turn_count: 7,
+            operation_id: Some(Uuid::new_v4()),
+        })
+        .unwrap();
 
         assert_eq!(json["type"], "forkSessionFromResponse");
         assert_eq!(json["turnCount"], 7);
-        assert_eq!(PROTOCOL_VERSION, 10);
+        assert_eq!(PROTOCOL_VERSION, 12);
     }
 
     #[test]
@@ -667,11 +687,15 @@ mod tests {
 
     #[test]
     fn message_rewind_command_uses_stable_camel_case_fields() {
-        let json = serde_json::to_value(Command::RewindSessionToMessage { turn_count: 4 }).unwrap();
+        let json = serde_json::to_value(Command::RewindSessionToMessage {
+            turn_count: 4,
+            operation_id: Some(Uuid::new_v4()),
+        })
+        .unwrap();
 
         assert_eq!(json["type"], "rewindSessionToMessage");
         assert_eq!(json["turnCount"], 4);
-        assert_eq!(PROTOCOL_VERSION, 10);
+        assert_eq!(PROTOCOL_VERSION, 12);
     }
 
     #[test]

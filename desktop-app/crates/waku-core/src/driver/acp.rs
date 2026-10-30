@@ -32,7 +32,9 @@ use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
 
 use super::activity;
+mod deerflow_steering;
 mod deerflow_tasks;
+mod deerflow_user_input;
 use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
@@ -50,6 +52,13 @@ enum CommandMessage {
     Prompt(String, Vec<crate::model::MessageAttachment>),
     Steer(String),
     Cancel,
+    DeleteSession(String, crossbeam_channel::Sender<Result<(), String>>),
+    History {
+        method: String,
+        params: Value,
+        deadline: Instant,
+        reply: crossbeam_channel::Sender<Result<Value, String>>,
+    },
     Respond {
         request_id: String,
         option_id: String,
@@ -104,7 +113,7 @@ fn close_command_loop(commands: &smol::channel::Receiver<CommandMessage>) {
 pub struct AcpDriver {
     commands: smol::channel::Sender<CommandMessage>,
     events: DriverEventSender,
-    supports_steer: bool,
+    supports_steer: Arc<AtomicBool>,
     provider: ProviderKind,
     access: Arc<Mutex<AcpAccessState>>,
     computer_use: Option<super::support::HeadlessComputerUseRuntime>,
@@ -240,6 +249,11 @@ impl AcpDriver {
         let (commands, command_rx) = smol::channel::unbounded();
         let access = Arc::new(Mutex::new(AcpAccessState::new(mode)));
         let connection_access = access.clone();
+        let supports_steer = Arc::new(AtomicBool::new(!matches!(
+            provider,
+            ProviderKind::Fx | ProviderKind::DeerFlow
+        )));
+        let connection_steer = supports_steer.clone();
         let provider_name = provider.display_name();
         let thread_events = events.clone();
 
@@ -259,6 +273,7 @@ impl AcpDriver {
                     cwd,
                     mode,
                     connection_access,
+                    connection_steer,
                     model,
                     reasoning_effort,
                     thinking_mode,
@@ -291,7 +306,7 @@ impl AcpDriver {
         Ok(Self {
             commands,
             events,
-            supports_steer: !matches!(provider, ProviderKind::Fx | ProviderKind::DeerFlow),
+            supports_steer,
             provider,
             access,
             computer_use,
@@ -380,6 +395,7 @@ type PendingPermissions = Arc<Mutex<HashMap<String, PermissionResponder>>>;
 enum AcpUserInputKind {
     Cursor,
     Xai,
+    DeerFlow,
 }
 
 struct PendingAcpUserInput {
@@ -391,7 +407,11 @@ struct PendingAcpUserInput {
 type PendingAcpUserInputs = Arc<Mutex<HashMap<String, PendingAcpUserInput>>>;
 
 #[derive(Default)]
-struct PendingPrompts(Vec<PendingPrompt>);
+struct PendingPrompts {
+    requests: Vec<PendingPrompt>,
+    user_inputs: Option<PendingAcpUserInputs>,
+    user_input_stopped: bool,
+}
 
 struct PendingPrompt {
     request_id: RequestId,
@@ -401,7 +421,10 @@ struct PendingPrompt {
 
 impl PendingPrompts {
     fn insert(&mut self, request_id: RequestId, extension_id: Option<String>, session_id: String) {
-        self.0.push(PendingPrompt {
+        if self.requests.is_empty() {
+            self.user_input_stopped = false;
+        }
+        self.requests.push(PendingPrompt {
             request_id,
             extension_id,
             session_id,
@@ -409,31 +432,49 @@ impl PendingPrompts {
     }
 
     fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.requests.is_empty()
+    }
+
+    fn accepts_user_input(&self, session_id: &str) -> bool {
+        !self.user_input_stopped
+            && self
+                .requests
+                .iter()
+                .any(|prompt| prompt.session_id == session_id)
     }
 
     fn settle_request(&mut self, request_id: &RequestId) -> bool {
         let Some(index) = self
-            .0
+            .requests
             .iter()
             .position(|prompt| &prompt.request_id == request_id)
         else {
             return false;
         };
-        self.0.remove(index);
-        self.0.is_empty()
+        self.requests.remove(index);
+        self.finish_if_idle()
     }
 
     fn settle_extension(&mut self, session_id: &str, extension_id: Option<&str>) -> bool {
-        let Some(index) = self.0.iter().position(|prompt| {
+        let Some(index) = self.requests.iter().position(|prompt| {
             prompt.session_id == session_id
                 && extension_id
                     .is_none_or(|extension_id| prompt.extension_id.as_deref() == Some(extension_id))
         }) else {
             return false;
         };
-        self.0.remove(index);
-        self.0.is_empty()
+        self.requests.remove(index);
+        self.finish_if_idle()
+    }
+
+    fn finish_if_idle(&self) -> bool {
+        if !self.requests.is_empty() {
+            return false;
+        }
+        if let Some(pending) = &self.user_inputs {
+            cancel_pending_deerflow_user_inputs(pending);
+        }
+        true
     }
 }
 
@@ -446,6 +487,7 @@ async fn run_sdk_connection(
     cwd: std::path::PathBuf,
     mode: RuntimeMode,
     access: Arc<Mutex<AcpAccessState>>,
+    supports_steer: Arc<AtomicBool>,
     model: Option<String>,
     reasoning_effort: Option<String>,
     thinking_mode: Option<String>,
@@ -462,7 +504,10 @@ async fn run_sdk_connection(
     let stream_state = Arc::new(Mutex::new(AcpStreamState::default()));
     let pending_permissions: PendingPermissions = Arc::new(Mutex::new(HashMap::new()));
     let pending_user_inputs: PendingAcpUserInputs = Arc::new(Mutex::new(HashMap::new()));
-    let prompt_requests = Arc::new(Mutex::new(PendingPrompts::default()));
+    let prompt_requests = Arc::new(Mutex::new(PendingPrompts {
+        user_inputs: Some(pending_user_inputs.clone()),
+        ..PendingPrompts::default()
+    }));
     let title_refresh = super::title_refresh::NativeTitleRefresh::default();
     let close_commands = commands.clone();
 
@@ -510,7 +555,13 @@ async fn run_sdk_connection(
                 async move |notification: UntypedMessage, _connection| {
                     if provider == ProviderKind::DeerFlow && notification.method() == "_deerflow/executions/updated" {
                         let mut stream = stream_state.lock();
+                        if let Some(state) = &mut stream.deerflow_steering { state.observe_execution(notification.params()); }
                         deerflow_tasks::receive_update(&mut stream,deerflow_tasks::EarlyUpdate::Lifecycle(notification.params().clone()),!prompt_requests.lock().is_empty(),&events)?;
+                    }
+                    if provider == ProviderKind::DeerFlow && notification.method() == "_deerflow/steering/updated" {
+                        if let Some(state) = &mut stream_state.lock().deerflow_steering {
+                            state.receive(notification.params(), &events);
+                        }
                     }
                     if notification.method() == "_x.ai/session/prompt_complete" {
                         if let Some(session_id) = finish_xai_prompt_complete(
@@ -556,8 +607,12 @@ async fn run_sdk_connection(
             {
                 let events = events.clone();
                 let pending = pending_user_inputs.clone();
+                let prompt_requests = prompt_requests.clone();
                 async move |request: UntypedMessage, responder, _connection| {
                     let kind = match request.method() {
+                        deerflow_user_input::METHOD if provider == ProviderKind::DeerFlow => {
+                            AcpUserInputKind::DeerFlow
+                        }
                         "cursor/ask_question" => AcpUserInputKind::Cursor,
                         "_x.ai/ask_user_question" | "x.ai/ask_user_question" => {
                             AcpUserInputKind::Xai
@@ -571,7 +626,7 @@ async fn run_sdk_connection(
                     };
                     let request_id = responder.id().to_string();
                     let params = match kind {
-                        AcpUserInputKind::Cursor => request.params().clone(),
+                        AcpUserInputKind::Cursor | AcpUserInputKind::DeerFlow => request.params().clone(),
                         AcpUserInputKind::Xai => {
                             unwrap_xai_question_params(request.params()).clone()
                         }
@@ -579,6 +634,9 @@ async fn run_sdk_connection(
                     let questions = match kind {
                         AcpUserInputKind::Cursor => cursor_user_input_questions(&params),
                         AcpUserInputKind::Xai => xai_user_input_questions(&params),
+                        AcpUserInputKind::DeerFlow => {
+                            return deerflow_user_input::receive(params, responder, &prompt_requests, &pending, &events);
+                        }
                     };
                     if questions.is_empty() {
                         responder.respond(cancelled_user_input_response(kind))?;
@@ -611,6 +669,9 @@ async fn run_sdk_connection(
         )
         .connect_with(agent, async move |connection: ConnectionTo<Agent>| {
             let mut client_capabilities = ClientCapabilities::new().terminal(false);
+            if provider == ProviderKind::DeerFlow {
+                client_capabilities = client_capabilities.meta(deerflow_user_input::capability());
+            }
             if provider == ProviderKind::Cursor {
                 // Cursor only exposes its parameterized model controls to
                 // clients that opt in. Waku applies the returned config option
@@ -671,6 +732,18 @@ async fn run_sdk_connection(
                     .await;
             }
             let native_session_id = session_id.to_string();
+            if provider == ProviderKind::DeerFlow {
+                let supported = deerflow_steering::supported(&initialize);
+                supports_steer.store(supported, Ordering::Release);
+                stream_state.lock().deerflow_steering = supported.then(|| deerflow_steering::State::new(&native_session_id));
+                let _ = events.send(DriverEvent::SteeringCapability { supported });
+                if supported { deerflow_steering::restore(&connection, &native_session_id, stream_state.clone(), events.clone()); }
+            }
+            let history_supported = provider == ProviderKind::DeerFlow
+                && deerflow_history_capability(&serde_json::to_value(&initialize)?);
+            if provider == ProviderKind::DeerFlow {
+                let _ = events.send(DriverEvent::ConversationCapability { supported: history_supported });
+            }
             let _ = events.send(DriverEvent::Connected {
                 provider_cursor: Some(ProviderResumeCursor::from_session_id(
                     provider,
@@ -772,6 +845,10 @@ async fn run_sdk_connection(
                         }
                     }
                     CommandMessage::Steer(text) => {
+                        if provider == ProviderKind::DeerFlow {
+                            deerflow_steering::submit(&connection, &native_session_id, text, stream_state.clone(), &events);
+                            continue;
+                        }
                         if !model_options_ready {
                             let _ = events.send(DriverEvent::SteerRejected {
                                 message: text,
@@ -814,6 +891,7 @@ async fn run_sdk_connection(
                         }
                     }
                     CommandMessage::Cancel => {
+                        prompt_requests.lock().user_input_stopped = true;
                         let _ = connection
                             .send_notification(CancelNotification::new(session_id.clone()));
                         cancel_pending_permissions(&pending_permissions);
@@ -843,6 +921,9 @@ async fn run_sdk_connection(
                                 }
                                 AcpUserInputKind::Xai => {
                                     xai_user_input_response(&pending.params, &answers)
+                                }
+                                AcpUserInputKind::DeerFlow => {
+                                    deerflow_user_input::response(&pending.params, &answers)
                                 }
                             };
                             let _ = pending.responder.respond(response);
@@ -898,6 +979,59 @@ async fn run_sdk_connection(
                             .await;
                         }
                     }
+                    CommandMessage::History { method, params, deadline, reply } => {
+                        if !history_supported
+                            || !matches!(method.as_str(), "_deerflow/history/turns" | "_deerflow/history/fork" | "_deerflow/history/rewind")
+                            || params["sessionId"] != native_session_id
+                            || Instant::now() >= deadline
+                            || !prompt_requests.lock().is_empty()
+                            || !pending_permissions.lock().is_empty()
+                            || !pending_user_inputs.lock().is_empty()
+                        {
+                            let _ = reply.send(Err("rejected: Native history capability, identity or idle state is unavailable".into()));
+                            continue;
+                        }
+                        let request = UntypedMessage::new(&method, params);
+                        match request {
+                            Ok(request) => {
+                                let fallback = reply.clone();
+                                if let Err(error) = connection.send_request(request).on_receiving_result(async move |result| {
+                                    let _ = reply.send(result.map_err(|error| {
+                                        let code: i32 = error.code.into();
+                                        let outcome = if matches!(code, -32600 | -32601 | -32602 | -32000 | -32020 | -32021 | -32022) { "rejected" } else { "unknown" };
+                                        format!("{outcome}: {error}")
+                                    }));
+                                    Ok(())
+                                }) {
+                                    let _ = fallback.send(Err(format!("unknown: {error}")));
+                                }
+                            }
+                            Err(error) => { let _ = reply.send(Err(format!("rejected: {error}"))); }
+                        }
+                    }
+                    CommandMessage::DeleteSession(expected, reply) => {
+                        if provider != ProviderKind::DeerFlow || expected != native_session_id {
+                            let _ = reply.send(Err("rejected: Native session identity mismatch".into()));
+                            continue;
+                        }
+                        let request = UntypedMessage::new("session/delete", json!({"sessionId": native_session_id}));
+                        match request {
+                            Ok(request) => {
+                                let fallback = reply.clone();
+                                if let Err(error) = connection.send_request(request).on_receiving_result(async move |result| {
+                                    let _ = reply.send(result.map(|_| ()).map_err(|error| {
+                                        let code: i32 = error.code.into();
+                                        let outcome = if matches!(code, -32600 | -32601 | -32602 | -32000 | -32010 | -32011) { "rejected" } else { "unknown" };
+                                        format!("{outcome}: {error}")
+                                    }));
+                                    Ok(())
+                                }) {
+                                    let _ = fallback.send(Err(error.to_string()));
+                                }
+                            }
+                            Err(error) => { let _ = reply.send(Err(error.to_string())); }
+                        }
+                    }
                     CommandMessage::Shutdown => break,
                 }
             }
@@ -906,6 +1040,14 @@ async fn run_sdk_connection(
             Ok(())
         })
         .await
+}
+
+fn deerflow_history_capability(initialize: &Value) -> bool {
+    let history = &initialize["_meta"]["deerflow"]["conversation"];
+    history["version"] == 1
+        && history["turnsMethod"] == "_deerflow/history/turns"
+        && history["forkMethod"] == "_deerflow/history/fork"
+        && history["rewindMethod"] == "_deerflow/history/rewind"
 }
 
 fn approval_error(message: impl Into<String>) -> agent_client_protocol::Error {
@@ -2459,9 +2601,21 @@ fn finish_prompt(
     let response = match result {
         Ok(response) => response,
         Err(error) => {
+            let rate_limited = i32::from(error.code) == -32027
+                || error
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("kind"))
+                    .and_then(Value::as_str)
+                    == Some("model_rate_limited");
             let message = error.to_string();
-            let message = if waku_protocol::deerflow_tasks::needs_receipt_review(&message) {
-                waku_protocol::deerflow_tasks::RECEIPT_REVIEW_MESSAGE.to_owned()
+            let message = if rate_limited {
+                "模型服务请求受到限流，本轮已停止。请稍后重试或切换模型；已完成的工具结果已保留，请检查结果后再继续。".to_owned()
+            } else if message.contains("reconciliation_required")
+                || message.contains("Uncertain tool effects require review")
+                || message.contains("previous execution could not finish safely")
+            {
+                "上一次执行未能正常结束，已保留执行记录。系统不会自动重放旧操作。".to_owned()
             } else {
                 message
             };
@@ -2521,10 +2675,26 @@ fn cancel_pending_user_inputs(pending: &PendingAcpUserInputs) {
     }
 }
 
+fn cancel_pending_deerflow_user_inputs(pending: &PendingAcpUserInputs) {
+    let mut inputs = pending.lock();
+    let ids = inputs
+        .iter()
+        .filter(|(_, input)| matches!(input.kind, AcpUserInputKind::DeerFlow))
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    for id in ids {
+        if let Some(input) = inputs.remove(&id) {
+            let _ = input
+                .responder
+                .respond(cancelled_user_input_response(input.kind));
+        }
+    }
+}
+
 fn cancelled_user_input_response(kind: AcpUserInputKind) -> Value {
     match kind {
         AcpUserInputKind::Cursor => json!({"answers": {}}),
-        AcpUserInputKind::Xai => json!({"outcome": "cancelled"}),
+        AcpUserInputKind::Xai | AcpUserInputKind::DeerFlow => json!({"outcome": "cancelled"}),
     }
 }
 
@@ -3005,6 +3175,7 @@ fn fx_context_notice(text: &str) -> bool {
 
 #[derive(Default)]
 struct AcpStreamState {
+    deerflow_steering: Option<deerflow_steering::State>,
     deerflow_config_options: Option<Vec<SessionConfigOption>>,
     deerflow_applying_model: bool,
     deerflow_tasks: Option<deerflow_tasks::NotificationState>,
@@ -3120,6 +3291,23 @@ fn classify(kind: &str) -> ActivityKind {
 }
 
 impl DriverControl for AcpDriver {
+    fn delete_session(
+        &self,
+        expected_native_session_id: String,
+    ) -> crossbeam_channel::Receiver<Result<(), String>> {
+        let (reply, result) = crossbeam_channel::bounded(1);
+        if self
+            .commands
+            .try_send(CommandMessage::DeleteSession(
+                expected_native_session_id,
+                reply.clone(),
+            ))
+            .is_err()
+        {
+            let _ = reply.send(Err("The DeerFlow ACP connection is closed".into()));
+        }
+        result
+    }
     fn deerflow_tasks(&self, command: waku_protocol::deerflow_tasks::Command) {
         if self
             .commands
@@ -3148,7 +3336,7 @@ impl DriverControl for AcpDriver {
     }
 
     fn supports_steer(&self) -> bool {
-        self.supports_steer
+        self.supports_steer.load(Ordering::Acquire)
     }
 
     fn steer(&self, prompt: String) {
@@ -3216,6 +3404,26 @@ impl DriverControl for AcpDriver {
             .map_err(anyhow::Error::msg)
     }
 
+    fn deerflow_history(&self, method: &str, params: Value) -> anyhow::Result<Value> {
+        if self.provider != ProviderKind::DeerFlow {
+            anyhow::bail!("native conversation history requires DeerFlow");
+        }
+        let timeout = Duration::from_secs(35);
+        let (reply, result) = crossbeam_channel::bounded(1);
+        self.commands
+            .try_send(CommandMessage::History {
+                method: method.to_owned(),
+                params,
+                deadline: Instant::now() + timeout,
+                reply,
+            })
+            .map_err(|_| anyhow!("unknown: The DeerFlow ACP connection is closed"))?;
+        result
+            .recv_timeout(timeout)
+            .context("unknown: Native history outcome is pending; retry the same operation")?
+            .map_err(anyhow::Error::msg)
+    }
+
     fn rollback(&self, _turns: usize) -> anyhow::Result<Option<ProviderResumeCursor>> {
         Err(anyhow!(
             "conversation rollback is not supported by this provider transport"
@@ -3237,6 +3445,18 @@ mod tests {
         SessionConfigSelectOption, SessionMode, SessionModeState, ToolCallUpdate,
         ToolCallUpdateFields,
     };
+
+    #[test]
+    fn native_history_requires_all_versioned_methods() {
+        let mut initialization = json!({"_meta":{"deerflow":{"conversation":{
+            "version":1,"turnsMethod":"_deerflow/history/turns",
+            "forkMethod":"_deerflow/history/fork","rewindMethod":"_deerflow/history/rewind"
+        }}}});
+        assert!(deerflow_history_capability(&initialization));
+        initialization["_meta"]["deerflow"]["conversation"]["version"] = json!(2);
+        assert!(!deerflow_history_capability(&initialization));
+        assert!(!deerflow_history_capability(&json!({})));
+    }
 
     #[test]
     fn deerflow_keeps_its_task_planner_independent_of_tool_approval() {
@@ -4418,7 +4638,7 @@ mod tests {
         let driver = AcpDriver {
             commands,
             events,
-            supports_steer: false,
+            supports_steer: Arc::new(AtomicBool::new(false)),
             provider: ProviderKind::DeerFlow,
             access: Arc::new(Mutex::new(AcpAccessState::new(RuntimeMode::Ask))),
             computer_use: None,
@@ -4847,7 +5067,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_recovery_error_replaces_rpc_dump_with_actionable_guidance() {
+    fn legacy_receipt_error_has_no_manual_review_instructions() {
         let (events, event_rx) = crossbeam_channel::unbounded();
         let error =
             agent_client_protocol::Error::new(-32010, "Uncertain tool effects require review")
@@ -4862,9 +5082,57 @@ mod tests {
         };
         assert_eq!(
             message,
-            waku_protocol::deerflow_tasks::RECEIPT_REVIEW_MESSAGE
+            "上一次执行未能正常结束，已保留执行记录。系统不会自动重放旧操作。"
         );
         assert!(!message.contains("listMethod"));
+        assert!(matches!(
+            event_rx.try_recv().unwrap(),
+            DriverEvent::TurnFinished { success: false, .. }
+        ));
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn rate_limited_prompt_errors_show_safe_message_without_execution_metadata() {
+        for error in [
+            agent_client_protocol::Error::new(-32027, "provider detail"),
+            agent_client_protocol::Error::internal_error().data(json!({
+                "kind": "model_rate_limited",
+                "automaticReplay": false,
+                "execution": {"runId": "run", "resumable": false},
+                "providerDetail": "must not appear in the transcript"
+            })),
+        ] {
+            let (events, event_rx) = crossbeam_channel::unbounded();
+            assert!(!finish_prompt(Err(error), None, &events));
+            let DriverEvent::Error(message) = event_rx.try_recv().unwrap() else {
+                panic!("expected rate limit message");
+            };
+            assert_eq!(
+                message,
+                "模型服务请求受到限流，本轮已停止。请稍后重试或切换模型；已完成的工具结果已保留，请检查结果后再继续。"
+            );
+            assert!(matches!(
+                event_rx.try_recv().unwrap(),
+                DriverEvent::TurnFinished { success: false, .. }
+            ));
+            assert!(event_rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn rate_limit_text_alone_does_not_reclassify_other_prompt_errors() {
+        let (events, event_rx) = crossbeam_channel::unbounded();
+        let error = agent_client_protocol::Error::internal_error().data(json!({
+            "kind": "different_failure",
+            "detail": "model_rate_limited"
+        }));
+        let expected = error.to_string();
+        assert!(!finish_prompt(Err(error), None, &events));
+        assert!(matches!(
+            event_rx.try_recv().unwrap(),
+            DriverEvent::Error(message) if message == expected
+        ));
         assert!(matches!(
             event_rx.try_recv().unwrap(),
             DriverEvent::TurnFinished { success: false, .. }

@@ -1037,6 +1037,11 @@ impl Waku {
         }
         Some(UserMessageAction {
             session_id: session.id,
+            enabled: waku_client::WorkspaceClient::rewind_action_enabled(
+                session.id,
+                turn.turn_count,
+                session.conversation_actions_enabled(),
+            ),
             message_id: message.id,
             turn_count: turn.turn_count,
         })
@@ -1133,7 +1138,12 @@ impl Waku {
         Some(AssistantMessageAction {
             session_id: session.id,
             turn_count: turn.turn_count,
-            enabled: pending_turn.is_none(),
+            enabled: pending_turn.is_none()
+                && waku_client::WorkspaceClient::fork_action_enabled(
+                    session.id,
+                    turn.turn_count,
+                    session.conversation_actions_enabled(),
+                ),
             preparing: pending_turn == Some(turn.turn_count),
         })
     }
