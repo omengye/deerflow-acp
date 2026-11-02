@@ -2238,14 +2238,14 @@ fn send_prompt(
             let native_failure = wire_offset
                 .filter(|_| !stream_state.lock().produced_content)
                 .and_then(|offset| crate::kimi_session::turn_failure(&native_session_id, offset));
-            let success = finish_prompt(result, native_failure, &callback_events);
-            if provider == ProviderKind::DeerFlow {
-                deerflow_tasks::flush_early_updates(
-                    &mut stream_state.lock(),
-                    false,
-                    &callback_events,
-                )?;
-            }
+            let success = if provider == ProviderKind::DeerFlow {
+                let mut stream = stream_state.lock();
+                let success = deerflow_tasks::finish_prompt(result, &mut stream, &callback_events);
+                deerflow_tasks::flush_early_updates(&mut stream, false, &callback_events)?;
+                success
+            } else {
+                finish_prompt(result, native_failure, &callback_events)
+            };
             if provider == ProviderKind::Grok && success {
                 start_grok_title_refresh(
                     grok_title_home.as_deref(),

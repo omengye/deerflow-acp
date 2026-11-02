@@ -15,6 +15,7 @@ pub(super) struct NotificationState {
     connection: String,
     session: String,
     active: Option<(String, String, u64)>,
+    parked: Option<(String, u64)>,
     announced: bool,
     recent: std::collections::VecDeque<(String, String)>,
 }
@@ -106,10 +107,10 @@ pub(super) fn receive_update(
     has_prompt: bool,
     events: &impl DriverEventSink,
 ) -> agent_client_protocol::Result<()> {
-    let deferred_start = has_prompt
-        && matches!(&update,EarlyUpdate::Lifecycle(params) if stream.deerflow_tasks.as_ref().is_some_and(|state| state.valid_new_start(params)));
-    if stream.deerflow_tasks.is_none() || stream.deerflow_buffering || deferred_start {
-        stream.deerflow_buffering |= deferred_start;
+    let deferred_lifecycle = has_prompt
+        && matches!(&update,EarlyUpdate::Lifecycle(params) if stream.deerflow_tasks.as_ref().is_some_and(|state| state.valid_new_start(params) || state.valid_terminal_notice(params)));
+    if stream.deerflow_tasks.is_none() || stream.deerflow_buffering || deferred_lifecycle {
+        stream.deerflow_buffering |= deferred_lifecycle;
         stream.deerflow_early.push(update);
         if stream.deerflow_early.overflow {
             return Err(approval_error(
@@ -152,11 +153,98 @@ pub(super) fn flush_early_updates(
     Ok(())
 }
 
+/// ACP ends the request even when the durable execution is waiting for a child.
+/// Keep that execution's UI turn open until its automatic continuation settles.
+pub(super) fn finish_prompt(
+    result: agent_client_protocol::Result<PromptResponse>,
+    stream: &mut AcpStreamState,
+    events: &impl DriverEventSink,
+) -> bool {
+    if let Some(state) = &mut stream.deerflow_tasks {
+        state.parked = None;
+        if let Ok(response) = &result
+            && response.stop_reason == StopReason::EndTurn
+            && let Some(execution) = response
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("deerflow"))
+                .and_then(|meta| meta.get("execution"))
+            && state.park_execution(execution, events)
+        {
+            return true;
+        }
+    }
+    super::finish_prompt(result, None, events)
+}
+
 impl NotificationState {
+    fn park_execution(&mut self, execution: &Value, events: &impl DriverEventSink) -> bool {
+        let (Some(run), Some(version)) =
+            (execution["runId"].as_str(), execution["version"].as_u64())
+        else {
+            return false;
+        };
+        if execution["sessionId"] != self.session
+            || execution["status"] != "waiting_input"
+            || run.is_empty()
+            || run.len() > 256
+            || version == 0
+            || version > i64::MAX as u64
+        {
+            return false;
+        }
+        self.parked = Some((run.into(), version));
+        let _ = events.send(DriverEvent::TurnParked);
+        true
+    }
+
+    fn finish_automatic(&mut self, params: &Value, events: &impl DriverEventSink) {
+        let execution = &params["result"]["execution"];
+        self.parked = None;
+        let success = !execution.is_null()
+            && params.get("error").is_none_or(Value::is_null)
+            && !matches!(
+                execution["status"].as_str(),
+                Some("failed" | "needs_reconciliation")
+            )
+            && matches!(
+                params["result"]["stopReason"].as_str(),
+                Some("end_turn" | "cancelled")
+            );
+        if success
+            && params["result"]["stopReason"] == "end_turn"
+            && self.park_execution(execution, events)
+        {
+            return;
+        }
+        let _ = events.send(DriverEvent::TurnFinished {
+            success,
+            summary: (!success).then(|| "自动执行已停止，请刷新任务状态查看原因。".into()),
+        });
+    }
+
     pub(super) fn steering_target(&self) -> Option<(String, u64)> {
         self.active
             .as_ref()
             .map(|(run, _, version)| (run.clone(), *version))
+    }
+    fn valid_terminal_notice(&self, params: &Value) -> bool {
+        let execution = &params["result"]["execution"];
+        params["sessionId"] == self.session
+            && params["phase"] == "finished"
+            && params["runId"].as_str().is_none_or(str::is_empty)
+            && params["operationId"].as_str().is_none_or(str::is_empty)
+            && execution["sessionId"] == self.session
+            && execution["runId"]
+                .as_str()
+                .is_some_and(|run| !run.is_empty() && run.len() <= 256)
+            && execution["version"]
+                .as_u64()
+                .is_some_and(|version| version > 0 && version <= i64::MAX as u64)
+            && matches!(
+                execution["status"].as_str(),
+                Some("completed" | "cancelled" | "failed" | "needs_reconciliation")
+            )
     }
     fn valid_new_start(&self, params: &Value) -> bool {
         let execution = &params["execution"];
@@ -211,6 +299,22 @@ impl NotificationState {
         } else {
             &params["result"]["execution"]
         };
+        // A failed dependency can end a parked execution without starting a
+        // new attempt. Bind that terminal notice to the parked run/version;
+        // unrelated or late notices must not finish another user's prompt.
+        if !has_prompt
+            && self.active.is_none()
+            && self.valid_terminal_notice(params)
+            && self.parked.as_ref().is_some_and(|(run, version)| {
+                execution["runId"] == *run
+                    && execution["version"]
+                        .as_u64()
+                        .is_some_and(|next| next >= *version && next <= i64::MAX as u64)
+            })
+        {
+            self.finish_automatic(params, events);
+            return;
+        }
         let (Some(run), Some(operation)) =
             (params["runId"].as_str(), params["operationId"].as_str())
         else {
@@ -232,6 +336,7 @@ impl NotificationState {
             {
                 return;
             }
+            self.parked = None;
             self.active = Some((run.into(), operation.into(), version));
             self.announced = !has_prompt;
             if self.announced {
@@ -255,16 +360,7 @@ impl NotificationState {
             }
             // A late automatic completion never settles a new user prompt.
             if !has_prompt {
-                let success = !execution.is_null()
-                    && params.get("error").is_none_or(Value::is_null)
-                    && matches!(
-                        params["result"]["stopReason"].as_str(),
-                        Some("end_turn" | "cancelled")
-                    );
-                let _ = events.send(DriverEvent::TurnFinished {
-                    success,
-                    summary: (!success).then(|| "自动执行已停止，请刷新任务状态查看原因。".into()),
-                });
+                self.finish_automatic(params, events);
             }
         }
     }
@@ -320,6 +416,7 @@ impl TaskConnection {
             connection: self.id.clone(),
             session: self.session.clone(),
             active: None,
+            parked: None,
             announced: false,
             recent: Default::default(),
         }
@@ -748,7 +845,7 @@ impl TaskConnection {
                 });
                 match result {
                     Ok(response) => {
-                        finish_prompt(Ok(response), None, &callback_events);
+                        finish_prompt(Ok(response), &mut callback_stream.lock(), &callback_events);
                         let _ = callback_events.send(DriverEvent::DeerFlowTasks(Event::Reply {
                             command: callback_command,
                             response: Response::ExecutionFinished,
@@ -848,8 +945,14 @@ mod tests {
     }
     #[test]
     fn deerflow_automatic_stream_and_permission_wait_for_the_old_prompt_response() {
-        for (finish_before_reply, with_permission) in [(false, false), (true, false), (false, true)]
-        {
+        for (finish_before_reply, with_permission, waiting) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, false, true),
+            (false, true, true),
+        ] {
             let start = json!({"sessionId":"session","phase":"started","runId":"automatic","operationId":"operation","execution":{"runId":"automatic","version":2}});
             let finish = json!({"sessionId":"session","phase":"finished","runId":"automatic","operationId":"operation","result":{"stopReason":"end_turn","execution":{"runId":"automatic","version":3}}});
             let agent=Agent.builder().on_receive_request(async move |_request:PromptRequest,responder:Responder<PromptResponse>,connection:ConnectionTo<Client>| {
@@ -864,7 +967,18 @@ mod tests {
                         after.send_notification(UntypedMessage::new("_deerflow/executions/updated",finish)?)
                     })?;
                 } else if finish_before_reply {connection.send_notification(UntypedMessage::new("_deerflow/executions/updated",finish.clone())?)?;}
-                responder.respond(PromptResponse::new(StopReason::EndTurn))?;
+                let response = if waiting {
+                    serde_json::from_value(json!({
+                        "stopReason": "end_turn",
+                        "_meta": {"deerflow": {"execution": {
+                            "sessionId": "session", "runId": "automatic", "version": 1,
+                            "status": "waiting_input", "waitingTasks": ["research"], "resumable": true
+                        }}}
+                    }))?
+                } else {
+                    PromptResponse::new(StopReason::EndTurn)
+                };
+                responder.respond(response)?;
                 if !with_permission && !finish_before_reply {connection.send_notification(UntypedMessage::new("_deerflow/executions/updated",finish.clone())?)?;}
                 Ok(())
             },agent_client_protocol::on_receive_request!());
@@ -876,6 +990,7 @@ mod tests {
                 connection: "connection".into(),
                 session: "session".into(),
                 active: None,
+                parked: None,
                 announced: false,
                 recent: Default::default(),
             });
@@ -949,10 +1064,11 @@ mod tests {
                     )?;
                     let mut sequence = vec![];
                     let mut finishes = 0;
-                    while finishes < 2 {
+                    while finishes < if waiting { 1 } else { 2 } {
                         if let Ok(event) = received.try_recv() {
                             match &event {
                                 DriverEvent::TurnStarted => sequence.push("started"),
+                                DriverEvent::TurnParked => sequence.push("parked"),
                                 DriverEvent::TurnFinished { .. } => {
                                     finishes += 1;
                                     sequence.push("finished");
@@ -986,7 +1102,7 @@ mod tests {
                         if with_permission {
                             vec![
                                 "started",
-                                "finished",
+                                if waiting { "parked" } else { "finished" },
                                 "started",
                                 "text",
                                 "tool",
@@ -994,7 +1110,14 @@ mod tests {
                                 "finished",
                             ]
                         } else {
-                            vec!["started", "finished", "started", "text", "tool", "finished"]
+                            vec![
+                                "started",
+                                if waiting { "parked" } else { "finished" },
+                                "started",
+                                "text",
+                                "tool",
+                                "finished",
+                            ]
                         }
                     );
                     assert!(permissions.lock().is_empty());
@@ -1019,6 +1142,7 @@ mod tests {
             connection: "connection".into(),
             session: "session".into(),
             active: None,
+            parked: None,
             announced: false,
             recent: Default::default(),
         });
@@ -1050,6 +1174,7 @@ mod tests {
             connection: "connection".into(),
             session: "session".into(),
             active: None,
+            parked: None,
             announced: false,
             recent: Default::default(),
         };
@@ -1136,8 +1261,192 @@ mod tests {
         );
     }
     #[test]
+    fn deerflow_automatic_continuation_can_wait_again_before_finishing() {
+        let (events, received) = crate::driver::test_event_channel();
+        let mut state = NotificationState {
+            connection: "connection".into(),
+            session: "session".into(),
+            active: None,
+            parked: None,
+            announced: false,
+            recent: Default::default(),
+        };
+        let start = json!({
+            "sessionId": "session", "phase": "started", "operationId": "first", "runId": "run",
+            "execution": {"sessionId": "session", "runId": "run", "version": 2, "status": "running"}
+        });
+        let waiting = json!({
+            "sessionId": "session", "phase": "finished", "operationId": "first", "runId": "run",
+            "result": {"stopReason": "end_turn", "execution": {
+                "sessionId": "session", "runId": "run", "version": 3,
+                "status": "waiting_input", "waitingTasks": ["second-child"], "resumable": true
+            }}
+        });
+        state.update(&start, false, &events);
+        state.update(&waiting, false, &events);
+        let output: Vec<_> = received
+            .try_iter()
+            .filter(|event| !matches!(event, DriverEvent::DeerFlowTasks(_)))
+            .collect();
+        assert!(matches!(
+            output.as_slice(),
+            [DriverEvent::TurnStarted, DriverEvent::TurnParked]
+        ));
+        assert_eq!(state.parked, Some(("run".into(), 3)));
+
+        let mut next = start;
+        next["operationId"] = json!("second");
+        next["execution"]["version"] = json!(4);
+        state.update(&next, false, &events);
+        // A repeated completion from the previous attempt must not park or
+        // finish the continuation now producing the answer.
+        state.update(&waiting, false, &events);
+        let mut done = waiting;
+        done["operationId"] = json!("second");
+        done["result"]["execution"]["version"] = json!(5);
+        done["result"]["execution"]["status"] = json!("completed");
+        done["result"]["execution"]
+            .as_object_mut()
+            .unwrap()
+            .remove("waitingTasks");
+        state.update(&done, false, &events);
+        state.update(&done, false, &events);
+        let output: Vec<_> = received
+            .try_iter()
+            .filter(|event| !matches!(event, DriverEvent::DeerFlowTasks(_)))
+            .collect();
+        assert!(matches!(
+            output.as_slice(),
+            [
+                DriverEvent::TurnStarted,
+                DriverEvent::TurnFinished { success: true, .. }
+            ]
+        ));
+        assert!(state.parked.is_none());
+    }
+
+    #[test]
+    fn deerflow_parked_dependency_failure_only_finishes_its_own_turn() {
+        let (events, received) = crate::driver::test_event_channel();
+        let mut stream = AcpStreamState::default();
+        stream.deerflow_tasks = Some(NotificationState {
+            connection: "connection".into(),
+            session: "session".into(),
+            active: None,
+            parked: None,
+            announced: false,
+            recent: Default::default(),
+        });
+        let execution = json!({
+            "sessionId": "session", "runId": "run", "version": 7,
+            "status": "waiting_input", "waitingTasks": ["child"], "resumable": true
+        });
+        let response: PromptResponse = serde_json::from_value(json!({
+            "stopReason": "end_turn", "_meta": {"deerflow": {"execution": execution}}
+        }))
+        .unwrap();
+        assert!(finish_prompt(Ok(response.clone()), &mut stream, &events));
+        assert!(matches!(
+            received.try_recv().unwrap(),
+            DriverEvent::TurnParked
+        ));
+
+        // closeFailedTaskWait reports a terminal result without starting an
+        // automatic attempt, so there is no operationId or top-level runId.
+        let failed = json!({
+            "sessionId": "session", "phase": "finished",
+            "error": {"code": -32603, "message": "Internal error"},
+            "result": {"stopReason": "failed", "execution": {
+                "sessionId": "session", "runId": "run", "version": 8, "status": "failed"
+            }}
+        });
+        let state = stream.deerflow_tasks.as_mut().unwrap();
+        for (path, value) in [
+            ("/sessionId", json!("other-session")),
+            ("/result/execution/sessionId", json!("other-session")),
+            ("/result/execution/runId", json!("other-run")),
+            ("/result/execution/version", json!(6)),
+            ("/result/execution", Value::Null),
+        ] {
+            let mut stale = failed.clone();
+            *stale.pointer_mut(path).unwrap() = value;
+            state.update(&stale, false, &events);
+        }
+        state.update(&failed, true, &events);
+        assert!(
+            !received
+                .try_iter()
+                .any(|event| matches!(event, DriverEvent::TurnFinished { .. }))
+        );
+        state.update(&failed, false, &events);
+        state.update(&failed, false, &events);
+        let output: Vec<_> = received
+            .try_iter()
+            .filter(|event| !matches!(event, DriverEvent::DeerFlowTasks(_)))
+            .collect();
+        assert!(matches!(
+            output.as_slice(),
+            [DriverEvent::TurnFinished { success: false, .. }]
+        ));
+        assert!(state.parked.is_none());
+
+        // The dependency may fail before the waiting prompt's response reaches
+        // the client. Its notice must survive until that response binds the run.
+        receive_update(&mut stream, EarlyUpdate::Lifecycle(failed), true, &events).unwrap();
+        assert!(received.try_recv().is_err());
+        assert!(finish_prompt(Ok(response), &mut stream, &events));
+        flush_early_updates(&mut stream, false, &events).unwrap();
+        let output: Vec<_> = received
+            .try_iter()
+            .filter(|event| !matches!(event, DriverEvent::DeerFlowTasks(_)))
+            .collect();
+        assert!(matches!(
+            output.as_slice(),
+            [
+                DriverEvent::TurnParked,
+                DriverEvent::TurnFinished { success: false, .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn deerflow_terminal_prompt_responses_do_not_leave_a_parked_turn() {
+        for (stop_reason, status, session) in [
+            ("end_turn", "completed", "session"),
+            ("cancelled", "waiting_input", "session"),
+            ("max_tokens", "waiting_input", "session"),
+            ("end_turn", "waiting_input", "foreign-session"),
+        ] {
+            let (events, received) = crate::driver::test_event_channel();
+            let mut stream = AcpStreamState::default();
+            stream.deerflow_tasks = Some(NotificationState {
+                connection: "connection".into(),
+                session: "session".into(),
+                active: None,
+                parked: Some(("old-run".into(), 1)),
+                announced: false,
+                recent: Default::default(),
+            });
+            let response = serde_json::from_value(json!({
+                "stopReason": stop_reason, "_meta": {"deerflow": {"execution": {
+                    "sessionId": session, "runId": "run", "version": 2, "status": status
+                }}}
+            }))
+            .unwrap();
+            finish_prompt(Ok(response), &mut stream, &events);
+            assert!(matches!(
+                received.try_recv().unwrap(),
+                DriverEvent::TurnFinished { .. }
+            ));
+            assert!(received.try_recv().is_err());
+            assert!(stream.deerflow_tasks.as_ref().unwrap().parked.is_none());
+        }
+    }
+
+    #[test]
     fn deerflow_execution_resume_preserves_turn_lifecycle_and_replays_real_permission() {
-        let agent = Agent.builder().on_receive_request(
+        for waiting in [false, true] {
+            let agent = Agent.builder().on_receive_request(
             async move |request: UntypedMessage, responder, connection: ConnectionTo<Client>| {
                 assert_eq!(request.method(), "_deerflow/executions/resume");
                 assert_eq!(request.params(), &json!({"sessionId":"session","runId":"continuation-run","expectedVersion":7}));
@@ -1147,104 +1456,120 @@ mod tests {
                 }))?;
                 connection.send_request(permission).on_receiving_result(async move |result| {
                     assert_eq!(serde_json::to_value(result?)?["outcome"]["optionId"], "reject");
-                    responder.respond(json!({"stopReason":"end_turn"}))
+                    let mut response = json!({"stopReason":"end_turn"});
+                    if waiting {
+                        response["_meta"] = json!({"deerflow": {"execution": {
+                            "sessionId": "session", "runId": "continuation-run", "version": 8,
+                            "status": "waiting_input", "waitingTasks": ["child"], "resumable": true
+                        }}});
+                    }
+                    responder.respond(response)
                 })?;
                 Ok(Handled::Yes)
             }, agent_client_protocol::on_receive_request!());
-        let (events, received) = crate::driver::test_event_channel();
-        let permissions: PendingPermissions = Arc::new(Mutex::new(HashMap::new()));
-        let handler_permissions = permissions.clone();
-        let handler_events = events.clone();
-        let client = Client.builder().on_receive_request(
-            async move |request: RequestPermissionRequest, responder, _connection| {
-                handle_permission_request(
-                    request,
-                    responder,
-                    ProviderKind::DeerFlow,
-                    RuntimeMode::FullAccess,
-                    &handler_permissions,
-                    &handler_events,
-                )
-            },
-            agent_client_protocol::on_receive_request!(),
-        );
-        smol::block_on(smol::future::or(
-            client.connect_with(agent, async move |connection| {
-                let state = TaskConnection {
-                    id: "connection".into(),
-                    session: "session".into(),
-                    capabilities: Capabilities {
-                        tree: true,
-                        executions: true,
-                        ..Default::default()
-                    },
-                    pending: Arc::new(AtomicBool::new(false)),
-                };
-                let prompt_requests = Arc::new(Mutex::new(PendingPrompts::default()));
-                state.resume_execution(
-                    &connection,
-                    Command {
-                        request_id: uuid::Uuid::new_v4().to_string(),
-                        connection_id: state.id.clone(),
-                        session_id: state.session.clone(),
-                        action: Action::ExecutionResume {
-                            run_id: "continuation-run".into(),
-                            expected_version: 7,
+            let (events, received) = crate::driver::test_event_channel();
+            let permissions: PendingPermissions = Arc::new(Mutex::new(HashMap::new()));
+            let handler_permissions = permissions.clone();
+            let handler_events = events.clone();
+            let client = Client.builder().on_receive_request(
+                async move |request: RequestPermissionRequest, responder, _connection| {
+                    handle_permission_request(
+                        request,
+                        responder,
+                        ProviderKind::DeerFlow,
+                        RuntimeMode::FullAccess,
+                        &handler_permissions,
+                        &handler_events,
+                    )
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+            smol::block_on(smol::future::or(
+                client.connect_with(agent, async move |connection| {
+                    let state = TaskConnection {
+                        id: "connection".into(),
+                        session: "session".into(),
+                        capabilities: Capabilities {
+                            tree: true,
+                            executions: true,
+                            ..Default::default()
                         },
-                    },
-                    &prompt_requests,
-                    &events,
-                    &Arc::new(Mutex::new(AcpStreamState::default())),
-                );
-                assert!(matches!(
-                    received.try_recv().unwrap(),
-                    DriverEvent::TurnStarted
-                ));
-                let mut permitted = false;
-                let mut finished = false;
-                loop {
-                    match received.try_recv() {
-                        Ok(DriverEvent::Permission { request_id, .. }) => {
-                            assert!(!prompt_requests.lock().is_empty());
-                            assert!(!finished);
-                            permissions
-                                .lock()
-                                .remove(&request_id)
-                                .expect("saved permission waits for explicit decision")
-                                .respond(RequestPermissionResponse::new(
-                                    RequestPermissionOutcome::Selected(
-                                        SelectedPermissionOutcome::new("reject"),
-                                    ),
-                                ))?;
-                            permitted = true;
-                        }
-                        Ok(DriverEvent::TurnFinished { success: true, .. }) => {
-                            assert!(permitted);
-                            finished = true;
-                        }
-                        Ok(DriverEvent::DeerFlowTasks(Event::Reply {
-                            response: Response::ExecutionFinished,
-                            ..
-                        })) => {
-                            assert!(finished);
-                            break;
-                        }
-                        Ok(other) => panic!("unexpected recovery event: {other:?}"),
-                        Err(_) => {
-                            smol::Timer::after(Duration::from_millis(5)).await;
+                        pending: Arc::new(AtomicBool::new(false)),
+                    };
+                    let prompt_requests = Arc::new(Mutex::new(PendingPrompts::default()));
+                    let mut stream = AcpStreamState::default();
+                    stream.deerflow_tasks = Some(state.notifications());
+                    state.resume_execution(
+                        &connection,
+                        Command {
+                            request_id: uuid::Uuid::new_v4().to_string(),
+                            connection_id: state.id.clone(),
+                            session_id: state.session.clone(),
+                            action: Action::ExecutionResume {
+                                run_id: "continuation-run".into(),
+                                expected_version: 7,
+                            },
+                        },
+                        &prompt_requests,
+                        &events,
+                        &Arc::new(Mutex::new(stream)),
+                    );
+                    assert!(matches!(
+                        received.try_recv().unwrap(),
+                        DriverEvent::TurnStarted
+                    ));
+                    let mut permitted = false;
+                    let mut finished = false;
+                    loop {
+                        match received.try_recv() {
+                            Ok(DriverEvent::Permission { request_id, .. }) => {
+                                assert!(!prompt_requests.lock().is_empty());
+                                assert!(!finished);
+                                permissions
+                                    .lock()
+                                    .remove(&request_id)
+                                    .expect("saved permission waits for explicit decision")
+                                    .respond(RequestPermissionResponse::new(
+                                        RequestPermissionOutcome::Selected(
+                                            SelectedPermissionOutcome::new("reject"),
+                                        ),
+                                    ))?;
+                                permitted = true;
+                            }
+                            Ok(DriverEvent::TurnFinished { success: true, .. }) => {
+                                assert!(permitted);
+                                assert!(!waiting);
+                                finished = true;
+                            }
+                            Ok(DriverEvent::TurnParked) => {
+                                assert!(permitted);
+                                assert!(waiting);
+                                finished = true;
+                            }
+                            Ok(DriverEvent::DeerFlowTasks(Event::Reply {
+                                response: Response::ExecutionFinished,
+                                ..
+                            })) => {
+                                assert!(finished);
+                                break;
+                            }
+                            Ok(other) => panic!("unexpected recovery event: {other:?}"),
+                            Err(_) => {
+                                smol::Timer::after(Duration::from_millis(5)).await;
+                            }
                         }
                     }
-                }
-                assert!(prompt_requests.lock().is_empty());
-                assert!(!state.pending.load(Ordering::Acquire));
-                Ok(())
-            }),
-            async {
-                smol::Timer::after(Duration::from_secs(5)).await;
-                Err(approval_error("execution resume test timed out"))
-            },
-        ))
-        .unwrap();
+                    assert!(prompt_requests.lock().is_empty());
+                    assert!(!state.pending.load(Ordering::Acquire));
+                    Ok(())
+                }),
+                async {
+                    smol::Timer::after(Duration::from_secs(5)).await;
+                    Err(approval_error("execution resume test timed out"))
+                },
+            ))
+            .unwrap();
+        }
     }
     #[test]
     fn deerflow_task_capabilities_require_exact_versioned_methods() {
