@@ -1,6 +1,7 @@
 """Install the fixed wrapper into an existing skills deployment without rebuilding.
 
-Run on the Docker host, after stopping/draining active requests. This only stages
+Run on the Docker host after draining active requests, with the daemon still
+running for identity checks. This only stages
 the wrapper and updates Compose; the caller controls coordinated recreation and
 verification. It never opens, moves, or merges a conversation database.
 """
@@ -9,7 +10,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import uuid
@@ -17,6 +18,45 @@ import uuid
 
 MOUNT = './runtime/deerflow-acpd-wrapper.sh:/opt/deerflow/bin/deerflow-acpd:ro'
 TARGET = '/opt/deerflow/bin/deerflow-acpd'
+
+
+def bound_data_directory(root):
+    """Require an established selection; wrapper updates never choose a DB."""
+    user_data = (root / 'data/user-data').resolve(strict=True)
+    raw = (user_data / 'config/runtime-data.json').read_bytes()
+    if len(raw) > 8192:
+        raise ValueError('Data directory binding is too large')
+    pairs = json.loads(raw, object_pairs_hook=list)
+    if (not isinstance(pairs, list) or len(pairs) != 1 or
+            not isinstance(pairs[0], tuple) or pairs[0][0] != 'data_dir' or
+            not isinstance(pairs[0][1], str)):
+        raise ValueError('Expected exactly one data_dir binding')
+    value = pairs[0][1]
+    relative = PurePosixPath(value)
+    if (not value or relative.is_absolute() or '..' in relative.parts or
+            ':' in value or '\\' in value or relative == PurePosixPath('.')):
+        raise ValueError('Data directory must be relative to user-data')
+    selected = (user_data / relative).resolve(strict=True)
+    if user_data not in selected.parents or not (selected / 'harness.db').is_file():
+        raise ValueError('Bound database is absent or outside user-data')
+    return str(PurePosixPath('/var/lib/deerflow/user-data') / relative)
+
+
+def verify_native_binding(container, selected):
+    """Reject incompatible images or a live mismatch before changing files."""
+    command = ['docker', 'exec', container, '/opt/deerflow/bin/deerflow-acpd.real',
+               '--check-paths', '--config', '/var/lib/deerflow/user-data/config/config.yaml',
+               '--data-dir', selected]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+    if result.returncode or json.loads(result.stdout).get('data_dir') != selected:
+        raise RuntimeError('Active image does not support this database binding')
+    result = subprocess.run(
+        ['docker', 'exec', '-i', container, '/opt/deerflow/bin/deerflow-control-go',
+         '--runtime-dir', '/var/lib/deerflow/user-data/runtime/acp-go'],
+        input='{"operation":"daemon.status"}', capture_output=True, text=True, timeout=20)
+    status = json.loads(result.stdout) if result.returncode == 0 else {}
+    if not status.get('ok') or status.get('runtime', {}).get('data_dir') != selected:
+        raise RuntimeError('Running daemon uses another database or cannot be verified')
 
 
 def update_compose(text):
@@ -81,8 +121,9 @@ def main():
         original = source.read()
     updated = update_compose(original)
     wrapper = args.wrapper_source.read_text()
-    if '--data-dir="$data_dir"' not in wrapper or 'DEERFLOW_PERSISTENT_DATA_DIR' not in wrapper:
-        raise ValueError('Wrapper does not pin the persistent data directory')
+    if ('exec /opt/deerflow/bin/deerflow-acpd.real "$@"' not in wrapper or
+            'DEERFLOW_PERSISTENT_DATA_DIR' not in wrapper or 'go-harness-state' in wrapper):
+        raise ValueError('Wrapper must use the native database binding')
     destination = root / 'runtime' / 'deerflow-acpd-wrapper.sh'
     if root not in destination.parent.resolve().parents:
         raise ValueError('Runtime destination escaped the deployment root')
@@ -90,13 +131,8 @@ def main():
         print(json.dumps({'status': 'not_applied', 'compose_change_required': updated != original,
                           'mount': MOUNT, 'requires_recreate': True}))
         return 0
-    if not (root / 'data/user-data/config/go-harness-state/harness.db').is_file():
-        raise RuntimeError('The original session database is absent; do not select a new empty directory')
-    prerequisite = subprocess.run(
-        ['docker', 'exec', args.container, 'test', '-x', '/opt/deerflow/bin/deerflow-acpd.real'],
-        capture_output=True, text=True, timeout=20)
-    if prerequisite.returncode:
-        raise RuntimeError('The active container must use the skills runtime image')
+    selected = bound_data_directory(root)
+    verify_native_binding(args.container, selected)
     stage = root / 'runtime-backups' / (
         datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8])
     stage.mkdir(parents=True, mode=0o700)
@@ -130,7 +166,7 @@ def main():
     report = {'status': 'installed', 'backup': str(stage), 'mount': MOUNT,
               'wrapper_sha256': hashlib.sha256(wrapper.encode()).hexdigest(),
               'compose_changed': updated != original, 'requires_recreate': True,
-              'persistent_data_dir': '/var/lib/deerflow/user-data/config/go-harness-state',
+              'persistent_data_dir': selected,
               'database_modified': False}
     write_private(stage / 'installation.json', json.dumps(report, indent=2) + '\n', 0o600)
     print(json.dumps(report))

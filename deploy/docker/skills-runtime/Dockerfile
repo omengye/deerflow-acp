@@ -1,8 +1,15 @@
 # Add skill runtimes to the deployed server; reuse all original Go/Rust binaries,
 # portable initialization, health check, volumes and container entrypoint.
-FROM deerflow-server:pilot-20261024
+ARG BASE_IMAGE=deerflow-server:current
+FROM ${BASE_IMAGE}
 
 USER root
+# Only layer this wrapper on a server built with the shared binding resolver.
+# The read-only probe uses a standalone path and never initializes a database.
+RUN env -u DEER_FLOW_PORTABLE_ROOT -u DEER_FLOW_CONFIG_PATH -u DEERFLOW_GO_DATA_DIR \
+    /opt/deerflow/bin/deerflow-acpd --check-paths \
+    --config /tmp/deerflow-build-check/config.yaml \
+    --data-dir /tmp/deerflow-build-check/state >/dev/null
 ARG DEBIAN_MIRROR=http://deb.debian.org/debian
 ARG DEBIAN_SECURITY_MIRROR=http://deb.debian.org/debian-security
 ARG PIP_INDEX_URL=https://pypi.org/simple

@@ -159,7 +159,9 @@ daemon and the Rust ACP Bridge. It does not include or require a Python runtime.
 Desktop history and preferences: user-data/desktop
 DeerFlow config: user-data/config/config.yaml
 Desktop MCP servers: user-data/config/client-mcp-servers.json
-Go harness state: user-data/data/go-harness
+Go harness state: selected by user-data/config/runtime-data.json when present;
+fresh profiles default to user-data/data/go-harness. Preserve the binding and
+the complete user-data directory during updates. Never merge historical stores.
 Go daemon endpoint: user-data/runtime/acp-go
 
 The first launch uses Simplified Chinese and creates user-data. Set the model

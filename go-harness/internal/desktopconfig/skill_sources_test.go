@@ -58,7 +58,7 @@ func TestManagedSourcesSaveLaunchAndRegistrySettingsStaySeparate(t *testing.T) {
 	if len(cfg.Skills.Sources) != 1 || cfg.Skills.Sources[0].Root != root || cfg.Skills.Sources[0].Workspace != options.UserData || cfg.Skills.ExportRoot != root || len(cfg.Skills.Install) != 0 || !reflect.DeepEqual(cfg.SkillProposalSources, []string{"generated"}) || cfg.SkillSelection.IncludeGlobal {
 		t.Fatalf("managed YAML not consumed: %+v", cfg.Skills)
 	}
-	cfg.DataDir = filepath.Join(t.TempDir(), "runtime")
+	// Use this fixture's portable state directory across configuration reloads.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	client, err := deerflow.Open(ctx, cfg)

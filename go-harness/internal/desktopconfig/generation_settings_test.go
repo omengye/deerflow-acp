@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -122,7 +121,8 @@ func TestGenerationSettingsSaveLaunchAndProviderConsumption(t *testing.T) {
 			if cfg.SkillGeneration == nil || cfg.SkillGeneration.Model.Timeout != wantTimeout || cfg.SkillGeneration.Model.MaxInputBytes != wantBytes || cfg.SkillGeneration.Model.MaxOutputTokens != 1024 || cfg.SkillGeneration.Budget.MaxJobSeconds != wantDeadline || cfg.SkillGeneration.Budget.Workers != 1 || !reflect.DeepEqual(cfg.SkillGeneration.Sources, []string{"python-custom"}) || cfg.SkillGeneration.AllowBuiltinOverlays {
 				t.Fatal("generation settings were not consumed")
 			}
-			cfg.DataDir = filepath.Join(t.TempDir(), "runtime")
+			// Keep the selected state in this test's disposable portable profile
+			// so reapplying configuration exercises the same database binding.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			client, err := deerflow.Open(ctx, cfg)

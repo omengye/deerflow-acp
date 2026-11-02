@@ -73,7 +73,7 @@ function Write-ArchiveChecksum([string]$Archive) {
 # Set target values only for this invocation; cross-compilation settings from
 # the caller must not accidentally produce Linux or ARM files with .exe names.
 $previousEnvironment = @{}
-foreach ($name in @('GOOS', 'GOARCH', 'CGO_ENABLED', 'DEERFLOW_TEST_BRIDGE', 'DEERFLOW_TEST_GO_DAEMON')) {
+foreach ($name in @('GOOS', 'GOARCH', 'CGO_ENABLED', 'DEERFLOW_TEST_BRIDGE', 'DEERFLOW_TEST_GO_DAEMON', 'DEERFLOW_TEST_GO_STDIO')) {
     $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 try {
@@ -83,6 +83,7 @@ try {
     # Ignore caller-selected package fixtures during the initial regression run.
     $env:DEERFLOW_TEST_BRIDGE = $null
     $env:DEERFLOW_TEST_GO_DAEMON = $null
+    $env:DEERFLOW_TEST_GO_STDIO = $null
     Push-Location (Join-Path $repoRoot 'go-harness')
     try {
         $goVersion = (& go version) -join ' '
@@ -120,6 +121,7 @@ try {
         # discovery and draft v2, with isolated local fixtures and no API key.
         $env:DEERFLOW_TEST_BRIDGE = Join-Path $packageRoot 'deerflow-acp.exe'
         $env:DEERFLOW_TEST_GO_DAEMON = Join-Path $packageRoot 'deerflow-acpd.exe'
+        $env:DEERFLOW_TEST_GO_STDIO = Join-Path $packageRoot 'deerflow-acp-go.exe'
         Push-Location (Join-Path $repoRoot 'go-harness')
         try {
             Invoke-CheckedNative go @('test', '-count=1', '-run', '^TestExistingRustBridge', '-timeout=5m', './cmd/deerflow-acpd-go')

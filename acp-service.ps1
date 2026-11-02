@@ -132,6 +132,10 @@ switch ($Action) {
         Stop-AcpService
     }
     "restart" {
+        $current = Invoke-AcpBridge "--status"
+        if ($current.ExitCode -ne 0 -and $current.Output -notmatch 'DeerFlow ACP daemon is not running') {
+            Assert-AcpCommandSucceeded $current "validate the database before restarting"
+        }
         Stop-AcpService
         Start-AcpService
     }

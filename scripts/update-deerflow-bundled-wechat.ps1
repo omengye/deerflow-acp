@@ -7,11 +7,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'deerflow-data-directory.ps1')
 $target = (Resolve-Path -LiteralPath $TargetDirectory).Path.TrimEnd('\')
 $plugin = Join-Path $target 'deerflow-channel-wechat.exe'
 $control = Join-Path $target 'deerflow-control-go.exe'
 $runtime = Join-Path $target 'user-data\runtime\acp-go'
-$data = Join-Path $target 'user-data\data\go-harness'
+$data = Get-DeerFlowDataDirectory (Join-Path $target 'user-data')
 if ((Get-FileHash -LiteralPath $plugin -Algorithm SHA256).Hash -ine $ExpectedSha256) { throw 'Bundled WeChat executable does not match the reviewed build' }
 
 # An explicit invocation approves this bundled executable, not an arbitrary plugin.
@@ -24,7 +25,8 @@ for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep -Seconds 1
 }
 if (-not $status -or -not $status.ok) { throw 'Daemon is not ready for plugin registration' }
-if ($status.runtime.data_dir -ine $data -or -not $status.runtime.instance_id) { throw 'Unexpected daemon identity or data directory' }
+Assert-DeerFlowDataDirectory $status $data
+if (-not $status.runtime.instance_id) { throw 'Unexpected daemon identity' }
 $instance = $status.runtime.instance_id
 function Invoke-ChannelManagement([hashtable]$Request) {
     $response = ($Request | ConvertTo-Json -Depth 8 -Compress) | & $control --runtime-dir $runtime --expect-instance-id $instance | ConvertFrom-Json

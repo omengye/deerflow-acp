@@ -26,6 +26,7 @@ static BOOTSTRAP: OnceLock<Mutex<()>> = OnceLock::new();
 struct Paths {
     root: PathBuf,
     user_data: PathBuf,
+    data_dir: PathBuf,
     config: PathBuf,
     client_mcp_config: PathBuf,
     resources: PathBuf,
@@ -33,6 +34,59 @@ struct Paths {
     daemon: PathBuf,
     bridge: PathBuf,
     runtime: PathBuf,
+}
+
+/// An installation can contain more than one historical store. Selection is
+/// explicit and portable; never move databases or guess from their timestamps.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataDirectoryBinding {
+    data_dir: PathBuf,
+}
+
+fn runtime_data_directory(user_data: &Path) -> Result<PathBuf> {
+    let binding_path = user_data.join("config/runtime-data.json");
+    let file = match std::fs::File::open(&binding_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if user_data
+                .join("config/go-harness-state/harness.db")
+                .is_file()
+            {
+                bail!(
+                    "DeerFlow 数据目录绑定缺失，但历史数据库仍存在；为保护历史会话，已停止启动，请恢复 runtime-data.json"
+                );
+            }
+            return Ok(user_data.join("data/go-harness"));
+        }
+        Err(error) => return Err(error).context("无法读取 DeerFlow 数据目录绑定"),
+    };
+    let mut bytes = Vec::new();
+    file.take(8193).read_to_end(&mut bytes)?;
+    if bytes.len() > 8192 {
+        bail!("DeerFlow 数据目录绑定超过大小限制");
+    }
+    let binding: DataDirectoryBinding =
+        serde_json::from_slice(&bytes).context("DeerFlow 数据目录绑定格式无效")?;
+    if binding.data_dir.as_os_str().is_empty()
+        || binding
+            .data_dir
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        bail!("DeerFlow 数据目录必须是 user-data 内的相对路径");
+    }
+    let data_dir = user_data.join(&binding.data_dir);
+    if !data_dir.join("harness.db").is_file() {
+        bail!(
+            "绑定的 DeerFlow 数据库不存在：{}；为保护历史会话，已停止启动",
+            data_dir.display()
+        );
+    }
+    if !std::fs::canonicalize(&data_dir)?.starts_with(std::fs::canonicalize(user_data)?) {
+        bail!("绑定的 DeerFlow 数据目录不能指向 user-data 之外");
+    }
+    Ok(data_dir)
 }
 
 /// Waku-owned per-session stdio servers. The host's YAML allowlist remains
@@ -293,6 +347,10 @@ fn mcp_bridge_arguments(policy: &Value) -> Result<Vec<String>> {
 impl Paths {
     fn discover() -> Result<Self> {
         let root = waku_protocol::identity::portable_root();
+        Self::from_root(root)
+    }
+
+    fn from_root(root: PathBuf) -> Result<Self> {
         let config_cli = root.join(if cfg!(windows) {
             "deerflow-config-go.exe"
         } else {
@@ -313,6 +371,7 @@ impl Paths {
         let user_data = root.join("user-data");
         let runtime = user_data.join("runtime/acp-go");
         Ok(Self {
+            data_dir: runtime_data_directory(&user_data)?,
             config: user_data.join("config/config.yaml"),
             client_mcp_config: user_data.join("config/client-mcp-servers.json"),
             resources: root.join("resources"),
@@ -351,13 +410,12 @@ impl Paths {
     }
 
     fn environment(&self) -> Vec<(String, String)> {
-        let data_dir = self.user_data.join("data/go-harness");
         let log_dir = self.user_data.join("logs");
         [
             ("DEER_FLOW_PORTABLE_ROOT", &self.root),
             ("DEER_FLOW_CONFIG_PATH", &self.config),
             ("DEER_FLOW_ACP_RUNTIME_DIR", &self.runtime),
-            ("DEERFLOW_GO_DATA_DIR", &data_dir),
+            ("DEERFLOW_GO_DATA_DIR", &self.data_dir),
             ("DEERFLOW_GO_LOG_DIR", &log_dir),
         ]
         .into_iter()
@@ -470,6 +528,7 @@ impl Paths {
             bail!("找不到 ACP Bridge：{}", self.bridge.display());
         }
         let mcp_arguments = if mode == "--start-daemon" {
+            self.verify_running_data_directory(false)?;
             self.go_mcp_arguments()?
         } else {
             Vec::new()
@@ -484,11 +543,53 @@ impl Paths {
             .arg("--runtime-dir")
             .arg(&self.runtime)
             .envs(self.environment());
-        run(
+        let output = run(
             command,
             input,
             Duration::from_secs(if mode == "--start-daemon" { 130 } else { 30 }),
-        )
+        )?;
+        if mode == "--start-daemon" {
+            self.verify_running_data_directory(true)?;
+        }
+        Ok(output)
+    }
+
+    fn validate_runtime_data_directory(&self, envelope: &Value) -> Result<()> {
+        let actual = envelope["runtime"]["data_dir"]
+            .as_str()
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| anyhow!("DeerFlow 未返回正在使用的数据目录"))?;
+        let expected_path = std::fs::canonicalize(&self.data_dir)?;
+        let actual_path = std::fs::canonicalize(actual)?;
+        let matches = if cfg!(windows) {
+            expected_path
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&actual_path.to_string_lossy())
+        } else {
+            expected_path == actual_path
+        };
+        if !matches {
+            bail!(
+                "DeerFlow 数据目录不一致：正在使用 {}，桌面绑定 {}。请核对历史数据库后重启服务",
+                actual,
+                self.data_dir.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn verify_running_data_directory(&self, required: bool) -> Result<()> {
+        let output = self.bridge_command("--manage", Some(&json!({"operation":"daemon.status"})));
+        let output = match output {
+            Ok(output) => output,
+            Err(_) if !required && self.bridge_command("--status", None).is_err() => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let envelope: Value = serde_json::from_str(output.trim())?;
+        if envelope["ok"] != true {
+            bail!("无法确认 DeerFlow 正在使用的数据目录");
+        }
+        self.validate_runtime_data_directory(&envelope)
     }
 
     fn manage(&self, input: &Value) -> Result<Value> {
@@ -518,6 +619,7 @@ impl Paths {
 pub fn launch_environment() -> Result<Vec<(String, String)>> {
     let paths = Paths::discover()?;
     paths.bootstrap()?;
+    paths.verify_running_data_directory(false)?;
     Ok(paths.environment())
 }
 
@@ -617,6 +719,7 @@ impl DeerFlowService {
                 // Use the same background workflow so cold starts cannot time out the RPC.
                 let _guard = self.state.mutation.lock();
                 if paths.live_status()["running"] == true {
+                    paths.verify_running_data_directory(true)?;
                     return Ok(self.status(&paths));
                 }
                 self.begin_apply(&paths, ApplyIntent::EnsureRunning)
@@ -722,6 +825,7 @@ impl DeerFlowService {
             return Ok(());
         }
         if paths.bridge_command("--status", None).is_ok() {
+            paths.verify_running_data_directory(true)?;
             paths.manage(&json!({"operation":"daemon.drain"}))?;
             loop {
                 if self.state.cancel.load(Ordering::Acquire) {
@@ -1003,6 +1107,129 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn data_directory_binding_survives_restart_with_both_stores_intact() {
+        let root =
+            std::env::temp_dir().join(format!("deerflow-data-root-{}", uuid::Uuid::new_v4()));
+        let user_data = root.join("user-data");
+        for relative in ["config/go-harness-state", "data/go-harness"] {
+            std::fs::create_dir_all(user_data.join(relative)).unwrap();
+            std::fs::write(user_data.join(relative).join("harness.db"), relative).unwrap();
+        }
+        assert!(runtime_data_directory(&user_data).is_err());
+        std::fs::write(
+            user_data.join("config/runtime-data.json"),
+            br#"{"data_dir":"config/go-harness-state"}"#,
+        )
+        .unwrap();
+        // Independent discoveries model startup, config apply and a later restart.
+        for _ in 0..3 {
+            let paths = Paths::from_root(root.clone()).unwrap();
+            assert_eq!(paths.data_dir, user_data.join("config/go-harness-state"));
+            assert!(paths.environment().iter().any(|(key, value)| {
+                key == "DEERFLOW_GO_DATA_DIR" && Path::new(value) == paths.data_dir
+            }));
+        }
+        for relative in ["config/go-harness-state", "data/go-harness"] {
+            assert_eq!(
+                std::fs::read_to_string(user_data.join(relative).join("harness.db")).unwrap(),
+                relative
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn data_directory_binding_is_relative_to_the_portable_profile() {
+        let root =
+            std::env::temp_dir().join(format!("deerflow-data-move-{}", uuid::Uuid::new_v4()));
+        let before = root.join("before");
+        let after = root.join("after");
+        std::fs::create_dir_all(before.join("config/go-harness-state")).unwrap();
+        std::fs::write(
+            before.join("config/go-harness-state/harness.db"),
+            b"history",
+        )
+        .unwrap();
+        std::fs::write(
+            before.join("config/runtime-data.json"),
+            br#"{"data_dir":"config/go-harness-state"}"#,
+        )
+        .unwrap();
+        std::fs::rename(&before, &after).unwrap();
+        assert_eq!(
+            runtime_data_directory(&after).unwrap(),
+            after.join("config/go-harness-state")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_or_missing_bound_database_never_falls_back_to_another_store() {
+        let root =
+            std::env::temp_dir().join(format!("deerflow-data-invalid-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::create_dir_all(root.join("data/go-harness")).unwrap();
+        std::fs::write(root.join("data/go-harness/harness.db"), b"other history").unwrap();
+        for binding in [
+            "not json",
+            r#"{"data_dir":"config/missing"}"#,
+            r#"{"data_dir":"../elsewhere"}"#,
+            r#"{"data_dir":""}"#,
+            r#"{"data_dir":"data/go-harness","unknown":true}"#,
+        ] {
+            std::fs::write(root.join("config/runtime-data.json"), binding).unwrap();
+            assert!(runtime_data_directory(&root).is_err(), "{binding}");
+        }
+        std::fs::write(
+            root.join("config/runtime-data.json"),
+            serde_json::to_vec(&json!({"data_dir":root.join("data/go-harness")})).unwrap(),
+        )
+        .unwrap();
+        assert!(runtime_data_directory(&root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fresh_install_keeps_the_default_data_directory() {
+        let root =
+            std::env::temp_dir().join(format!("deerflow-data-fresh-{}", uuid::Uuid::new_v4()));
+        assert_eq!(
+            runtime_data_directory(&root).unwrap(),
+            root.join("data/go-harness")
+        );
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn live_backend_with_the_same_config_but_another_database_is_rejected() {
+        let root =
+            std::env::temp_dir().join(format!("deerflow-data-live-{}", uuid::Uuid::new_v4()));
+        let paths = Paths::from_root(root.clone()).unwrap();
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        let alternate = paths.user_data.join("config/go-harness-state");
+        std::fs::create_dir_all(&alternate).unwrap();
+        assert!(
+            paths
+                .validate_runtime_data_directory(&json!({
+                    "runtime":{"config_path":paths.config,"data_dir":paths.data_dir}
+                }))
+                .is_ok()
+        );
+        let error = paths
+            .validate_runtime_data_directory(&json!({
+                "runtime":{"config_path":paths.config,"data_dir":alternate}
+            }))
+            .unwrap_err();
+        assert!(error.to_string().contains("数据目录不一致"));
+        assert!(
+            paths
+                .validate_runtime_data_directory(&json!({"runtime":{}}))
+                .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn go_only_paths_use_the_bundled_config_cli_and_daemon() {
         let root = std::env::temp_dir().join(format!("deerflow-go-paths-{}", uuid::Uuid::new_v4()));
         let paths = Paths {
@@ -1024,6 +1251,7 @@ mod tests {
             config: root.join("user-data/config/config.yaml"),
             client_mcp_config: root.join("user-data/config/client-mcp-servers.json"),
             user_data: root.join("user-data"),
+            data_dir: root.join("user-data/data/go-harness"),
             resources: root.join("resources"),
             runtime: root.join("user-data/runtime/acp-go"),
             root,

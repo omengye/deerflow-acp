@@ -21,6 +21,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
+	"github.com/omengye/deerflow-acp/go-harness/internal/runtimepaths"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills/evolution"
 	"go.yaml.in/yaml/v3"
@@ -352,8 +353,9 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	if sameBackend && apiKey != "" && cfg.APIKey == "" {
 		cfg.APIKey = apiKey
 	}
-	if !explicit["data-dir"] && cfg.DataDir == "" {
-		cfg.DataDir = filepath.Join(filepath.Dir(abs), "go-harness-state")
+	cfg.DataDir, err = runtimepaths.Resolve(abs, cfg.DataDir)
+	if err != nil {
+		return result, err
 	}
 	if !explicit["max-connections"] {
 		*maxConnections = 16

@@ -39,6 +39,16 @@ try {
     Assert-Test ([IO.File]::ReadAllText((Join-Path $backup 'user-data\skills\public\skill-creator\old.txt')) -eq 'old support') 'Full skill backup missing'
     Assert-Test ([IO.File]::ReadAllText((Join-Path $target 'user-data\preserve.txt')) -eq 'private fixture data') 'Unrelated user data changed'
     foreach ($name in $names) { Assert-Test ((Get-FileHash -LiteralPath (Join-Path $source $name)).Hash -eq (Get-FileHash -LiteralPath (Join-Path $target $name)).Hash) "Executable mismatch: $name" }
+    $selected = Join-Path $target 'user-data\config\go-harness-state'
+    New-Item -ItemType Directory -Path $selected -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $selected 'harness.db') -Value 'original history'
+    Set-Content -LiteralPath (Join-Path $target 'user-data\config\runtime-data.json') -Value '{"data_dir":"config/go-harness-state"}' -Encoding utf8NoBOM
+    $incompatibleBackup = Join-Path $fixture 'incompatible-backup'
+    $rejected = $false
+    try { & $updater -PackageDirectory $source -TargetDirectory $target -BackupDirectory $incompatibleBackup } catch { $rejected = $true }
+    Assert-Test $rejected 'A package without binding support was accepted'
+    Assert-Test (-not (Test-Path -LiteralPath $incompatibleBackup)) 'Incompatible package reached shutdown/backup'
+    Assert-Test ([IO.File]::ReadAllText((Join-Path $selected 'harness.db')).Trim() -eq 'original history') 'Rejected package modified the database'
     Write-Host 'Updater: complete creator migration, manifest conflict, program hashes and preserved user data passed.'
 } finally {
     $resolved = [IO.Path]::GetFullPath($fixture)

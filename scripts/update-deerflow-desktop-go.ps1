@@ -12,6 +12,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'deerflow-data-directory.ps1')
 if ($RefreshBundledWeChat -and -not $Restart) { throw 'Refreshing the bundled channel requires -Restart' }
 $channelUpdater = Join-Path $PSScriptRoot 'update-deerflow-bundled-wechat.ps1'
 if ($RefreshBundledWeChat -and -not (Test-Path -LiteralPath $channelUpdater -PathType Leaf)) { throw 'Bundled channel updater is missing' }
@@ -33,6 +34,25 @@ foreach ($name in $names) {
 }
 $userData = Join-Path $target 'user-data'
 if (-not (Test-Path -LiteralPath $userData -PathType Container)) { throw 'Existing user-data is required' }
+$expectedDataDirectory = Get-DeerFlowDataDirectory $userData
+# A downgrade or stale package must fail before stopping the working service.
+# This probe reads only the binding; it does not initialize SQLite or run tools.
+if (Test-Path -LiteralPath (Join-Path $userData 'config\runtime-data.json') -PathType Leaf) {
+    $probe = [Diagnostics.ProcessStartInfo]::new((Join-Path $source 'deerflow-acpd.exe'))
+    $probe.UseShellExecute = $false
+    $probe.CreateNoWindow = $true
+    $probe.RedirectStandardOutput = $true
+    $probe.RedirectStandardError = $true
+    $probe.Environment['DEER_FLOW_PORTABLE_ROOT'] = $target
+    foreach ($argument in @('--check-paths', '--config', (Join-Path $userData 'config\config.yaml'), '--data-dir', $expectedDataDirectory, '--runtime-dir', (Join-Path $userData 'runtime\acp-go'))) { $probe.ArgumentList.Add($argument) }
+    $child = [Diagnostics.Process]::Start($probe)
+    $stdout = $child.StandardOutput.ReadToEndAsync()
+    $stderr = $child.StandardError.ReadToEndAsync()
+    if (-not $child.WaitForExit(15000)) { $child.Kill(); throw 'Package storage preflight timed out; installed programs were not changed' }
+    if ($child.ExitCode -ne 0) { throw 'Package does not support the selected database binding; installed programs were not changed' }
+    $paths = $stdout.GetAwaiter().GetResult() | ConvertFrom-Json
+    if ($paths.data_dir -ine $expectedDataDirectory) { throw 'Package selected another database; installed programs were not changed' }
+}
 $creatorRelative = 'skills\public\skill-creator\SKILL.md'
 $creator = Join-Path $userData $creatorRelative
 if ($SkillCreatorExpectedHash -and $SkillCreatorExpectedManifest) { throw 'Choose a file hash or a complete skill manifest, not both' }
@@ -91,11 +111,12 @@ try {
     if ($processes | Where-Object {$_.Name -eq 'deerflow-acpd.exe'}) {
         $status = '{"operation":"daemon.status"}' | & $control --runtime-dir $runtime | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0 -or -not $status.ok) { throw 'Cannot confirm daemon activity' }
-        if ($status.data.active_runs -ne 0 -or $status.data.queued_runs -ne 0) { throw 'Active or queued work exists; wait for it to finish before updating' }
+        Assert-DeerFlowDataDirectory $status $expectedDataDirectory
+        if ($status.data.active_operations -ne 0 -or $status.data.active_runs -ne 0 -or $status.data.queued_runs -ne 0) { throw 'Active or queued work exists; wait for it to finish before updating' }
         $status = '{"operation":"daemon.drain"}' | & $control --runtime-dir $runtime | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0 -or -not $status.ok) { throw 'Cannot drain daemon' }
         $drained = $true
-        if ($status.data.active_runs -ne 0 -or $status.data.queued_runs -ne 0) { throw 'Work started before drain; update cancelled' }
+        if ($status.data.active_operations -ne 0 -or $status.data.active_runs -ne 0 -or $status.data.queued_runs -ne 0) { throw 'Work started before drain; update cancelled' }
     }
     foreach ($process in $processes | Where-Object {$_.Name -eq 'deerflow-desktop.exe'}) {
         $ui = Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
@@ -174,13 +195,38 @@ Assert-Manifest $userData $before
     if ($creatorExpected) { Replace-CreatorTree (Join-Path $backup 'user-data\skills\public\skill-creator') }
     throw "Replacement failed; original programs and skill creator restored. User data was not rolled back. Backup: $backup. Cause: $failure"
 }
-$result = [ordered]@{source=$source; target=$target; backup=$backup; exe_count=$names.Count; user_data_files=$before.Count; user_data_verified=$true; skill_creator_updated=[bool]($SkillCreatorExpectedHash -or $creatorExpected); programs_before=$oldPrograms}
+$result = [ordered]@{source=$source; target=$target; backup=$backup; data_directory=$expectedDataDirectory; exe_count=$names.Count; user_data_files=$before.Count; user_data_verified=$true; skill_creator_updated=[bool]($SkillCreatorExpectedHash -or $creatorExpected); programs_before=$oldPrograms}
 $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $backup 'deployment.json') -Encoding utf8NoBOM
 if ($Restart) {
     # -Restart reopens the interactive desktop. A hidden startup suppresses
     # its main window even though the backend starts successfully.
-    $desktop = Start-Process -FilePath (Join-Path $target 'deerflow-desktop.exe') -WorkingDirectory $target -WindowStyle Normal -PassThru
+    # Start-Process detaches the GUI from maintenance stdio. A raw Process.Start
+    # leaves redirected updater callers waiting on handles inherited by the GUI.
+    $launchEnvironment = @{
+        DEER_FLOW_PORTABLE_ROOT = $target
+        DEER_FLOW_CONFIG_PATH = Join-Path $userData 'config\config.yaml'
+        DEER_FLOW_ACP_RUNTIME_DIR = $runtime
+        DEERFLOW_GO_DATA_DIR = $expectedDataDirectory
+    }
+    $previousEnvironment = @{}
+    foreach ($key in $launchEnvironment.Keys) { $previousEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+    try {
+        foreach ($key in $launchEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $launchEnvironment[$key], 'Process') }
+        $desktop = Start-Process -FilePath (Join-Path $target 'deerflow-desktop.exe') -WorkingDirectory $target -WindowStyle Normal -PassThru
+    } finally {
+        foreach ($key in $launchEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $previousEnvironment[$key], 'Process') }
+    }
     Write-Output "Desktop started: PID $($desktop.Id)"
+    $restartedStatus = $null
+    for ($attempt = 0; $attempt -lt 60; $attempt++) {
+        try {
+            $restartedStatus = '{"operation":"daemon.status"}' | & $control --runtime-dir $runtime 2>$null | ConvertFrom-Json
+            if ($LASTEXITCODE -eq 0 -and $restartedStatus.ok) { break }
+        } catch { $restartedStatus = $null }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $restartedStatus -or -not $restartedStatus.ok) { throw "Updated desktop did not start its backend. Backup: $backup" }
+    Assert-DeerFlowDataDirectory $restartedStatus $expectedDataDirectory
     if ($RefreshBundledWeChat) {
         $pluginHash = (Get-FileHash -LiteralPath (Join-Path $source 'deerflow-channel-wechat.exe') -Algorithm SHA256).Hash
         $channelUpdate = & $channelUpdater -TargetDirectory $target -ExpectedSha256 $pluginHash | ConvertFrom-Json

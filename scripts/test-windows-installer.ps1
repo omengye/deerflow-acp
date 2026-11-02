@@ -205,6 +205,14 @@ try {
             $sentinel = Join-Path $profile 'installation-test.txt'
             Set-Content -LiteralPath $sentinel -Value 'Preserve this isolated test profile, not a real credential.'
             $sentinelHash = (Get-FileHash -LiteralPath $sentinel).Hash
+            $storage = @{}
+            foreach ($relative in @('config\runtime-data.json', 'config\go-harness-state\harness.db', 'data\go-harness\harness.db')) {
+                $file = Join-Path (Join-Path $installRoot 'user-data') $relative
+                New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($file)) -Force | Out-Null
+                $value = if ($relative.EndsWith('.json')) { '{"data_dir":"config/go-harness-state"}' } else { "Historical database fixture: $relative" }
+                Set-Content -LiteralPath $file -Value $value -Encoding utf8
+                $storage[$file] = (Get-FileHash -LiteralPath $file).Hash
+            }
             $busyHelper = Join-Path $installRoot 'deerflow-installer-fixture.exe'
             Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\ping.exe') -Destination $busyHelper
             $busyProcess = Start-Process -FilePath $busyHelper -ArgumentList '-t 127.0.0.1' -WindowStyle Hidden -PassThru
@@ -222,10 +230,12 @@ try {
             $process = Start-Process -FilePath $result -ArgumentList $installArguments -WindowStyle Hidden -PassThru -Wait
             Assert-Installer ($process.ExitCode -eq 0) 'same-directory upgrade completed'
             Assert-Installer ((Get-FileHash -LiteralPath $sentinel).Hash -ceq $sentinelHash) 'upgrade preserved profile bytes'
+            foreach ($file in $storage.Keys) { Assert-Installer ((Get-FileHash -LiteralPath $file).Hash -ceq $storage[$file]) 'upgrade preserved binding and both databases' }
             $process = Start-Process -FilePath $installedUninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -WindowStyle Hidden -PassThru -Wait
             Assert-Installer ($process.ExitCode -eq 0) 'uninstall completed'
             $installedUninstaller = $null
             Assert-Installer ((Get-FileHash -LiteralPath $sentinel).Hash -ceq $sentinelHash) 'uninstall preserved profile bytes'
+            foreach ($file in $storage.Keys) { Assert-Installer ((Get-FileHash -LiteralPath $file).Hash -ceq $storage[$file]) 'uninstall preserved binding and both databases' }
             Assert-Installer (-not (Test-Path -LiteralPath (Join-Path $installRoot 'deerflow-desktop.exe'))) 'uninstall removed the installed desktop'
         }
     }

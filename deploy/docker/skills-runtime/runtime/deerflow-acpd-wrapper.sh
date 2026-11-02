@@ -4,16 +4,18 @@ set -eu
 # Keep the portable bridge's config/runtime arguments while enabling execution
 # inside this Docker container. The immutable Go executable remains unchanged.
 # skill_run checks the configured venv path before the backend canonicalizes it.
-# The original deployment created its sessions beside config.yaml. Waku supplies
-# a different DEERFLOW_GO_DATA_DIR on managed launches, so pin one explicit CLI
-# value for every launch. Keep this separate from Waku's environment override.
-data_dir="${DEERFLOW_PERSISTENT_DATA_DIR:-${DEER_FLOW_PORTABLE_ROOT:-/var/lib/deerflow}/user-data/config/go-harness-state}"
-case "$data_dir" in
-  /*) ;;
-  *) echo 'DEERFLOW_PERSISTENT_DATA_DIR must be an absolute container path' >&2; exit 2 ;;
-esac
+# The native launcher owns runtime-data.json. Preserve a legacy explicit setting
+# as a request that it must validate, never as a separate default database.
+if [ -n "${DEERFLOW_PERSISTENT_DATA_DIR:-}" ]; then
+  case "$DEERFLOW_PERSISTENT_DATA_DIR" in
+    /*) set -- "$@" "--data-dir=$DEERFLOW_PERSISTENT_DATA_DIR" ;;
+    *) echo 'DEERFLOW_PERSISTENT_DATA_DIR must be an absolute container path' >&2; exit 2 ;;
+  esac
+fi
+# Refuse an older image that cannot enforce the binding. Validate before the
+# actual launch, including paths supplied by an older host or mounted wrapper.
+/opt/deerflow/bin/deerflow-acpd.real "$@" --check-paths >/dev/null
 exec /opt/deerflow/bin/deerflow-acpd.real "$@" \
-  --data-dir="$data_dir" \
   --sandbox-provider=local \
   --sandbox-allow-shell=false \
   --sandbox-allow-command=/opt/deerflow-skill-python/bin/python \

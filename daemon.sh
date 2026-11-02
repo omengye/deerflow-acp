@@ -72,5 +72,14 @@ case "$action" in
     start) exec "$bridge" "${args[@]}" --start-daemon ;;
     status) exec "$bridge" "${args[@]}" --status ;;
     stop) stop_daemon ;;
-    restart) stop_daemon; exec "$bridge" "${args[@]}" --start-daemon ;;
+    restart)
+        if output="$("$bridge" "${args[@]}" --status 2>&1)"; then
+            :
+        elif [[ "$output" != *"DeerFlow ACP daemon is not running"* ]]; then
+            printf '%s\n' "$output" >&2
+            exit 1
+        fi
+        stop_daemon
+        exec "$bridge" "${args[@]}" --start-daemon
+        ;;
 esac

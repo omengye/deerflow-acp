@@ -11,6 +11,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod data_directory;
 mod gateway;
 mod remote;
 mod v2;
@@ -40,6 +41,8 @@ pub(crate) struct Endpoint {
     pub(crate) build_id: String,
     pub(crate) config_path: String,
     #[serde(default)]
+    pub(crate) data_dir: String,
+    #[serde(default)]
     pub(crate) instance_id: String,
 }
 
@@ -66,6 +69,7 @@ struct Cli {
     protocol: AcpProtocol,
     config: Option<PathBuf>,
     daemon: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
     mcp_allow_commands: Vec<PathBuf>,
     runtime_dir: Option<PathBuf>,
     auto_start: bool,
@@ -105,6 +109,7 @@ deerflow-acp --remote URL [--token-env NAME]\n\n\
 Options:\n  --config PATH       DeerFlow config.yaml used when starting the daemon\n  \
 --protocol VERSION  ACP wire protocol for stdio proxy mode: v1 (default) or v2\n  \
 --daemon PATH       Eino Go deerflow-acpd executable (default: sibling file)\n  --runtime-dir PATH  Override daemon endpoint directory\n  \
+--data-dir PATH     Requested database directory (must match a portable binding)\n  \
 --mcp-allow-command PATH  Host-authorized absolute MCP executable for Go daemon (repeatable)\n  \
 --no-auto-start      Fail instead of starting a missing daemon\n  --status             Check daemon status\n  \
 --start-daemon       Start the daemon without entering ACP proxy mode\n  --stop-daemon        Stop the daemon\n  \
@@ -138,6 +143,9 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Cli> {
     let mut protocol = AcpProtocol::V1;
     let mut config = None;
     let mut daemon = None;
+    let mut data_dir = env::var_os("DEERFLOW_GO_DATA_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
     let mut mcp_allow_commands = Vec::new();
     let mut runtime_dir = None;
     let mut auto_start = true;
@@ -172,6 +180,11 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Cli> {
             "--daemon" => {
                 daemon = Some(PathBuf::from(
                     args.next().ok_or("--daemon requires a path")?,
+                ));
+            }
+            "--data-dir" => {
+                data_dir = Some(PathBuf::from(
+                    args.next().ok_or("--data-dir requires a path")?,
                 ));
             }
             "--mcp-allow-command" => {
@@ -242,6 +255,7 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Cli> {
         protocol,
         config,
         daemon,
+        data_dir,
         mcp_allow_commands,
         runtime_dir,
         auto_start,
@@ -278,7 +292,9 @@ fn portable_root_for(executable: &Path) -> Option<PathBuf> {
 }
 
 fn portable_config_path() -> Option<PathBuf> {
-    let path = portable_root()?
+    let path = env::var_os("DEER_FLOW_PORTABLE_ROOT")
+        .map(PathBuf::from)
+        .or_else(portable_root)?
         .join("user-data")
         .join("config")
         .join("config.yaml");
@@ -293,7 +309,7 @@ fn runtime_dir(override_path: Option<&Path>) -> Result<PathBuf> {
         return absolute_path(Path::new(&value));
     }
     if let Some(root) = portable_root() {
-        return Ok(root.join("user-data").join("runtime").join("acp"));
+        return Ok(root.join("user-data").join("runtime").join("acp-go"));
     }
     if let Some(value) = env::var_os("LOCALAPPDATA") {
         return Ok(PathBuf::from(value).join("DeerFlow").join("acp"));
@@ -379,6 +395,17 @@ fn validate_config(endpoint: &Endpoint, requested: Option<&Path>) -> Result<()> 
             requested.display()
         )
         .into());
+    }
+    Ok(())
+}
+
+fn validate_data_directory(endpoint: &Endpoint, requested: Option<&Path>) -> Result<()> {
+    if let Some(requested) = requested {
+        if endpoint.data_dir.is_empty()
+            || normalize_path(Path::new(&endpoint.data_dir))? != normalize_path(requested)?
+        {
+            return Err(format!("running daemon database does not match selected data directory: running {}, selected {}", endpoint.data_dir, requested.display()).into());
+        }
     }
     Ok(())
 }
@@ -517,6 +544,10 @@ fn spawn_daemon(cli: &Cli, runtime_dir: &Path) -> Result<DaemonProcess> {
         args.push(OsString::from("--config"));
         args.push(config.as_os_str().to_owned());
         cwd = config.parent();
+    }
+    if let Some(data_dir) = &cli.data_dir {
+        args.push(OsString::from("--data-dir"));
+        args.push(data_dir.as_os_str().to_owned());
     }
     args.extend(mcp_daemon_arguments(&cli.mcp_allow_commands));
     args.push(OsString::from("--runtime-dir"));
@@ -704,7 +735,10 @@ fn wait_for_status(cli: &Cli, path: &Path, process: &mut DaemonProcess) -> Resul
         if let Ok(endpoint) = load_endpoint(path) {
             match validate_config(&endpoint, cli.config.as_deref()) {
                 Ok(()) => match status(&endpoint) {
-                    Ok(_) => return Ok(endpoint),
+                    Ok(_) => {
+                        validate_data_directory(&endpoint, cli.data_dir.as_deref())?;
+                        return Ok(endpoint);
+                    }
                     Err(error) => last_error = error.to_string(),
                 },
                 Err(error) => last_error = error.to_string(),
@@ -734,6 +768,7 @@ fn ensure_running(cli: &Cli, path: &Path) -> Result<Endpoint> {
         && endpoint_is_live(&endpoint)
     {
         validate_config(&endpoint, cli.config.as_deref())?;
+        validate_data_directory(&endpoint, cli.data_dir.as_deref())?;
         return Ok(endpoint);
     }
     if !cli.auto_start && cli.mode != Mode::Start {
@@ -842,6 +877,7 @@ fn manage(cli: &Cli, path: &Path) -> Result<()> {
 
     let endpoint = load_endpoint(path).map_err(|_| "DeerFlow ACP daemon is not running")?;
     validate_config(&endpoint, cli.config.as_deref())?;
+    validate_data_directory(&endpoint, cli.data_dir.as_deref())?;
     println!("{}", management_request(&endpoint, &request)?);
     Ok(())
 }
@@ -849,7 +885,10 @@ fn manage(cli: &Cli, path: &Path) -> Result<()> {
 async fn run() -> Result<()> {
     let mut cli = parse_cli()?;
     if cli.config.is_none() {
-        cli.config = portable_config_path();
+        cli.config = env::var_os("DEER_FLOW_CONFIG_PATH")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(portable_config_path);
     }
     if let Some(config) = &cli.config
         && !config.is_file()
@@ -862,6 +901,25 @@ async fn run() -> Result<()> {
         // daemon environment into bash's WSL working-directory wrapper, where
         // it is not a valid Linux path.
         cli.config = Some(strip_windows_verbatim_prefix(fs::canonicalize(config)?));
+    }
+    if cli.mode != Mode::Remote {
+        // The child runs in the config directory; resolve a caller-relative
+        // override before changing its cwd so it cannot open a different DB.
+        cli.data_dir = cli.data_dir.as_deref().map(absolute_path).transpose()?;
+        let portable = env::var_os("DEER_FLOW_PORTABLE_ROOT").map(PathBuf::from);
+        let profile = data_directory::user_data(
+            cli.config.as_deref(),
+            portable.as_deref(),
+            &env::current_exe()?,
+        )?;
+        if let Some(profile) = profile {
+            if cli.mode != Mode::Stop {
+                cli.data_dir = Some(data_directory::resolve(&profile, cli.data_dir.as_deref())?);
+            }
+            if cli.runtime_dir.is_none() && env::var_os("DEER_FLOW_ACP_RUNTIME_DIR").is_none() {
+                cli.runtime_dir = Some(profile.join("runtime/acp-go"));
+            }
+        }
     }
     match cli.mode {
         Mode::Remote => {
@@ -891,6 +949,7 @@ async fn run_local_mode(cli: &Cli, path: &Path) -> Result<()> {
         Mode::Status => {
             let endpoint = load_endpoint(path).map_err(|_| "DeerFlow ACP daemon is not running")?;
             validate_config(&endpoint, cli.config.as_deref())?;
+            validate_data_directory(&endpoint, cli.data_dir.as_deref())?;
             let response = status(&endpoint).map_err(|error| error.to_string())?;
             println!(
                 "running pid={} build={} endpoint={}:{} ({response})",
@@ -1152,6 +1211,7 @@ mod process_tests {
             pid: 1,
             build_id: "test".into(),
             config_path: "config.yaml".into(),
+            data_dir: String::new(),
             instance_id: "instance-one".into(),
         };
 
