@@ -1,0 +1,29 @@
+{
+  "candidate_wrapper_sha256": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0",
+  "executable_files": [
+    "daemon.sh",
+    "start.sh",
+    "stop.sh"
+  ],
+  "full_manifest_sha256": "e9d7abb00dc1ed810c6d1d6c1eac4f440e68b85d819d5ac44027ff47abbd296d",
+  "go_archive_sha256": "f3f746a459ac8950a4cef03875f962af00f56b987d0488eafd5d5a79f8b7537b",
+  "go_artifacts": {
+    "daemon.test": "b002b5375843e5632907c0d2c4ceb35655712d193ec16f155459af5e35a55b01",
+    "deerflow-acp-go": "ede1117fbee4243a9edd4bf82485954d5ef9f0d2ced97ed5d99475ae140ed61c",
+    "deerflow-acpd.real": "d1e475a1cdb51819d00a45ed8a0fb2062a18adc72fb4b3f678b577277cd4b995",
+    "desktopconfig.test": "1ae962ff671f7658fdfb56a80bb3871dfb6fa792b5eb72d36222995c407acc93",
+    "launch.test": "ef5815c8a1142cbf5da59e7399915ab85d4da438fd6fd77929740ab833474084",
+    "paths.test": "cab91e736a3235cff203cae7dd04967b0a77c40d679066636ab761cae355b652"
+  },
+  "go_toolchain": "go1.26.8 windows/amd64 cross compilation, GOOS=linux GOARCH=amd64 CGO_ENABLED=0",
+  "preserved_deployed_files": {
+    "desktop-app/crates/waku-core/src/daemon.rs": "527541a4cc6a5065b07aedfdb0ceae92c2d491f48c0453af75253389261d3084"
+  },
+  "release_support_sha256": "5c24315d0cb5f135d27ab198b5fa76c4cbec238eab26b2f819246da2ba301960",
+  "revision": "6586c1f074141908913344411d20ad516901ae86",
+  "rust_builder_digest": "sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663",
+  "rust_toolchain": "rustc 1.96.0; Debian bookworm; offline vendored dependencies",
+  "source_archive_sha256": "a4792f7e30bd7788c855df6aa64af649825c40ea8c7b63cb2111c860b33fe9c7",
+  "source_state": "committed-source-plus-unchanged-deployed-ready-fix",
+  "tracked_file_count": 1344
+}

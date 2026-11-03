@@ -1,0 +1,89 @@
+{
+  "activity": {
+    "active_operations": 0,
+    "active_runs": 0,
+    "queued_runs": 0
+  },
+  "backup_directories": [
+    "/home/gen/deerflow-deploy/storage-binding-20261103/previous-attempt-1lj08pak/backup",
+    "/home/gen/deerflow-deploy/storage-binding-20261103/backup"
+  ],
+  "build_id": "storage-binding-20261103-6586c1f0",
+  "data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+  "deployment_scripts": {
+    "build.py": "7217068c1f55654cedb88f22b81b7c6495bfdab5909bd9b9499ab4dd383de8c2",
+    "release.py": "416142a8bcf4edea7c664a68760857f044015fed90be4d63400775d71c28516c",
+    "test_release.py": "53a735277741c7523fadff794cd7fd67cc1406d9b77ba72f087922aa6d4bb3ca",
+    "ws_probe.py": "2091cce7ce20403516354e94ee2789533726cb00d868dbd3fb6ef80d865f4d0d"
+  },
+  "draining": false,
+  "health": "healthy",
+  "image_id": "sha256:475c63fa112b79806c1679b0ded9f90b8dc347ffc83f38cdf5207c5b9ff9a65b",
+  "initial_desktop_records": {
+    "messages": {
+      "after": 4,
+      "before": 4,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "sessions": {
+      "after": 1,
+      "before": 1,
+      "missing": 0
+    }
+  },
+  "initial_native_records": {
+    "eino_checkpoints": {
+      "after": 0,
+      "before": 0,
+      "missing": 0
+    },
+    "eino_session_events": {
+      "after": 3260,
+      "before": 3260,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_channels": {
+      "after": 0,
+      "before": 0,
+      "missing": 0
+    },
+    "harness_events": {
+      "after": 9011,
+      "before": 9011,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_inputs": {
+      "after": 146,
+      "before": 146,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_runs": {
+      "after": 146,
+      "before": 146,
+      "missing": 0
+    },
+    "harness_session_configs": {
+      "after": 72,
+      "before": 72,
+      "missing": 0
+    },
+    "harness_sessions": {
+      "after": 72,
+      "before": 72,
+      "missing": 0
+    },
+    "harness_tool_receipts": {
+      "after": 285,
+      "before": 285,
+      "missing": 0
+    }
+  },
+  "original_alternate_store_preserved": true,
+  "original_mounts_ports_preserved": true,
+  "original_other_containers_preserved": true,
+  "passed": true
+}

@@ -1,0 +1,85 @@
+{
+  "alternate_database_preserved": true,
+  "data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+  "health": "healthy",
+  "image_id": "sha256:475c63fa112b79806c1679b0ded9f90b8dc347ffc83f38cdf5207c5b9ff9a65b",
+  "native_resume": {
+    "occupied_skipped": 0,
+    "passed": true,
+    "prompts_submitted": 0,
+    "resumed_ids_sha256": "c2df2b8a9cfcd0d5a2ddf7c188d1db5ad31fe0a6eb3fd831d35ad8223e7bac9a",
+    "resumed_original_count": 2
+  },
+  "other_containers_preserved": true,
+  "passed": true,
+  "protocol": 12,
+  "records": {
+    "desktop": {
+      "messages": {
+        "after": 4,
+        "before": 4,
+        "missing": 0
+      },
+      "sessions": {
+        "after": 1,
+        "before": 1,
+        "missing": 0
+      }
+    },
+    "eino_checkpoints": {
+      "after": 0,
+      "before": 0,
+      "missing": 0
+    },
+    "eino_session_events": {
+      "after": 3260,
+      "before": 3260,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_channels": {
+      "after": 0,
+      "before": 0,
+      "missing": 0
+    },
+    "harness_events": {
+      "after": 9011,
+      "before": 9011,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_inputs": {
+      "after": 146,
+      "before": 146,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_runs": {
+      "after": 146,
+      "before": 146,
+      "missing": 0
+    },
+    "harness_session_configs": {
+      "after": 72,
+      "before": 72,
+      "missing": 0
+    },
+    "harness_sessions": {
+      "after": 72,
+      "before": 72,
+      "missing": 0
+    },
+    "harness_tool_receipts": {
+      "after": 285,
+      "before": 285,
+      "missing": 0
+    }
+  },
+  "websocket": {
+    "config_applied": true,
+    "passed": true,
+    "prompts_submitted": 0,
+    "protocol": 12,
+    "sessions": 1
+  }
+}

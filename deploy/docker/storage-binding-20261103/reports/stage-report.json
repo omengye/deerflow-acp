@@ -1,0 +1,32 @@
+{
+  "alternate_database_preserved": true,
+  "binaries": {
+    "deerflow-acp": "e48d9c6a0bfd7190f08dab38636bb004cbae5e71a7edcac9e0479297c2da29a1",
+    "deerflow-acp-go": "ede1117fbee4243a9edd4bf82485954d5ef9f0d2ced97ed5d99475ae140ed61c",
+    "deerflow-acpd": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0",
+    "deerflow-acpd.real": "d1e475a1cdb51819d00a45ed8a0fb2062a18adc72fb4b3f678b577277cd4b995",
+    "deerflow-config-go": "018ec2aa9647d8e6f555f3ad99acd6e2533c156b1d511321f8bd8beb85411698",
+    "deerflow-control-go": "b69e39ce50d5a0143f3fe75feaedc91b21c96639eb49d61298d1d7ac8ff2173d",
+    "deerflow-server-healthcheck": "d94e16b9fd1c9209bacd1727889e36486aba3cf97fa310dcdc60c79e4522a925",
+    "deerflow-skill-go": "a9bac6389389948ab6ce2ed781ed26065a1244dc45dace647ef465de07e9094d",
+    "waku-daemon": "c1b2562af5eaeeaeeb1abfc46b8d930f9ab316c1c20232f640adf6df3f012268"
+  },
+  "config_apply": {
+    "config_applied": true,
+    "passed": true,
+    "prompts_submitted": 0,
+    "protocol": 12,
+    "sessions": 0
+  },
+  "image_id": "sha256:475c63fa112b79806c1679b0ded9f90b8dc347ffc83f38cdf5207c5b9ff9a65b",
+  "passed": true,
+  "production_data_mounted": false,
+  "restart_resume": true,
+  "resume_after_apply": {
+    "occupied_skipped": 0,
+    "passed": true,
+    "prompts_submitted": 0,
+    "resumed_ids_sha256": "920ef20f64705b4d0f7151e8e0b0f56fc5cc02cc2c57119a65212ef2fd0f5f3f",
+    "resumed_original_count": 1
+  }
+}

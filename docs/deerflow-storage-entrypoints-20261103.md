@@ -44,15 +44,32 @@ Bridge 的 stop 允许停止目录不匹配的服务，供人工恢复使用；�
 
 本机存在用户自行添加的 `skills/custom/oss-attachments`，会改变仓库自带技能数量测试的输入。Go 完整相关套件在隔离的源码快照中运行，保留原断言，未删除用户技能。该快照包含当前已存在的其他受跟踪本地修复；程序来源记录为 working-tree snapshot，不能仅用旧 Git HEAD 代表。
 
-## 本机验收与 Gentoo 部署前提
+## 本机验收与 Gentoo 部署结果
 
 2026-11-03 本机安装已更新并重启。实际运行目录仍为 `user-data/config/go-harness-state`，原生构建标识为 `data-binding-20261103`。两个当前保留的桌面会话在更新及桌面配置 apply 后，均通过真实 `session/resume` 恢复原生 ID 并加载历史。已由用户完成删除的会话不重建。配置、消息、检查点、执行记录及回执的保留检查通过，备用数据库目录文件的哈希不变。
 
 本机验证材料位于 `.build-cache/entrypoint-audit-20261103/`；完整备份位于 `.build-cache/desktop-deploy-backups/entrypoints-20261103/` 和 `entrypoints-20261103-detached/`。
 
-本轮 Gentoo 的 `192.168.1.190:22` 和历史 Tailscale 地址均连接超时；未更新远端镜像或修改远端文件。恢复连接后需要在现有部署上完成：
+2026-11-03 通过用户提供的 Tailscale 地址完成 Gentoo 更新。现场核对表明，服务端及 FoloToy
+客户端原本都已使用 protocol 12。此次基于现有镜像保留运行依赖，更新为
+`deerflow-server:storage-binding-20261103-6586c1f0`，不可变镜像 ID 为
+`sha256:475c63fa112b79806c1679b0ded9f90b8dc347ffc83f38cdf5207c5b9ff9a65b`。
 
-1. 核对正在运行的镜像、挂载、实际 `runtime.data_dir`、原会话及客户端协议兼容性。此前部署文档记录的是 Waku protocol 10，不能把本地 protocol 12 程序直接视作兼容发布。
-2. 保留现有基础镜像和运行依赖，构建候选镜像。在隔离 profile 中验证真实入口、原生恢复和 wrapper；不能只更新镜像而遗漏宿主机 wrapper 挂载。
-3. 基于实际运行目录保存持久绑定；备份程序、配置、绑定、两份数据库及原镜像选择。排空业务，使用 90 秒宽限期，只停止和更新 `deerflow` 服务。
-4. 重启及配置 apply 后核对目录、原会话恢复和其他服务状态。回退仅恢复程序/配置选择，不能用旧备份覆盖更新后新增的业务数据。
+实际使用的仍是原 `user-data/config/go-harness-state/harness.db`，并已保存持久绑定。
+镜像内 wrapper 与宿主机只读挂载的 wrapper 同时更新；Compose 和业务配置保持原字节，
+`.env` 仅更新镜像 ID。只重建 `deerflow` 服务，原挂载、端口及其他容器保持不变。
+
+Linux 验收为 Rust 188 通过、3 忽略，Go 150 通过；发布保护测试 9 项通过。
+候选镜像先在无网络、无生产数据挂载的容器中完成重启、配置 apply 和原会话恢复。
+上线后，实际配置 apply 和一次普通容器重启均通过；两个原生历史会话 ID 均可恢复。
+72 个会话、146 条执行记录、9,011 条事件、285 条工具回执和桌面消息均完整保留；
+历史输入及事件内容比对通过，备用库文件集合和哈希不变。
+
+Gentoo 的程序来源为固定提交 `6586c1f0` 加上已经部署的 Ready 缓存修复，
+未混入其他未提交源码。完整来源清单、备份和运行日志保存在服务器发布目录
+`/home/gen/deerflow-deploy/storage-binding-20261103/`。
+最终部署备份为 `backup/`；一次因验收脚本筛选错误触发的回退备份保留于
+`previous-attempt-1lj08pak/backup/`。回退只恢复镜像和 wrapper，未用旧备份覆盖业务数据。
+
+发布脚本、回退说明及脱敏验收报告见
+[Gentoo 持久数据库绑定发布](../deploy/docker/storage-binding-20261103/README.md)。
