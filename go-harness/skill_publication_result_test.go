@@ -7,14 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
-	"github.com/omengye/deerflow-acp/go-harness/internal/localhost"
 )
 
 func TestPublicationModelResultDescribesSavedDecision(t *testing.T) {
@@ -23,7 +20,7 @@ func TestPublicationModelResultDescribesSavedDecision(t *testing.T) {
 	if err := json.Unmarshal([]byte(skillManageResult(p)), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result["requires_operator_review"] != false || result["approval_recorded"] != true || result["published"] != false {
+	if result["requires_operator_review"] != nil || result["approval_recorded"] != nil || result["published"] != false {
 		t.Fatal("approval confused with publication", result)
 	}
 	p.Status = "published"
@@ -69,85 +66,19 @@ func TestPublicationHostRestartResumesSavedApproval(t *testing.T) {
 	}
 }
 
-func TestPublicationManagementRetainsApprovalOnFailureAndSupportsSourceReview(t *testing.T) {
-	c, cfg := skillEvolutionClient(t)
+func TestPublicationManagementCannotApproveOrReviveHistoricalCandidates(t *testing.T) {
+	c, _ := skillEvolutionClient(t)
 	ctx := context.Background()
-	content := []byte("---\nname: new-search\ndescription: Search sources\n---\nReview all results.\n")
-	p, err := c.SubmitSkillProposal(ctx, harness.SkillProposalRequest{SourceID: "project", Name: "new-search", Action: "create", RequestKey: "candidate", Reason: "Reusable search", Files: map[string][]byte{"SKILL.md": content}})
-	if err != nil {
-		t.Fatal(err)
+	p := submitSkillEdit(t, c, "historical", "Archived improvement")
+	for _, operation := range []string{"proposal.approve", "proposal.submit", "proposal.source_review", "proposal.review_retry", "proposal.publish_retry"} {
+		_, err := skillManagementCall(t, c, map[string]any{"operation": operation, "proposal_id": p.ID, "expected_state_version": p.StateVersion})
+		if err == nil {
+			t.Fatal("manual candidate recovery remains reachable", operation)
+		}
 	}
-	dir := filepath.Join(cfg.Skills.Sources[0].Root, "new-search")
-	if err = os.MkdirAll(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filepath.Join(dir, "SKILL.md"), append(content, []byte("Current directory revision.\n")...), 0600); err != nil {
-		t.Fatal(err)
-	}
-	runtime := t.TempDir()
-	host, err := localhost.New(localhost.Config{RuntimeDir: runtime, Manage: c.ManageLocal, ServeACP: func(context.Context, io.ReadCloser, io.WriteCloser) error { return nil }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = host.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-	defer host.Close()
-	command := map[string]any{"operation": "proposal.approve", "proposal_id": p.ID, "expected_state_version": p.StateVersion}
-	request, _ := json.Marshal(command)
-	response, err := localhost.ManagementCall(ctx, runtime, request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var envelope struct {
-		OK   bool `json:"ok"`
-		Data struct {
-			Proposal json.RawMessage `json:"proposal"`
-		} `json:"data"`
-	}
-	if json.Unmarshal(response, &envelope) != nil || envelope.OK || len(envelope.Data.Proposal) == 0 {
-		t.Fatalf("lost definitive result: %s", response)
-	}
-	var saved harness.SkillProposal
-	if json.Unmarshal(envelope.Data.Proposal, &saved) != nil || saved.Approval == nil || saved.Status != "stale" || saved.PublicationError != "target_content_differs" {
-		t.Fatalf("lost approval: %s", response)
-	}
-	var projected map[string]any
-	_ = json.Unmarshal(envelope.Data.Proposal, &projected)
-	if projected["diff"] != "" || projected["publication"].(map[string]any)["state"] != "blocked" {
-		t.Fatal("unsafe/incorrect error projection")
-	}
-	if _, err = skillManagementCall(t, c, map[string]any{"operation": "proposal.publish_retry", "proposal_id": p.ID, "expected_approval_version": p.StateVersion}); err == nil {
-		t.Fatal("retry overwrote conflicting source")
-	}
-	result, err := skillManagementCall(t, c, map[string]any{"operation": "proposal.source_review", "proposal_id": p.ID, "expected_state_version": saved.StateVersion, "request_key": "new-source"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal(result)
-	var fresh struct {
-		Proposal harness.SkillProposal `json:"proposal"`
-	}
-	if json.Unmarshal(raw, &fresh) != nil || fresh.Proposal.ID == p.ID || fresh.Proposal.Approval != nil {
-		t.Fatal("new source inherited approval")
-	}
-	if _, err = skillManagementCall(t, c, map[string]any{"operation": "proposal.approve", "proposal_id": fresh.Proposal.ID, "expected_state_version": fresh.Proposal.StateVersion}); err != nil {
-		t.Fatal(err)
-	}
-	head, err := c.GetSkillHead(ctx, "project", "new-search")
-	if err != nil || !head.Exists || !head.Enabled || head.Version != fresh.Proposal.CandidateVersion {
-		t.Fatal("source review did not install", err)
-	}
-	if _, err = skillManagementCall(t, c, map[string]any{"operation": "proposal.publish_retry", "proposal_id": fresh.Proposal.ID, "expected_approval_version": fresh.Proposal.StateVersion}); err != nil {
-		t.Fatal("publication retry failed", err)
-	}
-	if _, err = skillManagementCall(t, c, map[string]any{"operation": "proposal.publish_retry", "proposal_id": fresh.Proposal.ID, "expected_approval_version": fresh.Proposal.StateVersion + 1}); err == nil {
-		t.Fatal("publication retry accepted different approval version")
-	}
-	_, err = skillManagementCall(t, c, map[string]any{"operation": "proposal.source_review", "proposal_id": p.ID, "expected_state_version": saved.StateVersion + 1, "request_key": "new-source"})
-	var managementErr *localhost.ManagementError
-	if !errors.As(err, &managementErr) || managementErr.Code != "conflict" {
-		t.Fatal("stale source review accepted", err)
+	after, err := c.GetSkillProposal(ctx, p.ID)
+	if err != nil || after.StateVersion != p.StateVersion || after.Approval != nil {
+		t.Fatal("retired operation mutated historical evidence", after, err)
 	}
 }
 

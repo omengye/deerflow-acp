@@ -44,23 +44,23 @@ func (s *Service) autoPatchPolicyIdentity() string {
 // count use the same classification, independent of pagination. Never parse
 // full candidate packages just to paint the settings badge.
 func (s *Service) proposalReasonSQL() (string, []any) {
-	fallback := "manual_review"
+	fallback := "blocked_runtime"
 	if s.autoPatch != nil {
 		fallback = "automatic_checks"
 	}
 	return `CASE WHEN EXISTS(SELECT 1 FROM df_skill_generation_inputs g JOIN df_skill_discoveries d
  ON d.job_id=g.job_id WHERE g.proposal_id=p.id AND json_extract(CAST(d.payload AS TEXT),'$.review_draft')=1)
- THEN 'waiting_evidence' WHEN ?='manual_review' OR json_extract(CAST(p.payload AS TEXT),'$.origin')<>'automatic'
+ THEN 'waiting_evidence' WHEN json_extract(CAST(p.payload AS TEXT),'$.origin')<>'automatic'
  THEN 'manual_review' WHEN NOT EXISTS(SELECT 1 FROM df_skill_generation_inputs g JOIN df_skill_maintenance_jobs j
  ON j.id=g.job_id WHERE g.proposal_id=p.id AND j.state IN ('queued','running','retry','completed'))
- THEN 'generation_binding_requires_review' ELSE COALESCE((SELECT reason FROM df_skill_auto_patch_decisions a
+ THEN 'generation_binding_invalid' ELSE COALESCE((SELECT reason FROM df_skill_auto_patch_decisions a
  WHERE a.proposal_id=p.id AND a.state_version=p.state_version AND a.policy_identity=?),?) END`,
-		[]any{fallback, s.autoPatchPolicyIdentity(), fallback}
+		[]any{s.autoPatchPolicyIdentity(), fallback}
 }
 
 func proposalNeedsAttention(reason string) bool {
 	switch reason {
-	case "waiting_evidence", "automatic_checks", "waiting_observation", "waiting_quota":
+	case "waiting_evidence", "automatic_checks", "waiting_observation", "blocked_evidence":
 		return false
 	default:
 		return true

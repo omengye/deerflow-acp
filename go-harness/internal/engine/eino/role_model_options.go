@@ -15,6 +15,7 @@ import (
 // budget grants an output cap. They cannot override that grant with a larger
 // max_completion_tokens or thinking budget.
 type roleModelTuning struct {
+	api            harness.ModelAPI
 	provider       string
 	thinking       *bool
 	effort         string
@@ -24,20 +25,22 @@ type roleModelTuning struct {
 
 func (e *Engine) roleTuning(spec agents.Spec) (*roleModelTuning, error) {
 	provider := strings.ToLower(e.config.Provider)
+	api := e.config.API
 	if spec.Model == e.config.Model && e.config.ChatModel != nil {
 		provider = "injected"
 	}
 	if route, ok := e.config.ModelRoutes[spec.Model]; ok {
 		provider = strings.ToLower(route.Provider)
+		api = route.API
 	}
 	cfg := harness.AgentConfig{ModelSettings: spec.ModelSettings, ThinkingEnabled: spec.ThinkingEnabled, ReasoningEffort: spec.ReasoningEffort}
-	if err := cfg.ValidateModelOptions(provider, e.config.Budget.MaxOutputTokens); err != nil {
+	if err := cfg.ValidateModelOptions(provider, e.config.ModelOutputLimits[spec.Model].Effective(e.config.Budget.MaxOutputTokens)); err != nil {
 		return nil, err
 	}
 	if spec.ThinkingEnabled == nil && spec.ReasoningEffort == "" {
 		return nil, nil
 	}
-	t := &roleModelTuning{provider: provider, thinking: spec.ThinkingEnabled, effort: spec.ReasoningEffort, thinkingTokens: 1024}
+	t := &roleModelTuning{api: api, provider: provider, thinking: spec.ThinkingEnabled, effort: spec.ReasoningEffort, thinkingTokens: 1024}
 	if spec.ModelSettings.ThinkingBudgetTokens != nil {
 		t.thinkingTokens = *spec.ModelSettings.ThinkingBudgetTokens
 	}
@@ -69,6 +72,9 @@ func (t *roleModelTuning) afterReservation(opts []model.Option) ([]model.Option,
 	result := append([]model.Option(nil), opts...)
 	switch t.provider {
 	case "", "openai", "openai-compatible":
+		if t.api == harness.ModelAPIResponses {
+			return append(result, withResponsesTuning(t.effort, t.extraFields)), nil
+		}
 		if len(t.extraFields) > 0 {
 			result = append(result, openai.WithExtraFields(t.extraFields))
 		}

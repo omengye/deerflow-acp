@@ -22,6 +22,7 @@ type discoveryHost struct {
 }
 
 type discoverySnapshot struct {
+	Fork            *experienceFork                              `json:"workspace_fork,omitempty"`
 	Kind            string                                       `json:"kind,omitempty"`
 	ID              string                                       `json:"id"`
 	Target          harness.SkillTarget                          `json:"target"`
@@ -41,7 +42,7 @@ var errDiscoveryEvidence = errors.New("automatic discovery evidence changed")
 func (s *Service) DiscoveryEnabled() bool { return s.discovery != nil }
 
 func validDiscoveryOptions(o harness.SkillDiscoveryOptions) bool {
-	return (!(o.ExperienceNewSkillsEnabled || o.ExperienceReviewDraftsEnabled) || o.ExperiencePatternsEnabled) && (!(o.MissingReportsEnabled || o.SuccessfulWorkflowsEnabled || o.ExperienceNewSkillsEnabled) || harness.ValidSkillName(o.NewSkillSourceID)) && o.RepeatThreshold >= 2 && o.RepeatThreshold <= 16 && o.RepeatWindowDays >= 1 && o.RepeatWindowDays <= 365 && o.CooldownHours >= 1 && o.CooldownHours <= 8760 && o.MaxDailyProposals >= 1 && o.MaxDailyProposals <= 100 && o.MaxPendingProposals >= 1 && o.MaxPendingProposals <= 1000
+	return (o.DestinationSourceID == "" || harness.ValidSkillName(o.DestinationSourceID)) && o.RepeatThreshold >= 2 && o.RepeatThreshold <= 16 && o.RepeatWindowDays >= 1 && o.RepeatWindowDays <= 365 && o.CooldownHours >= 1 && o.CooldownHours <= 8760 && o.MaxPendingProposals >= 1 && o.MaxPendingProposals <= 1000
 }
 
 func migrateDiscovery(ctx context.Context, tx *sql.Tx) error {
@@ -77,17 +78,29 @@ CREATE TABLE IF NOT EXISTS df_skill_discovery_cooldowns(source_key TEXT NOT NULL
 	return migrateDerivedDiscovery(ctx, tx)
 }
 
-// ConfigureDiscovery is a startup-only opt-in. Existing operator generation is
-// kept independent; only this extra grant enables automatic paid maintenance.
+// ConfigureDiscovery binds the host policy and authorized destination at startup.
 func (s *Service) ConfigureDiscovery(options harness.SkillDiscoveryOptions) error {
 	if s.discovery != nil || s.generation == nil || !validDiscoveryOptions(options) {
 		return invalid("discovery requires configured generation and bounded options")
 	}
-	if options.ExperiencePatternsEnabled && (s.experienceSource == nil || !s.experienceSource.PromotionEnabled()) {
-		return invalid("experience discovery requires explicitly enabled extraction, consolidation and matching")
+	if options.DestinationSourceID == "" {
+		builtin, err := s.registry.BuiltinSources()
+		if err != nil {
+			return err
+		}
+		var destinations []string
+		for id := range s.generation.allowed {
+			if !slices.Contains(builtin, id) {
+				destinations = append(destinations, id)
+			}
+		}
+		slices.Sort(destinations)
+		if len(destinations) != 0 {
+			options.DestinationSourceID = destinations[0]
+		}
 	}
-	if options.MissingReportsEnabled || options.SuccessfulWorkflowsEnabled || options.ExperienceNewSkillsEnabled {
-		if _, ok := s.generation.allowed[options.NewSkillSourceID]; !ok {
+	if options.DestinationSourceID != "" {
+		if _, ok := s.generation.allowed[options.DestinationSourceID]; !ok {
 			return invalid("new skill discovery source is not authorized for generation")
 		}
 		builtin, err := s.registry.BuiltinSources()
@@ -95,7 +108,7 @@ func (s *Service) ConfigureDiscovery(options harness.SkillDiscoveryOptions) erro
 			return err
 		}
 		for _, id := range builtin {
-			if id == options.NewSkillSourceID {
+			if id == options.DestinationSourceID {
 				return invalid("new skill discovery requires a non-builtin source")
 			}
 		}
@@ -121,7 +134,22 @@ func readDiscovery(ctx context.Context, db rowReader, id string) (discoverySnaps
 	if err != nil {
 		return d, "", "", err
 	}
-	if len(payload) > 32<<10 || hash(payload) != digest || json.Unmarshal(payload, &d) != nil || d.ID != id || !strings.HasPrefix(id, "sd_") || len(id) > 128 || d.Target.SourceIdentity != source || d.Target.Name != name || !validDiscoveryOptions(d.Options) || d.CreatedAt.UnixNano() != created || !validOverlayBase(d.OverlayBase, d.Target) || !validDiscoverySnapshot(d) {
+	// Historical records retain their original bytes and hash. Only the saved
+	// source binding is decoded here; no old runtime configuration is accepted.
+	var historical struct {
+		Options struct {
+			Destination string `json:"new_skill_source_id"`
+		} `json:"options"`
+	}
+	decodeErr := json.Unmarshal(payload, &d)
+	if decodeErr == nil && d.Options.DestinationSourceID == "" {
+		if e := json.Unmarshal(payload, &historical); e != nil {
+			decodeErr = e
+		} else {
+			d.Options.DestinationSourceID = historical.Options.Destination
+		}
+	}
+	if len(payload) > 32<<10 || hash(payload) != digest || decodeErr != nil || d.ID != id || !strings.HasPrefix(id, "sd_") || len(id) > 128 || d.Target.SourceIdentity != source || d.Target.Name != name || !validDiscoveryOptions(d.Options) || d.CreatedAt.UnixNano() != created || !validOverlayBase(d.OverlayBase, d.Target) || !validDiscoverySnapshot(d) {
 		return discoverySnapshot{}, "", "", invalid("discovery record is inconsistent")
 	}
 	roots := map[string]bool{}

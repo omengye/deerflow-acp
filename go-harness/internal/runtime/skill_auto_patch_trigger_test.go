@@ -91,7 +91,15 @@ func TestSkillTriggerLearningDescriptionPublicationRequiresIndependentEvidence(t
 				t.Fatal(ds)
 			}
 			p := autoPatchLearningProposal(t, e, ds[0])
-			if evaluator.calls != 8 || len(g.seen) != 1 || p.Evaluation.BehaviorReport == nil || p.Evaluation.BehaviorReport.TriggerPositiveCases != 1 || p.Evaluation.BehaviorReport.TriggerNegativeCases != 1 {
+			wantCalls := 8
+			if mode == "baseline-timeout" {
+				if p.Status != "validating" || evaluator.calls != 5 {
+					t.Fatal("measurement failed before finite retry", p.Status, evaluator.calls)
+				}
+				p = finishTransientBehaviorRetries(t, s, e, ds[0], p)
+				wantCalls = 10
+			}
+			if evaluator.calls != wantCalls || len(g.seen) != 1 || p.Evaluation.BehaviorReport == nil || p.Evaluation.BehaviorReport.TriggerPositiveCases != 1 || p.Evaluation.BehaviorReport.TriggerNegativeCases != 1 {
 				t.Fatal("missing separate bounded trigger pairs", evaluator.calls, p)
 			}
 			if mode == "consent" {
@@ -142,35 +150,36 @@ func TestSkillTriggerLearningDescriptionPublicationRequiresIndependentEvidence(t
 }
 
 func TestSkillTriggerLearningPendingRestartFencesSuiteAndEvaluator(t *testing.T) {
-	s, x, r, e, g, v, matcher := experienceDiscoveryTest(t)
-	ctx := context.Background()
-	adoptLearningBase(t, r)
-	g.descriptionOnly, matcher.relation = true, "trigger_mismatch"
-	evaluator := &autoPatchTriggerEvaluator{}
-	if err := e.ConfigureBehavior(evaluator, harness.SkillBehaviorOptions{Suites: []harness.SkillBehaviorSuite{autoPatchTriggerSuite()}}); err != nil {
-		t.Fatal(err)
-	}
-	experienceTwoEpisodes(t, s, x)
-	enableExperienceDiscovery(t, e)
-	if err := e.ConfigureAutoPatch(learningAutoPatchOptions(true)); err != nil {
-		t.Fatal(err)
-	}
-	ds := experienceDiscoveries(t, e)
-	if len(ds) != 1 {
-		t.Fatal(ds)
-	}
-	p := autoPatchLearningProposal(t, e, ds[0])
-	if err := e.Close(); err != nil {
-		t.Fatal(err)
-	}
 	for _, mode := range []string{"competitor-change", "prompt-change", "evaluator-change", "suite-v1", "original"} {
 		t.Run(mode, func(t *testing.T) {
+			s, x, r, e, g, v, matcher := experienceDiscoveryTest(t)
+			ctx := context.Background()
+			adoptLearningBase(t, r)
+			g.descriptionOnly, matcher.relation = true, "trigger_mismatch"
+			evaluator := &autoPatchTriggerEvaluator{}
+			if err := e.ConfigureBehavior(evaluator, harness.SkillBehaviorOptions{Suites: []harness.SkillBehaviorSuite{autoPatchTriggerSuite()}}); err != nil {
+				t.Fatal(err)
+			}
+			experienceTwoEpisodes(t, s, x)
+			enableExperienceDiscovery(t, e)
+			if err := e.ConfigureAutoPatch(learningAutoPatchOptions(true)); err != nil {
+				t.Fatal(err)
+			}
+			ds := experienceDiscoveries(t, e)
+			if len(ds) != 1 {
+				t.Fatal(ds)
+			}
+			p := autoPatchLearningProposal(t, e, ds[0])
+			if err := e.Close(); err != nil {
+				t.Fatal(err)
+			}
+
 			next, err := evolution.New(ctx, r, v)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer next.Close()
-			if err := next.ConfigureGeneration(ctx, g, consolidationTestOptions().Budget, []string{"project"}, false); err != nil {
+			if err := next.ConfigureGeneration(ctx, g, consolidationTestOptions().Policy, []string{"project"}, false); err != nil {
 				t.Fatal(err)
 			}
 			suite := autoPatchTriggerSuite()

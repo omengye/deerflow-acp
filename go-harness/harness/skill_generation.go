@@ -5,11 +5,9 @@ import (
 	"time"
 )
 
-type SkillMaintenanceBudget struct {
-	MaxDailyModelCalls int64 `json:"max_daily_model_calls"`
-	MaxDailyTokens     int64 `json:"max_daily_tokens"`
-	MaxJobSeconds      int64 `json:"max_job_seconds"`
-	Workers            int   `json:"workers"`
+type SkillMaintenancePolicy struct {
+	MaxJobSeconds int64 `json:"max_job_seconds"`
+	Workers       int   `json:"workers"`
 }
 
 type SkillGenerationModelConfig struct {
@@ -23,7 +21,7 @@ type SkillGenerationModelConfig struct {
 // generation. It does not enable discovery or automatic publication.
 type SkillGenerationOptions struct {
 	Model                SkillGenerationModelConfig
-	Budget               SkillMaintenanceBudget
+	Policy               SkillMaintenancePolicy
 	Sources              []string
 	AllowBuiltinOverlays bool
 }
@@ -65,7 +63,7 @@ type SkillGenerationStatus struct {
 	Version string                  `json:"version"`
 	Enabled bool                    `json:"enabled"`
 	Sources []SkillTarget           `json:"sources"`
-	Budget  *SkillMaintenanceBudget `json:"budget,omitempty"`
+	Policy  *SkillMaintenancePolicy `json:"policy,omitempty"`
 }
 
 // Preparation is a read-only observation, including absent targets. Enqueue
@@ -77,20 +75,21 @@ type SkillGenerationPreparation struct {
 }
 
 type SkillMaintenanceReceipt struct {
-	Sequence       int64  `json:"sequence"`
-	ID             string `json:"id"`
-	JobID          string `json:"job_id"`
-	Attempt        int    `json:"attempt"`
-	Day            string `json:"day"`
-	Stage          string `json:"stage"`
-	ModelIdentity  string `json:"model_identity"`
-	InputDigest    string `json:"input_digest"`
-	ReservedTokens int64  `json:"reserved_tokens"`
-	ChargedTokens  int64  `json:"charged_tokens"`
-	InputTokens    int64  `json:"input_tokens"`
-	OutputTokens   int64  `json:"output_tokens"`
-	State          string `json:"state"`
-	Estimated      bool   `json:"estimated"`
+	UsageState      string `json:"usage_state"`
+	Sequence        int64  `json:"sequence"`
+	ID              string `json:"id"`
+	JobID           string `json:"job_id"`
+	Attempt         int    `json:"attempt"`
+	Day             string `json:"day"`
+	Stage           string `json:"stage"`
+	ModelIdentity   string `json:"model_identity"`
+	InputDigest     string `json:"input_digest"`
+	EstimatedTokens int64  `json:"estimated_tokens"`
+	ActualTokens    int64  `json:"actual_tokens"`
+	InputTokens     int64  `json:"input_tokens"`
+	OutputTokens    int64  `json:"output_tokens"`
+	State           string `json:"state"`
+	Estimated       bool   `json:"estimated"`
 }
 
 // These host-side types contain no publication or filesystem authority.

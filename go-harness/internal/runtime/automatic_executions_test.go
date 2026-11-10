@@ -183,6 +183,49 @@ func TestAutomaticSessionUpdatesCancelIdleWaitAndJoin(t *testing.T) {
 	}
 }
 
+func TestAutomaticSessionUpdatesCancelWhileWaitingForDatabaseConnection(t *testing.T) {
+	f := newExecutionWaitFixture(t)
+	f.suspend(t, false)
+	s := automaticService(t, f, &automaticWaitEngine{})
+	f.s.db.SetMaxOpenConns(1)
+	connection, err := f.s.db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	waits := f.s.db.Stats().WaitCount
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.ServeSessionUpdates(ctx, "owner", f.req.Session.ID, harness.SessionUpdates{}) }()
+	deadline := time.After(3 * time.Second)
+	for f.s.db.Stats().WaitCount == waits {
+		select {
+		case err := <-done:
+			t.Fatalf("subscription exited before the database wait: %v", err)
+		case <-deadline:
+			t.Fatal("subscription did not reach the database check")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("stopping the subscription surfaced a database cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled database check did not join")
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state, err := f.s.Execution(context.Background(), f.req.Session.ID, f.req.RunID)
+	if err != nil || state.Status != harness.ExecutionWaitingInput {
+		t.Fatalf("stopping the subscriber changed its waiting execution: %+v %v", state, err)
+	}
+}
+
 func TestAutomaticSessionUpdatesDisconnectAndReplacementOwner(t *testing.T) {
 	f := newExecutionWaitFixture(t)
 	f.suspend(t, false)

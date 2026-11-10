@@ -97,7 +97,7 @@ func (w *wakuClient) rateLimitTurn(runtime string) ([]obj, obj) {
 }
 
 func (s *smoke) rateLimitToolEvidence(nativeSession, callID string) obj {
-	path := filepath.Join(s.root, "user-data", "data", "go-harness", "harness.db")
+	path := filepath.Join(s.root, "user-data", "config", "go-harness-state", "harness.db")
 	need(below(path, s.root), "rate-limit evidence escaped disposable package")
 	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro")
 	must(err)

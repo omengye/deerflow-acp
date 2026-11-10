@@ -343,12 +343,10 @@ func TestProposalAcceptsPythonAndRejectsBrokenReferences(t *testing.T) {
 		t.Fatalf("Python candidate not reviewable: %+v", p)
 	}
 	if _, err := f.service.Approve(context.Background(), p.ID, review(p)); !errors.Is(err, harness.ErrInvalidInput) {
-		t.Fatalf("unverified script approved without acknowledgment: %v", err)
+		t.Fatalf("unexecuted script approved: %v", err)
 	}
-	decision := review(p)
-	decision.AcknowledgeUnverifiedScripts = true
-	if _, err := f.service.Approve(context.Background(), p.ID, decision); err != nil {
-		t.Fatalf("acknowledged Python publication failed: %v", err)
+	if head := f.head(t); head != p.Base {
+		t.Fatal("unexecuted scripts changed the installed head")
 	}
 	r = f.request(t, "reference", "See [guide](references/guide.md).")
 	r.Files["references/guide.md"] = []byte("Read [main](../SKILL.md).\n")

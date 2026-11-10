@@ -40,7 +40,7 @@ func skillToolResponse(w http.ResponseWriter, stream bool, name, args, text stri
 }
 
 func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
-	for _, mode := range []string{"root", "role", "background-role", "managed-create", "builtin-overlay", "builtin-create", "hidden-role-skill", "quality-rejected", "quality-unavailable", "review-fails", "review-storage-fails", "budget-exhausted", "read-only", "tool-denied"} {
+	for _, mode := range []string{"root", "role", "background-role", "managed-create", "builtin-overlay", "builtin-create", "hidden-role-skill", "budget-exhausted", "read-only", "tool-denied"} {
 		t.Run(mode, func(t *testing.T) {
 			workspace, cfg := skillFixture(t)
 			cfg.Skills.Install = []harness.SkillInstall{{SourceID: "project", Directory: "research", Enabled: true}}
@@ -60,7 +60,7 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 			}
 			limits := harness.BudgetLimits{MaxModelCalls: 8, MaxToolCalls: 6, MaxTokens: 100000, MaxOutputTokens: 2048}
 			if mode == "budget-exhausted" {
-				limits.MaxModelCalls = 2
+				limits.MaxModelCalls = 1
 			}
 			cfg.Budget = &limits
 			var mu sync.Mutex
@@ -84,30 +84,8 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 				number := calls[request.Model]
 				mu.Unlock()
 				if request.Model == "moderator" || request.Model == "evaluator" {
-					if mode == "quality-unavailable" && request.Model == "evaluator" {
-						w.Header().Set("Content-Type", "application/json")
-						w.WriteHeader(503)
-						fmt.Fprint(w, `{"error":{"message":"private-review-error","type":"unavailable"}}`)
-						return
-					}
-					if mode == "review-fails" {
-						w.WriteHeader(400)
-						fmt.Fprint(w, `{"error":{"message":"private-review-error"}}`)
-						return
-					}
-					if len(request.Tools) != 0 || len(request.Messages) != 2 {
-						t.Errorf("review borrowed tool/history context: %+v", request)
-					}
-					var input map[string]any
-					if err := json.Unmarshal([]byte(request.Messages[1].Content), &input); err != nil {
-						t.Error(err)
-					}
-					passed, reason := true, "Scoped content review"
-					if mode == "quality-rejected" && request.Model == "evaluator" {
-						passed, reason = false, "Missing output consistency check."
-					}
-					decision, _ := json.Marshal(map[string]any{"base_version": input["base_version"], "candidate_version": input["candidate_version"], "passed": passed, "reason": reason})
-					skillToolResponse(w, request.Stream, "", "", string(decision))
+					t.Error("foreground candidate submission invoked a review model")
+					http.Error(w, "unexpected review", http.StatusInternalServerError)
 					return
 				}
 				for _, m := range request.Messages {
@@ -116,20 +94,6 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 						toolResult = m.Content
 						mu.Unlock()
 					}
-				}
-				if (mode == "quality-rejected" || mode == "quality-unavailable") && number == 2 {
-					mu.Lock()
-					priorResult := toolResult
-					mu.Unlock()
-					var prior struct {
-						ProposalID string `json:"proposal_id"`
-					}
-					if err := json.Unmarshal([]byte(priorResult), &prior); err != nil || prior.ProposalID == "" {
-						t.Errorf("missing proposal for get: %s %v", priorResult, err)
-					}
-					args, _ := json.Marshal(map[string]string{"action": "get", "proposal_id": prior.ProposalID})
-					skillToolResponse(w, request.Stream, "skill_manage", string(args), "", "call-skill-manage-get")
-					return
 				}
 				if number == 1 {
 					visible := false
@@ -195,6 +159,7 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			configureSkillManageQueue(t, c)
 			defer c.Close()
 			s, err := c.NewSession(ctx, workspace)
 			if err != nil {
@@ -209,28 +174,8 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var emit harness.EventHandler
-			if mode == "review-storage-fails" {
-				_, err = c.store.DB().ExecContext(ctx, `CREATE TRIGGER fail_skill_review BEFORE INSERT ON budget_reservations WHEN NEW.kind='model' AND EXISTS (SELECT 1 FROM df_skill_proposals) BEGIN SELECT RAISE(ABORT,'fixture-review-budget-storage'); END`)
-				if err != nil {
-					t.Fatal(err)
-				}
-				emit = func(_ context.Context, event harness.RunEvent) error {
-					if event.Kind == "tool_end" {
-						// Remove the transient fault before the agent could continue.
-						// A later successful reservation cannot erase this failure.
-						_, dropErr := c.store.DB().Exec(`DROP TRIGGER IF EXISTS fail_skill_review`)
-						return dropErr
-					}
-					return nil
-				}
-			}
-			result, err := c.Run(ctx, s.ID, []harness.Content{{Type: "text", Text: "Improve the research skill"}}, emit, nil)
-			if mode == "review-storage-fails" {
-				if err == nil || !strings.Contains(err.Error(), "fixture-review-budget-storage") {
-					t.Fatalf("storage failure became a successful run: %+v %v", result, err)
-				}
-			} else if err != nil {
+			result, err := c.Run(ctx, s.ID, []harness.Content{{Type: "text", Text: "Improve the research skill"}}, nil, nil)
+			if err != nil {
 				t.Fatalf("run: %+v %v", result, err)
 			}
 			proposalSession := s.ID
@@ -255,7 +200,7 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 				if result.StopReason != "max_turn_requests" {
 					t.Fatalf("budget result: %+v", result)
 				}
-			} else if mode != "review-storage-fails" && result.StopReason != "end_turn" {
+			} else if result.StopReason != "end_turn" {
 				t.Fatalf("result: %+v", result)
 			}
 			page, err := c.ListSkillProposals(ctx, harness.SkillQuery{Limit: 20})
@@ -267,53 +212,22 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 			totalCalls := reviewCalls + calls["parent"] + calls["child"]
 			resultText := toolResult
 			mu.Unlock()
-			if mode == "review-storage-fails" && totalCalls != 1 {
-				t.Fatalf("agent made another provider call after review infrastructure failed: %d", totalCalls)
-			}
-			wantProposal := mode != "hidden-role-skill" && mode != "builtin-create" && mode != "read-only" && mode != "tool-denied"
+			wantProposal := mode != "hidden-role-skill" && mode != "builtin-create" && mode != "builtin-overlay" && mode != "read-only" && mode != "tool-denied"
 			if wantProposal {
 				if len(page.Proposals) != 1 {
 					t.Fatalf("candidate count=%d result=%s", len(page.Proposals), resultText)
 				}
 				p := page.Proposals[0]
-				wantStatus := "pending_review"
-				if mode == "review-fails" || mode == "review-storage-fails" || mode == "budget-exhausted" || mode == "quality-rejected" || mode == "quality-unavailable" {
-					wantStatus = "failed"
+				if reviewCalls != 0 || p.BehaviorJobID == "" {
+					t.Fatal("submission must queue independent validation", p, reviewCalls)
 				}
-				if p.Status != wantStatus || p.Base != before || !strings.HasPrefix(p.Author, "model/") || p.Trigger.ThreadID != proposalSession {
+				if p.Origin != "automatic" || p.Status != "validating" || p.Base != before || !strings.HasPrefix(p.Author, "model/") || p.Trigger.ThreadID != proposalSession {
 					t.Fatalf("proposal: %+v", p)
-				}
-				if mode == "builtin-overlay" && (p.OverlayBase == nil || p.OverlayBase.Version != before.Version || p.OverlayBase.SourceID != "project") {
-					t.Fatalf("model proposal lost builtin origin: %+v", p)
-				}
-				if mode == "review-fails" && (strings.Contains(resultText, "private-review-error") || !strings.Contains(resultText, `"status":"failed"`)) {
-					t.Fatalf("review failure leaked or killed session: %s", resultText)
-				}
-				if mode == "quality-rejected" || mode == "quality-unavailable" {
-					var feedback struct {
-						Security, Quality string
-						Code              string `json:"error_code"`
-						Stage             string `json:"failure_stage"`
-						Retryable         bool
-					}
-					if err := json.Unmarshal([]byte(resultText), &feedback); err != nil {
-						t.Fatal(err)
-					}
-					wantCode, wantQuality := "quality_rejected", "failed"
-					if mode == "quality-unavailable" {
-						wantCode, wantQuality = "review_temporarily_unavailable", "unavailable"
-					}
-					if feedback.Security != "passed" || feedback.Quality != wantQuality || feedback.Code != wantCode || feedback.Stage != "quality" || feedback.Retryable != (mode == "quality-unavailable") || reviewCalls != 2 || strings.Contains(resultText, "private-review-error") {
-						t.Fatalf("get lost cause, leaked diagnostics or reran reviews: %s calls=%d", resultText, reviewCalls)
-					}
-					if mode == "quality-rejected" && !strings.Contains(resultText, "Missing output consistency check.") {
-						t.Fatalf("agent cannot revise the rejected candidate: %s", resultText)
-					}
 				}
 			} else if len(page.Proposals) != 0 || reviewCalls != 0 {
 				t.Fatalf("unauthorized candidate/model calls: %+v %d", page, reviewCalls)
 			}
-			if (mode == "hidden-role-skill" || mode == "builtin-create") && !strings.Contains(resultText, "permission_denied") {
+			if (mode == "hidden-role-skill" || mode == "builtin-create" || mode == "builtin-overlay") && !strings.Contains(resultText, "permission_denied") {
 				t.Fatalf("hidden skill result: %s", resultText)
 			}
 			if after, err := c.GetSkillHead(ctx, "project", "research"); err != nil || after != before {
@@ -334,7 +248,7 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 			}
 			for _, receipt := range receipts {
 				want := harness.ReceiptCompleted
-				if mode == "builtin-create" || mode == "hidden-role-skill" {
+				if mode == "builtin-create" || mode == "builtin-overlay" || mode == "hidden-role-skill" {
 					want = harness.ReceiptNotExecuted
 				}
 				if receipt.ToolName == "skill_manage" && receipt.State != want {

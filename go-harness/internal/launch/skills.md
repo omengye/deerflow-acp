@@ -63,29 +63,19 @@ its root are not scanned or imported, including previously generated exports.
 The root continues to bind source identity/scope. Builtin and managed policies
 cannot apply to the same source.
 
-With `skill_evolution.enabled: true` and valid review model routes in the
-ordinary YAML configuration, the explicit managed sources become model
-candidate destinations. The tool lists them as preferred destinations for new
-skills. Existing custom import sources remain available for reviewed updates;
-builtin proposals require the separate `allow_builtin_overlays` setting.
-Disabling evolution revokes model submission grants while retaining declared
-managed sources and their published content.
+Native launch configures automatic skill evolution from the primary model when
+skills are enabled. Explicit managed sources are preferred candidate destinations;
+existing custom import sources can receive authorized updates. If no writable
+destination exists, the host provisions managed storage beside the configuration.
+Builtin sources do not accept in-place model candidates.
 
-Explicit `skill_evolution.generation.enabled` also enables the durable operator
-generation worker, requiring a resolved generation model route and positive
-maintenance `budget`. It uses the same candidate destinations and requires at
-most 32 sources. Generation disabled means no worker, even when a model name is
-present; disabling evolution also clears generation on launch. The YAML model
-and bounds are carried into `Config.SkillGeneration`; the SDK owns lifecycle,
-recovery and the independent ledger. See the [configuration example](../acp/skill-evolution.md#yaml-and-waku-generation-settings).
-
-The moderation, evaluation and generation model names are optional overrides.
-Omitted, null or empty values inherit the global `default_model` (the first
-configured model when that default is omitted), including its provider,
-endpoint and credential. Session model overrides do not change this maintenance
-default. Saving preserves inheritance, so changing the global default and
-applying the configuration updates all inherited routes. Each stage retains its
-independent context, review rules and maintenance budget.
+There is no `skill_evolution` YAML block, manual approval setting, independent
+review route or daily maintenance quota. The host owns worker concurrency,
+timeouts and finite retries. Candidate validation, automatic admission,
+observation and withdrawal use independent evidence and scoped source authority.
+The `skill_manage` submission call queues the exact package without performing
+foreground model review. Command execution permissions remain independent.
+See the [candidate contract](../acp/skill-evolution.md).
 
 The SDK owns a local export worker. Every managed publication, enablement
 change or tombstone queues the exact head in the same SQLite transaction.
@@ -132,17 +122,15 @@ import behavior and source identities remain unchanged. Import configurations
 keep their historical global selection unless `include_global` is specified.
 Managed directories are never scanned or installed from disk. The explicit
 `--skills-config` profile still takes precedence over YAML sources. Disabling
-skills clears source selection; disabling evolution alone preserves managed
-sources and revokes candidate submission grants.
+skills clears source selection and removes candidate submission tools while
+preserving stored publications.
 
 Desktop save/validate uses the same source resolution and proposal destination
 policy as native launch. It no longer writes filesystem skill enablement into
-extensions JSON; Registry operations own that state. Manual review has native
-settings controls, and MANAGE/Waku support export status/retry. Waku also provides
-native import/export directory fields, global selection and per-source
-id/root/scope/workspace editing. The source form preserves relative paths and
-unknown legacy root fields; an unchanged source definition is not rewritten.
-Directories must exist before validation, and removing a configured source does
-not delete its files or published history. Old `storage_path`/history import
-and the full automatic evolution flow remain ongoing work. Explicit review conversion removes the
-unconsumed old storage field; it does not relocate or import its data.
+extensions JSON; Registry operations own that state. MANAGE/Waku support export
+status/retry and native import/export directory fields, global selection and
+per-source id/root/scope/workspace editing. Source forms preserve relative paths;
+an unchanged source definition is not rewritten. Directories must exist before
+validation, and removing a source does not delete its files or published history.
+Retired evolution settings and jobs remain migration/history concerns and do not
+reintroduce manual candidate approval.

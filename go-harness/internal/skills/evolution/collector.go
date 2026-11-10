@@ -162,6 +162,17 @@ func (s *Service) collectPage(ctx context.Context, claim collectionClaim, limit 
 		}
 		claim.cursor = r.id
 	}
+	if !more {
+		var available bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='harness_learning_inputs')`).Scan(&available); err != nil {
+			return err
+		}
+		if available {
+			if err = captureTaskOracleTx(ctx, tx, run); err != nil {
+				return err
+			}
+		}
+	}
 	state := "pending"
 	if !more {
 		state = "completed"

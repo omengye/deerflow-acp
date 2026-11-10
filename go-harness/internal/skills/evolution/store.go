@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS df_skill_publications (
  request_key TEXT NOT NULL,request_sha TEXT NOT NULL,payload BLOB NOT NULL,
  PRIMARY KEY(source_key,name,revision),UNIQUE(source_key,name,request_key));
 CREATE TABLE IF NOT EXISTS df_skill_approvals (
- proposal_id TEXT PRIMARY KEY,payload BLOB NOT NULL,payload_sha TEXT NOT NULL);`)
+ proposal_id TEXT PRIMARY KEY,payload BLOB NOT NULL,payload_sha TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS df_evolution_retired_proposals(proposal_id TEXT PRIMARY KEY);`)
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +153,11 @@ func readProposal(ctx context.Context, db rowReader, id string) (Proposal, error
 			return Proposal{}, errors.New("skill approval identity is inconsistent")
 		}
 		p.Approval = &approval
+		if confirmation := approval.UserConfirmation; confirmation != nil {
+			if confirmation.RuleVersion != confirmationRule || confirmation.SessionID != p.Trigger.ThreadID || confirmation.RunID == "" || confirmation.InputID == "" || !hexDigest(confirmation.InputSHA) || confirmation.Workspace == "" || approval.Review.Actor != "user/"+confirmation.SessionID {
+				return Proposal{}, errors.New("skill user confirmation is inconsistent")
+			}
+		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Proposal{}, err
 	}

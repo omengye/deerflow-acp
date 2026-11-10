@@ -19,7 +19,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
 
-const PolicyVersion = "procedural-experience-v1"
+const PolicyVersion = "procedural-experience-v2"
 
 type Store struct {
 	db           *sql.DB
@@ -142,6 +142,9 @@ func New(ctx context.Context, db *sql.DB, options *harness.SkillLearningOptions)
 	if err = Migrate(ctx, tx); err != nil {
 		return nil, err
 	}
+	if err = skillmaintenance.BeginAutomaticEpoch(ctx, tx); err != nil {
+		return nil, err
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE harness_learning_host SET enabled=?,policy_version=? WHERE id=1`, s.enabled, PolicyVersion); err != nil {
 		return nil, err
 	}
@@ -208,6 +211,17 @@ func (s *Store) CaptureInputTx(ctx context.Context, tx *sql.Tx, req harness.RunR
 	if sequence < 1 || req.RunID == "" || req.InputID == "" || !filepath.IsAbs(req.Session.CWD) {
 		return invalid("invalid accepted input")
 	}
+	root := req.RootBudgetID
+	if root == "" {
+		root = req.RunID
+	}
+	var historical bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_evolution_retired_inputs WHERE root_id=? OR (session_id=? AND input_id=?))`, root, req.Session.ID, req.InputID).Scan(&historical); err != nil {
+		return err
+	}
+	if historical {
+		return nil
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO harness_learning_controls VALUES(?,1,1)`, req.Session.ID); err != nil {
 		return err
 	}
@@ -219,26 +233,37 @@ func (s *Store) CaptureInputTx(ctx context.Context, tx *sql.Tx, req harness.RunR
 	if !contribute {
 		return nil
 	}
-	// Preserve privacy/backpressure across restarts without blocking the main
-	// task once its small, metadata-only pending inventory is full.
-	var pending int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM harness_learning_inputs i JOIN harness_runs r ON r.id=i.run_id
- WHERE i.session_id=? AND NOT EXISTS(SELECT 1 FROM harness_learning_outbox o WHERE o.run_id=i.run_id AND o.state NOT IN ('pending','queued'))`, req.Session.ID).Scan(&pending); err != nil {
+	// Inputs are small durable references. Queue slices provide backpressure without dropping accepted evidence.
+	episode, workspace := "lep_"+encodedDigest([]string{"task-v2", root}), workspaceKey(req.Session.CWD)
+	// A retry keeps its original episode. A host-linked task boundary is
+	// consumed once; it cannot mint an independent vote for every retry.
+	var prior string
+	err := tx.QueryRowContext(ctx, `SELECT episode_id FROM harness_learning_inputs WHERE root_id=? ORDER BY accepted_sequence LIMIT 1`, root).Scan(&prior)
+	if err == nil {
+		episode = prior
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
-	}
-	if pending >= 128 {
-		return nil
-	}
-	var episode, workspace string
-	err := tx.QueryRowContext(ctx, `SELECT id,workspace_key FROM df_learning_episodes WHERE session_id=? ORDER BY rowid DESC LIMIT 1`, req.Session.ID).Scan(&episode, &workspace)
-	if errors.Is(err, sql.ErrNoRows) {
-		episode = "lep_" + req.InputID
-		workspace = workspaceKey(req.Session.CWD)
-		_, err = tx.ExecContext(ctx, `INSERT INTO df_learning_episodes VALUES(?,?,?,?,?)`, episode, req.Session.ID, workspace, encodedDigest([]string{"episode-v1", req.Session.ID, req.InputID}), time.Now().UTC().Format(time.RFC3339Nano))
+	} else {
+		err = tx.QueryRowContext(ctx, `SELECT e.id FROM df_learning_episodes e JOIN df_learning_episode_lineage l ON l.episode_id=e.id
+ WHERE e.session_id=? AND e.workspace_key=? AND l.origin IN ('explicit_task','linked_task')
+ AND NOT EXISTS(SELECT 1 FROM harness_learning_inputs i WHERE i.episode_id=e.id) ORDER BY e.created_at DESC LIMIT 1`, req.Session.ID, workspace).Scan(&prior)
 		if err == nil {
-			err = captureLineageTx(ctx, tx, episode, workspace, digest(input))
+			episode = prior
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
 		}
 	}
+	var savedWorkspace string
+	err = tx.QueryRowContext(ctx, `SELECT workspace_key FROM df_learning_episodes WHERE id=?`, episode).Scan(&savedWorkspace)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, err = tx.ExecContext(ctx, `INSERT INTO df_learning_episodes VALUES(?,?,?,?,?)`, episode, req.Session.ID, workspace, encodedDigest([]string{"task-v2", root}), time.Now().UTC().Format(time.RFC3339Nano))
+		if err == nil {
+			err = captureLineageTx(ctx, tx, episode, workspace, root)
+		}
+	} else if err == nil && savedWorkspace != workspace {
+		return harness.ErrPermissionDenied
+	}
+
 	if err != nil {
 		return err
 	}
@@ -251,10 +276,6 @@ func (s *Store) CaptureInputTx(ctx context.Context, tx *sql.Tx, req harness.RunR
 	}
 	if workspace != workspaceKey(req.Session.CWD) {
 		return harness.ErrPermissionDenied
-	}
-	root := req.RootBudgetID
-	if root == "" {
-		root = req.RunID
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO harness_learning_inputs VALUES(?,?,?,?,?,?,?,?,?)`, req.RunID, req.Session.ID, req.InputID, root, episode, sequence, digest(input), epoch, PolicyVersion)
 	return err

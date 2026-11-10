@@ -43,8 +43,8 @@ func proposalManagementError(err error) error {
 		code, message = "invalid_request", "Invalid skill management request."
 	case errors.Is(err, skillmaintenance.ErrInvalid):
 		code, message = "invalid_request", "Invalid skill maintenance request."
-	case errors.Is(err, skillmaintenance.ErrBudget):
-		code, message = "resource_limit", "Skill maintenance queue or budget limit reached."
+	case errors.Is(err, skillmaintenance.ErrCapacity):
+		code, message = "resource_limit", "Skill maintenance is waiting for storage or queue capacity."
 	case errors.Is(err, harness.ErrSkillFeedbackLimit):
 		code, message = "resource_limit", "Skill feedback revision limit reached."
 	case errors.Is(err, harness.ErrSkillMissingReportLimit):
@@ -164,113 +164,8 @@ func proposalProjections(proposals []harness.SkillProposal) []map[string]any {
 
 func (c *Client) managementProposals(ctx context.Context, request localhost.ManagementRequest) (any, error) {
 	switch request.Operation {
-	case "proposal.submit":
-		// Operator draft import stages bytes, never copies into an installation.
-		if err := proposalFields(request, "target", "expected_head", "request_key", "reason", "files"); err != nil {
-			return nil, err
-		}
-		var target harness.SkillTarget
-		if err := managementSkillObject(request.Fields, "target", &target, "source_id", "source_identity", "name", "scope"); err != nil {
-			return nil, err
-		}
-		var head harness.SkillHead
-		if err := managementSkillObject(request.Fields, "expected_head", &head, "version", "state_version", "exists", "enabled", "managed"); err != nil {
-			return nil, err
-		}
-		current, _, _, err := c.evolution.Head(ctx, target.SourceID, target.Name)
-		if err != nil {
-			return nil, err
-		}
-		if current != target {
-			return nil, harness.ErrPermissionDenied
-		}
-		key, err := managementID(request.Fields, "request_key")
-		if err != nil {
-			return nil, err
-		}
-		reason, err := optionalProposalString(request.Fields, "reason", 4000)
-		if err != nil {
-			return nil, err
-		}
-		files, err := managementDraftFiles(request.Fields["files"])
-		if err != nil {
-			return nil, err
-		}
-		action := "create"
-		if head.Exists {
-			action = "edit"
-		}
-		p, err := c.evolution.Submit(ctx, harness.SkillProposalRequest{SourceID: target.SourceID, Name: target.Name, Base: head, Action: action, Files: files, Reason: reason, RequestKey: "operator-draft/" + key, Author: "desktop", Origin: "manual_agent"})
-		if err != nil {
-			return nil, err
-		}
-		_, _, catalog, err := c.evolution.Head(ctx, p.Target.SourceID, p.SkillName)
-		return map[string]any{"proposal": proposalProjection(p), "catalog_version": catalog}, err
-	case "proposal.review_retry":
-		if err := proposalFields(request, "proposal_id", "expected_state_version"); err != nil {
-			return nil, err
-		}
-		id, err := managementID(request.Fields, "proposal_id")
-		if err != nil {
-			return nil, err
-		}
-		state, err := optionalProposalInteger(request.Fields, "expected_state_version", 0)
-		if err != nil || state < 1 {
-			return nil, managementInvalid("review retry requires observed state")
-		}
-		p, err := c.evolution.RetryReview(ctx, id, state)
-		if err != nil {
-			return nil, err
-		}
-		_, _, catalog, err := c.evolution.Head(ctx, p.Target.SourceID, p.SkillName)
-		return map[string]any{"proposal": proposalProjection(p), "catalog_version": catalog}, err
-	case "proposal.publish_retry":
-		if err := proposalFields(request, "proposal_id", "expected_approval_version"); err != nil {
-			return nil, err
-		}
-		id, err := managementID(request.Fields, "proposal_id")
-		if err != nil {
-			return nil, err
-		}
-		state, err := optionalProposalInteger(request.Fields, "expected_approval_version", 0)
-		if err != nil || state < 1 {
-			return nil, managementInvalid("publication retry requires the original approval version")
-		}
-		p, err := c.evolution.RetryPublication(ctx, id, state)
-		if err != nil {
-			if p.ID == id && p.Approval != nil && p.Approval.Review.ExpectedStateVersion == state {
-				mapped := proposalManagementError(err).(*localhost.ManagementError)
-				projection := proposalProjection(p)
-				projection["diff"] = ""
-				mapped.Details = map[string]any{"proposal": projection}
-				return nil, mapped
-			}
-			return nil, err
-		}
-		_, _, catalog, err := c.evolution.Head(ctx, p.Target.SourceID, p.SkillName)
-		return map[string]any{"proposal": proposalProjection(p), "catalog_version": catalog}, err
-	case "proposal.source_review":
-		if err := proposalFields(request, "proposal_id", "expected_state_version", "request_key"); err != nil {
-			return nil, err
-		}
-		id, err := managementID(request.Fields, "proposal_id")
-		if err != nil {
-			return nil, err
-		}
-		state, err := optionalProposalInteger(request.Fields, "expected_state_version", 0)
-		if err != nil || state < 1 {
-			return nil, managementInvalid("source review requires an observed state version")
-		}
-		key, err := managementID(request.Fields, "request_key")
-		if err != nil {
-			return nil, err
-		}
-		p, err := c.evolution.ReviewSource(ctx, id, state, key)
-		if err != nil {
-			return nil, err
-		}
-		_, _, catalog, err := c.evolution.Head(ctx, p.Target.SourceID, p.SkillName)
-		return map[string]any{"proposal": proposalProjection(p), "catalog_version": catalog}, err
+	case "proposal.approve", "proposal.submit", "proposal.review_retry", "proposal.source_review", "proposal.publish_retry":
+		return nil, managementInvalid("manual candidate approval and recovery are retired; submit candidates through skill_manage for automatic validation and adoption")
 	case "proposal.list", "proposal.history":
 		allowed := []string{"source_id", "name", "status", "cursor", "limit"}
 		if request.Operation == "proposal.history" {
@@ -313,15 +208,12 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 		// containers do not stand in for selection records or probation results.
 		result["signals"] = []any{}
 		result["probations"] = map[string]any{}
-		result["capabilities"] = map[string]bool{"review": true, "rollback": true, "generation": c.evolution.GenerationEnabled(), "discovery": c.evolution.DiscoveryEnabled(), "probation": false}
+		result["capabilities"] = map[string]bool{"review": false, "automatic": true, "rollback": true, "generation": c.evolution.GenerationEnabled(), "discovery": c.evolution.DiscoveryEnabled(), "probation": false}
 		return result, nil
-	case "proposal.get", "proposal.approve", "proposal.reject":
+	case "proposal.get", "proposal.reject":
 		allowed := []string{"proposal_id"}
 		if request.Operation != "proposal.get" {
 			allowed = append(allowed, "expected_state_version", "expected_base_sha256", "note")
-		}
-		if request.Operation == "proposal.approve" {
-			allowed = append(allowed, "acknowledge_unverified_scripts")
 		}
 		if err := proposalFields(request, allowed...); err != nil {
 			return nil, err
@@ -349,14 +241,9 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 		if err != nil {
 			return nil, err
 		}
-		// Legacy duplicate reviews can recover the original state version. The
-		// application service still verifies actor, note and idempotency digest.
-		if _, explicit := request.Fields["expected_state_version"]; !explicit {
-			if p.Approval != nil && request.Operation == "proposal.approve" {
-				state = p.Approval.Review.ExpectedStateVersion
-			} else if p.Status == "published" || p.Status == "publishing" || p.Status == "rejected" {
-				state--
-			}
+		// Preserve idempotent cancellation from older desktop clients.
+		if _, explicit := request.Fields["expected_state_version"]; !explicit && p.Status == "rejected" {
+			state--
 		}
 		base, err := optionalProposalString(request.Fields, "expected_base_sha256", 64)
 		if err != nil {
@@ -375,24 +262,8 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 			return nil, err
 		}
 		review := harness.SkillReview{ExpectedStateVersion: state, Actor: "desktop", Note: note}
-		if raw, exists := request.Fields["acknowledge_unverified_scripts"]; exists {
-			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &review.AcknowledgeUnverifiedScripts) != nil {
-				return nil, managementInvalid("acknowledge_unverified_scripts must be boolean")
-			}
-		}
-		if request.Operation == "proposal.approve" {
-			p, err = c.evolution.Approve(ctx, id, review)
-		} else {
-			p, err = c.evolution.Reject(ctx, id, review)
-		}
+		p, err = c.evolution.Reject(ctx, id, review)
 		if err != nil {
-			if request.Operation == "proposal.approve" && p.ID == id && p.Approval != nil && p.Approval.Review == review {
-				mapped := proposalManagementError(err).(*localhost.ManagementError)
-				projection := proposalProjection(p)
-				projection["diff"] = ""
-				mapped.Details = map[string]any{"proposal": projection}
-				return nil, mapped
-			}
 			return nil, err
 		}
 		_, _, catalog, err := c.evolution.Head(ctx, p.Target.SourceID, p.SkillName)

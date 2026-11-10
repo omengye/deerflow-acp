@@ -9,6 +9,10 @@ import (
 
 func migrateMatching(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS df_learning_match_progress(
+ pattern_id TEXT NOT NULL,revision INTEGER NOT NULL,catalog INTEGER NOT NULL,inventory_sha TEXT NOT NULL,next_offset INTEGER NOT NULL,PRIMARY KEY(pattern_id,revision));
+CREATE TABLE IF NOT EXISTS df_learning_match_catalog_scan(scan_key TEXT PRIMARY KEY,cursor TEXT NOT NULL,complete INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS df_learning_match_catalog_entries(scan_key TEXT NOT NULL REFERENCES df_learning_match_catalog_scan(scan_key) ON DELETE CASCADE,name TEXT NOT NULL,score INTEGER NOT NULL,was_read INTEGER NOT NULL,payload BLOB NOT NULL,payload_sha TEXT NOT NULL,PRIMARY KEY(scan_key,name));
 CREATE TABLE IF NOT EXISTS df_learning_match_inputs(
  sequence INTEGER PRIMARY KEY AUTOINCREMENT,pattern_id TEXT NOT NULL,revision INTEGER NOT NULL,
  state TEXT NOT NULL DEFAULT 'pending',job_id TEXT NOT NULL DEFAULT '',reason TEXT NOT NULL DEFAULT '',

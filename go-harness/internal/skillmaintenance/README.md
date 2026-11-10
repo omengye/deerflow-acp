@@ -40,32 +40,18 @@ starts a worker.
   including exhausted expired claims. The evolution host also reconciles old
   interrupted metadata without model calls.
 
-## Budget contract
+## Usage and execution contract
 
-- UTC calendar days share one database-wide model-call and token allowance
-  across all skill sources and stages. Generation, security review, quality
-  review and behavioral model calls use the same broker. Parent `skill_manage`
-  calls retain their existing parent-run ledger; the two scopes cannot mix.
-- Reservation atomically increments the day's call count and charges estimated
-  input tokens plus the requested output cap **before** model I/O. Only one
-  unsettled call per active claim is admitted. A job cannot report success with
-  an unsettled call in that attempt.
-- Valid final provider usage replaces the conservative charge. Failure,
-  cancellation, missing/invalid usage or a crash retains the full amount. A
-  stale worker cannot refund it. Settling twice is idempotent only when the
-  usage is identical. A database error rolls back the whole accounting update.
-- Usage over the reservation is recorded in full and prevents later admission;
-  it is never clamped to the estimate. Reported usage is trusted provider data,
-  not an exact tokenizer-based preflight price guarantee. There is no currency
-  or provider-invoice accounting here.
-- Billing remains on the reservation's UTC day when a call crosses midnight.
-  A persisted clock check rejects time moving backwards. Restart/retry cannot
-  clear counters; an existing job cannot use a looser new policy to enlarge its
-  pinned daily allowance. The current host's stricter daily caps also apply.
-- Receipts retain stage, digests, attempt and charged/estimated usage. They do
-  not contain model input/output, endpoint URLs or credentials. Call inventories
-  use bounded sequence pagination. A product-facing adapter must authorize the
-  job's source before exposing these internal queries.
+Automatic maintenance uses an independent durable usage ledger, internal
+concurrency/time limits and finite retries. It has no customer daily call/token
+quota. Reservations and settlement bind the exact active claim; unfinished calls
+cannot be reported as completed, stale workers cannot refund charges, and paid
+phase outputs survive restart. Receipts contain stage, digests, attempt and
+usage, never credentials or raw provider errors.
+
+`skill_manage` only queues the candidate in the foreground. Content and behavior
+model calls run later through the maintenance broker, independently of the
+conversation budget. Source authorization is checked before exposing job data.
 
 ## Model adapters and generation host
 
@@ -75,12 +61,12 @@ broker and rejects changed target/base, malformed/duplicate JSON fields,
 incomplete output and tool calls. It has no publication or filesystem API.
 The evolution host applies package/path/Python and credential checks, stages
 the immutable candidate and its digest atomically, and checkpoints a proposal
-before running independent review. Optional host-defined behavior suites then
-execute both immutable versions through fixture tools and host assertions.
-Completed content and variant results survive retries. A target without a
-matching suite reports `not_run`; failed applicable evaluation blocks approval.
-Success produces only a `pending_review` proposal. Publication uses the existing
-explicit approval transaction. See [behavior contract](../skills/evolution/behavior.md).
+before independent content and behavior validation. Trusted suites compare
+baseline and candidate through fixture tools and host assertions. Completed
+content and variant results survive retries. Missing trusted evidence waits as
+`blocked_evidence`; missing script isolation waits as `blocked_runtime`.
+Successful validation enters automatic adoption, observation and withdrawal.
+The legacy storage state `pending_review` does not request human approval. See [behavior contract](../skills/evolution/behavior.md).
 
 The existing Eino security/quality reviewer recognizes the same broker. All
 content stages and behavior calls commit reservations and settle receipts at the provider boundary.

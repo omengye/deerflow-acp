@@ -13,6 +13,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/assets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/checkpoint"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
@@ -116,8 +117,13 @@ func (a *executionAttempt) ResolvePermission(ctx context.Context, p harness.Perm
 }
 
 func (a *executionAttempt) stage(_ context.Context, cp interaction.StagedExecutionCheckpoint) error {
-	if cp.ID != "harness/turn/v1/"+a.lease.Scope.MemberID || (!cp.Remove && (len(cp.Data) == 0 || len(cp.Data) > 64*1024*1024)) {
-		return executionInvalid("invalid staged native checkpoint")
+	if cp.ID != "harness/turn/v1/"+a.lease.Scope.MemberID || (!cp.Remove && len(cp.Data) == 0) {
+		return fmt.Errorf("%w: invalid staged native checkpoint identity or data", harness.ErrCheckpointInvalid)
+	}
+	if !cp.Remove {
+		if _, _, err := checkpoint.Metadata(cp.Data); err != nil {
+			return err
+		}
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()

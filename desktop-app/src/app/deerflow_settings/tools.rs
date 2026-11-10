@@ -75,18 +75,6 @@ pub(super) fn fields(document: &Value, selected: usize) -> Vec<Field> {
     let mut fields = Vec::new();
     for (key, label, hint, kind) in [
         (
-            "api_key",
-            "Brave API 密钥",
-            "留空保留已有密钥；可填写 $变量名",
-            Kind::Text,
-        ),
-        (
-            "clear_api_key",
-            "清除已保存密钥",
-            "保存时移除该工具的密钥",
-            Kind::Bool,
-        ),
-        (
             "https_proxy",
             "请求代理",
             "http / https / socks5 / socks5h；支持 $变量名；留空保留已有值",
@@ -134,6 +122,9 @@ pub(super) fn fields(document: &Value, selected: usize) -> Vec<Field> {
             Kind::Names,
         ),
     ] {
+        if name == "web_search" && key != "max_results" {
+            continue;
+        }
         if item.get(key).is_some() {
             fields.push(Field::new(format!("{root}/{key}"), label, hint, kind));
         }
@@ -148,7 +139,12 @@ impl Waku {
             return div().into_any_element();
         };
         let selected = state.selected_tool.min(NAMES.len() - 1);
-        let mut picker = div().flex().flex_col().gap(px(5.0));
+        let mut picker = div()
+            .w(px(210.0))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(5.0));
         for (index, name) in NAMES.iter().enumerate() {
             if let Some(label) = match index {
                 0 => Some("网页"),
@@ -169,7 +165,9 @@ impl Waku {
             picker = picker.child(
                 df_button(
                     SharedString::from(format!("df-tool-{name}")),
-                    if configured {
+                    if index == 0 {
+                        format!("{name} · {}", self.current_search_provider_label())
+                    } else if configured {
                         format!("{name} · 已配置参数")
                     } else {
                         format!(
@@ -188,6 +186,9 @@ impl Waku {
                     move |this, _, cx| {
                         this.deerflow_settings.selected_tool = index;
                         this.deerflow_rebind(cx);
+                        if index <= 1 {
+                            this.search_plugins_request("search-status", json!({}), cx);
+                        }
                         cx.notify();
                     },
                 )
@@ -196,32 +197,64 @@ impl Waku {
             );
         }
         let configured = index(document, selected).is_some();
-        let mut group = df_group(theme)
-            .child(df_label("Go 原生工具参数", "网页工具和 OpenCLI 需要配置条目；文件及命令工具另受全局权限控制，移除参数条目不等于禁用工具。", theme))
-            .child(picker)
-            .child(df_button("df-tool-membership", if configured { "移除所选工具配置" } else { "添加所选工具配置" },
-                !state.can_edit_field("/tools") || !state.errors.is_empty(), false, theme, cx,
-                |this, _, cx| {
-                    if !this.deerflow_settings.can_edit_field("/tools") || !this.deerflow_settings.errors.is_empty() { return; }
-                    let selected = this.deerflow_settings.selected_tool;
-                    if let Some(document) = &mut this.deerflow_settings.draft {
-                        if let Err(error) = change_membership(document, selected) { this.deerflow_settings.error = Some(error); cx.notify(); return; }
+        let mut detail = div().flex_1().min_w_0().flex().flex_col().gap(px(12.0));
+        if selected == 0 {
+            detail = detail.child(self.render_search_plugin_settings(theme, cx));
+        } else if selected == 1 {
+            detail = detail.child(self.render_search_fetch_settings(theme, cx));
+        }
+        detail = detail.child(df_button(
+            "df-tool-membership",
+            if configured {
+                "移除所选工具配置"
+            } else {
+                "添加所选工具配置"
+            },
+            !state.can_edit_field("/tools") || !state.errors.is_empty(),
+            false,
+            theme,
+            cx,
+            |this, _, cx| {
+                if !this.deerflow_settings.can_edit_field("/tools")
+                    || !this.deerflow_settings.errors.is_empty()
+                {
+                    return;
+                }
+                let selected = this.deerflow_settings.selected_tool;
+                if let Some(document) = &mut this.deerflow_settings.draft {
+                    if let Err(error) = change_membership(document, selected) {
+                        this.deerflow_settings.error = Some(error);
+                        cx.notify();
+                        return;
                     }
-                    this.deerflow_settings.dirty = true;
-                    this.deerflow_settings.edit_generation += 1;
-                    this.deerflow_settings.notice = None;
-                    this.deerflow_rebind(cx);
-                    cx.notify();
-                },
-            ));
+                }
+                this.deerflow_settings.dirty = true;
+                this.deerflow_settings.edit_generation += 1;
+                this.deerflow_settings.notice = None;
+                this.deerflow_rebind(cx);
+                cx.notify();
+            },
+        ));
         if let Some(index) = index(document, selected) {
             let tool = &document["tools"][index];
+            if matches!(selected, 1 | 2) {
+                let independent = tool["clear_https_proxy"] != true
+                    && (tool["https_proxy_configured"] == true
+                        || tool["https_proxy"]
+                            .as_str()
+                            .is_some_and(|value| !value.is_empty()));
+                detail = detail.child(df_label(
+                    "本地请求代理",
+                    self.deerflow_proxy_source(independent),
+                    theme,
+                ));
+            }
             let keys = ["api_key", "https_proxy"]
                 .into_iter()
                 .filter(|key| tool[format!("{key}_configured")] == true)
                 .collect::<Vec<_>>();
             if !keys.is_empty() {
-                group = group.child(df_label(
+                detail = detail.child(df_label(
                     "已有凭据或代理",
                     format!("{} 已配置；留空会保留。", keys.join("、")),
                     theme,
@@ -239,7 +272,7 @@ impl Waku {
             .iter()
             .any(|key| tool.get(*key).is_some())
             {
-                group = group.child(df_label(
+                detail = detail.child(df_label(
                     "无额外参数",
                     "该工具通过下方允许/拒绝列表控制使用权限。",
                     theme,
@@ -249,7 +282,7 @@ impl Waku {
         if let Some(diagnostics) = document["tool_diagnostics"].as_array() {
             for (index, diagnostic) in diagnostics.iter().enumerate() {
                 if let Some(message) = diagnostic.as_str() {
-                    group = group.child(df_label(
+                    detail = detail.child(df_label(
                         format!("保留的旧配置 {}", index + 1),
                         message.to_owned(),
                         theme,
@@ -257,7 +290,21 @@ impl Waku {
                 }
             }
         }
-        group.into_any_element()
+        df_group(theme)
+            .child(df_label(
+                "工具设置",
+                "选择工具查看配置。搜索服务的切换和凭据保存即时生效。",
+                theme,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(18.0))
+                    .child(picker)
+                    .child(detail),
+            )
+            .into_any_element()
     }
 }
 
@@ -300,5 +347,14 @@ mod tests {
             json!({"name":"web_search","original_name":"","api_key":"","timeout":0})
         );
         assert!(change_membership(&mut doc, NAMES.len()).is_err());
+    }
+
+    #[test]
+    fn deerflow_search_parameters_hide_obsolete_credentials_and_transport_fields() {
+        let doc = json!({"tools":[{"name":"web_search", "api_key":"", "clear_api_key":false,
+            "https_proxy":"", "clear_https_proxy":false, "timeout":30, "max_results":5}]});
+        let fields = fields(&doc, 0);
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].path, "/tools/0/max_results");
     }
 }

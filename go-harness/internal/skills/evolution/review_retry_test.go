@@ -109,13 +109,12 @@ func TestReviewRetryRejectsContentAndIntegrityFailures(t *testing.T) {
 	}
 }
 
-func TestScriptPackageNeverAutomaticallyPublishesEvenWithAcknowledgment(t *testing.T) {
+func TestScriptPackageWithoutExecutionCannotAutomaticallyPublish(t *testing.T) {
 	f := newFixture(t, nil)
 	request := f.request(t, "python-auto", "Use the packaged helper.")
 	request.Files["run.py"] = []byte("print('sample')")
 	p := f.submit(t, request)
 	r := review(p)
-	r.AcknowledgeUnverifiedScripts = true
 	ctx := context.WithValue(context.Background(), autoPatchContextKey{}, true)
 	if _, err := f.service.Approve(ctx, p.ID, r); !errors.Is(err, errAutoPatchReview) {
 		t.Fatal("automatic scripts admitted", err)

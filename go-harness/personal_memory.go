@@ -98,7 +98,7 @@ func personalMemoryPostRun(store *memory.Store, req harness.RunRequest, cfg Conf
 }
 
 func (c *Client) startMemoryWorker(ctx context.Context, cfg Config) error {
-	extract, err := einoengine.NewMemoryExtractor(ctx, einoengine.Config{Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, OutputTokenParameter: cfg.OutputTokenParameter})
+	extract, err := einoengine.NewMemoryExtractor(ctx, einoengine.Config{API: cfg.API, Network: cfg.Network, Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, OutputTokenParameter: cfg.OutputTokenParameter})
 	if err != nil {
 		return err
 	}

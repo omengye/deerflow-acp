@@ -9,7 +9,14 @@ import (
 )
 
 func (s *Service) BehaviorEvaluation(ctx context.Context, proposalID string) (harness.SkillBehaviorEvaluation, error) {
+	return s.BehaviorEvaluationPage(ctx, proposalID, 0, 32)
+}
+
+func (s *Service) BehaviorEvaluationPage(ctx context.Context, proposalID string, after int64, limit int) (harness.SkillBehaviorEvaluation, error) {
 	var view harness.SkillBehaviorEvaluation
+	if after < 0 || limit < 1 || limit > 100 {
+		return view, harness.ErrInvalidInput
+	}
 	err := s.withProposal(ctx, proposalID, func(tx *skills.PublicationTx, p *Proposal) error {
 		r, err := readBehavior(ctx, tx.SQL(), p.ID)
 		if err != nil {
@@ -22,12 +29,12 @@ func (s *Service) BehaviorEvaluation(ctx context.Context, proposalID string) (ha
 		if err != nil {
 			return err
 		}
-		results, err := readBehaviorResults(ctx, tx.SQL(), r)
+		results, last, more, err := behaviorResultPage(ctx, tx.SQL(), r, after, limit)
 		if err != nil {
 			return err
 		}
 		if r.report != nil {
-			composed, err := composeBehaviorReport(r, results)
+			composed, err := storedBehaviorReport(ctx, tx.SQL(), r)
 			if err != nil {
 				return err
 			}
@@ -35,11 +42,16 @@ func (s *Service) BehaviorEvaluation(ctx context.Context, proposalID string) (ha
 				return invalid("behavior report does not match persisted cases")
 			}
 		}
-		view = harness.SkillBehaviorEvaluation{ID: r.input.ID, ProposalID: p.ID, JobID: r.jobID, Target: r.input.Target, Base: r.input.Base, CandidateVersion: r.input.CandidateVersion, SuiteDigest: r.input.SuiteDigest, EvaluatorIdentity: r.input.EvaluatorIdentity, State: job.State, StateVersion: job.StateVersion, Attempts: job.Attempts, ErrorCode: job.ErrorCode, Deadline: job.Deadline, RetryAt: job.RetryAt, ContentReviewed: r.content != nil, Results: results, Report: r.report}
+		var total int
+		if err = tx.SQL().QueryRowContext(ctx, `SELECT count(*) FROM df_skill_behavior_results WHERE evaluation_id=?`, r.input.ID).Scan(&total); err != nil {
+			return err
+		}
+		view = harness.SkillBehaviorEvaluation{LastResultSequence: last, HasMoreResults: more, TotalResults: total, ID: r.input.ID, ProposalID: p.ID, JobID: r.jobID, Target: r.input.Target, Base: r.input.Base, CandidateVersion: r.input.CandidateVersion, SuiteDigest: r.input.SuiteDigest, EvaluatorIdentity: r.input.EvaluatorIdentity, State: job.State, StateVersion: job.StateVersion, Attempts: job.Attempts, ErrorCode: job.ErrorCode, Deadline: job.Deadline, RetryAt: job.RetryAt, ContentReviewed: r.content != nil, Results: results, Report: r.report}
 		if r.input.Suite != nil {
 			view.SuiteID = r.input.Suite.ID
 		}
-		return nil
+		view.Evidence, err = s.evidenceReadinessTx(ctx, tx.SQL(), *p, r)
+		return err
 	})
 	return view, err
 }

@@ -162,6 +162,8 @@ func mapError(err error) (mapped error) {
 		return &protocol.Error{Code: protocol.InvalidParams, Message: "存在重复启用的同名技能，暂时无法继续。请打开技能中心，对照技能名称和来源，仅保留需要的一份启用，再重新发送消息。无需删除聊天记录。", Data: map[string]any{"kind": "skill_name_conflict", "skillName": skillConflict.Name, "sources": []string{skillConflict.FirstSource, skillConflict.SecondSource}, "automaticReplay": false}}
 	case errors.Is(err, harness.ErrModelVisionUnavailable):
 		return &protocol.Error{Code: protocol.InvalidParams, Message: "当前输入或会话历史中包含图片，但所选模型未配置图片理解能力。请切换到支持图片的模型，或确认该模型支持图片后在模型设置中启用视觉能力；也可新建纯文本会话继续。", Data: map[string]any{"kind": "model_vision_unavailable", "automaticReplay": false}}
+	case errors.Is(err, harness.ErrCheckpointTooLarge), errors.Is(err, harness.ErrCheckpointInvalid), errors.Is(err, harness.ErrCheckpointCommit):
+		return checkpointError(err)
 	case errors.Is(err, harness.ErrInvalidInput):
 		return rpcError(protocol.InvalidParams, "Invalid request parameters")
 	case errors.Is(err, harness.ErrModelResponseInvalid):
@@ -172,6 +174,12 @@ func mapError(err error) (mapped error) {
 			return err
 		}
 		return &protocol.Error{Code: -32027, Message: "模型服务请求受到限流，本轮已停止。请稍后重试或切换模型；已完成的工具结果已保留，请检查结果后再继续。", Data: map[string]any{"kind": "model_rate_limited", "automaticReplay": false}}
+	case errors.Is(err, harness.ErrModelToolsRequireResponses):
+		var persistence interface{ PersistenceFailure() bool }
+		if errors.As(err, &persistence) && persistence.PersistenceFailure() {
+			return err
+		}
+		return &protocol.Error{Code: -32031, Message: "当前模型在 Chat Completions 接口下不支持此工具调用配置。请使用 Responses 接口，或切换到兼容工具调用的模型；已保存的执行记录会保留。", Data: map[string]any{"kind": "model_tools_require_responses", "automaticReplay": false}}
 	}
 	return err
 }

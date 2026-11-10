@@ -39,8 +39,8 @@ func TestSkillLearningConsolidationSDKLifecycleManagementAndSharedDispatcher(t *
 		t.Run(name, func(t *testing.T) {
 			workspace, cfg := skillFixture(t)
 			extractor, consolidator := &sdkExperienceExtractor{}, &sdkExperienceConsolidator{}
-			budget := harness.SkillMaintenanceBudget{MaxDailyModelCalls: 5, MaxDailyTokens: 100000, MaxJobSeconds: 60, Workers: 1}
-			cfg.SkillLearning = &harness.SkillLearningOptions{Idle: time.Second, MaxDailyModelCalls: 3, MaxDailyTokens: 50000, Budget: budget, Consolidation: &harness.SkillGenerationModelConfig{}}
+			budget := harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}
+			cfg.SkillLearning = &harness.SkillLearningOptions{Idle: time.Second, Policy: budget, Consolidation: &harness.SkillGenerationModelConfig{}}
 			cfg.SkillExperienceExtractor, cfg.SkillExperienceConsolidator = extractor, consolidator
 			cfg.Engine = engineFunc(func(ctx context.Context, req harness.RunRequest, emit harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
 				err := emit(ctx, harness.RunEvent{SessionID: req.Session.ID, RunID: req.RunID, Kind: "text_delta", AgentName: "deerflow", Text: "Inspect the complete configuration"})
@@ -53,7 +53,7 @@ func TestSkillLearningConsolidationSDKLifecycleManagementAndSharedDispatcher(t *
 				if err != nil {
 					t.Fatal(err)
 				}
-				cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route}, Budget: budget, Sources: []string{"project"}}
+				cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route}, Policy: budget, Sources: []string{"project"}}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			defer cancel()
@@ -85,7 +85,7 @@ func TestSkillLearningConsolidationSDKLifecycleManagementAndSharedDispatcher(t *
 				t.Fatal("consolidation worker did not persist shadow result", page)
 			}
 			status, err := c.SkillLearningStatus(ctx)
-			if err != nil || !status.ConsolidationEnabled || status.Patterns != 1 || status.Mode != "shadow" {
+			if err != nil || !status.ConsolidationEnabled || status.Patterns != 1 || status.Mode != "automatic" {
 				t.Fatal(status, err)
 			}
 			if _, err = skillManagementCall(t, c, map[string]any{"operation": "skill.learning.patterns", "session_id": x.ID, "limit": 10}); err != nil {

@@ -23,7 +23,7 @@ type autoPatchHost struct {
 }
 type autoPatchContextKey struct{}
 
-var errAutoPatchReview = errors.New("candidate requires operator review")
+var errAutoPatchReview = errors.New("candidate is waiting for automatic adoption requirements")
 
 type autoPatchDecisionError struct{ reason string }
 
@@ -34,7 +34,7 @@ func (e autoPatchDecisionError) Unwrap() error { return errAutoPatchReview }
 func autoPatchDecision(reason string) error    { return autoPatchDecisionError{reason: reason} }
 
 func validAutoPatchOptions(o harness.SkillAutoPatchOptions) bool {
-	return o.MaxChangedLines >= 1 && o.MaxChangedLines <= 200 && o.MaxDailyPublications >= 1 && o.MaxDailyPublications <= 20 && o.ObservationHours >= 1 && o.ObservationHours <= 720 && o.MinObservations >= 1 && o.MinObservations <= 100 && o.RollbackFailureThreshold >= 1 && o.RollbackFailureThreshold <= 100
+	return o.MaxChangedLines >= 1 && o.MaxChangedLines <= 200 && o.ObservationHours >= 1 && o.ObservationHours <= 720 && o.MinObservations >= 1 && o.MinObservations <= 100 && o.RollbackFailureThreshold >= 1 && o.RollbackFailureThreshold <= 100
 }
 
 func migrateAutoPatch(ctx context.Context, tx *sql.Tx) error {
@@ -59,9 +59,6 @@ INSERT OR IGNORE INTO df_skill_auto_patch_scan VALUES(1,'','','');`)
 func (s *Service) ConfigureAutoPatch(options harness.SkillAutoPatchOptions) error {
 	if s.autoPatch != nil || s.generation == nil || s.behavior == nil || !validAutoPatchOptions(options) {
 		return invalid("auto_patch requires generation, behavior evaluation and bounded options")
-	}
-	if options.ExperiencePatternsEnabled && (s.experienceSource == nil || !s.experienceSource.PromotionEnabled() || s.discovery == nil || !s.discovery.options.ExperiencePatternsEnabled) {
-		return invalid("learning auto_patch requires enabled experience discovery and host learning authority")
 	}
 	builtin, err := s.registry.BuiltinSources()
 	if err != nil {
@@ -119,32 +116,42 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 		return nil
 	}
 	learningCandidate := p.Trigger.Type == "experience_pattern"
-	if containsScripts(input.CandidateFiles) {
-		return autoPatchDecision("script_package_requires_review")
+	if containsScripts(input.CandidateFiles) && !p.Evaluation.IsolatedScripts {
+		return autoPatchDecision("blocked_runtime")
 	}
 	a := s.autoPatch
-	if a != nil && slices.Contains(a.builtin, p.Target.SourceID) {
-		return autoPatchDecision("scope_or_coverage_requires_review")
+	if p.Origin == "automatic" && p.Evaluation.BehaviorReport != nil && p.Evaluation.BehaviorReport.HoldoutCases < 1 {
+		return autoPatchDecision("blocked_evidence")
 	}
-	if learningCandidate && (a == nil || !a.options.ExperiencePatternsEnabled || s.discovery == nil || !s.discovery.options.ExperiencePatternsEnabled) {
+	if a != nil && slices.Contains(a.builtin, p.Target.SourceID) {
+		return autoPatchDecision("blocked_scope_or_coverage")
+	}
+	if learningCandidate && (a == nil || s.discovery == nil || s.experienceSource == nil || !s.experienceSource.PromotionEnabled()) {
 		return autoPatchDecision("learning_authorization_required")
 	}
-	if a == nil || !p.Base.Exists || !p.Base.Enabled || !p.Base.Managed || p.OverlayBase != nil || p.Origin != "automatic" || p.Action != "edit" && p.Action != "patch" || !slices.Equal(p.ChangedFiles, []string{"SKILL.md"}) || p.Evaluation.Security != "passed" || p.Evaluation.Behavior != "passed" || p.Evaluation.BehaviorReport == nil || p.Evaluation.BehaviorReport.Regressions != 0 || p.Evaluation.BehaviorReport.TargetedCases < 1 || p.Evaluation.BehaviorReport.RegressionCases < 1 {
-		return autoPatchDecision("scope_or_coverage_requires_review")
+	if a == nil || p.Base.Exists && !p.Base.Enabled || p.OverlayBase != nil || p.Origin != "automatic" || p.Action != "edit" && p.Action != "patch" && p.Action != "create" || p.Evaluation.Security != "passed" || p.Evaluation.Behavior != "passed" || p.Evaluation.BehaviorReport == nil || p.Evaluation.BehaviorReport.Regressions != 0 || p.Evaluation.BehaviorReport.TargetedCases < 1 || p.Evaluation.BehaviorReport.RegressionCases < 1 {
+		return autoPatchDecision("blocked_scope_or_coverage")
 	}
 	// All automatic origins need actual improvement, not merely two passing
 	// variants. Metadata rewrites use the same stricter trigger comparison.
-	if !learningAutoPatchContentAllowed(input.BaseFiles["SKILL.md"], input.CandidateFiles["SKILL.md"], *p.Evaluation.BehaviorReport) {
-		return autoPatchDecision("improvement_or_metadata_requires_review")
+	contentAllowed := learningAutoPatchContentAllowed(input.BaseFiles["SKILL.md"], input.CandidateFiles["SKILL.md"], *p.Evaluation.BehaviorReport)
+	if !p.Base.Exists {
+		contentAllowed = learningAutoPatchImproved(*p.Evaluation.BehaviorReport) && p.Evaluation.BehaviorReport.TriggerPositiveCases > 0 && p.Evaluation.BehaviorReport.TriggerNegativeCases > 0
 	}
-	changed := changedTextLines(input.BaseFiles["SKILL.md"], input.CandidateFiles["SKILL.md"], a.options.MaxChangedLines)
+	if !contentAllowed {
+		return autoPatchDecision("improvement_not_proven")
+	}
+	changed := 0
+	for _, path := range p.ChangedFiles {
+		changed += changedTextLines(input.BaseFiles[path], input.CandidateFiles[path], a.options.MaxChangedLines)
+	}
 	if changed < 1 || changed > a.options.MaxChangedLines {
-		return autoPatchDecision("change_size_requires_review")
+		return autoPatchDecision("change_size_exceeded")
 	}
 	var jobID string
 	if err := tx.SQL().QueryRowContext(ctx, `SELECT job_id FROM df_skill_generation_inputs WHERE proposal_id=?`, p.ID).Scan(&jobID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return autoPatchDecision("generation_binding_requires_review")
+			return autoPatchDecision("generation_binding_invalid")
 		}
 		return err
 	}
@@ -152,15 +159,20 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 	if err != nil {
 		return err
 	}
-	if r.job.State != "completed" || r.proposal != p.ID || r.candidate != p.CandidateVersion || r.input.Target != p.Target || r.input.Request.Base != p.Base {
-		return autoPatchDecision("generation_binding_requires_review")
+	generationComplete := r.job.State == "completed"
+	if !generationComplete && r.job.State == "failed" && r.job.ErrorCode == "configuration_changed" {
+		if err = tx.SQL().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_behavior_evaluations e JOIN df_skill_maintenance_jobs j ON j.id=e.job_id WHERE e.proposal_id=? AND e.manual=1 AND j.state='completed')`, p.ID).Scan(&generationComplete); err != nil {
+			return err
+		}
+	}
+	if !generationComplete || r.proposal != p.ID || r.candidate != p.CandidateVersion || r.input.Target != p.Target || r.input.Request.Base != p.Base {
+		return autoPatchDecision("generation_binding_invalid")
 	}
 	if err = s.generation.checkSource(r); err != nil {
 		return autoPatchDecision("source_authorization_required")
 	}
-	if err = s.generation.checkConfiguration(r); err != nil {
-		return autoPatchDecision("configuration_requires_review")
-	}
+	// Generation identity remains provenance. Current review and evaluation
+	// identities are enforced by guardBehaviorReport, including re-evaluation.
 	if r.input.DiscoveryID != "" {
 		d, _, _, err := readDiscovery(ctx, tx.SQL(), r.input.DiscoveryID)
 		if err != nil {
@@ -171,10 +183,10 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 			if d.ReviewDraft {
 				return autoPatchDecision("waiting_evidence")
 			}
-			return autoPatchDecision("evidence_requires_review")
+			return autoPatchDecision("blocked_evidence")
 		}
 	} else if learningCandidate {
-		return autoPatchDecision("evidence_requires_review")
+		return autoPatchDecision("blocked_evidence")
 	}
 	var count int
 	if err = tx.SQL().QueryRowContext(ctx, `SELECT count(*) FROM df_skill_auto_patch_observations WHERE source_key=? AND name=? AND status='observing'`, p.Target.SourceIdentity, p.Target.Name).Scan(&count); err != nil {
@@ -182,14 +194,6 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 	}
 	if count > 0 {
 		return autoPatchDecision("waiting_observation")
-	}
-	now := a.now().UTC()
-	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	if err = tx.SQL().QueryRowContext(ctx, `SELECT count(*) FROM df_skill_auto_patch_observations WHERE started_ns>=? AND started_ns<?`, start.UnixNano(), start.Add(24*time.Hour).UnixNano()).Scan(&count); err != nil {
-		return err
-	}
-	if count >= a.options.MaxDailyPublications {
-		return autoPatchDecision("waiting_quota")
 	}
 	return nil
 }
@@ -223,7 +227,7 @@ func readAutoPatchObservation(ctx context.Context, db rowReader, id string) (har
 		return o, invalid("auto_patch observation is inconsistent")
 	}
 	switch o.Status {
-	case "observing", "passed", "insufficient_evidence", "rolled_back", "superseded":
+	case "observing", "stable", "passed", "insufficient_evidence", "rolled_back", "superseded", "withdrawn":
 	default:
 		return o, invalid("auto_patch observation status is inconsistent")
 	}
@@ -242,12 +246,21 @@ func (s *Service) attachAutoPatchObservation(ctx context.Context, tx *skills.Pub
 		return harness.ErrSkillConflict
 	}
 	now := s.autoPatch.now().UTC()
-	o := harness.SkillAutoPatchObservation{ProposalID: p.ProposalID, Target: p.Target, PublicationRevision: p.Revision, BaselineRevision: previous.Revision, Head: p.Head, Options: s.autoPatch.options, Status: "observing", StartedAt: now, Deadline: now.Add(time.Duration(s.autoPatch.options.ObservationHours) * time.Hour), UpdatedAt: now}
+	o := harness.SkillAutoPatchObservation{PolicyVersion: "skill-evolution-v2", ProposalID: p.ProposalID, Target: p.Target, PublicationRevision: p.Revision, BaselineRevision: previous.Revision, Head: p.Head, Options: s.autoPatch.options, Status: "observing", StartedAt: now, Deadline: now.Add(time.Duration(s.autoPatch.options.ObservationHours) * time.Hour), UpdatedAt: now}
 	if proposal.Trigger.Type == "experience_pattern" {
 		o.LearningSource, err = autoPatchLearningSource(ctx, tx.SQL(), proposal)
 		if err != nil {
 			return err
 		}
+	}
+	workspace, err := s.automaticWorkspace(ctx, tx.SQL(), proposal)
+	if err != nil {
+		return err
+	}
+	_ = workspace // Scope and immutable route were committed by PublishAutomatic.
+	// Remove any already prepared export before the publication transaction commits.
+	if _, err = tx.SQL().ExecContext(ctx, `DELETE FROM df_skill_exports WHERE source_key=? AND name=? AND state_version=?`, p.Target.SourceIdentity, p.Target.Name, p.Head.StateVersion); err != nil {
+		return err
 	}
 	return writeAutoPatchObservation(ctx, tx.SQL(), o, true)
 }
@@ -271,18 +284,20 @@ func sameAutoPatchFrontmatter(base, candidate []byte) bool {
 }
 
 func learningAutoPatchImproved(report harness.SkillBehaviorReport) bool {
-	if report.State != "passed" || report.TargetedCases < 1 || report.RegressionCases < 1 || report.Regressions != 0 {
+	if report.State != "passed" || report.TargetedCases < 1 || report.RegressionCases < 1 || report.Regressions != 0 || report.CandidateFailures > 0 || report.MeasurementErrors > 0 {
 		return false
 	}
-	improved := false
-	for _, result := range report.Results {
-		// Operational failures do not establish a baseline skill deficiency.
-		if result.BaseErrorCode != "" && result.BaseErrorCode != "assertion_failed" || result.CandidateErrorCode != "" && result.CandidateErrorCode != "assertion_failed" || result.BasePassed && !result.CandidatePassed {
-			return false
+	if report.TotalComparisons <= len(report.Results) {
+		improved := false
+		for _, c := range report.Results {
+			if c.BaseErrorCode != "" && c.BaseErrorCode != "assertion_failed" || !c.CandidatePassed {
+				return false
+			}
+			if c.Kind == "targeted" && !c.BasePassed && c.BaseErrorCode == "assertion_failed" && c.CandidatePassed {
+				improved = true
+			}
 		}
-		if result.Kind == "targeted" && !result.BasePassed && result.BaseErrorCode == "assertion_failed" && result.CandidatePassed && result.CandidateErrorCode == "" {
-			improved = true
-		}
+		return improved
 	}
-	return improved
+	return report.TargetedImprovements > 0
 }

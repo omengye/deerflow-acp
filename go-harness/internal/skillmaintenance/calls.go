@@ -21,8 +21,8 @@ func (b *claimBroker) Settle(ctx context.Context, r Receipt, u Usage) error {
 	return b.store.settle(ctx, b.claim, r, u)
 }
 
-// The full estimate plus output cap is charged in the admission transaction.
-// A crash, timeout, cancellation or invalid usage cannot refund that charge.
+// Register every external request before I/O. Usage is observational and never
+// participates in admission; the durable receipt binds the request to its lease.
 func (s *Store) reserve(ctx context.Context, c Claim, r ModelCall) (Receipt, error) {
 	switch r.Stage {
 	case "generation", "security", "quality", "behavior", "experience_extract", "experience_consolidate", "skill_match":
@@ -66,12 +66,12 @@ func (s *Store) reserve(ctx context.Context, c Claim, r ModelCall) (Receipt, err
 		return Receipt{}, ErrConflict
 	}
 	day := now.Format("2006-01-02")
-	_, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO df_skill_maintenance_days(day,model_calls,charged_tokens) VALUES(?,0,0)`, day)
+	_, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO df_skill_maintenance_days(day,model_calls,actual_tokens) VALUES(?,0,0)`, day)
 	if err != nil {
 		return Receipt{}, err
 	}
 	charge := r.InputTokens + r.MaxOutputTokens
-	result, err := tx.ExecContext(ctx, `UPDATE df_skill_maintenance_days SET model_calls=model_calls+1,charged_tokens=charged_tokens+? WHERE day=? AND model_calls<? AND charged_tokens<=?`, charge, day, min(j.Policy.MaxDailyModelCalls, s.policy.MaxDailyModelCalls), min(j.Policy.MaxDailyTokens, s.policy.MaxDailyTokens)-charge)
+	result, err := tx.ExecContext(ctx, `UPDATE df_skill_maintenance_days SET model_calls=model_calls+1 WHERE day=?`, day)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -80,10 +80,10 @@ func (s *Store) reserve(ctx context.Context, c Claim, r ModelCall) (Receipt, err
 		return Receipt{}, err
 	}
 	if n != 1 {
-		return Receipt{}, ErrBudget
+		return Receipt{}, ErrConflict
 	}
-	receipt := Receipt{ID: "smc_" + rand.Text(), JobID: j.ID, Attempt: j.Attempts, Day: day, Stage: r.Stage, ModelIdentity: r.ModelIdentity, InputDigest: r.InputDigest, ReservedTokens: charge, ChargedTokens: charge, State: "reserved", Estimated: true}
-	result, err = tx.ExecContext(ctx, `INSERT INTO df_skill_maintenance_calls(id,job_id,attempt,claim_token,day,stage,model_identity,input_digest,reserved_tokens,charged_tokens,state) VALUES(?,?,?,?,?,?,?,?,?,?,'reserved')`, receipt.ID, j.ID, j.Attempts, c.token, day, r.Stage, r.ModelIdentity, r.InputDigest, charge, charge)
+	receipt := Receipt{ID: "smc_" + rand.Text(), JobID: j.ID, Attempt: j.Attempts, Day: day, Stage: r.Stage, ModelIdentity: r.ModelIdentity, InputDigest: r.InputDigest, EstimatedTokens: charge, ActualTokens: 0, State: "reserved", Estimated: true, UsageState: "unknown"}
+	result, err = tx.ExecContext(ctx, `INSERT INTO df_skill_maintenance_calls(id,job_id,attempt,claim_token,day,stage,model_identity,input_digest,estimated_tokens,actual_tokens,state) VALUES(?,?,?,?,?,?,?,?,?,?,'reserved')`, receipt.ID, j.ID, j.Attempts, c.token, day, r.Stage, r.ModelIdentity, r.InputDigest, charge, 0)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -107,13 +107,19 @@ func stageAllowed(kind JobKind, stage string) bool {
 	}
 }
 
-const receiptColumns = `sequence,id,job_id,attempt,day,stage,model_identity,input_digest,reserved_tokens,charged_tokens,input_tokens,output_tokens,state,estimated`
+const receiptColumns = `sequence,id,job_id,attempt,day,stage,model_identity,input_digest,estimated_tokens,actual_tokens,input_tokens,output_tokens,state,estimated`
 
 type scanner interface{ Scan(...any) error }
 
 func scanReceipt(row scanner) (Receipt, error) {
 	var r Receipt
-	err := row.Scan(&r.Sequence, &r.ID, &r.JobID, &r.Attempt, &r.Day, &r.Stage, &r.ModelIdentity, &r.InputDigest, &r.ReservedTokens, &r.ChargedTokens, &r.InputTokens, &r.OutputTokens, &r.State, &r.Estimated)
+	err := row.Scan(&r.Sequence, &r.ID, &r.JobID, &r.Attempt, &r.Day, &r.Stage, &r.ModelIdentity, &r.InputDigest, &r.EstimatedTokens, &r.ActualTokens, &r.InputTokens, &r.OutputTokens, &r.State, &r.Estimated)
+	if err == nil {
+		r.UsageState = "actual"
+		if r.Estimated {
+			r.UsageState = "unknown"
+		}
+	}
 	return r, err
 }
 
@@ -144,7 +150,7 @@ func (s *Store) settle(ctx context.Context, c Claim, r Receipt, u Usage) error {
 	if err = tx.QueryRowContext(ctx, `SELECT claim_token,settlement_digest FROM df_skill_maintenance_calls WHERE id=?`, r.ID).Scan(&token, &prior); err != nil {
 		return err
 	}
-	if stored.JobID != c.Job.ID || stored.Attempt != c.Job.Attempts || token != c.token || r.JobID != stored.JobID || r.Sequence != stored.Sequence || r.Attempt != stored.Attempt || r.Day != stored.Day || r.Stage != stored.Stage || r.ModelIdentity != stored.ModelIdentity || r.InputDigest != stored.InputDigest || r.ReservedTokens != stored.ReservedTokens {
+	if stored.JobID != c.Job.ID || stored.Attempt != c.Job.Attempts || token != c.token || r.JobID != stored.JobID || r.Sequence != stored.Sequence || r.Attempt != stored.Attempt || r.Day != stored.Day || r.Stage != stored.Stage || r.ModelIdentity != stored.ModelIdentity || r.InputDigest != stored.InputDigest || r.EstimatedTokens != stored.EstimatedTokens {
 		return ErrConflict
 	}
 	digest := hash(u)
@@ -157,16 +163,16 @@ func (s *Store) settle(ctx context.Context, c Claim, r Receipt, u Usage) error {
 	if stored.State != "reserved" {
 		return ErrConflict
 	}
-	charged := stored.ReservedTokens
+	charged := int64(0)
 	if u.Known {
 		charged = u.InputTokens + u.OutputTokens
 	}
 	// Attribute late settlement to the reservation's UTC day, even across midnight.
-	_, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_days SET charged_tokens=charged_tokens+? WHERE day=?`, charged-stored.ChargedTokens, stored.Day)
+	_, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_days SET actual_tokens=actual_tokens+? WHERE day=?`, charged-stored.ActualTokens, stored.Day)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_calls SET state='settled',charged_tokens=?,input_tokens=?,output_tokens=?,estimated=?,settlement_digest=? WHERE id=?`, charged, u.InputTokens, u.OutputTokens, !u.Known, digest, r.ID)
+	_, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_calls SET state='settled',actual_tokens=?,input_tokens=?,output_tokens=?,estimated=?,settlement_digest=? WHERE id=?`, charged, u.InputTokens, u.OutputTokens, !u.Known, digest, r.ID)
 	if err != nil {
 		return err
 	}
@@ -206,7 +212,7 @@ func (s *Store) DayUsage(ctx context.Context, day string) (DayUsage, error) {
 	if parsed, err := time.Parse("2006-01-02", day); err != nil || parsed.Format("2006-01-02") != day {
 		return result, ErrInvalid
 	}
-	err := s.db.QueryRowContext(ctx, `SELECT model_calls,charged_tokens FROM df_skill_maintenance_days WHERE day=?`, day).Scan(&result.ModelCalls, &result.ChargedTokens)
+	err := s.db.QueryRowContext(ctx, `SELECT model_calls,actual_tokens,(SELECT COALESCE(SUM(estimated_tokens),0) FROM df_skill_maintenance_calls WHERE day=d.day AND estimated=1),(SELECT count(*) FROM df_skill_maintenance_calls WHERE day=d.day AND estimated=1) FROM df_skill_maintenance_days d WHERE day=?`, day).Scan(&result.ModelCalls, &result.ActualTokens, &result.EstimatedTokens, &result.UnknownCalls)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil
 	}

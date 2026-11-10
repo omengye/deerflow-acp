@@ -52,12 +52,13 @@ fn runtime_data_directory(user_data: &Path) -> Result<PathBuf> {
             if user_data
                 .join("config/go-harness-state/harness.db")
                 .is_file()
+                || user_data.join("data/go-harness/harness.db").is_file()
             {
                 bail!(
                     "DeerFlow 数据目录绑定缺失，但历史数据库仍存在；为保护历史会话，已停止启动，请恢复 runtime-data.json"
                 );
             }
-            return Ok(user_data.join("data/go-harness"));
+            return Ok(user_data.join("config/go-harness-state"));
         }
         Err(error) => return Err(error).context("无法读取 DeerFlow 数据目录绑定"),
     };
@@ -85,6 +86,16 @@ fn runtime_data_directory(user_data: &Path) -> Result<PathBuf> {
     }
     if !std::fs::canonicalize(&data_dir)?.starts_with(std::fs::canonicalize(user_data)?) {
         bail!("绑定的 DeerFlow 数据目录不能指向 user-data 之外");
+    }
+    for relative in ["config/go-harness-state", "data/go-harness"] {
+        let other = user_data.join(relative);
+        if other.join("harness.db").is_file()
+            && std::fs::canonicalize(&other)? != std::fs::canonicalize(&data_dir)?
+        {
+            bail!(
+                "发现第二份运行数据库；请先将非活动库归档到运行目录之外，再启动并使用归档恢复技能登记"
+            );
+        }
     }
     Ok(data_dir)
 }
@@ -680,13 +691,21 @@ impl DeerFlowService {
     pub fn request(&self, operation: &str, input: Value) -> Result<Value> {
         ensure_operation(operation)?;
         let paths = Paths::discover()?;
-        if operation != "check-readiness" {
+        if !matches!(
+            operation,
+            "check-readiness" | "search-status" | "search-select" | "search-configure"
+        ) || operation.starts_with("search-") && !paths.config.is_file()
+        {
             paths.bootstrap()?;
         }
         match operation {
             "snapshot" => paths.config_snapshot(),
             "validate" => paths.save_config_document(operation, &input),
-            "test-model" | "check-readiness" => paths.config_command(operation, &input),
+            "search-status" => paths
+                .manage(&json!({"operation":"search.status"}))
+                .or_else(|_| paths.config_command(operation, &input)),
+            "test-model" | "test-network" | "check-readiness" | "search-select"
+            | "search-configure" => paths.config_command(operation, &input),
             "save" | "save-and-apply" => {
                 let _guard = self.state.mutation.lock();
                 if self.state.applying.load(Ordering::Acquire)
@@ -873,7 +892,11 @@ fn ensure_operation(operation: &str) -> Result<()> {
             | "save-and-apply"
             | "validate"
             | "test-model"
+            | "test-network"
             | "check-readiness"
+            | "search-status"
+            | "search-select"
+            | "search-configure"
             | "manage"
             | "manage-envelope"
             | "status"
@@ -1107,7 +1130,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn data_directory_binding_survives_restart_with_both_stores_intact() {
+    fn data_directory_binding_rejects_second_store_and_survives_archive() {
         let root =
             std::env::temp_dir().join(format!("deerflow-data-root-{}", uuid::Uuid::new_v4()));
         let user_data = root.join("user-data");
@@ -1121,6 +1144,12 @@ mod tests {
             br#"{"data_dir":"config/go-harness-state"}"#,
         )
         .unwrap();
+        assert!(runtime_data_directory(&user_data).is_err());
+        std::fs::rename(
+            user_data.join("data/go-harness/harness.db"),
+            root.join("archived.db"),
+        )
+        .unwrap();
         // Independent discoveries model startup, config apply and a later restart.
         for _ in 0..3 {
             let paths = Paths::from_root(root.clone()).unwrap();
@@ -1129,12 +1158,14 @@ mod tests {
                 key == "DEERFLOW_GO_DATA_DIR" && Path::new(value) == paths.data_dir
             }));
         }
-        for relative in ["config/go-harness-state", "data/go-harness"] {
-            assert_eq!(
-                std::fs::read_to_string(user_data.join(relative).join("harness.db")).unwrap(),
-                relative
-            );
-        }
+        assert_eq!(
+            std::fs::read_to_string(user_data.join("config/go-harness-state/harness.db")).unwrap(),
+            "config/go-harness-state"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("archived.db")).unwrap(),
+            "data/go-harness"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1195,7 +1226,7 @@ mod tests {
             std::env::temp_dir().join(format!("deerflow-data-fresh-{}", uuid::Uuid::new_v4()));
         assert_eq!(
             runtime_data_directory(&root).unwrap(),
-            root.join("data/go-harness")
+            root.join("config/go-harness-state")
         );
         assert!(!root.exists());
     }
@@ -1206,7 +1237,7 @@ mod tests {
             std::env::temp_dir().join(format!("deerflow-data-live-{}", uuid::Uuid::new_v4()));
         let paths = Paths::from_root(root.clone()).unwrap();
         std::fs::create_dir_all(&paths.data_dir).unwrap();
-        let alternate = paths.user_data.join("config/go-harness-state");
+        let alternate = paths.user_data.join("data/go-harness");
         std::fs::create_dir_all(&alternate).unwrap();
         assert!(
             paths

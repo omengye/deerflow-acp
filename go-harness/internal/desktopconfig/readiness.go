@@ -13,6 +13,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
 	"github.com/omengye/deerflow-acp/go-harness/internal/opencli"
+	"github.com/omengye/deerflow-acp/go-harness/internal/websearch"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -111,10 +112,33 @@ func capabilityReadiness(data map[string]any, configDir string) []map[string]str
 			continue
 		}
 		if name == "web_search" {
-			if !hasCredential(str(tool, "api_key", "")) {
-				add(name, "missing_credential", "需要单独配置 Brave Search API Key；模型密钥不能替代。", "tools")
-			} else {
-				add(name, "unverified", "本地凭据已配置；未检查网络、额度或搜索服务。", "tools")
+			body, _ := yaml.Marshal(data)
+			seed, seedErr := websearch.SeedYAML(body)
+			manager, managerErr := websearch.New(filepath.Join(configDir, "search-providers.json"), seed)
+			if seedErr != nil || managerErr != nil {
+				add(name, "not_configured", "搜索服务配置无效，请在设置 → 工具 → web_search 中重新配置。", "tools")
+				continue
+			}
+			status, statusErr := manager.Status()
+			if statusErr != nil {
+				add(name, "not_configured", "无法读取搜索服务配置，请在设置 → 工具 → web_search 中检查。", "tools")
+				continue
+			}
+			for _, provider := range status.Providers {
+				if provider.Name != status.DefaultProvider {
+					continue
+				}
+				if !provider.Configured {
+					state := "missing_credential"
+					reason := "请在设置 → 工具 → web_search 中为 " + provider.Label + " 配置 API Key。"
+					if provider.Name == "searxng" {
+						state = "not_configured"
+						reason = "请填写 SearXNG 实例地址；Key 选填。"
+					}
+					add(name, state, reason, "tools")
+				} else {
+					add(name, "unverified", provider.Label+" 已配置；本地检查不验证网络、额度或实际搜索。", "tools")
+				}
 			}
 		} else {
 			executable, err := resolveSecret(str(tool, "executable", ""))

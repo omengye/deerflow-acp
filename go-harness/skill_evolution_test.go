@@ -116,15 +116,16 @@ func TestSkillEvolutionSDKAndAuthenticatedManagement(t *testing.T) {
 	if json.Unmarshal(response["data"], &projected) != nil || projected.OverlayBase != nil || projected.Target != p.Target {
 		t.Fatalf("MANAGE lost file source identity: %s", response)
 	}
-	response = call(map[string]any{"operation": "proposal.approve", "proposal_id": p.ID, "expected_state_version": p.StateVersion + 1})
-	if string(response["ok"]) != "false" || string(response["code"]) != `"conflict"` {
-		t.Fatalf("CAS: %s", response)
-	}
-	for range 2 {
-		response = call(map[string]any{"operation": "proposal.approve", "proposal_id": p.ID, "expected_base_sha256": p.Base.Version})
-		if string(response["ok"]) != "true" {
-			t.Fatalf("legacy review: %s", response)
+	for _, operation := range []string{"proposal.approve", "proposal.submit", "proposal.review_retry", "proposal.source_review"} {
+		response = call(map[string]any{"operation": operation, "proposal_id": p.ID, "expected_state_version": p.StateVersion})
+		if string(response["ok"]) != "false" || string(response["code"]) != `"invalid_request"` {
+			t.Fatalf("retired manual operation accepted: %s %s", operation, response)
 		}
+	}
+	// Populate legacy publication history through the standalone SDK fixture;
+	// the desktop management surface may inspect and roll it back, never approve.
+	if _, err := c.ApproveSkillProposal(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "legacy-fixture"}); err != nil {
+		t.Fatal(err)
 	}
 	head, err := c.GetSkillHead(ctx, "project", "research")
 	if err != nil || head.Version != p.CandidateVersion {

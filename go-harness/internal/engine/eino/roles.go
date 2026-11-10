@@ -333,8 +333,8 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 	if e.config.Compaction.Enabled {
 		private := media
 		private.importer, private.publish = nil, nil
-		metered := &trackedModel{inner: chat, io: lifecycle, budget: budget, sink: sink, media: &private, settings: harness.AgentModelSettings{MaxTokens: spec.ModelSettings.MaxTokens}, tuning: e.compactionTuning(spec.Model), role: true, contextWindow: e.config.ContextWindows[spec.Model]}
-		compaction, err = newCompactionMiddleware(ctx, windowCompaction(e.config.Compaction, e.config.ContextWindows[spec.Model], outputReserve(budget.limits.MaxOutputTokens, spec.ModelSettings)), metered)
+		metered := &trackedModel{inner: chat, io: lifecycle, budget: budget, sink: sink, media: &private, settings: harness.AgentModelSettings{MaxTokens: spec.ModelSettings.MaxTokens}, tuning: e.compactionTuning(spec.Model), role: true, contextWindow: e.config.ContextWindows[spec.Model], outputLimits: e.config.ModelOutputLimits[spec.Model]}
+		compaction, err = newCompactionMiddleware(ctx, windowCompaction(e.config.Compaction, e.config.ContextWindows[spec.Model], outputReserve(e.config.ModelOutputLimits[spec.Model].Effective(budget.limits.MaxOutputTokens), spec.ModelSettings)), metered)
 		if err != nil {
 			return nil, err
 		}
@@ -345,7 +345,7 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 	}
 	handlers = append(handlers,
 		&outputContinuationHistory{},
-		&modelLifecycle{io: lifecycle, budget: budget, sink: sink, media: &media, settings: spec.ModelSettings, tuning: tuning, role: true, contextWindow: e.config.ContextWindows[spec.Model]},
+		&modelLifecycle{io: lifecycle, budget: budget, sink: sink, media: &media, settings: spec.ModelSettings, tuning: tuning, role: true, contextWindow: e.config.ContextWindows[spec.Model], outputLimits: e.config.ModelOutputLimits[spec.Model]},
 		&toolMiddleware{sink: sink, permissions: permissions, protected: protected, trusted: trusted, preparers: preparers, policy: roleToolPolicy(spec, len(children) > 0, ownedBackground), permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, durableTaskWait: ownedBackground["task_wait"], io: lifecycle, budget: budget, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore})
 	child, err := deep.New(ctx, &deep.Config{
 		Name: name, Description: spec.Description, Instruction: e.config.Instruction + "\n\n" + spec.Instruction + extensions.InstructionAppend + toolFailureInstruction + stoppedToolInstruction(ctx),
@@ -387,6 +387,7 @@ func (e *Engine) roleModel(ctx context.Context, reference, parentReference strin
 	if route, ok := e.config.ModelRoutes[reference]; ok {
 		selected.Provider, selected.BaseURL, selected.APIKey = route.Provider, route.BaseURL, route.APIKey
 		selected.OutputTokenParameter = route.OutputTokenParameter
+		selected.API = route.API
 		return newModel(ctx, selected, route.Model)
 	}
 	// The SDK also permits an explicit catalog on one shared provider. Only

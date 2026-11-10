@@ -42,12 +42,14 @@ func (s *Store) Source(ctx context.Context, actor string, r harness.SkillLearnin
 		if revision != r.ExpectedRevision {
 			return out, harness.ErrSkillConflict
 		}
-		for _, dep := range p.Members {
+		if err := walkPatternMembers(ctx, tx, p, func(dep experienceDependency) error {
 			if dep.ID == r.ExperienceID {
 				copy := dep
 				member = &copy
-				break
 			}
+			return nil
+		}); err != nil {
+			return out, err
 		}
 		if member == nil {
 			return out, harness.ErrPermissionDenied
@@ -120,7 +122,7 @@ func (s *Store) sourceExtractionTx(ctx context.Context, tx *sql.Tx, id string) (
 		return snap, sha, resultSHA, err
 	}
 	if len(data) > (2<<20)+(32<<10) || digest(data) != sha || json.Unmarshal(data, &snap) != nil || policy != PolicyVersion || model == "" || resultSHA == "" ||
-		snap.ID != id || snap.Session != session || snap.Episode != episode || snap.Epoch != epoch || snap.MaxDailyModelCalls < 1 || snap.MaxDailyTokens < 1 ||
+		snap.ID != id || snap.Session != session || snap.Episode != episode || snap.Epoch != epoch ||
 		job.State != "completed" || job.Request.Kind != skillmaintenance.ExperienceExtract || job.Request.OwnerKind != skillmaintenance.WorkspaceOwner ||
 		job.Request.OwnerKey != snap.Owner || job.Request.Reference != id || job.Request.Key != id || job.Request.InputDigest != sha ||
 		id != extractionID(snap, model) {

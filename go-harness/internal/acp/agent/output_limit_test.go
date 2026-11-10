@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -12,7 +13,7 @@ func TestOutputLimitNoticeUsesStableProtocolMetadata(t *testing.T) {
 		if err := emit(ctx, harness.RunEvent{Kind: "output_limit", Text: "Incomplete after bounded continuation; partial answer preserved."}); err != nil {
 			return harness.RunResult{}, err
 		}
-		return harness.RunResult{StopReason: "max_tokens"}, nil
+		return harness.RunResult{StopReason: "max_tokens", Limit: "output_tokens"}, nil
 	}))
 	c := connect(t, f.service)
 	c.initialize(t)
@@ -22,5 +23,19 @@ func TestOutputLimitNoticeUsesStableProtocolMetadata(t *testing.T) {
 	if chunkText(t, event) != "Incomplete after bounded continuation; partial answer preserved." {
 		t.Fatal("output-limit notice missing")
 	}
-	stopReason(t, c.success(t, id), "max_tokens")
+	raw := c.success(t, id)
+	stopReason(t, raw, "max_tokens")
+	var response struct {
+		Meta struct {
+			Deerflow struct {
+				Limit string `json:"limit"`
+			} `json:"deerflow"`
+		} `json:"_meta"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Meta.Deerflow.Limit != "output_tokens" {
+		t.Fatalf("output-limit classification missing: %s", raw)
+	}
 }

@@ -119,7 +119,7 @@ func TestSkillLearningDelegatedExecutionNativeExtractorAdmissionAndView(t *testi
 				t.Fatal("native extractor bypassed delegated snapshot admission", got, calls.Load(), err)
 			}
 			var receipts, tokens, unsettled int
-			if err = s.Store.db.QueryRow(`SELECT count(*),COALESCE(sum(charged_tokens),0),COALESCE(sum(state<>'settled'),0) FROM df_skill_maintenance_calls WHERE job_id=?`, job).Scan(&receipts, &tokens, &unsettled); err != nil || receipts != paid || tokens != 15*paid || unsettled != 0 {
+			if err = s.Store.db.QueryRow(`SELECT count(*),COALESCE(sum(actual_tokens),0),COALESCE(sum(state<>'settled'),0) FROM df_skill_maintenance_calls WHERE job_id=?`, job).Scan(&receipts, &tokens, &unsettled); err != nil || receipts != paid || tokens != 15*paid || unsettled != 0 {
 				t.Fatal("native root rejection refunded or admitted paid work", receipts, tokens, unsettled, err)
 			}
 		})

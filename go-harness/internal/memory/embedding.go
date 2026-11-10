@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/network"
 	"io"
 	"math"
 	"net/http"
@@ -26,12 +27,22 @@ type HTTPEmbedder struct {
 	Client     *http.Client
 }
 
-func NewHTTPEmbedder(endpoint, model string) (*HTTPEmbedder, error) {
+func NewHTTPEmbedder(endpoint, model string, policies ...harness.NetworkConfig) (*HTTPEmbedder, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") || model == "" {
 		return nil, fmt.Errorf("invalid memory embedding configuration")
 	}
-	return &HTTPEmbedder{URL: strings.TrimRight(endpoint, "/") + "/embeddings", Model: model, Client: &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	var policy harness.NetworkConfig
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	client, err := network.NewClient(policy, "", true)
+	if err != nil {
+		return nil, err
+	}
+	client.Timeout = 15 * time.Second
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	return &HTTPEmbedder{URL: strings.TrimRight(endpoint, "/") + "/embeddings", Model: model, Client: client}, nil
 }
 func (e *HTTPEmbedder) Identity() string { return e.Model }
 func (e *HTTPEmbedder) Embed(ctx context.Context, texts []string, query bool) ([][]float64, error) {

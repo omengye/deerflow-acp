@@ -76,6 +76,12 @@ struct Evaluation {
     deadline: String,
     #[serde(default)]
     retry_at: String,
+    #[serde(default)]
+    last_result_sequence: u64,
+    #[serde(default)]
+    has_more_results: bool,
+    #[serde(default)]
+    total_results: u64,
     content_reviewed: bool,
     #[serde(default)]
     report: Value,
@@ -91,8 +97,8 @@ struct Receipt {
     stage: String,
     model_identity: String,
     input_digest: String,
-    reserved_tokens: u64,
-    charged_tokens: u64,
+    estimated_tokens: u64,
+    actual_tokens: u64,
     input_tokens: u64,
     output_tokens: u64,
     state: String,
@@ -115,6 +121,8 @@ pub(super) struct BehaviorInspector {
     detail: Option<Detail>,
     absent: bool,
     result_page: usize,
+    result_after: u64,
+    result_previous: Vec<u64>,
     receipt_rows: Vec<(String, String)>,
     receipts_loaded: bool,
     receipt_after: u64,
@@ -130,6 +138,8 @@ impl BehaviorInspector {
         self.detail = None;
         self.absent = false;
         self.result_page = 0;
+        self.result_after = 0;
+        self.result_previous.clear();
         self.clear_receipts();
     }
 
@@ -201,7 +211,7 @@ impl BehaviorInspector {
     pub(super) fn accept(&mut self, request: &Value, data: Value) -> anyhow::Result<()> {
         self.check_pending(request)?;
         match request["operation"].as_str() {
-            Some("proposal.behavior") => self.accept_detail(data)?,
+            Some("proposal.behavior") => self.accept_detail(request, data)?,
             Some("proposal.behavior.receipts") => self.accept_receipts(request, data)?,
             _ => anyhow::bail!("未知行为详情操作"),
         }
@@ -209,7 +219,7 @@ impl BehaviorInspector {
         Ok(())
     }
 
-    fn accept_detail(&mut self, data: Value) -> anyhow::Result<()> {
+    fn accept_detail(&mut self, request: &Value, data: Value) -> anyhow::Result<()> {
         anyhow::ensure!(
             serde_json::to_vec(&data)?.len() <= 1 << 20,
             "行为详情超过大小限制"
@@ -238,7 +248,13 @@ impl BehaviorInspector {
                 && evaluation.attempts <= 3
                 && matches!(
                     evaluation.state.as_str(),
-                    "queued" | "running" | "retry" | "completed" | "failed" | "cancelled"
+                    "queued"
+                        | "running"
+                        | "retry"
+                        | "waiting"
+                        | "completed"
+                        | "failed"
+                        | "cancelled"
                 )
                 && bounded_code(&evaluation.error_code)
                 && timestamp(&evaluation.deadline)
@@ -263,7 +279,7 @@ impl BehaviorInspector {
         } else {
             serde_json::from_value(data["results"].clone())?
         };
-        anyhow::ensure!(results.len() <= 96, "行为样例超过数量限制");
+        anyhow::ensure!(results.len() <= 100, "行为样例超过数量限制");
         let mut unique = HashSet::new();
         let mut cases = HashSet::new();
         let mut rows = Vec::with_capacity(results.len());
@@ -344,7 +360,7 @@ impl BehaviorInspector {
                 if result.usage_estimated {"（估算）"} else {""},result.elapsed_millis,&result.output_digest[..16],&result.trace_digest[..16],
                 result.selection.as_ref().map_or(String::new(), |selection| format!("\n{}", selection.detail())))));
         }
-        anyhow::ensure!(cases.len() <= 16, "行为样例种类超过限制");
+
         if !evaluation.report.is_null() {
             let mut checked = proposal.clone();
             checked["evaluation"] = json!({"base_version":evaluation.base.version,"candidate_version":evaluation.candidate_version,
@@ -364,6 +380,7 @@ impl BehaviorInspector {
                 "queued" => "等待执行",
                 "running" => "执行中",
                 "retry" => "等待重试",
+                "waiting" => "等待条件变化",
                 "completed" => "已完成",
                 "failed" => "失败",
                 "cancelled" => "已取消",
@@ -390,7 +407,7 @@ impl BehaviorInspector {
             } else {
                 "尚未完成"
             },
-            rows.len(),
+            evaluation.total_results.max(rows.len() as u64),
             if evaluation.report.is_null() {
                 "完整行为报告尚未生成；部分结果不代表评测通过。"
             } else {
@@ -407,6 +424,15 @@ impl BehaviorInspector {
                 String::new()
             }
         );
+        let after = request["after_result"].as_u64().unwrap_or(0);
+        if after == 0 {
+            self.result_previous.clear();
+        } else if self.result_previous.last() == Some(&after) {
+            self.result_previous.pop();
+        } else {
+            self.result_previous.push(self.result_after);
+        }
+        self.result_after = after;
         self.detail = Some(Detail {
             evaluation,
             title,
@@ -461,8 +487,8 @@ impl BehaviorInspector {
                     )
                     && matches!(receipt.state.as_str(), "reserved" | "settled")
                     && [
-                        receipt.reserved_tokens,
-                        receipt.charged_tokens,
+                        receipt.estimated_tokens,
+                        receipt.actual_tokens,
                         receipt.input_tokens,
                         receipt.output_tokens
                     ]
@@ -485,13 +511,13 @@ impl BehaviorInspector {
                     receipt.day
                 ),
                 format!(
-                    "计入 {} tokens · 预留 {} · 输入 {} / 输出 {} · {}{}",
-                    receipt.charged_tokens,
-                    receipt.reserved_tokens,
+                    "计入 {} tokens · 估计 {} · 输入 {} / 输出 {} · {}{}",
+                    receipt.actual_tokens,
+                    receipt.estimated_tokens,
                     receipt.input_tokens,
                     receipt.output_tokens,
                     if receipt.state == "reserved" {
-                        "已预留"
+                        "已估计"
                     } else {
                         "已结算"
                     },
@@ -539,7 +565,7 @@ impl Waku {
         let mut group = div().flex().flex_col().gap(px(6.0));
         for (key, label, operation) in [
             ("detail", "刷新行为评测详情", "proposal.behavior"),
-            ("proposal", "刷新提案审核状态", "proposal.get"),
+            ("proposal", "刷新提案验证状态", "proposal.get"),
         ] {
             let id = proposal["id"].clone();
             group = group.child(df_button(
@@ -578,40 +604,32 @@ impl Waku {
                     theme,
                 ))
                 .child(df_label("评测作业身份", detail.identity.clone(), theme));
-            let start = browser.result_page * PAGE_SIZE;
-            for (title, text) in detail.rows.iter().skip(start).take(PAGE_SIZE) {
+            for (title, text) in &detail.rows {
                 group = group.child(df_label(title.clone(), text.clone(), theme));
             }
-            for (key, label, page) in [
-                ("previous", "样例上一页", browser.result_page.checked_sub(1)),
+            for (key, label, after) in [
+                (
+                    "previous",
+                    "样例上一页",
+                    browser.result_previous.last().copied(),
+                ),
                 (
                     "next",
                     "样例下一页",
-                    (start + PAGE_SIZE < detail.rows.len()).then_some(browser.result_page + 1),
+                    detail
+                        .evaluation
+                        .has_more_results
+                        .then_some(detail.evaluation.last_result_sequence),
                 ),
             ] {
-                let generation = browser.generation;
-                group = group.child(df_button(
-                    SharedString::from(format!("df-behavior-results-{key}")),
-                    label,
-                    unavailable || page.is_none(),
-                    false,
-                    theme,
-                    cx,
-                    move |this, _, cx| {
-                        let browser = &mut this.deerflow_settings.skill_browser.behavior_inspector;
-                        if browser.generation == generation {
-                            if let Some(page) = page {
-                                browser.result_page = page;
-                                cx.notify();
-                            }
-                        }
-                    },
-                ));
+                let proposal_id = detail.evaluation.proposal_id.clone();
+                group=group.child(df_button(SharedString::from(format!("df-behavior-results-{key}")),label,unavailable || after.is_none(),false,theme,cx,move |this,_,cx| {
+                    if let Some(after)=after {this.deerflow_request("manage",json!({"operation":"proposal.behavior","proposal_id":proposal_id,"after_result":after,"limit":32}),cx);}
+                }));
             }
             group = group.child(df_label(
                 "维护作业用量回执",
-                "同一作业可能包含生成、内容审查与行为评测调用，均计入维护额度。",
+                "同一作业可能包含生成、内容审查与行为评测调用，分别记录实际用量。",
                 theme,
             ));
             for (key, label, after) in [
@@ -661,7 +679,7 @@ mod tests {
     fn detail(proposal: &Value) -> Value {
         json!({"id":"sbe_manual","proposal_id":proposal["id"],"job_id":"smj_manual","target":proposal["target"],"base":proposal["base"],
             "candidate_version":proposal["candidate_sha256"],"suite_id":"citations","suite_digest":"a".repeat(64),"evaluator_identity":"eino-skill-behavior-v1/fixture",
-            "state":"failed","state_version":5,"attempts":1,"error_code":"budget_exhausted","content_reviewed":true,"results":[row()]})
+            "state":"failed","state_version":5,"attempts":1,"error_code":"deferred_capacity","content_reviewed":true,"results":[row()]})
     }
 
     fn request(proposal: &Value) -> Value {
@@ -681,7 +699,7 @@ mod tests {
     fn receipts(proposal: &Value, first: u64, count: usize) -> (Value, Value) {
         let request = json!({"operation":"proposal.behavior.receipts","proposal_id":proposal["id"],"after_sequence":first - 1,"limit":PAGE_SIZE});
         let rows: Vec<_> = (first..first + count as u64).map(|sequence| json!({"sequence":sequence,"id":format!("smr_{sequence}"),"job_id":"smj_manual","attempt":1,"day":"2026-10-02","stage":"behavior",
-            "model_identity":"test-model","input_digest":"d".repeat(64),"reserved_tokens":100,"charged_tokens":40,"input_tokens":30,"output_tokens":10,"state":"settled","estimated":false})).collect();
+            "model_identity":"test-model","input_digest":"d".repeat(64),"estimated_tokens":100,"actual_tokens":40,"input_tokens":30,"output_tokens":10,"state":"settled","estimated":false})).collect();
         let data = json!({"proposal_id":proposal["id"],"receipts":rows,"last_sequence":first + count as u64 - 1});
         (request, data)
     }
@@ -693,7 +711,7 @@ mod tests {
         assert!(browser.matches(&proposal));
         assert!(detail.title.contains("失败"));
         assert!(detail.progress.contains("部分结果不代表评测通过"));
-        assert!(detail.progress.contains("budget_exhausted"));
+        assert!(detail.progress.contains("deferred_capacity"));
         assert_eq!(detail.rows.len(), 1);
         assert!(detail.rows[0].0.contains("候选版本"));
         assert!(detail.rows[0].1.contains("references：未通过"));

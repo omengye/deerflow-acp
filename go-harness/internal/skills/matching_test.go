@@ -3,6 +3,7 @@ package skills
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -326,5 +327,67 @@ func TestSkillLearningMatchingAccessPinsBuiltinOverlayAndABAHead(t *testing.T) {
 	overlay := read()
 	if overlay.OverlayBase == nil || overlay.OverlayBase.Version != before.Head.Version || !overlay.Head.Managed {
 		t.Fatal("overlay lineage omitted", overlay)
+	}
+}
+
+func TestCatalogPagesIncludeThe129thSkillAndKeepScope(t *testing.T) {
+	ctx := context.Background()
+	ws := testutil.CanonicalTempDir(t)
+	root := filepath.Join(ws, "skills")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	r, db := registry(t, harness.SkillsConfig{Sources: []harness.SkillSource{{ID: "project", Root: root, Scope: harness.SkillScopeWorkspace, Workspace: ws}}})
+	for n := 0; n < 130; n++ {
+		name := fmt.Sprintf("item-%03d", n)
+		writeSkill(t, root, name, "Validate structured JSON")
+		installEnabled(t, r, "project", name)
+	}
+	access, err := r.NewMatchAccess(harness.SkillSelection{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := ""
+	seen := map[string]bool{}
+	pages := 0
+	for {
+		tx, err := db.DB().BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, next, done, err := access.InventoryPageTx(ctx, tx, ws, cursor)
+		_ = tx.Rollback()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Skills) > 128 {
+			t.Fatal("metadata batch unbounded")
+		}
+		pages++
+		for _, entry := range page.Skills {
+			if seen[entry.Target.Name] {
+				t.Fatal("duplicate page item")
+			}
+			seen[entry.Target.Name] = true
+		}
+		if done {
+			break
+		}
+		if next <= cursor {
+			t.Fatal("cursor failed to advance")
+		}
+		cursor = next
+	}
+	if len(seen) != 130 || !seen["item-129"] || pages != 2 {
+		t.Fatal("catalog truncated", len(seen), pages)
+	}
+	tx, err := db.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	foreign, _, _, err := access.InventoryPageTx(ctx, tx, testutil.CanonicalTempDir(t), "")
+	if err == nil && len(foreign.Skills) != 0 {
+		t.Fatal("paging widened workspace authority")
 	}
 }

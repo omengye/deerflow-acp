@@ -8,7 +8,12 @@ import (
 
 // Behavior options are loaded and authorized by the host. Candidates cannot
 // supply or modify the fixture suite, assertions or evaluation model.
-type SkillBehaviorOptions struct{ Suites []SkillBehaviorSuite }
+type SkillBehaviorOptions struct {
+	Suites []SkillBehaviorSuite
+	// Load is a host-owned streaming loader. Each suite is validated and reduced
+	// to a manifest before the next file is read. It is never customer YAML.
+	Load func(func(SkillBehaviorSuite) error) error
+}
 
 type SkillBehaviorModelConfig struct {
 	Route                                                       ModelRoute
@@ -25,13 +30,16 @@ type SkillBehaviorSuite struct {
 }
 
 type SkillBehaviorCase struct {
-	ID          string                   `json:"id"`
-	Kind        string                   `json:"kind"`
-	Prompt      string                   `json:"prompt"`
-	Files       map[string]string        `json:"files"`
-	Fixtures    []SkillBehaviorFixture   `json:"fixtures"`
-	Assertions  []SkillBehaviorAssertion `json:"assertions"`
-	Repetitions int                      `json:"repetitions"`
+	Holdout        bool                     `json:"holdout,omitempty"`
+	EvidenceDigest string                   `json:"evidence_digest,omitempty"`
+	EvidenceRoot   string                   `json:"evidence_root,omitempty"`
+	ID             string                   `json:"id"`
+	Kind           string                   `json:"kind"`
+	Prompt         string                   `json:"prompt"`
+	Files          map[string]string        `json:"files"`
+	Fixtures       []SkillBehaviorFixture   `json:"fixtures"`
+	Assertions     []SkillBehaviorAssertion `json:"assertions"`
+	Repetitions    int                      `json:"repetitions"`
 	// TriggerSkills are fixed host-owned competing descriptions, not live
 	// inventory reads. Trigger cases never load or execute any skill body.
 	TriggerSkills []SkillBehaviorTriggerSkill `json:"trigger_skills,omitempty"`
@@ -92,6 +100,7 @@ type SkillBehaviorCheck struct {
 }
 
 type SkillBehaviorResult struct {
+	Scripts        []SkillScriptExecution  `json:"scripts,omitempty"`
 	CaseID         string                  `json:"case_id"`
 	Variant        string                  `json:"variant"`
 	Version        string                  `json:"version"`
@@ -123,6 +132,11 @@ type SkillBehaviorSelection struct {
 // The compact proposal report references separately persisted per-case results.
 // It is composed by the evolution host, never accepted from content reviewers.
 type SkillBehaviorReport struct {
+	TargetedImprovements int                       `json:"targeted_improvements"`
+	HoldoutCases         int                       `json:"holdout_cases"`
+	CandidateFailures    int                       `json:"candidate_failures"`
+	MeasurementErrors    int                       `json:"measurement_errors"`
+	TotalComparisons     int                       `json:"total_comparisons"`
 	EvaluationID         string                    `json:"evaluation_id"`
 	EvaluatorIdentity    string                    `json:"evaluator_identity"`
 	SuiteID              string                    `json:"suite_id"`
@@ -161,22 +175,48 @@ type SkillBehaviorComparison struct {
 }
 
 type SkillBehaviorEvaluation struct {
-	ID                string                `json:"id"`
-	ProposalID        string                `json:"proposal_id"`
-	JobID             string                `json:"job_id"`
-	Target            SkillTarget           `json:"target"`
-	Base              SkillHead             `json:"base"`
-	CandidateVersion  string                `json:"candidate_version"`
-	SuiteID           string                `json:"suite_id,omitempty"`
-	SuiteDigest       string                `json:"suite_digest,omitempty"`
-	EvaluatorIdentity string                `json:"evaluator_identity"`
-	State             string                `json:"state"`
-	StateVersion      int64                 `json:"state_version"`
-	Attempts          int                   `json:"attempts"`
-	ErrorCode         string                `json:"error_code,omitempty"`
-	Deadline          time.Time             `json:"deadline,omitempty"`
-	RetryAt           time.Time             `json:"retry_at,omitempty"`
-	ContentReviewed   bool                  `json:"content_reviewed"`
-	Results           []SkillBehaviorResult `json:"results"`
-	Report            *SkillBehaviorReport  `json:"report,omitempty"`
+	Evidence           *SkillBehaviorEvidence `json:"evidence,omitempty"`
+	LastResultSequence int64                  `json:"last_result_sequence"`
+	HasMoreResults     bool                   `json:"has_more_results"`
+	TotalResults       int                    `json:"total_results"`
+	ID                 string                 `json:"id"`
+	ProposalID         string                 `json:"proposal_id"`
+	JobID              string                 `json:"job_id"`
+	Target             SkillTarget            `json:"target"`
+	Base               SkillHead              `json:"base"`
+	CandidateVersion   string                 `json:"candidate_version"`
+	SuiteID            string                 `json:"suite_id,omitempty"`
+	SuiteDigest        string                 `json:"suite_digest,omitempty"`
+	EvaluatorIdentity  string                 `json:"evaluator_identity"`
+	State              string                 `json:"state"`
+	StateVersion       int64                  `json:"state_version"`
+	Attempts           int                    `json:"attempts"`
+	ErrorCode          string                 `json:"error_code,omitempty"`
+	Deadline           time.Time              `json:"deadline,omitempty"`
+	RetryAt            time.Time              `json:"retry_at,omitempty"`
+	ContentReviewed    bool                   `json:"content_reviewed"`
+	Results            []SkillBehaviorResult  `json:"results"`
+	Report             *SkillBehaviorReport   `json:"report,omitempty"`
+}
+
+// Evidence describes readiness, not a passing verdict. It contains no task
+// prompts, expected answers or private contents from another session.
+type SkillBehaviorEvidence struct {
+	Path               string   `json:"path"`
+	SourceTaskBound    bool     `json:"source_task_bound"`
+	SuiteBound         bool     `json:"suite_bound"`
+	HostSuiteAvailable bool     `json:"host_suite_available"`
+	SupportingCases    int      `json:"supporting_cases"`
+	HoldoutCases       int      `json:"holdout_cases"`
+	RequiredSupporting int      `json:"required_supporting_cases"`
+	RequiredHoldout    int      `json:"required_holdout_cases"`
+	Missing            []string `json:"missing"`
+	NextAction         string   `json:"next_action"`
+}
+
+type SkillScriptExecution struct {
+	Path     string `json:"path"`
+	Runtime  string `json:"runtime"`
+	ExitCode int    `json:"exit_code"`
+	Digest   string `json:"digest"`
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
@@ -14,7 +15,9 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/checkpoint"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
+	"github.com/omengye/deerflow-acp/go-harness/internal/network"
 )
 
 // turnItem records durable input identity and the immutable execution policy.
@@ -41,6 +44,11 @@ func itemFor(req harness.RunRequest) turnItem {
 }
 
 func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawMessage, trusted ...map[string]bool) (string, error) {
+	routes := maps.Clone(e.config.ModelRoutes)
+	for name, route := range routes {
+		route.API = contractModelAPI(route.API)
+		routes[name] = route
+	}
 	var policy *harness.ToolPolicy
 	if e.config.ToolPolicy.Allowlist != nil || len(e.config.ToolPolicy.Denylist) > 0 {
 		policy = &e.config.ToolPolicy
@@ -61,10 +69,13 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 		Subagents                             *harness.SubagentsConfig `json:",omitempty"`
 		ContextWindows                        map[string]int           `json:",omitempty"`
 		ContextPolicy                         string
-		ModelThinking                         map[string]harness.ThinkingConfig `json:",omitempty"`
+		ModelThinking                         map[string]harness.ThinkingConfig    `json:",omitempty"`
+		ModelOutputLimits                     map[string]harness.ModelOutputLimits `json:",omitempty"`
 		PermissionPolicy                      string
 		TrustedBuiltins                       []map[string]bool
-	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.OutputTokenParameter, e.config.ModelRoutes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode, e.config.Subagents, e.config.ContextWindows, "adaptive-window-compaction-v3/output-parameter-v1/output-continuation-v1/stopped-tool-followup-v1/unknown-tool-feedback-v1/user-input-v1/progress-v1/continuity-v1/steering-v1", e.config.ModelThinking, harness.PermissionPolicyVersion, trusted})
+		Network                               string           `json:",omitempty"`
+		API                                   harness.ModelAPI `json:",omitempty"`
+	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.OutputTokenParameter, routes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode, e.config.Subagents, e.config.ContextWindows, "adaptive-window-compaction-v3/output-parameter-v1/output-continuation-v2/stopped-tool-followup-v1/unknown-tool-feedback-v1/user-input-v1/progress-v1/continuity-v1/steering-v1", e.config.ModelThinking, e.config.ModelOutputLimits, harness.PermissionPolicyVersion, trusted, network.Fingerprint(e.config.Network), contractModelAPI(e.config.API)})
 	if err != nil {
 		return "", fmt.Errorf("encode execution contract: %w", err)
 	}
@@ -159,9 +170,9 @@ func (e *Engine) turnLoop(ctx context.Context, req harness.RunRequest, resumeID,
 	return loop, checkpoints, nil
 }
 
-// The harness envelope leaves Eino's native encoding opaque and pins the
-// execution budget and extension state alongside it. Older development formats
-// are rejected rather than restoring execution with reset counters or policies.
+// The envelope pins the execution budget and extension state alongside opaque
+// native state. New writes frame metadata and losslessly compressed native bytes;
+// old v1/v2 JSON envelopes remain readable with their original budget semantics.
 type checkpointEnvelope struct {
 	Version          int                           `json:"version"`
 	Native           []byte                        `json:"native"`
@@ -176,16 +187,26 @@ type checkpointEnvelope struct {
 }
 
 func decodeCheckpointEnvelope(data []byte) (*checkpointEnvelope, error) {
+	metadata, native, stats, err := checkpoint.Unpack(data)
+	if err != nil {
+		return nil, err
+	}
 	var saved checkpointEnvelope
-	if err := json.Unmarshal(data, &saved); err != nil {
-		return nil, fmt.Errorf("%w: decode harness checkpoint: %v", harness.ErrInvalidInput, err)
+	if err := json.Unmarshal(metadata, &saved); err != nil {
+		return nil, fmt.Errorf("%w: decode harness checkpoint: %v", harness.ErrCheckpointInvalid, err)
+	}
+	if stats.Format != "legacy-json" {
+		if len(saved.Native) != 0 {
+			return nil, fmt.Errorf("%w: framed metadata duplicates native state", harness.ErrCheckpointInvalid)
+		}
+		saved.Native = native
 	}
 	if len(saved.Native) == 0 || (saved.Version != 1 && saved.Version != 2) || (saved.Version == 1 && (saved.Budget == nil || saved.Ledger != nil)) || (saved.Version == 2 && (saved.Ledger == nil || saved.Budget != nil)) {
-		return nil, fmt.Errorf("%w: unsupported or empty harness checkpoint", harness.ErrInvalidInput)
+		return nil, fmt.Errorf("%w: unsupported or empty harness checkpoint", harness.ErrCheckpointInvalid)
 	}
 	if saved.Roles != nil {
 		if err := saved.Roles.Validate(); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: saved role catalog: %v", harness.ErrCheckpointInvalid, err)
 		}
 	}
 	return &saved, nil
@@ -327,8 +348,14 @@ func (s *checkedCheckpoints) commit(ctx context.Context, deleteAllowed bool) err
 			envelope.Budget = &snapshot
 		}
 		if err == nil {
-			var data []byte
-			data, err = json.Marshal(envelope)
+			// Only small control metadata is JSON. Native gob bytes are framed
+			// directly, avoiding base64 and duplicate JSON buffers on every pause.
+			envelope.Native = nil
+			var metadata, data []byte
+			metadata, err = json.Marshal(envelope)
+			if err == nil {
+				data, _, err = checkpoint.Pack(metadata, s.data)
+			}
 			if err == nil {
 				if s.hooks != nil && s.hooks.StageCheckpoint != nil {
 					err = s.hooks.StageCheckpoint(ctx, StagedExecutionCheckpoint{ID: s.key, Data: data, Interrupts: append([]ExecutionInterruptBinding(nil), s.interrupts...), TaskWaits: append([]interaction.TaskWaitBinding(nil), s.taskWaits...)})

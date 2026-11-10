@@ -79,6 +79,7 @@ type SkillInstall struct {
 // Nil Names selects all enabled visible skills; an empty non-nil slice selects
 // none. Global scope is opt-in even when global installation sources exist.
 type SkillSelection struct {
+	RootID        string // Host task identity; empty reads only the stable catalog.
 	Workspace     string
 	IncludeGlobal bool
 	Names         []string

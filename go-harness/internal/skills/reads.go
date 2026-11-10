@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
@@ -22,6 +23,10 @@ type ReadObserver func(context.Context, ReadObservation) error
 // snapshots remain unobserved, and restricted role snapshots inherit it.
 func (s *Snapshot) WithReadObserver(observer ReadObserver) *Snapshot {
 	copy := *s
+	if !copy.inheritLease(s) {
+		copy.closed = &atomic.Bool{}
+		copy.closed.Store(true)
+	}
 	copy.observe = observer
 	return &copy
 }

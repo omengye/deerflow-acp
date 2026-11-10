@@ -26,8 +26,8 @@ func validateMatchDecision(input harness.SkillExperienceMatchInput, d harness.Sk
 		if !slices.ContainsFunc(input.Skills, func(e harness.SkillExperienceMatchChoice) bool { return e.ID == d.SkillID }) {
 			return d, invalid("invented matching target")
 		}
-	case "new_capability", "irrelevant", "ambiguous":
-		if d.SkillID != "" || d.Relation == "new_capability" && !input.InventoryComplete {
+	case "new_capability", "irrelevant", "ambiguous", "search_incomplete":
+		if d.SkillID != "" || d.Relation == "new_capability" && !input.InventoryComplete || d.Relation == "search_incomplete" && input.InventoryComplete {
 			return d, invalid("untargeted match or incomplete capability search")
 		}
 	default:
@@ -75,7 +75,7 @@ func (s *Store) readMatchRecordTx(ctx context.Context, tx *sql.Tx, job skillmain
 	if err != nil {
 		return snap, nil, err
 	}
-	if len(data) > s.matchInputLimit()+(64<<10) || digest(data) != sha || sha != job.Request.InputDigest || json.Unmarshal(data, &snap) != nil || snap.ID != job.Request.Reference || job.Request.Key != snap.ID || job.Request.Kind != skillmaintenance.SkillMatch || job.Request.OwnerKind != skillmaintenance.WorkspaceOwner || job.Request.OwnerKey != snap.Owner || snap.Session != session || snap.Pattern.ID != pattern || snap.Pattern.Revision != revision || snap.MaxDailyModelCalls < 1 || snap.MaxDailyTokens < 1 || len(snap.Choices) > 8 || len(snap.Choices) != len(snap.View.Skills) {
+	if len(data) > s.matchInputLimit()+(64<<10) || digest(data) != sha || sha != job.Request.InputDigest || json.Unmarshal(data, &snap) != nil || snap.ID != job.Request.Reference || job.Request.Key != snap.ID || job.Request.Kind != skillmaintenance.SkillMatch || job.Request.OwnerKind != skillmaintenance.WorkspaceOwner || job.Request.OwnerKey != snap.Owner || snap.Session != session || snap.Pattern.ID != pattern || snap.Pattern.Revision != revision || len(snap.Choices) > 8 || len(snap.Choices) != len(snap.View.Skills) {
 		return snap, nil, invalid("inconsistent matching identity")
 	}
 	identity := snap
@@ -83,7 +83,7 @@ func (s *Store) readMatchRecordTx(ctx context.Context, tx *sql.Tx, job skillmain
 	if snap.ID != "lmatch_"+encodedDigest([]any{policy, model, access, identity}) {
 		return snap, nil, invalid("inconsistent fixed matching digest")
 	}
-	if !s.enabled || s.options.Matching == nil || s.matcher == nil || s.matchAccess == nil || policy != MatchingPolicyVersion || model != s.matcher.Identity() || access != s.matchAccess.Identity() {
+	if !s.enabled || s.options.Matching == nil || s.matcher == nil || s.matchAccess == nil || policy != MatchingPolicyVersion || job.State != "completed" && model != s.matcher.Identity() || access != s.matchAccess.Identity() {
 		return snap, nil, harness.ErrSkillConflict
 	}
 	var state, jobID string
@@ -101,7 +101,7 @@ func (s *Store) readMatchRecordTx(ctx context.Context, tx *sql.Tx, job skillmain
 		return snap, nil, nil
 	}
 	var result matchResult
-	if len(output) > 32<<10 || digest(output) != resultSHA || json.Unmarshal(output, &result) != nil || result.Match.CreatedAt.IsZero() || state != "processed" {
+	if len(output) > 32<<10 || digest(output) != resultSHA || json.Unmarshal(output, &result) != nil || result.Match.CreatedAt.IsZero() || state != "processed" && !(result.Decision.Relation == "search_incomplete" && state == "pending") {
 		return snap, nil, invalid("inconsistent matching result")
 	}
 	d, err := validateMatchDecision(snap.View, result.Decision)
@@ -141,7 +141,7 @@ func (s *Store) readMatchTx(ctx context.Context, tx *sql.Tx, job skillmaintenanc
 	if owner != snap.Owner || p.Pattern.SessionID != snap.Session || encodedDigest(p) != snap.Pattern.SHA {
 		return snap, nil, harness.ErrPermissionDenied
 	}
-	inventory, choices, view, err := s.matchViewTx(ctx, tx, p)
+	inventory, choices, view, err := s.matchPageTargetViewTx(ctx, tx, p, nil, snap.View.PageOffset)
 	if err != nil {
 		if errors.Is(err, harness.ErrNotFound) {
 			err = harness.ErrSkillConflict
@@ -218,6 +218,17 @@ func (s *Store) HandleMatch(ctx context.Context, job skillmaintenance.Job) (stri
 	}
 	if err = matchWriteApplied(result); err != nil {
 		return learningFailure(err)
+	}
+	if d.Relation == "search_incomplete" {
+		if len(snap.Choices) == 0 {
+			return learningFailure(invalid("search made no progress"))
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO df_learning_match_progress VALUES(?,?,?,?,?) ON CONFLICT(pattern_id,revision) DO UPDATE SET catalog=excluded.catalog,inventory_sha=excluded.inventory_sha,next_offset=excluded.next_offset`, snap.Pattern.ID, snap.Pattern.Revision, snap.Catalog, snap.InventorySHA, snap.View.PageOffset+len(snap.Choices)); err != nil {
+			return learningFailure(err)
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE df_learning_match_inputs SET state='pending',reason='search_incomplete' WHERE pattern_id=? AND revision=? AND job_id=?`, snap.Pattern.ID, snap.Pattern.Revision, job.ID); err != nil {
+			return learningFailure(err)
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return learningFailure(err)

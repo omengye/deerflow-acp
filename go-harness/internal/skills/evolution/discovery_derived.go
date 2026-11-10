@@ -25,7 +25,10 @@ func isDiscoveryTrigger(kind string) bool {
 	return kind == "operator_corrections" || kind == "missing_skill" || kind == "repeated_workflow" || kind == "experience_pattern"
 }
 func validDiscoverySnapshot(d discoverySnapshot) bool {
-	if d.ReviewDraft && (d.kind() != "experience_pattern" || !d.Options.ExperienceReviewDraftsEnabled || d.CreationRetry != nil) {
+	if d.Fork != nil && (d.kind() != "experience_pattern" || d.Base.Exists || d.CreationRetry != nil || !d.Fork.Head.Exists || !d.Fork.Head.Enabled || !hexDigest(d.Fork.Head.Version) || !harness.ValidSkillName(d.Fork.Target.Name)) {
+		return false
+	}
+	if d.ReviewDraft && (d.kind() != "experience_pattern" || d.CreationRetry != nil) {
 		return false
 	}
 	if retry := d.CreationRetry; retry != nil && (d.kind() != "experience_pattern" || d.Base != (harness.SkillHead{}) || d.HostAdjudicated ||
@@ -40,15 +43,15 @@ func validDiscoverySnapshot(d discoverySnapshot) bool {
 	case "operator_corrections":
 		return d.Base.Exists && d.Base.Enabled && hexDigest(d.Base.Version) && len(d.Evidence) == d.Options.RepeatThreshold
 	case "missing_skill":
-		return d.Options.MissingReportsEnabled && !d.Base.Exists && d.Base.Version == "" && len(d.Evidence) == 1 && d.Target.SourceID == d.Options.NewSkillSourceID
+		return !d.Base.Exists && d.Base.Version == "" && len(d.Evidence) == 1 && d.Target.SourceID == d.Options.DestinationSourceID
 	case "repeated_workflow":
-		return d.Options.SuccessfulWorkflowsEnabled && !d.Base.Exists && d.Base.Version == "" && len(d.Evidence) == d.Options.RepeatThreshold && d.Target.SourceID == d.Options.NewSkillSourceID
+		return !d.Base.Exists && d.Base.Version == "" && len(d.Evidence) == d.Options.RepeatThreshold && d.Target.SourceID == d.Options.DestinationSourceID
 	case "experience_pattern":
 		existing := d.Base.Exists && d.Base.Enabled && hexDigest(d.Base.Version)
-		newSkill := d.Options.ExperienceNewSkillsEnabled && d.Base == (harness.SkillHead{}) && d.OverlayBase == nil && d.Target.SourceID == d.Options.NewSkillSourceID && harness.ValidSkillCapabilityName(d.Target.Name)
+		newSkill := d.Base == (harness.SkillHead{}) && d.OverlayBase == nil && d.Target.SourceID == d.Options.DestinationSourceID && harness.ValidSkillCapabilityName(d.Target.Name)
 		count := len(d.Evidence)
 		validCount := !d.ReviewDraft && count == d.Options.RepeatThreshold || d.ReviewDraft && count >= 1 && count < d.Options.RepeatThreshold
-		return d.Options.ExperiencePatternsEnabled && d.EpisodeDedup && (existing || newSkill && !d.HostAdjudicated) && validCount
+		return d.EpisodeDedup && (existing || newSkill && (!d.HostAdjudicated || d.Fork != nil)) && validCount
 	}
 	return false
 }
@@ -89,6 +92,11 @@ func migrateDerivedDiscovery(ctx context.Context, tx *sql.Tx) error {
 // evidence. A still-running descendant, pending collector, or uncertain effect
 // cannot be interpreted as a finished successful root.
 func rootDiscoveryState(ctx context.Context, tx *sql.Tx, root string, target harness.SkillTarget, success bool) (string, string, error) {
+	if historical, err := skillmaintenance.HistoricalRootTx(ctx, tx, root); err != nil {
+		return "", "", err
+	} else if historical {
+		return "", "", errDiscoveryEvidence
+	}
 	var sessionID, run, cwd, ended, blocked string
 	err := tx.QueryRowContext(ctx, `SELECT b.session_id,b.root_run_id,s.cwd,o.ended_at,b.blocked_reason FROM budget_roots b JOIN harness_runs r ON r.id=b.root_run_id AND r.session_id=b.session_id JOIN harness_sessions s ON s.id=b.session_id JOIN harness_skill_outcomes o ON o.run_id=r.id WHERE b.id=?`, root).Scan(&sessionID, &run, &cwd, &ended, &blocked)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -234,10 +242,10 @@ func derivedDiscoveryEvidence(ctx context.Context, tx *sql.Tx, d discoverySnapsh
 
 func (s *Service) runDerivedDiscovery(ctx context.Context) (bool, error) {
 	o := s.discovery.options
-	if !o.MissingReportsEnabled && !o.SuccessfulWorkflowsEnabled {
+	if o.DestinationSourceID == "" {
 		return false, nil
 	}
-	target, ok := s.generation.allowed[o.NewSkillSourceID]
+	target, ok := s.generation.allowed[o.DestinationSourceID]
 	if !ok {
 		return false, harness.ErrPermissionDenied
 	}
@@ -281,12 +289,12 @@ func (s *Service) runDerivedDiscovery(ctx context.Context) (bool, error) {
 		if ctx.Err() != nil {
 			return true, errors.Join(combined, ctx.Err())
 		}
-		if o.MissingReportsEnabled {
+		{
 			if err = s.considerDerivedRoot(ctx, root, target, "missing_skill"); err != nil && !discoverySkippable(err) {
 				combined = errors.Join(combined, err)
 			}
 		}
-		if o.SuccessfulWorkflowsEnabled {
+		{
 			if err = s.considerDerivedRoot(ctx, root, target, "repeated_workflow"); err != nil && !discoverySkippable(err) {
 				combined = errors.Join(combined, err)
 			}
@@ -386,13 +394,6 @@ func (s *Service) considerDerivedRoot(ctx context.Context, root string, target h
 			return err
 		}
 		if until > now.UnixNano() {
-			return nil
-		}
-		var daily int
-		if err = sqltx.QueryRowContext(ctx, `SELECT COALESCE((SELECT reservations FROM df_skill_discovery_days WHERE day=?),0)`, now.Format("2006-01-02")).Scan(&daily); err != nil {
-			return err
-		}
-		if daily >= s.discovery.options.MaxDailyProposals {
 			return nil
 		}
 		pending, err := discoveryPending(ctx, sqltx)

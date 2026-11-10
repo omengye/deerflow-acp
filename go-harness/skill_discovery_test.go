@@ -110,12 +110,12 @@ func skillDiscoveryFixture(t *testing.T) (string, Config, *discoveryProvider) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route("generator")}, Budget: harness.SkillMaintenanceBudget{MaxDailyModelCalls: 12, MaxDailyTokens: 100000, MaxJobSeconds: 60, Workers: 1}, Sources: []string{"project"}}
+	cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route("generator")}, Policy: harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}, Sources: []string{"project"}}
 	return workspace, cfg, provider
 }
 
 func discoveryOptions() *harness.SkillDiscoveryOptions {
-	return &harness.SkillDiscoveryOptions{RepeatThreshold: 2, RepeatWindowDays: 7, CooldownHours: 24, MaxDailyProposals: 2, MaxPendingProposals: 2}
+	return &harness.SkillDiscoveryOptions{RepeatThreshold: 2, RepeatWindowDays: 7, CooldownHours: 24, MaxPendingProposals: 2}
 }
 
 func waitDiscoverySignal(t *testing.T, ctx context.Context, c *Client, runID string) harness.SkillSignalEvidence {
@@ -380,7 +380,7 @@ func TestSkillDiscoverySDKAndAuthenticatedManagement(t *testing.T) {
 		t.Fatalf("independent maintenance charges: %+v calls=%d %v", receipts, provider.maintenanceCalls.Load(), err)
 	}
 	for _, receipt := range receipts {
-		if receipt.Estimated || receipt.ChargedTokens != 125 {
+		if receipt.Estimated || receipt.ActualTokens != 125 {
 			t.Fatalf("maintenance charge was not accounted: %+v", receipt)
 		}
 	}
@@ -409,7 +409,7 @@ func TestSkillDiscoverySDKAndAuthenticatedManagement(t *testing.T) {
 	}
 	var status harness.SkillDiscoveryStatus
 	wire.wire(map[string]any{"operation": "skill.discovery.status"}, "", &status)
-	if !status.Enabled || !status.Running || status.Options == nil || *status.Options != *cfg.SkillDiscovery || len(status.Sources) != 1 || status.Sources[0].SourceIdentity != discovery.Target.SourceIdentity || status.DailyReservations != 1 || status.Pending != 1 || status.FailedSignals != 0 || status.LastErrorCode != "" {
+	if !status.Enabled || !status.Running || status.Options == nil || status.Options.RepeatThreshold != cfg.SkillDiscovery.RepeatThreshold || status.Options.RepeatWindowDays != cfg.SkillDiscovery.RepeatWindowDays || status.Options.CooldownHours != cfg.SkillDiscovery.CooldownHours || len(status.Sources) != 1 || status.Sources[0].SourceIdentity != discovery.Target.SourceIdentity || status.DailyReservations != 1 || status.Pending != 1 || status.FailedSignals != 0 || status.LastErrorCode != "" {
 		t.Fatalf("discovery status: %+v", status)
 	}
 	var managed harness.SkillDiscoveryPage

@@ -103,7 +103,7 @@ func creationRetryOriginalTx(ctx context.Context, tx *sql.Tx, d discoverySnapsho
 func (s *Service) prepareCreationRetryTx(ctx context.Context, pub *skills.PublicationTx, actor string, request harness.SkillLearningNewSkillRetryPreparationRequest, previous generationRecord) (harness.SkillLearningNewSkillRetryPreparation, discoverySnapshot, string, error) {
 	var result harness.SkillLearningNewSkillRetryPreparation
 	var d discoverySnapshot
-	if s.generation == nil || s.discovery == nil || s.experienceSource == nil || !s.discovery.options.ExperienceNewSkillsEnabled || !s.discovery.options.ExperiencePatternsEnabled {
+	if s.generation == nil || s.discovery == nil || s.experienceSource == nil {
 		return result, d, "", harness.ErrPermissionDenied
 	}
 	tx := pub.SQL()

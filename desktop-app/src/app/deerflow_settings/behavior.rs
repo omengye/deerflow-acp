@@ -5,7 +5,7 @@ use super::*;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-const MAX_CASES: usize = 16;
+const MAX_COMPARISON_DETAILS: usize = 32;
 const MAX_REPETITIONS: u64 = 3;
 const MAX_REPORT_BYTES: usize = 64 << 10;
 
@@ -82,6 +82,12 @@ struct Report {
     base_version: String,
     candidate_version: String,
     state: String,
+    #[serde(default)]
+    total_comparisons: Option<u64>,
+    #[serde(default)]
+    candidate_failures: u64,
+    #[serde(default)]
+    measurement_errors: u64,
     targeted_cases: u64,
     regression_cases: u64,
     #[serde(default)]
@@ -117,7 +123,7 @@ fn outcome(passed: bool, error: &str) -> String {
     let label = match error {
         "" | "assertion_failed" => "断言未通过",
         "timeout" | "deadline_exceeded" => "执行超时",
-        "budget_exhausted" => "维护预算不足",
+        "deferred_capacity" => "等待维护资源",
         "cancelled" => "执行已取消",
         "model_error" => "模型调用失败",
         "step_limit" | "max_steps" => "达到执行步数上限",
@@ -186,17 +192,12 @@ impl BehaviorView {
         );
         anyhow::ensure!(
             report.targeted_cases >= 1
-                && report.targeted_cases <= MAX_CASES as u64
-                && report.regression_cases <= MAX_CASES as u64
-                && report.trigger_positive_cases <= MAX_CASES as u64
-                && report.trigger_negative_cases <= MAX_CASES as u64
-                && report.targeted_cases
-                    + report.regression_cases
-                    + report.trigger_positive_cases
-                    + report.trigger_negative_cases
-                    <= MAX_CASES as u64
                 && !report.results.is_empty()
-                && report.results.len() <= MAX_CASES * MAX_REPETITIONS as usize
+                && report.results.len() <= MAX_COMPARISON_DETAILS
+                && report
+                    .total_comparisons
+                    .unwrap_or(report.results.len() as u64)
+                    >= report.results.len() as u64
                 && [
                     report.model_calls,
                     report.tool_calls,
@@ -293,21 +294,37 @@ impl BehaviorView {
             .filter(|(kind, _)| *kind == "trigger_negative")
             .count() as u64;
         anyhow::ensure!(
-            positive == report.trigger_positive_cases
-                && negative == report.trigger_negative_cases
-                && ((positive == 0 && negative == 0)
-                    || (positive > 0
-                        && negative > 0
+            positive <= report.trigger_positive_cases
+                && negative <= report.trigger_negative_cases
+                && ((report.trigger_positive_cases == 0 && report.trigger_negative_cases == 0)
+                    || (report.trigger_positive_cases > 0
+                        && report.trigger_negative_cases > 0
                         && report.rule_version == "skill-behavior-comparison-v2")),
             "触发评测需完整正例、负例与独立评分规则"
         );
-        let passed = targeted > 0 && all_targeted_passed && regressions == 0;
+        let complete = report
+            .total_comparisons
+            .unwrap_or(report.results.len() as u64)
+            == report.results.len() as u64;
+        let passed = report.targeted_cases > 0
+            && report.candidate_failures == 0
+            && report.measurement_errors == 0
+            && report.regressions == 0;
         anyhow::ensure!(
-            targeted == report.targeted_cases
-                && regression == report.regression_cases
-                && regressions == report.regressions
-                && improvements == report.improvements
-                && passed == (report.state == "passed"),
+            targeted <= report.targeted_cases
+                && regression <= report.regression_cases
+                && regressions <= report.regressions
+                && improvements <= report.improvements
+                && (!complete
+                    || (targeted == report.targeted_cases
+                        && regression == report.regression_cases
+                        && regressions == report.regressions
+                        && improvements == report.improvements))
+                && (if report.total_comparisons.is_some() {
+                    passed
+                } else {
+                    targeted > 0 && all_targeted_passed && regressions == 0
+                }) == (report.state == "passed"),
             "行为评测汇总与逐样例结果不一致"
         );
         let rows =
@@ -359,7 +376,9 @@ impl BehaviorView {
                 regression,
                 positive,
                 negative,
-                report.results.len(),
+                report
+                    .total_comparisons
+                    .unwrap_or(report.results.len() as u64),
                 improvements,
                 regressions
             ),
@@ -372,7 +391,7 @@ impl BehaviorView {
                 evaluation["behavior_digest"].as_str().unwrap_or("")
             ),
             usage: format!(
-                "模型调用 {} · fixture 工具调用 {} · 耗时 {} ms\n输入 {} / 输出 {} tokens{}；费用计入独立维护预算。",
+                "模型调用 {} · fixture 工具调用 {} · 耗时 {} ms\n输入 {} / 输出 {} tokens{}；使用量单独记录。",
                 report.model_calls,
                 report.tool_calls,
                 report.elapsed_millis,

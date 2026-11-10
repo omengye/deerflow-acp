@@ -31,7 +31,7 @@ func TestNativeTemplatesInitializeSaveAndLaunch(t *testing.T) {
 				t.Fatal(err)
 			}
 			doc := run(t, options, "snapshot", nil)
-			for _, key := range []string{"config_migration", "skill_evolution_migration"} {
+			for _, key := range []string{"config_migration"} {
 				if readObject(doc, key)["required"] != false {
 					t.Fatalf("fresh native template requires migration: %s", key)
 				}
@@ -91,18 +91,25 @@ func TestNativeTemplatesInitializeSaveAndLaunch(t *testing.T) {
 					if cfg.SkillGeneration == nil || cfg.SkillGeneration.Model.Route.Model != cfg.Model {
 						t.Fatal("desktop generation does not inherit the configured model")
 					}
-					if cfg.SkillAutoPatch == nil || !cfg.SkillAutoPatch.ExperiencePatternsEnabled || cfg.SkillBehaviorEvaluator == nil || cfg.SkillBehavior == nil || len(cfg.SkillBehavior.Suites) != 1 {
+					if cfg.SkillAutoPatch == nil || cfg.SkillBehaviorEvaluator == nil || cfg.SkillBehavior == nil || cfg.SkillBehavior.Load == nil {
 						t.Fatal("desktop automatic maintenance requires extra non-model configuration")
 					}
-					suite := cfg.SkillBehavior.Suites[0]
+					var loaded []harness.SkillBehaviorSuite
+					if err := cfg.SkillBehavior.Load(func(suite harness.SkillBehaviorSuite) error { loaded = append(loaded, suite); return nil }); err != nil {
+						t.Fatal(err)
+					}
+					if len(loaded) != 1 {
+						t.Fatal("bundled assessment missing", len(loaded))
+					}
+					suite := loaded[0]
 					if suite.SourceID != "managed-evolution" || suite.Name != "searxng-web-search" || len(suite.Cases) != 2 {
 						t.Fatal("desktop bundled assessment expanded its verified scope")
 					}
-					wantBudget := harness.SkillMaintenanceBudget{MaxDailyModelCalls: 1000, MaxDailyTokens: 6000000, MaxJobSeconds: 600, Workers: 5}
-					if cfg.SkillGeneration.Budget != wantBudget || cfg.SkillLearning.Budget != wantBudget || cfg.SkillLearning.MaxDailyModelCalls != 50 || cfg.SkillLearning.MaxDailyTokens != 1000000 {
+					wantBudget := harness.SkillMaintenancePolicy{MaxJobSeconds: 900, Workers: 2}
+					if cfg.SkillGeneration.Policy != wantBudget || cfg.SkillLearning.Policy != wantBudget {
 						t.Fatal("desktop maintenance budgets differ from the selected defaults")
 					}
-					if cfg.SkillLearning.CrossSession || cfg.SkillDiscovery.ExperienceNewSkillsEnabled || cfg.SkillDiscovery.CooldownHours != 1 || cfg.SkillDiscovery.MaxDailyProposals != 10 || cfg.SkillAutoPatch.MaxDailyPublications != 2 || cfg.SkillAutoPatch.MaxChangedLines != 40 {
+					if !cfg.SkillLearning.CrossSession || cfg.SkillDiscovery.CooldownHours != 24 || cfg.SkillAutoPatch.MaxChangedLines != 200 {
 						t.Fatal("desktop defaults changed source-sharing authority or publication bounds")
 					}
 					body, err := os.ReadFile(filepath.Join(filepath.Dir(options.Config), filepath.FromSlash(defaultBehaviorSuitePath)))
@@ -115,7 +122,7 @@ func TestNativeTemplatesInitializeSaveAndLaunch(t *testing.T) {
 						}
 					}
 				}
-				if cfg.Provider != "openai" || cfg.Model == "" || connections != wantConnections || cfg.DisableSubagents == desktop || (cfg.SkillGeneration != nil) != desktop {
+				if cfg.Provider != "openai" || cfg.Model == "" || connections != wantConnections || cfg.DisableSubagents == desktop || cfg.SkillGeneration == nil {
 					t.Fatal("unexpected native model, opt-in or connection settings")
 				}
 				if round == 1 && (cfg.Model != "fixture-model" || cfg.APIKey != "fixture-model-key" || cfg.BaseURL != "https://model.example.test/v1") {
@@ -137,7 +144,9 @@ func TestNativeTemplatesInitializeSaveAndLaunch(t *testing.T) {
 				if content, err := os.ReadFile(path); err != nil || string(content) != "host assessment under maintenance" {
 					t.Fatal("existing host assessment was replaced", err)
 				}
-				if _, err := Run(options, "validate", mustJSON(t, doc)); err == nil {
+				var cfg deerflow.Config
+				connections := 0
+				if _, err := launch.ApplyConfig(options.Config, &cfg, &connections, nil); err == nil {
 					t.Fatal("invalid existing assessment was treated as usable")
 				}
 				if err := os.Remove(path); err != nil {
@@ -183,8 +192,8 @@ func TestNewDesktopDefaultsDoNotOverwriteExistingConfig(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatal("new desktop defaults overwrote the existing user configuration")
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(options.Config), "skill-behavior")); !os.IsNotExist(err) {
-		t.Fatal("existing review-only profile unexpectedly received automatic assessments")
+	if info, err := os.Stat(filepath.Join(filepath.Dir(options.Config), "skill-behavior")); err != nil || !info.IsDir() {
+		t.Fatal("trusted host assessment directory missing")
 	}
 }
 

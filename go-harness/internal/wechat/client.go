@@ -194,12 +194,24 @@ type Message struct {
 	UserID   string          `json:"ilink_user_id"`
 	Group    string          `json:"group_id"`
 	Context  string          `json:"context_token"`
-	Items    []struct {
-		Type int `json:"type"`
-		Text struct {
-			Text string `json:"text"`
-		} `json:"text_item"`
-	} `json:"item_list"`
+	Items    []MessageItem   `json:"item_list"`
+}
+
+type MessageItem struct {
+	Type int `json:"type"`
+	Text struct {
+		Text string `json:"text"`
+	} `json:"text_item"`
+	Ref *RefMessage `json:"ref_msg,omitempty"`
+}
+
+// RefMessage follows the provider's ref_msg schema. Newer clients may send
+// only svr_id; that is insufficient context to execute a quoted instruction.
+type RefMessage struct {
+	Item        *MessageItem    `json:"message_item"`
+	Title       string          `json:"title"`
+	ID          string          `json:"svr_id"`
+	PartialText json.RawMessage `json:"partial_text"`
 }
 
 func (m Message) key() string {

@@ -54,6 +54,25 @@ func AssessSignalTx(ctx context.Context, tx *sql.Tx, signal harness.SkillSignal)
 		return q, nil
 	}
 	if signal.FeedbackRevision == 0 {
+		var available bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='harness_learning_controls')`).Scan(&available); err != nil {
+			return q, err
+		}
+		if available {
+			var passed bool
+			err := tx.QueryRowContext(ctx, `SELECT o.passed FROM df_skill_task_oracles o JOIN harness_learning_controls c ON c.session_id=o.session_id AND c.epoch=o.epoch AND c.contribute=1 WHERE o.root_id=?`, signal.RootID).Scan(&passed)
+			if err == nil && passed && !failed {
+				q.Kind, q.Confidence, q.Source, q.Eligible = "skill_quality_success", "high", "host_verified", true
+				return q, nil
+			}
+			if err == nil && !passed && !failed {
+				q.Kind, q.Confidence, q.Source, q.Eligible = "skill_quality_failure", "high", "host_verified", true
+				return q, nil
+			}
+			if err != nil && err != sql.ErrNoRows {
+				return q, err
+			}
+		}
 		if failed {
 			q.Kind = "unknown_failure"
 		}
@@ -73,7 +92,7 @@ func AssessSignalTx(ctx context.Context, tx *sql.Tx, signal harness.SkillSignal)
 		q.Source = "operator"
 		return q, nil
 	}
-	if f.Kind != "quality_failure" && (f.Kind != "helpful" || failed) {
+	if f.Kind != "quality_failure" && f.Kind != "critical_failure" && (f.Kind != "helpful" || failed) {
 		return q, nil
 	}
 	for _, id := range f.ReadIDs {
@@ -88,6 +107,9 @@ func AssessSignalTx(ctx context.Context, tx *sql.Tx, signal harness.SkillSignal)
 	q.Kind = "skill_quality_success"
 	if f.Kind == "quality_failure" {
 		q.Kind = "skill_quality_failure"
+	}
+	if f.Kind == "critical_failure" {
+		q.Kind = "skill_quality_critical_failure"
 	}
 	q.Confidence, q.Source, q.Eligible = "high", "operator_confirmed", true
 	q.EvidenceReadIDs = slices.Clone(f.ReadIDs)

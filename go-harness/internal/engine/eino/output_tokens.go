@@ -19,10 +19,11 @@ type outputTokenModel struct {
 	inner     model.ToolCallingChatModel
 	provider  string
 	parameter harness.OutputTokenParameter
+	responses bool
 }
 
 func (m *outputTokenModel) options(opts []model.Option) []model.Option {
-	if m.provider == "claude" || m.provider == "anthropic" || m.provider == "injected" {
+	if m.responses || m.provider == "claude" || m.provider == "anthropic" || m.provider == "injected" {
 		return opts
 	}
 	common := model.GetCommonOptions(nil, opts...)
@@ -51,14 +52,14 @@ func (m *outputTokenModel) Generate(ctx context.Context, input []*schema.Message
 }
 
 func (m *outputTokenModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	if m.provider == "" || m.provider == "openai" || m.provider == "openai-compatible" {
+	if !m.responses && (m.provider == "" || m.provider == "openai" || m.provider == "openai-compatible") {
 		input = openAIToolImageMessages(input)
 	}
 	stream, err := m.inner.Stream(ctx, input, m.options(opts)...)
 	if stream == nil {
 		err = rejectedRateLimitRequest(err)
 	}
-	return stream, classifyModelContextError(err)
+	return stream, classifyModelToolsCompatibilityError(classifyModelContextError(err))
 }
 
 func (m *outputTokenModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
@@ -66,7 +67,7 @@ func (m *outputTokenModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallin
 	if err != nil {
 		return nil, err
 	}
-	return &outputTokenModel{inner: inner, provider: m.provider, parameter: m.parameter}, nil
+	return &outputTokenModel{inner: inner, provider: m.provider, parameter: m.parameter, responses: m.responses}, nil
 }
 
 func (m *outputTokenModel) GetType() string {

@@ -65,13 +65,10 @@ func TestSkillLearningAutoPatchRequiresTargetedAssertionImprovement(t *testing.T
 	}
 }
 
-func TestSkillLearningAutoPatchRequiresIndependentHostGrant(t *testing.T) {
+func TestSkillLearningAutoPatchRequiresEvidenceAuthorityAtAdmission(t *testing.T) {
 	f, _, _, _ := behaviorFixture(t)
-	o := harness.SkillAutoPatchOptions{ExperiencePatternsEnabled: true, MaxChangedLines: 40, MaxDailyPublications: 2, ObservationHours: 72, MinObservations: 3, RollbackFailureThreshold: 2}
-	if err := f.service.ConfigureAutoPatch(o); err == nil {
-		t.Fatal("learning automatic publication configured without learning/discovery authority")
-	}
-	o.ExperiencePatternsEnabled = false
+	o := harness.SkillAutoPatchOptions{MaxChangedLines: 40, ObservationHours: 72, MinObservations: 3, RollbackFailureThreshold: 2}
+
 	if err := f.service.ConfigureAutoPatch(o); err != nil {
 		t.Fatal("existing auto_patch unexpectedly requires learning", err)
 	}
@@ -86,8 +83,8 @@ func TestSkillLearningAutoPatchRetainsManualPackageBoundaries(t *testing.T) {
 			f, _, _, _ := behaviorFixture(t)
 			// Isolate the structural gate. Full host authority and publication
 			// transaction are covered by the runtime learning fixtures.
-			f.service.autoPatch = &autoPatchHost{options: harness.SkillAutoPatchOptions{ExperiencePatternsEnabled: true}}
-			f.service.discovery = &discoveryHost{options: harness.SkillDiscoveryOptions{ExperiencePatternsEnabled: true}}
+			f.service.autoPatch = &autoPatchHost{options: harness.SkillAutoPatchOptions{}}
+			f.service.discovery = &discoveryHost{options: harness.SkillDiscoveryOptions{}}
 			p := Proposal{Trigger: Trigger{Type: "experience_pattern"}, Base: harness.SkillHead{Exists: true, Enabled: true, Managed: true}, Origin: "automatic", Action: "edit", ChangedFiles: []string{"SKILL.md"}, Evaluation: Report{Security: "passed", Behavior: "passed", BehaviorReport: &harness.SkillBehaviorReport{TargetedCases: 1, RegressionCases: 1}}}
 			switch mode {
 			case "new":
@@ -114,17 +111,16 @@ func TestSkillLearningAutoPatchRetainsManualPackageBoundaries(t *testing.T) {
 
 func TestSkillLearningAutoPatchSourceRecordIsBoundedAndHistorical(t *testing.T) {
 	source := harness.SkillAutoPatchLearningSource{GenerationID: "smj_fixture", DiscoveryID: "sd_fixture", DiscoverySHA: strings.Repeat("a", 64), PatternID: "lpat_fixture", PatternRevision: 2, MatchID: "lmatch_fixture", PolicyIdentity: strings.Repeat("b", 64), EvidenceSHA: strings.Repeat("c", 64), SourceState: "valid_at_publication"}
-	for _, mode := range []string{"historical", "withdrawn", "unavailable", "old-record", "not-authorized", "quality-claim", "invalid-digest", "empty-match", "zero-revision", "oversized"} {
+	for _, mode := range []string{"historical", "withdrawn", "unavailable", "old-record", "quality-claim", "invalid-digest", "empty-match", "zero-revision", "oversized"} {
 		t.Run(mode, func(t *testing.T) {
 			x := source
-			o := harness.SkillAutoPatchObservation{Options: harness.SkillAutoPatchOptions{ExperiencePatternsEnabled: true}, LearningSource: &x}
+			o := harness.SkillAutoPatchObservation{Options: harness.SkillAutoPatchOptions{}, LearningSource: &x}
 			switch mode {
 			case "withdrawn", "unavailable":
 				x.SourceState = mode
 			case "old-record":
-				o.LearningSource, o.Options.ExperiencePatternsEnabled = nil, false
-			case "not-authorized":
-				o.Options.ExperiencePatternsEnabled = false
+				o.LearningSource = nil
+
 			case "quality-claim":
 				x.SourceState = "quality_passed"
 			case "invalid-digest":

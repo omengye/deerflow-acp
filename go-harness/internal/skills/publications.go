@@ -253,25 +253,28 @@ func (p *PublicationTx) stagePackage(pkg skillPackage) (string, error) {
 	if err := p.tx.QueryRowContext(p.ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_versions WHERE source_key=? AND name=? AND version=?)`, p.source.identity, p.name, version).Scan(&exists); err != nil {
 		return "", err
 	}
-	if exists {
+	var expired bool
+	if err := p.tx.QueryRowContext(p.ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_content_gc WHERE source_key=? AND name=? AND version=? AND state='expired')`, p.source.identity, p.name, version).Scan(&expired); err != nil {
+		return "", err
+	}
+	if exists && !expired {
 		if _, err := p.ReadVersion(version); err != nil {
 			return "", err
 		}
 		return version, nil
 	}
-	var count int
 	var total int64
-	if err := p.tx.QueryRowContext(p.ctx, `SELECT count(*) FROM df_skill_versions WHERE source_key=? AND name=?`, p.source.identity, p.name).Scan(&count); err != nil {
+	if err := p.tx.QueryRowContext(p.ctx, `SELECT COALESCE(sum(total_bytes),0) FROM df_skill_versions v WHERE NOT EXISTS(SELECT 1 FROM df_skill_content_gc g WHERE g.source_key=v.source_key AND g.name=v.name AND g.version=v.version AND g.state='expired')`).Scan(&total); err != nil {
 		return "", err
 	}
-	if err := p.tx.QueryRowContext(p.ctx, `SELECT COALESCE(sum(total_bytes),0) FROM df_skill_versions`).Scan(&total); err != nil {
-		return "", err
-	}
-	if count >= p.limits.MaxVersionsPerSkill || pkg.bytes > p.limits.MaxTotalBytes-total {
-		return "", invalid("retained version or total byte limit exceeded")
+	if pkg.bytes > p.limits.MaxTotalBytes-total {
+		return "", ErrCapacity
 	}
 	meta, _ := json.Marshal(pkg.meta)
-	if _, err := p.tx.ExecContext(p.ctx, `INSERT INTO df_skill_versions VALUES(?,?,?,?,?,?,?)`, p.source.identity, p.name, version, string(meta), string(manifest), pkg.bytes, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := p.tx.ExecContext(p.ctx, `INSERT OR IGNORE INTO df_skill_versions VALUES(?,?,?,?,?,?,?)`, p.source.identity, p.name, version, string(meta), string(manifest), pkg.bytes, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return "", err
+	}
+	if _, err := p.tx.ExecContext(p.ctx, `DELETE FROM df_skill_content_gc WHERE source_key=? AND name=? AND version=?`, p.source.identity, p.name, version); err != nil {
 		return "", err
 	}
 	for _, f := range pkg.manifest {
@@ -293,6 +296,13 @@ func (p *PublicationTx) stagePackage(pkg skillPackage) (string, error) {
 func (p *PublicationTx) ReadVersion(version string) (*Candidate, error) {
 	if !validHash(version) {
 		return nil, invalid("version must be a content digest")
+	}
+	var expired bool
+	if err := p.tx.QueryRowContext(p.ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_content_gc WHERE source_key=? AND name=? AND version=? AND state IN ('expired','deleting'))`, p.source.identity, p.name, version).Scan(&expired); err != nil {
+		return nil, err
+	}
+	if expired {
+		return nil, fmtContentExpired()
 	}
 	var meta, manifest string
 	var size int64
@@ -349,6 +359,9 @@ func (p *PublicationTx) Publish(version string, expected SkillHead, enabled bool
 		return h, ErrPublicationConflict
 	}
 	if version != "" {
+		if err = guardAutomaticContent(p.ctx, p.tx, version); err != nil {
+			return h, err
+		}
 		if _, err = p.ReadVersion(version); err != nil {
 			return h, err
 		}
@@ -369,15 +382,6 @@ func (p *PublicationTx) moveHead(old SkillHead, version string, enabled, managed
 	}
 	if version == "" && enabled {
 		return old, invalid("deleted skill cannot be enabled")
-	}
-	if version != "" && !old.Exists {
-		var count int
-		if err := p.tx.QueryRowContext(p.ctx, `SELECT count(*) FROM df_skill_installs`).Scan(&count); err != nil {
-			return old, err
-		}
-		if count >= p.limits.MaxSkills {
-			return old, invalid("installed skill count limit exceeded")
-		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if version == "" {
@@ -400,6 +404,8 @@ func (p *PublicationTx) moveHead(old SkillHead, version string, enabled, managed
 	}
 	return next, nil
 }
+
+var ErrCapacity = errors.New("skill storage capacity unavailable")
 
 func (p *PublicationTx) CatalogVersion() (int64, error) {
 	var version int64

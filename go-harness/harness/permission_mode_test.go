@@ -21,12 +21,13 @@ func TestPermissionModeToolClassification(t *testing.T) {
 		{"list_directory", false, false, true},
 		{"read_skill_file", false, false, true},
 		{"skill_edit", false, true, true},
-		{"skill_manage", false, true, true},
+		{"skill_manage", false, false, false},
 		{"mcp/custom/skill", false, true, true},
 		{"mcp/custom/skill_inspect", false, true, true},
 		{"mcp/custom/list_directory", false, true, true},
 		{"skill_execute", false, true, true},
 		{"web_search", false, true, true},
+		{"set_search_provider", false, false, true},
 		{"bash", false, true, true},
 		{"execute_command", false, true, true},
 	} {
@@ -45,7 +46,7 @@ func TestPermissionModeToolClassification(t *testing.T) {
 }
 
 func TestUnknownToolCannotImpersonateBuiltin(t *testing.T) {
-	for _, name := range []string{"read_file", "task", "skill", "view_image", "search_memory"} {
+	for _, name := range []string{"read_file", "task", "skill", "view_image", "search_memory", "set_search_provider", "skill_manage"} {
 		if !PermissionModeDangerous.RequiresToolPermission(name, false) {
 			t.Fatalf("untrusted %q bypassed approval", name)
 		}

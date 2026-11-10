@@ -1148,6 +1148,7 @@ pub struct Waku {
     expanded_provider_settings: Option<ProviderKind>,
     provider_path_input: Entity<TextInput>,
     deerflow_settings: deerflow_settings::DeerFlowSettings,
+    search_plugins: search_plugins::SearchPlugins,
     channel_settings: channels::ChannelSettings,
     schedule_settings: schedules::ScheduleSettings,
     deerflow_approval_states: HashMap<Uuid, String>,
@@ -1664,6 +1665,7 @@ mod render;
 mod right_panel;
 mod runtime;
 mod schedules;
+mod search_plugins;
 mod server_connection;
 mod sessions;
 mod settings;
@@ -2075,6 +2077,7 @@ impl Waku {
                 .placeholder(tr!("input.detected_automatically"))
         });
         let deerflow_settings = deerflow_settings::DeerFlowSettings::new(window, cx);
+        let search_plugins = search_plugins::SearchPlugins::new(window, cx);
         let channel_settings = channels::ChannelSettings::new(window, cx);
         let schedule_settings = schedules::ScheduleSettings::new(window, cx);
         let usage_project_filter =
@@ -2882,6 +2885,7 @@ impl Waku {
                 expanded_provider_settings: None,
                 provider_path_input,
                 deerflow_settings,
+                search_plugins,
                 channel_settings,
                 schedule_settings,
                 deerflow_approval_states: HashMap::new(),

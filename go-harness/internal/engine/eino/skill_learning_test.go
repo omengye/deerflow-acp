@@ -26,7 +26,7 @@ func TestSkillLearningExtractorIsolatedBudgetedAndStrictJSON(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer db.Close()
-			queue, err := skillmaintenance.New(context.Background(), db.DB(), skillmaintenance.Policy{MaxDailyModelCalls: 3, MaxDailyTokens: 100000, MaxJobSeconds: 60, Workers: 1})
+			queue, err := skillmaintenance.New(context.Background(), db.DB(), skillmaintenance.Policy{MaxJobSeconds: 60, Workers: 1})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -99,7 +99,7 @@ func TestSkillLearningExtractorIsolatedBudgetedAndStrictJSON(t *testing.T) {
 			if err != nil || len(receipts) != 1 || receipts[0].Stage != "experience_extract" || receipts[0].State != "settled" {
 				t.Fatalf("receipt %+v %v", receipts, err)
 			}
-			if mode == "provider-failure" && (!receipts[0].Estimated || receipts[0].ChargedTokens != receipts[0].ReservedTokens) {
+			if mode == "provider-failure" && (!receipts[0].Estimated || receipts[0].ActualTokens != 0) {
 				t.Fatal("failed call refunded")
 			}
 		})

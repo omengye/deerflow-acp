@@ -16,7 +16,7 @@ import (
 )
 
 func TestManagedSourcesSaveLaunchAndRegistrySettingsStaySeparate(t *testing.T) {
-	options, reviewDoc := reviewDocument(t)
+	options, _ := reviewDocument(t)
 	root := filepath.Join(options.UserData, "managed")
 	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)
@@ -27,7 +27,6 @@ func TestManagedSourcesSaveLaunchAndRegistrySettingsStaySeparate(t *testing.T) {
 	}
 	raw, _ := readYAML(options.Config)
 	raw["skills"] = map[string]any{"enabled": true, "managed_sources": []any{map[string]any{"id": "generated", "root": "../managed", "scope": "workspace", "workspace": ".."}}, "export_root": "../managed", "include_global": false}
-	raw["skill_evolution"] = readObject(reviewDoc, "skill_evolution")
 	if err := writeYAMLAtomic(options.Config, raw); err != nil {
 		t.Fatal(err)
 	}
@@ -85,10 +84,9 @@ func TestManagedSourcesSaveLaunchAndRegistrySettingsStaySeparate(t *testing.T) {
 		t.Fatal("rejected legacy edit changed import state")
 	}
 	delete(doc, "skills")
-	readObject(doc, "skill_evolution")["enabled"] = false
 	run(t, options, "save", doc)
-	if _, err := launch.ApplyConfig(options.Config, &cfg, &connections, nil); err != nil || len(cfg.SkillProposalSources) != 0 || len(cfg.Skills.ManagedSources) != 1 {
-		t.Fatal("evolution disable removed published source", err)
+	if _, err := launch.ApplyConfig(options.Config, &cfg, &connections, nil); err != nil || len(cfg.SkillProposalSources) != 1 || len(cfg.Skills.ManagedSources) != 1 {
+		t.Fatal("automatic settings lost existing source authority", err)
 	}
 }
 

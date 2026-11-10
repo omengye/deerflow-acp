@@ -11,6 +11,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	"github.com/omengye/deerflow-acp/go-harness/internal/background"
+	"github.com/omengye/deerflow-acp/go-harness/internal/checkpoint"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 	fastjson "github.com/segmentio/encoding/json"
 )
@@ -36,20 +37,24 @@ func checkExecutionInterruptSet(permissions []ExecutionInterruptBinding, waits [
 // manifest's native address or role must not retarget an opaque checkpoint.
 // Legacy permission-only fixtures/checkpoints need no new envelope fields.
 func checkExecutionWaitBytes(data []byte, waits []interaction.TaskWaitBinding) error {
+	metadata, _, err := checkpoint.Metadata(data)
+	if err != nil {
+		return fmt.Errorf("%w: %w", harness.ErrExecutionUnresumable, err)
+	}
 	var envelope struct {
 		TaskWaitsEnabled bool                          `json:"taskWaitsEnabled"`
 		TaskWaits        []interaction.TaskWaitBinding `json:"taskWaits"`
 	}
-	// Native nested-role checkpoints can approach the 64 MiB storage limit.
-	// Scan their opaque JSON strings in blocks rather than encoding/json's
-	// race-instrumented byte-at-a-time state machine while holding SQLite.
-	// Keep full JSON validation and the same field decoding/binding checks.
-	decodeErr := fastjson.Unmarshal(data, &envelope)
+	// Framed checkpoints expose only small metadata here. Legacy envelopes can
+	// still approach 64 MiB: scan their opaque strings in blocks rather than
+	// encoding/json's race-instrumented byte-at-a-time state machine in SQLite.
+	// Preserve legacy field decoding and binding checks.
+	decodeErr := fastjson.Unmarshal(metadata, &envelope)
 	if decodeErr != nil {
 		// The standard decoder validates syntax before populating fields and
 		// continues after type errors. Preserve that legacy behavior on errors.
 		envelope.TaskWaitsEnabled, envelope.TaskWaits = false, nil
-		decodeErr = json.Unmarshal(data, &envelope)
+		decodeErr = json.Unmarshal(metadata, &envelope)
 	}
 	if len(waits) == 0 && len(envelope.TaskWaits) == 0 {
 		return nil

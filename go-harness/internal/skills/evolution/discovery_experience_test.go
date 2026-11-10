@@ -8,12 +8,12 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
-func TestSkillLearningExperienceDiscoveryNeedsHostAuthorityAndRemainsManualOnly(t *testing.T) {
+func TestSkillLearningExperienceDiscoveryChecksAuthorityAtAdmission(t *testing.T) {
 	f, _, _ := generationFixture(t)
 	opts := discoveryOptions()
-	opts.ExperiencePatternsEnabled = true
-	if err := f.service.ConfigureDiscovery(opts); err == nil {
-		t.Fatal("experience discovery configured without host learning authority")
+
+	if err := f.service.ConfigureDiscovery(opts); err != nil {
+		t.Fatal("host discovery policy rejected", err)
 	}
 	if err := f.service.ConfigureExperienceDiscoverySource(nil); err == nil {
 		t.Fatal("nil learning source granted evidence authority")
@@ -25,31 +25,31 @@ func TestSkillLearningExperienceDiscoveryNeedsHostAuthorityAndRemainsManualOnly(
 	}
 }
 
-func TestSkillLearningExperienceNewSkillDiscoveryNeedsIndependentGrant(t *testing.T) {
+func TestSkillLearningExperienceNewSkillDestinationIsHostSelected(t *testing.T) {
 	for _, mode := range []string{"missing-experience-gate", "missing-source", "unauthorized-source", "no-learning-authority"} {
 		t.Run(mode, func(t *testing.T) {
 			f, _, _ := generationFixture(t)
 			o := discoveryOptions()
-			o.ExperienceNewSkillsEnabled, o.ExperiencePatternsEnabled, o.NewSkillSourceID = true, true, "project"
+			o.DestinationSourceID = "project"
 			switch mode {
 			case "missing-experience-gate":
-				o.ExperiencePatternsEnabled = false
+
 			case "missing-source":
-				o.NewSkillSourceID = ""
+				o.DestinationSourceID = ""
 			case "unauthorized-source":
-				o.NewSkillSourceID = "foreign"
+				o.DestinationSourceID = "foreign"
 			}
-			if err := f.service.ConfigureDiscovery(o); err == nil {
-				t.Fatal("new capability creation implicitly authorized", mode)
+			if err := f.service.ConfigureDiscovery(o); (err != nil) != (mode == "unauthorized-source") {
+				t.Fatal("destination authority", mode, err)
 			}
 		})
 	}
 	d := discoverySnapshot{Kind: "experience_pattern", Options: discoveryOptions(), Target: harness.SkillTarget{SourceID: "project", Name: "structured-json-audit"}, EpisodeDedup: true, Evidence: make([]harness.SkillDiscoveryEvidence, 2)}
-	d.Options.ExperiencePatternsEnabled = true
+
 	if validDiscoverySnapshot(d) {
 		t.Fatal("experience editing implicitly authorized absent head")
 	}
-	d.Options.ExperienceNewSkillsEnabled, d.Options.NewSkillSourceID = true, "project"
+	d.Options.DestinationSourceID = "project"
 	if !validDiscoverySnapshot(d) {
 		t.Fatal("explicit new capability target rejected")
 	}
@@ -101,15 +101,11 @@ func TestSkillLearningExperienceDiscoveryExistingTriggerUsesUnifiedConsumption(t
 	}
 }
 
-func TestSkillLearningReviewDraftSnapshotRequiresOptInAndCannotClaimFullThreshold(t *testing.T) {
+func TestHistoricalReviewDraftCannotClaimFullThreshold(t *testing.T) {
 	d := discoverySnapshot{Kind: "experience_pattern", Options: discoveryOptions(),
 		Base:         harness.SkillHead{Exists: true, Enabled: true, Version: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 		EpisodeDedup: true, ReviewDraft: true, Evidence: make([]harness.SkillDiscoveryEvidence, 1)}
-	d.Options.ExperiencePatternsEnabled = true
-	if validDiscoverySnapshot(d) {
-		t.Fatal("review draft enabled without its host gate")
-	}
-	d.Options.ExperienceReviewDraftsEnabled = true
+
 	if !validDiscoverySnapshot(d) {
 		t.Fatal("one-episode review draft rejected")
 	}

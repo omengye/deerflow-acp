@@ -41,11 +41,9 @@ type SkillLearningOptions struct {
 	CrossSession bool
 	// Matching is independently enabled and requires consolidation. It can
 	// classify gaps in authorized skills, never generate or publish a change.
-	Matching           *SkillGenerationModelConfig
-	Budget             SkillMaintenanceBudget
-	Idle               time.Duration
-	MaxDailyModelCalls int64
-	MaxDailyTokens     int64
+	Matching *SkillGenerationModelConfig
+	Policy   SkillMaintenancePolicy
+	Idle     time.Duration
 }
 
 type SkillLearningControl struct {
@@ -298,6 +296,8 @@ type SkillExperienceMatchChoice struct {
 }
 
 type SkillExperienceMatchInput struct {
+	PageOffset        int                          `json:"page_offset"`
+	InventorySize     int                          `json:"inventory_size"`
 	PatternID         string                       `json:"pattern_id"`
 	Revision          int64                        `json:"revision"`
 	Candidate         SkillExperienceCandidate     `json:"experience"`

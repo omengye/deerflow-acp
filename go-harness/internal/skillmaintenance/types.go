@@ -1,5 +1,5 @@
-// Package skillmaintenance owns the separate, durable budget for skill
-// generation and evaluation. It never creates user runs or invokes tools.
+// Package skillmaintenance owns durable scheduling and request records for
+// skill generation and evaluation. It never creates user runs or invokes tools.
 package skillmaintenance
 
 import (
@@ -13,19 +13,21 @@ import (
 var (
 	ErrInvalid               = errors.New("invalid skill maintenance request")
 	ErrConflict              = errors.New("skill maintenance state changed")
-	ErrBudget                = errors.New("skill maintenance daily budget exhausted")
+	ErrCapacity              = errors.New("skill maintenance queue capacity unavailable")
 	ErrClock                 = errors.New("skill maintenance clock moved backwards")
 	ErrSourceActive          = errors.New("skill maintenance source is active")
 	ErrMatchInventoryChanged = errors.New("skill matching inventory changed")
+	ErrYieldProgress         = errors.New("skill maintenance slice completed with durable progress")
+	ErrBlockedEvidence       = errors.New("skill maintenance requires new verified evidence")
+	ErrBlockedRuntime        = errors.New("skill maintenance requires an isolated runtime")
 )
 
-// Policy must be explicit. Zero never means unlimited. UTC days share one
-// budget across all sources and stages in the database. Jobs pin their policy;
-// a later stricter host policy also applies at admission.
-type Policy = harness.SkillMaintenanceBudget
+// Policy contains execution constraints, not usage quotas. Jobs pin their
+// deadline; restarts cannot renew a failed attempt's execution time.
+type Policy = harness.SkillMaintenancePolicy
 
 func validPolicy(p Policy) bool {
-	return p.MaxDailyModelCalls >= 1 && p.MaxDailyModelCalls <= 100000 && p.MaxDailyTokens >= 1 && p.MaxDailyTokens <= 1000000000 && p.MaxJobSeconds >= 1 && p.MaxJobSeconds <= 3600 && p.Workers >= 1 && p.Workers <= 16
+	return p.MaxJobSeconds >= 1 && p.MaxJobSeconds <= 3600 && p.Workers >= 1 && p.Workers <= 16
 }
 
 // Reference and InputDigest identify a producer-owned immutable input record.
@@ -129,15 +131,17 @@ type ModelCall struct {
 
 type Usage struct {
 	InputTokens, OutputTokens int64
-	Known                     bool // only a complete, valid provider usage record can release credit
+	Known                     bool // true only when the provider returned complete token usage
 }
 
 type Receipt = harness.SkillMaintenanceReceipt
 
 type DayUsage struct {
-	Day           string `json:"day"`
-	ModelCalls    int64  `json:"model_calls"`
-	ChargedTokens int64  `json:"charged_tokens"`
+	EstimatedTokens int64  `json:"estimated_tokens"`
+	UnknownCalls    int64  `json:"unknown_calls"`
+	Day             string `json:"day"`
+	ModelCalls      int64  `json:"model_calls"`
+	ActualTokens    int64  `json:"actual_tokens"`
 }
 
 // Broker is installed only by a trusted maintenance worker. A provider call

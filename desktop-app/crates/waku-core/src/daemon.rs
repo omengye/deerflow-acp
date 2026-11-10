@@ -910,28 +910,13 @@ impl Backend for WakuBackend {
                             }
                             if let DriverEvent::DeerFlowTasks(task_event) = &event {
                                 if let Some(runtimes) = runtimes.upgrade() {
-                                    let runtimes = runtimes.lock();
-                                    if runtimes
-                                        .get(&session_id)
-                                        .is_some_and(|(id, _)| *id == runtime_id)
-                                    {
-                                        match task_event {
-                                            waku_protocol::deerflow_tasks::Event::Ready {
-                                                ..
-                                            } => {
-                                                deerflow_ready.lock().insert(
-                                                    session_id,
-                                                    (runtime_id, task_event.clone()),
-                                                );
-                                            }
-                                            waku_protocol::deerflow_tasks::Event::Invalidated {
-                                                ..
-                                            } => {
-                                                deerflow_ready.lock().remove(&session_id);
-                                            }
-                                            _ => {}
-                                        }
-                                    }
+                                    cache_deerflow_ready(
+                                        &runtimes,
+                                        &deerflow_ready,
+                                        session_id,
+                                        runtime_id,
+                                        task_event,
+                                    );
                                 }
                             }
                             if let DriverEvent::ConversationCapability { supported } = &event {
@@ -971,13 +956,11 @@ impl Backend for WakuBackend {
                                     {
                                         capabilities.remove(&session_id);
                                     }
-                                    let mut ready = deerflow_ready.lock();
-                                    if ready
-                                        .get(&session_id)
-                                        .is_some_and(|(id, _)| *id == runtime_id)
-                                    {
-                                        ready.remove(&session_id);
-                                    }
+                                    remove_finished_runtime(
+                                        &deerflow_ready,
+                                        session_id,
+                                        runtime_id,
+                                    );
                                 }
                                 if let Some(runtimes) = runtimes.upgrade() {
                                     remove_finished_runtime(&runtimes, session_id, runtime_id);
@@ -1110,6 +1093,27 @@ impl Backend for WakuBackend {
         drop(sessions);
         let terminals = std::mem::take(&mut *self.terminals.lock());
         drop(terminals);
+    }
+}
+
+/// Ready belongs to the live ACP connection. Task-data invalidation asks clients
+/// to refresh their lists; it does not revoke this connection or its capabilities.
+fn cache_deerflow_ready<T>(
+    runtimes: &Mutex<HashMap<Uuid, (Uuid, T)>>,
+    ready: &Mutex<HashMap<Uuid, (Uuid, waku_protocol::deerflow_tasks::Event)>>,
+    session_id: Uuid,
+    runtime_id: Uuid,
+    event: &waku_protocol::deerflow_tasks::Event,
+) {
+    let runtimes = runtimes.lock();
+    if !runtimes
+        .get(&session_id)
+        .is_some_and(|(id, _)| *id == runtime_id)
+    {
+        return;
+    }
+    if let waku_protocol::deerflow_tasks::Event::Ready { .. } = event {
+        ready.lock().insert(session_id, (runtime_id, event.clone()));
     }
 }
 
@@ -2512,6 +2516,86 @@ mod tests {
                 matches!(event_from_wire(wire).unwrap(), DriverEvent::ToolApprovalChanged(actual) if actual == mode)
             );
         }
+    }
+
+    #[test]
+    fn deerflow_ready_survives_normal_prompt_invalidation() {
+        use waku_protocol::deerflow_tasks::{Capabilities, Event};
+
+        let session = Uuid::new_v4();
+        let runtime = Uuid::new_v4();
+        let runtimes = Mutex::new(HashMap::from([(session, (runtime, ()))]));
+        let cached = Mutex::new(HashMap::new());
+        let ready = Event::Ready {
+            connection_id: "connection".into(),
+            session_id: "native-session".into(),
+            capabilities: Capabilities {
+                tree: true,
+                artifact_list: true,
+                artifact_read: true,
+                ..Capabilities::default()
+            },
+        };
+        cache_deerflow_ready(&runtimes, &cached, session, runtime, &ready);
+        // The ACP prompt completion callback emits this event while its connection stays alive.
+        cache_deerflow_ready(
+            &runtimes,
+            &cached,
+            session,
+            runtime,
+            &Event::Invalidated {
+                connection_id: "connection".into(),
+                session_id: "native-session".into(),
+            },
+        );
+        assert_eq!(runtimes.lock().get(&session).unwrap().0, runtime);
+        let snapshot = cached.lock();
+        let (cached_runtime, current_ready) = snapshot
+            .get(&session)
+            .expect("attachSession must still expose Ready after a normal prompt completes");
+        assert_eq!(*cached_runtime, runtime);
+        assert_eq!(
+            serde_json::to_value(current_ready).unwrap(),
+            serde_json::to_value(&ready).unwrap()
+        );
+    }
+
+    #[test]
+    fn deerflow_ready_ignores_replaced_runtime_events_and_clears_on_exit() {
+        use waku_protocol::deerflow_tasks::{Capabilities, Event};
+
+        let session = Uuid::new_v4();
+        let stale = Uuid::new_v4();
+        let current = Uuid::new_v4();
+        let runtimes = Mutex::new(HashMap::from([(session, (current, ()))]));
+        let cached = Mutex::new(HashMap::new());
+        let ready = |connection: &str| Event::Ready {
+            connection_id: connection.into(),
+            session_id: "native-session".into(),
+            capabilities: Capabilities::default(),
+        };
+        cache_deerflow_ready(&runtimes, &cached, session, current, &ready("current"));
+        cache_deerflow_ready(&runtimes, &cached, session, stale, &ready("stale"));
+        cache_deerflow_ready(
+            &runtimes,
+            &cached,
+            session,
+            stale,
+            &Event::Invalidated {
+                connection_id: "stale".into(),
+                session_id: "native-session".into(),
+            },
+        );
+        remove_finished_runtime(&cached, session, stale);
+        assert_eq!(
+            serde_json::to_value(&cached.lock().get(&session).unwrap().1).unwrap()["connectionId"],
+            "current"
+        );
+        remove_finished_runtime(&cached, session, current);
+        assert!(cached.lock().is_empty());
+        runtimes.lock().remove(&session);
+        cache_deerflow_ready(&runtimes, &cached, session, current, &ready("late"));
+        assert!(cached.lock().is_empty());
     }
 
     #[test]

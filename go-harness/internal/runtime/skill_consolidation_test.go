@@ -82,7 +82,7 @@ func consolidationTestCall(ctx context.Context, stage string) error {
 
 func consolidationTestOptions() *harness.SkillLearningOptions {
 	o := learningTestOptions()
-	o.Budget.MaxDailyModelCalls, o.MaxDailyModelCalls = 30, 20
+
 	o.Consolidation = &harness.SkillGenerationModelConfig{}
 	return o
 }
@@ -110,6 +110,16 @@ func newConsolidationTest(t *testing.T) (*Service, harness.Session, *consolidati
 func consolidateExtract(t *testing.T, s *Service, x harness.Session, text string) harness.RunRequest {
 	t.Helper()
 	req := learningTestRun(t, s, x, text)
+	return consolidateExtractRun(t, s, req)
+}
+
+func consolidateRelatedExtract(t *testing.T, s *Service, x harness.Session, text string) harness.RunRequest {
+	t.Helper()
+	return consolidateExtractRun(t, s, learningTestRelatedRun(t, s, x, text))
+}
+
+func consolidateExtractRun(t *testing.T, s *Service, req harness.RunRequest) harness.RunRequest {
+	t.Helper()
 	for _, kind := range []string{"tool_start", "tool_execute", "tool_end"} {
 		event := receiptEvent(req, kind, "complete-file", "read_file")
 		if kind == "tool_start" {
@@ -159,7 +169,7 @@ func TestSkillLearningConsolidationDistinctEpisodesAndUnresolvedEvidence(t *test
 	consolidateExtract(t, s, x, "Correct the previous check and validate fields")
 	consolidateRun(t, s)
 	page, err := s.SkillExperiencePatterns(ctx, "owner", x.ID, "", 10)
-	if err != nil || len(page.Patterns) != 1 || page.Patterns[0].Revision != 2 || len(page.Patterns[0].ExperienceIDs) != 2 || page.Patterns[0].SupportEpisodes != 1 || page.Patterns[0].ObservedEpisodes != 1 || page.Patterns[0].EvidenceState != "insufficient_evidence" {
+	if err != nil || len(page.Patterns) != 1 || page.Patterns[0].Revision != 2 || len(page.Patterns[0].ExperienceIDs) != 2 || page.Patterns[0].SupportEpisodes != 2 || page.Patterns[0].ObservedEpisodes != 2 || page.Patterns[0].EvidenceState != "observed_execution" {
 		t.Fatalf("one task inflated support %+v %v", page, err)
 	}
 	if page.Patterns[0].SourceState != "not_revalidated" {
@@ -174,7 +184,7 @@ func TestSkillLearningConsolidationDistinctEpisodesAndUnresolvedEvidence(t *test
 	consolidateExtract(t, s, x, "An independent JSON inspection")
 	consolidateRun(t, s)
 	page, err = s.SkillExperiencePatterns(ctx, "owner", x.ID, "", 10)
-	if err != nil || len(page.Patterns) != 1 || page.Patterns[0].SupportEpisodes != 2 || page.Patterns[0].ObservedEpisodes != 2 || page.Patterns[0].EvidenceState != "observed_execution" || page.Patterns[0].Quality != "unassessed" {
+	if err != nil || len(page.Patterns) != 1 || page.Patterns[0].SupportEpisodes != 3 || page.Patterns[0].ObservedEpisodes != 3 || page.Patterns[0].EvidenceState != "observed_execution" || page.Patterns[0].Quality != "unassessed" {
 		t.Fatalf("independent execution evidence lost %+v %v", page, err)
 	}
 	// Saved result reuse must also work for a merge whose input pinned the
@@ -193,7 +203,7 @@ func TestSkillLearningConsolidationDistinctEpisodesAndUnresolvedEvidence(t *test
 	consolidateExtract(t, s, x, "This step still has an unverified issue")
 	consolidateRun(t, s)
 	page, err = s.SkillExperiencePatterns(ctx, "owner", x.ID, "", 10)
-	if err != nil || len(page.Patterns) != 1 || page.Patterns[0].EvidenceState != "unresolved" || page.Patterns[0].ObservedEpisodes != 2 || len(model.seen) != 4 {
+	if err != nil || len(page.Patterns) != 1 || page.Patterns[0].EvidenceState != "unresolved" || page.Patterns[0].ObservedEpisodes != 3 || len(model.seen) != 4 {
 		t.Fatalf("unresolved evidence disappeared %+v %v", page, err)
 	}
 	jobs, err := s.SkillLearningJobs(ctx, "owner", x.ID, "", 10)
@@ -438,14 +448,14 @@ func TestSkillLearningConsolidationResultAndMembersCommitAtomically(t *testing.T
 	}
 }
 
-func TestSkillLearningConsolidationSharesExtractionSublimitWithoutRefund(t *testing.T) {
+func TestSkillLearningConsolidationContinuesAfterExtractionWithoutQuota(t *testing.T) {
 	s, x, extractor, model := newConsolidationTest(t)
 	ctx := context.Background()
 	if err := s.Store.Learning.Close(); err != nil {
 		t.Fatal(err)
 	}
 	options := consolidationTestOptions()
-	options.MaxDailyModelCalls = 1
+
 	l, err := learning.New(ctx, s.Store.db, options)
 	if err != nil {
 		t.Fatal(err)
@@ -460,24 +470,16 @@ func TestSkillLearningConsolidationSharesExtractionSublimitWithoutRefund(t *test
 	s.Store.Learning = l
 	consolidateExtract(t, s, x, "Procedure consumed the only learning call")
 	consolidateQueued(t, s)
-	for range 2 {
-		if worked, err := l.RunOne(ctx); err != nil || worked {
-			t.Fatal("quota-deferred consolidation was claimed", worked, err)
-		}
+	if worked, err := l.RunOne(ctx); err != nil || !worked {
+		t.Fatal("consolidation blocked after extraction", worked, err)
 	}
-	var state, code string
-	var attempts int
-	var deadlineNS int64
-	var charged int
-	if err = s.Store.db.QueryRow(`SELECT state,error_code,attempts,deadline_ns FROM df_skill_maintenance_jobs WHERE job_kind='experience_consolidate'`).Scan(&state, &code, &attempts, &deadlineNS); err != nil || state != "queued" || code != "" || attempts != 0 || deadlineNS != 0 || len(model.seen) != 0 {
-		t.Fatal("consolidation did not defer intact at the extraction sublimit", state, code, attempts, deadlineNS, len(model.seen), err)
-	}
-	if err = s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_maintenance_calls`).Scan(&charged); err != nil || charged != 1 {
-		t.Fatal("denied call dispatched or previous receipt refunded", charged, err)
+	var calls int
+	if err = s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_maintenance_calls`).Scan(&calls); err != nil || calls != 2 {
+		t.Fatal("actual stage usage", calls, err)
 	}
 	page, err := l.Patterns(ctx, x.ID, "", 10)
-	if err != nil || len(page.Patterns) != 0 {
-		t.Fatal("budget denied result committed", page, err)
+	if err != nil || len(page.Patterns) != 1 || len(model.seen) != 1 {
+		t.Fatal("consolidation did not continue", err)
 	}
 }
 

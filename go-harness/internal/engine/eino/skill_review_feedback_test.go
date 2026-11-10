@@ -90,9 +90,9 @@ func TestSkillReviewFailureNeverRetriesCancellationOrBudget(t *testing.T) {
 	}{
 		{context.Canceled, "review_cancelled", false},
 		{context.DeadlineExceeded, "review_timeout", true},
-		{&budgetError{resource: "tokens"}, "review_budget_exhausted", false},
-		{&budget.LimitError{Resource: "model_calls"}, "review_budget_exhausted", false},
-		{skillmaintenance.ErrBudget, "review_budget_exhausted", false},
+		{&budgetError{resource: "tokens"}, "review_runtime_unavailable", false},
+		{&budget.LimitError{Resource: "model_calls"}, "review_runtime_unavailable", false},
+		{skillmaintenance.ErrCapacity, "review_runtime_unavailable", false},
 		{&net.DNSError{Err: "private-endpoint", Name: "private.example", IsTemporary: true}, "review_temporarily_unavailable", true},
 		{&net.DNSError{Err: "private-endpoint", Name: "private.example", IsNotFound: true}, "review_request_failed", false},
 		{errors.New("private-provider-error"), "review_request_failed", false},

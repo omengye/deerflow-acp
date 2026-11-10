@@ -131,8 +131,8 @@ func (r *Registry) InspectSkill(ctx context.Context, ref harness.SkillRef) (out 
 			out.BlockedReason = "Current run pins an older version; start an ordinary new turn before editing."
 		}
 		if mode == "source" {
-			actual, e := r.readPackage(ctx, p.source, dir)
-			if e != nil || (&Candidate{pkg: actual}).Version() != head.Version {
+			matches, e := p.physicalMatches(head, dir)
+			if e != nil || !matches {
 				out.Editable = false
 				out.BlockedReason = "Source files changed or became invalid; start a new ordinary turn to refresh, or repair the directory."
 			}
@@ -226,11 +226,11 @@ func (r *Registry) PrepareEdit(ctx context.Context, ref harness.SkillRef, owner,
 			return err
 		}
 		if mode == "source" {
-			disk, err := r.readPackage(ctx, s, dir)
+			matches, err := p.physicalMatches(head, dir)
 			if err != nil {
 				return err
 			}
-			if (&Candidate{pkg: disk}).Version() != head.Version {
+			if !matches {
 				return harness.ErrSkillConflict
 			}
 		}
@@ -243,6 +243,9 @@ func (r *Registry) PrepareEdit(ctx context.Context, ref harness.SkillRef, owner,
 			return err
 		}
 		candidate := &Candidate{pkg: pkg}
+		if err = guardAutomaticContent(ctx, p.tx, candidate.Version()); err != nil {
+			return err
+		}
 		if _, err = p.Stage(candidate); err != nil {
 			return err
 		}
@@ -328,7 +331,16 @@ func (r *Registry) ApplyEdit(ctx context.Context, id, owner string, approved har
 	if rec.Owner != owner || string(a) != string(b) || s == nil || sourceTarget(s, rec.Review.Target.Name) != rec.Review.Target {
 		return out, harness.ErrPermissionDenied
 	}
-	if rec.Status == "applied" || rec.Status == "conflict" {
+	if rec.Status == "applied" || rec.Status == "publishing" || rec.Status == "conflict" {
+		if rec.Status != "conflict" {
+			if err = r.withEditPublication(ctx, s, rec.Review.Target.Name, id, func(p *PublicationTx) error { return p.ResumeFilePublication() }); err != nil {
+				return out, err
+			}
+			rec, err = readEdit(ctx, r.db, id)
+			if err != nil {
+				return out, err
+			}
+		}
 		return r.editResult(ctx, s, rec)
 	}
 	if rec.Status != "prepared" {
@@ -368,13 +380,26 @@ func (r *Registry) ApplyEdit(ctx context.Context, id, owner string, approved har
 			return harness.ErrSkillConflict
 		}
 		if mode == "source" {
-			pkg, err := r.readPackage(ctx, s, dir)
+			matches, err := p.physicalMatches(head, dir)
 			if err != nil {
 				return err
 			}
-			if (&Candidate{pkg: pkg}).Version() != head.Version {
+			if !matches {
 				return harness.ErrSkillConflict
 			}
+		}
+		if _, scoped, e := p.physicalVersion(head); e != nil {
+			return e
+		} else if scoped {
+			rec.Applied, err = p.Publish(rec.Review.Candidate, head, head.Enabled)
+			if err != nil {
+				return err
+			}
+			rec.Status = "publishing"
+			if err = p.bindPublicationEdit(rec.Review.ID); err != nil {
+				return err
+			}
+			return saveEdit(ctx, p.tx, rec)
 		}
 		rec.Status = "applying"
 		return saveEdit(ctx, p.tx, rec)
@@ -383,6 +408,10 @@ func (r *Registry) ApplyEdit(ctx context.Context, id, owner string, approved har
 		return out, err
 	}
 	if rec.Status != "applying" {
+		rec, err = readEdit(ctx, r.db, id)
+		if err != nil {
+			return out, err
+		}
 		return r.editResult(ctx, s, rec)
 	}
 	if err = r.finishEdit(ctx, s, &rec); err != nil {
@@ -421,6 +450,9 @@ func (r *Registry) finishEdit(ctx context.Context, s *source, rec *editRecord) e
 		}
 		candidate, err := p.ReadVersion(rec.Review.Candidate)
 		if err != nil {
+			return err
+		}
+		if err = guardAutomaticContent(ctx, p.tx, rec.Review.Candidate); err != nil {
 			return err
 		}
 		if rec.Review.Storage == "source" {
@@ -467,7 +499,7 @@ func (r *Registry) RecoverEdits(ctx context.Context) error {
 	if r.closed {
 		return ErrClosed
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT id FROM df_skill_edits WHERE status='applying' ORDER BY id`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM df_skill_edits WHERE status IN ('applying','publishing') ORDER BY id`)
 	if err != nil {
 		return err
 	}
@@ -495,6 +527,12 @@ func (r *Registry) RecoverEdits(ctx context.Context) error {
 		if s == nil || sourceTarget(s, rec.Review.Target.Name) != rec.Review.Target {
 			continue
 		}
+		if rec.Status == "publishing" {
+			if err = r.withEditPublication(ctx, s, rec.Review.Target.Name, id, func(p *PublicationTx) error { return p.ResumeFilePublication() }); err != nil {
+				return err
+			}
+			continue
+		}
 		if err = r.finishEdit(ctx, s, &rec); err != nil {
 			return err
 		}
@@ -506,7 +544,7 @@ func editPending(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, source, name, allowedID string) (bool, error) {
 	var pending bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_edits WHERE source_key=? AND name=? AND status IN ('applying','needs_reconciliation') AND id<>?)`, source, name, allowedID).Scan(&pending)
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_edits WHERE source_key=? AND name=? AND status IN ('applying','publishing','needs_reconciliation') AND id<>?)`, source, name, allowedID).Scan(&pending)
 	return pending, err
 }
 

@@ -70,7 +70,7 @@ func (s *Store) Start() error {
 	workers.Add(1)
 	go loop(s.QueueLearning)
 	if !s.shared {
-		for range s.options.Budget.Workers {
+		for range s.options.Policy.Workers {
 			workers.Add(1)
 			go loop(s.RunOne)
 		}
@@ -97,7 +97,7 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Status(ctx context.Context) (harness.SkillLearningStatus, error) {
-	result := harness.SkillLearningStatus{Version: PolicyVersion, Enabled: s.enabled, Mode: "shadow", IdleSeconds: int64(s.options.Idle / time.Second), ConsolidationEnabled: s.enabled && s.consolidator != nil}
+	result := harness.SkillLearningStatus{Version: PolicyVersion, Enabled: s.enabled, Mode: "automatic", IdleSeconds: int64(s.options.Idle / time.Second), ConsolidationEnabled: s.enabled && s.consolidator != nil}
 	result.MatchingEnabled = s.enabled && s.matcher != nil
 	result.CrossSessionEnabled = s.enabled && s.consolidator != nil && s.options.CrossSession
 	result.Running = s.running()

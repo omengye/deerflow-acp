@@ -23,6 +23,7 @@ mod missing;
 mod model_metadata;
 mod model_metadata_logic;
 mod models_dev;
+mod network;
 pub(super) mod presentation;
 mod publication_state;
 mod readiness;
@@ -69,7 +70,6 @@ pub(super) enum Section {
     Models,
     Agents,
     Memory,
-    Skills,
     Tools,
     Runtime,
 }
@@ -245,6 +245,8 @@ pub(super) struct DeerFlowSettings {
     pending_model_names: HashMap<usize, String>,
     roles: roles::RoleEditor,
     advanced: bool,
+    network_advanced: bool,
+    network_probe: Option<String>,
     dirty: bool,
     needs_apply: bool,
     request_generation: u64,
@@ -341,6 +343,8 @@ impl DeerFlowSettings {
             pending_model_names: HashMap::new(),
             roles: roles::RoleEditor::default(),
             advanced: false,
+            network_advanced: false,
+            network_probe: None,
             dirty: false,
             needs_apply: false,
             request_generation: 0,
@@ -536,16 +540,7 @@ fn remap_model_references(document: &mut Value, names: &HashMap<String, String>)
             }
         }
     }
-    for path in [
-        "/default_model",
-        "/runtime/model_name",
-        "/skill_evolution/moderation_model_name",
-        "/skill_evolution/evaluation_model_name",
-        "/skill_evolution/generation_model_name",
-        "/skill_evolution/learning/extraction_model_name",
-        "/skill_evolution/learning/consolidation_model_name",
-        "/skill_evolution/learning/matching_model_name",
-    ] {
+    for path in ["/default_model", "/runtime/model_name"] {
         if let Some(value) = document.pointer_mut(path) {
             replace(value, names, false);
         }
@@ -1047,11 +1042,15 @@ impl Waku {
                                 this.deerflow_settings.draft.as_ref(),
                             ));
                         }
+                        if operation == "test-network" && this.deerflow_settings.edit_generation == edits {
+                            this.deerflow_settings.network_probe = Some(redact_deerflow_message(&message, this.deerflow_settings.draft.as_ref()));
+                        }
                         this.deerflow_service_error(&message, cx);
                     }
                     Ok(data) => match operation.as_str() {
                         "snapshot" | "save" | "save-and-apply" => {
                             this.deerflow_settings.readiness = None;
+                            this.deerflow_settings.network_probe = None;
                             let (document, application) = if operation == "save-and-apply" {
                                 (data["document"].clone(), Some(data["status"].clone()))
                             } else {
@@ -1110,6 +1109,11 @@ impl Waku {
                             this.deerflow_settings.notice = Some("本地检查完成；网络和实际模型能力未验证。".into());
                         }
                         "validate" => this.deerflow_settings.notice = Some("配置校验通过。".into()),
+                        "test-network" => {
+                            if this.deerflow_settings.edit_generation == edits {
+                                this.deerflow_settings.network_probe = Some(network::probe_notice(&data));
+                            }
+                        }
                         "test-model" => {
                             if data["capabilities"].is_object() {
                                 this.deerflow_settings.notice = Some(capability_probe::capability_notice(&data));
@@ -1202,6 +1206,9 @@ impl Waku {
                             .observed_applied_generation
                             .is_some_and(|previous| applied_generation > previous);
                         let ready = model_refresh_ready(&status);
+                        if ready && !this.search_plugins.loaded {
+                            this.search_plugins_request("search-status", json!({}), cx);
+                        }
                         if skills::service_identity(&status)
                             != skills::service_identity(&this.deerflow_settings.status)
                             || status["applied_generation"]
@@ -1358,6 +1365,9 @@ impl Waku {
             return;
         }
         self.deerflow_settings.input_text[slot] = text.clone();
+        if field.path.starts_with("/network/") {
+            self.deerflow_settings.network_probe = None;
+        }
         self.deerflow_metadata_edited(&field.path, cx);
         self.deerflow_settings.dirty = true;
         self.deerflow_settings.edit_generation += 1;
@@ -1390,7 +1400,11 @@ impl Waku {
             cx.notify();
             return;
         }
-        let parsed = parse_field(&text, field.kind);
+        let parsed = if field.path == "/network/proxy/no_proxy" && text.trim().is_empty() {
+            Ok(json!([]))
+        } else {
+            parse_field(&text, field.kind)
+        };
         match parsed {
             Ok(value) => {
                 self.deerflow_settings.invalid_text.remove(&field.path);
@@ -1398,6 +1412,9 @@ impl Waku {
                     path != &field.path && !path.starts_with(&(field.path.clone() + "/"))
                 });
                 if let Some(document) = self.deerflow_settings.draft.as_mut() {
+                    if field.path == "/network/proxy/url" && !text.trim().is_empty() {
+                        set_value(document, "/network/proxy/clear_url", json!(false));
+                    }
                     if field.path.starts_with("/models/")
                         && field.path.ends_with("/api_key")
                         && !text.trim().is_empty()
@@ -1440,6 +1457,9 @@ impl Waku {
             return;
         }
         self.deerflow_metadata_edited(path, cx);
+        if path.starts_with("/network/") {
+            self.deerflow_settings.network_probe = None;
+        }
         self.deerflow_settings.errors.remove(path);
         self.deerflow_settings.invalid_text.remove(path);
         if let Some(document) = self.deerflow_settings.draft.as_mut() {
@@ -1559,6 +1579,11 @@ impl Waku {
         self.open_settings_page(SettingsPage::DeerFlowTools, cx);
     }
 
+    pub(super) fn open_deerflow_search_settings(&mut self, cx: &mut Context<Self>) {
+        self.deerflow_settings.selected_tool = 0;
+        self.open_deerflow_tools_settings(cx);
+    }
+
     pub(super) fn open_deerflow_models_settings(&mut self, cx: &mut Context<Self>) {
         self.open_settings_page(SettingsPage::DeerFlowModels, cx);
     }
@@ -1657,7 +1682,7 @@ impl Waku {
         {
             number += 1;
         }
-        items.push(json!({"original_name":"", "name":format!("model-{number}"), "display_name":"", "description":"", "provider":"openai", "model":"", "base_url":"", "api_key":"", "api_key_configured":false, "api_key_literal":false, "clear_api_key":false, "supports_vision":false, "context_window":0, "output_token_parameter":"auto"}));
+        items.push(json!({"original_name":"", "name":format!("model-{number}"), "display_name":"", "description":"", "provider":"openai", "api":"auto", "model":"", "base_url":"", "api_key":"", "api_key_configured":false, "api_key_literal":false, "clear_api_key":false, "supports_vision":false, "context_window":0, "max_output_tokens":0, "max_supported_output_tokens":0, "output_token_parameter":"auto"}));
         self.deerflow_settings.selected_model = items.len() - 1;
         self.deerflow_settings.model_metadata.added(items.len() - 1);
         self.deerflow_settings.dirty = true;
@@ -1695,11 +1720,6 @@ impl Waku {
 }
 
 fn fields_for(state: &DeerFlowSettings) -> Vec<Field> {
-    if state.section == Section::SkillCenter
-        && state.skill_center_tab == presentation::SkillCenterTab::Automation
-    {
-        return evolution::fields();
-    }
     fields_for_section(state, state.section)
 }
 
@@ -1742,6 +1762,16 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
                 Kind::Choice(&[("openai", "OpenAI 兼容"), ("claude", "Claude")]),
             );
             add(
+                format!("{root}/api"),
+                "接口协议",
+                "自动：OpenAI 使用 Chat Completions，Claude 使用原生接口。需要推理与工具调用的 OpenAI 模型可选择 Responses。",
+                Kind::Choice(&[
+                    ("auto", "自动（沿用提供商默认）"),
+                    ("chat_completions", "Chat Completions"),
+                    ("responses", "Responses"),
+                ]),
+            );
+            add(
                 format!("{root}/supports_vision"),
                 "支持图片输入",
                 "请按服务商实际能力设置",
@@ -1751,6 +1781,18 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
                 format!("{root}/context_window"),
                 "上下文窗口",
                 "Token 数；0 使用模型/宿主默认",
+                Kind::Integer,
+            );
+            add(
+                format!("{root}/max_output_tokens"),
+                "本模型单次输出额度",
+                "Token 数；包含服务计入输出的推理 tokens。0 继承宿主限额；不得超过服务支持上限或宿主硬限额。保存并重启后生效，不会自动提高。",
+                Kind::Integer,
+            );
+            add(
+                format!("{root}/max_supported_output_tokens"),
+                "服务支持的最大输出",
+                "按当前模型和接口的文档或元数据填写，与上下文窗口不同。0 表示未知，不表示无限制；此字段只约束请求额度。",
                 Kind::Integer,
             );
             add(
@@ -1781,7 +1823,7 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
             add(
                 format!("{root}/output_token_parameter"),
                 "输出上限参数（高级）",
-                "通常选自动；腾讯 Copilot 使用 max_tokens，其余 OpenAI 兼容默认使用 max_completion_tokens。未知网关请按实测覆盖，与推理强度无关。",
+                "Responses 必须选自动，使用 max_output_tokens。Chat Completions 通常选自动；腾讯 Copilot 使用 max_tokens，其余默认 max_completion_tokens。未知网关按实测覆盖，与推理强度无关。",
                 Kind::Choice(&[
                     ("auto", "自动选择"),
                     ("max_tokens", "max_tokens"),
@@ -1896,7 +1938,6 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
                 add(format!("/memory/{key}"), label, hint, kind);
             }
         }
-        Section::Skills => fields.extend(evolution::fields()),
         Section::Tools => {
             add(
                 "/runtime/permission_mode".into(),
@@ -1977,7 +2018,7 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
                 ),
                 (
                     "max_output_tokens",
-                    "单次模型输出上限",
+                    "宿主单次输出硬限额",
                     "包含推理和正文 tokens；默认 4096，0 不设宿主上限，仍受模型、角色及上下文限制。修改后重启生效。",
                     Kind::Integer,
                 ),
@@ -2022,7 +2063,11 @@ fn df_group(theme: Theme) -> Div {
         .flex_col()
         .gap(px(16.0))
 }
-fn df_label(label: impl Into<SharedString>, hint: impl Into<SharedString>, theme: Theme) -> Div {
+pub(super) fn df_label(
+    label: impl Into<SharedString>,
+    hint: impl Into<SharedString>,
+    theme: Theme,
+) -> Div {
     let label: SharedString = label.into();
     let hint: SharedString = hint.into();
     div()
@@ -2122,6 +2167,7 @@ impl Waku {
                 "snapshot" => "正在加载…",
                 "validate" => "正在校验…",
                 "test-model" => "正在测试模型…",
+                "test-network" => "正在测试代理连接…",
                 _ => "正在处理…",
             }
         } else if state.dirty {
@@ -2655,7 +2701,7 @@ impl Waku {
                                     ) {
                                         Ok(document) => this.deerflow_request(
                                             "test-model",
-                                            json!({"model":document["models"][index]}),
+                                            json!({"model":document["models"][index],"network":document["network"]}),
                                             cx,
                                         ),
                                         Err(error) => {
@@ -2672,7 +2718,7 @@ impl Waku {
                             let index = this.deerflow_settings.selected_model;
                             if let Some(document) = &this.deerflow_settings.draft {
                                 match document_with_model_names(document, &this.deerflow_settings.pending_model_names) {
-                                    Ok(document) => this.deerflow_request("test-model", json!({"model":document["models"][index],"profile":"agent"}), cx),
+                                    Ok(document) => this.deerflow_request("test-model", json!({"model":document["models"][index],"profile":"agent","network":document["network"]}), cx),
                                     Err(error) => { this.deerflow_settings.error = Some(error); cx.notify(); }
                                 }
                             }
@@ -2693,11 +2739,6 @@ impl Waku {
             }
             Section::Agents => {
                 content = content.child(self.render_deerflow_roles(theme, cx));
-            }
-            Section::Skills => {
-                if doc["skill_evolution_migration"]["required"] == true {
-                    content = content.child(self.render_deerflow_evolution(theme, cx));
-                }
             }
             Section::Memory => {
                 content = content.child(df_group(theme).child(df_label(
@@ -2722,12 +2763,9 @@ impl Waku {
             }
             _ => {}
         }
-        content = presentation::compose_settings_content(
-            state.section,
-            state.skill_center_tab,
-            content,
-            || self.render_deerflow_form_fields(theme, cx),
-        );
+        content = presentation::compose_settings_content(state.section, content, || {
+            self.render_deerflow_form_fields(theme, cx)
+        });
         body = body.child(self.render_deerflow_panel(content, theme, cx));
         body.into_any_element()
     }
@@ -3023,15 +3061,13 @@ mod tests {
     }
     #[test]
     fn model_rename_updates_references_without_changing_remote_model_ids() {
-        let mut doc = json!({"default_model":"old","runtime":{"model_name":"old"},"memory":{"model_name":null},"models":[{"name":"old","model":"old"}],"skill_evolution":{"generation_model_name":"old","moderation_model_name":"old","evaluation_model_name":"quality"}});
+        let mut doc = json!({"default_model":"old","runtime":{"model_name":"old"},"memory":{"model_name":null},"models":[{"name":"old","model":"old"}]});
         rename_model_references(&mut doc, "old", "new");
         assert_eq!(doc["default_model"], "new");
         assert_eq!(doc["runtime"]["model_name"], "new");
         assert_eq!(doc["models"][0]["model"], "old");
         assert!(doc["memory"]["model_name"].is_null());
-        assert_eq!(doc["skill_evolution"]["generation_model_name"], "new");
-        assert_eq!(doc["skill_evolution"]["moderation_model_name"], "new");
-        assert_eq!(doc["skill_evolution"]["evaluation_model_name"], "quality");
+        assert!(doc.get("skill_evolution").is_none());
     }
 }
 
@@ -3444,8 +3480,8 @@ impl Waku {
                     cx,
                 );
                 self.deerflow_settings.notice = Some(if operation == "proposal.review_retry" {
-                    "已为原始不可变内容创建审核重试候选；旧失败记录保留，审核通过后仍需确认发布。"
-                } else { "已基于当前目录提交新的候选；需检查新的审核结果并确认发布，旧批准不会转移。" }.into());
+                    "已为原始内容创建验证重试候选；旧失败记录保留，可在技能管理中查看验证结果和处理状态。"
+                } else { "已基于当前目录提交新的候选；请查看新的验证结果和处理状态，旧验证结果不会转移。" }.into());
             }
             "proposal.approve"
             | "proposal.publish_retry"
@@ -3776,12 +3812,12 @@ impl Waku {
             if history_only {
                 "发布历史"
             } else {
-                "需要你确认的候选"
+                "需要处理的候选"
             },
             if history_only {
                 "查看已发布修订，核对后可恢复历史版本。"
             } else {
-                "仅默认展示宿主判断需要决策的候选。等待证据、观察期、额度或后台检查不计入角标；可展开查看但不能绕过验证。"
+                "默认展示需要纠正来源或处理失败的候选。等待证据、观察期或后台检查不计入角标；可展开查看全部候选和验证结果。"
             },
             theme,
         ));
@@ -3804,7 +3840,7 @@ impl Waku {
             move |this, _, cx| this.deerflow_request("manage", query.clone(), cx),
         ));
         if !history_only {
-            group = group.child(df_button("df-review-waiting", if state.show_more { "仅查看待确认候选" } else { "查看全部候选与发布失败" }, unavailable, state.show_more, theme, cx, |this, _, cx| {
+            group = group.child(df_button("df-review-waiting", if state.show_more { "仅查看需要处理的候选" } else { "查看全部候选与发布失败" }, unavailable, state.show_more, theme, cx, |this, _, cx| {
                 this.deerflow_settings.show_more = !this.deerflow_settings.show_more;
                 let query = if this.deerflow_settings.show_more { json!({"operation":"proposal.list","limit":20}) }
                     else { json!({"operation":"proposal.list","status":"pending_review","needs_attention":true,"limit":20}) };
@@ -3950,7 +3986,7 @@ impl Waku {
                     let retry_review = json!({"operation":"proposal.review_retry","proposal_id":proposal["id"],"expected_state_version":observed_state});
                     group = group.child(df_button("df-proposal-review-retry", "重新审核原始内容…", disabled, false, theme, cx,
                         move |this, _, cx| {
-                            this.deerflow_settings.confirm_manage = Some(("为原始候选内容创建一次新的限额审核，不读取当前目录、不修改旧失败记录。将使用维护模型额度，通过后仍需人工发布。重复点击不会重复创建。".into(), retry_review.clone()));
+                            this.deerflow_settings.confirm_manage = Some(("重新验证原始候选内容，保留旧失败记录。使用主模型并记录实际用量；重复点击不会重复创建。".into(), retry_review.clone()));
                             this.settings_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
                             cx.notify();
                         }));
@@ -4079,6 +4115,7 @@ fn redact_deerflow_message(message: &str, document: Option<&Value>) -> String {
                             "authorization",
                             "credential",
                             "https_proxy",
+                            "proxy",
                         ]
                         .iter()
                         .any(|part| key.contains(part));
@@ -4666,11 +4703,12 @@ impl Waku {
         let section = match top {
             "models" => Section::Models,
             "default_model" => Section::Common,
+            "network" => Section::Common,
             "subagents" => Section::Agents,
             "memory" => Section::Memory,
             "skills_enabled" => Section::Common,
             "skill_sources" => Section::Sources,
-            "skills" | "skill_evolution" => Section::Skills,
+            "skills" => Section::Sources,
             "client_mcp_servers" => Section::MCP,
             "sandbox" | "tools" | "tool_groups" => Section::Tools,
             "runtime"

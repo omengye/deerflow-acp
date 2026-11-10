@@ -11,20 +11,28 @@ import (
 )
 
 func saveConsolidationSourcesTx(ctx context.Context, tx *sql.Tx, job string, snap consolidationSnapshot, choices []patternSnapshot) error {
-	sources := map[string]int64{snap.Seed.Session: snap.Seed.Epoch}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO df_learning_consolidation_sources VALUES(?,?,?)`, job, snap.Seed.Session, snap.Seed.Epoch); err != nil {
+		return err
+	}
 	for _, choice := range choices {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO df_learning_consolidation_patterns VALUES(?,?)`, job, choice.Pattern.ID); err != nil {
 			return err
 		}
-		for _, dep := range choice.Members {
-			if prior, exists := sources[dep.Session]; exists && prior != dep.Epoch {
-				return harness.ErrPermissionDenied
+		if err := walkPatternMembers(ctx, tx, choice, func(dep experienceDependency) error {
+			var epoch int64
+			err := tx.QueryRowContext(ctx, `SELECT epoch FROM df_learning_consolidation_sources WHERE job_id=? AND session_id=?`, job, dep.Session).Scan(&epoch)
+			if err == nil {
+				if epoch != dep.Epoch {
+					return harness.ErrPermissionDenied
+				}
+				return nil
 			}
-			sources[dep.Session] = dep.Epoch
-		}
-	}
-	for session, epoch := range sources {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO df_learning_consolidation_sources VALUES(?,?,?)`, job, session, epoch); err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			_, err = tx.ExecContext(ctx, `INSERT INTO df_learning_consolidation_sources VALUES(?,?,?)`, job, dep.Session, dep.Epoch)
+			return err
+		}); err != nil {
 			return err
 		}
 	}
@@ -43,51 +51,27 @@ func verifyConsolidationSourcesTx(ctx context.Context, tx *sql.Tx, job string, s
 	if owner != snap.Owner {
 		return harness.ErrPermissionDenied
 	}
-	expected := map[string]int64{snap.Seed.Session: snap.Seed.Epoch}
 	patterns := make([]string, 0, len(snap.Patterns))
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS df_learning_expected_sources(session TEXT,epoch INTEGER,PRIMARY KEY(session,epoch)); DELETE FROM df_learning_expected_sources;`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO df_learning_expected_sources VALUES(?,?)`, snap.Seed.Session, snap.Seed.Epoch); err != nil {
+		return err
+	}
 	for _, dep := range snap.Patterns {
 		patterns = append(patterns, dep.ID)
-		rows, err := tx.QueryContext(ctx, `SELECT e.session_id,m.epoch FROM df_learning_pattern_members m
- JOIN df_learning_experiences e ON e.id=m.experience_id WHERE m.pattern_id=? AND m.revision=? LIMIT ?`, dep.ID, dep.Revision, maxPatternMembers+1)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var session string
-			var epoch int64
-			if err = rows.Scan(&session, &epoch); err != nil {
-				break
-			}
-			if prior, exists := expected[session]; exists && prior != epoch {
-				err = harness.ErrPermissionDenied
-				break
-			}
-			expected[session] = epoch
-		}
-		if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO df_learning_expected_sources SELECT e.session_id,m.epoch FROM df_learning_pattern_members m JOIN df_learning_experiences e ON e.id=m.experience_id WHERE m.pattern_id=? AND m.revision<=?`, dep.ID, dep.Revision); err != nil {
 			return err
 		}
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT session_id,epoch FROM df_learning_consolidation_sources WHERE job_id=? LIMIT ?`, job, 8*maxPatternMembers+2)
-	if err != nil {
+	var mismatch bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT session,epoch FROM df_learning_expected_sources EXCEPT SELECT session_id,epoch FROM df_learning_consolidation_sources WHERE job_id=?) OR EXISTS(SELECT session_id,epoch FROM df_learning_consolidation_sources WHERE job_id=? EXCEPT SELECT session,epoch FROM df_learning_expected_sources)`, job, job).Scan(&mismatch); err != nil {
 		return err
 	}
-	actual := map[string]int64{}
-	for rows.Next() {
-		var session string
-		var epoch int64
-		if err = rows.Scan(&session, &epoch); err != nil {
-			break
-		}
-		actual[session] = epoch
-	}
-	if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	if encodedDigest(actual) != encodedDigest(expected) {
+	if mismatch {
 		return harness.ErrPermissionDenied
 	}
-	rows, err = tx.QueryContext(ctx, `SELECT pattern_id FROM df_learning_consolidation_patterns WHERE job_id=? ORDER BY pattern_id LIMIT 9`, job)
+	rows, err := tx.QueryContext(ctx, `SELECT pattern_id FROM df_learning_consolidation_patterns WHERE job_id=? ORDER BY pattern_id LIMIT 9`, job)
 	if err != nil {
 		return err
 	}

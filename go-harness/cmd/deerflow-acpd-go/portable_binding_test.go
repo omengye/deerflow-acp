@@ -73,9 +73,11 @@ func TestExistingRustBridgePortableDataBinding(t *testing.T) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, executable, args...)
 		cmd.Env, cmd.Dir, cmd.WaitDelay = append(append([]string{}, environment...), extraEnv...), root, 3*time.Second
-		output, err := cmd.CombinedOutput()
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		output, err := cmd.Output()
 		if (err == nil) != success {
-			t.Fatalf("%s %v: %v %s", filepath.Base(executable), args, err, output)
+			t.Fatalf("%s %v: %v %s %s", filepath.Base(executable), args, err, output, stderr.String())
 		}
 		return output
 	}
@@ -102,6 +104,13 @@ func TestExistingRustBridgePortableDataBinding(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() { _ = command(bridge, "--stop-daemon").Run() })
+	invoke(bridge, false, nil, "--start-daemon")
+	invoke(daemon, false, nil, "--check-paths")
+	invoke(stdio, false, nil)
+	archive := filepath.Join(root, "archived-history.db")
+	if err := os.Rename(filepath.Join(other, "harness.db"), archive); err != nil {
+		t.Fatal(err)
+	}
 	invoke(bridge, true, nil, "--start-daemon") // no config/data/runtime environment
 	ep := endpoint()
 	client := acpClient(t, ep)
@@ -192,9 +201,12 @@ func TestExistingRustBridgePortableDataBinding(t *testing.T) {
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("stdio exit: %v %s", err, stderr.String())
 	}
-	untouched, err := os.ReadFile(filepath.Join(other, "harness.db"))
+	untouched, err := os.ReadFile(archive)
 	if err != nil || string(untouched) != "another historical store; must never be opened" {
 		t.Fatal("alternate store changed")
+	}
+	if _, err := os.Stat(filepath.Join(other, "harness.db")); !os.IsNotExist(err) {
+		t.Fatal("alternate runtime database was recreated", err)
 	}
 }
 

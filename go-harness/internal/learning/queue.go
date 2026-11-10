@@ -12,11 +12,11 @@ import (
 )
 
 func validateOptions(o harness.SkillLearningOptions) error {
-	b := o.Budget
-	if b.MaxDailyModelCalls < 1 || b.MaxDailyModelCalls > 100000 || b.MaxDailyTokens < 1 || b.MaxDailyTokens > 1000000000 || b.MaxJobSeconds < 1 || b.MaxJobSeconds > 3600 || b.Workers < 1 || b.Workers > 16 ||
-		o.MaxDailyModelCalls < 1 || o.MaxDailyModelCalls > b.MaxDailyModelCalls || o.MaxDailyTokens < 1 || o.MaxDailyTokens > b.MaxDailyTokens {
-		return invalid("requires explicit shared budget and bounded learning sublimits")
+	b := o.Policy
+	if b.MaxJobSeconds < 1 || b.MaxJobSeconds > 3600 || b.Workers < 1 || b.Workers > 16 {
+		return invalid("requires bounded execution time and concurrency")
 	}
+
 	models := []harness.SkillGenerationModelConfig{o.Model}
 	if o.CrossSession && o.Consolidation == nil {
 		return invalid("cross-session learning requires consolidation")
@@ -49,7 +49,7 @@ func (s *Store) Configure(ctx context.Context, extractor harness.SkillExperience
 	s.extractor, s.maintenance, s.shared = extractor, shared, shared != nil
 	if shared == nil {
 		var err error
-		s.maintenance, err = skillmaintenance.NewWithHooks(ctx, s.db, s.options.Budget, s.ExtractionHooks())
+		s.maintenance, err = skillmaintenance.NewWithHooks(ctx, s.db, s.options.Policy, s.ExtractionHooks())
 		if err != nil {
 			s.extractor = nil
 			return err
@@ -105,7 +105,7 @@ func (s *Store) QueueOne(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	base := extractionSnapshot{Session: session, Episode: episode, Owner: owner, Epoch: epoch, MaxDailyModelCalls: s.options.MaxDailyModelCalls, MaxDailyTokens: s.options.MaxDailyTokens, View: harness.SkillLearningInput{EpisodeID: episode, References: []harness.SkillLearningReference{}}}
+	base := extractionSnapshot{Session: session, Episode: episode, Owner: owner, Epoch: epoch, View: harness.SkillLearningInput{EpisodeID: episode, References: []harness.SkillLearningReference{}}}
 	var parts []queueSourceView
 	var changed bool
 	for _, candidate := range candidates {
@@ -154,7 +154,7 @@ func (s *Store) QueueOne(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	job, err := s.maintenance.EnqueueTx(ctx, tx, skillmaintenance.Request{Kind: skillmaintenance.ExperienceExtract, OwnerKind: skillmaintenance.WorkspaceOwner, OwnerKey: owner, Key: snap.ID, Reference: snap.ID, InputDigest: digest(payload)})
-	if errors.Is(err, skillmaintenance.ErrBudget) {
+	if errors.Is(err, skillmaintenance.ErrCapacity) {
 		for _, part := range parts {
 			if err = markQueueSourceTx(ctx, tx, part.source.Outbox, "pending", "queue_backpressure", ""); err != nil {
 				return false, err

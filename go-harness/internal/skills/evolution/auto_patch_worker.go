@@ -18,9 +18,9 @@ func (s *Service) autoPatchBatch(ctx context.Context, monitor bool) error {
 	if err := s.db.QueryRowContext(ctx, `SELECT `+column+` FROM df_skill_auto_patch_scan WHERE id=1`).Scan(&cursor); err != nil {
 		return err
 	}
-	query := `SELECT p.id FROM df_skill_proposals p JOIN df_skill_generation_inputs g ON g.proposal_id=p.id JOIN df_skill_maintenance_jobs j ON j.id=g.job_id WHERE p.id>? AND p.status='pending_review' AND j.state='completed' ORDER BY p.id LIMIT 16`
+	query := `SELECT p.id FROM df_skill_proposals p JOIN df_skill_generation_inputs g ON g.proposal_id=p.id JOIN df_skill_maintenance_jobs j ON j.id=g.job_id WHERE p.id>? AND ((p.status='pending_review' AND (j.state='completed' OR EXISTS(SELECT 1 FROM df_skill_behavior_evaluations e JOIN df_skill_maintenance_jobs b ON b.id=e.job_id WHERE e.proposal_id=p.id AND e.manual=1 AND b.state='completed'))) OR (p.status IN ('validating','failed') AND EXISTS(SELECT 1 FROM df_skill_behavior_evaluations e JOIN df_skill_maintenance_jobs b ON b.id=e.job_id WHERE e.proposal_id=p.id AND b.state='failed' AND b.error_code='configuration_changed'))) AND NOT EXISTS(SELECT 1 FROM df_evolution_retired_proposals old WHERE old.proposal_id=p.id) ORDER BY p.id LIMIT 16`
 	if monitor {
-		query = `SELECT proposal_id FROM df_skill_auto_patch_observations WHERE proposal_id>? AND status='observing' ORDER BY proposal_id LIMIT 16`
+		query = `SELECT proposal_id FROM df_skill_auto_patch_observations WHERE proposal_id>? AND status IN ('observing','stable') ORDER BY proposal_id LIMIT 16`
 	}
 	rows, err := s.db.QueryContext(ctx, query, cursor)
 	if err != nil {
@@ -46,15 +46,20 @@ func (s *Service) autoPatchBatch(ctx context.Context, monitor bool) error {
 		if monitor {
 			err = s.monitorAutoPatch(ctx, id)
 		} else {
-			var p Proposal
-			p, err = s.Get(ctx, id)
-			if err == nil {
-				_, err = s.Approve(context.WithValue(ctx, autoPatchContextKey{}, true), id, Review{ExpectedStateVersion: p.StateVersion, Actor: "auto_patch", Note: "Automatically published a bounded patch after content and behavioral evaluation."})
-				var decision autoPatchDecisionError
-				if errors.As(err, &decision) {
-					combined = errors.Join(combined, s.saveAutoPatchDecision(ctx, p, decision.reason))
-				} else if errors.Is(err, harness.ErrSkillValidation) {
-					combined = errors.Join(combined, s.saveAutoPatchDecision(ctx, p, "validation_requires_review"))
+			queued, e := s.recheckEnvironment(ctx, id)
+			// Always advance the scan, including errors and queued re-evaluations.
+			err = e
+			if e == nil && !queued {
+				var p Proposal
+				p, err = s.Get(ctx, id)
+				if err == nil {
+					_, err = s.Approve(context.WithValue(ctx, autoPatchContextKey{}, true), id, Review{ExpectedStateVersion: p.StateVersion, Actor: "auto_patch", Note: "Automatically published a bounded patch after content and behavioral evaluation."})
+					var decision autoPatchDecisionError
+					if errors.As(err, &decision) {
+						combined = errors.Join(combined, s.saveAutoPatchDecision(ctx, p, decision.reason))
+					} else if errors.Is(err, harness.ErrSkillValidation) {
+						combined = errors.Join(combined, s.saveAutoPatchDecision(ctx, p, "validation_failed"))
+					}
 				}
 			}
 		}

@@ -26,7 +26,7 @@ func maintenanceReviewFixture(t *testing.T, calls int64) (*skillmaintenance.Stor
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	s, err := skillmaintenance.New(context.Background(), db.DB(), skillmaintenance.Policy{MaxDailyModelCalls: calls, MaxDailyTokens: 100000, MaxJobSeconds: 60, Workers: 1})
+	s, err := skillmaintenance.New(context.Background(), db.DB(), skillmaintenance.Policy{MaxJobSeconds: 60, Workers: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestSkillMaintenanceReviewChargesBothStages(t *testing.T) {
 			}
 			report, e := validator.Validate(ctx, reviewInput())
 			wantCalls := int32(1)
-			success := mode == "complete" || mode == "missing-usage" || mode == "partial-usage" || mode == "inconsistent-usage" || mode == "underreported-usage"
+			success := mode == "complete" || mode == "one-call-budget" || mode == "missing-usage" || mode == "partial-usage" || mode == "inconsistent-usage" || mode == "underreported-usage"
 			if success {
 				wantCalls = 2
 			}
@@ -135,7 +135,7 @@ func TestSkillMaintenanceReviewChargesBothStages(t *testing.T) {
 					t.Fatal(r)
 				}
 				estimated := mode == "provider-failure" || mode == "missing-usage" || mode == "partial-usage" || mode == "inconsistent-usage" || mode == "underreported-usage" || mode == "settle-failure"
-				if r.Estimated != estimated || estimated && r.ChargedTokens != r.ReservedTokens || !estimated && r.ChargedTokens != 15 {
+				if r.Estimated != estimated || estimated && r.ActualTokens != 0 || !estimated && r.ActualTokens != 15 {
 					t.Fatalf("charge %+v", r)
 				}
 			}

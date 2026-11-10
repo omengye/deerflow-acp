@@ -10,7 +10,7 @@ import (
 )
 
 var toolParameters = map[string][]string{
-	"web_search":   {"api_key", "https_proxy", "timeout", "max_results"},
+	"web_search":   {"max_results"},
 	"web_fetch":    {"https_proxy", "timeout", "max_output_chars"},
 	"image_search": {"https_proxy", "timeout", "max_results"},
 	"host_opencli": {"executable", "timeout", "allowed_sites"},
@@ -23,8 +23,6 @@ func toolFields() []Field {
 	fields := []Field{
 		{Path: "/tools", Type: "tool_catalog", Default: []any{}},
 		{Path: "/tools/*/name", Type: "string", Enum: ToolNames(), Default: ""},
-		{Path: "/tools/*/api_key", Type: "string", Default: ""},
-		{Path: "/tools/*/clear_api_key", Type: "boolean", Default: false},
 		{Path: "/tools/*/https_proxy", Type: "string", Default: ""},
 		{Path: "/tools/*/clear_https_proxy", Type: "boolean", Default: false},
 		numeric("tools/*", "timeout", "integer", 0, 0, 120),

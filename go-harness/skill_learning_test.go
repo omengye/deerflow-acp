@@ -80,7 +80,7 @@ func TestSkillLearningSDKNativeExecutionCapturesActualSkillAndTool(t *testing.T)
 	defer provider.Close()
 	e := &sdkExperienceExtractor{seen: make(chan harness.SkillLearningInput, 1)}
 	cfg.Provider, cfg.Model, cfg.APIKey, cfg.BaseURL = "openai", "fixture", "fixture-only", provider.URL+"/v1"
-	cfg.SkillLearning = &harness.SkillLearningOptions{Idle: time.Second, MaxDailyModelCalls: 1, MaxDailyTokens: 10000, Budget: harness.SkillMaintenanceBudget{MaxDailyModelCalls: 3, MaxDailyTokens: 30000, MaxJobSeconds: 30, Workers: 1}}
+	cfg.SkillLearning = &harness.SkillLearningOptions{Idle: time.Second, Policy: harness.SkillMaintenancePolicy{MaxJobSeconds: 30, Workers: 1}}
 	cfg.SkillExperienceExtractor = e
 	cfg.Budget = &harness.BudgetLimits{MaxModelCalls: 6, MaxToolCalls: 4, MaxTokens: 100000, MaxOutputTokens: 128}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -157,7 +157,7 @@ func TestSkillLearningSDKNativeExecutionCapturesActualSkillAndTool(t *testing.T)
 func TestSkillLearningSDKShadowLifecycleAndManagement(t *testing.T) {
 	ctx := context.Background()
 	e := &sdkExperienceExtractor{}
-	cfg := Config{DataDir: t.TempDir(), SkillLearning: &harness.SkillLearningOptions{Idle: time.Second, MaxDailyModelCalls: 1, MaxDailyTokens: 10000, Budget: harness.SkillMaintenanceBudget{MaxDailyModelCalls: 3, MaxDailyTokens: 30000, MaxJobSeconds: 60, Workers: 1}}, SkillExperienceExtractor: e, Engine: engineFunc(func(ctx context.Context, req harness.RunRequest, emit harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
+	cfg := Config{DataDir: t.TempDir(), SkillLearning: &harness.SkillLearningOptions{Idle: time.Second, Policy: harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}}, SkillExperienceExtractor: e, Engine: engineFunc(func(ctx context.Context, req harness.RunRequest, emit harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
 		if err := emit(ctx, harness.RunEvent{SessionID: req.Session.ID, RunID: req.RunID, Kind: "text_delta", AgentName: "deerflow", Text: "Please validate the complete JSON"}); err != nil {
 			return harness.RunResult{}, err
 		}
@@ -191,7 +191,7 @@ func TestSkillLearningSDKShadowLifecycleAndManagement(t *testing.T) {
 		t.Fatalf("worker did not persist experience %+v calls=%d", page, e.calls.Load())
 	}
 	status, err := c.SkillLearningStatus(ctx)
-	if err != nil || !status.Enabled || status.Mode != "shadow" || status.Experiences != 1 {
+	if err != nil || !status.Enabled || status.Mode != "automatic" || status.Experiences != 1 {
 		t.Fatalf("status %+v %v", status, err)
 	}
 	if generations := c.evolution.GenerationStatus(); generations.Enabled {

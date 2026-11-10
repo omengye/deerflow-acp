@@ -6,10 +6,7 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct Options {
-    #[serde(default)]
-    experience_patterns_enabled: bool,
     max_changed_lines: u64,
-    max_daily_publications: u64,
     observation_hours: u64,
     min_observations: u64,
     rollback_failure_threshold: u64,
@@ -19,7 +16,6 @@ impl Options {
     fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             (1..=200).contains(&self.max_changed_lines)
-                && (1..=20).contains(&self.max_daily_publications)
                 && (1..=720).contains(&self.observation_hours)
                 && (1..=100).contains(&self.min_observations)
                 && (1..=100).contains(&self.rollback_failure_threshold),
@@ -30,17 +26,11 @@ impl Options {
 
     fn summary(&self) -> String {
         format!(
-            "最多修改 {} 行 · 每日发布 {} 次 · 观察 {} 小时 · 最少 {} 个有效样本 · 连续 {} 次质量失败回滚 · 学习来源自动补丁{}",
+            "最多修改 {} 行 · 观察 {} 小时 · 最少 {} 个有效样本 · 累计 {} 个独立任务质量失败撤回",
             self.max_changed_lines,
-            self.max_daily_publications,
             self.observation_hours,
             self.min_observations,
             self.rollback_failure_threshold,
-            if self.experience_patterns_enabled {
-                "已授权"
-            } else {
-                "未授权"
-            },
         )
     }
 }
@@ -72,7 +62,6 @@ struct Readiness {
     needs_attention: Option<u64>,
     #[serde(default)]
     waiting_candidates: Option<u64>,
-    new_skills_require_review: bool,
     reasons: Vec<String>,
 }
 
@@ -99,10 +88,10 @@ impl Readiness {
         let state = match self.state.as_str() {
             "ready" => "已就绪",
             "partial" => "部分可用",
-            _ => "自动采用未启用",
+            _ => "自动进化暂不可用",
         };
         Ok(format!(
-            "自动采用条件：{state} · 目录版本 {}\n{} / {} 个安装目标具备自动补丁基础条件 · {} 个受管目标缺少可信覆盖\n当前授权来源共有 {} 个待审候选。{}{}候选仍须通过本次证据、评测、预算及版本检查。{}",
+            "自动采用条件：{state} · 目录版本 {}\n{} / {} 个安装目标具备自动补丁基础条件 · {} 个受管目标缺少可信覆盖\n当前授权来源共有 {} 个待处理候选。{}{}候选仍须通过本次来源、评测及版本检查。{}",
             self.catalog_version,
             self.eligible_targets,
             self.installed,
@@ -112,25 +101,21 @@ impl Readiness {
                 .zip(self.waiting_candidates)
                 .map(|(a, w)| format!("需处理 {a} 个，后台检查或等待 {w} 个。 "))
                 .unwrap_or_default(),
-            if self.new_skills_require_review {
-                "新技能仍需确认；"
-            } else {
-                ""
-            },
+            "新技能与已有技能均经验证自动采用。",
             self.reasons
                 .iter()
                 .map(|code| format!(
                     "\n{}",
                     match code.as_str() {
                         "automatic_publication_disabled" =>
-                            "自动采用未启用；在自动化设置中核对授权并保存应用。".to_owned(),
+                            "自动采用服务未就绪；请查看后台服务状态。".to_owned(),
                         "trusted_suite_missing" =>
-                            "缺少可信评测覆盖；为目标配置并通过评测，或在需要处理页人工审核。"
+                            "缺少可信评测覆盖；等待新的可信任务证据，宿主将自动扩展评测。"
                                 .to_owned(),
                         "some_targets_require_review" =>
-                            "部分目标仍须人工审核；在需要处理页查看具体候选。".to_owned(),
+                            "部分目标正在等待证据或运行环境；可查看具体原因。".to_owned(),
                         "no_eligible_targets" =>
-                            "尚无符合条件的安装目标；先安装目标技能并配置可信评测，新技能仍需审核。"
+                            "尚无符合条件的安装目标；新任务产生充分证据后将自动建立并验证候选。"
                                 .to_owned(),
                         _ => format!("服务就绪原因 {code}；请按该代码排查。"),
                     }
@@ -162,6 +147,10 @@ struct Observation {
     reason: String,
     #[serde(default)]
     learning_source: Option<LearningSource>,
+    #[serde(default)]
+    verification_state: String,
+    #[serde(default)]
+    verification_identity: String,
 }
 
 #[derive(Deserialize)]
@@ -178,10 +167,9 @@ struct LearningSource {
 }
 
 impl LearningSource {
-    fn summary(&self, options: &Options) -> anyhow::Result<String> {
+    fn summary(&self) -> anyhow::Result<String> {
         anyhow::ensure!(
-            options.experience_patterns_enabled
-                && bounded(&self.generation_id, 128)
+            bounded(&self.generation_id, 128)
                 && self.generation_id.starts_with("smj_")
                 && bounded(&self.discovery_id, 128)
                 && self.discovery_id.starts_with("sd_")
@@ -195,12 +183,12 @@ impl LearningSource {
         );
         let state = match self.source_state.as_str() {
             "valid_at_publication" => "仅发布时已核验；不是当前来源授权",
-            "withdrawn" => "来源已撤销；已采用版本保留",
+            "withdrawn" => "来源已撤销；等待撤回处理",
             "unavailable" => "来源链接不可用；不作为质量判断",
             _ => anyhow::bail!("未知自动补丁学习来源状态"),
         };
         Ok(format!(
-            "\n学习来源：{state}\n发现 {} · 生成 {}\n归并 {} 修订 {} · 匹配 {}\n来源证据摘要 {}\n观察仍仅计算操作者确认的质量反馈，不把经验摘要当质量票。",
+            "\n学习来源：{state}\n发现 {} · 生成 {}\n归并 {} 修订 {} · 匹配 {}\n来源证据摘要 {}\n观察计算宿主可验证结果及明确质量反馈，不把经验摘要当质量票。",
             self.discovery_id,
             self.generation_id,
             self.pattern_id,
@@ -255,7 +243,7 @@ impl AutoPatchBrowser {
                     match r.state.as_str() {
                         "ready" => "自动采用条件 · 已就绪",
                         "partial" => "自动采用条件 · 部分可用",
-                        _ => "自动采用未启用",
+                        _ => "自动进化暂不可用",
                     }
                     .to_owned()
                 });
@@ -282,7 +270,7 @@ impl AutoPatchBrowser {
                             .options
                             .as_ref()
                             .map(Options::summary)
-                            .unwrap_or_else(|| "当前未配置自动补丁参数".into()),
+                            .unwrap_or_else(|| "服务尚未返回观察策略".into()),
                         if !status.running && status.observing > 0 {
                             "\n当前后台未运行观察维护；历史记录保留，请检查服务状态。"
                         } else {
@@ -315,7 +303,7 @@ impl AutoPatchBrowser {
                     let learning = observation
                         .learning_source
                         .as_ref()
-                        .map(|source| source.summary(&observation.options))
+                        .map(|source| source.summary())
                         .transpose()?
                         .unwrap_or_default();
                     anyhow::ensure!(
@@ -362,15 +350,31 @@ impl AutoPatchBrowser {
                     );
                     let state = match observation.status.as_str() {
                         "observing" => "观察中",
-                        "passed" => "观察通过",
+                        "stable" => "已稳定",
+                        "passed" => "历史观察通过",
+                        "withdrawn" => "已退出分发",
                         "insufficient_evidence" => "观察结束，证据不足",
                         "rolled_back" => "已自动回滚",
                         "superseded" => "已被后续版本取代",
                         _ => anyhow::bail!("未知自动补丁观察状态"),
                     };
+                    let verification = match observation.verification_state.as_str() {
+                        "current" => "当前环境验证有效",
+                        "stale" => "验证环境已变化",
+                        "rechecking" => "正在按当前环境重新验证",
+                        "blocked_evidence" => "等待可信验证证据",
+                        "unavailable" => "验证服务暂不可用",
+                        "historical" | "" => "历史验证记录",
+                        _ => anyhow::bail!("未知验证环境状态"),
+                    };
+                    anyhow::ensure!(
+                        observation.verification_identity.is_empty()
+                            || digest(&observation.verification_identity),
+                        "验证环境身份无效"
+                    );
                     rows.push((
                         format!("{} / {} · {state}", observation.target.source_id, observation.target.name),
-                        format!("提案 {} · 发布修订 {} · 基线修订 {}\n发布版本 {} · 状态版本 {}\n开始 {} · 截止 {} · 更新 {}\n有效成功 {} · 累计质量失败 {} · 当前连续失败 {} · 未计入 {}\n{}{}{}{}",
+                        format!("提案 {} · 发布修订 {} · 基线修订 {}\n发布版本 {} · 状态版本 {}\n验证：{verification}\n开始 {} · 截止 {} · 更新 {}\n有效成功 {} · 累计质量失败 {} · 当前连续失败 {} · 未计入 {}\n{}{}{}{}",
                             observation.proposal_id, observation.publication_revision, observation.baseline_revision,
                             observation.head.version, observation.head.state_version,
                             observation.started_at, observation.deadline, observation.updated_at,
@@ -401,35 +405,23 @@ impl Waku {
     ) -> AnyElement {
         let state = &self.deerflow_settings;
         let browser = &state.skill_browser.auto_patch;
-        let supported = [
-            "max_changed_lines",
-            "max_daily_publications",
-            "observation_hours",
-            "min_observations",
-            "rollback_failure_threshold",
-        ]
-        .iter()
-        .all(|field| {
-            state
-                .settings_contract
-                .allows(&format!("/skill_evolution/auto_patch/{field}"))
-        });
+        let supported = true;
         let unavailable =
             !supported || state.busy() || state.applying() || state.status["running"] != true;
-        let mut group = df_group(theme).child(df_label("自动补丁发布与观察", "宿主自动执行审核、发布和回滚。观察只计算明确的技能质量判断，外部故障、取消和不确定副作用单独记录。", theme));
+        let mut group = df_group(theme).child(df_label("自动采用与撤回记录", "新技能和更新通过验证后自动采用并持续观察。发生回归或观察到期证据不足时自动撤回；外部故障和取消单独记录。", theme));
         if !supported {
             return group
                 .child(df_label(
                     "当前服务未提供此能力",
-                    "更新配套 Go 服务并重新加载配置后，可查看自动补丁状态。",
+                    "更新配套服务后，可查看自动采用状态。",
                     theme,
                 ))
                 .into_any_element();
         }
         let mut actions = div().flex().flex_wrap().gap(px(6.0));
         for (suffix, label, operation) in [
-            ("status", "刷新自动补丁状态", "skill.auto_patch.status"),
-            ("list", "刷新发布观察记录", "skill.auto_patch.list"),
+            ("status", "刷新采用状态", "skill.auto_patch.status"),
+            ("list", "刷新采用与撤回记录", "skill.auto_patch.list"),
         ] {
             actions = actions.child(df_button(
                 SharedString::from(format!("df-auto-patch-{suffix}")),
@@ -453,8 +445,8 @@ impl Waku {
         }
         if browser.loaded && browser.rows.is_empty() {
             group = group.child(df_label(
-                "暂无自动发布记录",
-                "符合条件的补丁发布后将在此显示观察进度。",
+                "暂无自动采用记录",
+                "新任务积累足够证据并通过验证后，会在此显示采用、观察和撤回记录。",
                 theme,
             ));
         }

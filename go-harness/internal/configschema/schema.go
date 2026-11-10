@@ -85,6 +85,7 @@ func Describe() Schema {
 	}
 	fields = append(fields, modelAgentFields()...)
 	fields = append(fields, toolFields()...)
+	fields = append(fields, networkFields()...)
 	fields = append(fields, evolutionFields()...)
 	fields = append(fields, skillSourceFields()...)
 	for i := range fields {
@@ -97,15 +98,16 @@ func Describe() Schema {
 		if f.Path == "/skills_enabled" {
 			f.ConfigPath = "skills.enabled"
 		}
-		if f.Path == "/models/*/clear_api_key" || f.Path == "/config_migration_ack" || f.Path == "/skill_evolution_migration_ack" || f.Path == "/tools/*/clear_api_key" || f.Path == "/tools/*/clear_https_proxy" {
+		if f.Path == "/network/proxy/clear_url" || f.Path == "/models/*/clear_api_key" || f.Path == "/config_migration_ack" || f.Path == "/skill_evolution_migration_ack" || f.Path == "/tools/*/clear_api_key" || f.Path == "/tools/*/clear_https_proxy" {
 			f.ConfigPath = "" // Credential edit intent, not a native YAML key.
 		}
 		f.Apply = "restart"
 		f.Operations = []string{"validate", "save"}
 		f.Hash = digest(*f)
 	}
-	schema := Schema{Version: Version, Sections: []string{"runtime", "memory", "models", "subagents", "tools", "sandbox", "skill_evolution", "skill_sources"}, Fields: fields}
+	schema := Schema{Version: Version, Sections: []string{"runtime", "memory", "models", "subagents", "tools", "sandbox", "network", "skill_evolution", "skill_sources"}, Fields: fields}
 	schema.HostSettings = []HostSetting{{ConfigPath: "mcp.host_recipes", Apply: "restart", Edit: "host_yaml", Description: "Explicit host-owned MCP recipes for exact workspaces; credentials are excluded from desktop and execution snapshots."}}
+	schema.HostSettings = append(schema.HostSettings, HostSetting{ConfigPath: "search", Apply: "live", Edit: "settings_tools_web_search", Description: "Configure Brave, DeepSeek and SearXNG in Settings > Tools > web_search. Search preferences and credentials are saved separately and apply to new executions without restarting; SearXNG requires a base URL, with an optional Key."})
 	schema.HostSettings = append(schema.HostSettings, HostSetting{ConfigPath: "memory.single_user", Apply: "restart", Edit: "host_yaml", Description: "One persistent personal profile, explicit memory tools and durable extraction."}, HostSetting{ConfigPath: "memory.embedding_url", Apply: "restart", Edit: "host_yaml", Description: "Private embedding service URL; never exposed to model tools."}, HostSetting{ConfigPath: "memory.embedding_model", Apply: "restart", Edit: "host_yaml", Description: "Pinned embedding model identity. Indexes can be rebuilt from current facts."})
 	schema.HostSettings = append(schema.HostSettings,
 		HostSetting{ConfigPath: "local_acp.goal_auto_continue", Apply: "restart", Edit: "host_yaml", Description: "Enable at most 3 evidence-based native goal continuations; /goal works without auto-continuation. Calls share the run budget."},
@@ -193,6 +195,9 @@ func ValidateDraft(section string, document map[string]any) error {
 // ValidateNative checks only present native settings. Unknown retained fields
 // remain migration input. YAML null means unset, as in the launch decoder.
 func ValidateNative(document map[string]any) error {
+	if _, err := NetworkConfig(document["network"]); err != nil {
+		return err
+	}
 	// Retention remains a host-only maintenance policy. Hiding its desktop
 	// projection must not remove native configuration validation.
 	maintenance := []Field{
@@ -366,6 +371,12 @@ func validate(field Field, value any) error {
 			if !utf8.ValidString(text) || strings.ContainsRune(text, 0) {
 				return fail("must contain valid UTF-8 names without NUL")
 			}
+		}
+		if field.Path == "/network/proxy/no_proxy" {
+			if err := validateNetworkBypass(values); err != nil {
+				return fail(err.Error())
+			}
+			return nil
 		}
 		if field.Type == "reasoning_efforts" {
 			return harness.ValidateReasoningEfforts("openai", values)

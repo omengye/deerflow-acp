@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -34,7 +33,7 @@ func TestSkillLearningQueuedConversationDefersWithoutLosingWork(t *testing.T) {
 			s, x, registry, extractor, matcher := newMatchingTest(t)
 			ctx := context.Background()
 			for _, text := range []string{"Inspect the configuration", "Use complete JSON text before validating fields"} {
-				learningQueueReadinessTurn(t, s, learningTestRun(t, s, x, text))
+				learningQueueReadinessTurn(t, s, learningTestRelatedRun(t, s, x, text))
 			}
 			learningTestQueue(t, s)
 			if kind != skillmaintenance.ExperienceExtract {
@@ -53,7 +52,7 @@ func TestSkillLearningQueuedConversationDefersWithoutLosingWork(t *testing.T) {
 			if err != nil || before.State != "queued" || before.Attempts != 0 || !before.Deadline.IsZero() {
 				t.Fatal("fixture did not queue a fresh stage", before, err)
 			}
-			continuation := learningTestRun(t, s, x, "Also verify the optional fields")
+			continuation := learningTestRelatedRun(t, s, x, "Also verify the optional fields")
 			for range 2 {
 				if worked, err := s.Store.Learning.RunOne(ctx); err != nil || worked {
 					t.Fatal("temporarily active task consumed the queued stage", worked, err)
@@ -146,7 +145,7 @@ func TestSkillLearningSharedQueuedConversationResumesToReview(t *testing.T) {
 			t.Cleanup(func() { _ = e.Close() })
 			options := consolidationTestOptions()
 			options.Matching = &harness.SkillGenerationModelConfig{}
-			if err = e.ConfigureGeneration(ctx, generator, options.Budget, []string{"project"}, false); err != nil {
+			if err = e.ConfigureGeneration(ctx, generator, options.Policy, []string{"project"}, false); err != nil {
 				t.Fatal(err)
 			}
 			if err = s.Store.Learning.Close(); err != nil {
@@ -190,9 +189,12 @@ func TestSkillLearningSharedQueuedConversationResumesToReview(t *testing.T) {
 					t.Fatal("shared dispatcher did not advance learning", worked, err)
 				}
 			}
-			for _, text := range []string{"Inspect structured configuration", "Correct the check with the complete JSON document"} {
-				learningQueueReadinessTurn(t, s, learningTestRun(t, s, x, text))
-			}
+			learningQueueReadinessTurn(t, s, learningTestRun(t, s, x, "First independent configuration"))
+			learningTestQueue(t, s)
+			runShared()
+			consolidateQueued(t, s)
+			runShared()
+			learningQueueReadinessTurn(t, s, learningTestRun(t, s, x, "Second independent configuration"))
 			learningTestQueue(t, s)
 			if kind != skillmaintenance.ExperienceExtract {
 				runShared()
@@ -204,7 +206,7 @@ func TestSkillLearningSharedQueuedConversationResumesToReview(t *testing.T) {
 			}
 			if kind == skillmaintenance.SkillGeneration {
 				runShared()
-				if discoveries := experienceDiscoveries(t, e); len(discoveries) != 1 || !discoveries[0].ReviewDraft {
+				if discoveries := experienceDiscoveries(t, e); len(discoveries) != 1 || discoveries[0].ReviewDraft {
 					t.Fatal("fixture did not automatically queue generation", discoveries)
 				}
 			}
@@ -216,7 +218,7 @@ func TestSkillLearningSharedQueuedConversationResumesToReview(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			continuation := learningTestRun(t, s, x, "Also check optional fields using the same method")
+			continuation := learningTestRelatedRun(t, s, x, "Also check optional fields using the same method")
 			if worked, err := e.RunGeneration(ctx); err != nil || worked {
 				t.Fatal("shared dispatcher consumed temporarily active evidence", worked, err)
 			}
@@ -235,7 +237,7 @@ func TestSkillLearningSharedQueuedConversationResumesToReview(t *testing.T) {
 				runShared()
 			}
 			discoveries := experienceDiscoveries(t, e)
-			if len(discoveries) != 1 || !discoveries[0].ReviewDraft || len(discoveries[0].Evidence) != 1 {
+			if len(discoveries) != 1 || discoveries[0].ReviewDraft || len(discoveries[0].Evidence) != 2 {
 				t.Fatal("resumed learning did not automatically discover one review-only candidate", discoveries)
 			}
 			var proposal harness.SkillProposal
@@ -248,15 +250,15 @@ func TestSkillLearningSharedQueuedConversationResumesToReview(t *testing.T) {
 			} else {
 				proposal = experienceGenerate(t, e)
 			}
-			if proposal.Status != "pending_review" || len(generator.seen) != 1 || !generator.seen[0].InstructionOnly || validator.calls != 1 {
+			if proposal.Status != "pending_review" || len(generator.seen) != 1 || generator.seen[0].InstructionOnly || validator.calls != 1 {
 				t.Fatal("resumed source did not produce the automatic candidate", proposal, generator.seen, validator.calls)
 			}
 			published, err := e.Approve(ctx, proposal.ID, harness.SkillReview{ExpectedStateVersion: proposal.StateVersion, Actor: "owner"})
-			if err != nil || published.Status != "published" {
-				t.Fatal("resumed evidence failed normal human review", published, err)
+			if err == nil || published.Status == "published" {
+				t.Fatal("resumed evidence bypassed automatic adoption", published, err)
 			}
 			var calls, tokens int
-			if err = s.Store.db.QueryRow(`SELECT count(*),COALESCE(sum(charged_tokens),0) FROM df_skill_maintenance_calls`).Scan(&calls, &tokens); err != nil || calls != 6 || tokens != 90 {
+			if err = s.Store.db.QueryRow(`SELECT count(*),COALESCE(sum(actual_tokens),0) FROM df_skill_maintenance_calls`).Scan(&calls, &tokens); err != nil || calls != 8 || tokens != 120 {
 				t.Fatal("waiting repeated model work or reset shared accounting", calls, tokens, err)
 			}
 		})
@@ -298,7 +300,7 @@ func TestSkillLearningQueuedSharedMembersWaitOnlyForCapturedEpisodes(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			active := learningTestRun(t, s, first, "Continue the first task verification")
+			active := learningTestRelatedRun(t, s, first, "Continue the first task verification")
 			if worked, err := s.Store.Learning.RunOne(ctx); err != nil || worked {
 				t.Fatal("active recalled member was skipped instead of deferred", worked, err)
 			}
@@ -336,11 +338,9 @@ func TestSkillLearningQueuedSharedMembersWaitOnlyForCapturedEpisodes(t *testing.
 func TestSkillLearningQueuedReviewACKDoesNotWaitForLaterConversation(t *testing.T) {
 	s, x, _, e, generator, validator, _ := experienceDiscoveryTest(t)
 	ctx := context.Background()
-	consolidateExtract(t, s, x, "Inspect the complete JSON document")
-	consolidateRun(t, s)
-	experienceMatch(t, s)
+	experienceTwoEpisodes(t, s, x)
 	enableExperienceReviewDrafts(t, e, false)
-	if discoveries := experienceDiscoveries(t, e); len(discoveries) != 1 || !discoveries[0].ReviewDraft {
+	if discoveries := experienceDiscoveries(t, e); len(discoveries) != 1 || discoveries[0].ReviewDraft {
 		t.Fatal("fixture did not queue the review-only candidate", discoveries)
 	}
 	proposal := experienceGenerate(t, e)
@@ -365,7 +365,7 @@ func TestSkillLearningQueuedReviewACKDoesNotWaitForLaterConversation(t *testing.
 	if err != nil || got.Status != "pending_review" || got.StateVersion != proposal.StateVersion {
 		t.Fatal("ACK adopted or changed the human-review candidate", got, err)
 	}
-	if _, err = e.Approve(ctx, proposal.ID, harness.SkillReview{ExpectedStateVersion: proposal.StateVersion, Actor: "owner"}); !errors.Is(err, harness.ErrPermissionDenied) {
+	if _, err = e.Approve(ctx, proposal.ID, harness.SkillReview{ExpectedStateVersion: proposal.StateVersion, Actor: "owner"}); err == nil {
 		t.Fatal("ACK allowed publication while the source was active")
 	}
 	got, err = e.Get(ctx, proposal.ID)
@@ -374,16 +374,16 @@ func TestSkillLearningQueuedReviewACKDoesNotWaitForLaterConversation(t *testing.
 	}
 	learningQueueReadinessTurn(t, s, active)
 	published, err := e.Approve(ctx, proposal.ID, harness.SkillReview{ExpectedStateVersion: proposal.StateVersion, Actor: "owner"})
-	if err != nil || published.Status != "published" {
-		t.Fatal("settled source could not use its original reviewed candidate", published, err)
+	if err == nil || published.Status == "published" {
+		t.Fatal("settled source introduced a manual adoption bypass", published, err)
 	}
 	var calls, tokens int
-	if err = s.Store.db.QueryRow(`SELECT count(*),COALESCE(sum(charged_tokens),0) FROM df_skill_maintenance_calls`).Scan(&calls, &tokens); err != nil || calls != 6 || tokens != 90 {
+	if err = s.Store.db.QueryRow(`SELECT count(*),COALESCE(sum(actual_tokens),0) FROM df_skill_maintenance_calls`).Scan(&calls, &tokens); err != nil || calls != 8 || tokens != 120 {
 		t.Fatal("ACK repeated or refunded earlier paid work", calls, tokens, err)
 	}
 }
 
-func TestSkillLearningAutoPatchWaitsForConversationThenPublishesOriginalCandidate(t *testing.T) {
+func TestSkillLearningAutoPatchUnrelatedTaskDoesNotBlockOriginalCandidate(t *testing.T) {
 	s, x, registry, e, generator, _, _ := experienceDiscoveryTest(t)
 	ctx := context.Background()
 	adoptLearningBase(t, registry)
@@ -410,8 +410,8 @@ func TestSkillLearningAutoPatchWaitsForConversationThenPublishesOriginalCandidat
 		t.Fatal(err)
 	}
 	waiting, err := e.Get(ctx, proposal.ID)
-	if err != nil || waiting.Status != "pending_review" || waiting.StateVersion != proposal.StateVersion {
-		t.Fatal("temporary source activity permanently staled the automatic candidate", waiting, err)
+	if err != nil || waiting.Status != "published" || waiting.CandidateVersion != proposal.CandidateVersion {
+		t.Fatal("unrelated task blocked automatic publication", waiting, err)
 	}
 	learningQueueReadinessTurn(t, s, active)
 	if err = e.RunAutoPatch(ctx); err != nil {

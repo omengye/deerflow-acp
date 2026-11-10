@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
+	"fmt"
+
 	"sync/atomic"
 	"testing"
 
@@ -104,7 +105,7 @@ func TestBehaviorManualQueuedBudgetedReviewedAndPublishedSeparately(t *testing.T
 		t.Fatalf("receipts %+v %v", receipts, err)
 	}
 	for i, stage := range []string{"security", "quality", "behavior", "behavior"} {
-		if receipts[i].Stage != stage || receipts[i].JobID != p.BehaviorJobID || receipts[i].ChargedTokens != 15 {
+		if receipts[i].Stage != stage || receipts[i].JobID != p.BehaviorJobID || receipts[i].ActualTokens != 15 {
 			t.Fatal(receipts)
 		}
 	}
@@ -254,7 +255,7 @@ func TestBehaviorCreateAndDeleteExecuteEmptyControls(t *testing.T) {
 	}
 }
 
-func TestBehaviorNoMatchingSuiteRequiresManualReviewWithoutBehaviorClaims(t *testing.T) {
+func TestBehaviorNoMatchingSuiteWaitsWithoutManualFallback(t *testing.T) {
 	ctx := context.Background()
 	f, _, _ := generationFixture(t)
 	e := &fixtureBehaviorEvaluator{id: "behavior-fixture-v1"}
@@ -264,11 +265,15 @@ func TestBehaviorNoMatchingSuiteRequiresManualReviewWithoutBehaviorClaims(t *tes
 	p := queueManualBehavior(t, f, "unmatched")
 	generationRun(t, f.service)
 	p, err := f.service.Get(ctx, p.ID)
-	if err != nil || p.Status != "pending_review" || p.Evaluation.Behavior != "not_run" || p.Evaluation.BehaviorReport != nil || e.calls.Load() != 0 || !strings.Contains(strings.Join(p.Evaluation.Evidence, " "), "no trusted host suite") {
-		t.Fatalf("no suite %+v %v", p, err)
+	if err != nil || p.Status != "validating" || e.calls.Load() != 0 {
+		t.Fatal("unverified candidate advanced", err)
 	}
-	if _, err = f.service.Approve(ctx, p.ID, review(p)); err != nil {
-		t.Fatal(err)
+	view, err := f.service.BehaviorEvaluation(ctx, p.ID)
+	if err != nil || view.State != "waiting" || view.ErrorCode != "blocked_evidence" {
+		t.Fatal("missing dependency state", err)
+	}
+	if _, err = f.service.Approve(ctx, p.ID, review(p)); err == nil {
+		t.Fatal("manual fallback accepted")
 	}
 }
 
@@ -281,6 +286,7 @@ func TestBehaviorComparisonsRejectRegressionsAndFailedTargetedCases(t *testing.T
 			reg := suite.Cases[0]
 			reg.ID = "regression"
 			reg.Kind = "regression"
+			reg.Holdout = true
 			suite.Cases = append(suite.Cases, reg)
 			e := &fixtureBehaviorEvaluator{id: "behavior-score-v1", result: func(in harness.SkillBehaviorInput) (bool, error) {
 				switch mode {
@@ -437,25 +443,66 @@ func TestBehaviorAdmissionFencesHeadSourceAndConfiguration(t *testing.T) {
 	}
 }
 
-func TestBehaviorBudgetExhaustionPreservesPartialEvidenceWithoutFallback(t *testing.T) {
+func TestBehaviorPagesExceedOldCallAndCaseLimitsAndReuseResults(t *testing.T) {
 	ctx := context.Background()
-	v := &fixtureGenerationValidator{id: "review-fixture-v1"}
-	f := newFixture(t, v)
-	g := &fixtureGenerator{id: "generation-fixture-v1"}
-	if err := f.service.ConfigureGeneration(ctx, g, skillmaintenance.Policy{MaxDailyModelCalls: 3, MaxDailyTokens: 100000, MaxJobSeconds: 300, Workers: 1}, []string{"project"}, false); err != nil {
+	f, _, v := generationFixture(t)
+	e := &fixtureBehaviorEvaluator{id: "behavior-pages-v1"}
+	suite := behaviorSuite()
+	sample := suite.Cases[0]
+	suite.Cases = nil
+	for i := 0; i < 40; i++ {
+		c := sample
+		c.ID = fmt.Sprintf("case-%02d", i)
+		suite.Cases = append(suite.Cases, c)
+	}
+	var suites []harness.SkillBehaviorSuite
+	for i := 0; i < 33; i++ {
+		other := suite
+		other.ID = fmt.Sprintf("suite-%02d", i)
+		other.Name = fmt.Sprintf("fixture-%02d", i)
+		suites = append(suites, other)
+	}
+	suites = append(suites, suite)
+	if err := f.service.ConfigureBehavior(e, harness.SkillBehaviorOptions{Suites: suites}); err != nil {
 		t.Fatal(err)
 	}
-	e := &fixtureBehaviorEvaluator{id: "behavior-fixture-v1"}
-	configureBehavior(t, f.service, e, behaviorSuite())
-	p := queueManualBehavior(t, f, "budget")
+	p := queueManualBehavior(t, f, "pages")
 	generationRun(t, f.service)
-	view, err := f.service.BehaviorEvaluation(ctx, p.ID)
-	if err != nil || view.State != "failed" || view.ErrorCode != "budget_exhausted" || len(view.Results) != 1 || view.Report != nil || e.calls.Load() != 1 {
-		t.Fatalf("budget %+v %v", view, err)
+	first, err := f.service.BehaviorEvaluation(ctx, p.ID)
+	if err != nil || first.TotalResults != 8 || first.Report != nil {
+		t.Fatal("slice failed", err)
 	}
-	p, err = f.service.Get(ctx, p.ID)
-	if err != nil || p.Status != "failed" || p.Evaluation.Behavior != "unavailable" || p.Evaluation.BehaviorReport != nil {
-		t.Fatalf("fallback %+v %v", p, err)
+	for i := 0; i < 10; i++ {
+		job, err := f.service.BehaviorEvaluation(ctx, p.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.State == "completed" {
+			break
+		}
+		generationRun(t, f.service)
+	}
+	view, err := f.service.BehaviorEvaluation(ctx, p.ID)
+	if err != nil || view.State != "completed" || view.TotalResults != 80 || len(view.Results) != 32 || !view.HasMoreResults || view.Report.TotalComparisons != 40 || e.calls.Load() != 80 || v.calls.Load() != 1 {
+		t.Fatalf("incomplete paged evaluation: state=%s results=%d calls=%d error=%v", view.State, view.TotalResults, e.calls.Load(), err)
+	}
+	count := len(view.Results)
+	for view.HasMoreResults {
+		view, err = f.service.BehaviorEvaluationPage(ctx, p.ID, view.LastResultSequence, 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		count += len(view.Results)
+	}
+	if count != 80 {
+		t.Fatal("result page lost evidence", count)
+	}
+	saved, err := readBehavior(ctx, f.db.DB(), p.ID)
+	if err != nil || saved.input.CaseCount != 40 || len(saved.input.Suite.Cases) != 0 {
+		t.Fatal("cases were embedded instead of paged", err)
+	}
+	if worked, err := f.service.RunGeneration(ctx); err != nil || worked || e.calls.Load() != 80 {
+		t.Fatal("completed cases replayed", err)
 	}
 }
 
@@ -516,12 +563,19 @@ func TestBehaviorNativeReviewDoesNotAuthorizeScriptExecution(t *testing.T) {
 	}
 	generationRun(t, f.service)
 	p, err = f.service.Get(ctx, p.ID)
-	if err != nil || p.Status != "pending_review" || p.Evaluation.IsolatedScripts {
+	if err != nil || p.Evaluation.IsolatedScripts {
 		t.Fatalf("script review %+v %v", p, err)
 	}
-	_ = e // Fixture calls are not execution of the helper.
-	if _, err := f.service.Approve(ctx, p.ID, review(p)); !errors.Is(err, harness.ErrInvalidInput) {
-		t.Fatalf("script risk acknowledgment was not required: %v", err)
+	if p.Status == "validating" {
+		job, err := skillmaintenance.ReadJob(ctx, f.db.DB(), p.BehaviorJobID)
+		if err != nil || job.State != "waiting" || job.ErrorCode != "blocked_runtime" || e.calls.Load() != 0 {
+			t.Fatal("unavailable isolation did not preserve a waiting candidate", job.State, job.ErrorCode, err)
+		}
+	} else if p.Status != "pending_review" {
+		t.Fatal("unexpected script validation state", p.Status)
+	}
+	if _, err := f.service.Approve(ctx, p.ID, review(p)); err == nil {
+		t.Fatal("static review authorized an unexecuted script")
 	}
 }
 

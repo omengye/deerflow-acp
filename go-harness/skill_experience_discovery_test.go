@@ -47,7 +47,7 @@ func TestSkillLearningExperienceNewSkillSDKSharedDispatcherLoopbackAndDisabledRe
 	sdkExperienceDiscoveryLoopback(t, true)
 }
 
-func TestSkillLearningReviewDraftSDKAutomaticallyGeneratesWithoutManualEpisodeOrRequest(t *testing.T) {
+func TestSkillLearningSDKAutomaticallyGeneratesFromIndependentTasksWithoutManualEpisodeOrRequest(t *testing.T) {
 	sdkExperienceDiscoveryLoopbackOptions(t, false, true)
 }
 
@@ -66,7 +66,7 @@ func sdkExperienceDiscoveryLoopback(t *testing.T, newCapability bool) {
 	sdkExperienceDiscoveryLoopbackOptions(t, newCapability, false)
 }
 
-func sdkExperienceDiscoveryLoopbackOptions(t *testing.T, newCapability, reviewDrafts bool) {
+func sdkExperienceDiscoveryLoopbackOptions(t *testing.T, newCapability, automaticEpisodes bool) {
 	t.Helper()
 	workspace, cfg := skillFixture(t)
 	var calls atomic.Int32
@@ -76,8 +76,8 @@ func sdkExperienceDiscoveryLoopbackOptions(t *testing.T, newCapability, reviewDr
 			Messages []struct{ Role, Content string }
 			Tools    []any
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Messages) != 2 || len(req.Tools) != 0 || !strings.Contains(req.Messages[0].Content, "instruction-only historical-experience") {
-			t.Error("generation not bounded instruction-only", req, err)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Messages) != 2 || len(req.Tools) != 0 || !strings.Contains(req.Messages[0].Content, "independent host validation and automatic adoption") {
+			t.Error("generation omitted host validation or exposed tools", req, err)
 			http.Error(w, "fixture invalid", http.StatusBadRequest)
 			return
 		}
@@ -98,8 +98,8 @@ func sdkExperienceDiscoveryLoopbackOptions(t *testing.T, newCapability, reviewDr
 		}
 		files["SKILL.md"] = "---\nname: " + payload.SkillName + "\ndescription: Research structured sources\n---\nRead complete input and verify fields.\n"
 		if newCapability {
-			if payload.SkillName != "structured-source-audit" || payload.BaseVersion != "" || len(payload.BaseFiles) != 0 || !strings.Contains(req.Messages[0].Content, "Create exactly one file, SKILL.md") {
-				t.Error("new capability generation did not fix name/absent base/one-file constraint", payload)
+			if payload.SkillName != "structured-source-audit" || payload.BaseVersion != "" || len(payload.BaseFiles) != 0 || !strings.Contains(req.Messages[1].Content, "host-pinned readable name") {
+				t.Error("new capability generation did not fix name and absent base", payload)
 			}
 		} else {
 			files["SKILL.md"] += "Read guide.txt.\n"
@@ -108,15 +108,15 @@ func sdkExperienceDiscoveryLoopbackOptions(t *testing.T, newCapability, reviewDr
 		_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125}})
 	}))
 	defer server.Close()
-	budget := harness.SkillMaintenanceBudget{MaxDailyModelCalls: 20, MaxDailyTokens: 100000, MaxJobSeconds: 60, Workers: 1}
-	cfg.SkillLearning = &harness.SkillLearningOptions{Idle: time.Second, MaxDailyModelCalls: 15, MaxDailyTokens: 50000, Budget: budget, Consolidation: &harness.SkillGenerationModelConfig{}, Matching: &harness.SkillGenerationModelConfig{}}
+	budget := harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}
+	cfg.SkillLearning = &harness.SkillLearningOptions{Idle: time.Second, Policy: budget, Consolidation: &harness.SkillGenerationModelConfig{}, Matching: &harness.SkillGenerationModelConfig{}}
 	cfg.SkillExperienceExtractor, cfg.SkillExperienceConsolidator, cfg.SkillExperienceMatcher = &sdkMatchingExtractor{}, &sdkExperienceMerge{}, &sdkExperienceMatcher{}
 	cfg.SkillValidator = &sdkExperienceReview{}
-	cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: harness.ModelRoute{Provider: "openai", Model: "fixture", BaseURL: server.URL, APIKey: "unused-fixture"}}, Budget: budget, Sources: []string{"project"}}
-	cfg.SkillDiscovery = &harness.SkillDiscoveryOptions{DisableOperatorCorrections: true, ExperiencePatternsEnabled: true, RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxDailyProposals: 5, MaxPendingProposals: 20}
-	cfg.SkillDiscovery.ExperienceReviewDraftsEnabled = reviewDrafts
+	cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: harness.ModelRoute{Provider: "openai", Model: "fixture", BaseURL: server.URL, APIKey: "unused-fixture"}}, Policy: budget, Sources: []string{"project"}}
+	cfg.SkillDiscovery = &harness.SkillDiscoveryOptions{RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxPendingProposals: 20}
+
 	if newCapability {
-		cfg.SkillDiscovery.ExperienceNewSkillsEnabled, cfg.SkillDiscovery.NewSkillSourceID = true, "project"
+		cfg.SkillDiscovery.DestinationSourceID = "project"
 		cfg.SkillExperienceMatcher = &sdkNewCapabilityMatcher{}
 	}
 	cfg.Skills.Install = []harness.SkillInstall{{SourceID: "project", Directory: "research", Enabled: true}}
@@ -144,7 +144,7 @@ func sdkExperienceDiscoveryLoopbackOptions(t *testing.T, newCapability, reviewDr
 	}
 	defer c.Close()
 	status, err := c.SkillLearningStatus(ctx)
-	if err != nil || status.Mode != "review_candidates" || !status.ProposalDiscoveryEnabled {
+	if err != nil || status.Mode != "automatic" || !status.ProposalDiscoveryEnabled {
 		t.Fatal("SDK status still advertises shadow", status, err)
 	}
 	x, err := c.NewSession(ctx, workspace)
@@ -163,16 +163,16 @@ func sdkExperienceDiscoveryLoopbackOptions(t *testing.T, newCapability, reviewDr
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if matches != 1 || !reviewDrafts && calls.Load() != 0 {
+	if matches != 1 || calls.Load() != 0 {
 		t.Fatal("one task generated a proposal or matching did not finish", matches, calls.Load())
 	}
-	if !reviewDrafts {
+	if !automaticEpisodes {
 		if _, err = c.StartSkillLearningEpisode(ctx, x.ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = c.Run(ctx, x.ID, []harness.Content{{Type: "text", Text: "Independent complete structured source"}}, nil, nil); err != nil {
-			t.Fatal(err)
-		}
+	}
+	if _, err = c.Run(ctx, x.ID, []harness.Content{{Type: "text", Text: "Independent complete structured source"}}, nil, nil); err != nil {
+		t.Fatal(err)
 	}
 	var proposal string
 	// Extraction, consolidation, matching and generation share durable workers.
@@ -191,22 +191,22 @@ func sdkExperienceDiscoveryLoopbackOptions(t *testing.T, newCapability, reviewDr
 		_ = c.store.DB().QueryRow(`SELECT group_concat(state||':'||reason) FROM df_learning_match_inputs`).Scan(&inputs)
 		t.Fatal("SDK did not create one pending review", proposal, calls.Load(), codes, inputs, ctx.Err())
 	}
-	if reviewDrafts {
+	if automaticEpisodes {
 		page, err := c.ListSkillDiscoveries(ctx, harness.SkillQuery{Limit: 10})
-		if err != nil || len(page.Discoveries) != 1 || !page.Discoveries[0].ReviewDraft || len(page.Discoveries[0].Evidence) != 1 {
-			t.Fatal("SDK automatic draft did not preserve one-episode manual boundary", page, err)
+		if err != nil || len(page.Discoveries) != 1 || page.Discoveries[0].ReviewDraft || len(page.Discoveries[0].Evidence) != 2 {
+			t.Fatal("SDK did not preserve two independent task roots", page, err)
 		}
 		managed, err := skillManagementCall(t, c, map[string]any{"operation": "skill.discovery.list", "limit": 10})
 		encoded, _ := json.Marshal(managed)
-		if err != nil || !strings.Contains(string(encoded), `"review_draft":true`) {
-			t.Fatal("MANAGE omitted automatic draft attribution", managed, err)
+		if err != nil || strings.Contains(string(encoded), `"review_draft":true`) {
+			t.Fatal("MANAGE still exposes a manual review draft", managed, err)
 		}
 	}
 	if err = c.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// Disabling discovery stops new spending but leaves valid explicit review
-	// available when the host keeps the exact learning/evidence adapters.
+	// A host without discovery can read history, but cannot manually publish an
+	// automatic candidate that has not passed the full automatic policy.
 	cfg.SkillDiscovery = nil
 	c, err = Open(ctx, cfg)
 	if err != nil {
@@ -214,7 +214,7 @@ func sdkExperienceDiscoveryLoopbackOptions(t *testing.T, newCapability, reviewDr
 	}
 	defer c.Close()
 	status, err = c.SkillLearningStatus(ctx)
-	if err != nil || status.Mode != "shadow" || status.ProposalDiscoveryEnabled {
+	if err != nil || status.Mode != "automatic" || status.ProposalDiscoveryEnabled {
 		t.Fatal("disabled discovery still advertised", status, err)
 	}
 	p, err := c.GetSkillProposal(ctx, proposal)
@@ -224,8 +224,11 @@ func sdkExperienceDiscoveryLoopbackOptions(t *testing.T, newCapability, reviewDr
 	if newCapability && (p.Action != "create" || p.SkillName != "structured-source-audit" || p.Base.Exists || len(p.ChangedFiles) != 1 || p.ChangedFiles[0] != "SKILL.md") {
 		t.Fatal("SDK new capability not one-file pending creation", p)
 	}
-	p, err = c.ApproveSkillProposal(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "fixture-operator"})
-	if err != nil || p.Status != "published" || calls.Load() != 1 {
-		t.Fatal("disabled-discovery manual recovery failed", p, err, calls.Load())
+	if _, err = c.ApproveSkillProposal(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "fixture-operator"}); err == nil {
+		t.Fatal("automatic candidate bypassed host adoption")
+	}
+	current, err := c.GetSkillHead(ctx, p.Target.SourceID, p.SkillName)
+	if err != nil || current != p.Base || calls.Load() != 1 {
+		t.Fatal("blocked approval changed head or replayed generation", current, err, calls.Load())
 	}
 }

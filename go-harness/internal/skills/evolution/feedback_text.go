@@ -56,7 +56,7 @@ func feedbackRequestKey(key string) bool {
 
 func feedbackKind(kind string) bool {
 	switch kind {
-	case "helpful", "correction", "quality_failure", "network", "quota", "permission", "cancelled", "other", "withdrawn":
+	case "helpful", "correction", "quality_failure", "critical_failure", "network", "quota", "permission", "cancelled", "other", "withdrawn":
 		return true
 	}
 	return false

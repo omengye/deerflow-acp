@@ -12,12 +12,12 @@ import (
 
 func enableNewExperienceDiscovery(t *testing.T, e *evolution.Service) {
 	t.Helper()
-	if err := e.ConfigureDiscovery(harness.SkillDiscoveryOptions{DisableOperatorCorrections: true, ExperiencePatternsEnabled: true, ExperienceNewSkillsEnabled: true, NewSkillSourceID: "project", RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxDailyProposals: 5, MaxPendingProposals: 20}); err != nil {
+	if err := e.ConfigureDiscovery(harness.SkillDiscoveryOptions{DestinationSourceID: "project", RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxPendingProposals: 20}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestSkillLearningExperienceNewSkillReadableTargetManualOnlyAndRestart(t *testing.T) {
+func TestSkillLearningExperienceNewSkillAutomaticTargetAndRestart(t *testing.T) {
 	s, x, r, e, g, v, matcher := experienceDiscoveryTest(t)
 	ctx := context.Background()
 	matcher.relation, matcher.suggestedName = "new_capability", "structured-json-audit"
@@ -39,8 +39,8 @@ func TestSkillLearningExperienceNewSkillReadableTargetManualOnlyAndRestart(t *te
 		t.Fatal("host did not fix absent named target", ds)
 	}
 	p := experienceGenerate(t, e)
-	if p.Action != "create" || p.Status != "pending_review" || p.SkillName != matcher.suggestedName || len(p.ChangedFiles) != 1 || p.ChangedFiles[0] != "SKILL.md" || p.Evaluation.Behavior != "not_run" || len(g.seen) != 1 || !g.seen[0].InstructionOnly || len(g.seen[0].BaseFiles) != 0 {
-		t.Fatal("new capability was not a one-file manual candidate", p, g.seen)
+	if p.Action != "create" || p.Status != "pending_review" || p.SkillName != matcher.suggestedName || len(p.ChangedFiles) != 1 || p.ChangedFiles[0] != "SKILL.md" || p.Evaluation.Behavior != "not_run" || len(g.seen) != 1 || g.seen[0].InstructionOnly || len(g.seen[0].BaseFiles) != 0 {
+		t.Fatal("new capability was not retained for host verification", p, g.seen)
 	}
 	if err := r.WithPublication(ctx, "project", p.SkillName, func(pub *skills.PublicationTx) error {
 		head, err := pub.Current()
@@ -59,28 +59,27 @@ func TestSkillLearningExperienceNewSkillReadableTargetManualOnlyAndRestart(t *te
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restarted.Close() })
-	if err = restarted.ConfigureGeneration(ctx, g, consolidationTestOptions().Budget, []string{"project"}, false); err != nil {
+	if err = restarted.ConfigureGeneration(ctx, g, consolidationTestOptions().Policy, []string{"project"}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = restarted.ConfigureExperienceDiscoverySource(s.Store.Learning); err != nil {
 		t.Fatal(err)
 	}
-	// No discovery configuration on reopen; explicit approval still requires
-	// the exact live learning source, target policy and immutable candidate.
+	// Restart never restores a manual bypass for automatic candidates.
 	p, err = restarted.Approve(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "owner"})
-	if err != nil || p.Status != "published" || len(g.seen) != 1 {
-		t.Fatal("new capability manual recovery failed", p, err)
+	if err == nil || p.Status == "published" || len(g.seen) != 1 {
+		t.Fatal("restart enabled manual adoption or regenerated the candidate", p, err)
 	}
 	control, _ := s.Store.Learning.Control(ctx, x.ID)
 	if _, err = s.SetSkillLearningControl(ctx, "owner", x.ID, harness.SkillLearningControlRequest{Contribute: false, ExpectedEpoch: control.Epoch}); err != nil {
 		t.Fatal(err)
 	}
-	if adopted, err := restarted.Get(ctx, p.ID); err != nil || adopted.Status != "published" {
-		t.Fatal("forget removed explicitly adopted asset", adopted, err)
+	if _, err := restarted.Get(ctx, p.ID); !errors.Is(err, harness.ErrNotFound) {
+		t.Fatal("revoked unadopted asset survived", err)
 	}
 }
 
-func TestSkillLearningExperienceNewSkillOptInOutputAndRevocationGuards(t *testing.T) {
+func TestSkillLearningExperienceNewSkillDestinationOutputAndRevocationGuards(t *testing.T) {
 	for _, mode := range []string{"separate-gate", "missing-name", "collision", "extra-file", "revocation", "new-head", "renamed-revision", "enqueue-fault", "pending-before", "pending-after"} {
 		t.Run(mode, func(t *testing.T) {
 			s, x, r, e, g, _, matcher := experienceDiscoveryTest(t)
@@ -145,7 +144,13 @@ func TestSkillLearningExperienceNewSkillOptInOutputAndRevocationGuards(t *testin
 				return
 			}
 			ds := experienceDiscoveries(t, e)
-			if mode == "separate-gate" || mode == "missing-name" || mode == "collision" {
+			if mode == "separate-gate" {
+				if len(ds) != 1 || ds[0].Target.SourceID != "project" || len(g.seen) != 0 {
+					t.Fatal("host did not select its writable destination", ds)
+				}
+				return
+			}
+			if mode == "missing-name" || mode == "collision" {
 				if len(ds) != 0 || len(g.seen) != 0 {
 					t.Fatal("new skill bypassed grant/name/collision", mode, ds)
 				}
@@ -179,8 +184,15 @@ func TestSkillLearningExperienceNewSkillOptInOutputAndRevocationGuards(t *testin
 					t.Fatal(worked, err)
 				}
 				job, err := e.GetGeneration(ctx, ds[0].GenerationID)
-				if err != nil || job.State != "failed" || job.ErrorCode != "invalid_candidate" || job.CandidateVersion != "" {
-					t.Fatal("new skill script/support file retained", job, err)
+				if err != nil || job.State != "completed" || job.CandidateVersion == "" || job.ProposalID == "" {
+					t.Fatal("complete skill package was not retained for verification", job, err)
+				}
+				p, err := e.Get(ctx, job.ProposalID)
+				if err != nil || p.Status == "published" || len(p.ChangedFiles) != 2 {
+					t.Fatal("unverified support script was published", p, err)
+				}
+				if _, err = e.Approve(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "owner"}); err == nil {
+					t.Fatal("manual approval bypassed script execution proof")
 				}
 				return
 			}
@@ -188,7 +200,7 @@ func TestSkillLearningExperienceNewSkillOptInOutputAndRevocationGuards(t *testin
 			if mode == "pending-after" {
 				pending()
 				stale, err := e.Approve(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "owner"})
-				if !errors.Is(err, harness.ErrSkillConflict) || stale.Status != "stale" || len(g.seen) != 1 {
+				if err == nil || stale.Status == "published" || len(g.seen) != 1 {
 					t.Fatal("pending name added after review remained publishable", stale, err)
 				}
 				return
@@ -208,7 +220,7 @@ func TestSkillLearningExperienceNewSkillOptInOutputAndRevocationGuards(t *testin
 					t.Fatal(err)
 				}
 				stale, err := e.Approve(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "owner"})
-				if !errors.Is(err, harness.ErrSkillConflict) || stale.Status != "stale" {
+				if err == nil || stale.Status == "published" {
 					t.Fatal("new-name collision silently rebased", stale, err)
 				}
 				return

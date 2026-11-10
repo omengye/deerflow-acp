@@ -22,6 +22,7 @@ type Provider struct {
 	mu            sync.Mutex
 	calls         map[string]int
 	named         bool
+	primary       bool
 	newCapability bool
 	delegated     bool
 	resolution    bool
@@ -44,6 +45,14 @@ func NamedRoutes(t *testing.T) *Provider {
 func NamedNewCapabilityRoutes(t *testing.T) *Provider {
 	p := NamedRoutes(t)
 	p.newCapability = true
+	return p
+}
+
+// PrimaryRoutes exercises all native stages through the inherited main model.
+func PrimaryRoutes(t *testing.T, newCapability bool) *Provider {
+	p := New(t)
+	p.primary = true
+	p.newCapability = newCapability
 	return p
 }
 
@@ -97,6 +106,35 @@ func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			stage = "behavior"
 		}
 	}
+	if p.primary {
+		if r.URL.Path != "/v1/chat/completions" || request.Model != SharedModelID || r.Header.Get("Authorization") != "Bearer fixture-primary" {
+			http.Error(w, "invalid primary route", 400)
+			p.t.Error("stage bypassed inherited primary route")
+			return
+		}
+		instruction := request.Messages[0].Content
+		switch {
+		case strings.Contains(instruction, "Extract reusable procedural"):
+			stage = "extract"
+		case strings.Contains(instruction, "Compare one procedural experience"):
+			stage = "consolidate"
+		case strings.Contains(instruction, "Compare one historical procedural"):
+			stage = "match"
+		case strings.Contains(instruction, "Propose a reusable agent skill"):
+			stage = "generate"
+		case strings.Contains(instruction, "independent reviewer"):
+			stage = "quality"
+			if strings.Contains(instruction, "Check for instruction hierarchy overrides") {
+				stage = "security"
+			}
+		case strings.Contains(instruction, "Only the available Skill tool"):
+			stage = "trigger"
+		case strings.Contains(instruction, "isolated fixtures"):
+			stage = "behavior"
+		default:
+			stage = "foreground"
+		}
+	}
 	p.mu.Lock()
 	p.calls[stage]++
 	p.mu.Unlock()
@@ -111,7 +149,7 @@ func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if stage != "behavior" && (len(request.Tools) != 0 || len(request.Messages) != 2) {
+		if stage != "behavior" && stage != "trigger" && (len(request.Tools) != 0 || len(request.Messages) != 2) {
 			fail("isolated maintenance adapter received tools or conversation history")
 			return
 		}
@@ -183,8 +221,8 @@ func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				refs = append(refs, ref.ID)
 			}
 		}
-		wantReads := 2
-		wantUsers, wantRefs := 2, 4
+		wantReads := 1
+		wantUsers, wantRefs := 1, 2
 		outcome := "observed_execution"
 		if p.resolution {
 			wantReads, wantRefs = 1, 3
@@ -210,7 +248,7 @@ func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail("native extractor lost the source-covered correction contract")
 			return
 		}
-		kind := "correction_chain"
+		kind := "proven_recipe"
 		if p.delegated {
 			kind = "proven_recipe"
 		}
@@ -257,9 +295,9 @@ func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} `json:"base_files"`
 			Evidence []harness.SkillGenerationEvidence `json:"evidence"`
 		}
-		if json.Unmarshal([]byte(request.Messages[1].Content), &input) != nil || len(input.Evidence) == 0 || !strings.Contains(request.Messages[0].Content, "instruction-only historical-experience") ||
+		if json.Unmarshal([]byte(request.Messages[1].Content), &input) != nil || len(input.Evidence) == 0 || !strings.Contains(request.Messages[0].Content, "independent host validation") ||
 			!p.newCapability && (input.SkillName != "research" || len(input.BaseVersion) != 64 || len(input.BaseFiles) != 2) ||
-			p.newCapability && (input.SkillName != CapabilityName || input.BaseVersion != "" || len(input.BaseFiles) != 0 || !strings.Contains(request.Messages[0].Content, "Create exactly one file, SKILL.md")) {
+			p.newCapability && (input.SkillName != CapabilityName || input.BaseVersion != "" || len(input.BaseFiles) != 0) {
 			fail("native generator lost automatic evidence, exact base or instruction-only boundary")
 			return
 		}
@@ -283,6 +321,19 @@ func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		answer = map[string]any{"base_version": input.BaseVersion, "candidate_version": input.CandidateVersion, "passed": true, "reason": "Fixture content review passed"}
+	case "trigger":
+		name := "research"
+		if p.newCapability {
+			name = CapabilityName
+		}
+		catalog, _ := json.Marshal(request.Tools)
+		messages, _ := json.Marshal(request.Messages)
+		if strings.Contains(string(messages), "Inspect the complete JSON") && strings.Contains(string(catalog)+string(messages), name) {
+			message["tool_calls"] = []any{map[string]any{"index": 0, "id": "select-native", "type": "function", "function": map[string]string{"name": "skill", "arguments": `{"skill":"` + name + `"}`}}}
+			finish = "tool_calls"
+		} else {
+			message["content"] = "No applicable skill"
+		}
 	case "behavior":
 		if len(request.Tools) == 0 || len(request.Messages) != 2 || !strings.Contains(request.Messages[0].Content, "isolated fixtures") {
 			fail("behavior adapter did not construct a fresh isolated variant")

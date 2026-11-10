@@ -106,6 +106,10 @@ func NewRegistry(ctx context.Context, config harness.SkillsConfig, db *sql.DB) (
 		_ = r.Close()
 		return nil, err
 	}
+	if err = r.migrateReferences(ctx); err != nil {
+		_ = r.Close()
+		return nil, err
+	}
 	if err = r.migrateEdits(ctx); err != nil {
 		_ = r.Close()
 		return nil, err
@@ -264,6 +268,7 @@ func (r *Registry) migrate(ctx context.Context) error {
 	}
 	defer tx.Rollback()
 	for _, q := range []string{
+		`CREATE TABLE IF NOT EXISTS df_skill_recoveries(source_key TEXT NOT NULL,name TEXT NOT NULL,request_key TEXT NOT NULL,receipt_sha TEXT NOT NULL,payload BLOB NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(source_key,name,request_key))`,
 		`CREATE TABLE IF NOT EXISTS df_skill_versions(source_key TEXT NOT NULL,name TEXT NOT NULL,version TEXT NOT NULL,metadata TEXT NOT NULL,manifest TEXT NOT NULL,total_bytes INTEGER NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(source_key,name,version))`,
 		`CREATE TABLE IF NOT EXISTS df_skill_files(source_key TEXT NOT NULL,name TEXT NOT NULL,version TEXT NOT NULL,path TEXT NOT NULL,hash TEXT NOT NULL,size INTEGER NOT NULL,data BLOB NOT NULL,PRIMARY KEY(source_key,name,version,path))`,
 		`CREATE TABLE IF NOT EXISTS df_skill_installs(source_key TEXT NOT NULL,name TEXT NOT NULL,current_version TEXT NOT NULL,enabled INTEGER NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(source_key,name))`,
@@ -280,6 +285,7 @@ func (r *Registry) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS df_skill_source_status(source_key TEXT NOT NULL,name TEXT NOT NULL,directory TEXT NOT NULL,status TEXT NOT NULL,observed_version TEXT NOT NULL,error_code TEXT NOT NULL,PRIMARY KEY(source_key,name))`,
 		`CREATE TABLE IF NOT EXISTS df_skill_file_publications(source_key TEXT NOT NULL,name TEXT NOT NULL,payload BLOB NOT NULL,payload_sha TEXT NOT NULL,PRIMARY KEY(source_key,name))`,
 		`CREATE TABLE IF NOT EXISTS df_skill_file_publication_results(source_key TEXT NOT NULL,name TEXT NOT NULL,state_version INTEGER NOT NULL,status TEXT NOT NULL,actor TEXT NOT NULL,PRIMARY KEY(source_key,name,state_version))`,
+		`CREATE TABLE IF NOT EXISTS df_skill_automatic_content(version TEXT PRIMARY KEY)`,
 		`CREATE TABLE IF NOT EXISTS df_skill_creation_guards(source_key TEXT NOT NULL,name TEXT NOT NULL,PRIMARY KEY(source_key,name))`,
 	} {
 		if _, err = tx.ExecContext(ctx, q); err != nil {
@@ -291,6 +297,9 @@ func (r *Registry) migrate(ctx context.Context) error {
 		return err
 	}
 	if proposals {
+		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO df_skill_automatic_content SELECT json_extract(CAST(payload AS TEXT),'$.candidate_sha256') FROM df_skill_proposals WHERE json_extract(CAST(payload AS TEXT),'$.origin')='automatic' AND COALESCE(json_extract(CAST(payload AS TEXT),'$.candidate_sha256'),'')<>''`); err != nil {
+			return err
+		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO df_skill_creation_guards SELECT source_key,name FROM df_skill_proposals WHERE json_extract(CAST(payload AS TEXT),'$.action')='create' AND status<>'published' ON CONFLICT DO NOTHING`)
 		if err != nil {
 			return err

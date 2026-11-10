@@ -55,18 +55,13 @@ func (s *Store) sharedPatternTx(ctx context.Context, tx *sql.Tx, snap patternSna
 	if !snap.Shared {
 		return nil
 	}
-	for _, dep := range snap.Members {
-		if err := s.sharedSessionTx(ctx, tx, dep.Session, owner, dep.Epoch); err != nil {
-			return err
-		}
-	}
-	return nil
+	return walkPatternMembers(ctx, tx, snap, func(dep experienceDependency) error { return s.sharedSessionTx(ctx, tx, dep.Session, owner, dep.Epoch) })
 }
 
-// Initial identical accepted inputs conservatively share a vote. Explicit task
-// boundaries get fresh keys; resume and host-linked copies keep their key.
-func captureLineageTx(ctx context.Context, tx *sql.Tx, episode, owner, inputSHA string) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO df_learning_episode_lineage VALUES(?,?,'initial_input')`, episode, encodedDigest([]string{"initial-task-v1", owner, inputSHA}))
+// Independent host roots receive distinct votes even when their input text is
+// identical. Resumed roots and explicit host-linked copies retain their key.
+func captureLineageTx(ctx context.Context, tx *sql.Tx, episode, owner, rootID string) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO df_learning_episode_lineage VALUES(?,?,'initial_input')`, episode, encodedDigest([]string{"host-task-v2", owner, rootID}))
 	return err
 }
 

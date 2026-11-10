@@ -111,6 +111,11 @@ func (s *Store) endExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease Exe
 		return row.State, err
 	}
 	if status == harness.ExecutionCompleted {
+		if s.CaptureSkillOracle != nil {
+			if err = s.CaptureSkillOracle(ctx, tx, row.State.RunID); err != nil {
+				return row.State, err
+			}
+		}
 		if err = captureConversationTurnTx(ctx, tx, row.State.RunID); err != nil {
 			return row.State, err
 		}

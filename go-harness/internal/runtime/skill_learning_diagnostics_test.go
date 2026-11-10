@@ -66,8 +66,8 @@ func TestSkillLearningDiagnosticsLiveReasonsMetadataAndBounds(t *testing.T) {
 			queuedReason = input.Reason
 		}
 	}
-	if queuedReason != "source_active" {
-		t.Fatal("queued source gate is invisible", d.Inputs)
+	if queuedReason != "awaiting_worker" {
+		t.Fatal("unrelated active task blocked captured evidence", d.Inputs)
 	}
 	learningTestFinish(t, s, active, "end_turn")
 	d, err = s.Store.Learning.Diagnostics(ctx, session.ID, 100)
@@ -146,17 +146,13 @@ func TestSkillLearningExtractionRetryPreservesAccountingAndGuards(t *testing.T) 
 	if err = s.Store.db.QueryRow(`SELECT day,model_calls FROM df_skill_maintenance_days`).Scan(&sharedDay, &sharedCalls); err != nil {
 		t.Fatal(err)
 	}
-	// Other maintenance producers can exhaust the shared budget while the
-	// learning-only sublimit still has room. Preflight must account for both.
-	if _, err = s.Store.db.Exec(`UPDATE df_skill_maintenance_days SET model_calls=? WHERE day=?`, learningTestOptions().Budget.MaxDailyModelCalls, sharedDay); err != nil {
+	// Usage is telemetry only, even after a million calls in the same day.
+	if _, err = s.Store.db.Exec(`UPDATE df_skill_maintenance_days SET model_calls=? WHERE day=?`, 1000000, sharedDay); err != nil {
 		t.Fatal(err)
 	}
 	d, err = s.Store.Learning.Diagnostics(ctx, session.ID, 10)
-	if err != nil || d.Jobs[0].Retryable || d.Jobs[0].RetryReason != "budget_exhausted" {
+	if err != nil || !d.Jobs[0].Retryable || d.Jobs[0].RetryReason != "" {
 		t.Fatal(d, err)
-	}
-	if _, err = s.Store.Learning.RetryExtraction(ctx, session.ID, req); err == nil {
-		t.Fatal("retry consumed an attempt against exhausted shared budget")
 	}
 	if _, err = s.Store.db.Exec(`UPDATE df_skill_maintenance_days SET model_calls=? WHERE day=?`, sharedCalls, sharedDay); err != nil {
 		t.Fatal(err)
@@ -183,7 +179,7 @@ func TestSkillLearningExtractionRetryPreservesAccountingAndGuards(t *testing.T) 
 		}
 	}
 	var calls, charged int64
-	if err = s.Store.db.QueryRow(`SELECT count(*),sum(charged_tokens) FROM df_skill_maintenance_calls`).Scan(&calls, &charged); err != nil {
+	if err = s.Store.db.QueryRow(`SELECT count(*),sum(actual_tokens) FROM df_skill_maintenance_calls`).Scan(&calls, &charged); err != nil {
 		t.Fatal(err)
 	}
 	retried, err := s.Store.Learning.RetryExtraction(ctx, session.ID, req)
@@ -194,18 +190,18 @@ func TestSkillLearningExtractionRetryPreservesAccountingAndGuards(t *testing.T) 
 	if err != nil || replayed != retried {
 		t.Fatal("retry not idempotent", replayed, err)
 	}
-	if _, err = s.Store.db.Exec(`UPDATE df_skill_maintenance_days SET model_calls=? WHERE day=?`, learningTestOptions().Budget.MaxDailyModelCalls, sharedDay); err != nil {
+	if _, err = s.Store.db.Exec(`UPDATE df_skill_maintenance_days SET model_calls=? WHERE day=?`, 1000000, sharedDay); err != nil {
 		t.Fatal(err)
 	}
 	d, err = s.Store.Learning.Diagnostics(ctx, session.ID, 10)
-	if err != nil || len(d.Inputs) != 1 || d.Inputs[0].State != "queued" || d.Inputs[0].Reason != "budget_exhausted" {
-		t.Fatal("queued diagnostics hid shared-budget exhaustion", d, err)
+	if err != nil || len(d.Inputs) != 1 || d.Inputs[0].State != "queued" || d.Inputs[0].Reason != "awaiting_worker" {
+		t.Fatal("usage counter blocked queued extraction", d, err)
 	}
 	if _, err = s.Store.db.Exec(`UPDATE df_skill_maintenance_days SET model_calls=? WHERE day=?`, sharedCalls, sharedDay); err != nil {
 		t.Fatal(err)
 	}
 	var afterCalls, afterCharged int64
-	if err = s.Store.db.QueryRow(`SELECT count(*),sum(charged_tokens) FROM df_skill_maintenance_calls`).Scan(&afterCalls, &afterCharged); err != nil || calls != afterCalls || charged != afterCharged {
+	if err = s.Store.db.QueryRow(`SELECT count(*),sum(actual_tokens) FROM df_skill_maintenance_calls`).Scan(&afterCalls, &afterCharged); err != nil || calls != afterCalls || charged != afterCharged {
 		t.Fatal("retry changed accounting", err)
 	}
 	extractor.bad = false

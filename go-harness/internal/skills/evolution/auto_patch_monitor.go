@@ -3,9 +3,6 @@ package evolution
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -22,7 +19,7 @@ func (s *Service) monitorAutoPatch(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
-		if o.Status != "observing" {
+		if o.Status != "observing" && o.Status != "stable" {
 			return nil
 		}
 		if tx.Target() != o.Target {
@@ -52,122 +49,41 @@ func (s *Service) monitorAutoPatch(ctx context.Context, id string) error {
 			o.Status, o.Reason = "superseded", "The installed version changed during observation."
 			return writeAutoPatchObservation(ctx, tx.SQL(), o, false)
 		}
-		// The table's unique root/version key limits each task to one judgment.
-		rows, err := tx.SQL().QueryContext(ctx, `SELECT id FROM df_skill_signals WHERE source_key=? AND name=? AND version=? ORDER BY id LIMIT 1001`, o.Target.SourceIdentity, o.Target.Name, o.Head.Version)
+		environmentCurrent, err := s.publishedEnvironmentTx(ctx, tx, &o)
 		if err != nil {
 			return err
 		}
-		var ids []string
-		for rows.Next() {
-			var signalID string
-			if err = rows.Scan(&signalID); err != nil {
-				break
-			}
-			ids = append(ids, signalID)
-		}
-		if err == nil {
-			err = rows.Err()
-		}
-		rows.Close()
+		complete, critical, err := s.collectObservationPageTx(ctx, tx.SQL(), &o)
 		if err != nil {
 			return err
 		}
-		truncated := len(ids) > 1000
-		if truncated {
-			ids = ids[:1000]
+		truncated := !complete
+		expired := o.Status == "observing" && !now.Before(o.Deadline)
+		withdrawn := o.VerificationState == "source_withdrawn" || o.LearningSource != nil && o.LearningSource.SourceState != "valid_at_publication"
+		covered, coverageErr := s.observationCoverageTx(ctx, tx.SQL(), o)
+		if coverageErr != nil {
+			return coverageErr
 		}
-		o.Successes, o.Failures, o.Ignored, o.ConsecutiveFailures = 0, 0, 0, 0
-		type observationResult struct {
-			root, outcome string
-			at            time.Time
-		}
-		var results []observationResult
-		if _, err = tx.SQL().ExecContext(ctx, `DELETE FROM df_skill_auto_patch_evidence WHERE proposal_id=?`, id); err != nil {
-			return err
-		}
-		allowed := map[string]harness.SkillTarget{o.Target.SourceIdentity: o.Target}
-		for _, signalID := range ids {
-			signal, err := readSignal(ctx, tx.SQL(), signalID, allowed)
-			if err != nil {
-				return err
-			}
-			q := signal.Quality
-			inWindow := false
-			var observedAt time.Time
-			// Count only a real read during this publication's observation period.
-			// A reused content hash from an older publication is not new evidence.
-			refs := q.EvidenceReadIDs
-			if len(refs) == 0 {
-				var observed string
-				if err = tx.SQL().QueryRowContext(ctx, `SELECT COALESCE(MAX(r.observed_at),'') FROM df_skill_signal_reads l JOIN harness_skill_reads r ON r.id=l.read_id WHERE l.signal_id=?`, signal.ID).Scan(&observed); err != nil {
+		o.BehaviorCovered = covered
+		confirmed, baselineFailed := false, false
+		if (o.Failures > 0 || !environmentCurrent) && o.PolicyVersion == "skill-evolution-v2" {
+			if o.Failures > 0 {
+				if err = s.queueRegressionTx(ctx, tx, o); err != nil {
 					return err
 				}
-				at, e := time.Parse(time.RFC3339Nano, observed)
-				observedAt = at
-				inWindow = e == nil && !at.Before(o.StartedAt) && !at.After(o.Deadline)
-			} else {
-				inWindow = true
-				for _, ref := range refs {
-					var observed string
-					if err = tx.SQL().QueryRowContext(ctx, `SELECT r.observed_at FROM df_skill_signal_reads l JOIN harness_skill_reads r ON r.id=l.read_id WHERE l.signal_id=? AND r.id=?`, signal.ID, ref).Scan(&observed); err != nil {
-						return err
-					}
-					at, e := time.Parse(time.RFC3339Nano, observed)
-					if e != nil {
-						return errCollectionEvidence
-					}
-					inWindow = inWindow && !at.Before(o.StartedAt) && !at.After(o.Deadline)
-					if at.After(observedAt) {
-						observedAt = at
-					}
-				}
 			}
-			if !inWindow {
-				continue
-			}
-			outcome := "ignored"
-			if q.Eligible && q.Confidence == "high" && q.Source == "operator_confirmed" {
-				if q.Kind == "skill_quality_success" {
-					outcome = "success"
-				}
-				if q.Kind == "skill_quality_failure" {
-					outcome = "failure"
-				}
-			}
-			switch outcome {
-			case "success":
-				o.Successes++
-			case "failure":
-				o.Failures++
-			default:
-				o.Ignored++
-			}
-			results = append(results, observationResult{root: signal.RootID, outcome: outcome, at: observedAt})
-			payload, e := json.Marshal(q)
-			if e != nil {
-				return e
-			}
-			if _, err = tx.SQL().ExecContext(ctx, `INSERT INTO df_skill_auto_patch_evidence(proposal_id,root_id,signal_id,feedback_revision,outcome,assessment) VALUES(?,?,?,?,?,?)`, id, signal.RootID, signal.ID, q.FeedbackRevision, outcome, payload); err != nil {
+			if err = tx.SQL().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_regression_checks WHERE proposal_id=? AND state='confirmed' AND json_extract(CAST(payload AS TEXT),'$.verification_identity')=?),EXISTS(SELECT 1 FROM df_skill_regression_checks WHERE proposal_id=? AND state='baseline_failed' AND json_extract(CAST(payload AS TEXT),'$.verification_identity')=?)`, id, o.VerificationIdentity, id, o.VerificationIdentity).Scan(&confirmed, &baselineFailed); err != nil {
 				return err
 			}
-		}
-		// Use host read chronology, never random signal IDs or feedback arrival
-		// order. Current feedback revises a task's judgment without adding a vote.
-		slices.SortFunc(results, func(a, b observationResult) int {
-			if cmp := a.at.Compare(b.at); cmp != 0 {
-				return cmp
-			}
-			return strings.Compare(a.root, b.root)
-		})
-		for _, result := range results {
-			switch result.outcome {
-			case "failure":
-				o.ConsecutiveFailures++
-			case "success":
-				o.ConsecutiveFailures = 0
+			baselineFailed = baselineFailed || !environmentCurrent && (confirmed || critical || withdrawn || expired || o.Failures >= o.Options.RollbackFailureThreshold)
+			if o.Failures > 0 || confirmed || baselineFailed {
+				if _, err = tx.SQL().ExecContext(ctx, `UPDATE df_skill_routes SET state='quarantined',stable_version=CASE WHEN ? THEN '' ELSE stable_version END WHERE source_key=? AND name=? AND candidate_version=?`, baselineFailed, o.Target.SourceIdentity, o.Target.Name, o.Head.Version); err != nil {
+					return err
+				}
 			}
 		}
-		if !truncated && o.ConsecutiveFailures >= o.Options.RollbackFailureThreshold {
+		enough := environmentCurrent && o.PolicyVersion == "skill-evolution-v2" && covered && !truncated && o.Successes >= o.Options.MinObservations && o.Failures == 0
+		if !baselineFailed && (o.Failures >= o.Options.RollbackFailureThreshold || critical || confirmed || withdrawn || expired && !enough) {
 			baseline, err := readPublication(ctx, tx, o.BaselineRevision)
 			if err != nil {
 				return err
@@ -179,11 +95,20 @@ func (s *Service) monitorAutoPatch(ctx context.Context, id string) error {
 			if published.Head != current || published.Previous != baseline.Head || published.ProposalID != o.ProposalID {
 				return harness.ErrSkillConflict
 			}
-			next, err := tx.Publish(baseline.ContentVersion, current, baseline.Enabled)
+			var scope string
+			e := tx.SQL().QueryRowContext(ctx, `SELECT workspace FROM df_skill_routes WHERE source_key=? AND name=? AND candidate_version=?`, o.Target.SourceIdentity, o.Target.Name, current.Version).Scan(&scope)
+			var next skills.SkillHead
+			if e == nil {
+				next, err = tx.PublishAutomatic(baseline.ContentVersion, current, baseline.Enabled, scope)
+			} else if e == sql.ErrNoRows {
+				next, err = tx.Publish(baseline.ContentVersion, current, baseline.Enabled)
+			} else {
+				return e
+			}
 			if err != nil {
 				return err
 			}
-			rollback := Publication{Action: "rollback", Target: o.Target, Name: o.Target.Name, ContentVersion: baseline.ContentVersion, Enabled: baseline.Enabled, Deleted: baseline.Deleted, Previous: current, Head: next, Actor: "auto_patch_monitor", Note: "Consecutive confirmed skill-quality failures reached the observation threshold.", RollbackOf: baseline.Revision, CreatedAt: now}
+			rollback := Publication{Action: "rollback", Target: o.Target, Name: o.Target.Name, ContentVersion: baseline.ContentVersion, Enabled: baseline.Enabled, Deleted: baseline.Deleted, Previous: current, Head: next, Actor: "auto_patch_monitor", Note: "Candidate withdrawn after cumulative failures, withdrawn evidence, or an inconclusive observation deadline.", RollbackOf: baseline.Revision, CreatedAt: now}
 			rollback.OverlayBase, err = tx.OverlayBase()
 			if err != nil {
 				return err
@@ -193,12 +118,22 @@ func (s *Service) monitorAutoPatch(ctx context.Context, id string) error {
 				return err
 			}
 			o.Status, o.Reason, o.RollbackRevision = "rolled_back", rollback.Note, rollback.Revision
-		} else if !now.Before(o.Deadline) {
-			o.Status, o.Reason = "insufficient_evidence", "Observation ended without enough confirmed quality assessments."
-			if !truncated && o.Successes+o.Failures >= o.Options.MinObservations {
-				o.Status, o.Reason = "passed", "Observation completed below the rollback failure threshold."
+		} else if baselineFailed {
+			o.Status, o.Reason = "withdrawn", "The candidate cannot remain in use and no baseline is verified for the current environment."
+		} else if enough {
+			o.Status, o.Reason = "stable", "Independent successful tasks met the host observation requirements."
+		}
+		if o.Failures == 0 && o.Status == "observing" {
+			if _, err = tx.SQL().ExecContext(ctx, `UPDATE df_skill_routes SET state='observing' WHERE source_key=? AND name=? AND candidate_version=?`, o.Target.SourceIdentity, o.Target.Name, o.Head.Version); err != nil {
+				return err
 			}
 		}
+		if o.Status != "observing" && (o.Failures == 0 || o.Status == "rolled_back") {
+			if _, err = tx.SQL().ExecContext(ctx, `UPDATE df_skill_routes SET state=?,stable_version=CASE WHEN ?='stable' THEN candidate_version ELSE stable_version END WHERE source_key=? AND name=? AND candidate_version=?`, o.Status, o.Status, o.Target.SourceIdentity, o.Target.Name, o.Head.Version); err != nil {
+				return err
+			}
+		}
+
 		return writeAutoPatchObservation(ctx, tx.SQL(), o, false)
 	})
 }
@@ -209,6 +144,23 @@ func migrateAutoPatchEvidence(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS df_skill_auto_patch_evidence(
  proposal_id TEXT NOT NULL REFERENCES df_skill_auto_patch_observations(proposal_id),root_id TEXT NOT NULL,
  signal_id TEXT NOT NULL,feedback_revision INTEGER NOT NULL,outcome TEXT NOT NULL,assessment BLOB NOT NULL,
- PRIMARY KEY(proposal_id,root_id));`)
+ PRIMARY KEY(proposal_id,root_id));
+CREATE TABLE IF NOT EXISTS df_skill_monitor_cursor(proposal_id TEXT PRIMARY KEY,cursor TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS df_skill_monitor_samples(proposal_id TEXT NOT NULL,root_id TEXT NOT NULL,signal_id TEXT NOT NULL,state_version INTEGER NOT NULL,feedback_revision INTEGER NOT NULL,outcome TEXT NOT NULL,observed_ns INTEGER NOT NULL,critical INTEGER NOT NULL,PRIMARY KEY(proposal_id,root_id));
+CREATE INDEX IF NOT EXISTS df_skill_monitor_signal ON df_skill_monitor_samples(signal_id);
+CREATE TRIGGER IF NOT EXISTS df_skill_monitor_signal_changed AFTER UPDATE ON df_skill_signals BEGIN
+ DELETE FROM df_skill_monitor_samples WHERE signal_id=NEW.id;
+ DELETE FROM df_skill_auto_patch_evidence WHERE signal_id=NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS df_skill_monitor_signal_deleted AFTER DELETE ON df_skill_signals BEGIN
+ DELETE FROM df_skill_monitor_samples WHERE signal_id=OLD.id;
+ DELETE FROM df_skill_auto_patch_evidence WHERE signal_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS df_skill_monitor_feedback_changed AFTER INSERT ON df_skill_feedback BEGIN
+ DELETE FROM df_skill_monitor_samples WHERE signal_id=NEW.signal_id;
+ DELETE FROM df_skill_auto_patch_evidence WHERE signal_id=NEW.signal_id;
+END;
+CREATE TABLE IF NOT EXISTS df_skill_regression_checks(check_key TEXT PRIMARY KEY,job_id TEXT NOT NULL UNIQUE,proposal_id TEXT NOT NULL,payload BLOB NOT NULL,payload_sha TEXT NOT NULL,state TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS df_skill_regression_results(job_id TEXT NOT NULL,result_key TEXT NOT NULL,payload BLOB NOT NULL,payload_sha TEXT NOT NULL,PRIMARY KEY(job_id,result_key));`)
 	return err
 }

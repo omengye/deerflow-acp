@@ -75,6 +75,7 @@ func TestBehaviorSuiteRejectsOracleAndToolContractAmbiguity(t *testing.T) {
 			c.Assertions = append(c.Assertions, c.Assertions[0])
 		case "no-target":
 			c.Kind = "regression"
+			c.Holdout = true
 		case "empty-contains":
 			c.Assertions[0] = harness.SkillBehaviorAssertion{ID: "check", Kind: "output_contains"}
 		case "script-assertion":

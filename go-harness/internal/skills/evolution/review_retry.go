@@ -33,7 +33,7 @@ func CanRetryReview(p Proposal) bool {
 }
 
 func (s *Service) ReviewRetryAvailable(p Proposal) bool {
-	return s.generation != nil && s.behavior != nil && (CanRetryReview(p) || s.reviewRetryAfterConfigurationChange(p))
+	return s.autoPatch == nil && !p.ContentExpired && s.generation != nil && s.behavior != nil && (CanRetryReview(p) || s.reviewRetryAfterConfigurationChange(p))
 }
 
 // A host configuration correction may recover a missing model/endpoint even

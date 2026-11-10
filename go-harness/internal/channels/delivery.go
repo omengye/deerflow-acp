@@ -41,9 +41,31 @@ func (m *Manager) step(ctx context.Context, i *instance) error {
 		return err
 	}
 	p, auth, cursor, cfg := i.proc, i.auth, i.cursor, i.cfg
+	independentPoll := i.manifest.Descriptor.IndependentPoll
+	if independentPoll {
+		m.startPollerLocked(ctx, i)
+	}
 	i.mu.Unlock()
+	if stopped, err := m.sendReceipts(ctx, i, p, auth, cfg); err != nil {
+		return err
+	} else if stopped {
+		// An optional receipt may have timed out and closed the plugin. Repair
+		// transport and still dispatch work this step, even if more receipts
+		// are pending, so repeated receipt failures cannot starve the task.
+		i.mu.Lock()
+		if ctx.Err() != nil || !i.cfg.Enabled || i.auth.Account != auth.Account || i.auth.Owner != auth.Owner || i.cfg.Workspace != cfg.Workspace {
+			i.mu.Unlock()
+			return ctx.Err()
+		}
+		err = m.ensureProcess(ctx, i)
+		p = i.proc
+		i.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
 	handled, err := m.process(ctx, i, p, auth, cfg)
-	if err != nil || handled {
+	if err != nil || handled || independentPoll {
 		return err
 	}
 	var batch channelproto.Batch
@@ -70,7 +92,8 @@ func (m *Manager) step(ctx context.Context, i *instance) error {
 	i.lastSuccess = time.Now().UTC()
 	i.lastError = ""
 	i.mu.Unlock()
-	return nil
+	_, err = m.sendReceipts(ctx, i, p, auth, cfg)
+	return err
 }
 func (m *Manager) accept(ctx context.Context, i *instance, auth channelproto.Auth, cfg Config, batch channelproto.Batch) error {
 	i.mu.Lock()
@@ -88,7 +111,7 @@ func (m *Manager) accept(ctx context.Context, i *instance, auth channelproto.Aut
 	defer tx.Rollback()
 	var bound *channelproto.Auth
 	for _, msg := range batch.Messages {
-		if msg.Group || msg.ID == "" || len(msg.ID) > 512 || msg.Sender == "" || len(msg.Sender) > 512 || msg.Conversation == "" || len(msg.Conversation) > 512 || len(msg.Context) > 8192 || !utf8.ValidString(msg.Text) {
+		if msg.Group || msg.ID == "" || len(msg.ID) > 512 || msg.Sender == "" || len(msg.Sender) > 512 || msg.Conversation == "" || len(msg.Conversation) > 512 || len(msg.Context) > 8192 || !utf8.ValidString(msg.Text) || !utf8.ValidString(msg.QuotedText) {
 			continue
 		}
 		if !allowed(cfg, auth, msg.Sender) {
@@ -112,10 +135,18 @@ func (m *Manager) accept(ctx context.Context, i *instance, auth channelproto.Aut
 		if controlCommand(text) {
 			text = strings.TrimSpace(text)
 		}
+		if msg.QuotedText != "" && !hostCommand(text) {
+			text += "\n\n" + msg.QuotedText
+		}
 		if msg.Unsupported || strings.TrimSpace(text) == "" || len(text) > 16384 {
 			status = "ready"
-			reply = "This channel currently accepts text only (up to 16 KiB). Use the desktop for attachments."
+			reply = "This channel accepts text and complete text quotes only (up to 16 KiB). Paste the quoted text and resend, or use the desktop for attachments."
 			text = ""
+		}
+		if i.manifest.Descriptor.RequiresReplyContext && strings.TrimSpace(msg.Context) == "" {
+			// Definitely unsendable input is recorded for dedupe, but must never
+			// run tools or create an ambiguous-delivery fence for this conversation.
+			status, reply = "ignored", ""
 		}
 		var duplicate bool
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_channel_messages WHERE instance=? AND account=? AND id=?)`, i.id, auth.Account, msg.ID).Scan(&duplicate); err != nil {
@@ -137,6 +168,11 @@ func (m *Manager) accept(ctx context.Context, i *instance, auth channelproto.Aut
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO harness_channel_admissions VALUES(?,?,?,?)`, i.id, auth.Account, msg.ID, effectiveApproval(cfg, auth)); err != nil {
 			return err
+		}
+		if i.manifest.ID == "wechat" && status == "queued" && wantsReceipt(msg) {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO harness_channel_receipts(instance,account,id,client_id,status) VALUES(?,?,?,?,'pending')`, i.id, auth.Account, msg.ID, "df-receipt-"+rand.Text()); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE harness_channels SET cursor=? WHERE id=?`, batch.Cursor, i.id); err != nil {
@@ -163,6 +199,7 @@ func (m *Manager) process(ctx context.Context, i *instance, p transport, auth ch
 	cfg = i.cfg
 	revision := i.revision
 	busy := i.active != nil
+	requiresContext := i.manifest.Descriptor.RequiresReplyContext
 	i.mu.Unlock()
 	controlSQL := `(trim(m.text) IN ('/status','/stop','/help','/permission') OR trim(m.text) LIKE '/permission %')`
 	query := `SELECT id,conversation,sender,context,text,status,reply,session_id,client_id,workspace FROM harness_channel_messages m WHERE instance=? AND account=? AND status IN ('queued','ready') AND ((` + controlSQL + `) OR (NOT EXISTS(SELECT 1 FROM harness_channel_messages u WHERE u.instance=m.instance AND u.account=m.account AND u.conversation=m.conversation AND u.sender=m.sender AND u.workspace=m.workspace AND u.status IN ('unknown','running','sending'))))`
@@ -188,7 +225,7 @@ func (m *Manager) process(ctx context.Context, i *instance, p transport, auth ch
 		defer cancel()
 		_, _ = m.db.ExecContext(persist, `UPDATE harness_channel_messages SET status='unknown' WHERE instance=? AND account=? AND id=? AND status IN ('running','sending')`, i.id, auth.Account, msg.ID)
 	}()
-	if !allowed(cfg, auth, msg.Sender) || workspace != cfg.Workspace {
+	if !allowed(cfg, auth, msg.Sender) || workspace != cfg.Workspace || (requiresContext && strings.TrimSpace(msg.Context) == "") {
 		_, err = m.db.ExecContext(ctx, `UPDATE harness_channel_messages SET status='ignored' WHERE instance=? AND account=? AND id=?`, i.id, auth.Account, msg.ID)
 		return true, err
 	}
@@ -223,6 +260,7 @@ func (m *Manager) process(ctx context.Context, i *instance, p transport, auth ch
 			i.mu.Unlock()
 			launched = true
 			go func() {
+				defer m.wakeWorker(i)
 				defer close(active.done)
 				defer cancel()
 				_ = m.execute(ctx, runCtx, i, auth, cfg, msg, session)

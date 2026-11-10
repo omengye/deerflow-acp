@@ -23,7 +23,23 @@ func validateReview(review Review) (Review, error) {
 }
 
 func (s *Service) Approve(ctx context.Context, id string, review Review) (Proposal, error) {
-	review, err := validateReview(review)
+	proposal, err := s.Get(ctx, id)
+	if err != nil {
+		return Proposal{}, err
+	}
+	var retired bool
+	if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_evolution_retired_proposals WHERE proposal_id=?)`, id).Scan(&retired); err != nil {
+		return proposal, err
+	}
+	if retired {
+		return proposal, invalid("historical candidates cannot be resumed")
+	}
+	if proposal.Origin == "automatic" || s.autoPatch != nil {
+		if automatic, _ := ctx.Value(autoPatchContextKey{}).(bool); !automatic {
+			return proposal, invalid("automatic candidates are adopted by the host after validation; manual approval is retired")
+		}
+	}
+	review, err = validateReview(review)
 	if err != nil {
 		return Proposal{}, err
 	}
@@ -92,8 +108,8 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 		if !validReportFor(p.Evaluation, input) {
 			return ErrValidation
 		}
-		if requiresScriptAcknowledgment(p.Evaluation, input) && !review.AcknowledgeUnverifiedScripts {
-			return invalid("publication requires explicit acknowledgment that support scripts were not execution-validated")
+		if requiresScriptAcknowledgment(p.Evaluation, input) {
+			return invalid("publication requires successful isolated execution of support scripts")
 		}
 		if err := s.guardBehaviorReport(ctx, tx.SQL(), *p, p.Evaluation); err != nil {
 			return err
@@ -136,7 +152,17 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 		if err = ensureBaselinePublication(ctx, tx, head); err != nil {
 			return err
 		}
-		next, err := tx.Publish(p.CandidateVersion, p.Base, enabled)
+		automatic, _ := ctx.Value(autoPatchContextKey{}).(bool)
+		var next skills.SkillHead
+		if automatic {
+			workspace, e := s.automaticWorkspace(ctx, tx.SQL(), *p)
+			if e != nil {
+				return e
+			}
+			next, err = tx.PublishAutomatic(p.CandidateVersion, p.Base, enabled, workspace)
+		} else {
+			next, err = tx.Publish(p.CandidateVersion, p.Base, enabled)
+		}
 		if err != nil {
 			if errors.Is(err, skills.ErrPublicationConflict) {
 				p.StateVersion++
@@ -164,15 +190,20 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 		if err != nil {
 			return err
 		}
-		if err = tx.BindPublicationProposal(p.ID); err != nil {
-			return err
+		if !automatic {
+			if err = tx.BindPublicationProposal(p.ID); err != nil {
+				return err
+			}
 		}
 		if err = s.attachAutoPatchObservation(ctx, tx, publication, *p); err != nil {
 			return err
 		}
 		p.StateVersion++
 		p.Status = "publishing"
-		p.FilePublicationPending = true
+		p.FilePublicationPending = !automatic
+		if automatic {
+			p.Status = "published"
+		}
 		p.PublishedRevision = publication.Revision
 		p.UpdatedAt = publication.CreatedAt
 		p.ReviewedAt = &publication.CreatedAt
@@ -247,7 +278,7 @@ func (s *Service) Reject(ctx context.Context, id string, review Review) (Proposa
 
 func decodePublication(data []byte, target skills.PublicationTarget, revision int64) (Publication, error) {
 	var p Publication
-	if json.Unmarshal(data, &p) != nil || p.Target != target || p.Name != target.Name || p.Revision != revision || p.Head.Version != p.ContentVersion || p.Head.Enabled != p.Enabled || p.Head.Exists == p.Deleted || p.Head.Exists != (p.ContentVersion != "") || p.Head.StateVersion < 1 {
+	if json.Unmarshal(data, &p) != nil || p.Target != target || p.Name != target.Name || p.Revision != revision || p.Head.Version != p.ContentVersion || p.Head.Enabled != p.Enabled || p.Head.Exists == p.Deleted || p.Head.Exists != (p.ContentVersion != "") || p.Head.StateVersion < 1 && !(p.Action == "baseline" && !p.Head.Exists) {
 		return p, errors.New("skill publication record is inconsistent")
 	}
 	if !validOverlayBase(p.OverlayBase, target) {
@@ -266,9 +297,6 @@ func decodePublication(data []byte, target skills.PublicationTarget, revision in
 // Capture an imported head before the first evolution publication so even the
 // first update can be rolled back through an ordinary integer revision.
 func ensureBaselinePublication(ctx context.Context, tx *skills.PublicationTx, head skills.SkillHead) error {
-	if head.StateVersion == 0 {
-		return nil
-	}
 	var exists bool
 	if err := tx.SQL().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_publications WHERE source_key=? AND name=?)`, tx.Target().SourceIdentity, tx.Target().Name).Scan(&exists); err != nil || exists {
 		return err

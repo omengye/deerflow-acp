@@ -52,6 +52,8 @@ type instance struct {
 	lastSuccess time.Time
 	lastError   string
 	active      *activeDispatch
+	poller      *channelPoller
+	wake        chan struct{}
 }
 type Manager struct {
 	db     *sql.DB
@@ -69,6 +71,8 @@ CREATE INDEX IF NOT EXISTS harness_channel_pending ON harness_channel_messages(i
 CREATE INDEX IF NOT EXISTS harness_channel_message_id ON harness_channel_messages(id);
 CREATE TABLE IF NOT EXISTS harness_channel_threads(instance TEXT NOT NULL,account TEXT NOT NULL,conversation TEXT NOT NULL,sender TEXT NOT NULL,workspace TEXT NOT NULL,session_id TEXT NOT NULL,PRIMARY KEY(instance,account,conversation,sender,workspace));
 CREATE TABLE IF NOT EXISTS harness_channel_admissions(instance TEXT NOT NULL,account TEXT NOT NULL,id TEXT NOT NULL,approval TEXT NOT NULL,PRIMARY KEY(instance,account,id));
+CREATE TABLE IF NOT EXISTS harness_channel_receipts(instance TEXT NOT NULL,account TEXT NOT NULL,id TEXT NOT NULL,client_id TEXT NOT NULL,status TEXT NOT NULL,PRIMARY KEY(instance,account,id));
+CREATE INDEX IF NOT EXISTS harness_channel_receipts_pending ON harness_channel_receipts(instance,account,status);
 CREATE TABLE IF NOT EXISTS harness_channel_confirmations(code TEXT PRIMARY KEY,scope TEXT NOT NULL,session_id TEXT NOT NULL,run_id TEXT NOT NULL,execution_version INTEGER NOT NULL,intent_id TEXT NOT NULL,intent_version INTEGER NOT NULL,digest TEXT NOT NULL,config_version INTEGER NOT NULL,policy_revision INTEGER NOT NULL,expires_ms INTEGER NOT NULL,decision TEXT NOT NULL DEFAULT '',used INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS harness_channel_policy_audit(id INTEGER PRIMARY KEY,instance TEXT NOT NULL,account TEXT NOT NULL,owner TEXT NOT NULL,workspace TEXT NOT NULL,approval TEXT NOT NULL,source TEXT NOT NULL,revision INTEGER NOT NULL,created_ms INTEGER NOT NULL);
 UPDATE harness_channel_messages SET status='unknown' WHERE status IN ('running','sending');`)
@@ -190,7 +194,7 @@ func (m *Manager) EnsureBundled(ctx context.Context) error {
 	// startup depend on a plugin process. Validate/handshake on first use instead.
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	manifest := Manifest{ID: "wechat", Command: path, SHA256: hex.EncodeToString(sum[:]), Descriptor: channelproto.Descriptor{ID: "wechat", Name: "WeChat", Version: "1.0.0", Protocol: 1, Login: []string{"qr"}, Messages: []string{"text"}, Fields: []channelproto.Field{}, RequiresReplyContext: true}}
+	manifest := Manifest{ID: "wechat", Command: path, SHA256: hex.EncodeToString(sum[:]), Descriptor: channelproto.Descriptor{ID: "wechat", Name: "WeChat", Version: "1.0.0", Protocol: 1, Login: []string{"qr"}, Messages: []string{"text"}, Fields: []channelproto.Field{}, RequiresReplyContext: true, IndependentPoll: true}}
 	i := &instance{id: "wechat", manifest: manifest, revision: 1, cfg: Config{Options: map[string]string{}}}
 	if err = m.persist(ctx, i); err != nil {
 		return err
@@ -439,11 +443,13 @@ func (m *Manager) startWorkerLocked(i *instance) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	i.cancel = cancel
+	i.wake = make(chan struct{}, 1)
 	i.done = make(chan struct{})
 	done := i.done
 	go func() {
 		defer close(done)
 		defer m.joinActive(i)
+		defer m.stopPoller(i)
 		for {
 			if ctx.Err() != nil {
 				return
@@ -453,25 +459,21 @@ func (m *Manager) startWorkerLocked(i *instance) {
 				return
 			}
 			delay := time.Second
-			i.mu.Lock()
 			if err != nil {
-				i.connected = false
-				i.lastError = "Channel unavailable; retrying"
+				m.workerError(i, err)
 				delay = 10 * time.Second
-				if errors.Is(err, channelproto.ErrAuthExpired) {
-					if i.active != nil {
-						i.active.cancel()
-					}
-					i.auth = channelproto.Auth{}
-					i.lastError = "Login expired; sign in again"
-					_ = m.persist(context.Background(), i)
-				}
 			}
+			i.mu.Lock()
+			wake := i.wake
 			i.mu.Unlock()
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-time.After(delay):
+			case <-wake:
+				timer.Stop()
+			case <-timer.C:
 			}
 		}
 	}()
@@ -486,6 +488,7 @@ func (m *Manager) stopWorker(i *instance) {
 	if done != nil {
 		<-done
 	}
+	m.stopPoller(i)
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.cancel = nil

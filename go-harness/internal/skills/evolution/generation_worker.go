@@ -1,12 +1,12 @@
 package evolution
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,6 +45,9 @@ func (s *Service) attachGenerationProposal(ctx context.Context, tx *skills.Publi
 }
 
 func (s *Service) guardGenerationValidation(ctx context.Context, tx *skills.PublicationTx, p Proposal) error {
+	if behavior, err := readBehavior(ctx, tx.SQL(), p.ID); err == nil && behavior.manual && p.BehaviorJobID == behavior.jobID {
+		return s.guardBehaviorManual(ctx, tx, p)
+	}
 	var id string
 	err := tx.SQL().QueryRowContext(ctx, `SELECT job_id FROM df_skill_generation_inputs WHERE proposal_id=?`, p.ID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -135,7 +138,7 @@ func (s *Service) generationInput(ctx context.Context, id string) (generationRec
 			if err != nil {
 				return err
 			}
-			input.InstructionOnly = d.kind() == "experience_pattern"
+			_ = d // Full packages use the same host validation path.
 		}
 		if input.Base.Exists {
 			base, err := tx.ReadVersion(input.Base.Version)
@@ -206,24 +209,7 @@ func (s *Service) saveGeneratedCandidate(ctx context.Context, id string, c skill
 				if err := validateCandidateCredentials(candidate, true); err != nil {
 					return err
 				}
-				if head.Exists {
-					base, err := tx.ReadVersion(head.Version)
-					if err != nil {
-						return err
-					}
-					files := base.Files()
-					if len(c.Files) != len(files) {
-						return invalid("experience candidates cannot add or remove support files")
-					}
-					for path, data := range files {
-						other, exists := c.Files[path]
-						if !exists || path != "SKILL.md" && !bytes.Equal(data, other) {
-							return invalid("experience candidates can only change SKILL.md")
-						}
-					}
-				} else if len(c.Files) != 1 || c.Files["SKILL.md"] == nil {
-					return invalid("new experience skills may only contain SKILL.md")
-				}
+
 				c.Reason, err = learning.RedactPromotionReason(c.Reason)
 				if err != nil {
 					return err
@@ -257,6 +243,12 @@ func (s *Service) saveGeneratedCandidate(ctx context.Context, id string, c skill
 func generationFailure(err error) (string, bool) {
 	var review *harness.SkillValidationFailure
 	switch {
+	case errors.Is(err, skillmaintenance.ErrYieldProgress):
+		return "yield_progress", false
+	case errors.Is(err, skillmaintenance.ErrBlockedEvidence):
+		return "blocked_evidence", false
+	case errors.Is(err, skillmaintenance.ErrBlockedRuntime):
+		return "blocked_runtime", false
 	case errors.Is(err, errGenerationConfiguration):
 		return "configuration_changed", false
 	case errors.Is(err, skillmaintenance.ErrSourceActive):
@@ -267,14 +259,14 @@ func generationFailure(err error) (string, bool) {
 		return "source_unavailable", false
 	case errors.Is(err, harness.ErrSkillConflict):
 		return "base_changed", false
-	case errors.Is(err, skillmaintenance.ErrBudget):
-		return "budget_exhausted", false
+	case errors.Is(err, skillmaintenance.ErrCapacity), errors.Is(err, skills.ErrCapacity):
+		return "deferred_capacity", false
 	case errors.Is(err, harness.ErrInvalidInput):
 		return "invalid_candidate", false
 	case errors.As(err, &review):
 		switch review.Code {
-		case "review_budget_exhausted":
-			return "budget_exhausted", false
+		case "review_runtime_unavailable":
+			return "blocked_runtime", false
 		case "review_storage_error":
 			return "storage_error", false
 		case "review_cancelled":
@@ -303,11 +295,27 @@ func (s *Service) generateOne(ctx context.Context, job skillmaintenance.Job) (st
 		if p.Status != "validating" {
 			return generationProposalOutcome(p)
 		}
-	}
-	if r.candidate == "" {
-		candidate, err := s.generation.generator.Generate(ctx, input)
+		// A submitted or resumed package is already bound to this durable job.
+		// Reuse its proposal and exact bytes; do not generate or submit it again.
+		p, err = s.Validate(ctx, p.ID, p.StateVersion)
 		if err != nil {
 			return generationFailure(err)
+		}
+		return generationProposalOutcome(p)
+	}
+	if r.candidate == "" {
+		candidate, saved, err := s.generatedOutput(ctx, job.ID)
+		if err != nil {
+			return generationFailure(err)
+		}
+		if !saved {
+			candidate, err = s.generation.generator.Generate(ctx, input)
+			if err != nil {
+				return generationFailure(err)
+			}
+			if err = s.persistGeneratedOutput(ctx, job.ID, candidate); err != nil {
+				return generationFailure(err)
+			}
 		}
 		if err = s.saveGeneratedCandidate(ctx, job.ID, candidate); err != nil {
 			return generationFailure(err)
@@ -368,7 +376,7 @@ func generationProposalOutcome(p Proposal) (string, bool) {
 // it reviewable. Bounded, replayable metadata cleanup closes that record on
 // failure/cancellation, including after a process crash during finalization.
 func (s *Service) reconcileGeneration(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT i.job_id FROM df_skill_generation_inputs i JOIN df_skill_maintenance_jobs j ON j.id=i.job_id JOIN df_skill_proposals p ON p.id=i.proposal_id WHERE j.state IN ('failed','cancelled') AND p.status='validating' ORDER BY i.job_id LIMIT 32`)
+	rows, err := s.db.QueryContext(ctx, `SELECT i.job_id FROM df_skill_generation_inputs i JOIN df_skill_maintenance_jobs j ON j.id=i.job_id JOIN df_skill_proposals p ON p.id=i.proposal_id WHERE j.state IN ('failed','cancelled') AND p.status='validating' AND NOT (j.error_code='configuration_changed' AND EXISTS(SELECT 1 FROM df_skill_behavior_evaluations e WHERE e.proposal_id=p.id AND e.manual=1 AND e.job_id<>i.job_id)) ORDER BY i.job_id LIMIT 32`)
 	if err != nil {
 		return err
 	}
@@ -422,6 +430,15 @@ func (s *Service) reconcileGeneration(ctx context.Context) error {
 }
 
 func closeGenerationProposal(ctx context.Context, tx *sql.Tx, r generationRecord, p Proposal) error {
+	if r.job.ErrorCode == "configuration_changed" && p.BehaviorJobID != "" && p.BehaviorJobID != r.job.ID {
+		active, err := readBehavior(ctx, tx, p.ID)
+		if err != nil {
+			return err
+		}
+		if active.manual && active.jobID == p.BehaviorJobID {
+			return nil
+		}
+	}
 	if p.Target != r.input.Target || p.Base != r.input.Request.Base || p.CandidateVersion != r.candidate {
 		return harness.ErrSkillConflict
 	}
@@ -488,6 +505,9 @@ func (s *Service) RunGeneration(ctx context.Context) (bool, error) {
 	if s.generation == nil {
 		return false, invalid("generation is not configured")
 	}
+	if err := s.refreshWaiting(ctx); err != nil {
+		return false, err
+	}
 	cleanup, cancel := context.WithTimeout(ctx, 2*time.Second)
 	before := s.reconcileGeneration(cleanup)
 	before = errors.Join(before, s.reconcileBehavior(cleanup))
@@ -500,6 +520,9 @@ func (s *Service) RunGeneration(ctx context.Context) (bool, error) {
 	slices.Sort(kinds)
 	worked, err := s.generation.store.RunKinds(ctx, kinds, func(work context.Context, job skillmaintenance.Job) (string, bool) {
 		activeID = job.ID
+		if strings.HasPrefix(job.Request.Reference, "regcheck_") {
+			return s.runRegression(work, job)
+		}
 		if producer, exists := s.maintenanceProducers[job.Request.Kind]; exists {
 			return producer.handler(work, job)
 		}

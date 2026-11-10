@@ -21,16 +21,20 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
+	"github.com/omengye/deerflow-acp/go-harness/internal/network"
 )
 
 // Config is internal to the Eino adapter. Business and transport packages use
 // harness.Engine, so alpha API changes stay at this boundary.
 type Config struct {
+	API                                           harness.ModelAPI
+	Network                                       harness.NetworkConfig
 	Provider, APIKey, BaseURL, Model, Instruction string
 	OutputTokenParameter                          harness.OutputTokenParameter
 	ModelRoutes                                   map[string]harness.ModelRoute
 	ModelReasoningEfforts                         map[string][]string
 	ModelThinking                                 map[string]harness.ThinkingConfig
+	ModelOutputLimits                             map[string]harness.ModelOutputLimits
 	Models                                        []harness.ConfigValue
 	ChatModel                                     model.ToolCallingChatModel
 	Tools                                         []tool.BaseTool
@@ -135,6 +139,10 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 	if config.CheckpointStore == nil {
 		config.CheckpointStore = &memoryCheckpoints{items: make(map[string][]byte)}
 	}
+	if err := network.Validate(config.Network); err != nil {
+		return nil, err
+	}
+	config.Network = network.Clone(config.Network)
 	config.Tools = append([]tool.BaseTool(nil), config.Tools...)
 	if config.ToolPolicy.Allowlist != nil {
 		config.ToolPolicy.Allowlist = append([]string{}, config.ToolPolicy.Allowlist...)
@@ -146,9 +154,26 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 	config.Media.VisionModels = append([]string(nil), config.Media.VisionModels...)
 	config.ContextWindows = maps.Clone(config.ContextWindows)
 	config.ModelRoutes = maps.Clone(config.ModelRoutes)
-	for _, route := range config.ModelRoutes {
+	if config.ChatModel == nil {
+		if err := harness.ValidateModelAPIOptions(config.Provider, config.API, config.OutputTokenParameter); err != nil {
+			return nil, err
+		}
+	}
+	config.API = contractModelAPI(config.API)
+	for name, route := range config.ModelRoutes {
+		if err := harness.ValidateModelAPIOptions(route.Provider, route.API, route.OutputTokenParameter); err != nil {
+			return nil, err
+		}
+		route.API = contractModelAPI(route.API)
+		config.ModelRoutes[name] = route
 		if _, err := harness.ResolveOutputTokenParameter(route.Provider, route.BaseURL, route.OutputTokenParameter); err != nil {
 			return nil, err
+		}
+	}
+	config.ModelOutputLimits = maps.Clone(config.ModelOutputLimits)
+	for name, output := range config.ModelOutputLimits {
+		if err := output.Validate(config.Budget.MaxOutputTokens); err != nil {
+			return nil, fmt.Errorf("model %q: %w", name, err)
 		}
 	}
 	config.ModelThinking = maps.Clone(config.ModelThinking)
@@ -157,7 +182,7 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 		if route, ok := config.ModelRoutes[name]; ok {
 			provider = route.Provider
 		}
-		if err := thinking.Validate(provider, config.ModelReasoningEfforts[name], config.Budget.MaxOutputTokens); err != nil {
+		if err := thinking.Validate(provider, config.ModelReasoningEfforts[name], config.ModelOutputLimits[name].Effective(config.Budget.MaxOutputTokens)); err != nil {
 			return nil, fmt.Errorf("model %q: %w", name, err)
 		}
 		if thinking.Parameter == "" {
@@ -309,7 +334,7 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	defer func() {
 		if pendingCheckpoints != nil && returnErr == nil {
 			if err := pendingCheckpoints.commit(context.WithoutCancel(ctx), result.StopReason != "cancelled"); err != nil {
-				returnErr = fmt.Errorf("commit execution checkpoint: %w", err)
+				returnErr = &harness.CheckpointCommitError{Cause: err}
 			}
 		}
 	}()
@@ -591,6 +616,7 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	var outputLimit *outputContinuationError
 	if errors.As(runErr, &outputLimit) {
 		result.StopReason = "max_tokens"
+		result.Limit = "output_tokens"
 		runErr, _ = removeErrorLeaves(runErr, func(err error) bool { _, ok := err.(*outputContinuationError); return ok })
 		runErr = errors.Join(runErr, sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "output_limit", Text: "\n\n" + outputLimit.Error()}))
 	}

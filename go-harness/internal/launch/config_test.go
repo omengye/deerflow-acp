@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go.yaml.in/yaml/v3"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -583,8 +584,8 @@ models:
 		"context-compaction": true, "compact-after-messages": true, "compact-after-tokens": true,
 		"compact-keep-messages": true, "skills-config": true,
 	})
-	if err != nil || cfg.MaxActiveRuns != 5 || cfg.QueueTimeout != 9*time.Second || cfg.MemoryExtraction || cfg.Compaction.Enabled || cfg.Compaction.ContextMessages != 40 || cfg.Compaction.ContextTokens != 40000 || cfg.Compaction.KeepRecentMessages != 8 || len(cfg.Skills.Sources) != 1 || cfg.Skills.Sources[0].ID != "host" || cfg.SkillSelection.IncludeGlobal {
-		t.Fatalf("explicit Go settings lost: config=%+v err=%v", cfg, err)
+	if err != nil || cfg.MaxActiveRuns != 5 || cfg.QueueTimeout != 9*time.Second || cfg.MemoryExtraction || cfg.Compaction.Enabled || cfg.Compaction.ContextMessages != 40 || cfg.Compaction.ContextTokens != 40000 || cfg.Compaction.KeepRecentMessages != 8 || len(cfg.Skills.Sources) != 2 || cfg.Skills.Sources[0].ID != "host" || cfg.Skills.Sources[1].ID != "managed-evolution" || cfg.SkillSelection.IncludeGlobal {
+		t.Fatalf("explicit Go settings or automatic managed source changed: %v", err)
 	}
 }
 
@@ -691,9 +692,44 @@ func TestApplyConfigRejectsUnsupportedSummarization(t *testing.T) {
 func TestApplyCurrentExampleSkillsStartGoHarness(t *testing.T) {
 	var cfg deerflow.Config
 	connections := 0
-	if _, err := ApplyConfig(filepath.Join("..", "..", "..", "config.example.yaml"), &cfg, &connections, nil); err != nil {
+	path := filepath.Join("..", "..", "..", "config.example.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
 		t.Fatal(err)
 	}
+	root, err := filepath.Abs(filepath.Join("..", "..", "..", "skills"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err = yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	settings, ok := doc["skills"].(map[string]any)
+	if !ok {
+		t.Fatal("missing skills")
+	}
+	settings["path"] = filepath.ToSlash(root)
+	raw, err = yaml.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyConfig(writeRoleConfig(t, string(raw)), &cfg, &connections, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Validate distribution skills independently of developer-owned packages in
+	// skills/custom. Local packages must not change the installer fixture count.
+	var bundled []harness.SkillInstall
+	for _, install := range cfg.Skills.Install {
+		for _, source := range cfg.Skills.BuiltinSources {
+			if install.SourceID == source {
+				bundled = append(bundled, install)
+				break
+			}
+		}
+	}
+	cfg.Skills.Install = bundled
 	expected := []string{"academic-paper-review", "bootstrap", "chart-visualization", "claude-to-deerflow", "code-documentation", "consulting-analysis", "deep-research", "find-skills", "frontend-design", "github-deep-research", "newsletter-generation", "skill-creator", "surprise-me", "systematic-literature-review", "vercel-deploy", "weather-cma", "web-design-guidelines"}
 	assertSkills := func(names map[string]bool) {
 		t.Helper()

@@ -34,14 +34,14 @@ func TestSkillLearningInFlightConversationKeepsOriginalBoundedJob(t *testing.T) 
 				s, x, extractor = newLearningTest(t, true)
 				extractor.during = func() {
 					extractor.during = nil
-					continuation = learningTestRun(t, s, x, "Also verify optional configuration fields")
+					continuation = learningTestRelatedRun(t, s, x, "Also verify optional configuration fields")
 				}
 			} else if kind == skillmaintenance.ExperienceConsolidate {
 				var model *consolidationTestModel
 				s, x, _, model = newConsolidationTest(t)
 				model.during = func() {
 					model.during = nil
-					continuation = learningTestRun(t, s, x, "Also verify optional configuration fields")
+					continuation = learningTestRelatedRun(t, s, x, "Also verify optional configuration fields")
 				}
 			} else {
 				var matcher *matchingTestModel
@@ -50,7 +50,7 @@ func TestSkillLearningInFlightConversationKeepsOriginalBoundedJob(t *testing.T) 
 				s, x, registry, extractor, matcher = newMatchingTest(t)
 				action := func() {
 					matcher.during, matcher.beforeReserve = nil, nil
-					continuation = learningTestRun(t, s, x, "Also verify optional configuration fields")
+					continuation = learningTestRelatedRun(t, s, x, "Also verify optional configuration fields")
 				}
 				if stage.beforeReserve {
 					matcher.beforeReserve = action
@@ -62,7 +62,7 @@ func TestSkillLearningInFlightConversationKeepsOriginalBoundedJob(t *testing.T) 
 				}
 			}
 			for _, text := range []string{"Inspect complete JSON configuration", "Correct the check with complete file text"} {
-				learningQueueReadinessTurn(t, s, learningTestRun(t, s, x, text))
+				learningQueueReadinessTurn(t, s, learningTestRelatedRun(t, s, x, text))
 			}
 			learningTestQueue(t, s)
 			if kind != skillmaintenance.ExperienceExtract {
@@ -89,7 +89,7 @@ func TestSkillLearningInFlightConversationKeepsOriginalBoundedJob(t *testing.T) 
 			assertCharges := func(want int) {
 				t.Helper()
 				var calls, tokens, unsettled int
-				if err := s.Store.db.QueryRow(`SELECT count(*),COALESCE(sum(charged_tokens),0),COALESCE(sum(state<>'settled'),0) FROM df_skill_maintenance_calls WHERE job_id=?`, id).Scan(&calls, &tokens, &unsettled); err != nil || calls != want || tokens != 15*want || unsettled != 0 {
+				if err := s.Store.db.QueryRow(`SELECT count(*),COALESCE(sum(actual_tokens),0),COALESCE(sum(state<>'settled'),0) FROM df_skill_maintenance_calls WHERE job_id=?`, id).Scan(&calls, &tokens, &unsettled); err != nil || calls != want || tokens != 15*want || unsettled != 0 {
 					t.Fatal("in-flight work refunded or fabricated model charges", calls, tokens, unsettled, err)
 				}
 			}
@@ -116,7 +116,11 @@ func TestSkillLearningInFlightConversationKeepsOriginalBoundedJob(t *testing.T) 
 			if err != nil || completed.State != "completed" || completed.Attempts != 2 || completed.Request != before.Request || completed.Deadline != after.Deadline {
 				t.Fatal("settled conversation did not automatically resume original work", completed, err)
 			}
-			assertCharges(paid + 1)
+			wantCalls := paid + 1
+			if kind == skillmaintenance.ExperienceConsolidate {
+				wantCalls = paid // Saved consolidation output is reused after activity ends.
+			}
+			assertCharges(wantCalls)
 			var pending int
 			if err := s.Store.db.QueryRow(`SELECT count(*) FROM harness_learning_outbox WHERE state='pending'`).Scan(&pending); err != nil || pending != 1 {
 				t.Fatal("retry swallowed the later user turn", pending, err)
@@ -195,17 +199,11 @@ func TestSkillLearningInFlightGenerationAndReviewResumeWithoutManualWork(t *test
 			if err := e.ConfigureBehavior(evaluator, harness.SkillBehaviorOptions{Suites: []harness.SkillBehaviorSuite{autoPatchLearningSuite()}}); err != nil {
 				t.Fatal(err)
 			}
-			for _, text := range []string{"Inspect complete JSON configuration", "Correct the check with complete file text"} {
-				learningQueueReadinessTurn(t, s, learningTestRun(t, s, x, text))
-			}
-			learningTestQueue(t, s)
-			matchingRun(t, s)
-			consolidateRun(t, s)
-			experienceMatch(t, s)
+			experienceTwoEpisodes(t, s, x)
 			enableExperienceReviewDrafts(t, e, newSkill)
 			discoveries := experienceDiscoveries(t, e)
-			if len(discoveries) != 1 || !discoveries[0].ReviewDraft {
-				t.Fatal("ordinary conversation did not automatically queue a draft", discoveries)
+			if len(discoveries) != 1 || discoveries[0].ReviewDraft || len(discoveries[0].Evidence) != 2 {
+				t.Fatal("independent tasks did not queue an automatic candidate", discoveries)
 			}
 			id := discoveries[0].GenerationID
 			before, err := e.GetGeneration(ctx, id)
@@ -213,7 +211,7 @@ func TestSkillLearningInFlightGenerationAndReviewResumeWithoutManualWork(t *test
 				t.Fatal(before, err)
 			}
 			var active harness.RunRequest
-			begin := func() { active = learningTestRun(t, s, x, "Also check the optional fields") }
+			begin := func() { active = learningTestRelatedRun(t, s, x, "Also check the optional fields") }
 			switch stage {
 			case "generation", "new-capability":
 				generator.during = func() { generator.during = nil; begin() }
@@ -247,7 +245,7 @@ func TestSkillLearningInFlightGenerationAndReviewResumeWithoutManualWork(t *test
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = next.Close() })
-			if err = next.ConfigureGeneration(ctx, generator, consolidationTestOptions().Budget, []string{"project"}, false); err != nil {
+			if err = next.ConfigureGeneration(ctx, generator, consolidationTestOptions().Policy, []string{"project"}, false); err != nil {
 				t.Fatal(err)
 			}
 			if err = next.ConfigureExperienceDiscoverySource(s.Store.Learning); err != nil {
@@ -274,7 +272,14 @@ func TestSkillLearningInFlightGenerationAndReviewResumeWithoutManualWork(t *test
 				t.Fatal(err)
 			}
 			proposal, err := next.Get(ctx, completed.ProposalID)
-			if err != nil || completed.State != "completed" || completed.Attempts != 2 || completed.Deadline != retry.Deadline || completed.Base != before.Base || proposal.Status != "pending_review" {
+			wantState, wantProposal := "completed", "pending_review"
+			if newSkill {
+				wantState, wantProposal = "waiting", "validating"
+				if completed.ErrorCode != "blocked_evidence" {
+					t.Fatal("missing suite did not preserve recoverable evidence wait", completed.ErrorCode)
+				}
+			}
+			if err != nil || completed.State != wantState || completed.Attempts != 2 || completed.Deadline != retry.Deadline || completed.Base != before.Base || proposal.Status != wantProposal {
 				t.Fatal("settled source did not resume its original candidate review", completed, proposal, err)
 			}
 			if !generating && (completed.CandidateVersion != retry.CandidateVersion || completed.ProposalID != retry.ProposalID) {
@@ -283,11 +288,8 @@ func TestSkillLearningInFlightGenerationAndReviewResumeWithoutManualWork(t *test
 			wantGeneration, wantContent, wantBehavior := 1, 1, 4
 			wantBehaviorState := "passed"
 			switch stage {
-			case "generation":
-				wantGeneration++
 			case "new-capability":
-				wantGeneration++
-				wantBehavior, wantBehaviorState = 0, "not_run"
+				wantBehavior, wantBehaviorState = 0, ""
 			case "content":
 				wantContent++
 			case "behavior":
@@ -298,10 +300,10 @@ func TestSkillLearningInFlightGenerationAndReviewResumeWithoutManualWork(t *test
 			}
 			var calls, tokens, unsettled, consumed, feedback, pending int
 			wantCalls := wantGeneration + 2*wantContent + wantBehavior
-			if err := s.Store.db.QueryRow(`SELECT count(*),sum(charged_tokens),sum(state<>'settled') FROM df_skill_maintenance_calls WHERE job_id=?`, id).Scan(&calls, &tokens, &unsettled); err != nil || calls != wantCalls || tokens != 15*wantCalls || unsettled != 0 {
+			if err := s.Store.db.QueryRow(`SELECT count(*),sum(actual_tokens),sum(state<>'settled') FROM df_skill_maintenance_calls WHERE job_id=?`, id).Scan(&calls, &tokens, &unsettled); err != nil || calls != wantCalls || tokens != 15*wantCalls || unsettled != 0 {
 				t.Fatal("retry refunded paid calls or duplicated completed stages", calls, tokens, unsettled, err)
 			}
-			if err := s.Store.db.QueryRow(`SELECT (SELECT count(*) FROM df_skill_discovery_episode_consumed),(SELECT count(*) FROM df_skill_feedback),(SELECT count(*) FROM harness_learning_outbox WHERE state='pending')`).Scan(&consumed, &feedback, &pending); err != nil || consumed != 1 || feedback != 0 || pending != 1 {
+			if err := s.Store.db.QueryRow(`SELECT (SELECT count(*) FROM df_skill_discovery_episode_consumed),(SELECT count(*) FROM df_skill_feedback),(SELECT count(*) FROM harness_learning_outbox WHERE state='pending')`).Scan(&consumed, &feedback, &pending); err != nil || consumed != 2 || feedback != 0 || pending != 1 {
 				t.Fatal("retry duplicated consumption, quality votes or swallowed the later turn", consumed, feedback, pending, err)
 			}
 			if newSkill {
@@ -316,20 +318,20 @@ func TestSkillLearningInFlightGenerationAndReviewResumeWithoutManualWork(t *test
 					t.Fatal(err)
 				}
 				retained, err := next.Get(ctx, proposal.ID)
-				if err != nil || retained.Status != "pending_review" {
+				if err != nil || retained.Status != "validating" {
 					t.Fatal("retry granted automatic new-capability publication", retained, err)
 				}
 			}
 			published, err := next.Approve(ctx, proposal.ID, harness.SkillReview{ExpectedStateVersion: proposal.StateVersion, Actor: "owner"})
-			if err != nil || published.Status != "published" {
-				t.Fatal("system-generated candidate could not be reviewed after retry", published, err)
+			if err == nil || published.Status == "published" {
+				t.Fatal("retry introduced manual adoption", published, err)
 			}
 		})
 	}
 }
 
 func TestSkillLearningInFlightActivityCannotHidePermanentSourceChanges(t *testing.T) {
-	for _, mode := range []string{"captured-event", "missing-outbox", "workspace", "catalog-head", "pattern-revision", "consent", "budget"} {
+	for _, mode := range []string{"captured-event", "missing-outbox", "workspace", "catalog-head", "pattern-revision", "consent", "usage"} {
 		t.Run(mode, func(t *testing.T) {
 			s, x, registry, _, matcher := newMatchingTest(t)
 			ctx := context.Background()
@@ -339,7 +341,7 @@ func TestSkillLearningInFlightActivityCannotHidePermanentSourceChanges(t *testin
 			id, _ := matchingJob(t, s)
 			var active harness.RunRequest
 			matcher.during = func() {
-				active = learningTestRun(t, s, x, "Also verify optional fields")
+				active = learningTestRelatedRun(t, s, x, "Also verify optional fields")
 				var err error
 				switch mode {
 				case "captured-event":
@@ -371,28 +373,31 @@ func TestSkillLearningInFlightActivityCannotHidePermanentSourceChanges(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mode == "budget" {
+			if mode == "usage" {
 				if job.State != "retry" || job.ErrorCode != "source_active" {
 					t.Fatal("fixture did not enter active-source retry", job)
 				}
 				matcher.during = nil
 				learningQueueReadinessTurn(t, s, active)
-				// Exhaust the same durable global budget, not a replacement policy
-				// or a refunded receipt, before the next paid admission.
-				if _, err := s.Store.db.Exec(`UPDATE df_skill_maintenance_days SET model_calls=30 WHERE day=?`, time.Now().UTC().Format("2006-01-02")); err != nil {
+				// A large telemetry counter never blocks the resumed call.
+				if _, err := s.Store.db.Exec(`UPDATE df_skill_maintenance_days SET model_calls=1000000 WHERE day=?`, time.Now().UTC().Format("2006-01-02")); err != nil {
 					t.Fatal(err)
 				}
 				time.Sleep(time.Until(job.RetryAt) + 50*time.Millisecond)
 				matchingRun(t, s)
 				job, err = skillmaintenance.ReadJob(ctx, s.Store.db, id)
-				if err != nil || job.State != "failed" || job.ErrorCode != "budget_exhausted" || job.Attempts != 2 {
-					t.Fatal("active-source retry bypassed the paid budget", job, err)
+				if err != nil || job.State != "completed" || job.ErrorCode != "" || job.Attempts != 2 {
+					t.Fatal("telemetry blocked the resumed matching job", job, err)
 				}
 			} else if job.State != "failed" && job.State != "cancelled" || job.ErrorCode == "source_active" {
 				t.Fatal("temporary activity hid permanent source or authority damage", job)
 			}
 			var saved, calls int
-			if err := s.Store.db.QueryRow(`SELECT (SELECT count(*) FROM df_learning_matches WHERE job_id=? AND result_sha<>''),(SELECT count(*) FROM df_skill_maintenance_calls WHERE job_id=?)`, id, id).Scan(&saved, &calls); err != nil || saved != 0 || calls != 1 {
+			wantSaved, wantCalls := 0, 1
+			if mode == "usage" {
+				wantSaved, wantCalls = 1, 2
+			}
+			if err := s.Store.db.QueryRow(`SELECT (SELECT count(*) FROM df_learning_matches WHERE job_id=? AND result_sha<>''),(SELECT count(*) FROM df_skill_maintenance_calls WHERE job_id=?)`, id, id).Scan(&saved, &calls); err != nil || saved != wantSaved || calls != wantCalls {
 				t.Fatal("invalid evidence was committed or refunded", saved, calls, err)
 			}
 		})
@@ -430,7 +435,7 @@ func TestSkillLearningInFlightSharedActivityValidatesAllPinnedMembers(t *testing
 			var active harness.RunRequest
 			matcher.during = func() {
 				matcher.during = nil
-				active = learningTestRun(t, s, first, "Continue verification of the first task")
+				active = learningTestRelatedRun(t, s, first, "Continue verification of the first task")
 				if mode == "other-source-damaged" {
 					if _, err := s.Store.Append(ctx, harness.RunEvent{SessionID: second.ID, RunID: captured.RunID, Kind: "text_delta", Text: "Changed other pinned source"}); err != nil {
 						t.Fatal(err)

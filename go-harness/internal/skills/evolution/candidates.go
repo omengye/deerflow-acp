@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
 
@@ -178,6 +179,9 @@ func (s *Service) submit(ctx context.Context, request Request, validate bool) (P
 	if err != nil {
 		return Proposal{}, err
 	}
+	if _, automatic := ctx.Value(automaticSubmissionKey{}).(string); automatic && request.Action != "create" {
+		request.Action = "edit"
+	}
 	var candidate *skills.Candidate
 	if request.Action != "delete" {
 		if err = validateFiles(request.Files); err != nil {
@@ -301,11 +305,20 @@ func (s *Service) submit(ctx context.Context, request Request, validate bool) (P
 		if err != nil {
 			return err
 		}
+		if p.Origin == "automatic" && p.CandidateVersion != "" {
+			if _, err = tx.SQL().ExecContext(ctx, `INSERT OR IGNORE INTO df_skill_automatic_content VALUES(?)`, p.CandidateVersion); err != nil {
+				return err
+			}
+		}
 		if err = s.attachGenerationProposal(ctx, tx, p); err != nil {
 			return err
 		}
 		if preflightErr != nil {
 			return nil
+		}
+		if workspace, automatic := ctx.Value(automaticSubmissionKey{}).(string); automatic {
+			queued = true
+			return s.queueSubmittedCandidate(ctx, tx, &p, workspace)
 		}
 		queued, err = s.queueBehaviorManual(ctx, tx, &p)
 		return err
@@ -393,6 +406,9 @@ func (s *Service) Validate(ctx context.Context, id string, expected int64) (Prop
 		report.BehaviorReport = nil
 		report.BehaviorDigest = ""
 	}
+	if errors.Is(reviewErr, skillmaintenance.ErrYieldProgress) || errors.Is(reviewErr, skillmaintenance.ErrBlockedEvidence) || errors.Is(reviewErr, skillmaintenance.ErrBlockedRuntime) {
+		return input.Proposal, reviewErr
+	}
 	valid := reviewErr == nil && validReportFor(report, input)
 	generationID, _ := ctx.Value(generationContextKey{}).(string)
 	if generationID != "" && (s.generation == nil || report.ValidatorVersion != s.generation.reviewIdentity) {
@@ -433,7 +449,7 @@ func (s *Service) Validate(ctx context.Context, id string, expected int64) (Prop
 			p.Error = "The installed skill changed during validation."
 		} else if generationID != "" && reviewErr != nil {
 			// Preserve the candidate while the durable job decides whether its
-			// remaining attempts and independent budget permit another review.
+			// remaining attempts permit another review.
 			p.Status = "validating"
 			p.ValidationFailure = failure
 			p.Error = "Candidate review could not complete in this maintenance attempt."
@@ -486,7 +502,7 @@ func reportBoundTo(report Report, input ValidationInput) bool {
 		}
 	} else {
 		native := report.BehaviorReport
-		if !hexDigest(report.BehaviorDigest) || report.BehaviorDigest != encodedHash(*native) || native.RuleVersion != behaviorRuleVersion && native.RuleVersion != behaviorTriggerRuleVersion || native.BaseVersion != report.BaseVersion || native.CandidateVersion != report.CandidateVersion || native.State != report.Behavior || native.State != "passed" && native.State != "failed" || report.IsolatedScripts {
+		if !hexDigest(report.BehaviorDigest) || report.BehaviorDigest != encodedHash(*native) || native.RuleVersion != behaviorRuleVersion && native.RuleVersion != behaviorTriggerRuleVersion || native.BaseVersion != report.BaseVersion || native.CandidateVersion != report.CandidateVersion || native.State != report.Behavior || native.State != "passed" && native.State != "failed" {
 			return false
 		}
 	}

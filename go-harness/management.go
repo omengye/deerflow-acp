@@ -130,6 +130,8 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 		return nil, err
 	}
 	switch request.Operation {
+	case "search.status", "search.select", "search.configure":
+		return c.managementSearch(ctx, request)
 	case "schedule.buzz.register", "schedule.buzz.bind", "schedule.buzz.poll", "schedule.buzz.claim", "schedule.buzz.ack", "schedule.owner.link":
 		return c.managementScheduleSources(ctx, request)
 	case "schedule.create", "schedule.list", "schedule.snapshot", "schedule.preview", "schedule.reschedule", "schedule.status", "schedule.pause", "schedule.history", "schedule.ack", "schedule.delete", "wechat.status", "wechat.history", "wechat.login.start", "wechat.login.poll", "wechat.logout", "wechat.review":
@@ -176,6 +178,9 @@ func (c *Client) ManageLocal(ctx context.Context, request localhost.ManagementRe
 		return data, proposalManagementError(err)
 	case "skill.verify":
 		data, err := c.managementSkillVerify(ctx, request)
+		return data, proposalManagementError(err)
+	case "skill.recovery.plan", "skill.recovery.apply":
+		data, err := c.managementSkillRecovery(ctx, request)
 		return data, proposalManagementError(err)
 	case "skill.list", "skill.get", "skill.set_enabled", "skill.delete", "skill.imports.refresh", "skill.export.retry":
 		data, err := c.managementSkills(ctx, request)

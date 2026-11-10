@@ -29,11 +29,19 @@ type AgentProbe struct {
 // ProbeAgentCapabilities makes at most two bounded requests and never executes
 // a returned tool. Callers provide a deadline; SDK transport retries are disabled.
 func ProbeAgentCapabilities(ctx context.Context, provider, name, baseURL, apiKey string, parameter ...harness.OutputTokenParameter) (AgentProbe, error) {
-	cfg := Config{Provider: provider, Model: name, BaseURL: baseURL, APIKey: apiKey}
+	return ProbeAgentCapabilitiesWithNetwork(ctx, provider, name, baseURL, apiKey, harness.NetworkConfig{}, parameter...)
+}
+
+func ProbeAgentCapabilitiesWithNetwork(ctx context.Context, provider, name, baseURL, apiKey string, policy harness.NetworkConfig, parameter ...harness.OutputTokenParameter) (AgentProbe, error) {
+	cfg := Config{Provider: provider, Model: name, BaseURL: baseURL, APIKey: apiKey, Network: policy}
 	if len(parameter) > 0 {
 		cfg.OutputTokenParameter = parameter[0]
 	}
-	chat, err := newModelWithRetryPolicy(ctx, cfg, name, true)
+	return ProbeAgentCapabilitiesWithConfig(ctx, cfg)
+}
+
+func ProbeAgentCapabilitiesWithConfig(ctx context.Context, cfg Config) (AgentProbe, error) {
+	chat, err := newModelWithRetryPolicy(ctx, cfg, cfg.Model, true)
 	if err != nil {
 		return AgentProbe{}, err
 	}

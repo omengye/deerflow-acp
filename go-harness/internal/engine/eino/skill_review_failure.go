@@ -31,8 +31,8 @@ func skillReviewRequestFailure(stage string, err error) *harness.SkillValidation
 		f.Stage = stage
 	case errors.As(err, &persistence) && persistence.PersistenceFailure():
 		f.Code = "review_storage_error"
-	case errors.As(err, &quota), errors.As(err, &localQuota), errors.Is(err, skillmaintenance.ErrBudget):
-		f.Code = "review_budget_exhausted"
+	case errors.As(err, &quota), errors.As(err, &localQuota), errors.Is(err, skillmaintenance.ErrCapacity):
+		f.Code = "review_runtime_unavailable"
 	case errors.Is(err, context.Canceled):
 		f.Code = "review_cancelled"
 	case errors.Is(err, context.DeadlineExceeded):

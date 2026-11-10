@@ -166,6 +166,7 @@ func relayMappedStream[T any](source *schema.StreamReader[T], finish func(), onC
 
 type modelLifecycle struct {
 	adk.BaseChatModelAgentMiddleware
+	outputLimits  harness.ModelOutputLimits
 	contextWindow int
 	io            *runIO
 	budget        *runBudget
@@ -177,10 +178,11 @@ type modelLifecycle struct {
 }
 
 func (m *modelLifecycle) WrapModel(_ context.Context, inner model.BaseModel[*schema.Message], _ *adk.ModelContext) (model.BaseModel[*schema.Message], error) {
-	return &trackedModel{inner: inner, nativeEndpoint: true, io: m.io, budget: m.budget, sink: m.sink, media: m.media, settings: m.settings, tuning: m.tuning, role: m.role, contextWindow: m.contextWindow}, nil
+	return &trackedModel{inner: inner, nativeEndpoint: true, io: m.io, budget: m.budget, sink: m.sink, media: m.media, settings: m.settings, tuning: m.tuning, role: m.role, contextWindow: m.contextWindow, outputLimits: m.outputLimits}, nil
 }
 
 type trackedModel struct {
+	outputLimits   harness.ModelOutputLimits
 	contextWindow  int
 	inner          model.BaseModel[*schema.Message]
 	nativeEndpoint bool

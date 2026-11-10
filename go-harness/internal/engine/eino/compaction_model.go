@@ -79,10 +79,12 @@ func validateCompactionSummary(summary *schema.Message, attempts int) *harness.C
 // declared by the host; normal answers and role recipes remain unchanged.
 func (e *Engine) compactionTuning(selectedModel string) *roleModelTuning {
 	provider := e.config.Provider
+	api := e.config.API
 	if route, ok := e.config.ModelRoutes[selectedModel]; ok {
 		provider = route.Provider
+		api = route.API
 	}
-	tuning := &roleModelTuning{provider: strings.ToLower(provider)}
+	tuning := &roleModelTuning{api: api, provider: strings.ToLower(provider)}
 	switch e.config.ModelThinking[selectedModel].Parameter {
 	case "enable_thinking":
 		tuning.extraFields = map[string]any{"enable_thinking": false}

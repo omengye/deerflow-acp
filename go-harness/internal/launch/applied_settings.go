@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -69,6 +68,9 @@ func appliedSettings(document map[string]any, cfg *deerflow.Config, maxConnectio
 		out.Fields[path] = setting
 	}
 	on := func(value *bool) bool { return value == nil || *value }
+	add("/network/proxy/enabled", cfg.Network.Proxy.Enabled, "", "network.proxy.enabled")
+	add("/network/proxy/no_proxy", cfg.Network.Proxy.NoProxy, "", "network.proxy.no_proxy")
+	add("/network/proxy/url_configured", cfg.Network.Proxy.URL != "", "", "network.proxy.url")
 	add("/runtime/model_name", cfg.Model, "model", "local_acp.model_name", "api.model_name", "default_model", "models")
 	add("/runtime/provider", cfg.Provider, "provider", "models")
 	add("/runtime/max_active_connections", maxConnections, "max-connections", "local_acp.max_active_connections")
@@ -114,80 +116,6 @@ func appliedSettings(document map[string]any, cfg *deerflow.Config, maxConnectio
 	add("/skills/source_count", len(cfg.Skills.Sources), "skills-config", "skills.managed_sources", "skills.path")
 	add("/skills/managed_source_count", len(cfg.Skills.ManagedSources), "skills-config", "skills.managed_sources")
 	add("/skills/model_submission_enabled", len(cfg.SkillProposalSources) > 0, "", "skill_evolution.enabled")
-	add("/skill_evolution/generation/enabled", cfg.SkillGeneration != nil, "", "skill_evolution.generation.enabled")
-	add("/skill_evolution/discovery/enabled", cfg.SkillDiscovery != nil, "", "skill_evolution.discovery")
-	add("/skill_evolution/behavior/enabled", cfg.SkillBehavior != nil, "", "skill_evolution.behavior.enabled")
-	add("/skill_evolution/learning/enabled", cfg.SkillLearning != nil, "", "skill_evolution.learning.enabled")
-	add("/skill_evolution/learning/consolidation_enabled", cfg.SkillLearning != nil && cfg.SkillLearning.Consolidation != nil, "", "skill_evolution.learning.consolidation_enabled")
-	add("/skill_evolution/learning/matching_enabled", cfg.SkillLearning != nil && cfg.SkillLearning.Matching != nil, "", "skill_evolution.learning.matching_enabled")
-	add("/skill_evolution/learning/cross_session_enabled", cfg.SkillLearning != nil && cfg.SkillLearning.CrossSession, "", "skill_evolution.learning.cross_session_enabled")
-	mode := "review"
-	if cfg.SkillAutoPatch != nil {
-		mode = "auto_patch"
-	}
-	add("/skill_evolution/mode", mode, "", "skill_evolution.mode")
-	// Read worker options already accepted by launch. ReviewSettings is used
-	// only for numeric model limits hidden behind the validator interfaces.
-	evolutionValue := func(key string, value any) {
-		add("/skill_evolution/"+key, value, "", "skill_evolution."+strings.ReplaceAll(key, "/", "."))
-	}
-	if review.Enabled {
-		evolutionValue("validation/timeout_seconds", review.Validation.TimeoutSeconds)
-		evolutionValue("validation/max_input_bytes", review.Validation.MaxInputBytes)
-		evolutionValue("validation/max_output_tokens", review.Validation.MaxOutputTokens)
-	}
-	if generation := cfg.SkillGeneration; generation != nil {
-		evolutionValue("generation/timeout_seconds", appliedDefault(review.Generation.TimeoutSeconds, 60))
-		evolutionValue("generation/max_input_bytes", appliedDefault(generation.Model.MaxInputBytes, 131072))
-		evolutionValue("generation/max_output_tokens", appliedDefault(generation.Model.MaxOutputTokens, 8192))
-		evolutionValue("budget/max_daily_model_calls", generation.Budget.MaxDailyModelCalls)
-		evolutionValue("budget/max_daily_tokens", generation.Budget.MaxDailyTokens)
-		evolutionValue("budget/max_job_seconds", generation.Budget.MaxJobSeconds)
-		evolutionValue("budget/workers", generation.Budget.Workers)
-	}
-	if learning := cfg.SkillLearning; learning != nil {
-		evolutionValue("learning/idle_seconds", int64(learning.Idle/time.Second))
-		evolutionValue("learning/timeout_seconds", int64(learning.Model.Timeout/time.Second))
-		evolutionValue("learning/max_input_bytes", learning.Model.MaxInputBytes)
-		evolutionValue("learning/max_output_tokens", learning.Model.MaxOutputTokens)
-		evolutionValue("learning/max_daily_model_calls", learning.MaxDailyModelCalls)
-		evolutionValue("learning/max_daily_tokens", learning.MaxDailyTokens)
-		evolutionValue("learning/external_context_policy", "hints_only")
-		if cfg.SkillGeneration == nil {
-			evolutionValue("budget/max_daily_model_calls", learning.Budget.MaxDailyModelCalls)
-			evolutionValue("budget/max_daily_tokens", learning.Budget.MaxDailyTokens)
-			evolutionValue("budget/max_job_seconds", learning.Budget.MaxJobSeconds)
-			evolutionValue("budget/workers", learning.Budget.Workers)
-		}
-	}
-	if discovery := cfg.SkillDiscovery; discovery != nil {
-		evolutionValue("discovery/operator_corrections_enabled", !discovery.DisableOperatorCorrections)
-		evolutionValue("discovery/missing_reports_enabled", discovery.MissingReportsEnabled)
-		evolutionValue("discovery/successful_workflows_enabled", discovery.SuccessfulWorkflowsEnabled)
-		evolutionValue("discovery/experience_patterns_enabled", discovery.ExperiencePatternsEnabled)
-		evolutionValue("discovery/experience_new_skills_enabled", discovery.ExperienceNewSkillsEnabled)
-		evolutionValue("discovery/experience_review_drafts_enabled", discovery.ExperienceReviewDraftsEnabled)
-		evolutionValue("discovery/new_skill_source_id", discovery.NewSkillSourceID)
-		evolutionValue("discovery/repeat_threshold", discovery.RepeatThreshold)
-		evolutionValue("discovery/repeat_window_days", discovery.RepeatWindowDays)
-		evolutionValue("discovery/cooldown_hours", discovery.CooldownHours)
-		evolutionValue("discovery/max_daily_proposals", discovery.MaxDailyProposals)
-		evolutionValue("discovery/max_pending_proposals", discovery.MaxPendingProposals)
-	}
-	if cfg.SkillBehavior != nil {
-		evolutionValue("behavior/timeout_seconds", review.Behavior.TimeoutSeconds)
-		evolutionValue("behavior/max_steps", review.Behavior.MaxSteps)
-		evolutionValue("behavior/max_input_bytes", review.Behavior.MaxInputBytes)
-		evolutionValue("behavior/max_output_tokens", review.Behavior.MaxOutputTokens)
-	}
-	if patch := cfg.SkillAutoPatch; patch != nil {
-		evolutionValue("auto_patch/experience_patterns_enabled", patch.ExperiencePatternsEnabled)
-		evolutionValue("auto_patch/max_changed_lines", patch.MaxChangedLines)
-		evolutionValue("auto_patch/max_daily_publications", patch.MaxDailyPublications)
-		evolutionValue("auto_patch/observation_hours", patch.ObservationHours)
-		evolutionValue("auto_patch/min_observations", patch.MinObservations)
-		evolutionValue("auto_patch/rollback_failure_threshold", patch.RollbackFailureThreshold)
-	}
 	add("/mcp/allowed_command_count", len(cfg.MCP.AllowedCommands), "mcp-allow-command")
 	add("/mcp/allow_http", cfg.MCP.AllowHTTP, "mcp-allow-http")
 	add("/mcp/allow_sse", cfg.MCP.AllowSSE, "mcp-allow-sse")

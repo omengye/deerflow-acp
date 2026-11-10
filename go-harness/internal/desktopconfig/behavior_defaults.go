@@ -16,10 +16,6 @@ const defaultBehaviorSuitePath = "./skill-behavior/searxng-web-search.json"
 var defaultBehaviorSuite []byte
 
 func (s service) initializeDefaultBehaviorSuite(data map[string]any) error {
-	behavior := readObject(readObject(data, "skill_evolution"), "behavior")
-	if !boolValue(behavior, "enabled", false) || str(behavior, "suite_path", "") != defaultBehaviorSuitePath {
-		return nil
-	}
 	configDir := filepath.Dir(s.config)
 	if filepath.Clean(configDir) != filepath.Join(s.userData, "config") {
 		return nil // External configuration directories remain operator-owned.

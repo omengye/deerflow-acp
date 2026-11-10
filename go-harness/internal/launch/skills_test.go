@@ -31,8 +31,8 @@ func TestSkillsConfigurationManagedSourcesAndReviewGrants(t *testing.T) {
 	}
 	// Disabling evolution revokes generation, not published managed skills.
 	yamlPath = writeRoleConfig(t, roleModels+"skill_evolution:\n  enabled: false\n")
-	if _, err = ApplyConfig(yamlPath, &cfg, &connections, map[string]bool{"skills-config": true}); err != nil || len(cfg.SkillProposalSources) != 0 || len(cfg.Skills.ManagedSources) != 1 {
-		t.Fatalf("evolution disable removed managed source: %+v %v", cfg.Skills, err)
+	if _, err = ApplyConfig(yamlPath, &cfg, &connections, map[string]bool{"skills-config": true}); err != nil || len(cfg.SkillProposalSources) != 1 || cfg.SkillProposalSources[0] != "generated" || len(cfg.Skills.ManagedSources) != 1 {
+		t.Fatalf("migration removed managed source: %+v %v", cfg.Skills, err)
 	}
 }
 

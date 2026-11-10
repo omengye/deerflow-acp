@@ -46,7 +46,7 @@ func (s *Store) ConfigureRootEvidence(reader RootEvidenceReader) error {
 }
 
 func extractionID(snap extractionSnapshot, model string) string {
-	identity := []any{PolicyVersion, snap.Session, snap.Episode, snap.Epoch, snap.Sources, snap.View, model, snap.MaxDailyModelCalls, snap.MaxDailyTokens}
+	identity := []any{PolicyVersion, snap.Session, snap.Episode, snap.Epoch, snap.Sources, snap.View, model}
 	if snap.RootPolicy != "" || len(snap.Roots) != 0 {
 		identity = append(identity, snap.RootPolicy, snap.Roots)
 	}

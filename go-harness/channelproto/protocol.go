@@ -29,6 +29,9 @@ type Descriptor struct {
 	Messages             []string `json:"messages"`
 	Fields               []Field  `json:"fields"`
 	RequiresReplyContext bool     `json:"requires_reply_context,omitempty"`
+	// IndependentPoll permits polling in a second process using explicit auth
+	// and the host's committed cursor, without process-local login state.
+	IndependentPoll bool `json:"independent_poll,omitempty"`
 }
 type Auth struct {
 	Account string          `json:"account"`
@@ -48,6 +51,7 @@ type Message struct {
 	Sender       string `json:"sender"`
 	Context      string `json:"context"`
 	Text         string `json:"text"`
+	QuotedText   string `json:"quoted_text,omitempty"`
 	Unsupported  bool   `json:"unsupported,omitempty"`
 	Group        bool   `json:"group,omitempty"`
 }

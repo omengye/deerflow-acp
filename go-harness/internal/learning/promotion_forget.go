@@ -57,7 +57,7 @@ func forgetPromotionsTx(ctx context.Context, tx *sql.Tx, pattern string) error {
 			continue
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET state='cancelled',state_version=state_version+1,token='',lease_ns=0,retry_ns=0,error_code='cancelled'
- WHERE state IN ('queued','retry','running') AND (id=? OR id IN (SELECT job_id FROM df_skill_behavior_evaluations WHERE proposal_id=?))`, item.job.String, item.proposal.String); err != nil {
+ WHERE state IN ('queued','retry','running','waiting') AND (id=? OR id IN (SELECT job_id FROM df_skill_behavior_evaluations WHERE proposal_id=?))`, item.job.String, item.proposal.String); err != nil {
 			return err
 		}
 		for _, query := range []string{
@@ -65,16 +65,25 @@ func forgetPromotionsTx(ctx context.Context, tx *sql.Tx, pattern string) error {
 			`DELETE FROM df_skill_behavior_evaluations WHERE proposal_id=?`,
 			`DELETE FROM df_skill_auto_patch_evidence WHERE proposal_id=?`,
 			`DELETE FROM df_skill_auto_patch_observations WHERE proposal_id=?`,
+			`DELETE FROM df_skill_auto_patch_decisions WHERE proposal_id=?`,
+			`DELETE FROM df_skill_approvals WHERE proposal_id=?`,
+			`DELETE FROM df_skill_discovery_successors WHERE previous_proposal_id=?`,
 			`DELETE FROM df_skill_proposals WHERE id=?`,
 		} {
 			if _, err = tx.ExecContext(ctx, query, item.proposal.String); err != nil {
 				return err
 			}
 		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM df_skill_generation_outputs WHERE job_id=?`, item.job.String); err != nil {
+			return err
+		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM df_skill_generation_inputs WHERE job_id=?`, item.job.String); err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM df_skill_discovery_consumed WHERE discovery_id IN (SELECT id FROM df_skill_discoveries WHERE job_id=?)`, item.job.String); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM df_skill_discovery_successors WHERE discovery_id IN (SELECT id FROM df_skill_discoveries WHERE job_id=?)`, item.job.String); err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM df_skill_discoveries WHERE job_id=?`, item.job.String); err != nil {
@@ -111,6 +120,7 @@ func collectPromotionVersionTx(ctx context.Context, tx *sql.Tx, v promotionGarba
  (json_extract(CAST(payload AS TEXT),'$.candidate_version')=? OR json_extract(CAST(payload AS TEXT),'$.base.version')=?))`,
 		`SELECT EXISTS(SELECT 1 FROM df_skill_exports WHERE source_key=? AND name=? AND json_extract(head,'$.version')=?)`,
 		`SELECT EXISTS(SELECT 1 FROM df_skill_management_requests WHERE source_key=? AND name=? AND json_extract(applied_head,'$.version')=?)`,
+		`SELECT EXISTS(SELECT 1 FROM df_skill_version_references WHERE source_key=? AND name=? AND version=?)`,
 	}
 	for i, query := range queries {
 		args := []any{v.source, v.name, v.version}

@@ -95,7 +95,7 @@ func resultKey(caseID, variant string, repetition int) string {
 
 func behaviorErrorCode(code string) bool {
 	switch code {
-	case "", "invalid_input", "workspace_error", "model_error", "timeout", "cancelled", "budget_exhausted", "unknown_tool", "duplicate_tool_call", "invalid_tool_arguments", "tool_limit", "model_limit", "fixture_mismatch", "tool_error", "invalid_model_response", "output_limit", "assertion_failed":
+	case "", "invalid_input", "workspace_error", "model_error", "timeout", "cancelled", "deferred_capacity", "unknown_tool", "duplicate_tool_call", "invalid_tool_arguments", "tool_limit", "model_limit", "fixture_mismatch", "tool_error", "invalid_model_response", "output_limit", "assertion_failed":
 		return true
 	default:
 		return false
@@ -121,6 +121,11 @@ func validateBehaviorResult(r harness.SkillBehaviorResult, in harness.SkillBehav
 	}
 	if len(want) != 0 {
 		return invalid("behavior result checks are incomplete")
+	}
+	for _, execution := range r.Scripts {
+		if !validScriptExecution(execution) {
+			return invalid("invalid isolated execution evidence")
+		}
 	}
 	if err := validateTriggerResult(r, in); err != nil {
 		return err
@@ -156,7 +161,7 @@ func readBehaviorResults(ctx context.Context, tx *sql.Tx, r behaviorRecord) ([]h
 	for _, in := range behaviorInputs(r) {
 		expected[resultKey(in.CaseID, in.Variant, in.Repetition)] = in
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT case_id,variant,repetition,payload,payload_sha FROM df_skill_behavior_results WHERE evaluation_id=? ORDER BY case_id,repetition,variant LIMIT 97`, r.input.ID)
+	rows, err := tx.QueryContext(ctx, `SELECT case_id,variant,repetition,payload,payload_sha FROM df_skill_behavior_results WHERE evaluation_id=? ORDER BY case_id,repetition,variant`, r.input.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +176,7 @@ func readBehaviorResults(ctx context.Context, tx *sql.Tx, r behaviorRecord) ([]h
 		}
 		in, ok := expected[resultKey(caseID, variant, rep)]
 		var value harness.SkillBehaviorResult
-		if !ok || len(result) >= 96 || len(data) > 16<<10 || hash(data) != digest || json.Unmarshal(data, &value) != nil {
+		if !ok || len(data) > 16<<10 || hash(data) != digest || json.Unmarshal(data, &value) != nil {
 			return nil, invalid("stored behavior result is inconsistent")
 		}
 		if err = validateBehaviorResult(value, in); err != nil {
@@ -216,6 +221,9 @@ func composeBehaviorReport(r behaviorRecord, results []harness.SkillBehaviorResu
 		report.RuleVersion = behaviorTriggerRuleVersion
 	}
 	for _, c := range r.input.Suite.Cases {
+		if c.Holdout {
+			report.HoldoutCases++
+		}
 		switch c.Kind {
 		case "targeted":
 			report.TargetedCases++
@@ -229,11 +237,21 @@ func composeBehaviorReport(r behaviorRecord, results []harness.SkillBehaviorResu
 		for rep := 1; rep <= c.Repetitions; rep++ {
 			base, candidate := byKey[resultKey(c.ID, "base", rep)], byKey[resultKey(c.ID, "candidate", rep)]
 			report.Results = append(report.Results, harness.SkillBehaviorComparison{CaseID: c.ID, Kind: c.Kind, Repetition: rep, BasePassed: base.Passed, CandidatePassed: candidate.Passed, BaseOutputDigest: base.OutputDigest, CandidateOutputDigest: candidate.OutputDigest, BaseErrorCode: base.ErrorCode, CandidateErrorCode: candidate.ErrorCode, BaseSelection: base.Selection, CandidateSelection: candidate.Selection})
+			report.TotalComparisons++
+			if !candidate.Passed {
+				report.CandidateFailures++
+			}
+			if operationalMeasurement(base.ErrorCode) || operationalMeasurement(candidate.ErrorCode) {
+				report.MeasurementErrors++
+			}
 			if base.Passed && !candidate.Passed {
 				report.Regressions++
 			}
 			if !base.Passed && candidate.Passed {
 				report.Improvements++
+				if c.Kind == "targeted" {
+					report.TargetedImprovements++
+				}
 			}
 			if (c.Kind == "targeted" || skillbehavior.TriggerCase(c)) && !candidate.Passed {
 				report.State = "failed"
@@ -248,8 +266,11 @@ func composeBehaviorReport(r behaviorRecord, results []harness.SkillBehaviorResu
 			}
 		}
 	}
-	if report.TargetedCases == 0 || report.Regressions > 0 {
+	if report.TargetedCases == 0 || report.Regressions > 0 || report.CandidateFailures > 0 || report.MeasurementErrors > 0 {
 		report.State = "failed"
+	}
+	if len(report.Results) > 32 {
+		report.Results = report.Results[:32]
 	}
 	data, err := json.Marshal(report)
 	if err != nil || len(data) > 48<<10 {
@@ -260,11 +281,32 @@ func composeBehaviorReport(r behaviorRecord, results []harness.SkillBehaviorResu
 
 func (s *Service) runBehavior(ctx context.Context, input ValidationInput, report Report) (Report, error) {
 	var record behaviorRecord
-	var results []harness.SkillBehaviorResult
+	var pending []harness.SkillBehaviorInput
+	pageFull := errors.New("case page full")
 	err := s.withBehaviorWork(ctx, input, func(tx *sql.Tx, r behaviorRecord) error {
 		record = r
-		var err error
-		results, err = readBehaviorResults(ctx, tx, r)
+		err := walkBehaviorCases(ctx, tx, r.input, func(c harness.SkillBehaviorCase) error {
+			part := r
+			suite := *r.input.Suite
+			suite.Cases = []harness.SkillBehaviorCase{c}
+			part.input.Suite = &suite
+			for _, in := range behaviorInputs(part) {
+				var exists bool
+				if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_behavior_results WHERE evaluation_id=? AND case_id=? AND variant=? AND repetition=?)`, r.input.ID, in.CaseID, in.Variant, in.Repetition).Scan(&exists); err != nil {
+					return err
+				}
+				if !exists {
+					pending = append(pending, in)
+					if len(pending) > 8 {
+						return pageFull
+					}
+				}
+			}
+			return nil
+		})
+		if errors.Is(err, pageFull) {
+			return nil
+		}
 		return err
 	})
 	if err != nil {
@@ -272,23 +314,23 @@ func (s *Service) runBehavior(ctx context.Context, input ValidationInput, report
 		return report, err
 	}
 	if record.input.Suite == nil {
-		note := "Behavior not run: no trusted host suite matches this skill; manual review is required."
-		if len(report.Evidence) < 64 {
-			report.Evidence = append(report.Evidence, note)
-		}
-		return report, nil
+		return report, skillmaintenance.ErrBlockedEvidence
 	}
+	if containsScripts(input.CandidateFiles) && !skillbehavior.RuntimeReady(ctx) {
+		if err := s.generation.store.ObserveDependency(ctx, "blocked_runtime", "unavailable"); err != nil {
+			return report, err
+		}
+		return report, skillmaintenance.ErrBlockedRuntime
+	}
+
 	if _, ok := skillmaintenance.BrokerFromContext(ctx); !ok {
 		report.Behavior = "unavailable"
 		return report, harness.ErrPermissionDenied
 	}
-	completed := map[string]bool{}
-	for _, r := range results {
-		completed[resultKey(r.CaseID, r.Variant, r.Repetition)] = true
-	}
-	for _, in := range behaviorInputs(record) {
-		if completed[resultKey(in.CaseID, in.Variant, in.Repetition)] {
-			continue
+	advanced := 0
+	for _, in := range pending {
+		if advanced >= 8 {
+			return report, skillmaintenance.ErrYieldProgress
 		}
 		if err = s.withBehaviorWork(ctx, input, func(_ *sql.Tx, _ behaviorRecord) error { return nil }); err != nil {
 			break
@@ -321,13 +363,26 @@ func (s *Service) runBehavior(ctx context.Context, input ValidationInput, report
 			break
 		}
 		data, _ := json.Marshal(result)
+		retryMeasurement := false
 		err = s.withBehaviorWork(ctx, input, func(tx *sql.Tx, r behaviorRecord) error {
+			var e error
+			retryMeasurement, e = recordMeasurementAttemptTx(ctx, tx, r.input.ID, resultKey(in.CaseID, in.Variant, in.Repetition), result)
+			if e != nil || retryMeasurement {
+				return e
+			}
 			_, err := tx.ExecContext(ctx, `INSERT INTO df_skill_behavior_results(evaluation_id,case_id,variant,repetition,payload,payload_sha) VALUES(?,?,?,?,?,?)`, r.input.ID, in.CaseID, in.Variant, in.Repetition, data, hash(data))
-			return err
+			if err != nil {
+				return err
+			}
+			return skillmaintenance.MarkProgressTx(ctx, tx, r.jobID, "behavior/"+resultKey(in.CaseID, in.Variant, in.Repetition))
 		})
 		if err != nil {
 			break
 		}
+		if retryMeasurement {
+			return report, harness.ErrSkillValidation
+		}
+		advanced++
 	}
 	if err != nil {
 		report.Behavior = "unavailable"
@@ -335,11 +390,8 @@ func (s *Service) runBehavior(ctx context.Context, input ValidationInput, report
 	}
 	var native harness.SkillBehaviorReport
 	err = s.withBehaviorWork(ctx, input, func(tx *sql.Tx, r behaviorRecord) error {
-		values, err := readBehaviorResults(ctx, tx, r)
-		if err != nil {
-			return err
-		}
-		native, err = composeBehaviorReport(r, values)
+		var err error
+		native, err = storedBehaviorReport(ctx, tx, r)
 		if err != nil {
 			return err
 		}
@@ -355,6 +407,14 @@ func (s *Service) runBehavior(ctx context.Context, input ValidationInput, report
 	})
 	if err != nil {
 		report.Behavior = "unavailable"
+		return report, err
+	}
+	err = s.withBehaviorWork(ctx, input, func(tx *sql.Tx, r behaviorRecord) error {
+		var err error
+		report.IsolatedScripts, err = storedScriptsCovered(ctx, tx, r, input.CandidateFiles)
+		return err
+	})
+	if err != nil {
 		return report, err
 	}
 	report.Behavior = native.State
@@ -382,8 +442,18 @@ func (s *Service) guardBehaviorReport(ctx context.Context, tx *sql.Tx, p Proposa
 	if err != nil {
 		return err
 	}
-	if r.input.Target != p.Target || r.input.Base != p.Base || r.input.CandidateVersion != p.CandidateVersion || !skills.SameOverlayBase(r.input.OverlayBase, p.OverlayBase) || report.ValidatorVersion != r.input.ValidatorIdentity || report.IsolatedScripts {
+	if r.input.Target != p.Target || r.input.Base != p.Base || r.input.CandidateVersion != p.CandidateVersion || !skills.SameOverlayBase(r.input.OverlayBase, p.OverlayBase) || report.ValidatorVersion != r.input.ValidatorIdentity {
 		return ErrValidation
+	}
+	if p.Origin == "automatic" {
+		if s.behavior == nil || s.behavior.identity != r.input.EvaluatorIdentity {
+			return errGenerationConfiguration
+		}
+		if r.input.Derived {
+			if err := s.validateDerivedSuiteTx(ctx, tx, p, r.input); err != nil {
+				return err
+			}
+		}
 	}
 	if report.BehaviorReport == nil {
 		if report.BehaviorDigest != "" || report.Behavior == "passed" {
@@ -403,18 +473,22 @@ func (s *Service) guardBehaviorReport(ctx context.Context, tx *sql.Tx, p Proposa
 	if r.report == nil || r.content == nil || report.BehaviorDigest != encodedHash(*report.BehaviorReport) || report.Behavior != report.BehaviorReport.State {
 		return ErrValidation
 	}
-	values, err := readBehaviorResults(ctx, tx, r)
-	if err != nil {
-		return err
-	}
-	native, err := composeBehaviorReport(r, values)
+	native, err := storedBehaviorReport(ctx, tx, r)
 	if err != nil {
 		return err
 	}
 	if encodedHash(native) != report.BehaviorDigest || encodedHash(*r.report) != report.BehaviorDigest {
 		return ErrValidation
 	}
+	covered, err := storedScriptsCovered(ctx, tx, r, inputFilesForReport(ctx, tx, p))
+	if err != nil {
+		return err
+	}
+	if report.IsolatedScripts != covered {
+		return ErrValidation
+	}
 	content := report
+	content.IsolatedScripts = false
 	content.Behavior = "not_run"
 	content.BehaviorReport = nil
 	content.BehaviorDigest = ""

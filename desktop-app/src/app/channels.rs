@@ -818,6 +818,11 @@ impl Waku {
                 item["permissions"].as_str().unwrap_or("跟随全局")
             ));
             let policy_busy = busy || item["bound"] != true || self.channel_has_draft(cx);
+            if item["bound"] != true {
+                card = card.child("请先完成渠道登录和账号绑定，再设置 Full Access 等工具权限。");
+            } else if self.channel_has_draft(cx) {
+                card = card.child("请先保存或还原未保存的修改，再设置工具权限。");
+            }
             for (mode, label) in [
                 ("global", "跟随全局 / 撤销 Full Access"),
                 ("read_only", "只读"),

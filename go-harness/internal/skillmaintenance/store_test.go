@@ -38,7 +38,7 @@ func newFixture(t *testing.T, p Policy) *fixture {
 	return f
 }
 func policy() Policy {
-	return Policy{MaxDailyModelCalls: 10, MaxDailyTokens: 10000, MaxJobSeconds: 300, Workers: 2}
+	return Policy{MaxJobSeconds: 300, Workers: 2}
 }
 func request(key string) Request {
 	return Request{SourceIdentity: strings.Repeat("a", 64), Name: "research", Key: key, Reference: "input/" + key, InputDigest: strings.Repeat("b", 64)}
@@ -73,15 +73,15 @@ func reserve(t *testing.T, s *Store, c Claim, stage string) Receipt {
 func usage(t *testing.T, s *Store, calls, tokens int64) {
 	t.Helper()
 	u, e := s.DayUsage(context.Background(), "2026-10-02")
-	if e != nil || u.ModelCalls != calls || u.ChargedTokens != tokens {
+	if e != nil || u.ModelCalls != calls || u.ActualTokens != tokens {
 		t.Fatalf("usage %+v %v; want %d/%d", u, e, calls, tokens)
 	}
 }
 
-func TestDurableMaintenanceSharedQuotaAndRestart(t *testing.T) {
+func TestDurableMaintenanceUsageAndRestart(t *testing.T) {
 	ctx := context.Background()
 	p := policy()
-	p.MaxDailyModelCalls = 2
+
 	f := newFixture(t, p)
 	j := enqueue(t, f.store, "one")
 	if dup, e := f.store.Enqueue(ctx, j.Request); e != nil || dup.ID != j.ID {
@@ -94,7 +94,7 @@ func TestDurableMaintenanceSharedQuotaAndRestart(t *testing.T) {
 	}
 	c := claim(t, f.store)
 	r := reserve(t, f.store, c, "generation")
-	usage(t, f.store, 1, 300)
+	usage(t, f.store, 1, 0)
 	if e := f.store.Broker(c).Settle(ctx, r, Usage{InputTokens: 20, OutputTokens: 10, Known: true}); e != nil {
 		t.Fatal(e)
 	}
@@ -108,14 +108,15 @@ func TestDurableMaintenanceSharedQuotaAndRestart(t *testing.T) {
 	if e := f.store.Broker(c).Settle(ctx, second, Usage{}); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := f.store.Broker(c).Reserve(ctx, call("quality")); !errors.Is(e, ErrBudget) {
+	third := reserve(t, f.store, c, "quality")
+	if e := f.store.Broker(c).Settle(ctx, third, Usage{}); e != nil {
 		t.Fatal(e)
 	}
-	usage(t, f.store, 2, 330)
+	usage(t, f.store, 3, 30)
 	if e := f.store.Finish(ctx, c, "model_failed", false); e != nil {
 		t.Fatal(e)
 	}
-	// Opening another connection/service cannot reset the global daily budget.
+	// Reopening retains usage records without using them as admission quotas.
 	db, e := sqlite.Open(f.path)
 	if e != nil {
 		t.Fatal(e)
@@ -132,15 +133,15 @@ func TestDurableMaintenanceSharedQuotaAndRestart(t *testing.T) {
 		t.Fatal(e)
 	}
 	c2 := claim(t, s)
-	if _, e = s.Broker(c2).Reserve(ctx, call("generation")); !errors.Is(e, ErrBudget) {
+	if _, e = s.Broker(c2).Reserve(ctx, call("generation")); e != nil {
 		t.Fatal(e)
 	}
 	receipts, e := s.Receipts(ctx, j.ID, 0, 1)
-	if e != nil || len(receipts) != 1 || receipts[0].ChargedTokens != 30 || receipts[0].Estimated {
+	if e != nil || len(receipts) != 1 || receipts[0].ActualTokens != 30 || receipts[0].Estimated {
 		t.Fatalf("receipts %+v %v", receipts, e)
 	}
 	page, e := s.Receipts(ctx, j.ID, receipts[0].Sequence, 100)
-	if e != nil || len(page) != 1 || !page[0].Estimated || page[0].ChargedTokens != 300 {
+	if e != nil || len(page) != 2 || !page[0].Estimated || page[0].ActualTokens != 0 || page[0].EstimatedTokens != 300 || page[0].UsageState != "unknown" {
 		t.Fatalf("page %+v %v", page, e)
 	}
 }
@@ -172,7 +173,7 @@ func TestMaintenanceUnknownCallsFencingAndDeadline(t *testing.T) {
 	if e := f.store.Broker(fresh).Settle(ctx, next, Usage{}); e != nil {
 		t.Fatal(e)
 	}
-	usage(t, f.store, 2, 600)
+	usage(t, f.store, 2, 0)
 	if e := f.store.Finish(ctx, fresh, "model_failed", true); e != nil {
 		t.Fatal(e)
 	}
@@ -233,7 +234,7 @@ func TestMaintenanceTransactionalFaultsAndCancellation(t *testing.T) {
 	if e = f.store.Broker(c).Settle(ctx, r, Usage{InputTokens: 1, OutputTokens: 1, Known: true}); e == nil {
 		t.Fatal("expected fault")
 	}
-	usage(t, f.store, 1, 300)
+	usage(t, f.store, 1, 0)
 	if _, e = f.store.Broker(c).Reserve(ctx, call("security")); !errors.Is(e, ErrConflict) {
 		t.Fatalf("unsettled allowed another call %v", e)
 	}
@@ -249,7 +250,7 @@ func TestMaintenanceTransactionalFaultsAndCancellation(t *testing.T) {
 	if e = f.store.Broker(c).Settle(ctx, r, Usage{Known: true}); !errors.Is(e, ErrConflict) {
 		t.Fatalf("cancel refunded %v", e)
 	}
-	usage(t, f.store, 1, 300)
+	usage(t, f.store, 1, 0)
 	if e = f.store.Heartbeat(ctx, c); !errors.Is(e, ErrConflict) {
 		t.Fatal(e)
 	}
@@ -261,7 +262,7 @@ func TestMaintenanceTransactionalFaultsAndCancellation(t *testing.T) {
 func TestMaintenanceDayBoundaryAndActualOverrun(t *testing.T) {
 	ctx := context.Background()
 	p := policy()
-	p.MaxDailyTokens = 300
+
 	f := newFixture(t, p)
 	f.now.Store(time.Date(2026, 10, 2, 23, 59, 58, 0, time.UTC).UnixNano())
 	enqueue(t, f.store, "midnight")
@@ -272,8 +273,7 @@ func TestMaintenanceDayBoundaryAndActualOverrun(t *testing.T) {
 		t.Fatal(e)
 	}
 	usage(t, f.store, 1, 350)
-	// A new UTC day gets its own allowance. The previous reservation's overrun
-	// is never silently clamped, and midnight does not change its billed day.
+	// UTC days only attribute usage. Actual consumption is never clamped.
 	r2 := reserve(t, f.store, c, "quality")
 	if r2.Day != "2026-10-03" {
 		t.Fatal(r2)
@@ -281,7 +281,8 @@ func TestMaintenanceDayBoundaryAndActualOverrun(t *testing.T) {
 	if e := f.store.Broker(c).Settle(ctx, r2, Usage{InputTokens: 400, OutputTokens: 100, Known: true}); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := f.store.Broker(c).Reserve(ctx, call("security")); !errors.Is(e, ErrBudget) {
+	r3 := reserve(t, f.store, c, "security")
+	if e := f.store.Broker(c).Settle(ctx, r3, Usage{}); e != nil {
 		t.Fatal(e)
 	}
 	f.now.Add(-int64(time.Hour))
@@ -294,7 +295,7 @@ func TestMaintenanceConcurrentAdmissionAndPolicyPinning(t *testing.T) {
 	ctx := context.Background()
 	p := policy()
 	p.Workers = 1
-	p.MaxDailyTokens = 300
+
 	f := newFixture(t, p)
 	enqueue(t, f.store, "a")
 	enqueue(t, f.store, "b")
@@ -323,7 +324,7 @@ func TestMaintenanceConcurrentAdmissionAndPolicyPinning(t *testing.T) {
 		wg.Go(func() {
 			if _, e := f.store.Broker(c).Reserve(ctx, call("generation")); e == nil {
 				successes.Add(1)
-			} else if !errors.Is(e, ErrConflict) && !errors.Is(e, ErrBudget) {
+			} else if !errors.Is(e, ErrConflict) && !errors.Is(e, ErrCapacity) {
 				t.Error(e)
 			}
 		})
@@ -332,7 +333,7 @@ func TestMaintenanceConcurrentAdmissionAndPolicyPinning(t *testing.T) {
 	if successes.Load() != 2 {
 		t.Fatalf("reservation concurrency %d", successes.Load())
 	}
-	usage(t, f.store, 1, 300)
+	usage(t, f.store, 1, 0)
 	if e := f.store.Finish(ctx, c, "model_failed", false); e != nil {
 		t.Fatal(e)
 	}
@@ -344,7 +345,7 @@ func TestMaintenanceConcurrentAdmissionAndPolicyPinning(t *testing.T) {
 	}
 	s.now = f.store.now
 	c2 := claim(t, s)
-	if _, e = s.Broker(c2).Reserve(ctx, call("generation")); !errors.Is(e, ErrBudget) {
+	if _, e = s.Broker(c2).Reserve(ctx, call("generation")); e != nil {
 		t.Fatal(e)
 	}
 }
@@ -389,7 +390,7 @@ func TestMaintenanceRunOneJoinsCancellation(t *testing.T) {
 		t.Fatalf("cancel %+v %v", state, e)
 	}
 	r, e := f.store.Receipts(ctx, j.ID, 0, 10)
-	if e != nil || len(r) != 1 || r[0].ChargedTokens != 300 {
+	if e != nil || len(r) != 1 || r[0].ActualTokens != 0 || r[0].EstimatedTokens != 300 {
 		t.Fatalf("lost shutdown charge %+v %v", r, e)
 	}
 }

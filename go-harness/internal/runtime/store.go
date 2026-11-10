@@ -19,9 +19,10 @@ type Store struct {
 	db *sql.DB
 	// Set during host construction before accepting work. Lifecycle writes use
 	// the same transaction as accepted input and terminal run state.
-	BudgetLedger *budget.Ledger
-	BudgetLimits harness.BudgetLimits
-	Learning     *learning.Store
+	BudgetLedger       *budget.Ledger
+	BudgetLimits       harness.BudgetLimits
+	Learning           *learning.Store
+	CaptureSkillOracle func(context.Context, *sql.Tx, string) error
 }
 
 func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
@@ -372,6 +373,11 @@ func (s *Store) Finish(ctx context.Context, id, reason string, runErr error, sco
 		return err
 	}
 	if status == "completed" {
+		if s.CaptureSkillOracle != nil {
+			if err = s.CaptureSkillOracle(ctx, tx, id); err != nil {
+				return err
+			}
+		}
 		if err = captureConversationTurnTx(ctx, tx, id); err != nil {
 			return err
 		}

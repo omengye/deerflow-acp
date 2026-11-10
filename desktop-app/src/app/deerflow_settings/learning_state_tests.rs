@@ -154,7 +154,7 @@ fn extraction_retry_receipt_must_match_original_job_and_version() {
 }
 
 fn status() -> Value {
-    json!({"version":"procedural-experience-v1", "enabled":true, "mode":"shadow", "idle_seconds":300,
+    json!({"version":"procedural-experience-v1", "enabled":true, "mode":"automatic", "idle_seconds":300,
         "pending_inputs":0, "experiences":1, "consolidation_enabled":true, "patterns":1,
         "matching_enabled":true, "cross_session_enabled":true, "matches":1, "proposal_discovery_enabled":false})
 }
@@ -228,10 +228,10 @@ fn learning_status_is_runtime_truth_not_an_automatic_publication_claim() {
             .status_summary
             .as_ref()
             .unwrap()
-            .contains("仅积累经验")
+            .contains("自动验证、采用、观察与撤回")
     );
     let mut candidate = status();
-    candidate["mode"] = json!("review_candidates");
+    candidate["mode"] = json!("automatic");
     candidate["proposal_discovery_enabled"] = json!(true);
     read(&mut browser, request.clone(), candidate);
     assert!(
@@ -239,7 +239,7 @@ fn learning_status_is_runtime_truth_not_an_automatic_publication_claim() {
             .status_summary
             .as_ref()
             .unwrap()
-            .contains("仍需人工发布")
+            .contains("自动验证、采用、观察与撤回")
     );
     for field in ["version", "mode", "idle_seconds", "cross_session_enabled"] {
         let mut bad = status();
@@ -685,21 +685,17 @@ fn learning_projection_bounds_utf8_titles_and_keeps_complete_details() {
 }
 
 #[test]
-fn learning_status_separates_auto_publication_grant_from_shadow_and_review() {
+fn learning_status_uses_one_automatic_policy_and_reports_worker_readiness() {
     let mut observed = status();
     observed["proposal_discovery_enabled"] = json!(true);
     observed["auto_patch_enabled"] = json!(true);
-    observed["mode"] = json!("guarded_auto_patch");
     let parsed: Status = serde_json::from_value(observed.clone()).unwrap();
     parsed.validate().unwrap();
-    assert!(parsed.summary().contains("受限自动补丁"));
-    assert!(parsed.summary().contains("描述修改另需正负触发评测"));
-    assert!(parsed.summary().contains("新技能/其他元数据"));
+    assert!(parsed.summary().contains("自动验证、采用、观察与撤回"));
     for (key, value) in [
-        ("mode", json!("review_candidates")),
+        ("mode", json!("shadow")),
         ("proposal_discovery_enabled", json!(false)),
         ("matching_enabled", json!(false)),
-        ("auto_patch_enabled", json!(false)),
     ] {
         let mut invalid = observed.clone();
         invalid[key] = value;
@@ -710,14 +706,10 @@ fn learning_status_separates_auto_publication_grant_from_shadow_and_review() {
                 .is_err()
         );
     }
-    observed["mode"] = json!("review_candidates");
-    observed
-        .as_object_mut()
-        .unwrap()
-        .remove("auto_patch_enabled");
-    let legacy: Status = serde_json::from_value(observed).unwrap();
-    legacy.validate().unwrap();
-    assert!(legacy.summary().contains("仍需人工发布"));
+    observed["auto_patch_enabled"] = json!(false);
+    let unavailable: Status = serde_json::from_value(observed).unwrap();
+    unavailable.validate().unwrap();
+    assert!(!unavailable.summary().contains("人工发布"));
 }
 
 fn pattern_review(state_version: u64, ignored: bool, adjudication: &str) -> Value {
@@ -895,7 +887,7 @@ fn learning_review_old_match_cannot_authorize_new_pattern_revision() {
 fn creation_retry_ready() -> LearningBrowser {
     let mut browser = review_ready();
     browser.status.as_mut().unwrap().proposal_discovery_enabled = true;
-    browser.status.as_mut().unwrap().mode = "review_candidates".into();
+    browser.status.as_mut().unwrap().mode = "automatic".into();
     browser
 }
 

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"sync"
+	"sync/atomic"
 
 	einoskill "github.com/cloudwego/eino/adk/middlewares/skill"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -25,6 +27,9 @@ type snapshotEntry struct {
 // It owns no directory handles and never consults mutable source files. Its
 // caller owns the database lifetime and persists Refs alongside checkpoints.
 type Snapshot struct {
+	lease    *snapshotLease
+	release  *sync.Once
+	closed   *atomic.Bool
 	db       *sql.DB
 	entries  map[string]snapshotEntry
 	names    []string
@@ -51,7 +56,12 @@ func (s *Snapshot) Subset(names []string) (*Snapshot, error) {
 			chosen[name] = entry
 		}
 	}
-	return newSnapshot(s.db, chosen).WithReadObserver(s.observe), nil
+	child := newSnapshot(s.db, chosen)
+	if !child.inheritLease(s) {
+		return nil, ErrClosed
+	}
+	child.observe = s.observe
+	return child, nil
 }
 
 func (r *Registry) Snapshot(ctx context.Context, selection harness.SkillSelection) (*Snapshot, error) {
@@ -71,7 +81,7 @@ func (r *Registry) Snapshot(ctx context.Context, selection harness.SkillSelectio
 	if err != nil {
 		return nil, err
 	}
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +108,20 @@ func (r *Registry) Snapshot(ctx context.Context, selection harness.SkillSelectio
 			}
 			if !selectedName(selection.Names, name) {
 				continue
+			}
+			routed, routeErr := RouteVersionTx(ctx, tx, s.identity, name, version, selection.Workspace, selection.RootID)
+			if routeErr != nil {
+				err = routeErr
+				break
+			}
+			if routed == "" {
+				continue
+			}
+			if routed != version {
+				version = routed
+				if err = tx.QueryRowContext(ctx, `SELECT metadata,manifest,total_bytes FROM df_skill_versions WHERE source_key=? AND name=? AND version=?`, s.identity, name, version).Scan(&meta, &manifest, &size); err != nil {
+					break
+				}
 			}
 			var fm metadata
 			var files []harness.SkillFileInfo
@@ -146,18 +170,18 @@ func (r *Registry) Snapshot(ctx context.Context, selection harness.SkillSelectio
 			delete(chosen, name)
 		}
 	}
-	if len(chosen) > r.limits.MaxSkills {
-		return nil, invalid("selected snapshot exceeds current skill count limit")
-	}
 	for _, name := range selection.Names {
 		if _, ok := chosen[name]; !ok {
 			return nil, fmt.Errorf("%w: selected skill is not enabled or visible", harness.ErrNotFound)
 		}
 	}
+	snapshot := newSnapshot(r.db, chosen)
+	if err = pinSnapshotTx(ctx, tx, snapshot); err != nil {
+		return nil, err
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-	snapshot := newSnapshot(r.db, chosen)
 	snapshot.warnings = warnings
 	return snapshot, nil
 }
@@ -171,9 +195,6 @@ func (r *Registry) Restore(ctx context.Context, selection harness.SkillSelection
 	if r.closed {
 		return nil, ErrClosed
 	}
-	if len(refs) > r.limits.MaxSkills {
-		return nil, invalid("snapshot reference count exceeds limit")
-	}
 	sources, err := r.selectedSources(selection)
 	if err != nil {
 		return nil, err
@@ -182,7 +203,7 @@ func (r *Registry) Restore(ctx context.Context, selection harness.SkillSelection
 	for _, s := range sources {
 		allowed[s.config.ID] = s
 	}
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -198,6 +219,9 @@ func (r *Registry) Restore(ctx context.Context, selection harness.SkillSelection
 		}
 		if _, ok := entries[ref.Name]; ok {
 			return nil, invalid("checkpoint contains duplicate skill names")
+		}
+		if err = checkScopedVersion(ctx, tx, ref, selection.Workspace); err != nil {
+			return nil, err
 		}
 		var meta, manifest string
 		var size int64
@@ -217,14 +241,18 @@ func (r *Registry) Restore(ctx context.Context, selection harness.SkillSelection
 		}
 		entries[ref.Name] = snapshotEntry{ref: ref, meta: fm, files: files, scope: s.config.Scope, enabled: true}
 	}
+	snapshot := newSnapshot(r.db, entries)
+	if err = pinSnapshotTx(ctx, tx, snapshot); err != nil {
+		return nil, err
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-	return newSnapshot(r.db, entries), nil
+	return snapshot, nil
 }
 
 func newSnapshot(db *sql.DB, entries map[string]snapshotEntry) *Snapshot {
-	s := &Snapshot{db: db, entries: entries}
+	s := &Snapshot{db: db, entries: entries, closed: &atomic.Bool{}}
 	for name := range entries {
 		s.names = append(s.names, name)
 	}
@@ -242,6 +270,9 @@ func (s *Snapshot) Refs() []harness.SkillRef {
 // List returns only validated name/description metadata. No SQL file body read
 // occurs, even when Eino refreshes this list before every model turn.
 func (s *Snapshot) List(ctx context.Context) ([]einoskill.FrontMatter, error) {
+	if s.closed != nil && s.closed.Load() {
+		return nil, ErrClosed
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -283,6 +314,13 @@ func (s *Snapshot) Files(ctx context.Context, name string) ([]harness.SkillFileI
 }
 
 func (s *Snapshot) ReadFile(ctx context.Context, name, relativePath string) ([]byte, error) {
+	if s.lease != nil {
+		s.lease.mu.Lock()
+		defer s.lease.mu.Unlock()
+	}
+	if s.closed != nil && s.closed.Load() {
+		return nil, ErrClosed
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -327,5 +365,5 @@ func (s *Snapshot) BuildContent(ctx context.Context, loaded einoskill.Skill, _ s
 		return "", harness.ErrNotFound
 	}
 	ref := s.entries[loaded.Name].ref
-	return fmt.Sprintf("Installed skill: name=%s source=%s version=%s. This is an immutable, read-only virtual snapshot. skill:// locations are not workspace or shell paths. Read referenced support files (or full SKILL.md including frontmatter) with read_skill_file. To modify the installation, use skill_inspect then skill_edit prepare/apply when available, never a same-named workspace copy. skill_manage only proposes evolution candidates; it does not write source files. Do not claim a change from a prepared draft, rejection, or workspace test. An ordinary next turn selects the new version; this execution and interrupted resumes stay pinned. Instructions do not grant tool permissions, change the model, or authorize subagents.\n\n", ref.Name, ref.SourceID, ref.Version) + loaded.Content, nil
+	return fmt.Sprintf("Installed skill: name=%s source=%s version=%s. This is an immutable, read-only virtual snapshot. skill:// locations are not workspace or shell paths. Read referenced support files (or full SKILL.md including frontmatter) with read_skill_file. For learned improvements, use skill_manage to submit a candidate for automatic validation, adoption and observation. An explicit publication confirmation in the current native user message permits skill_manage publish for the exact candidate, bypassing automatic evidence gates while preserving source authority and base conflicts. Candidate submission is not adoption; use host lifecycle results. Direct source-directory editing uses skill_inspect then skill_edit prepare/apply when available and has its separate confirmation policy. Never edit a same-named workspace copy or treat it as an installed change. Do not claim a change from a prepared draft, rejection, or workspace test. An ordinary next turn selects the new version; this execution and interrupted resumes stay pinned. Instructions do not grant tool permissions, change the model, or authorize subagents.\n\n", ref.Name, ref.SourceID, ref.Version) + loaded.Content, nil
 }

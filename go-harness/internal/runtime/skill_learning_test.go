@@ -16,7 +16,7 @@ import (
 )
 
 func learningTestOptions() *harness.SkillLearningOptions {
-	return &harness.SkillLearningOptions{Idle: time.Second, Budget: harness.SkillMaintenanceBudget{MaxDailyModelCalls: 10, MaxDailyTokens: 200000, MaxJobSeconds: 60, Workers: 1}, MaxDailyModelCalls: 3, MaxDailyTokens: 100000}
+	return &harness.SkillLearningOptions{Idle: time.Second, Policy: harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}}
 }
 
 type learningTestExtractor struct {
@@ -90,11 +90,69 @@ func newLearningTest(t *testing.T, enabled bool) (*Service, harness.Session, *le
 }
 
 func learningTestRun(t *testing.T, s *Service, x harness.Session, text string) harness.RunRequest {
+	return learningTestRunWithRoot(t, s, x, text, "")
+}
+
+// Model an explicitly host-linked continuation. Ordinary BeginRun inputs use
+// learningTestRun and remain independent, even in the same chat. This fixture
+// exercises CaptureInputTx's existing-root contract using real member/attempt
+// bindings; it never infers task identity from the text of a user message.
+func learningTestRelatedRun(t *testing.T, s *Service, x harness.Session, text string) harness.RunRequest {
+	t.Helper()
+	var root string
+	err := s.Store.db.QueryRow(`SELECT root_id FROM harness_learning_inputs WHERE session_id=?
+ AND NOT EXISTS(SELECT 1 FROM df_learning_episodes e JOIN df_learning_episode_lineage l ON l.episode_id=e.id
+ WHERE e.session_id=? AND l.origin IN ('explicit_task','linked_task') AND NOT EXISTS(SELECT 1 FROM harness_learning_inputs i WHERE i.episode_id=e.id))
+ ORDER BY accepted_sequence DESC LIMIT 1`, x.ID, x.ID).Scan(&root)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal(err)
+	}
+	return learningTestRunWithRoot(t, s, x, text, root)
+}
+
+func learningTestRunWithRoot(t *testing.T, s *Service, x harness.Session, text, root string) harness.RunRequest {
 	t.Helper()
 	run := NewID()
 	req := harness.RunRequest{Session: x, RunID: run, RootBudgetID: run, InputID: NewID(), Input: []harness.Content{{Type: "text", Text: text}}}
-	if err := s.Store.BeginRun(context.Background(), req); err != nil {
-		t.Fatal(err)
+	if root == "" {
+		if err := s.Store.BeginRun(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		req.RootBudgetID = root
+		ctx := context.Background()
+		tx, err := s.Store.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if err = s.Store.BudgetLedger.BindMemberTx(ctx, tx, budget.MemberBinding{RootBudgetID: root, MemberID: run, SessionID: x.ID, OriginRunID: root, ParentMemberID: root, Kind: "run"}); err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Store.BudgetLedger.BeginAttemptTx(ctx, tx, foregroundBudgetScope(req)); err != nil {
+			t.Fatal(err)
+		}
+		now := timestamp()
+		if _, err = tx.ExecContext(ctx, `INSERT INTO harness_runs(id,session_id,input_id,status,created_at,updated_at) VALUES(?,?,?,'running',?,?)`, run, x.ID, req.InputID, now, now); err != nil {
+			t.Fatal(err)
+		}
+		input, err := json.Marshal(req.Input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO harness_inputs VALUES(?,?,?)`, req.InputID, run, input); err != nil {
+			t.Fatal(err)
+		}
+		event, err := appendEventTx(ctx, tx, harness.RunEvent{SessionID: x.ID, RunID: run, Kind: "user_message", Content: req.Input})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Store.Learning.CaptureInputTx(ctx, tx, req, event.Sequence, input); err != nil {
+			t.Fatal(err)
+		}
+		if err = tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := s.Store.Append(context.Background(), harness.RunEvent{SessionID: x.ID, RunID: run, Kind: "reasoning_delta", Text: "PRIVATE_HIDDEN_REASONING"}); err != nil {
 		t.Fatal(err)
@@ -151,7 +209,7 @@ func TestSkillLearningCaptureDefaultOffConsentAndEpisode(t *testing.T) {
 	s, x, _ := newLearningTest(t, true)
 	first := learningTestRun(t, s, x, "Check JSON")
 	learningTestFinish(t, s, first, "end_turn")
-	second := learningTestRun(t, s, x, "No, read the complete file")
+	second := learningTestRelatedRun(t, s, x, "No, read the complete file")
 	learningTestFinish(t, s, second, "end_turn")
 	var episodes int
 	if err := s.Store.db.QueryRow(`SELECT count(DISTINCT episode_id) FROM harness_learning_inputs`).Scan(&episodes); err != nil || episodes != 1 {
@@ -234,7 +292,7 @@ func TestSkillLearningExtractionDebounceRestartAndRedaction(t *testing.T) {
 	s, x, e := newLearningTest(t, true)
 	a := learningTestRun(t, s, x, "Check JSON token=VERY_PRIVATE_TOKEN")
 	learningTestFinish(t, s, a, "end_turn")
-	b := learningTestRun(t, s, x, "Use complete file text")
+	b := learningTestRelatedRun(t, s, x, "Use complete file text")
 	learningTestFinish(t, s, b, "end_turn")
 	if worked, err := s.Store.Learning.QueueOne(context.Background()); err != nil || worked {
 		t.Fatalf("idle not respected %v %v", worked, err)
@@ -314,7 +372,7 @@ func TestSkillLearningCaptureDeletionCancelsUnpublishedJobs(t *testing.T) {
 func TestSkillLearningExtractionChunkingPreservesSingleEpisode(t *testing.T) {
 	s, x, e := newLearningTest(t, true)
 	for i := 0; i < 10; i++ {
-		req := learningTestRun(t, s, x, "A turn in one continuing task")
+		req := learningTestRelatedRun(t, s, x, "A turn in one continuing task")
 		learningTestFinish(t, s, req, "end_turn")
 	}
 	learningTestQueue(t, s)

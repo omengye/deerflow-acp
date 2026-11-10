@@ -25,17 +25,15 @@ type sourceRef struct {
 }
 
 type extractionSnapshot struct {
-	ID                 string                     `json:"id"`
-	Session            string                     `json:"session"`
-	Episode            string                     `json:"episode"`
-	Owner              string                     `json:"owner"`
-	Epoch              int64                      `json:"epoch"`
-	MaxDailyModelCalls int64                      `json:"max_daily_model_calls"`
-	MaxDailyTokens     int64                      `json:"max_daily_tokens"`
-	Sources            []sourceRef                `json:"sources"`
-	RootPolicy         string                     `json:"root_policy,omitempty"`
-	Roots              []rootCapture              `json:"roots,omitempty"`
-	View               harness.SkillLearningInput `json:"view"`
+	ID         string                     `json:"id"`
+	Session    string                     `json:"session"`
+	Episode    string                     `json:"episode"`
+	Owner      string                     `json:"owner"`
+	Epoch      int64                      `json:"epoch"`
+	Sources    []sourceRef                `json:"sources"`
+	RootPolicy string                     `json:"root_policy,omitempty"`
+	Roots      []rootCapture              `json:"roots,omitempty"`
+	View       harness.SkillLearningInput `json:"view"`
 }
 
 // ErrSourceBounds distinguishes bounded-capture rejection from invalid source
@@ -311,12 +309,37 @@ func verifiedSourceViewTx(ctx context.Context, tx *sql.Tx, src sourceRef, sessio
 	if live != src || live.Epoch != epoch || uncertain || live.Status == "cancelled" {
 		return nil, harness.ErrPermissionDenied
 	}
+	refs, err := inputView(ctx, tx, src)
+	if err != nil {
+		return nil, err
+	}
 	settled, err := settledRoot(ctx, tx, src.Root)
 	if err != nil {
 		return nil, err
 	}
 	if !settled {
-		return nil, harness.ErrPermissionDenied
+		// A host-linked continuation can temporarily reopen the captured root.
+		// Preserve its immutable source, but never defer corruption, unknown
+		// effects, revoked authority or a blocked root as ordinary activity.
+		var active bool
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM budget_roots WHERE id=? AND blocked_reason='')
+ AND EXISTS(SELECT 1 FROM harness_learning_inputs i JOIN harness_runs r ON r.id=i.run_id
+ WHERE i.root_id=? AND i.episode_id=? AND i.epoch=? AND i.accepted_sequence>? AND r.status IN ('running','waiting_input','waiting_permission'))
+ AND NOT EXISTS(SELECT 1 FROM budget_members m LEFT JOIN harness_runs r ON r.id=m.id
+ WHERE m.root_id=? AND (r.id IS NULL OR r.status NOT IN ('completed','failed','running','waiting_input','waiting_permission')))
+ AND NOT EXISTS(SELECT 1 FROM budget_attempts WHERE root_id=? AND state='unknown')
+ AND NOT EXISTS(SELECT 1 FROM budget_reservations WHERE root_id=? AND state='unknown')
+ AND NOT EXISTS(SELECT 1 FROM harness_tool_receipts t JOIN budget_members m ON m.id=t.run_id WHERE m.root_id=? AND t.state='uncertain')`,
+			src.Root, src.Root, episode, epoch, src.Accepted, src.Root, src.Root, src.Root, src.Root).Scan(&active)
+		if err != nil {
+			return nil, err
+		}
+		if !active {
+			return nil, harness.ErrPermissionDenied
+		}
+		if err = sourceActiveTx(ctx, tx); err != nil {
+			return nil, err
+		}
 	}
-	return inputView(ctx, tx, src)
+	return refs, nil
 }

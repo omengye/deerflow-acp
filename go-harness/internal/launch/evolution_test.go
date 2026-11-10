@@ -17,7 +17,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/modelstreamtest"
 )
 
-func TestApplyConfigSkillReviewUsesConfiguredRoutesAndCustomSource(t *testing.T) {
+func TestApplyConfigSkillReviewInheritsPrimaryAndKeepsSourceAuthority(t *testing.T) {
 	var calls [2]atomic.Int32
 	server := func(index int) *httptest.Server {
 		return httptest.NewServer(modelstreamtest.RequireStreaming(t, func(w http.ResponseWriter, r *http.Request) {
@@ -67,25 +67,20 @@ func TestApplyConfigSkillReviewUsesConfiguredRoutesAndCustomSource(t *testing.T)
 		t.Fatalf("missing builtin source policy: %+v", cfg.Skills)
 	}
 	report, err := cfg.SkillValidator.Validate(context.Background(), harness.SkillValidationInput{Proposal: harness.SkillProposal{Action: "create", SkillName: "research", CandidateVersion: "candidate"}, CandidateFiles: map[string][]byte{"SKILL.md": []byte("Fixture content")}})
-	if err != nil || report.Security != "passed" || calls[0].Load() != 1 || calls[1].Load() != 1 {
+	if err != nil || report.Security != "passed" || calls[0].Load() != 2 || calls[1].Load() != 0 {
 		t.Fatalf("resolved review calls: %+v %v %d/%d", report, err, calls[0].Load(), calls[1].Load())
 	}
-	withOverlays := strings.Replace(body, "  mode: review", "  mode: review\n  allow_builtin_overlays: true", 1)
-	if err = os.WriteFile(path, []byte(withOverlays), 0600); err != nil {
+	// A completed migration is not a runtime compatibility path.
+	if err = os.WriteFile(path, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ApplyConfig(path, &cfg, &connections, nil); err != nil || len(cfg.SkillProposalSources) != 2 || cfg.SkillProposalSources[1] != "python-public" {
-		t.Fatalf("explicit builtin overlay grant: %+v %v", cfg.SkillProposalSources, err)
+	if _, err = ApplyConfig(path, &cfg, &connections, nil); err == nil || !strings.Contains(err.Error(), "retired") {
+		t.Fatal("legacy configuration reintroduced after migration", err)
 	}
-	if err = os.WriteFile(path, []byte(strings.Replace(body, "  enabled: true\n  mode: review", "  enabled: false\n  mode: review", 1)), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = ApplyConfig(path, &cfg, &connections, nil); err != nil || len(cfg.SkillProposalSources) != 0 {
-		t.Fatalf("explicit disable preserved model writes: %+v %v", cfg.SkillProposalSources, err)
-	}
+
 }
 
-func TestApplyConfigSkillReviewRejectsInactiveSettingsAndMissingDestinations(t *testing.T) {
+func TestApplyConfigSkillReviewMigratesRetiredSettingsOnce(t *testing.T) {
 	for _, section := range []string{
 		"enabled: true\n  moderation_model_name: main\n  evaluation_model_name: research\n",
 		"enabled: true\n  moderation_model_name: missing\n  evaluation_model_name: research\n",
@@ -95,8 +90,8 @@ func TestApplyConfigSkillReviewRejectsInactiveSettingsAndMissingDestinations(t *
 		path := writeRoleConfig(t, roleModels+"skill_evolution:\n  "+section)
 		var cfg deerflow.Config
 		connections := 0
-		if _, err := ApplyConfig(path, &cfg, &connections, nil); err == nil || !strings.Contains(err.Error(), "skill_evolution") {
-			t.Fatalf("ignored setting %q: %v", section, err)
+		if _, err := ApplyConfig(path, &cfg, &connections, nil); err != nil {
+			t.Fatalf("one-time migration rejected retired setting %q: %v", section, err)
 		}
 	}
 }

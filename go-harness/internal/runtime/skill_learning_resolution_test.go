@@ -24,7 +24,7 @@ func TestSkillLearningLaterVerificationAutomaticallyResolvesOriginalTask(t *test
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Close() })
-	if err = e.ConfigureGeneration(ctx, generator, consolidationTestOptions().Budget, []string{"project"}, false); err != nil {
+	if err = e.ConfigureGeneration(ctx, generator, consolidationTestOptions().Policy, []string{"project"}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = e.ConfigureExperienceDiscoverySource(s.Store.Learning); err != nil {
@@ -43,7 +43,7 @@ func TestSkillLearningLaterVerificationAutomaticallyResolvesOriginalTask(t *test
 	}
 	original := before.Patterns[0].ExperienceIDs[0]
 	extractor.observed = true
-	consolidateExtract(t, s, session, "Correct the incomplete inspection: read full JSON text and verify required fields")
+	consolidateRelatedExtract(t, s, session, "Correct the incomplete inspection: read full JSON text and verify required fields")
 	consolidateRun(t, s)
 	after, err := s.Store.Learning.Patterns(ctx, session.ID, "", 10)
 	if err != nil || len(after.Patterns) != 1 || after.Patterns[0].ID != before.Patterns[0].ID || after.Patterns[0].Revision != 2 ||
@@ -55,16 +55,8 @@ func TestSkillLearningLaterVerificationAutomaticallyResolvesOriginalTask(t *test
 		t.Fatal("resolved same-task history authorized automatic publication")
 	}
 	discoveries := experienceDiscoveries(t, e)
-	if len(discoveries) != 1 || !discoveries[0].ReviewDraft || len(discoveries[0].Evidence) != 1 || len(matcher.seen) != 1 {
-		t.Fatal("resolved task did not automatically reach review-only drafting", discoveries, matcher.seen)
-	}
-	proposal := experienceGenerate(t, e)
-	if proposal.Status != "pending_review" || len(generator.seen) != 1 {
-		t.Fatal("resolved task required manual evolution", proposal, generator.seen)
-	}
-	published, err := e.Approve(ctx, proposal.ID, harness.SkillReview{ExpectedStateVersion: proposal.StateVersion, Actor: "owner"})
-	if err != nil || published.Status != "published" {
-		t.Fatal("generated resolved-task proposal could not be reviewed", published, err)
+	if len(discoveries) != 0 || len(generator.seen) != 0 || len(matcher.seen) != 1 {
+		t.Fatal("same-task correction generated an automatic candidate", discoveries)
 	}
 	sourceRequest := harness.SkillLearningSourceRequest{Kind: "pattern", ID: after.Patterns[0].ID, ExpectedRevision: 2, Scope: "session", ExperienceID: original}
 	source, err := s.Store.Learning.Source(ctx, session.ID, sourceRequest)
@@ -131,7 +123,7 @@ func TestSkillLearningLaterVerificationCannotResolveUncoveredOrLaterIssues(t *te
 			extractor := &learningResolutionExtractor{base: base}
 			model := &consolidationTestModel{}
 			learningInFlightRestart(t, s, registry, extractor, model, matcher)
-			consolidateExtract(t, s, x, "Unverified full configuration check")
+			consolidateRelatedExtract(t, s, x, "Unverified full configuration check")
 			consolidateRun(t, s)
 			base.observed = true
 			if mode == "latest-user-only" || mode == "original-user-only" {
@@ -146,17 +138,17 @@ func TestSkillLearningLaterVerificationCannotResolveUncoveredOrLaterIssues(t *te
 				model.relation = "conflicting"
 			}
 			if mode == "old-receipt-only" {
-				req := learningTestRun(t, s, x, "Correct prior issue but do not perform a new verification")
+				req := learningTestRelatedRun(t, s, x, "Correct prior issue but do not perform a new verification")
 				learningTestFinish(t, s, req, "end_turn")
 				learningTestQueue(t, s)
 				matchingRun(t, s)
 			} else {
-				consolidateExtract(t, s, x, "Correct prior issue with a complete configuration check")
+				consolidateRelatedExtract(t, s, x, "Correct prior issue with a complete configuration check")
 			}
 			consolidateRun(t, s)
 			if mode == "later-unresolved" {
 				base.observed = false
-				consolidateExtract(t, s, x, "There is a new unverified issue after the completed correction")
+				consolidateRelatedExtract(t, s, x, "There is a new unverified issue after the completed correction")
 				consolidateRun(t, s)
 			}
 			page, err := s.Store.Learning.Patterns(ctx, x.ID, "", 10)
@@ -194,10 +186,10 @@ func TestSkillLearningResolvedTaskCheckpointRevalidatesLinksAndLiveSources(t *te
 			s, x, registry, extractor, matcher := newMatchingTest(t)
 			ctx := context.Background()
 			extractor.observed = false
-			first := consolidateExtract(t, s, x, "Unverified original JSON check")
+			first := consolidateRelatedExtract(t, s, x, "Unverified original JSON check")
 			consolidateRun(t, s)
 			extractor.observed = true
-			later := consolidateExtract(t, s, x, "Correct the original JSON check with complete text")
+			later := consolidateRelatedExtract(t, s, x, "Correct the original JSON check with complete text")
 			consolidateRun(t, s)
 			var jobID string
 			if err := s.Store.db.QueryRow(`SELECT job_id FROM df_learning_consolidations ORDER BY rowid DESC LIMIT 1`).Scan(&jobID); err != nil {
@@ -264,7 +256,7 @@ func TestSkillLearningResolutionRehashedUnsupportedLinkCannotCertifyHistory(t *t
 	base.observed = false
 	extractor := &learningResolutionExtractor{base: base}
 	learningInFlightRestart(t, s, registry, extractor, &consolidationTestModel{}, matcher)
-	consolidateExtract(t, s, x, "Unverified original check")
+	consolidateRelatedExtract(t, s, x, "Unverified original check")
 	consolidateRun(t, s)
 	page, err := s.Store.Learning.Patterns(ctx, x.ID, "", 10)
 	if err != nil || len(page.Patterns) != 1 {
@@ -272,7 +264,7 @@ func TestSkillLearningResolutionRehashedUnsupportedLinkCannotCertifyHistory(t *t
 	}
 	prior := page.Patterns[0].ExperienceIDs[0]
 	base.observed, extractor.filter = true, "latest-user-only"
-	consolidateExtract(t, s, x, "Different observed check that does not cite the original issue")
+	consolidateRelatedExtract(t, s, x, "Different observed check that does not cite the original issue")
 	consolidateRun(t, s)
 	var raw []byte
 	if err = s.Store.db.QueryRow(`SELECT payload FROM df_learning_pattern_revisions WHERE revision=2`).Scan(&raw); err != nil {
@@ -313,8 +305,8 @@ func TestSkillLearningResolutionRehashedUnsupportedLinkCannotCertifyHistory(t *t
 	}
 }
 
-func TestSkillLearningLaterDelegatedVerificationResolvesOriginalTask(t *testing.T) {
-	s, x, registry, extractor, matcher := newMatchingTest(t)
+func TestSkillLearningLaterDelegatedVerificationCannotResolveUnrelatedRoot(t *testing.T) {
+	s, x, _, extractor, matcher := newMatchingTest(t)
 	ctx := context.Background()
 	x = learningDelegationSession(t, s, x)
 	native := learningDelegationNative(t, s)
@@ -325,7 +317,7 @@ func TestSkillLearningLaterDelegatedVerificationResolvesOriginalTask(t *testing.
 	matchingRun(t, s)
 	consolidateRun(t, s)
 	extractor.observed = true
-	parent := learningTestRun(t, s, x, "Correct the original check using a delegated complete local verification")
+	parent := learningTestRun(t, s, x, "Independently verify JSON using a delegated local check")
 	child := learningDelegationCreate(t, s, native, parent, "later-resolution")
 	learningTestFinish(t, s, parent, "end_turn")
 	learningDelegationComplete(t, child, "read_file")
@@ -333,30 +325,20 @@ func TestSkillLearningLaterDelegatedVerificationResolvesOriginalTask(t *testing.
 	matchingRun(t, s)
 	consolidateRun(t, s)
 	page, err := s.Store.Learning.Patterns(ctx, x.ID, "", 10)
-	if err != nil || len(page.Patterns) != 1 || page.Patterns[0].EvidenceState != "insufficient_evidence" || page.Patterns[0].SupportEpisodes != 1 || page.Patterns[0].ObservedEpisodes != 1 || len(page.Patterns[0].ExperienceIDs) != 2 {
-		t.Fatal("later delegated verification left the same original task permanently blocked", page, err)
+	if err != nil || len(page.Patterns) != 1 || page.Patterns[0].EvidenceState != "unresolved" || page.Patterns[0].SupportEpisodes != 2 || page.Patterns[0].ObservedEpisodes != 1 || len(page.Patterns[0].ExperienceIDs) != 2 {
+		t.Fatal("independent delegated result incorrectly certified the original task", page, err)
 	}
-	experienceMatch(t, s)
-	generator := &experienceDiscoveryGenerator{}
-	e, err := evolution.New(ctx, registry, &experienceDiscoveryValidator{})
-	if err != nil {
-		t.Fatal(err)
+	for range 4 {
+		if _, err = s.Store.Learning.QueueMatchOne(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
-	t.Cleanup(func() { _ = e.Close() })
-	if err = e.ConfigureGeneration(ctx, generator, consolidationTestOptions().Budget, []string{"project"}, false); err != nil {
-		t.Fatal(err)
+	if len(matcher.seen) != 0 {
+		t.Fatal("unresolved history reached matching")
 	}
-	if err = e.ConfigureExperienceDiscoverySource(s.Store.Learning); err != nil {
-		t.Fatal(err)
-	}
-	enableExperienceReviewDrafts(t, e, false)
-	discoveries := experienceDiscoveries(t, e)
-	if len(discoveries) != 1 || !discoveries[0].ReviewDraft || len(discoveries[0].Evidence) != 1 || discoveries[0].Evidence[0].RootID != parent.RootBudgetID || len(matcher.seen) != 1 {
-		t.Fatal("delegated resolution lost the later human-root observation", discoveries, matcher.seen)
-	}
-	p := experienceGenerate(t, e)
-	if p, err = e.Approve(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "owner"}); err != nil || p.Status != "published" || len(generator.seen) != 1 {
-		t.Fatal("delegated resolution required manual skill evolution", p, generator.seen, err)
+	var matches int
+	if err = s.Store.db.QueryRow(`SELECT count(*) FROM df_learning_matches`).Scan(&matches); err != nil || matches != 0 {
+		t.Fatal(matches, err)
 	}
 }
 
@@ -364,10 +346,12 @@ func TestSkillLearningResolvedTaskWithdrawalCleansGeneratedDraft(t *testing.T) {
 	s, x, registry, extractor, _ := newMatchingTest(t)
 	ctx := context.Background()
 	extractor.observed = false
-	consolidateExtract(t, s, x, "Unverified original full-text task")
+	consolidateRelatedExtract(t, s, x, "Unverified original full-text task")
 	consolidateRun(t, s)
 	extractor.observed = true
-	consolidateExtract(t, s, x, "Correct the original full-text task and verify fields")
+	consolidateRelatedExtract(t, s, x, "Correct the original full-text task and verify fields")
+	consolidateRun(t, s)
+	consolidateExtract(t, s, x, "Independently verify another full-text task")
 	consolidateRun(t, s)
 	experienceMatch(t, s)
 	generator, validator := &experienceDiscoveryGenerator{}, &experienceDiscoveryValidator{}
@@ -376,7 +360,7 @@ func TestSkillLearningResolvedTaskWithdrawalCleansGeneratedDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Close() })
-	if err = e.ConfigureGeneration(ctx, generator, consolidationTestOptions().Budget, []string{"project"}, false); err != nil {
+	if err = e.ConfigureGeneration(ctx, generator, consolidationTestOptions().Policy, []string{"project"}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = e.ConfigureExperienceDiscoverySource(s.Store.Learning); err != nil {
@@ -408,7 +392,7 @@ func TestSkillLearningResolvedTaskWithdrawalCleansGeneratedDraft(t *testing.T) {
 	if err = s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_maintenance_calls`).Scan(&after); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_discovery_episode_consumed`).Scan(&consumed); err != nil || patterns != 0 || proposals != 0 || after != charges || consumed != 1 {
+	if err = s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_discovery_episode_consumed`).Scan(&consumed); err != nil || patterns != 0 || proposals != 0 || after != charges || consumed != 2 {
 		t.Fatal("resolved historical dependency escaped revocation or refunded consumed work", patterns, proposals, after, charges, consumed, err)
 	}
 }
@@ -435,7 +419,7 @@ func TestSkillLearningSharedLineageCannotResolveAnotherConversationsHistory(t *t
 	}
 	s.Store.Learning = l
 	sourceControl := workspaceLearningConsent(t, s, x, true)
-	consolidateExtract(t, s, x, "Original unverified full configuration task")
+	consolidateRelatedExtract(t, s, x, "Original unverified full configuration task")
 	consolidateRun(t, s)
 	page, err := l.WorkspacePatterns(ctx, x.ID, "", 10)
 	if err != nil || len(page.Patterns) != 1 {
@@ -447,13 +431,13 @@ func TestSkillLearningSharedLineageCannotResolveAnotherConversationsHistory(t *t
 		t.Fatal(err)
 	}
 	extractor.observed = true
-	consolidateExtract(t, s, linked, "A copied task completed in another conversation")
+	consolidateRelatedExtract(t, s, linked, "A copied task completed in another conversation")
 	consolidateRun(t, s)
 	page, err = l.WorkspacePatterns(ctx, x.ID, "", 10)
 	if err != nil || len(page.Patterns) != 1 || page.Patterns[0].EvidenceState != "unresolved" || page.Patterns[0].SupportEpisodes != 1 || page.Patterns[0].ObservedEpisodes != 1 || len(page.Patterns[0].ExperienceIDs) != 2 {
 		t.Fatal("shared origin certified another conversation or added independent votes", page, err)
 	}
-	consolidateExtract(t, s, x, "Correct the original task in its actual conversation with full text")
+	consolidateRelatedExtract(t, s, x, "Correct the original task in its actual conversation with full text")
 	consolidateRun(t, s)
 	page, err = l.WorkspacePatterns(ctx, linked.ID, "", 10)
 	if err != nil || len(page.Patterns) != 1 || page.Patterns[0].EvidenceState != "insufficient_evidence" || page.Patterns[0].SupportEpisodes != 1 || page.Patterns[0].ObservedEpisodes != 1 || len(page.Patterns[0].ExperienceIDs) != 3 {
@@ -480,15 +464,13 @@ func learningResolutionLegacyQueued(t *testing.T, s *Service) string {
 	// Recreate the pre-policy field order; JSON object order is part of the
 	// existing digest, so a map re-encoding is not a legacy snapshot.
 	var ordered struct {
-		ID                 string                                    `json:"id"`
-		Session            string                                    `json:"session"`
-		Owner              string                                    `json:"owner"`
-		Shared             bool                                      `json:"workspace_shared,omitempty"`
-		Seed               json.RawMessage                           `json:"seed"`
-		Patterns           json.RawMessage                           `json:"patterns"`
-		View               harness.SkillExperienceConsolidationInput `json:"view"`
-		MaxDailyModelCalls int64                                     `json:"max_daily_model_calls"`
-		MaxDailyTokens     int64                                     `json:"max_daily_tokens"`
+		ID       string                                    `json:"id"`
+		Session  string                                    `json:"session"`
+		Owner    string                                    `json:"owner"`
+		Shared   bool                                      `json:"workspace_shared,omitempty"`
+		Seed     json.RawMessage                           `json:"seed"`
+		Patterns json.RawMessage                           `json:"patterns"`
+		View     harness.SkillExperienceConsolidationInput `json:"view"`
 	}
 	if err := json.Unmarshal(data, &ordered); err != nil {
 		t.Fatal(err)
@@ -526,12 +508,12 @@ func TestSkillLearningResolutionLegacyJobsKeepFixedSemanticsUntilNewInput(t *tes
 	s, x, registry, extractor, matcher := newMatchingTest(t)
 	ctx := context.Background()
 	extractor.observed = false
-	consolidateExtract(t, s, x, "Unverified legacy full configuration check")
+	consolidateRelatedExtract(t, s, x, "Unverified legacy full configuration check")
 	consolidateQueued(t, s)
 	learningResolutionLegacyQueued(t, s)
 	matchingRun(t, s)
 	extractor.observed = true
-	consolidateExtract(t, s, x, "Completed legacy correction with full text")
+	consolidateRelatedExtract(t, s, x, "Completed legacy correction with full text")
 	consolidateQueued(t, s)
 	jobID := learningResolutionLegacyQueued(t, s)
 	matchingRun(t, s)
@@ -553,7 +535,7 @@ func TestSkillLearningResolutionLegacyJobsKeepFixedSemanticsUntilNewInput(t *tes
 	if err != nil || job.State != "completed" || len(model.seen) != 0 {
 		t.Fatal("legacy saved result was invalidated or regenerated", job, model.seen, err)
 	}
-	consolidateExtract(t, s, x, "Another ordinary followup verifies the complete original task")
+	consolidateRelatedExtract(t, s, x, "Another ordinary followup verifies the complete original task")
 	consolidateRun(t, s)
 	page, err = s.Store.Learning.Patterns(ctx, x.ID, "", 10)
 	if err != nil || len(page.Patterns) != 1 || page.Patterns[0].Revision != 3 || page.Patterns[0].EvidenceState != "insufficient_evidence" || page.Patterns[0].SupportEpisodes != 1 || page.Patterns[0].ObservedEpisodes != 1 || len(page.Patterns[0].ExperienceIDs) != 3 {

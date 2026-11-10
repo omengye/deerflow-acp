@@ -80,7 +80,7 @@ func Migrate(ctx context.Context, tx *sql.Tx) error {
 CREATE TABLE IF NOT EXISTS df_skill_maintenance_clock (id INTEGER PRIMARY KEY CHECK(id=1),last_ns INTEGER NOT NULL);
 INSERT OR IGNORE INTO df_skill_maintenance_clock VALUES(1,0);
 CREATE TABLE IF NOT EXISTS df_skill_maintenance_days (
- day TEXT PRIMARY KEY,model_calls INTEGER NOT NULL CHECK(model_calls>=0),charged_tokens INTEGER NOT NULL CHECK(charged_tokens>=0));
+ day TEXT PRIMARY KEY,model_calls INTEGER NOT NULL CHECK(model_calls>=0),actual_tokens INTEGER NOT NULL CHECK(actual_tokens>=0));
 CREATE TABLE IF NOT EXISTS df_skill_maintenance_jobs (
  id TEXT PRIMARY KEY,source_key TEXT NOT NULL,name TEXT NOT NULL,request_key TEXT NOT NULL,reference TEXT NOT NULL,input_digest TEXT NOT NULL,
  policy BLOB NOT NULL,state TEXT NOT NULL,state_version INTEGER NOT NULL,attempts INTEGER NOT NULL,
@@ -90,11 +90,17 @@ CREATE INDEX IF NOT EXISTS df_skill_maintenance_queue ON df_skill_maintenance_jo
 CREATE TABLE IF NOT EXISTS df_skill_maintenance_calls (
  sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,job_id TEXT NOT NULL REFERENCES df_skill_maintenance_jobs(id),attempt INTEGER NOT NULL,claim_token TEXT NOT NULL,
  day TEXT NOT NULL REFERENCES df_skill_maintenance_days(day),stage TEXT NOT NULL,model_identity TEXT NOT NULL,input_digest TEXT NOT NULL,
- reserved_tokens INTEGER NOT NULL,charged_tokens INTEGER NOT NULL,input_tokens INTEGER NOT NULL DEFAULT 0,output_tokens INTEGER NOT NULL DEFAULT 0,
+ estimated_tokens INTEGER NOT NULL,actual_tokens INTEGER NOT NULL,input_tokens INTEGER NOT NULL DEFAULT 0,output_tokens INTEGER NOT NULL DEFAULT 0,
  state TEXT NOT NULL,estimated INTEGER NOT NULL DEFAULT 1,settlement_digest TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS df_skill_maintenance_job_calls ON df_skill_maintenance_calls(job_id,id);
+CREATE TABLE IF NOT EXISTS df_skill_maintenance_progress(job_id TEXT NOT NULL,progress_key TEXT NOT NULL,PRIMARY KEY(job_id,progress_key));
+CREATE TABLE IF NOT EXISTS df_skill_maintenance_slices(job_id TEXT PRIMARY KEY,completed_count INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS df_skill_maintenance_dependencies(code TEXT PRIMARY KEY,identity TEXT NOT NULL);
 `)
 	if err != nil {
+		return err
+	}
+	if err = migrateUsageLedger(ctx, tx); err != nil {
 		return err
 	}
 	return migrateJobOwners(ctx, tx)
@@ -217,7 +223,7 @@ func (s *Store) EnqueueTx(ctx context.Context, tx *sql.Tx, r Request) (Job, erro
 	// Learning stages share a smaller inventory inside the global cap, leaving
 	// room for explicit skill generation and evaluation when capture backs up.
 	if pending >= 100 || r.OwnerKind != SkillOwner && learningPending >= 20 {
-		return Job{}, ErrBudget
+		return Job{}, ErrCapacity
 	}
 	j := Job{ID: "smj_" + rand.Text(), Request: r, Policy: s.policy, State: "queued", StateVersion: 1}
 	policy, _ := json.Marshal(j.Policy)
@@ -447,7 +453,8 @@ func (s *Store) heartbeat(ctx context.Context, c Claim) (time.Time, error) {
 // Complete/Fail never release model charges. Error codes are a fixed enum.
 func (s *Store) Finish(ctx context.Context, c Claim, code string, retry bool) error {
 	switch code {
-	case "", "model_failed", "invalid_candidate", "budget_exhausted", "storage_error", "cancelled", "job_deadline", "source_unavailable", "source_active", "inventory_changed", "base_changed", "configuration_changed", "evidence_changed":
+	case "yield_progress", "blocked_runtime", "blocked_evidence":
+	case "", "model_failed", "invalid_candidate", "deferred_capacity", "storage_error", "cancelled", "job_deadline", "source_unavailable", "source_active", "inventory_changed", "base_changed", "configuration_changed", "evidence_changed":
 	default:
 		return ErrInvalid
 	}
@@ -495,6 +502,33 @@ func (s *Store) Finish(ctx context.Context, c Claim, code string, retry bool) er
 			state, at = "retry", backoff.UnixNano()
 		}
 	}
+	if code == "yield_progress" {
+		var count, previous int
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM df_skill_maintenance_progress WHERE job_id=?`, j.ID).Scan(&count); err != nil {
+			return err
+		}
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT completed_count FROM df_skill_maintenance_slices WHERE job_id=?),0)`, j.ID).Scan(&previous); err != nil {
+			return err
+		}
+		if count <= previous || unsettled != 0 {
+			return ErrConflict
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO df_skill_maintenance_slices VALUES(?,?) ON CONFLICT(job_id) DO UPDATE SET completed_count=excluded.completed_count`, j.ID, count); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET attempts=0,deadline_ns=0 WHERE id=?`, j.ID); err != nil {
+			return err
+		}
+		state, at = "queued", 0
+	}
+	if code == "blocked_runtime" {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO df_skill_maintenance_dependencies VALUES('blocked_runtime','unavailable') ON CONFLICT(code) DO NOTHING`); err != nil {
+			return err
+		}
+	}
+	if code == "blocked_runtime" || code == "blocked_evidence" || code == "deferred_capacity" {
+		state, at = "waiting", 0
+	}
 	_, err = tx.ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET state=?,state_version=state_version+1,token='',lease_ns=0,retry_ns=?,error_code=? WHERE id=?`, state, at, code, j.ID)
 	if err != nil {
 		return err
@@ -527,7 +561,7 @@ func CancelTx(ctx context.Context, tx *sql.Tx, id string, version int64) error {
 	if version < 1 {
 		return ErrInvalid
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET state='cancelled',state_version=state_version+1,token='',lease_ns=0,retry_ns=0,error_code='cancelled' WHERE id=? AND state_version=? AND state IN ('queued','retry','running')`, id, version)
+	result, err := tx.ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET state='cancelled',state_version=state_version+1,token='',lease_ns=0,retry_ns=0,error_code='cancelled' WHERE id=? AND state_version=? AND state IN ('queued','retry','running','waiting')`, id, version)
 	if err != nil {
 		return err
 	}

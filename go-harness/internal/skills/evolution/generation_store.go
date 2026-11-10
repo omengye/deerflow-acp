@@ -8,6 +8,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -17,12 +18,14 @@ import (
 )
 
 type generationHost struct {
+	dependencyMu             sync.Mutex
+	dependencyProbe          time.Time
 	store                    *skillmaintenance.Store
 	generator                skillmaintenance.Generator
 	identity, reviewIdentity string
 	allowed                  map[string]harness.SkillTarget
 	workers                  int
-	policy                   harness.SkillMaintenanceBudget
+	policy                   harness.SkillMaintenancePolicy
 	lifecycle                collectorLifecycle
 	discovery                *discoveryHost
 	behavior                 *behaviorHost
@@ -34,6 +37,10 @@ var errGenerationConfiguration = errors.New("skill generation configuration chan
 func (s *Service) GenerationEnabled() bool { return s.generation != nil }
 
 type generationSnapshot struct {
+	// Agent-authored candidates enter the same durable evaluation pipeline, with
+	// their originating workspace pinned even for a global managed destination.
+	Workspace                  string                         `json:"workspace,omitempty"`
+	Submission                 *submittedTaskOrigin           `json:"submission,omitempty"`
 	Request                    harness.SkillGenerationRequest `json:"request"`
 	Target                     harness.SkillTarget            `json:"target"`
 	OverlayBase                *harness.SkillRef              `json:"overlay_base,omitempty"`
@@ -62,6 +69,7 @@ CREATE TABLE IF NOT EXISTS df_skill_generation_inputs (
  source_key TEXT NOT NULL,name TEXT NOT NULL,request_key TEXT NOT NULL,request_sha TEXT NOT NULL,payload BLOB NOT NULL,
  candidate_version TEXT NOT NULL DEFAULT '',candidate_reason TEXT NOT NULL DEFAULT '',proposal_id TEXT NOT NULL DEFAULT '',progress_sha TEXT NOT NULL,
  created_at TEXT NOT NULL,UNIQUE(source_key,name,request_key));
+CREATE TABLE IF NOT EXISTS df_skill_generation_outputs(job_id TEXT PRIMARY KEY REFERENCES df_skill_maintenance_jobs(id),payload BLOB NOT NULL,payload_sha TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS df_skill_generation_catalog(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS df_skill_generation_proposal ON df_skill_generation_inputs(proposal_id) WHERE proposal_id<>'';
 INSERT OR IGNORE INTO df_skill_generation_catalog VALUES(1,0);

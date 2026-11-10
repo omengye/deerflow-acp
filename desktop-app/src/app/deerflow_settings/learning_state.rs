@@ -162,12 +162,8 @@ impl Status {
         }
         anyhow::ensure!(
             self.version == "procedural-experience-v1"
-                && matches!(
-                    self.mode.as_str(),
-                    "shadow" | "review_candidates" | "guarded_auto_patch"
-                )
-                && (self.mode != "shadow") == self.proposal_discovery_enabled
-                && (self.mode == "guarded_auto_patch") == self.auto_patch_enabled
+                && self.mode == "automatic"
+                && (!self.auto_patch_enabled || self.proposal_discovery_enabled)
                 && (!self.proposal_discovery_enabled || self.matching_enabled)
                 && (!self.enabled || self.idle_seconds > 0)
                 && (!self.consolidation_enabled || self.enabled)
@@ -190,18 +186,12 @@ impl Status {
     fn summary(&self) -> String {
         let on = |enabled| if enabled { "已启用" } else { "关闭" };
         format!(
-            "提取 {} · 归并 {} · 匹配 {} · 跨会话 {}\n模式 {} · 空闲等待 {} 秒\n此数据目录合计：待处理 {} · 经验 {} · 归并 {} · 匹配 {}\n后台执行器{}；在线不代表已有学习产出。数量是全目录累计值，不代表当前聊天已完成。排查顺序：聊天贡献 → 原任务结算与空闲等待 → 提取 → 归并匹配 → 生成 → 审核或合格自动补丁。",
+            "提取 {} · 归并 {} · 匹配 {} · 跨会话 {}\n模式 {} · 空闲等待 {} 秒\n此数据目录合计：待处理 {} · 经验 {} · 归并 {} · 匹配 {}\n后台执行器{}；在线不代表已有学习产出。数量是全目录累计值，不代表当前聊天已完成。排查顺序：聊天贡献 → 原任务结算与空闲等待 → 提取 → 归并匹配 → 生成 → 验证 → 自动采用与观察。",
             on(self.enabled),
             on(self.consolidation_enabled),
             on(self.matching_enabled),
             on(self.cross_session_enabled),
-            if self.auto_patch_enabled {
-                "受限自动补丁；描述修改另需正负触发评测，新技能/其他元数据/未合格候选仍需人工"
-            } else if self.proposal_discovery_enabled {
-                "可生成待审核提案，仍需人工发布"
-            } else {
-                "仅积累经验，不生成技能"
-            },
+            "自动验证、采用、观察与撤回",
             self.idle_seconds,
             self.pending_inputs,
             self.experiences,

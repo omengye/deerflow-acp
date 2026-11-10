@@ -256,7 +256,7 @@ func TestNestedSecretsAreRedactedAndRestored(t *testing.T) {
 		t.Fatal(err)
 	}
 	object(readObject(raw, "memory"), "backend_config")["access_token"] = "memory-private-token"
-	object(raw, "skill_evolution")["access_token"] = "evolution-private-token"
+	object(readObject(raw, "memory"), "backend_config")["refresh_token"] = "nested-private-token"
 	if err := writeYAMLAtomic(options.Config, raw); err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestNestedSecretsAreRedactedAndRestored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"memory-private-token", "subagent-private-key", "evolution-private-token", "agent-private-key"} {
+	for _, secret := range []string{"memory-private-token", "subagent-private-key", "nested-private-token", "agent-private-key"} {
 		if strings.Contains(string(visible), secret) {
 			t.Fatal("snapshot exposed a nested credential")
 		}
@@ -288,8 +288,8 @@ func TestNestedSecretsAreRedactedAndRestored(t *testing.T) {
 	if str(readObject(readObject(saved, "memory"), "backend_config"), "access_token", "") != "memory-private-token" {
 		t.Fatal("memory secret changed")
 	}
-	if str(readObject(saved, "skill_evolution"), "access_token", "") != "evolution-private-token" {
-		t.Fatal("evolution secret changed")
+	if str(readObject(readObject(saved, "memory"), "backend_config"), "refresh_token", "") != "nested-private-token" {
+		t.Fatal("nested refresh secret changed")
 	}
 	agent, err := readYAML(filepath.Join(agentDir, "config.yaml"))
 	if err != nil {

@@ -6,8 +6,10 @@ import (
 
 func TestNativeDesktopConfigSaveKeepsSecretsAndRemovesPythonUses(t *testing.T) {
 	options := setup(t)
+	state := searchOperation(t, options, "search-status", nil)
+	searchOperation(t, options, "search-configure", map[string]any{"provider": "brave", "expected_revision": state.Revision, "api_key": "fixture-tool-secret", "https_proxy": "http://127.0.0.1:11808"})
 	doc := run(t, options, "snapshot", nil)
-	doc["tools"] = []any{map[string]any{"name": "web_search", "api_key": "fixture-tool-secret", "https_proxy": "http://127.0.0.1:11808", "max_results": 5}, map[string]any{"name": "host_opencli", "executable": "opencli"}}
+	doc["tools"] = []any{map[string]any{"name": "web_search", "max_results": 5}, map[string]any{"name": "host_opencli", "executable": "opencli"}}
 	run(t, options, "save", doc)
 	saved, err := readYAML(options.Config)
 	if err != nil {
@@ -32,7 +34,7 @@ func TestNativeDesktopConfigSaveKeepsSecretsAndRemovesPythonUses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if str(list(saved, "tools")[0].(map[string]any), "api_key", "") != "fixture-tool-secret" {
-		t.Fatal("redacted tool credential was lost on save")
+	if storedSearchProvider(t, options, "brave")["api_key"] != "fixture-tool-secret" {
+		t.Fatal("independent search credential was lost on unrelated save")
 	}
 }

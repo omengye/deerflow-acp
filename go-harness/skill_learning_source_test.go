@@ -62,8 +62,7 @@ func TestSkillLearningSourceSDKManagementCitedHintsDisabledAndWithdrawal(t *test
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	extractor := &sdkSourceExtractor{}
-	cfg := Config{DataDir: t.TempDir(), SkillLearning: &harness.SkillLearningOptions{Idle: time.Second, MaxDailyModelCalls: 1, MaxDailyTokens: 10000,
-		Budget: harness.SkillMaintenanceBudget{MaxDailyModelCalls: 3, MaxDailyTokens: 30000, MaxJobSeconds: 30, Workers: 1}}, SkillExperienceExtractor: extractor,
+	cfg := Config{DataDir: t.TempDir(), SkillLearning: &harness.SkillLearningOptions{Idle: time.Second, Policy: harness.SkillMaintenancePolicy{MaxJobSeconds: 30, Workers: 1}}, SkillExperienceExtractor: extractor,
 		Engine: engineFunc(func(ctx context.Context, req harness.RunRequest, emit harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
 			for _, tool := range []string{"read_file", "web_fetch"} {
 				for _, kind := range []string{"tool_start", "tool_execute", "tool_end"} {

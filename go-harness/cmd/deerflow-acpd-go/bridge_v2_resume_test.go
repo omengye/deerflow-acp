@@ -18,7 +18,7 @@ func TestExistingRustBridgeV2ResumeLargeHistoryWithoutReplay(t *testing.T) {
 	dataDir, runtimeDir, workspace := t.TempDir(), t.TempDir(), t.TempDir()
 	daemon := launchDaemon(t, dataDir, runtimeDir, "http://127.0.0.1:1/v1")
 	ep := daemon.endpoint(t, runtimeDir)
-	client := launchBridgeV2(t, bridge, runtimeDir)
+	client := launchBridgeV2(t, bridge, dataDir, runtimeDir)
 	initialize := map[string]any{"protocolVersion": 2, "capabilities": map[string]any{}, "info": map[string]string{"name": "resume-regression", "version": "1"}}
 	client.request(t, "initialize", initialize)
 	raw := client.request(t, "session/new", map[string]any{"cwd": workspace, "mcpServers": []any{}})
@@ -55,7 +55,7 @@ func TestExistingRustBridgeV2ResumeLargeHistoryWithoutReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed := launchBridgeV2(t, bridge, runtimeDir)
+	resumed := launchBridgeV2(t, bridge, dataDir, runtimeDir)
 	resumed.request(t, "initialize", initialize)
 	resumed.request(t, "session/resume", map[string]any{"sessionId": created.SessionID, "cwd": workspace, "mcpServers": []any{}})
 	resumed.waitState(t, created.SessionID, "idle")

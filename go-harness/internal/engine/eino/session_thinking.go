@@ -34,10 +34,12 @@ func (e *Engine) sessionTuning(selectedModel string, session harness.Session) (*
 		return e.roleTuning(spec)
 	}
 	provider := e.config.Provider
+	api := e.config.API
 	if route, ok := e.config.ModelRoutes[selectedModel]; ok {
 		provider = route.Provider
+		api = route.API
 	}
-	tuning := &roleModelTuning{provider: strings.ToLower(provider), effort: effort}
+	tuning := &roleModelTuning{api: api, provider: strings.ToLower(provider), effort: effort}
 	switch config.Parameter {
 	case "enable_thinking":
 		tuning.extraFields = map[string]any{"enable_thinking": enabled}

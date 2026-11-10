@@ -215,6 +215,9 @@ func (s *Service) ServeSessionUpdates(parent context.Context, owner, sessionID s
 			continue
 		}
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			return err
 		}
 		if closed != nil {

@@ -15,7 +15,7 @@ fn browser() -> SkillBrowser {
     let status = json!({"operation":"skill.learning.status"});
     browser.begin_at(&status, &service);
     browser.accept_learning(&status, json!({"version":"procedural-experience-v1", "enabled":true,
-        "mode":"shadow", "idle_seconds":300, "pending_inputs":0, "experiences":0, "consolidation_enabled":false,
+        "mode":"automatic", "idle_seconds":300, "pending_inputs":0, "experiences":0, "consolidation_enabled":false,
         "patterns":0, "matching_enabled":false, "cross_session_enabled":false, "matches":0, "proposal_discovery_enabled":false})).unwrap();
     let get = json!({"operation":"skill.learning.control.get", "session_id":"session-a"});
     browser.begin_at(&get, &service);
@@ -248,7 +248,7 @@ fn learning_review_transport_retains_original_key_store_and_late_receipt_fence()
     browser
         .accept_detail(&get, json!({"skill":entry.clone(),"catalog_version":5}))
         .unwrap();
-    let parsed = serde_json::from_value::<learning_state::Status>(json!({"version":"procedural-experience-v1","enabled":true,"mode":"shadow",
+    let parsed = serde_json::from_value::<learning_state::Status>(json!({"version":"procedural-experience-v1","enabled":true,"mode":"automatic",
         "idle_seconds":300,"pending_inputs":0,"experiences":1,"consolidation_enabled":true,"patterns":1,"matching_enabled":true,
         "cross_session_enabled":false,"matches":0,"proposal_discovery_enabled":false})).unwrap();
     browser.learning.status = Some(parsed);
@@ -368,7 +368,7 @@ fn learning_creation_retry_transport_pins_selected_job_store_and_unknown_receipt
     let first = store("first", 1);
     let status = json!({"operation":"skill.learning.status"});
     browser.begin_at(&status, &first);
-    browser.accept_learning(&status,json!({"version":"procedural-experience-v1","enabled":true,"mode":"review_candidates",
+    browser.accept_learning(&status,json!({"version":"procedural-experience-v1","enabled":true,"mode":"automatic",
         "idle_seconds":300,"pending_inputs":0,"experiences":2,"consolidation_enabled":true,"patterns":1,"matching_enabled":true,
         "cross_session_enabled":false,"matches":1,"proposal_discovery_enabled":true})).unwrap();
     browser.learning.choose_pane(learning_state::Pane::Patterns);

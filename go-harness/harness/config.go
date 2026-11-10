@@ -44,7 +44,9 @@ type ConfigValue struct {
 // ModelRoute is host-only configuration for an allowed session model choice.
 // APIKey must never be included in ACP config options or persisted sessions.
 type ModelRoute struct {
+	Network              NetworkConfig `json:"-"`
 	Provider             string
+	API                  ModelAPI `json:",omitempty"`
 	Model                string
 	BaseURL              string
 	APIKey               string

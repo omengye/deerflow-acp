@@ -28,15 +28,16 @@ func TestAutoPatchPublicationObservationAndRollback(t *testing.T) {
 	regression := suite.Cases[0]
 	regression.ID = "existing-behavior"
 	regression.Kind = "regression"
+	regression.Holdout = true
 	suite.Cases = append(suite.Cases, regression)
 	e := &fixtureBehaviorEvaluator{id: "behavior-fixture-v1"}
 	configureBehavior(t, f.service, e, suite)
-	options := harness.SkillAutoPatchOptions{MaxChangedLines: 40, MaxDailyPublications: 2, ObservationHours: 72, MinObservations: 3, RollbackFailureThreshold: 2}
+	options := harness.SkillAutoPatchOptions{MaxChangedLines: 40, ObservationHours: 72, MinObservations: 3, RollbackFailureThreshold: 2}
 	if err = f.service.ConfigureAutoPatch(options); err != nil {
 		t.Fatal(err)
 	}
 	status, err := f.service.AutoPatchStatus(ctx)
-	if err != nil || status.Readiness == nil || status.Readiness.State != "ready" || status.Readiness.EligibleTargets != 1 || !status.Readiness.NewSkillsRequireReview {
+	if err != nil || status.Readiness == nil || status.Readiness.State != "ready" || status.Readiness.EligibleTargets != 1 {
 		t.Fatalf("host readiness: %+v %v", status, err)
 	}
 	base := f.head(t)
@@ -55,7 +56,7 @@ func TestAutoPatchPublicationObservationAndRollback(t *testing.T) {
 	}
 	attention := true
 	pageBefore, err := f.service.QueryProposals(ctx, harness.SkillQuery{Limit: 1, Status: "pending_review", NeedsAttention: &attention})
-	if err != nil || len(pageBefore.Proposals) != 1 || pageBefore.Proposals[0].Disposition.Reason != "improvement_or_metadata_requires_review" {
+	if err != nil || len(pageBefore.Proposals) != 1 || pageBefore.Proposals[0].Disposition.Reason != "improvement_not_proven" {
 		t.Fatal(pageBefore, err)
 	}
 	if _, err = f.service.Reject(ctx, unimproved.ID, review(unimproved)); err != nil {
@@ -89,7 +90,7 @@ func TestAutoPatchPublicationObservationAndRollback(t *testing.T) {
 		t.Fatalf("publication and observation not atomic: %+v %v", o, err)
 	}
 	// New conversations observe the new immutable version.
-	snapshot, err := f.registry.Snapshot(ctx, harness.SkillSelection{Workspace: f.cfg.Sources[0].Workspace})
+	snapshot, err := f.registry.Restore(ctx, harness.SkillSelection{Workspace: f.cfg.Sources[0].Workspace}, []harness.SkillRef{{SourceID: o.Target.SourceID, SourceIdentity: o.Target.SourceIdentity, Name: o.Target.Name, Version: o.Head.Version, Hash: o.Head.Version}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,10 +137,10 @@ func TestAutoPatchPublicationObservationAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	o, err = readAutoPatchObservation(ctx, f.db.DB(), proposal.ID)
-	if err != nil || o.Failures != 2 || o.ConsecutiveFailures != 1 || o.Status != "observing" {
-		t.Fatalf("success did not reset failure streak: %+v %v", o, err)
+	if err != nil || o.Failures != 2 || o.ConsecutiveFailures != 1 || o.Status != "rolled_back" {
+		t.Fatalf("cumulative failures were erased by a success: %+v %v", o, err)
 	}
-	addFeedback("quality_failure", "new-quality-three")
+
 	// Reopen the service before monitoring; neither grants nor volatile counters
 	// decide publication identity, outcome counts or rollback revision.
 	if err = f.service.Close(); err != nil {
@@ -157,7 +158,7 @@ func TestAutoPatchPublicationObservationAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	o, err = readAutoPatchObservation(ctx, f.db.DB(), proposal.ID)
-	if err != nil || o.Status != "rolled_back" || o.Failures != 3 || o.ConsecutiveFailures != 2 || o.RollbackRevision != 4 || f.head(t).Version != base.Version {
+	if err != nil || o.Status != "rolled_back" || o.Failures != 2 || o.ConsecutiveFailures != 1 || o.RollbackRevision != 4 || f.head(t).Version != base.Version {
 		t.Fatalf("confirmed regressions not rolled back: %+v %v", o, err)
 	}
 	before := f.head(t)

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
@@ -86,10 +87,15 @@ func (a *MatchAccess) Identity() string { return a.identity }
 // restrictive Names selection or disabled/tombstoned visible name must never be
 // bypassed by creating a fresh skill, even in a higher-precedence source.
 func (a *MatchAccess) NewCapabilityTargetTx(ctx context.Context, tx *sql.Tx, workspace, sourceID, name string) (harness.SkillTarget, error) {
+	return a.newCapabilityTargetTx(ctx, tx, workspace, sourceID, name, true)
+}
+
+func (a *MatchAccess) newCapabilityTargetTx(ctx context.Context, tx *sql.Tx, workspace, sourceID, name string, allowScopedName bool) (harness.SkillTarget, error) {
 	var target harness.SkillTarget
 	if a == nil || tx == nil || a.names != nil || !filepath.IsAbs(workspace) || filepath.Clean(workspace) != workspace || !harness.ValidSkillCapabilityName(name) {
 		return target, denied("new capability requires unrestricted host skill selection")
 	}
+	foreignName := false
 	for _, s := range a.sources {
 		visible := s.target.Scope == harness.SkillScopeGlobal && a.global || s.target.Scope == harness.SkillScopeWorkspace && session.SameWorkspace(workspace, s.target.Workspace)
 		if !visible {
@@ -105,11 +111,26 @@ func (a *MatchAccess) NewCapabilityTargetTx(ctx context.Context, tx *sql.Tx, wor
 			return harness.SkillTarget{}, err
 		}
 		if occupied {
-			return harness.SkillTarget{}, harness.ErrSkillConflict
+			var scope, public string
+			var deleted bool
+			err := tx.QueryRowContext(ctx, `SELECT r.workspace,r.public_version,c.deleted FROM df_skill_routes r JOIN df_skill_control c ON c.source_key=r.source_key AND c.name=r.name JOIN df_skill_installs i ON i.source_key=r.source_key AND i.name=r.name AND i.current_version=r.candidate_version WHERE r.source_key=? AND r.name=?`, s.target.SourceIdentity, name).Scan(&scope, &public, &deleted)
+			if errors.Is(err, sql.ErrNoRows) || err == nil && (deleted || public != "" || scope == "" || session.SameWorkspace(scope, workspace)) {
+				return harness.SkillTarget{}, harness.ErrSkillConflict
+			}
+			if err != nil {
+				return harness.SkillTarget{}, err
+			}
+			foreignName = true
 		}
 	}
 	if target.SourceID == "" {
 		return target, denied("new capability source is not visible and non-builtin")
+	}
+	if foreignName {
+		if !allowScopedName {
+			return harness.SkillTarget{}, harness.ErrSkillConflict
+		}
+		return a.newCapabilityTargetTx(ctx, tx, workspace, sourceID, WorkspaceSkillName(name, workspace), false)
 	}
 	return target, nil
 }
@@ -117,6 +138,52 @@ func (a *MatchAccess) NewCapabilityTargetTx(ctx context.Context, tx *sql.Tx, wor
 // InventoryTx resolves the same disabled-shadow and duplicate-name semantics
 // as a new runtime Snapshot. Management List is deliberately not an access list.
 func (a *MatchAccess) InventoryTx(ctx context.Context, tx *sql.Tx, workspace string) (MatchInventory, error) {
+	return a.inventoryRangeTx(ctx, tx, workspace, "", "")
+}
+
+// InventoryPageTx bounds metadata memory independently of catalog lifetime size.
+// The cursor includes disabled/shadowed names so a page always makes progress.
+func (a *MatchAccess) InventoryPageTx(ctx context.Context, tx *sql.Tx, workspace, after string) (MatchInventory, string, bool, error) {
+	var keys []any
+	for _, source := range a.sources {
+		if source.target.Scope == harness.SkillScopeGlobal && a.global || source.target.Scope == harness.SkillScopeWorkspace && session.SameWorkspace(workspace, source.target.Workspace) {
+			keys = append(keys, source.target.SourceIdentity)
+		}
+	}
+	if len(keys) == 0 {
+		inv, err := a.inventoryRangeTx(ctx, tx, workspace, "", "")
+		return inv, after, true, err
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",")
+	keys = append(keys, after, MaxMatchInventory)
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT name FROM df_skill_installs WHERE source_key IN (`+placeholders+`) AND name>? ORDER BY name LIMIT ?`, keys...)
+	if err != nil {
+		return MatchInventory{}, after, false, err
+	}
+	last, count := after, 0
+	for rows.Next() {
+		if err = rows.Scan(&last); err != nil {
+			break
+		}
+		count++
+	}
+	err = errors.Join(err, rows.Err(), rows.Close())
+	if err != nil {
+		return MatchInventory{}, after, false, err
+	}
+	// An empty range must not be interpreted as the unbounded range.
+	if count == 0 {
+		last = after + "\x00"
+	}
+	inv, err := a.inventoryRangeTx(ctx, tx, workspace, after, last)
+	return inv, last, count < MaxMatchInventory, err
+}
+
+func (a *MatchAccess) InventoryNameTx(ctx context.Context, tx *sql.Tx, workspace, name string) (MatchInventory, error) {
+	return a.inventoryRangeTx(ctx, tx, workspace, "", name, name)
+}
+
+func (a *MatchAccess) inventoryRangeTx(ctx context.Context, tx *sql.Tx, workspace, after, through string, exact ...string) (MatchInventory, error) {
 	inventory := MatchInventory{Skills: []MatchSkill{}, access: a, transaction: tx, grants: map[string]bool{}}
 	if a == nil || tx == nil || !filepath.IsAbs(workspace) || filepath.Clean(workspace) != workspace {
 		return inventory, denied("matching requires a canonical host workspace")
@@ -131,20 +198,28 @@ func (a *MatchAccess) InventoryTx(ctx context.Context, tx *sql.Tx, workspace str
 	if a.names != nil && len(a.names) == 0 {
 		return inventory, nil
 	}
-	scanned, metadataBytes := 0, 0
 	for _, s := range a.sources {
 		if s.target.Scope == harness.SkillScopeGlobal && !a.global || s.target.Scope == harness.SkillScopeWorkspace && !session.SameWorkspace(workspace, s.target.Workspace) {
 			continue
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT i.name,i.current_version,i.enabled,
+		query := `SELECT i.name,i.current_version,i.enabled,
  CASE WHEN length(CAST(v.metadata AS BLOB))+length(CAST(v.manifest AS BLOB))<=? THEN v.metadata ELSE '' END,
  CASE WHEN length(CAST(v.metadata AS BLOB))+length(CAST(v.manifest AS BLOB))<=? THEN v.manifest ELSE '' END,v.total_bytes
  FROM df_skill_installs i JOIN df_skill_versions v ON v.source_key=i.source_key AND v.name=i.name AND v.version=i.current_version
- WHERE i.source_key=? ORDER BY i.name LIMIT ?`, maxMatchMetadataBytes, maxMatchMetadataBytes, s.target.SourceIdentity, MaxMatchInventory+1)
+ WHERE i.source_key=? AND i.name>?`
+		args := []any{maxMatchMetadataBytes, maxMatchMetadataBytes, s.target.SourceIdentity, after}
+		if through != "" {
+			query += ` AND i.name<=?`
+			args = append(args, through)
+		}
+		if len(exact) > 0 {
+			query += ` AND i.name=?`
+			args = append(args, exact[0])
+		}
+		rows, err := tx.QueryContext(ctx, query+` ORDER BY i.name`, args...)
 		if err != nil {
 			return inventory, err
 		}
-		count := 0
 		for rows.Next() {
 			var name, version, meta, manifest string
 			var enabled bool
@@ -152,15 +227,22 @@ func (a *MatchAccess) InventoryTx(ctx context.Context, tx *sql.Tx, workspace str
 			if err = rows.Scan(&name, &version, &enabled, &meta, &manifest, &size); err != nil {
 				break
 			}
-			count++
-			scanned++
-			metadataBytes += len(meta) + len(manifest)
-			if count > MaxMatchInventory || scanned > 2*MaxMatchInventory || metadataBytes > maxMatchInventoryBytes {
-				err = invalid("matching inventory exceeds bounds")
-				break
-			}
 			if !selectedName(a.names, name) {
 				continue
+			}
+			routed, routeErr := RouteVersionTx(ctx, tx, s.target.SourceIdentity, name, version, workspace, "")
+			if routeErr != nil {
+				err = routeErr
+				break
+			}
+			if routed == "" {
+				continue
+			}
+			if routed != version {
+				version = routed
+				if err = tx.QueryRowContext(ctx, `SELECT metadata,manifest,total_bytes FROM df_skill_versions WHERE source_key=? AND name=? AND version=?`, s.target.SourceIdentity, name, version).Scan(&meta, &manifest, &size); err != nil {
+					break
+				}
 			}
 			fm, _, decodeErr := decodeVersion(meta, manifest, version, size, a.limits)
 			if decodeErr != nil || fm.Name != name {
@@ -185,10 +267,6 @@ func (a *MatchAccess) InventoryTx(ctx context.Context, tx *sql.Tx, workspace str
 				}
 			}
 			chosen[name] = e
-			if len(chosen) > MaxMatchInventory || len(chosen) > a.limits.MaxSkills {
-				err = invalid("matching inventory exceeds bounds")
-				break
-			}
 		}
 		if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
 			return inventory, err
@@ -202,9 +280,14 @@ func (a *MatchAccess) InventoryTx(ctx context.Context, tx *sql.Tx, workspace str
 		if err != nil {
 			return inventory, err
 		}
-		if !head.Exists || !head.Enabled || head.Version != e.Head.Version {
+		routed, routeErr := RouteVersionTx(ctx, tx, e.Target.SourceIdentity, name, head.Version, workspace, "")
+		if routeErr != nil {
+			return inventory, routeErr
+		}
+		if !head.Exists || !head.Enabled || routed != e.Head.Version {
 			return inventory, invalid("matching head is inconsistent")
 		}
+		head.Version = e.Head.Version
 		e.Head = head
 		var base string
 		err = tx.QueryRowContext(ctx, `SELECT base_version FROM df_skill_overlays WHERE source_key=? AND name=?`, e.Target.SourceIdentity, name).Scan(&base)
@@ -222,6 +305,9 @@ func (a *MatchAccess) InventoryTx(ctx context.Context, tx *sql.Tx, workspace str
 	}
 	sort.Slice(inventory.Skills, func(i, j int) bool { return inventory.Skills[i].Target.Name < inventory.Skills[j].Target.Name })
 	for _, name := range a.names {
+		if through != "" {
+			continue
+		}
 		if !slices.ContainsFunc(inventory.Skills, func(e MatchSkill) bool { return e.Target.Name == name }) {
 			return inventory, harness.ErrNotFound
 		}

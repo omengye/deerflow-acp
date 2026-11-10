@@ -45,11 +45,12 @@ func NewSkillBehaviorEvaluator(ctx context.Context, cfg harness.SkillBehaviorMod
 	if cfg.Timeout < time.Second || cfg.Timeout > 300*time.Second || cfg.MaxInputBytes < 1024 || cfg.MaxInputBytes > 2<<20 || cfg.MaxOutputTokens < 128 || cfg.MaxOutputTokens > 8192 || cfg.MaxModelCalls < 1 || cfg.MaxModelCalls > 32 || cfg.MaxToolCalls < 1 || cfg.MaxToolCalls > 128 {
 		return nil, fmt.Errorf("%w: invalid behavior model limits", harness.ErrInvalidInput)
 	}
-	chat, err := newModelWithRetryPolicy(ctx, Config{Provider: cfg.Route.Provider, APIKey: cfg.Route.APIKey, BaseURL: cfg.Route.BaseURL, Model: cfg.Route.Model, OutputTokenParameter: cfg.Route.OutputTokenParameter}, cfg.Route.Model, true)
+	chat, err := newModelWithRetryPolicy(ctx, Config{API: cfg.Route.API, Network: cfg.Route.Network, Provider: cfg.Route.Provider, APIKey: cfg.Route.APIKey, BaseURL: cfg.Route.BaseURL, Model: cfg.Route.Model, OutputTokenParameter: cfg.Route.OutputTokenParameter}, cfg.Route.Model, true)
 	if err != nil {
 		return nil, skillReviewError("cannot construct behavior model")
 	}
-	identity, _ := json.Marshal([]any{skillBehaviorVersion, cfg.Route.Provider, cfg.Route.Model, cfg.Route.BaseURL, cfg.Route.OutputTokenParameter, cfg.Timeout.String(), cfg.MaxInputBytes, cfg.MaxOutputTokens, cfg.MaxModelCalls, cfg.MaxToolCalls})
+	identity, _ := json.Marshal([]any{skillBehaviorVersion, skillbehavior.RuntimeVersion, cfg.Route.Provider, cfg.Route.Model, cfg.Route.BaseURL, cfg.Route.OutputTokenParameter, cfg.Timeout.String(), cfg.MaxInputBytes, cfg.MaxOutputTokens, cfg.MaxModelCalls, cfg.MaxToolCalls})
+	identity = appendModelAPIIdentity(identity, cfg.Route.API)
 	return &skillBehaviorEvaluator{config: cfg, chat: chat, identity: skillBehaviorVersion + "/" + skillbehavior.Hash(identity)}, nil
 }
 func (e *skillBehaviorEvaluator) Identity() string { return e.identity }
@@ -121,7 +122,7 @@ func (e *skillBehaviorEvaluator) Evaluate(parent context.Context, in harness.Ski
 	}()
 	broker, ok := skillmaintenance.BrokerFromContext(parent)
 	if !ok {
-		return result, skillReviewError("behavior requires an independent maintenance budget")
+		return result, skillReviewError("behavior requires a host maintenance recorder")
 	}
 	if _, parentRun := parent.Value(skillReviewRuntimeKey{}).(*skillReviewRuntime); parentRun {
 		return result, skillReviewError("behavior cannot use parent task budget")
@@ -145,6 +146,9 @@ func (e *skillBehaviorEvaluator) Evaluate(parent context.Context, in harness.Ski
 		triggerRun = true
 		return e.evaluateTrigger(ctx, broker, in)
 	}
+	if skillbehavior.HasScripts(in.Files) && !skillbehavior.RuntimeReady(ctx) {
+		return result, skillmaintenance.ErrBlockedRuntime
+	}
 	workspace, err := newBehaviorWorkspace(in.Files, in.Case)
 	if err != nil {
 		result.ErrorCode = "workspace_error"
@@ -160,6 +164,7 @@ func (e *skillBehaviorEvaluator) Evaluate(parent context.Context, in harness.Ski
 			}
 		}
 	}()
+	defer func() { result.Scripts = append([]harness.SkillScriptExecution(nil), workspace.scripts...) }()
 	infos := workspace.infos()
 	toolData, _ := json.Marshal(infos)
 	binding, _ := json.Marshal([]any{e.identity, in.EvaluationID, in.CaseID, in.Variant, in.Version, in.Repetition, in.Case, toolData})
@@ -247,6 +252,9 @@ func (e *skillBehaviorEvaluator) Evaluate(parent context.Context, in harness.Ski
 			result.ToolCalls++
 			output, code := workspace.invoke(ctx, call.Function.Name, call.Function.Arguments)
 			trace.add([]any{call.ID, call.Function.Name, call.Function.Arguments, output, code})
+			if code == "blocked_runtime" {
+				return result, skillmaintenance.ErrBlockedRuntime
+			}
 			if code != "" {
 				result.ErrorCode = code
 				if ctx.Err() != nil {
@@ -262,8 +270,8 @@ func (e *skillBehaviorEvaluator) Evaluate(parent context.Context, in harness.Ski
 }
 func behaviorErrorCode(err error) string {
 	switch {
-	case errors.Is(err, skillmaintenance.ErrBudget):
-		return "budget_exhausted"
+	case errors.Is(err, skillmaintenance.ErrCapacity):
+		return "deferred_capacity"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
 	case errors.Is(err, context.Canceled):

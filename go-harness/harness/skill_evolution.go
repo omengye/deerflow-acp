@@ -75,6 +75,7 @@ type SkillProposal struct {
 	Target                 SkillTarget             `json:"target"`
 	Base                   SkillHead               `json:"base"`
 	OverlayBase            *SkillRef               `json:"overlay_base,omitempty"`
+	ContentExpired         bool                    `json:"content_expired,omitempty"`
 	CandidateVersion       string                  `json:"candidate_sha256,omitempty"`
 	Reason                 string                  `json:"reason"`
 	Trigger                SkillTrigger            `json:"trigger"`
@@ -102,13 +103,25 @@ type SkillProposal struct {
 // Approval is immutable evidence for one reviewed candidate, not proof that
 // publication completed or permission to adopt different source contents.
 type SkillApproval struct {
-	ProposalID       string      `json:"proposal_id"`
-	Target           SkillTarget `json:"target"`
-	Base             SkillHead   `json:"base"`
-	CandidateVersion string      `json:"candidate_version"`
-	EvaluationDigest string      `json:"evaluation_digest"`
-	Review           SkillReview `json:"review"`
-	CreatedAt        time.Time   `json:"created_at"`
+	// UserConfirmation records explicit native user authority to bypass the
+	// automatic evidence gates. It never turns an unrun check into a pass.
+	UserConfirmation *SkillUserConfirmation `json:"user_confirmation,omitempty"`
+	ProposalID       string                 `json:"proposal_id"`
+	Target           SkillTarget            `json:"target"`
+	Base             SkillHead              `json:"base"`
+	CandidateVersion string                 `json:"candidate_version"`
+	EvaluationDigest string                 `json:"evaluation_digest"`
+	Review           SkillReview            `json:"review"`
+	CreatedAt        time.Time              `json:"created_at"`
+}
+
+type SkillUserConfirmation struct {
+	SessionID   string `json:"session_id"`
+	RunID       string `json:"run_id"`
+	InputID     string `json:"input_id"`
+	InputSHA    string `json:"input_sha256"`
+	Workspace   string `json:"workspace"`
+	RuleVersion string `json:"rule_version"`
 }
 
 type SkillProposalDisposition struct {
@@ -146,8 +159,8 @@ type SkillModelCheck struct {
 }
 
 // SkillModelReviewConfig creates two independent, tool-free model calls for
-// manual review. The host must explicitly configure both routes. This is not
-// the discovery-worker budget, and does not enable automatic publication.
+// content validation. Native automatic maintenance inherits both routes from
+// the primary model. Content decisions alone never authorize adoption.
 type SkillModelReviewConfig struct {
 	Moderation, Evaluation         ModelRoute
 	Timeout                        time.Duration
@@ -200,9 +213,8 @@ type SkillPublication struct {
 }
 
 type SkillReview struct {
-	ExpectedStateVersion         int64
-	Actor, Note                  string
-	AcknowledgeUnverifiedScripts bool `json:",omitempty"`
+	ExpectedStateVersion int64
+	Actor, Note          string
 }
 
 type SkillRollback struct {

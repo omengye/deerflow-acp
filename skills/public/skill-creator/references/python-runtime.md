@@ -27,13 +27,13 @@ Use only supported declaration fields. Invented `meta.json` keys do not enable d
 
 Use `skill_run` with `action: "check"` and the skill's `name` for the session-selected snapshot. Inspect the actual schema for any additional constraints. Read the returned version and readiness diagnostics. A `skill://` URI or `<SKILL_DIR>` placeholder is not an executable filesystem path.
 
-The host binds checks and execution to an immutable skill snapshot. Do not substitute a mutable installation directory or an externally edited script when the session is pinned to another version. After changing the package, obtain new approval and verify which version the next turn selects.
+The host binds checks and execution to an immutable skill snapshot. Do not substitute a mutable installation directory or an externally edited script when the session is pinned to another version. After changing the package, obtain fresh host validation and verify which version the next turn selects.
 
 A readiness check is not behavioral testing and does not authorize execution. If Python or a dependency is missing, report the exact unready condition. Do not automatically run `pip install`, create environments, modify global Python or install dependencies on skill load. Dependency preparation is a separate authorized operation with a disclosed installation plan.
 
 ## Run only the authorized operation
 
-Use `skill_run` with `action: "run"`, `name`, package-relative `path`, explicit `args` and an appropriate `timeout_seconds`. The host checks readiness before running, materializes the pinned package and selects the configured interpreter. Follow the existing execution-approval policy; a skill's manual publication is not command authorization. Do not execute in plan mode.
+Use `skill_run` with `action: "run"`, `name`, package-relative `path`, explicit `args` and an appropriate `timeout_seconds`. The host checks readiness before running, materializes the pinned package and selects the configured interpreter. Follow the existing execution-approval policy; a skill's publication does not grant command authorization. Do not execute in plan mode.
 
 Local execution, PowerShell and WSL do not become security sandboxes through snapshotting or hash checks. Use an actually configured isolation backend when required for untrusted execution. Do not claim isolation that the host has not supplied.
 

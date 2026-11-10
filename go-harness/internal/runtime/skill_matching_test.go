@@ -62,6 +62,10 @@ func (m *matchingTestModel) Match(ctx context.Context, input harness.SkillExperi
 }
 
 func newMatchingTest(t *testing.T) (*Service, harness.Session, *skills.Registry, *consolidationTestExtractor, *matchingTestModel) {
+	return newMatchingTestSources(t, false, false)
+}
+
+func newMatchingTestSources(t *testing.T, global, readOnly bool) (*Service, harness.Session, *skills.Registry, *consolidationTestExtractor, *matchingTestModel) {
 	t.Helper()
 	s, x, _ := newLearningTest(t, true)
 	_ = s.Store.Learning.Close()
@@ -72,7 +76,15 @@ func newMatchingTest(t *testing.T) (*Service, harness.Session, *skills.Registry,
 	if err := os.WriteFile(filepath.Join(root, "json-check", "SKILL.md"), []byte("---\nname: json-check\ndescription: Inspect JSON structured configuration token=PRIVATE_SKILL_MATCH_DESCRIPTION\n---\nValidate required fields token=PRIVATE_SKILL_MATCH_BODY\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	r, err := skills.NewRegistry(context.Background(), harness.SkillsConfig{Sources: []harness.SkillSource{{ID: "project", Root: root, Scope: harness.SkillScopeWorkspace, Workspace: x.CWD}}}, s.Store.db)
+	config := harness.SkillsConfig{Sources: []harness.SkillSource{{ID: "project", Root: root, Scope: harness.SkillScopeWorkspace, Workspace: x.CWD}}}
+	if global {
+		config.Sources[0].Scope, config.Sources[0].Workspace = harness.SkillScopeGlobal, ""
+	}
+	if readOnly {
+		config.BuiltinSources = []string{"project"}
+		config.Sources = append(config.Sources, harness.SkillSource{ID: "owned", Root: t.TempDir(), Scope: harness.SkillScopeGlobal})
+	}
+	r, err := skills.NewRegistry(context.Background(), config, s.Store.db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +95,7 @@ func newMatchingTest(t *testing.T) (*Service, harness.Session, *skills.Registry,
 	if err = r.SetEnabled(context.Background(), "project", "json-check", true); err != nil {
 		t.Fatal(err)
 	}
-	access, err := r.NewMatchAccess(harness.SkillSelection{})
+	access, err := r.NewMatchAccess(harness.SkillSelection{IncludeGlobal: global || readOnly})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,13 +122,23 @@ func newMatchingTest(t *testing.T) (*Service, harness.Session, *skills.Registry,
 
 func matchingQueue(t *testing.T, s *Service) {
 	t.Helper()
-	worked, err := s.Store.Learning.QueueMatchOne(context.Background())
-	if err == nil && !worked {
-		worked, err = s.Store.Learning.QueueMatchOne(context.Background())
+	var pending int
+	if err := s.Store.db.QueryRow(`SELECT count(*) FROM df_learning_match_inputs WHERE state='pending'`).Scan(&pending); err != nil {
+		t.Fatal(err)
 	}
-	if err != nil || !worked {
-		t.Fatal("matching did not queue", worked, err)
+	for range pending + 8 {
+		if _, err := s.Store.Learning.QueueMatchOne(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		var queued bool
+		if err := s.Store.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM df_skill_maintenance_jobs WHERE job_kind='skill_match' AND state='queued')`).Scan(&queued); err != nil {
+			t.Fatal(err)
+		}
+		if queued {
+			return
+		}
 	}
+	t.Fatal("matching did not queue a runnable job")
 }
 
 func matchingRun(t *testing.T, s *Service) {
@@ -175,7 +197,7 @@ func TestSkillLearningMatchingPinsTargetAndDoesNotFabricateReadsOrGeneration(t *
 		t.Fatal("derived matcher snapshot duplicated sensitive skill metadata", err)
 	}
 	status, err := s.Store.Learning.Status(ctx)
-	if err != nil || !status.MatchingEnabled || status.Matches != 1 || status.Mode != "shadow" {
+	if err != nil || !status.MatchingEnabled || status.Matches != 1 || status.Mode != "automatic" {
 		t.Fatal(status, err)
 	}
 	job, _ := matchingJob(t, s)
@@ -430,8 +452,16 @@ func TestSkillLearningMatchingBlockedEvidenceAndIncompleteInventoryRemainNonGene
 			}
 			consolidateExtract(t, s, x, "Inspect JSON configuration")
 			consolidateRun(t, s)
-			matchingQueue(t, s)
-			if mode != "unresolved" {
+			if mode == "unresolved" {
+				if worked, err := s.Store.Learning.QueueMatchOne(ctx); err != nil || !worked {
+					t.Fatal("unresolved evidence was not classified", worked, err)
+				}
+				var state, reason string
+				if err := s.Store.db.QueryRow(`SELECT state,reason FROM df_learning_match_inputs`).Scan(&state, &reason); err != nil || state != "skipped" || reason != "evidence_blocked" {
+					t.Fatal("unresolved evidence must be skipped without creating a runnable model job", state, reason, err)
+				}
+			} else {
+				matchingQueue(t, s)
 				matchingRun(t, s)
 			}
 			page, err := s.Store.Learning.Matches(ctx, x.ID, "", 10)
@@ -643,7 +673,7 @@ func TestSkillLearningMatchingQueueBackpressurePreservesEvidenceForLater(t *test
 	ctx := context.Background()
 	consolidateExtract(t, s, x, "A verified JSON check")
 	consolidateRun(t, s)
-	queue, err := skillmaintenance.New(ctx, s.Store.db, consolidationTestOptions().Budget)
+	queue, err := skillmaintenance.New(ctx, s.Store.db, consolidationTestOptions().Policy)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,6 +16,7 @@ func modelAgentFields() []Field {
 		{Path: "/models/*/display_name", Type: "string", Default: "", MaxLength: 4096},
 		{Path: "/models/*/description", Type: "string", Default: "", MaxLength: 4096},
 		{Path: "/models/*/provider", Type: "string", Default: "openai", Enum: []string{"openai", "claude"}},
+		{Path: "/models/*/api", Type: "string", Default: "auto", Enum: []string{"auto", "chat_completions", "responses"}},
 		{Path: "/models/*/model", Type: "string", Default: "", MaxLength: 256},
 		{Path: "/models/*/api_key", Type: "string", Default: ""},
 		{Path: "/models/*/base_url", Type: "string", Default: ""},
@@ -25,6 +26,8 @@ func modelAgentFields() []Field {
 		numeric("models/*", "thinking_budget_tokens", "integer", 0, 0, (1<<30)-1),
 		{Path: "/models/*/reasoning_efforts", Type: "reasoning_efforts", Nullable: true, Default: nil},
 		numeric("models/*", "context_window", "integer", 0, 0, 1<<30),
+		numeric("models/*", "max_output_tokens", "integer", 0, 0, 1<<30),
+		numeric("models/*", "max_supported_output_tokens", "integer", 0, 0, 1<<30),
 		{Path: "/models/*/clear_api_key", Type: "boolean", Default: false},
 		{Path: "/subagents/enabled", Type: "boolean", Default: false},
 		numeric("subagents", "max_concurrent", "integer", 2, 1, 64),
@@ -148,7 +151,7 @@ func ValidateModelDraft(model map[string]any) error {
 	}
 	for _, field := range Describe().Fields {
 		if key, ok := strings.CutPrefix(field.Path, "/models/*/"); ok {
-			if key == "reasoning_efforts" || key == "output_token_parameter" || key == "thinking_parameter" || key == "thinking_budget_tokens" {
+			if key == "api" || key == "reasoning_efforts" || key == "output_token_parameter" || key == "thinking_parameter" || key == "thinking_budget_tokens" || key == "max_output_tokens" || key == "max_supported_output_tokens" {
 				continue // Older desktop drafts preserve these optional settings.
 			}
 			if _, exists := model[key]; !exists {
@@ -165,12 +168,23 @@ func ValidateModelDraft(model map[string]any) error {
 }
 
 func validateModelReasoning(model map[string]any) error {
+	output, err := modelOutputLimits(model)
+	if err != nil {
+		return err
+	}
+	if err := output.Validate(0); err != nil {
+		return err
+	}
 	provider, _ := model["provider"].(string)
 	if provider == "" {
 		legacy, _ := model["use"].(string)
 		provider, _ = harness.NativeModelProvider(legacy)
 	}
 	parameter, _ := model["output_token_parameter"].(string)
+	api, _ := model["api"].(string)
+	if err := harness.ValidateModelAPIOptions(provider, harness.ModelAPI(api), harness.OutputTokenParameter(parameter)); err != nil {
+		return fmt.Errorf("/models/*/api: %w", err)
+	}
 	if _, err := harness.ResolveOutputTokenParameter(provider, "", harness.OutputTokenParameter(parameter)); err != nil {
 		return fmt.Errorf("/models/*/output_token_parameter: %w", err)
 	}
@@ -208,5 +222,5 @@ func validateModelReasoning(model map[string]any) error {
 		}
 	}
 	// The configuration loader validates against the actual host output limit.
-	return (harness.ThinkingConfig{Parameter: thinkingParameter, BudgetTokens: budget}).Validate(provider, efforts, 1<<30)
+	return (harness.ThinkingConfig{Parameter: thinkingParameter, BudgetTokens: budget}).Validate(provider, efforts, output.Effective(1<<30))
 }

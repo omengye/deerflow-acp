@@ -303,7 +303,7 @@ func TestNativeWebStatusCancellationAndCredentialRedirect(t *testing.T) {
 	defer other.Close()
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/redirect":
+		case "/redirect/res/v1/web/search":
 			http.Redirect(w, r, other.URL, 302)
 		case "/wait":
 			<-r.Context().Done()
@@ -319,7 +319,7 @@ func TestNativeWebStatusCancellationAndCredentialRedirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.transport.CloseIdleConnections()
-	s.braveBase = origin.URL + "/redirect"
+	s.braveBase = origin.URL + "/redirect/res/v1/web/search"
 	if _, err := s.search(context.Background(), webSearchInput{Query: "test"}); err != nil {
 		t.Fatal(err)
 	}

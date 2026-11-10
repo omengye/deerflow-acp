@@ -29,6 +29,13 @@ func (p *PublicationTx) queueExport(head SkillHead) error {
 	if p.export == nil || !head.Managed {
 		return nil
 	}
+	var scoped bool
+	if err := p.tx.QueryRowContext(p.ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_routes WHERE source_key=? AND name=? AND workspace<>'')`, p.source.identity, p.name).Scan(&scoped); err != nil {
+		return err
+	}
+	if scoped {
+		return nil
+	}
 	data, _ := json.Marshal(head)
 	_, err := p.tx.ExecContext(p.ctx, `INSERT INTO df_skill_exports(source_key,name,export_key,state_version,head,status,view_directory,attempts,error_code,updated_at,retry_after_ns) VALUES(?,?,?,?,?,'pending','',0,'',?,0) ON CONFLICT(source_key,name,export_key) DO UPDATE SET state_version=excluded.state_version,head=excluded.head,status='pending',view_directory='',attempts=0,error_code='',updated_at=excluded.updated_at,retry_after_ns=0 WHERE df_skill_exports.state_version<>excluded.state_version`, p.source.identity, p.name, p.export.key, head.StateVersion, string(data), time.Now().UTC().Format(time.RFC3339Nano))
 	return err

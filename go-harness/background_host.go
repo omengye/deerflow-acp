@@ -19,6 +19,7 @@ import (
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
+	"github.com/omengye/deerflow-acp/go-harness/internal/network"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
 )
@@ -84,7 +85,8 @@ func backgroundHostPolicyVersion(cfg Config, version int) (string, error) {
 		PermissionMode                        harness.PermissionMode
 		Subagents                             *harness.SubagentsConfig      `json:",omitempty"`
 		ModelRoutes                           map[string]harness.ModelRoute `json:",omitempty"`
-	}{version, cfg.Provider, cfg.BaseURL, cfg.Model, cfg.Instruction, cfg.MaxIterations, cfg.DisableSubagents, cfg.Media, toolPolicy, cfg.PermissionMode, cfg.Subagents, routes})
+		Network                               string                        `json:",omitempty"`
+	}{version, cfg.Provider, cfg.BaseURL, cfg.Model, cfg.Instruction, cfg.MaxIterations, cfg.DisableSubagents, cfg.Media, toolPolicy, cfg.PermissionMode, cfg.Subagents, routes, network.Fingerprint(cfg.Network)})
 	if err != nil {
 		return "", err
 	}

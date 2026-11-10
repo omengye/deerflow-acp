@@ -79,7 +79,7 @@ func TestSkillLearningMatchingReassessmentNativeInventoryChangeIsNotModelRetry(t
 				t.Fatal("native automatic reassessment was not a fresh paid snapshot", fresh, calls.Load(), err)
 			}
 			var count, tokens, unsettled int
-			if err := s.Store.db.QueryRow(`SELECT count(*),COALESCE(sum(charged_tokens),0),COALESCE(sum(state<>'settled'),0) FROM df_skill_maintenance_calls WHERE job_id IN (?,?)`, oldID, freshID).Scan(&count, &tokens, &unsettled); err != nil || count != paid+1 || tokens != 15*count || unsettled != 0 {
+			if err := s.Store.db.QueryRow(`SELECT count(*),COALESCE(sum(actual_tokens),0),COALESCE(sum(state<>'settled'),0) FROM df_skill_maintenance_calls WHERE job_id IN (?,?)`, oldID, freshID).Scan(&count, &tokens, &unsettled); err != nil || count != paid+1 || tokens != 15*count || unsettled != 0 {
 				t.Fatal("native reassessment refunded or reclassified accounting", count, tokens, unsettled, err)
 			}
 			page, err := s.Store.Learning.Matches(ctx, x.ID, "", 10)

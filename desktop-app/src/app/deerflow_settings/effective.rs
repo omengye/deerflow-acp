@@ -160,73 +160,25 @@ pub(super) fn read(status: &Value) -> Vec<Row> {
         (
             "/skills/include_global",
             "加载全局技能",
-            Section::Skills,
+            Section::SkillCenter,
             false,
         ),
         (
             "/skills/source_count",
             "技能来源数量",
-            Section::Skills,
+            Section::SkillCenter,
             false,
         ),
         (
             "/skills/managed_source_count",
             "托管技能来源数量",
-            Section::Skills,
+            Section::SkillCenter,
             false,
         ),
         (
             "/skills/model_submission_enabled",
             "模型提交技能候选",
-            Section::Skills,
-            false,
-        ),
-        (
-            "/skill_evolution/mode",
-            "技能发布方式",
-            Section::Skills,
-            true,
-        ),
-        (
-            "/skill_evolution/generation/enabled",
-            "技能候选生成",
-            Section::Skills,
-            true,
-        ),
-        (
-            "/skill_evolution/discovery/enabled",
-            "技能自动发现",
-            Section::Skills,
-            false,
-        ),
-        (
-            "/skill_evolution/learning/enabled",
-            "会话经验提取（仅积累）",
-            Section::Skills,
-            false,
-        ),
-        (
-            "/skill_evolution/learning/consolidation_enabled",
-            "经验语义归并（仅积累）",
-            Section::Skills,
-            false,
-        ),
-        (
-            "/skill_evolution/learning/cross_session_enabled",
-            "工作区跨会话归并（需会话授权）",
-            Section::Skills,
-            false,
-        ),
-        (
-            "/skill_evolution/learning/matching_enabled",
-            "经验技能匹配（仅积累）",
-            Section::Skills,
-            false,
-        ),
-        (
-            "/skill_evolution/behavior/enabled",
-            "技能行为评测",
-            Section::Skills,
+            Section::SkillCenter,
             false,
         ),
         ("/subagents/enabled", "子代理", Section::Agents, true),
@@ -250,69 +202,6 @@ pub(super) fn read(status: &Value) -> Vec<Row> {
             label,
             section,
             overview,
-        );
-    }
-    for (key, label) in [
-        ("validation/timeout_seconds", "审查超时（秒）"),
-        ("validation/max_input_bytes", "审查输入上限（字节）"),
-        ("validation/max_output_tokens", "审查输出 Token 上限"),
-        ("generation/timeout_seconds", "生成超时（秒）"),
-        ("generation/max_input_bytes", "生成输入上限（字节）"),
-        ("generation/max_output_tokens", "生成输出 Token 上限"),
-        ("learning/idle_seconds", "经验提取空闲窗口（秒）"),
-        ("learning/timeout_seconds", "经验提取超时（秒）"),
-        ("learning/max_input_bytes", "经验输入上限（字节）"),
-        ("learning/max_output_tokens", "经验输出 Token 上限"),
-        ("learning/max_daily_model_calls", "每日学习调用子额度"),
-        ("learning/max_daily_tokens", "每日学习 Token 子额度"),
-        ("learning/external_context_policy", "外部上下文学习策略"),
-        ("budget/max_daily_model_calls", "每日维护调用上限"),
-        ("budget/max_daily_tokens", "每日维护 Token 上限"),
-        ("budget/max_job_seconds", "维护作业时限（秒）"),
-        ("budget/workers", "维护并发数"),
-        ("discovery/operator_corrections_enabled", "重复纠正发现"),
-        ("discovery/missing_reports_enabled", "缺失技能发现"),
-        ("discovery/successful_workflows_enabled", "成功流程发现"),
-        ("discovery/experience_patterns_enabled", "会话经验改进提案"),
-        (
-            "discovery/experience_new_skills_enabled",
-            "会话经验新技能提案",
-        ),
-        (
-            "discovery/experience_review_drafts_enabled",
-            "单任务自动起草待审核提案",
-        ),
-        ("discovery/new_skill_source_id", "新技能源 ID"),
-        ("discovery/repeat_threshold", "发现所需独立任务数"),
-        ("discovery/repeat_window_days", "发现统计范围（天）"),
-        ("discovery/cooldown_hours", "发现冷却时间（小时）"),
-        ("discovery/max_daily_proposals", "每日自动候选上限"),
-        ("discovery/max_pending_proposals", "待处理候选上限"),
-        ("behavior/timeout_seconds", "行为评测超时（秒）"),
-        ("behavior/max_steps", "行为样例步数上限"),
-        ("behavior/max_input_bytes", "行为输入上限（字节）"),
-        ("behavior/max_output_tokens", "行为输出 Token 上限"),
-        (
-            "auto_patch/experience_patterns_enabled",
-            "会话经验受限自动补丁",
-        ),
-        ("auto_patch/max_changed_lines", "自动补丁修改行数上限"),
-        ("auto_patch/max_daily_publications", "每日自动发布上限"),
-        ("auto_patch/observation_hours", "发布观察期（小时）"),
-        ("auto_patch/min_observations", "观察期最少质量反馈数"),
-        (
-            "auto_patch/rollback_failure_threshold",
-            "回滚所需连续质量失败数",
-        ),
-    ] {
-        let path = format!("/skill_evolution/{key}");
-        push_row(
-            &mut rows,
-            &settings["fields"][&path],
-            &path,
-            label,
-            Section::Skills,
-            false,
         );
     }
     // Only the explicit non-secret allowlist is formatted. This runs when a
@@ -431,12 +320,6 @@ fn push_row(
         _ => return,
     };
     let display = match value {
-        Value::String(text) if path == "/skill_evolution/mode" && text == "review" => {
-            "人工审核".to_owned()
-        }
-        Value::String(text) if path == "/skill_evolution/mode" && text == "auto_patch" => {
-            "受限自动补丁".to_owned()
-        }
         Value::Bool(true) => "开启".to_owned(),
         Value::Bool(false) => "关闭".to_owned(),
         Value::Null => "继承".to_owned(),

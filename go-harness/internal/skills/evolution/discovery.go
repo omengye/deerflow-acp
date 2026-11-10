@@ -84,9 +84,6 @@ func discoveryPending(ctx context.Context, tx *sql.Tx) (int, error) {
 }
 
 func (s *Service) discoveryConsider(ctx context.Context, item discoveryScanItem) (bool, error) {
-	if s.discovery.options.DisableOperatorCorrections {
-		return false, nil
-	}
 	target, ok := s.generation.allowed[item.sourceID]
 	if !ok || target.SourceIdentity != item.source || !harness.ValidSkillName(item.name) {
 		return false, nil
@@ -131,6 +128,11 @@ func (s *Service) discoveryConsider(ctx context.Context, item discoveryScanItem)
 			return err
 		}
 		created, _ := time.Parse(time.RFC3339Nano, fb.CreatedAt)
+		if historical, err := skillmaintenance.HistoricalRootTx(ctx, tx.SQL(), sig.RootID); err != nil {
+			return err
+		} else if historical {
+			return remove(item.id)
+		}
 		window := now.Add(-time.Duration(s.discovery.options.RepeatWindowDays) * 24 * time.Hour)
 		if created.Before(window) || created.After(now) {
 			return remove(item.id)
@@ -160,14 +162,6 @@ func (s *Service) discoveryConsider(ctx context.Context, item discoveryScanItem)
 			return err
 		}
 		if until > now.UnixNano() {
-			return nil
-		}
-		var daily int
-		err = tx.SQL().QueryRowContext(ctx, `SELECT reservations FROM df_skill_discovery_days WHERE day=?`, now.Format("2006-01-02")).Scan(&daily)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if daily >= s.discovery.options.MaxDailyProposals {
 			return nil
 		}
 		pending, err := discoveryPending(ctx, tx.SQL())
@@ -336,7 +330,7 @@ func (s *Service) RunDiscovery(ctx context.Context) (bool, error) {
 			return len(items) > 0, errors.Join(combined, ctx.Err())
 		}
 		_, err := s.discoveryConsider(ctx, item)
-		if errors.Is(err, skillmaintenance.ErrBudget) {
+		if errors.Is(err, skillmaintenance.ErrCapacity) {
 			err = nil
 		} // Backpressure is not invalid evidence.
 		if err != nil && ctx.Err() == nil {

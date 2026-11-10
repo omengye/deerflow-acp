@@ -8,7 +8,7 @@ import (
 
 // SkillValidationFailure is host-selected diagnostic metadata, not approval
 // evidence. Retryable permits consideration of a bounded retry under the same
-// authorization and budget; it neither schedules one nor resets a failed job.
+// authorization and execution limits; it neither schedules one nor resets a failed job.
 type SkillValidationFailure struct {
 	Code           string `json:"code"`
 	Stage          string `json:"stage"`
@@ -44,8 +44,8 @@ func (f *SkillValidationFailure) Error() string {
 		return "The review request timed out before a decision was available."
 	case "review_cancelled":
 		return "The review request was cancelled before a decision was available."
-	case "review_budget_exhausted":
-		return "The review budget is exhausted."
+	case "review_runtime_unavailable":
+		return "The review runtime is unavailable."
 	case "review_storage_error":
 		return "Review accounting or storage failed."
 	case "review_input_too_large":

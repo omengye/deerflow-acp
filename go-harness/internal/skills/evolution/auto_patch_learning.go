@@ -15,7 +15,7 @@ func validAutoPatchLearningSource(o harness.SkillAutoPatchObservation) bool {
 		return true // Observations written before this independent opt-in.
 	}
 	validID := func(id, prefix string) bool { return strings.HasPrefix(id, prefix) && bounded(id, 128) }
-	return o.Options.ExperiencePatternsEnabled && validID(x.GenerationID, "smj_") && validID(x.DiscoveryID, "sd_") &&
+	return validID(x.GenerationID, "smj_") && validID(x.DiscoveryID, "sd_") &&
 		x.PatternID != "" && bounded(x.PatternID, 128) && x.MatchID != "" && bounded(x.MatchID, 128) && x.PatternRevision > 0 &&
 		hexDigest(x.DiscoverySHA) && hexDigest(x.PolicyIdentity) && hexDigest(x.EvidenceSHA) &&
 		(x.SourceState == "valid_at_publication" || x.SourceState == "withdrawn" || x.SourceState == "unavailable")

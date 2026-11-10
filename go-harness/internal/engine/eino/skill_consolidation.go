@@ -29,6 +29,7 @@ func NewSkillExperienceConsolidator(ctx context.Context, cfg harness.SkillGenera
 	}
 	base := extractor.(*experienceExtractor)
 	identity, _ := json.Marshal([]any{experienceConsolidationPromptVersion, base.config.Route.Provider, base.config.Route.Model, base.config.Route.BaseURL, base.config.Route.OutputTokenParameter, base.config.Timeout.String(), base.config.MaxInputBytes, base.config.MaxOutputTokens})
+	identity = appendModelAPIIdentity(identity, base.config.Route.API)
 	return &experienceConsolidator{config: base.config, chat: base.chat, identity: fmt.Sprintf("%s/%x", experienceConsolidationPromptVersion, sha256.Sum256(identity))}, nil
 }
 

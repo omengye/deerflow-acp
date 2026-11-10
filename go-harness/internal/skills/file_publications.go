@@ -15,12 +15,15 @@ import (
 )
 
 type filePublication struct {
-	ID         string    `json:"id"`
-	Directory  string    `json:"directory"`
-	Base       SkillHead `json:"base"`
-	Next       SkillHead `json:"next"`
-	ProposalID string    `json:"proposal_id,omitempty"`
-	Adopt      bool      `json:"adopt_existing,omitempty"`
+	ScopedBase      bool      `json:"scoped_base,omitempty"`
+	FileBaseVersion string    `json:"file_base_version,omitempty"`
+	ID              string    `json:"id"`
+	Directory       string    `json:"directory"`
+	Base            SkillHead `json:"base"`
+	Next            SkillHead `json:"next"`
+	ProposalID      string    `json:"proposal_id,omitempty"`
+	EditID          string    `json:"edit_id,omitempty"`
+	Adopt           bool      `json:"adopt_existing,omitempty"`
 }
 
 // BindPublicationProposal defers the published state until filesystem commit.
@@ -30,6 +33,19 @@ func (p *PublicationTx) BindPublicationProposal(id string) error {
 		return invalid("publication journal required")
 	}
 	p.publication.ProposalID = id
+	data, err := json.Marshal(p.publication)
+	if err != nil {
+		return err
+	}
+	_, err = p.tx.ExecContext(p.ctx, `UPDATE df_skill_file_publications SET payload=?,payload_sha=? WHERE source_key=? AND name=?`, data, digest(data), p.source.identity, p.name)
+	return err
+}
+
+func (p *PublicationTx) bindPublicationEdit(id string) error {
+	if p.publication == nil || !validEditID(id) {
+		return invalid("publication edit journal required")
+	}
+	p.publication.EditID = id
 	data, err := json.Marshal(p.publication)
 	if err != nil {
 		return err
@@ -90,13 +106,17 @@ func (p *PublicationTx) preparePublication(version string, head SkillHead, enabl
 	if dir == "." || !validRelative(dir) {
 		return head, invalid("publication requires a bound package subdirectory")
 	}
+	physical, scoped, err := p.physicalVersion(head)
+	if err != nil {
+		return head, err
+	}
 	adopt := false
-	if head.Exists {
+	if physical != "" {
 		pkg, err := p.registry.readPackage(p.ctx, p.source, dir)
 		if err != nil {
 			return head, err
 		}
-		if (&Candidate{pkg: pkg}).Version() != head.Version {
+		if (&Candidate{pkg: pkg}).Version() != physical {
 			return head, ErrPublicationConflict
 		}
 	} else {
@@ -109,24 +129,15 @@ func (p *PublicationTx) preparePublication(version string, head SkillHead, enabl
 	if version == "" && enabled {
 		return head, invalid("deleted skill cannot be enabled")
 	}
-	if version != "" && !head.Exists {
-		var count int
-		if err := p.tx.QueryRowContext(p.ctx, `SELECT count(*) FROM df_skill_installs`).Scan(&count); err != nil {
-			return head, err
-		}
-		if count >= p.limits.MaxSkills {
-			return head, invalid("installed skill count limit exceeded")
-		}
-	}
 	next := SkillHead{Version: version, StateVersion: head.StateVersion + 1, Exists: version != "", Enabled: enabled, Managed: true}
 	// Preflight export/audit constraints in the same approval transaction.
 	// Workers still reject this predicted head until real files are installed.
 	if err := p.queueExport(next); err != nil {
 		return head, err
 	}
-	rec := filePublication{ID: rand.Text(), Directory: dir, Base: head, Next: next, Adopt: adopt}
+	rec := filePublication{ScopedBase: scoped, FileBaseVersion: physical, ID: rand.Text(), Directory: dir, Base: head, Next: next, Adopt: adopt}
 	data, _ := json.Marshal(rec)
-	_, err := p.tx.ExecContext(p.ctx, `INSERT INTO df_skill_file_publications VALUES(?,?,?,?)`, p.source.identity, p.name, data, digest(data))
+	_, err = p.tx.ExecContext(p.ctx, `INSERT INTO df_skill_file_publications VALUES(?,?,?,?)`, p.source.identity, p.name, data, digest(data))
 	if err != nil {
 		return head, err
 	}
@@ -148,7 +159,7 @@ func readFilePublication(ctx context.Context, q fileQuery, source, name string) 
 	if digest(data) != sha || json.Unmarshal(data, &rec) != nil || !validEditID(rec.ID) || !validRelative(rec.Directory) || path.Base(rec.Directory) != name || rec.Next.StateVersion != rec.Base.StateVersion+1 || !rec.Next.Managed || rec.Next.Exists != (rec.Next.Version != "") || rec.Next.Exists && !validHash(rec.Next.Version) || !rec.Next.Exists && rec.Next.Enabled || rec.Base.Exists && !validHash(rec.Base.Version) {
 		return rec, invalid("publication journal integrity failure")
 	}
-	if rec.Adopt && (rec.Base.Exists || !rec.Next.Exists) {
+	if rec.Adopt && (rec.Base.Exists && !rec.ScopedBase || !rec.Next.Exists) {
 		return rec, invalid("invalid adoption journal")
 	}
 	return rec, nil
@@ -159,7 +170,7 @@ func (r *Registry) finishPublication(ctx context.Context, s *source, rec filePub
 		return errors.Join(harness.ErrReconciliationRequired, denied("builtin source policy now forbids this admitted publication"))
 	}
 	name := path.Base(rec.Directory)
-	return r.withEditPublication(ctx, s, name, "", func(p *PublicationTx) error {
+	return r.withEditPublication(ctx, s, name, rec.EditID, func(p *PublicationTx) error {
 		fresh, err := readFilePublication(ctx, p.tx, s.identity, name)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -210,6 +221,19 @@ func (r *Registry) finishPublication(ctx context.Context, s *source, rec filePub
 				return invalid("publication proposal completion mismatch")
 			}
 		}
+		if rec.EditID != "" {
+			edit, e := readEdit(ctx, p.tx, rec.EditID)
+			if e != nil {
+				return e
+			}
+			if edit.Status != "publishing" || edit.Review.Base != head || edit.Review.Candidate != rec.Next.Version {
+				return ErrPublicationConflict
+			}
+			edit.Status, edit.Applied, edit.Error = "applied", rec.Next, ""
+			if e = saveEdit(ctx, p.tx, edit); e != nil {
+				return e
+			}
+		}
 		if _, err = p.tx.ExecContext(ctx, `DELETE FROM df_skill_file_publications WHERE source_key=? AND name=?`, s.identity, name); err != nil {
 			return err
 		}
@@ -228,6 +252,10 @@ func (r *Registry) finishPublication(ctx context.Context, s *source, rec filePub
 }
 
 func (r *Registry) writePublicationFiles(ctx context.Context, s *source, rec filePublication, candidate *Candidate) error {
+	if rec.ScopedBase {
+		rec.Base.Version = rec.FileBaseVersion
+		rec.Base.Exists = rec.FileBaseVersion != ""
+	}
 	if err := validateSourceRoot(s); err != nil {
 		return err
 	}

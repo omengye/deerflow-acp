@@ -122,6 +122,8 @@ New-Item -ItemType Directory -Path $packageResources | Out-Null
 foreach ($name in $binaries.Keys) { Copy-Item -LiteralPath $binaries[$name] -Destination (Join-Path $outputRoot $name) }
 Copy-Item -LiteralPath $desktopDefault -Destination (Join-Path $packageResources "default-config.yaml")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\go-native-tools.md") -Destination (Join-Path $packageResources "go-native-tools.md")
+Copy-Item -LiteralPath (Join-Path $repoRoot "docs\search-plugins.md") -Destination (Join-Path $packageResources "search-plugins.md")
+Copy-Item -LiteralPath (Join-Path $repoRoot "docs\model-output-limits.md") -Destination (Join-Path $packageResources "model-output-limits.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\skill-python-support-20261018.md") -Destination (Join-Path $packageResources "skill-python-support-20261018.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\harness-reliability-20261012.md") -Destination (Join-Path $packageResources "harness-reliability-20261012.md")
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs\eino-three-iterations-20261004.md") -Destination (Join-Path $packageResources "eino-three-iterations.md")
@@ -160,7 +162,7 @@ Desktop history and preferences: user-data/desktop
 DeerFlow config: user-data/config/config.yaml
 Desktop MCP servers: user-data/config/client-mcp-servers.json
 Go harness state: selected by user-data/config/runtime-data.json when present;
-fresh profiles default to user-data/data/go-harness. Preserve the binding and
+fresh profiles use user-data/config/go-harness-state and persist their binding. Preserve the binding and
 the complete user-data directory during updates. Never merge historical stores.
 Go daemon endpoint: user-data/runtime/acp-go
 
@@ -168,19 +170,21 @@ The first launch uses Simplified Chinese and creates user-data. Set the model
 endpoint, model ID and API key in Settings; maintenance inherits this model.
 The desktop profile enables local commands, subagents, global memory and skill
 learning/generation using the selected model. Local commands are not isolated.
-Skill maintenance may use paid model calls, capped at 1000 calls / 6000000 tokens
-per UTC day (learning shares that budget, capped at 50 calls / 1000000 tokens).
-Covered existing managed SKILL.md patches may publish automatically: at most
-40 changed lines and 2 publications per day, after actual improvement and
-regression checks. The host initializes the bundled SearXNG assessment; it does
-not install a personal skill, search endpoint or credential. Uncovered skills,
-new skills and executable support changes still require review. A fresh profile
-can therefore show partial automation until eligible managed skills exist.
+Skill evolution inherits the primary model and runs automatically, with no
+separate settings, daily call limit, cumulative token budget or publication quota.
+New and existing skills require trusted behavioral comparison before scoped
+adoption. Script candidates require actual OCI isolation; a missing runtime
+waits for availability. Observation lasts 72 hours and needs five independent
+verified successes plus behavior coverage. Confirmed regression or insufficient
+observation withdraws the candidate. Usage remains visible. Old unfinished
+learning work is retired during the one-time migration and is never replayed.
 No startup model calls are made for this setup. Inactive/closed backend sessions are
 archived after five days, preserving history and evicting regenerable caches.
 This maintenance runs in the background and is configured by the host, not Settings.
-No personal credentials or proxies are bundled. Brave web search requires its
-own optional API key; it cannot use the model API key.
+No personal credentials or proxies are bundled. Configure and switch Brave,
+DeepSeek and SearXNG in Settings > Tools > web_search without restarting.
+Brave and DeepSeek require an API key; SearXNG requires an instance URL and
+accepts an optional Key. See resources/search-plugins.md.
 Models use provider=openai/claude; sandbox uses provider=local. Native tools are
 selected by name without Python class paths. See resources/go-native-tools.md.
 Optional host_opencli calls an installed OpenCLI/Node.js; browser commands need

@@ -12,7 +12,7 @@ func TestPortableBindingAcrossLaunchers(t *testing.T) {
 	data := filepath.Join(root, "user-data")
 	old := filepath.Join(data, "config", "go-harness-state")
 	canonical := filepath.Join(data, "data", "go-harness")
-	if got, err := ResolvePortable(data, ""); err != nil || got != canonical {
+	if got, err := ResolvePortable(data, ""); err != nil || got != old {
 		t.Fatalf("fresh: %s %v", got, err)
 	}
 	for _, dir := range []string{old, canonical} {
@@ -30,6 +30,12 @@ func TestPortableBindingAcrossLaunchers(t *testing.T) {
 	if err := os.WriteFile(binding, []byte(`{"data_dir":"config/go-harness-state"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := ResolvePortable(data, ""); err == nil || !strings.Contains(err.Error(), "second runtime database") {
+		t.Fatalf("accepted two runtime databases: %v", err)
+	}
+	if err := os.Rename(filepath.Join(canonical, "harness.db"), filepath.Join(root, "archived.db")); err != nil {
+		t.Fatal(err)
+	}
 	for _, requested := range []string{"", old} {
 		if got, err := ResolvePortable(data, requested); err != nil || got != old {
 			t.Fatalf("restore: %s %v", got, err)
@@ -43,6 +49,35 @@ func TestPortableBindingAcrossLaunchers(t *testing.T) {
 	}
 	if _, err := ResolvePortable(data, ""); err == nil {
 		t.Fatal("missing bound database fell back to other store")
+	}
+}
+
+func TestFirstCreationBindingPreventsReplacementDatabase(t *testing.T) {
+	data := t.TempDir()
+	dir, err := ResolvePortable(data, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "harness.db"), []byte("first database"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = BindCreated(data, dir); err != nil {
+		t.Fatal(err)
+	}
+	if err = BindCreated(data, dir); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Remove(filepath.Join(dir, "harness.db")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ResolvePortable(data, ""); err == nil {
+		t.Fatal("silently recreated missing bound database")
+	}
+	if _, err = os.Stat(filepath.Join(data, "data", "go-harness")); !os.IsNotExist(err) {
+		t.Fatal("created alternate directory")
 	}
 }
 

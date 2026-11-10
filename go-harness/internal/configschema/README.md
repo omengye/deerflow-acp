@@ -2,11 +2,11 @@
 
 `Describe` supplies `config_schema` in configuration snapshots and local
 `daemon.status`, `daemon.drain`, and `daemon.resume` responses. The initial
-`deerflow-settings-v2` contract covers **runtime, memory, models, subagents,
-native tool parameters, local sandbox authorization, skill enablement and
-manual skill candidate review**. The current contract also includes bounded
-generation, behavior evaluation, discovery, auto-patch observation and the
-daemon's selected effective-setting projection; their consumers are implemented.
+settings contract covers runtime, memory, models, subagents, native tool
+parameters, local sandbox authorization and skill enablement. Automatic skill
+evolution has no customer-editable review/generation/adoption settings; the
+former `skill_evolution` block is rejected after migration. Command authorization
+remains part of the independent sandbox and tool permission configuration.
 `host_settings` advertises host-only `mcp.host_recipes` support and restart scope
 without exposing recipe values or allowing model/desktop recipe editing.
 

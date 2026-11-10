@@ -23,7 +23,7 @@ func TestSkillManageValidationFeedback(t *testing.T) {
 		{"queued", "validating", "", "", "not_run", "", "", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := harness.SkillProposal{ID: "p_fixture", Status: tc.status, Evaluation: harness.SkillValidationReport{Security: tc.security, Behavior: tc.behavior, ModelChecks: tc.checks}}
+			p := harness.SkillProposal{ID: "p_fixture", Status: tc.status, Origin: "automatic", Evaluation: harness.SkillValidationReport{Security: tc.security, Behavior: tc.behavior, ModelChecks: tc.checks}}
 			before, _ := json.Marshal(p)
 			var result map[string]any
 			if err := json.Unmarshal([]byte(skillManageResult(p)), &result); err != nil {
@@ -32,7 +32,7 @@ func TestSkillManageValidationFeedback(t *testing.T) {
 			if result["quality"] != tc.quality || result["error_code"] != tc.code || result["failure_stage"] != tc.stage || result["retryable"] != false || result["live_skill_changed"] != false {
 				t.Fatalf("incomplete or misleading feedback: %+v", result)
 			}
-			if result["ok"] != true || result["requires_operator_review"] != (tc.status == "pending_review") {
+			if result["ok"] != true || result["requires_operator_review"] != nil || result["approval_recorded"] != nil || result["mode"] != "automatic" {
 				t.Fatalf("submission contract changed: %+v", result)
 			}
 			if tc.status == "failed" && (result["error"] == "" || result["next_action"] == "") {
@@ -89,11 +89,11 @@ func TestSkillManageValidationFeedbackIncludesSafeFailureDetails(t *testing.T) {
 		t.Fatal(err)
 	}
 	failure, ok := result["validation_failure"].(map[string]any)
-	if !ok || failure["detail_code"] != "invalid_json" || failure["response_digest"] != strings.Repeat("a", 64) || failure["response_bytes"] != float64(120) || result["review_retry_available"] != true {
+	if !ok || failure["detail_code"] != "invalid_json" || failure["response_digest"] != strings.Repeat("a", 64) || failure["response_bytes"] != float64(120) || result["review_retry_available"] != nil || result["status"] != "historical" {
 		t.Fatalf("safe request failure detail was omitted: %+v", result)
 	}
 	p.ReviewRetryOf = "p_original"
-	if err := json.Unmarshal([]byte(skillManageResult(p)), &result); err != nil || result["review_retry_of"] != p.ReviewRetryOf || result["review_retry_available"] != false {
+	if err := json.Unmarshal([]byte(skillManageResult(p)), &result); err != nil || result["review_retry_of"] != nil || result["review_retry_available"] != nil {
 		t.Fatalf("successor offered an unbounded retry: %+v %v", result, err)
 	}
 }

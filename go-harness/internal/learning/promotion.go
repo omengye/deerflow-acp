@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -14,7 +13,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 )
 
-const PromotionPolicyVersion = "procedural-proposal-evidence-v1"
+const PromotionPolicyVersion = "procedural-proposal-evidence-v2"
 const ReviewDraftPolicyVersion = "procedural-review-draft-evidence-v1"
 
 type Promotion struct {
@@ -75,6 +74,18 @@ func (s *Store) ReviewDraftPromotionTx(ctx context.Context, tx *sql.Tx, matchID 
 	return s.promotionTx(ctx, tx, matchID, 1, from, until, true)
 }
 
+// ResumePromotionTx preserves the generation's evidence revision while validating
+// the complete current ledger for withdrawals and new conflicts. Only a bound
+// promotion may do this; new discoveries still require the current revision.
+type promotionResumeKey struct{}
+
+func (s *Store) ResumePromotionTx(ctx context.Context, tx *sql.Tx, job, match, pattern string, required int, from, until time.Time) (Promotion, error) {
+	if err := s.GuardPromotionTx(ctx, tx, job, match, pattern); err != nil {
+		return Promotion{}, err
+	}
+	return s.PromotionTx(context.WithValue(ctx, promotionResumeKey{}, true), tx, match, required, from, until)
+}
+
 func (s *Store) promotionTx(ctx context.Context, tx *sql.Tx, matchID string, required int, from, until time.Time, reviewDrafts bool) (out Promotion, err error) {
 	ctx, finish := withSourceActivity(ctx, tx)
 	defer finish(&err)
@@ -118,9 +129,26 @@ func (s *Store) promotionTx(ctx context.Context, tx *sql.Tx, matchID string, req
 	default:
 		return out, harness.ErrPermissionDenied
 	}
-	p, err := s.patternTx(ctx, tx, m.PatternID, m.PatternRevision, true)
+	resume, _ := ctx.Value(promotionResumeKey{}).(bool)
+	p, err := s.patternTx(ctx, tx, m.PatternID, m.PatternRevision, !resume)
 	if err != nil {
 		return out, err
+	}
+	if resume {
+		var revision int64
+		if err = tx.QueryRowContext(ctx, `SELECT current_revision FROM df_learning_patterns WHERE id=?`, m.PatternID).Scan(&revision); err != nil {
+			return out, err
+		}
+		live, e := s.patternTx(ctx, tx, m.PatternID, revision, true)
+		if e != nil {
+			return out, e
+		}
+		if len(live.Pattern.ConflictsWith) != 0 || live.Pattern.EvidenceState != "observed_execution" {
+			return out, harness.ErrPermissionDenied
+		}
+		if err = s.guardPatternConsolidationTx(ctx, tx, live); err != nil {
+			return out, err
+		}
 	}
 	if err = s.guardPatternConsolidationTx(ctx, tx, p); err != nil {
 		return out, err
@@ -129,7 +157,10 @@ func (s *Store) promotionTx(ctx context.Context, tx *sql.Tx, matchID string, req
 	if !observed || p.Pattern.ObservedEpisodes < required || len(p.Pattern.ConflictsWith) != 0 {
 		return out, harness.ErrPermissionDenied
 	}
-	policy := encodedDigest([]string{PromotionPolicyVersion, PolicyVersion, ConsolidationPolicyVersion, MatchingPolicyVersion, s.extractor.Identity(), s.consolidator.Identity(), s.matcher.Identity(), s.matchAccess.Identity()})
+	// The immutable matching input already binds the historical extraction,
+	// consolidation and matching models. A new primary model requires a new
+	// evaluation, not loss of otherwise valid, authorized task evidence.
+	policy := encodedDigest([]string{PromotionPolicyVersion, PolicyVersion, ConsolidationPolicyVersion, MatchingPolicyVersion, inputSHA, s.matchAccess.Identity()})
 	if manual {
 		policy = encodedDigest([]string{policy, AdjudicationPolicyVersion})
 	}
@@ -137,35 +168,37 @@ func (s *Store) promotionTx(ctx context.Context, tx *sql.Tx, matchID string, req
 		policy = encodedDigest([]string{policy, ReviewDraftPolicyVersion})
 	}
 	common := harness.SkillExperienceDiscoveryReference{MatchID: matchID, PatternID: m.PatternID, PatternRevision: m.PatternRevision, MatchInputSHA: inputSHA, MatchResultSHA: encodedDigest(*result), PatternSHA: encodedDigest(p), PolicyIdentity: policy}
-	observations := map[string]harness.SkillDiscoveryEvidence{}
+	if _, err = tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS df_learning_promotion_projection(independence TEXT PRIMARY KEY,root TEXT NOT NULL,payload BLOB NOT NULL,spent INTEGER NOT NULL DEFAULT 0); DELETE FROM df_learning_promotion_projection`); err != nil {
+		return out, err
+	}
 	resolved := map[string]bool{}
 	for _, resolution := range p.Resolutions {
 		resolved[resolution.Prior] = true
 	}
-	for _, dep := range p.Members {
+	err = walkPatternMembers(ctx, tx, p, func(dep experienceDependency) error {
 		e, _, err := s.experienceTx(ctx, tx, dep.ID)
 		if err != nil {
-			return out, err
+			return err
 		}
 		if e.Candidate.Outcome != "observed_execution" {
 			// Retain and revalidate history, but only the later completed source
 			// can contribute an observation for this original task.
-			if resolved[dep.ID] {
-				continue
+			if resolved[dep.ID] || p.ResolutionDigest != "" && p.Pattern.EvidenceState == "observed_execution" {
+				return nil
 			}
-			return out, harness.ErrPermissionDenied
+			return harness.ErrPermissionDenied
 		}
 		var extractionJob string
 		if err = tx.QueryRowContext(ctx, `SELECT job_id FROM df_learning_extractions WHERE id=?`, dep.Extraction).Scan(&extractionJob); err != nil {
-			return out, err
+			return err
 		}
 		j, err := skillmaintenance.ReadJob(ctx, tx, extractionJob)
 		if err != nil {
-			return out, err
+			return err
 		}
 		x, _, err := s.readExtractionTx(ctx, tx, j)
 		if err != nil {
-			return out, err
+			return err
 		}
 		for _, ref := range x.View.References {
 			if ref.Kind != "tool_observation" || ref.State != string(harness.ReceiptCompleted) || ref.Truncated || !localObservation(ref.ToolName) || !slices.Contains(e.Candidate.References, ref.ID) {
@@ -179,27 +212,61 @@ func (s *Store) promotionTx(ctx context.Context, tx *sql.Tx, matchID string, req
 				copy := common
 				copy.EpisodeID, copy.IndependenceKey = dep.Episode, dep.Independent
 				fixed := harness.SkillDiscoveryEvidence{RootID: src.Root, Experience: &copy}
-				prior, exists := observations[dep.Independent]
-				if !exists || fixed.RootID < prior.RootID {
-					observations[dep.Independent] = fixed
+				raw, _ := json.Marshal(fixed)
+				if _, err = tx.ExecContext(ctx, `INSERT INTO df_learning_promotion_projection(independence,root,payload) VALUES(?,?,?) ON CONFLICT(independence) DO UPDATE SET root=excluded.root,payload=excluded.payload WHERE excluded.root<df_learning_promotion_projection.root`, dep.Independent, fixed.RootID, raw); err != nil {
+					return err
 				}
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return out, err
 	}
-	keys := make([]string, 0, len(observations))
-	for key := range observations {
-		keys = append(keys, key)
+	var count int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM df_learning_promotion_projection`).Scan(&count); err != nil {
+		return out, err
 	}
-	sort.Strings(keys)
-	if len(keys) < required {
+	if count < required {
 		return out, harness.ErrPermissionDenied
+	}
+	var discovery bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='df_skill_discoveries')`).Scan(&discovery); err != nil {
+		return out, err
+	}
+	if discovery && !resume {
+		// Prioritize new roots without copying the lifetime ledger into Go.
+		// Discovery still performs the authoritative target/version spend check.
+		var source, name, version string
+		if m.Target != nil {
+			source, name, version = m.Target.SourceIdentity, m.Target.Name, m.Head.Version
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE df_learning_promotion_projection AS x SET spent=1 WHERE EXISTS(SELECT 1 FROM df_skill_discoveries d JOIN json_each(CAST(d.payload AS TEXT),'$.evidence') e WHERE json_extract(e.value,'$.root_id')=x.root AND ((?<>'' AND d.source_key=? AND d.name=? AND json_extract(CAST(d.payload AS TEXT),'$.base.version')=?) OR (?='' AND json_extract(e.value,'$.experience.pattern_id')=?)))`, source, source, name, version, source, m.PatternID)
+		if err != nil {
+			return out, err
+		}
 	}
 	out = Promotion{Relation: m.Relation, SessionID: m.SessionID, Name: m.SuggestedName, Manual: manual}
 	if m.Target != nil {
 		out.Target, out.Head, out.OverlayBase = *m.Target, *m.Head, m.OverlayBase
 	}
-	for _, key := range keys {
-		out.Evidence = append(out.Evidence, observations[key])
+	rows, err := tx.QueryContext(ctx, `SELECT payload FROM df_learning_promotion_projection ORDER BY spent,independence LIMIT 32`)
+	if err != nil {
+		return out, err
+	}
+	for rows.Next() {
+		var raw []byte
+		var evidence harness.SkillDiscoveryEvidence
+		if err = rows.Scan(&raw); err != nil {
+			break
+		}
+		if err = json.Unmarshal(raw, &evidence); err != nil {
+			break
+		}
+		out.Evidence = append(out.Evidence, evidence)
+	}
+	if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
+		return out, err
 	}
 	candidate := p.Pattern.Candidate
 	candidate.References = nil
@@ -282,4 +349,13 @@ func (s *Store) NewPromotionTargetTx(ctx context.Context, tx *sql.Tx, sessionID,
 		return harness.SkillTarget{}, err
 	}
 	return s.matchAccess.NewCapabilityTargetTx(ctx, tx, cwd, sourceID, name)
+}
+
+func (s *Store) NewPromotionTarget(ctx context.Context, sessionID, sourceID, name string) (harness.SkillTarget, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return harness.SkillTarget{}, err
+	}
+	defer tx.Rollback()
+	return s.NewPromotionTargetTx(ctx, tx, sessionID, sourceID, name)
 }

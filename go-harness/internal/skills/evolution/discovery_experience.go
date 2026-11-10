@@ -29,14 +29,14 @@ func experienceSkippable(err error) bool {
 }
 
 func (s *Service) discoverExperiences(ctx context.Context) (bool, error) {
-	if !s.discovery.options.ExperiencePatternsEnabled {
+	if s.experienceSource == nil || !s.experienceSource.PromotionEnabled() {
 		return false, nil
 	}
 	var cursor string
 	if err := s.db.QueryRowContext(ctx, `SELECT cursor FROM df_skill_discovery_experience_scan WHERE id=1`).Scan(&cursor); err != nil {
 		return false, err
 	}
-	ids, err := s.experienceSource.PromotionIDsWithReviewDrafts(ctx, cursor, s.discovery.options.ExperienceNewSkillsEnabled, s.discovery.options.ExperienceReviewDraftsEnabled)
+	ids, err := s.experienceSource.PromotionIDsWithReviewDrafts(ctx, cursor, true, false)
 	if err != nil {
 		return false, err
 	}
@@ -50,7 +50,7 @@ func (s *Service) discoverExperiences(ctx context.Context) (bool, error) {
 			return true, errors.Join(combined, ctx.Err())
 		}
 		err = s.considerExperience(ctx, id)
-		if !experienceSkippable(err) && !errors.Is(err, skillmaintenance.ErrBudget) {
+		if !experienceSkippable(err) && !errors.Is(err, skillmaintenance.ErrCapacity) {
 			combined = errors.Join(combined, err)
 		}
 		result, err := s.db.ExecContext(ctx, `UPDATE df_skill_discovery_experience_scan SET cursor=? WHERE id=1 AND cursor=?`, id, cursor)
@@ -74,24 +74,13 @@ func (s *Service) considerExperience(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	sourceID, name := "", ""
-	switch observation.Relation {
-	case "body_gap", "trigger_mismatch":
-		if observation.Target == nil || observation.Head == nil {
-			return errDiscoveryEvidence
-		}
-		sourceID, name = observation.Target.SourceID, observation.Target.Name
-	case "new_capability":
-		if !o.ExperienceNewSkillsEnabled || !harness.ValidSkillCapabilityName(observation.SuggestedName) {
-			return harness.ErrPermissionDenied
-		}
-		sourceID, name = o.NewSkillSourceID, observation.SuggestedName
-	default:
-		return harness.ErrPermissionDenied
+	target, fork, err := s.experienceTarget(ctx, observation)
+	if err != nil {
+		return err
 	}
-	target, ok := s.generation.allowed[sourceID]
-	target.Name = name
-	if !ok || observation.Target != nil && target != *observation.Target {
+	allowed, ok := s.generation.allowed[target.SourceID]
+	allowed.Name = target.Name
+	if !ok || allowed != target {
 		return harness.ErrPermissionDenied
 	}
 	return s.registry.WithPublication(ctx, target.SourceID, target.Name, func(pub *skills.PublicationTx) error {
@@ -107,18 +96,17 @@ func (s *Service) considerExperience(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
-		if observation.Head != nil && (head != *observation.Head || !skills.SameOverlayBase(overlay, observation.OverlayBase)) {
+		if fork == nil && observation.Head != nil && (head != *observation.Head || !skills.SameOverlayBase(overlay, observation.OverlayBase)) {
 			return harness.ErrSkillConflict
 		}
 		var capacity bool
-		// Keep cheap daily/cooldown exclusions before rebuilding source trees.
-		if err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT reservations FROM df_skill_discovery_days WHERE day=?),0)<?
- AND COALESCE((SELECT until_ns FROM df_skill_discovery_cooldowns WHERE source_key=? AND name=?),0)<=?`,
-			now.Format("2006-01-02"), o.MaxDailyProposals, target.SourceIdentity, target.Name, now.UnixNano()).Scan(&capacity); err != nil || !capacity {
+		// Keep cheap cooldown exclusions before rebuilding source trees.
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT until_ns FROM df_skill_discovery_cooldowns WHERE source_key=? AND name=?),0)<=?`,
+			target.SourceIdentity, target.Name, now.UnixNano()).Scan(&capacity); err != nil || !capacity {
 			return err
 		}
 		// A hint may only exclude work. Avoid rebuilding a whole historical
-		// tree for a pattern whose lifetime creation slot is already consumed.
+		// tree for a pattern without fresh evidence after a failed creation.
 		if observation.Relation == "new_capability" {
 			if err = s.experienceSource.GuardNewPromotionTx(ctx, tx, observation.PatternID, ""); err != nil {
 				return err
@@ -131,11 +119,20 @@ func (s *Service) considerExperience(ctx context.Context, id string) error {
 		if p.Relation != observation.Relation || p.Manual != (observation.Origin == "host_adjudicated") {
 			return errDiscoveryEvidence
 		}
-		if p.Relation == "new_capability" {
-			if err = s.experienceSource.GuardNewPromotionTx(ctx, tx, p.Evidence[0].Experience.PatternID, ""); err != nil {
-				return err
+		if p.Relation == "new_capability" || fork != nil {
+			if p.Relation == "new_capability" {
+				if err = s.experienceSource.GuardNewPromotionTx(ctx, tx, p.Evidence[0].Experience.PatternID, ""); err != nil {
+					return err
+				}
 			}
-			chosen, err := s.experienceSource.NewPromotionTargetTx(ctx, tx, p.SessionID, o.NewSkillSourceID, p.Name)
+			if fork != nil && (p.Target != fork.Target || p.Head != fork.Head) {
+				return errDiscoveryEvidence
+			}
+			name := p.Name
+			if fork != nil {
+				name = target.Name
+			}
+			chosen, err := s.experienceSource.NewPromotionTargetTx(ctx, tx, p.SessionID, o.DestinationSourceID, name)
 			if err != nil {
 				return err
 			}
@@ -170,7 +167,7 @@ func (s *Service) considerExperience(ctx context.Context, id string) error {
 				break
 			}
 		}
-		if len(refs) == 0 || len(refs) < o.RepeatThreshold && !o.ExperienceReviewDraftsEnabled {
+		if len(refs) < o.RepeatThreshold {
 			return nil
 		}
 		// Replacement and admission share one transaction. If capacity is still
@@ -190,17 +187,17 @@ func (s *Service) considerExperience(ctx context.Context, id string) error {
 			_, err = tx.ExecContext(ctx, `ROLLBACK TO draft_successor; RELEASE draft_successor`)
 			return err
 		}
-		d := discoverySnapshot{Kind: "experience_pattern", ID: "sd_" + rand.Text(), Target: target, Base: head, OverlayBase: overlay, Options: o, CreatedAt: now, Evidence: refs, EpisodeDedup: true, HostAdjudicated: p.Manual, ReviewDraft: len(refs) < o.RepeatThreshold}
+		d := discoverySnapshot{Fork: fork, Kind: "experience_pattern", ID: "sd_" + rand.Text(), Target: target, Base: head, OverlayBase: overlay, Options: o, CreatedAt: now, Evidence: refs, EpisodeDedup: true, HostAdjudicated: p.Manual, ReviewDraft: len(refs) < o.RepeatThreshold}
 		payload, err := json.Marshal(d)
 		if err != nil || len(payload) > 32<<10 {
 			return invalid("experience discovery exceeds bounds")
 		}
-		reason := "Propose an instruction-only SKILL.md correction from the independently observed procedure. Preserve all support files, permissions and unrelated behavior. Historical execution is unassessed, not operator-confirmed quality. Publication requires independent host approval and evaluation."
-		if p.Relation == "new_capability" {
-			reason = "Propose a new instruction-only skill from the independently observed reusable procedure with the host-pinned readable name. Supply only SKILL.md with a concrete applicability description. Do not add scripts, support files, permissions or task-specific data. Historical execution is unassessed, not operator-confirmed quality. This candidate requires human approval."
+		reason := "Propose a complete skill package correction from the independently observed procedure. Preserve permissions and unrelated behavior. Include supporting Python scripts or text dependencies only when justified by the evidence; scripts require actual isolated execution and host assertions. Historical execution is unassessed, not operator-confirmed quality. Publication requires independent host validation and automatic adoption."
+		if p.Relation == "new_capability" || fork != nil {
+			reason = "Propose a new complete skill package from the independently observed reusable procedure with the host-pinned readable name. Include SKILL.md with a concrete applicability description. Supporting Python scripts and text dependencies require evidence and actual isolated execution; do not add permissions or task-specific data. Historical execution is unassessed, not operator-confirmed quality. The host validates this candidate against the existing skill catalog before automatic adoption."
 		}
 		if d.ReviewDraft {
-			reason = "Automatically draft only SKILL.md from the source-verified procedure. Evidence is below the independent-episode threshold and does not prove generalization, efficacy or quality. Preserve support files, permissions and unrelated behavior; exclude task-specific data. This draft always requires human approval, even when automatic publication is enabled."
+			reason = "Automatically draft only SKILL.md from the source-verified procedure. Evidence is below the independent-episode threshold and does not prove generalization, efficacy or quality. Preserve support files, permissions and unrelated behavior; exclude task-specific data. This draft waits for independent evidence and host validation before automatic adoption."
 		}
 		request := harness.SkillGenerationRequest{SourceID: target.SourceID, Name: target.Name, RequestKey: "discovery:" + d.ID, Reason: reason, Author: "discovery", Base: head}
 		r := generationRecord{id: "sgi_" + rand.Text(), created: now, input: generationSnapshot{Request: request, Target: target, OverlayBase: overlay, GeneratorIdentity: s.generation.identity, ValidatorIdentity: s.generation.reviewIdentity, DiscoveryID: d.ID, DiscoveryDigest: hash(payload), BehaviorIdentity: s.behavior.bindingIdentity(target)}}
@@ -281,9 +278,7 @@ func (s *Service) supersedeReviewDraftTx(ctx context.Context, tx *sql.Tx, target
 
 func experiencePromotionTx(ctx context.Context, tx *sql.Tx, source *learning.Store, id string, options harness.SkillDiscoveryOptions, from, until time.Time) (learning.Promotion, error) {
 	p, err := source.PromotionTx(ctx, tx, id, options.RepeatThreshold, from, until)
-	if options.ExperienceReviewDraftsEnabled && errors.Is(err, harness.ErrPermissionDenied) && !errors.Is(err, skillmaintenance.ErrSourceActive) {
-		return source.ReviewDraftPromotionTx(ctx, tx, id, from, until)
-	}
+
 	return p, err
 }
 
@@ -305,13 +300,6 @@ func (s *Service) discoveryCapacityTx(ctx context.Context, tx *sql.Tx, target ha
 		return false, err
 	}
 	if until > now.UnixNano() {
-		return false, nil
-	}
-	var daily int
-	if err = tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT reservations FROM df_skill_discovery_days WHERE day=?),0)`, now.Format("2006-01-02")).Scan(&daily); err != nil {
-		return false, err
-	}
-	if daily >= s.discovery.options.MaxDailyProposals {
 		return false, nil
 	}
 	pending, err := discoveryPending(ctx, tx)
@@ -355,7 +343,7 @@ func liveExperienceDiscovery(ctx context.Context, tx *sql.Tx, source *learning.S
 		}
 		return nil, err
 	}
-	p, err := experiencePromotionTx(ctx, tx, source, x.MatchID, d.Options, d.CreatedAt.Add(-time.Duration(d.Options.RepeatWindowDays)*24*time.Hour), d.CreatedAt)
+	p, err := source.ResumePromotionTx(ctx, tx, job, x.MatchID, x.PatternID, d.Options.RepeatThreshold, d.CreatedAt.Add(-time.Duration(d.Options.RepeatWindowDays)*24*time.Hour), d.CreatedAt)
 	var activity error
 	if errors.Is(err, skillmaintenance.ErrSourceActive) {
 		activity, err = err, nil
@@ -376,10 +364,10 @@ func liveExperienceDiscovery(ctx context.Context, tx *sql.Tx, source *learning.S
 			}
 			return nil, err
 		}
-		if !d.Options.ExperienceNewSkillsEnabled || d.Target.SourceID != d.Options.NewSkillSourceID || d.Target.Name != p.Name || d.Base != (harness.SkillHead{}) || d.OverlayBase != nil {
+		if d.Fork != nil || d.Target.SourceID != d.Options.DestinationSourceID || d.Base != (harness.SkillHead{}) || d.OverlayBase != nil {
 			return nil, errDiscoveryEvidence
 		}
-		target, err := source.NewPromotionTargetTx(ctx, tx, p.SessionID, d.Options.NewSkillSourceID, p.Name)
+		target, err := source.NewPromotionTargetTx(ctx, tx, p.SessionID, d.Options.DestinationSourceID, p.Name)
 		if experienceSkippable(err) {
 			return nil, errDiscoveryEvidence
 		}
@@ -388,6 +376,17 @@ func liveExperienceDiscovery(ctx context.Context, tx *sql.Tx, source *learning.S
 		}
 		if target != d.Target {
 			return nil, errDiscoveryEvidence
+		}
+		if err = guardNewExperienceBusyTx(ctx, tx, target.Name, job); err != nil {
+			return nil, err
+		}
+	} else if d.Fork != nil {
+		if err = validateExperienceFork(ctx, tx, p.SessionID, d, p.Target, p.Head); err != nil {
+			return nil, err
+		}
+		target, err := source.NewPromotionTargetTx(ctx, tx, p.SessionID, d.Options.DestinationSourceID, d.Target.Name)
+		if err != nil || target != d.Target {
+			return nil, errors.Join(errDiscoveryEvidence, err)
 		}
 		if err = guardNewExperienceBusyTx(ctx, tx, target.Name, job); err != nil {
 			return nil, err

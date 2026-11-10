@@ -1,153 +1,69 @@
-# Host-defined skill behavior evaluation
+# Host-owned automatic skill evaluation
 
-Behavior evaluation executes bounded tasks through the Eino model and fixture
-tools, then checks their outputs in Go. Content reviewers cannot supply or
-approve a behavior report. The evaluator does not publish a skill.
+The native harness always enables automatic skill evolution and inherits the
+primary model. There is no `skill_evolution` configuration block, independent
+review route or daily call/token quota. Concurrency,
+timeouts and finite retries are internal policy; usage remains recorded.
 
-## Configuration
+Evidence gates govern automatic adoption. `skill_manage.publish` can publish
+an exact conversation-owned candidate after a native user confirmation without
+behavior, holdout, isolation or observation evidence. It preserves real checks,
+records the input digest and cancels queued/running/waiting validation jobs.
+Structural validity, source authority and base CAS remain mandatory. A copied
+automatic package cannot acquire this authority by being written to a source.
 
-Native configuration uses the existing `evaluation_model_name`, with fresh
-contexts separate from security and quality review. Enable evolution and
-generation with their existing model routes, source grants and independent
-maintenance budget before enabling this block:
+The host derives trusted cases from new independent tasks with explicit exact
+output or artifact requirements. At least two independent roots support a
+candidate, and a separate holdout is required before adoption. Missing trusted
+coverage waits as `blocked_evidence`. Synthetic tasks cannot count as online
+successes. Candidates never receive expected answers or editable grading rules.
 
-```yaml
-skill_evolution:
-  behavior:
-    enabled: true
-    suite_path: behavior-suite.json
-    timeout_seconds: 60
-    max_steps: 6
-    max_input_bytes: 131072
-    max_output_tokens: 1024
-```
+Optional host-maintained regression files live in the `skill-behavior` directory
+beside the configuration file. Each regular JSON file contains one strictly
+validated suite, capped at 1 MiB. Files load 32 at a time and suites persist as
+content-addressed case manifests. Sixteen cases and 32 suites are not lifetime
+limits. SDK hosts can supply `SkillBehaviorOptions.Load` to stream suites; this
+is a host API, not a customer setting. Duplicate targets are rejected.
 
-`suite_path` is relative to the configuration file, or absolute. Save/validate
-and launch use the same parser and source authorization. Native configuration
-loads one JSON suite, at most 1 MiB, once at startup; changing the file requires
-applying configuration again. SDK callers can configure up to 32 target suites
-with `Config.SkillBehavior` and `Config.SkillBehaviorEvaluator`. Duplicate
-targets are rejected. Defaults leave behavior evaluation disabled.
+## Cases and comparison
 
-The per-variant timeout is 1–300 seconds, model step cap 1–32, serialized input
-cap 1 KiB–2 MiB and output cap 128–8192 tokens. Native configuration limits each
-variant to 24 tool calls. The job deadline, daily call/token budget and worker
-count remain those of `skill_evolution.budget`; a case cannot extend them.
+`skill-behavior-v1` supports targeted and regression cases. The v2 contract also
+requires positive and negative metadata-only selection checks. A case has one
+to three repetitions, a task prompt, at most 64 text files, eight fixture tools
+and 32 host assertions. Assertions inspect output, files or tool calls. Trigger
+cases compare the pinned target description with up to eight competitors per
+case; additional competitor groups become additional cases.
 
-## Suite contract
+Each baseline/candidate repetition runs in a clean context and workspace. A new
+skill uses the current catalog without that skill as its baseline. Content
+review cannot mint behavior or script-execution evidence. Mandatory comparisons
+are persisted and paged; all must finish before the host assesses improvement,
+regression, triggering and holdout coverage. Operational failures are distinct
+from assertion failures. Transient measurements have at most three persisted
+attempts, and successful comparisons are reused after restart.
 
-The host owns the suite, its task inputs, simulated responses and assertions.
-Candidates cannot provide or edit their own suite. `source_id` must match an
-authorized source and `name` the skill in that source. See
-[`docs/fixtures/skill-behavior-v1.json`](../../../../docs/fixtures/skill-behavior-v1.json)
-for a copy-file example; select the actual source ID before using it.
+## Script execution
 
-A suite has version `skill-behavior-v1`, an ID and 1–16 cases. Each case has:
+`run_script` executes package Python or shell scripts using the managed OCI
+runner: fixed image identity, temporary storage, disabled network, process
+limits and real exit/output evidence. Host credentials and grading files are
+never mounted. `read_skill`, `read_file`, `write_file` and `list_files` operate
+only on immutable package files or task fixtures. Simulated external tools
+return host-owned fixture data. Missing OCI capability is `blocked_runtime`;
+static inspection cannot substitute for execution or authorize publication.
 
-- A unique ID, `kind` (`targeted` or `regression`), task prompt and 1–3 repetitions.
-- Up to 64 initial text files at portable relative paths.
-- Up to 8 simulated tools, each with primitive parameter definitions and an
-  ordered list of exact JSON argument/response exchanges.
-- 1–32 host assertions: `output_equals`, `output_contains`, `file_equals`,
-  `file_absent` or `tool_calls`. At least one suite case must be targeted.
+## Adoption and recovery
 
-`skill-behavior-v2` preserves those execution cases and adds metadata-only trigger
-cases. It requires at least one `trigger_positive` and one `trigger_negative`,
-as well as a targeted execution case. The existing 16-case/3-repetition cap is
-shared, not doubled. See
-[`docs/fixtures/skill-behavior-v2.json`](../../../../docs/fixtures/skill-behavior-v2.json).
+Evaluation identities bind package, baseline, suite, catalog, model, validator,
+runner and tool contract. Changes invalidate pending verdicts and schedule
+reassessment of published content without regenerating candidates. The host
+checks all bindings and current source authority again at publication CAS.
+Automatic packages stay in immutable storage; scoped routing selects observation
+candidates without overwriting public source files. Normal catalogs retain the
+stable baseline, and a new skill stays hidden outside observation scope.
 
-Each trigger case has no task files or fixture tools and exactly one
-`skill_selected` assertion: `count=1` for a positive and `count=0` for a negative.
-`trigger_skills` may contain up to eight host-fixed competing name/description
-entries, never an override of the evaluated target. Only the target description
-comes from the immutable baseline/candidate package, parsed with the runtime's
-installation parser. The fixed catalog is sorted and digested. It is not a live
-inventory scan and proves only that suite's selection boundaries.
-
-The evaluator uses the pinned native Eino Skill middleware's prompt, reminder and
-tool schema in a fresh context, then observes the first model response. An exact
-valid Skill call selects its name; a final answer without calls means no skill.
-No tool is invoked, no body is loaded, no workspace is created, and no simulated
-selection becomes a runtime read. Expected labels, case IDs/kinds and assertion
-values remain outside model messages. Unknown tools/names, malformed arguments,
-multiple calls, truncation and timeouts are operational failures, not evidence
-that the old description was wrong. Calls use the original job's `behavior`
-maintenance receipts and budget; no extra worker or paid retry loop is added.
-
-JSON duplicate keys, unknown fields, explicit nulls, executable assertions,
-invalid paths and oversized data are rejected. Builtin fixture tools are
-`read_skill`, `read_file`, `write_file` and `list_files`. They access only the
-immutable skill package or the current temporary task workspace. Simulated
-external tools return host fixture data; they never call the real service.
-
-Each execution base/candidate/case/repetition has a fresh temporary workspace and model
-context. Expected answers and assertion paths are absent from model messages
-and tool-readable files. The Go host inspects actual task output and file/tool
-effects. Creating a skill uses a real no-skill baseline; deleting a skill uses
-a real no-skill candidate. The absent variant has an empty version and package.
-
-No shell, Python, OpenCLI, MCP or arbitrary script runs in this evaluator.
-Only the configured model provider makes network requests. `IsolatedScripts`
-stays false: fixture execution does not verify executable support files. A
-script package requires explicit operator acknowledgment for manual publication;
-automatic publication remains disabled. Runtime readiness and permission are
-checked independently by `skill_run`, which executes session-pinned source.
-
-## Jobs, results and approval
-
-Generated candidates continue evaluation within their original maintenance job.
-When behavior is enabled, manual submissions atomically create a `validating`
-proposal and a dedicated behavior job (`behavior_job_id`), without inventing a
-generation request. Rejection cancels an unfinished manual behavior job.
-
-Content review and completed variant results are persisted. Retries reuse
-completed work; an interrupted call without a committed result may run again
-under the remaining budget. Each provider request reserves durable usage first;
-unknown usage keeps its conservative charge. Receipts include all attempted
-calls, so their total can exceed the cost of completed results in the report.
-
-Work is bound to the complete source/target/head/overlay, candidate version,
-reviewer/evaluator identities, suite digest and comparison rule version. Source,
-configuration, head, evidence or claim changes prevent stale work from advancing.
-The evolution service recomposes reports from stored results before approval.
-
-All targeted and trigger candidate repetitions must pass and no previously passing baseline
-case may regress. The report includes comparisons, improvements, regressions,
-digests, calls, token charges and elapsed time. Passing evaluation still produces
-only a proposal for explicit review unless an independently authorized auto-patch
-policy admits it. Enabling behavior or using a v2 suite does not grant publication.
-
-V1 saved reports retain `skill-behavior-comparison-v1` and their original digest.
-V2 reports use `skill-behavior-comparison-v2`, separate positive/negative counts
-and paired selection observations. Approval reconstructs checks from host labels
-and observed names, and reconstructs each catalog from immutable variant bytes.
-The Eino evaluator identity is now `eino-skill-behavior-v2/<config digest>`;
-unfinished v1-evaluator work is fenced after upgrade rather than silently reused.
-Completed old evidence remains explicitly manually reviewable; automatic admission
-still requires today's exact evaluator/suite/configuration identity.
-
-A target without a matching suite records `not_run` and needs manual review.
-An applicable evaluation that fails or cannot complete cannot claim `not_run`
-or success. Failed and partial evaluation state remains inspectable. A failed
-maintenance task does not fail the user's conversation or replay real tools.
-
-## Inspection
-
-Go SDK methods are `SkillBehaviorEvaluation(ctx, proposalID)` and
-`SkillBehaviorReceipts(ctx, proposalID, after, limit)`. Authenticated MANAGE:
-
-```json
-{"operation":"proposal.behavior","proposal_id":"<proposal-id>"}
-{"operation":"proposal.behavior.receipts","proposal_id":"<proposal-id>","after_sequence":0,"limit":50}
-```
-
-Evaluation detail contains job state, attempts, deadlines, content-review status,
-up to 96 variant results and the compact report. Receipts use sequence pagination,
-with limit 1–100. Queries enforce the proposal's current source authorization,
-including when generation is disabled. Responses do not expose suite prompts,
-assertion values, fixture files, model messages or provider credentials.
-
-Waku loads evaluation details and receipts in the background and renders cached
-state with local result pagination. This source integration and fixture tests
-do not replace actual desktop interaction and Release acceptance.
+Observations last 72 hours and require five independent successful roots,
+critical-behavior coverage and no unresolved failures. Source withdrawal,
+confirmed regression or inconclusive expiry withdraws the candidate. A manual
+head change supersedes the old observation. Historical observations finish at
+their original deadline; retired learning and generation work never replays.

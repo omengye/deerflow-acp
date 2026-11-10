@@ -55,8 +55,8 @@ func TestSkillLearningReviewManagementRequiresCompleteStrictObjects(t *testing.T
 
 func TestSkillLearningReviewSDKAndManagementManualControls(t *testing.T) {
 	workspace, cfg := skillFixture(t)
-	budget := harness.SkillMaintenanceBudget{MaxDailyModelCalls: 6, MaxDailyTokens: 100000, MaxJobSeconds: 60, Workers: 1}
-	cfg.SkillLearning = &harness.SkillLearningOptions{Idle: time.Second, MaxDailyModelCalls: 3, MaxDailyTokens: 50000, Budget: budget,
+	budget := harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}
+	cfg.SkillLearning = &harness.SkillLearningOptions{Idle: time.Second, Policy: budget,
 		Consolidation: &harness.SkillGenerationModelConfig{}, Matching: &harness.SkillGenerationModelConfig{}}
 	extractor, consolidator, matcher := &sdkMatchingExtractor{}, &sdkExperienceConsolidator{}, &sdkExperienceMatcher{}
 	cfg.SkillExperienceExtractor, cfg.SkillExperienceConsolidator, cfg.SkillExperienceMatcher = extractor, consolidator, matcher

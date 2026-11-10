@@ -15,16 +15,24 @@ import (
 )
 
 type behaviorBinding struct {
+	count  int
+	root   string
 	target harness.SkillTarget
 	suite  harness.SkillBehaviorSuite
 	digest string
 }
 type behaviorHost struct {
+	access    *skills.MatchAccess
 	evaluator harness.SkillBehaviorEvaluator
 	identity  string
 	suites    map[string]behaviorBinding
 }
 type behaviorSnapshot struct {
+	Submission        *submittedTaskOrigin        `json:"submission,omitempty"`
+	CaseCount         int                         `json:"case_count,omitempty"`
+	CaseRoot          string                      `json:"case_root,omitempty"`
+	CompetitorsDigest string                      `json:"competitors_digest,omitempty"`
+	Derived           bool                        `json:"derived,omitempty"`
 	ID                string                      `json:"id"`
 	ProposalID        string                      `json:"proposal_id"`
 	Target            harness.SkillTarget         `json:"target"`
@@ -46,6 +54,10 @@ type behaviorRecord struct {
 
 func migrateBehavior(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS df_skill_task_oracle_kinds(root_id TEXT PRIMARY KEY,kind TEXT NOT NULL,path TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS df_skill_task_oracles(root_id TEXT PRIMARY KEY,run_id TEXT NOT NULL,session_id TEXT NOT NULL,workspace TEXT NOT NULL,epoch INTEGER NOT NULL,prompt TEXT NOT NULL,expected TEXT NOT NULL,input_sha TEXT NOT NULL,output_sha TEXT NOT NULL,passed INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS df_skill_measurement_attempts(evaluation_id TEXT NOT NULL,result_key TEXT NOT NULL,attempt INTEGER NOT NULL,payload BLOB NOT NULL,payload_sha TEXT NOT NULL,PRIMARY KEY(evaluation_id,result_key,attempt));
+CREATE TABLE IF NOT EXISTS df_skill_behavior_cases(suite_digest TEXT NOT NULL,ordinal INTEGER NOT NULL,case_id TEXT NOT NULL,payload BLOB NOT NULL,payload_sha TEXT NOT NULL,PRIMARY KEY(suite_digest,ordinal),UNIQUE(suite_digest,case_id));
 CREATE TABLE IF NOT EXISTS df_skill_behavior_evaluations(
  id TEXT PRIMARY KEY,proposal_id TEXT NOT NULL UNIQUE REFERENCES df_skill_proposals(id),
  job_id TEXT NOT NULL REFERENCES df_skill_maintenance_jobs(id),manual INTEGER NOT NULL,
@@ -55,7 +67,11 @@ CREATE INDEX IF NOT EXISTS df_skill_behavior_job ON df_skill_behavior_evaluation
 CREATE UNIQUE INDEX IF NOT EXISTS df_skill_behavior_manual_job ON df_skill_behavior_evaluations(job_id) WHERE manual=1;
 CREATE TABLE IF NOT EXISTS df_skill_behavior_results(
  evaluation_id TEXT NOT NULL REFERENCES df_skill_behavior_evaluations(id),case_id TEXT NOT NULL,variant TEXT NOT NULL,repetition INTEGER NOT NULL,
- payload BLOB NOT NULL,payload_sha TEXT NOT NULL,PRIMARY KEY(evaluation_id,case_id,variant,repetition));`)
+ payload BLOB NOT NULL,payload_sha TEXT NOT NULL,PRIMARY KEY(evaluation_id,case_id,variant,repetition));
+CREATE TABLE IF NOT EXISTS df_skill_behavior_history AS SELECT * FROM df_skill_behavior_evaluations WHERE 0;
+CREATE UNIQUE INDEX IF NOT EXISTS df_skill_behavior_history_id ON df_skill_behavior_history(id);
+CREATE TABLE IF NOT EXISTS df_skill_behavior_result_history AS SELECT * FROM df_skill_behavior_results WHERE 0;
+CREATE UNIQUE INDEX IF NOT EXISTS df_skill_behavior_result_history_id ON df_skill_behavior_result_history(evaluation_id,case_id,variant,repetition);`)
 	return err
 }
 
@@ -66,11 +82,11 @@ func (s *Service) BehaviorEnabled() bool { return s.behavior != nil }
 // ConfigureBehavior fixes trusted fixture/oracle content before workers start.
 // A behavioral evaluator has no role in authorizing publication.
 func (s *Service) ConfigureBehavior(evaluator harness.SkillBehaviorEvaluator, options harness.SkillBehaviorOptions) error {
-	if s.behavior != nil || s.generation == nil || evaluator == nil || evaluator.Identity() == "" || !bounded(evaluator.Identity(), 128) || len(options.Suites) == 0 || len(options.Suites) > 32 {
+	if s.behavior != nil || s.generation == nil || evaluator == nil || evaluator.Identity() == "" || !bounded(evaluator.Identity(), 128) {
 		return invalid("behavior requires configured generation, evaluator and bounded host suites")
 	}
 	h := &behaviorHost{evaluator: evaluator, identity: evaluator.Identity(), suites: map[string]behaviorBinding{}}
-	for _, suite := range options.Suites {
+	bind := func(suite harness.SkillBehaviorSuite) error {
 		digest, err := skillbehavior.Digest(suite)
 		if err != nil {
 			return err
@@ -84,16 +100,37 @@ func (s *Service) ConfigureBehavior(evaluator harness.SkillBehaviorEvaluator, op
 		if _, exists := h.suites[key]; exists {
 			return invalid("duplicate behavior target")
 		}
-		encoded, err := json.Marshal(suite)
-		if err != nil || len(encoded) > 2<<20 {
-			return invalid("behavior suite exceeds bounds")
+		in := behaviorSnapshot{Suite: &suite, SuiteDigest: digest}
+		tx, err := s.db.BeginTx(context.Background(), nil)
+		if err != nil {
+			return err
 		}
-		var fixed harness.SkillBehaviorSuite
-		if json.Unmarshal(encoded, &fixed) != nil {
-			return invalid("behavior suite cannot be fixed")
+		err = persistBehaviorCases(context.Background(), tx, &in)
+		if err == nil {
+			err = tx.Commit()
 		}
-		h.suites[key] = behaviorBinding{target: target, suite: fixed, digest: digest}
+		_ = tx.Rollback()
+		if err != nil {
+			return err
+		}
+		h.suites[key] = behaviorBinding{target: target, suite: *in.Suite, digest: digest, count: in.CaseCount, root: in.CaseRoot}
+		return nil
 	}
+	for _, suite := range options.Suites {
+		if err := bind(suite); err != nil {
+			return err
+		}
+	}
+	if options.Load != nil {
+		if err := options.Load(bind); err != nil {
+			return err
+		}
+	}
+	access, err := s.registry.NewMatchAccess(harness.SkillSelection{IncludeGlobal: true})
+	if err != nil {
+		return err
+	}
+	h.access = access
 	s.behavior = h
 	s.generation.behavior = h
 	return nil
@@ -113,11 +150,15 @@ func (s *Service) newBehaviorSnapshot(p Proposal) behaviorSnapshot {
 		fixed := b.suite
 		in.Suite = &fixed
 		in.SuiteDigest = b.digest
+		in.CaseCount, in.CaseRoot = b.count, b.root
 	}
 	return in
 }
 
 func insertBehavior(ctx context.Context, tx *sql.Tx, in behaviorSnapshot, jobID string, manual bool) error {
+	if err := persistBehaviorCases(ctx, tx, &in); err != nil {
+		return err
+	}
 	payload, err := json.Marshal(in)
 	if err != nil {
 		return err
@@ -143,6 +184,10 @@ func readBehavior(ctx context.Context, db rowReader, proposalID string) (behavio
 	if r.input.Suite == nil {
 		if r.input.SuiteDigest != "" {
 			return r, invalid("behavior suite binding is inconsistent")
+		}
+	} else if r.input.CaseCount > 0 {
+		if !hexDigest(r.input.SuiteDigest) || !hexDigest(r.input.CaseRoot) || len(r.input.Suite.Cases) != 0 || r.input.Suite.SourceID != r.input.Target.SourceID || r.input.Suite.Name != r.input.Target.Name {
+			return r, invalid("behavior manifest binding is inconsistent")
 		}
 	} else {
 		calculated, err := skillbehavior.Digest(*r.input.Suite)
@@ -217,18 +262,47 @@ func (s *Service) attachBehaviorGeneration(ctx context.Context, tx *skills.Publi
 	} else if !errors.Is(err, harness.ErrNotFound) {
 		return err
 	}
-	return insertBehavior(ctx, tx.SQL(), s.newBehaviorSnapshot(p), r.job.ID, false)
+	in := s.newBehaviorSnapshot(p)
+	in.Submission = r.input.Submission
+	if in.Suite == nil {
+		if err := s.deriveBehaviorCasesTx(ctx, tx.SQL(), p, &in); err != nil {
+			return err
+		}
+	}
+	return insertBehavior(ctx, tx.SQL(), in, r.job.ID, false)
 }
 
 func (s *Service) checkBehavior(ctx context.Context, tx *sql.Tx, r behaviorRecord, p Proposal) error {
+	if p.Origin == "automatic" {
+		var job string
+		if err := tx.QueryRowContext(ctx, `SELECT job_id FROM df_skill_generation_inputs WHERE proposal_id=?`, p.ID).Scan(&job); err != nil {
+			return err
+		}
+		original, err := readGeneration(ctx, tx, job)
+		if err != nil {
+			return err
+		}
+		if original.candidate != p.CandidateVersion || original.input.Target != p.Target || original.input.Request.Base != p.Base {
+			return harness.ErrSkillConflict
+		}
+		if _, err = s.generation.discoveryEvidence(ctx, tx, original); err != nil {
+			return err
+		}
+	}
+
 	if s.behavior == nil || s.generation == nil || r.input.EvaluatorIdentity != s.behavior.identity || r.input.ValidatorIdentity != s.generation.reviewIdentity {
 		return errGenerationConfiguration
 	}
 	if r.input.Target != p.Target || r.input.Base != p.Base || r.input.CandidateVersion != p.CandidateVersion || !skills.SameOverlayBase(r.input.OverlayBase, p.OverlayBase) {
 		return harness.ErrSkillConflict
 	}
+	if r.input.Derived {
+		if err := s.validateDerivedSuiteTx(ctx, tx, p, r.input); err != nil {
+			return err
+		}
+	}
 	b := s.behavior.suites[behaviorKey(p.Target)]
-	if b.digest != r.input.SuiteDigest {
+	if !r.input.Derived && b.digest != r.input.SuiteDigest {
 		return errGenerationConfiguration
 	}
 	if err := s.generation.checkSource(generationRecord{input: generationSnapshot{Target: p.Target}}); err != nil {

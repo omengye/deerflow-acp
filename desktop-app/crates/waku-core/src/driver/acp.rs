@@ -2593,6 +2593,14 @@ fn start_grok_title_refresh(
     );
 }
 
+fn token_limit_summary(limit: Option<&str>) -> String {
+    match limit {
+        Some("output_tokens") => tr!("session.model_output_limit"),
+        Some("tokens") => tr!("session.run_token_budget_reached"),
+        _ => tr!("session.token_limit_reached"),
+    }
+}
+
 fn finish_prompt(
     result: agent_client_protocol::Result<PromptResponse>,
     native_failure: Option<String>,
@@ -2601,6 +2609,26 @@ fn finish_prompt(
     let response = match result {
         Ok(response) => response,
         Err(error) => {
+            let error_kind = error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("kind"))
+                .and_then(Value::as_str);
+            let known_failure_message = match (i32::from(error.code), error_kind) {
+                (-32026, _) | (_, Some("model_response_invalid")) => Some(
+                    "模型流式响应解析失败，本轮已停止。已完成的工具结果已保留，请发送新消息继续。",
+                ),
+                (-32028, _) | (_, Some("checkpoint_too_large")) => Some(
+                    "执行状态过大，无法保存本轮进度。请减少并行子任务后发送新消息继续；已保存的工具结果会保留。",
+                ),
+                (-32029, _) | (_, Some("checkpoint_invalid")) => Some(
+                    "执行状态校验失败，暂时无法恢复。本轮已停止，已保存的记录会保留；请发送新消息继续。",
+                ),
+                (-32030, _) | (_, Some("checkpoint_persist_failed")) => {
+                    Some("执行进度保存失败，本轮已停止。请检查本机存储后重试；已保存的记录会保留。")
+                }
+                _ => None,
+            };
             let rate_limited = i32::from(error.code) == -32027
                 || error
                     .data
@@ -2609,7 +2637,9 @@ fn finish_prompt(
                     .and_then(Value::as_str)
                     == Some("model_rate_limited");
             let message = error.to_string();
-            let message = if rate_limited {
+            let message = if let Some(known_failure_message) = known_failure_message {
+                known_failure_message.to_owned()
+            } else if rate_limited {
                 "模型服务请求受到限流，本轮已停止。请稍后重试或切换模型；已完成的工具结果已保留，请检查结果后再继续。".to_owned()
             } else if message.contains("reconciliation_required")
                 || message.contains("Uncertain tool effects require review")
@@ -2641,7 +2671,17 @@ fn finish_prompt(
     }
     let (success, summary) = match response.stop_reason {
         StopReason::EndTurn | StopReason::Cancelled => (true, None),
-        StopReason::MaxTokens => (false, Some(tr!("session.agent_ran_out_of_context"))),
+        StopReason::MaxTokens => (
+            false,
+            Some(token_limit_summary(
+                response
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("deerflow"))
+                    .and_then(|meta| meta.get("limit"))
+                    .and_then(Value::as_str),
+            )),
+        ),
         StopReason::Refusal => (false, Some(tr!("session.agent_declined_turn"))),
         StopReason::MaxTurnRequests => (
             false,
@@ -5093,6 +5133,77 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_errors_show_safe_messages_without_execution_metadata() {
+        for (code, kind, expected) in [
+            (
+                -32028,
+                "checkpoint_too_large",
+                "执行状态过大，无法保存本轮进度。请减少并行子任务后发送新消息继续；已保存的工具结果会保留。",
+            ),
+            (
+                -32029,
+                "checkpoint_invalid",
+                "执行状态校验失败，暂时无法恢复。本轮已停止，已保存的记录会保留；请发送新消息继续。",
+            ),
+            (
+                -32030,
+                "checkpoint_persist_failed",
+                "执行进度保存失败，本轮已停止。请检查本机存储后重试；已保存的记录会保留。",
+            ),
+        ] {
+            for error in [
+                agent_client_protocol::Error::new(code, "private-checkpoint"),
+                agent_client_protocol::Error::internal_error().data(json!({
+                    "kind": kind,
+                    "execution": {"runId": "run", "resumable": false},
+                    "automaticReplay": false,
+                    "privateDetail": "fixture-secret"
+                })),
+            ] {
+                let (events, event_rx) = crossbeam_channel::unbounded();
+                assert!(!finish_prompt(Err(error), None, &events));
+                let DriverEvent::Error(message) = event_rx.try_recv().unwrap() else {
+                    panic!("expected checkpoint message");
+                };
+                assert_eq!(message, expected);
+                assert!(matches!(
+                    event_rx.try_recv().unwrap(),
+                    DriverEvent::TurnFinished { success: false, .. }
+                ));
+                assert!(event_rx.try_recv().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_model_stream_errors_hide_execution_metadata() {
+        for error in [
+            agent_client_protocol::Error::new(-32026, "upstream private detail"),
+            agent_client_protocol::Error::internal_error().data(json!({
+                "kind": "model_response_invalid",
+                "automaticReplay": false,
+                "execution": {"runId": "run", "resumable": false},
+                "privateDetail": "fixture-secret"
+            })),
+        ] {
+            let (events, event_rx) = crossbeam_channel::unbounded();
+            assert!(!finish_prompt(Err(error), None, &events));
+            let DriverEvent::Error(message) = event_rx.try_recv().unwrap() else {
+                panic!("expected stream failure message");
+            };
+            assert_eq!(
+                message,
+                "模型流式响应解析失败，本轮已停止。已完成的工具结果已保留，请发送新消息继续。"
+            );
+            assert!(matches!(
+                event_rx.try_recv().unwrap(),
+                DriverEvent::TurnFinished { success: false, .. }
+            ));
+            assert!(event_rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
     fn rate_limited_prompt_errors_show_safe_message_without_execution_metadata() {
         for error in [
             agent_client_protocol::Error::new(-32027, "provider detail"),
@@ -5138,6 +5249,26 @@ mod tests {
             DriverEvent::TurnFinished { success: false, .. }
         ));
         assert!(event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn token_limits_do_not_claim_context_exhaustion() {
+        for (limit, expected) in [
+            (Some("output_tokens"), tr!("session.model_output_limit")),
+            (Some("tokens"), tr!("session.run_token_budget_reached")),
+            (None, tr!("session.token_limit_reached")),
+        ] {
+            let (events, event_rx) = crossbeam_channel::unbounded();
+            let response: PromptResponse = serde_json::from_value(json!({
+                "stopReason":"max_tokens", "_meta":{"deerflow":{"limit":limit}}
+            }))
+            .unwrap();
+            assert!(!finish_prompt(Ok(response), None, &events));
+            assert!(matches!(event_rx.try_recv().unwrap(),
+                DriverEvent::TurnFinished {success: false, summary: Some(summary)} if summary == expected
+            ));
+            assert!(event_rx.try_recv().is_err());
+        }
     }
 
     #[test]

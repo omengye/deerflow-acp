@@ -13,9 +13,6 @@ import (
 // the same session. Missing or invalid metadata goes to the normal admission
 // guard; this scheduling hint cannot authorize model work or publication.
 func (s *Store) ReadyTx(ctx context.Context, tx *sql.Tx, job skillmaintenance.Job) (bool, error) {
-	if ready, err := s.budgetReadyTx(ctx, tx, job); err != nil || !ready {
-		return ready, err
-	}
 	var episodes string
 	var args []any
 	switch job.Request.Kind {
@@ -33,7 +30,7 @@ func (s *Store) ReadyTx(ctx context.Context, tx *sql.Tx, job skillmaintenance.Jo
 		}
 	case skillmaintenance.SkillMatch:
 		episodes = `SELECT p.episode_id FROM df_learning_matches m JOIN df_learning_pattern_members p
- ON p.pattern_id=m.pattern_id AND p.revision=m.revision WHERE m.id=? AND m.job_id=?`
+ ON p.pattern_id=m.pattern_id AND p.revision<=m.revision WHERE m.id=? AND m.job_id=?`
 		args = []any{job.Request.Reference, job.ID}
 	case skillmaintenance.SkillGeneration:
 		var reviewed bool
@@ -60,7 +57,7 @@ func (s *Store) PromotionReadyTx(ctx context.Context, tx *sql.Tx, jobID string) 
  SELECT id,pattern_id,revision FROM df_learning_matches
  UNION ALL SELECT id,pattern_id,revision FROM df_learning_adjudications) m
  ON m.id=dep.match_id AND m.pattern_id=dep.pattern_id JOIN df_learning_pattern_members p
- ON p.pattern_id=m.pattern_id AND p.revision=m.revision WHERE dep.job_id=? AND dep.revoked=0`
+ ON p.pattern_id=m.pattern_id AND p.revision<=m.revision WHERE dep.job_id=? AND dep.revoked=0`
 	args := []any{jobID}
 	var reference, consolidationJob, sha string
 	err := tx.QueryRowContext(ctx, `SELECT c.id,c.job_id,j.input_digest FROM df_learning_promotion_dependencies dep JOIN (
@@ -104,7 +101,7 @@ func (s *Store) consolidationEpisodesTx(ctx context.Context, tx *sql.Tx, referen
 	episodes := `SELECT episode_id FROM df_learning_experiences WHERE id=?`
 	args := []any{snap.Seed.ID}
 	for _, dep := range snap.Patterns {
-		episodes += ` UNION SELECT episode_id FROM df_learning_pattern_members WHERE pattern_id=? AND revision=?`
+		episodes += ` UNION SELECT episode_id FROM df_learning_pattern_members WHERE pattern_id=? AND revision<=?`
 		args = append(args, dep.ID, dep.Revision)
 	}
 	return episodes, args, nil

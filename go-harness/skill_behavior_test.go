@@ -107,7 +107,7 @@ func TestSkillBehaviorSDKManualAndGeneratedCandidates(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route("generator")}, Sources: []string{"project"}, Budget: harness.SkillMaintenanceBudget{MaxDailyModelCalls: 20, MaxDailyTokens: 200000, MaxJobSeconds: 30, Workers: 1}}
+			cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route("generator")}, Sources: []string{"project"}, Policy: harness.SkillMaintenancePolicy{MaxJobSeconds: 30, Workers: 1}}
 			cfg.SkillBehaviorEvaluator, err = NewSkillBehaviorEvaluator(ctx, harness.SkillBehaviorModelConfig{Route: route("behavior"), MaxModelCalls: 3, MaxOutputTokens: 512})
 			if err != nil {
 				t.Fatal(err)

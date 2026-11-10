@@ -77,6 +77,7 @@ func TestSkillManageNativeProposalOwnership(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			configureSkillManageQueue(t, c)
 			defer func() {
 				if c != nil {
 					_ = c.Close()
@@ -129,14 +130,14 @@ func TestSkillManageNativeProposalOwnership(t *testing.T) {
 				mu.Unlock()
 				allowed := author == "session" && reader == "same-session"
 				if allowed {
-					if !strings.Contains(output, `"status":"pending_review"`) || !strings.Contains(output, proposalID) {
+					if !strings.Contains(output, `"status":"evaluating"`) || !strings.Contains(output, proposalID) {
 						t.Fatalf("owner lost access: %s", output)
 					}
 				} else if !strings.Contains(output, `"code":"not_found"`) || strings.Contains(output, proposalID) {
 					t.Fatalf("another agent's proposal exposed to %s: %s", reader, output)
 				}
 			}
-			if reviews.Load() != 1 {
+			if reviews.Load() != 0 {
 				t.Fatalf("reading repeated model review: %d", reviews.Load())
 			}
 		})

@@ -59,10 +59,11 @@ pub(crate) fn resolve(user_data: &Path, requested: Option<&Path>) -> Result<Path
             if user_data
                 .join("config/go-harness-state/harness.db")
                 .is_file()
+                || user_data.join("data/go-harness/harness.db").is_file()
             {
                 return Err("runtime-data.json is missing while a historical database exists; refusing to choose another store".into());
             }
-            user_data.join("data/go-harness")
+            user_data.join("config/go-harness-state")
         }
         Err(error) => return Err(error.into()),
         Ok(file) => {
@@ -90,6 +91,12 @@ pub(crate) fn resolve(user_data: &Path, requested: Option<&Path>) -> Result<Path
             selected
         }
     };
+    for relative in ["config/go-harness-state", "data/go-harness"] {
+        let other = user_data.join(relative);
+        if other.join("harness.db").is_file() && normalize_path(&other)? != normalize_path(&selected)? {
+            return Err("a second runtime database exists; archive the inactive store outside runtime paths before starting this profile, then use the archive for skill recovery".into());
+        }
+    }
     if let Some(requested) = requested {
         if normalize_path(requested)? != normalize_path(&selected)? {
             return Err(format!("data directory override conflicts with portable binding: requested {}, selected {}", requested.display(), selected.display()).into());
@@ -107,7 +114,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let data = root.path().join("user-data");
         let old = data.join("config/go-harness-state");
-        assert_eq!(resolve(&data, None).unwrap(), data.join("data/go-harness"));
+        assert_eq!(resolve(&data, None).unwrap(), old);
         fs::create_dir_all(&old).unwrap();
         fs::write(old.join("harness.db"), b"original history").unwrap();
         assert!(resolve(&data, None).is_err());

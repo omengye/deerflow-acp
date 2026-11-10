@@ -20,6 +20,10 @@ func (s service) snapshot() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	network, err := networkDocument(data["network"])
+	if err != nil {
+		return nil, err
+	}
 	if value := data["tools"]; value != nil {
 		if _, ok := value.([]any); !ok {
 			return nil, errors.New("tools 必须是数组")
@@ -132,6 +136,14 @@ func (s service) snapshot() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	searchManager, err := s.searchManager()
+	if err != nil {
+		return nil, err
+	}
+	searchStatus, err := searchManager.Status()
+	if err != nil {
+		return nil, err
+	}
 	for key := range withoutKeys(sandboxRaw, "provider", "use", "allow_host_bash", "allow_host_tools") {
 		toolDiagnostics = append(toolDiagnostics, "sandbox."+key+"：原数据保留，当前 Go 配置不读取此设置")
 	}
@@ -146,23 +158,6 @@ func (s service) snapshot() (map[string]any, error) {
 		}
 	}
 	subagents["enabled"], subagents["max_concurrent"] = controls.Enabled, controls.MaxConcurrent
-	if value := data["skill_evolution"]; value != nil {
-		if _, ok := value.(map[string]any); !ok {
-			return nil, fmt.Errorf("skill_evolution: must be an object")
-		}
-	}
-	evolutionRaw := readObject(data, "skill_evolution")
-	evolution, ignoredEvolution, err := configschema.ProjectEvolution(evolutionRaw)
-	if err != nil {
-		return nil, err
-	}
-	evolution = redact(evolution, "").(map[string]any)
-	nativeEvolutionMode := evolution["mode"] == "review" || evolution["mode"] == "auto_patch"
-	evolutionMigrationRequired := len(ignoredEvolution) > 0 || !nativeEvolutionMode || evolution["security_fail_closed"] != true
-	evolutionTargetMode := evolution["mode"]
-	if evolutionMigrationRequired {
-		evolutionTargetMode = "review"
-	}
 
 	return map[string]any{
 		"config_migration": map[string]any{
@@ -177,19 +172,13 @@ func (s service) snapshot() (map[string]any, error) {
 		"config_schema":        configschema.Describe(),
 		"config_revision":      configRevision, "extensions_revision": extensionsRevision,
 		"default_model": defaultModel, "models": models, "runtime": runtime, "memory": memory,
-		"subagents": subagents, "sandbox": sandbox,
+		"subagents": subagents, "sandbox": sandbox, "network": network,
 		"tools": tools, "tool_diagnostics": toolDiagnostics,
-		"skills_enabled":                boolValue(readObject(data, "skills"), "enabled", true),
-		"skill_sources":                 skillSources,
-		"skill_source_diagnostics":      skillSourceDiagnostics,
-		"skill_evolution":               evolution,
-		"skill_evolution_migration_ack": "",
-		"skill_evolution_migration": map[string]any{
-			"required":        evolutionMigrationRequired,
-			"source_revision": configRevision, "removed_paths": ignoredEvolution,
-			"target_mode": evolutionTargetMode, "security_fail_closed": true,
-		},
-		"paths": map[string]any{"config": s.config, "extensions": paths.extensions, "skills": paths.skills, "user_data": s.userData},
+		"search_plugins":           searchStatus,
+		"skills_enabled":           boolValue(readObject(data, "skills"), "enabled", true),
+		"skill_sources":            skillSources,
+		"skill_source_diagnostics": skillSourceDiagnostics,
+		"paths":                    map[string]any{"config": s.config, "extensions": paths.extensions, "skills": paths.skills, "user_data": s.userData},
 	}, nil
 }
 
@@ -197,6 +186,13 @@ func modelDocument(raw map[string]any) map[string]any {
 	thinkingBudget := any(0)
 	if value := raw["thinking_budget_tokens"]; value != nil {
 		thinkingBudget = value
+	}
+	maxOutput, maxSupportedOutput := any(0), any(0)
+	if value := raw["max_output_tokens"]; value != nil {
+		maxOutput = value
+	}
+	if value := raw["max_supported_output_tokens"]; value != nil {
+		maxSupportedOutput = value
 	}
 	contextWindow := any(0)
 	if value := raw["context_window"]; value != nil {
@@ -211,13 +207,16 @@ func modelDocument(raw map[string]any) map[string]any {
 		"original_name": str(raw, "name", ""), "name": str(raw, "name", ""),
 		"display_name": str(raw, "display_name", ""), "description": str(raw, "description", ""),
 		"provider": nativeProvider(raw), "model": str(raw, "model", ""),
+		"api":     str(raw, "api", "auto"),
 		"api_key": reference, "api_key_configured": key != "", "api_key_literal": key != "" && reference == "", "clear_api_key": false,
 		"base_url":               str(raw, "base_url", ""),
 		"output_token_parameter": str(raw, "output_token_parameter", "auto"),
 		"supports_vision":        boolValue(raw, "supports_vision", false), "context_window": contextWindow,
-		"reasoning_efforts":      raw["reasoning_efforts"],
-		"thinking_parameter":     str(raw, "thinking_parameter", ""),
-		"thinking_budget_tokens": thinkingBudget,
+		"reasoning_efforts":           raw["reasoning_efforts"],
+		"thinking_parameter":          str(raw, "thinking_parameter", ""),
+		"thinking_budget_tokens":      thinkingBudget,
+		"max_output_tokens":           maxOutput,
+		"max_supported_output_tokens": maxSupportedOutput,
 	}
 }
 

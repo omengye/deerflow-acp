@@ -17,7 +17,7 @@ func (s *Service) GenerationStatus() harness.SkillGenerationStatus {
 	}
 	result.Enabled = true
 	policy := s.generation.policy
-	result.Budget = &policy
+	result.Policy = &policy
 	for _, target := range s.generation.allowed {
 		result.Sources = append(result.Sources, target)
 	}

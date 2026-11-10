@@ -30,7 +30,7 @@ func discoveryFixture(t *testing.T) (*collectorFixture, *fixtureGenerator, *fixt
 	return f, g, v
 }
 func discoveryOptions() harness.SkillDiscoveryOptions {
-	return harness.SkillDiscoveryOptions{RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxDailyProposals: 5, MaxPendingProposals: 20}
+	return harness.SkillDiscoveryOptions{RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxPendingProposals: 20}
 }
 
 func discoveryCorrection(t *testing.T, f *collectorFixture, root string, key string) harness.SkillFeedback {
@@ -162,7 +162,7 @@ func TestDiscoveryWithdrawalFencesCallsCandidateAndApproval(t *testing.T) {
 					t.Fatal(err)
 				}
 				withdrawDiscoveryFeedback(t, f.service, first.SignalID)
-				if _, err = f.service.Approve(ctx, p.ID, Review{ExpectedStateVersion: p.StateVersion, Actor: "test"}); !errors.Is(err, harness.ErrSkillConflict) {
+				if _, err = f.service.Approve(context.WithValue(ctx, autoPatchContextKey{}, true), p.ID, Review{ExpectedStateVersion: p.StateVersion, Actor: "test"}); !errors.Is(err, harness.ErrSkillConflict) {
 					t.Fatalf("withdrawn approved: %v", err)
 				}
 				stale, err := f.service.Get(ctx, p.ID)
@@ -291,10 +291,10 @@ func TestDiscoveryConcurrentReservationRestartAndLifetimeRootDedup(t *testing.T)
 	}
 }
 
-func TestDiscoveryCooldownDailyAndPendingCaps(t *testing.T) {
+func TestDiscoveryCooldownAndPendingWithoutDailyCap(t *testing.T) {
 	f, _, _ := discoveryFixture(t)
 	ctx := context.Background()
-	f.service.discovery.options = harness.SkillDiscoveryOptions{RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 1, MaxDailyProposals: 2, MaxPendingProposals: 1}
+	f.service.discovery.options = harness.SkillDiscoveryOptions{RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 1, MaxPendingProposals: 1}
 	now := time.Now().UTC().Add(24 * time.Hour).Truncate(24 * time.Hour).Add(2 * time.Hour)
 	f.service.discovery.now = func() time.Time { return now }
 	add := func(prefix string) {
@@ -338,13 +338,13 @@ func TestDiscoveryCooldownDailyAndPendingCaps(t *testing.T) {
 	}
 	now = now.Add(31 * time.Minute)
 	discoverySteps(t, f.service, 3)
-	if len(discoveries(t, f.service)) != 2 {
-		t.Fatal("daily cap bypass")
+	if len(discoveries(t, f.service)) != 3 {
+		t.Fatal("removed daily cap still blocks new work")
 	}
 	now = now.Add(24 * time.Hour)
 	discoverySteps(t, f.service, 3)
 	if len(discoveries(t, f.service)) != 3 {
-		t.Fatal("new day did not release daily cap")
+		t.Fatal("date change duplicated work")
 	}
 }
 
@@ -438,8 +438,8 @@ func TestDiscoveryDisabledAfterReviewAllowsExplicitApprovalAndTerminalAck(t *tes
 	}
 	defer disabled.Close()
 	approved, err := disabled.Approve(ctx, p.ID, Review{ExpectedStateVersion: p.StateVersion, Actor: "operator"})
-	if err != nil || approved.Status != "published" {
-		t.Fatalf("explicit approval disabled discovery %+v %v", approved, err)
+	if !errors.Is(err, harness.ErrInvalidInput) || approved.Status == "published" {
+		t.Fatalf("manual approval admitted automatic candidate: %v", err)
 	}
 	// Simulate a process losing its final job acknowledgement after the durable
 	// review. Recovery sees the published result and spends no new model calls,

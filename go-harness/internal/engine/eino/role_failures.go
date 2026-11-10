@@ -78,6 +78,7 @@ func (m *trackedModel) modelError(err error) error {
 	err = classifyModelRateLimitError(err)
 	err = classifyModelContextError(err)
 	err = classifyModelResponseError(err)
+	err = classifyModelToolsCompatibilityError(err)
 	if err == nil || !m.role {
 		return err
 	}

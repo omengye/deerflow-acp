@@ -10,6 +10,9 @@ import (
 
 func (c *Client) managementBehavior(ctx context.Context, request localhost.ManagementRequest) (any, error) {
 	fields := []string{"proposal_id"}
+	if request.Operation == "proposal.behavior" {
+		fields = append(fields, "after_result", "limit")
+	}
 	if request.Operation == "proposal.behavior.receipts" {
 		fields = append(fields, "after_sequence", "limit")
 	}
@@ -21,7 +24,17 @@ func (c *Client) managementBehavior(ctx context.Context, request localhost.Manag
 		return nil, err
 	}
 	if request.Operation == "proposal.behavior" {
-		return c.evolution.BehaviorEvaluation(ctx, id)
+		var after int64
+		if raw, ok := request.Fields["after_result"]; ok {
+			if json.Unmarshal(raw, &after) != nil || after < 0 {
+				return nil, managementInvalid("invalid after_result")
+			}
+		}
+		limit, err := optionalProposalInteger(request.Fields, "limit", 32)
+		if err != nil {
+			return nil, err
+		}
+		return c.evolution.BehaviorEvaluationPage(ctx, id, after, int(limit))
 	}
 	if request.Operation != "proposal.behavior.receipts" {
 		return nil, managementInvalid("unsupported behavior operation")

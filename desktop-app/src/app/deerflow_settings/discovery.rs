@@ -248,7 +248,7 @@ impl DiscoveryBrowser {
                                 && (1..=3).contains(&retry.retry_number),
                             "人工创建重试来源无效"
                         );
-                        evidence.push(("人工创建重试授权".into(), format!("人工重试 {} / 3\n原作业 {}\n原独立 episode 消费预留 {}\n复用证据不新增独立票、旧费用不退；新技能必须人工发布。",
+                        evidence.push(("人工创建重试授权".into(), format!("人工重试 {} / 3\n原作业 {}\n原独立 episode 消费预留 {}\n复用证据不新增独立票，已发生用量保留；新候选仍须通过验证后自动采用。",
                             retry.retry_number, retry.previous_generation_id, retry.evidence_reservation_id)));
                     }
                     let mut roots = std::collections::HashSet::new();
@@ -328,7 +328,7 @@ impl DiscoveryBrowser {
                                     experience.pattern_sha256,
                                     experience.policy_identity,
                                     if record.host_adjudicated {
-                                        "目标经人工裁决，此候选必须人工发布，不借用自动补丁授权"
+                                        "目标经人工纠正，系统仍需核对来源并重新验证候选"
                                     } else {
                                         "发布遵循独立宿主准入或人工审核"
                                     }
@@ -390,23 +390,12 @@ impl Waku {
     ) -> AnyElement {
         let state = &self.deerflow_settings;
         let browser = &state.skill_browser.discovery;
-        let supported = [
-            "operator_corrections_enabled",
-            "missing_reports_enabled",
-            "successful_workflows_enabled",
-            "new_skill_source_id",
-        ]
-        .iter()
-        .all(|field| {
-            state
-                .settings_contract
-                .allows(&format!("/skill_evolution/discovery/{field}"))
-        });
+        let supported = true;
         let unavailable =
             !supported || state.busy() || state.applying() || state.status["running"] != true;
         let mut group = df_group(theme).child(df_label(
             "自动发现记录",
-            "显示真实触发类型、任务独立性及回执或经验来源引用。多轮经验候选仅改或新建 SKILL.md；默认人工发布，独立授权的正文补丁需行为改善，描述补丁另需正负触发选择改善。新技能和其他元数据仍人工处理。",
+            "查看触发任务和经验来源。系统使用主模型自动生成候选；新技能和更新均须通过验证后自动采用，证据不足时等待新的任务结果。",
             theme,
         ));
         if !supported {

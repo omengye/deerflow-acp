@@ -81,7 +81,7 @@ func generationFixture(t *testing.T) (*fixture, *fixtureGenerator, *fixtureGener
 }
 func configureGeneration(t *testing.T, s *Service, g *fixtureGenerator) {
 	t.Helper()
-	err := s.ConfigureGeneration(context.Background(), g, skillmaintenance.Policy{MaxDailyModelCalls: 30, MaxDailyTokens: 100000, MaxJobSeconds: 300, Workers: 1}, []string{"project"}, false)
+	err := s.ConfigureGeneration(context.Background(), g, skillmaintenance.Policy{MaxJobSeconds: 300, Workers: 1}, []string{"project"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestGenerationOperatorPreparationIsReadOnlyAndIdentityBound(t *testing.T) {
 	ctx := context.Background()
 	f, g, v := generationFixture(t)
 	status := f.service.GenerationStatus()
-	if !status.Enabled || status.Version != "skill-generation-v1" || len(status.Sources) != 1 || status.Sources[0].SourceID != "project" || status.Sources[0].Name != "" || status.Budget == nil || status.Budget.MaxDailyModelCalls != 30 {
+	if !status.Enabled || status.Version != "skill-generation-v1" || len(status.Sources) != 1 || status.Sources[0].SourceID != "project" || status.Sources[0].Name != "" || status.Policy == nil || status.Policy.Workers != 1 {
 		t.Fatalf("status: %+v", status)
 	}
 	target := status.Sources[0]
@@ -129,8 +129,8 @@ func TestGenerationOperatorPreparationIsReadOnlyAndIdentityBound(t *testing.T) {
 		}
 	}
 	status.Sources[0].SourceID = "changed"
-	status.Budget.MaxDailyModelCalls = 100000
-	if next := f.service.GenerationStatus(); next.Sources[0].SourceID != "project" || next.Budget.MaxDailyModelCalls != 30 {
+	status.Policy.Workers = 16
+	if next := f.service.GenerationStatus(); next.Sources[0].SourceID != "project" || next.Policy.Workers != 1 {
 		t.Fatal("status exposed mutable grants")
 	}
 	page, err := f.service.QueryGeneration(ctx, harness.SkillQuery{Limit: 10})
@@ -144,11 +144,11 @@ func TestGenerationPreparationRequiresBuiltinGrantAndImportedOrigin(t *testing.T
 	f, g, v := generationFixture(t)
 	f.cfg.BuiltinSources = []string{"project"}
 	reopenBuiltin(t, f)
-	policy := skillmaintenance.Policy{MaxDailyModelCalls: 30, MaxDailyTokens: 100000, MaxJobSeconds: 300, Workers: 1}
+	policy := skillmaintenance.Policy{MaxJobSeconds: 300, Workers: 1}
 	if err := f.service.ConfigureGeneration(ctx, g, policy, []string{"project"}, false); err == nil {
 		t.Fatal("builtin generation enabled without overlay grant")
 	}
-	if status := f.service.GenerationStatus(); status.Enabled || len(status.Sources) != 0 || status.Budget != nil {
+	if status := f.service.GenerationStatus(); status.Enabled || len(status.Sources) != 0 || status.Policy != nil {
 		t.Fatalf("failed configuration exposed generation authority: %+v", status)
 	}
 	if err := f.service.ConfigureGeneration(ctx, g, policy, []string{"project"}, true); err != nil {
@@ -205,21 +205,21 @@ func TestGenerationQueueReviewAndPublishAreSeparate(t *testing.T) {
 		t.Fatalf("receipts %+v %v", receipts, e)
 	}
 	for i, stage := range []string{"generation", "security", "quality"} {
-		if receipts[i].Stage != stage || receipts[i].ChargedTokens != 15 {
+		if receipts[i].Stage != stage || receipts[i].ActualTokens != 15 {
 			t.Fatal(receipts)
 		}
 	}
 	if _, e = f.service.Validate(ctx, p.ID, p.StateVersion); !errors.Is(e, harness.ErrPermissionDenied) {
 		t.Fatalf("unbudgeted review allowed %v", e)
 	}
-	if _, e = f.service.Approve(ctx, p.ID, review(p)); e != nil {
-		t.Fatal(e)
+	if _, e = f.service.Approve(ctx, p.ID, review(p)); !errors.Is(e, harness.ErrInvalidInput) {
+		t.Fatal("manual approval bypassed automatic validation", e)
 	}
-	if f.head(t).Version != p.CandidateVersion {
-		t.Fatal("operator approval did not publish")
+	if f.head(t) != base {
+		t.Fatal("unverified candidate changed head")
 	}
-	if e = f.service.CancelGeneration(ctx, job.ID, finished.StateVersion); !errors.Is(e, harness.ErrSkillConflict) {
-		t.Fatalf("cancel published %v", e)
+	if e = f.service.CancelGeneration(ctx, job.ID, finished.StateVersion); !errors.Is(e, skillmaintenance.ErrConflict) {
+		t.Fatalf("cancel completed %v", e)
 	}
 	// A duplicate after publication returns the original job instead of charging.
 	again, e := f.service.EnqueueGeneration(ctx, harness.SkillGenerationRequest{SourceID: "project", Name: "research", RequestKey: "edit", Reason: "Please verify sources", Base: base})
@@ -460,7 +460,7 @@ func TestGenerationCancelDuringReviewRejectsProposalAtomically(t *testing.T) {
 	if e != nil || len(r) != 1 || r[0].Stage != "generation" {
 		t.Fatalf("cancel admitted review %+v %v", r, e)
 	}
-	if _, e = f.service.Approve(ctx, p.ID, review(p)); !errors.Is(e, harness.ErrSkillConflict) {
+	if _, e = f.service.Approve(ctx, p.ID, review(p)); !errors.Is(e, harness.ErrInvalidInput) {
 		t.Fatalf("cancelled proposal approved %v", e)
 	}
 }
@@ -483,8 +483,8 @@ func TestGenerationCommittedReviewRecoversWithoutNewModelConfiguration(t *testin
 	if e != nil || p.Status != "pending_review" {
 		t.Fatalf("review checkpoint %+v %v", p, e)
 	}
-	if _, e = f.service.Approve(ctx, p.ID, review(p)); e != nil {
-		t.Fatal(e)
+	if _, e = f.service.Approve(ctx, p.ID, review(p)); !errors.Is(e, harness.ErrInvalidInput) {
+		t.Fatal("manual approval bypassed automatic validation", e)
 	}
 	if _, e = f.db.DB().Exec(`DROP TRIGGER fail_generation_finish`); e != nil {
 		t.Fatal(e)
@@ -507,8 +507,8 @@ func TestGenerationCommittedReviewRecoversWithoutNewModelConfiguration(t *testin
 	if g.calls.Load() != 1 || v.calls.Load() != 1 || nextGenerator.calls.Load() != 0 || nextValidator.calls.Load() != 0 {
 		t.Fatal("committed review was regenerated or reevaluated")
 	}
-	if f.head(t).Version != p.CandidateVersion {
-		t.Fatal("recovery changed published head")
+	if f.head(t) != p.Base {
+		t.Fatal("recovery changed the installed head")
 	}
 }
 
@@ -572,11 +572,11 @@ func TestGenerationCandidateCheckpointRollsBackWithProgress(t *testing.T) {
 	}
 	generationRun(t, f.service)
 	finished, e := f.service.GetGeneration(ctx, job.ID)
-	if e != nil || finished.State != "completed" || g.calls.Load() != 2 || v.calls.Load() != 1 {
+	if e != nil || finished.State != "completed" || g.calls.Load() != 1 || v.calls.Load() != 1 {
 		t.Fatalf("retry %+v %v", finished, e)
 	}
 	receipts, e := f.service.GenerationReceipts(ctx, job.ID, 0, 100)
-	if e != nil || len(receipts) != 4 {
+	if e != nil || len(receipts) != 3 {
 		t.Fatalf("lost failed attempt charge %+v %v", receipts, e)
 	}
 }

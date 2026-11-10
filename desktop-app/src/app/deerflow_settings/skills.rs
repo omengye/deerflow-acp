@@ -645,10 +645,10 @@ pub(super) fn proposal_disposition_label(proposal: &Value) -> &str {
         Some("waiting_observation") => "等待当前版本观察结束",
         Some("waiting_quota") => "等待自动采用额度",
         Some("learning_authorization_required") => "需要经验来源授权",
-        Some("scope_or_coverage_requires_review") => "范围或可信覆盖需要确认",
+        Some("blocked_scope_or_coverage") => "范围或可信覆盖需要确认",
         Some("script_package_requires_review") => "含脚本，需要人工确认",
-        Some("improvement_or_metadata_requires_review") => "改善不足或元数据超范围",
-        Some("change_size_requires_review") => "修改规模超出自动采用范围",
+        Some("improvement_not_proven") => "改善不足或元数据超范围",
+        Some("change_size_exceeded") => "修改规模超出自动采用范围",
         Some("configuration_requires_review") => "配置已变化，请核对后重新生成",
         Some("source_authorization_required") => "来源授权需要确认",
         Some("validation_requires_review") => "验证不完整或已失效，请核对；不能绕过检查",
@@ -840,12 +840,16 @@ impl Waku {
         if evaluation["behavior"] == "not_run" {
             group = group.child(df_label(
                 "行为评测尚未执行",
-                "内容审查不能证明真实任务效果；本次由用户审查决定是否发布。",
+                if proposal["origin"] == "automatic" {
+                    "等待行为评测；通过验证后由系统自动采用，内容审查不能代替真实任务验证。"
+                } else {
+                    "内容审查不能证明真实任务效果；请查看候选的验证结果和处理状态。"
+                },
                 theme,
             ));
         }
         if proposal["script_review_required"] == true {
-            group = group.child(df_label("脚本未进行真实隔离执行验证", "静态内容检查或模拟行为测试不证明脚本可运行。此候选不可自动发布，人工发布需明确确认；运行前请使用 skill_run check 检查 Python 与依赖。", theme));
+            group = group.child(df_label("脚本未进行真实隔离执行验证", "候选暂不能发布，需在隔离环境中完成脚本执行验证。缺少环境时等待运行条件，静态检查和模拟测试不能代替真实执行。", theme));
         }
         if proposal["validation_failure"].is_object() {
             let failure = &proposal["validation_failure"];
@@ -1755,9 +1759,9 @@ mod tests {
     }
 
     #[test]
-    fn direct_script_approval_retry_preserves_the_exact_risk_decision() {
+    fn explicit_publication_retry_preserves_the_exact_decision() {
         let proposal = json!({"id":"p_script","status":"pending_review","state_version":2,
-            "base_sha256":null,"script_review_required":true});
+            "base_sha256":null,"script_review_required":false});
         let request = publication_state::approval_action(&proposal)
             .unwrap()
             .request;
@@ -1771,7 +1775,7 @@ mod tests {
         for (field, value) in [
             ("proposal_id", json!("p_other")),
             ("expected_state_version", json!(3)),
-            ("acknowledge_unverified_scripts", json!(false)),
+            ("expected_base_sha256", json!("a".repeat(64))),
         ] {
             let mut changed = request.clone();
             changed[field] = value;

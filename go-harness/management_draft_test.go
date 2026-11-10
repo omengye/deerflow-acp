@@ -2,62 +2,30 @@ package deerflow
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
-func TestOperatorDraftStagesFullPythonPackageAndRequiresAcknowledgment(t *testing.T) {
+func TestOperatorDraftManualReviewIsRetired(t *testing.T) {
 	c, _ := skillEvolutionClient(t)
 	ctx := context.Background()
-	target, head, _, err := c.evolution.Head(ctx, "project", "research")
+	before, err := c.GetSkillHead(ctx, "project", "research")
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := map[string]any{"operation": "proposal.submit", "target": target, "expected_head": head, "request_key": "python-draft", "reason": "Keep Python source without implicit execution.", "files": map[string]string{"SKILL.md": "---\nname: research\ndescription: Research using Python\n---\nUse skill_run.\n", "run.py": "print('reviewed source')\n"}}
-	value, err := skillManagementCall(t, c, request)
-	if err != nil {
-		t.Fatal(err)
+	for _, operation := range []string{"proposal.submit", "proposal.approve", "proposal.review_retry", "proposal.source_review"} {
+		if _, err = skillManagementCall(t, c, map[string]any{"operation": operation}); err == nil {
+			t.Fatal("retired operation accepted", operation)
+		}
 	}
-	data, _ := json.Marshal(value)
-	var result struct{ Proposal harness.SkillProposal }
-	if err = json.Unmarshal(data, &result); err != nil {
-		t.Fatal(err)
+	after, err := c.GetSkillHead(ctx, "project", "research")
+	if err != nil || after != before {
+		t.Fatal("retired operation changed installed skill", after, err)
 	}
-	p := result.Proposal
-	if p.Status != "pending_review" || !p.ScriptReviewRequired || p.Evaluation.IsolatedScripts {
-		t.Fatal("false execution claim", p)
-	}
-	current, _ := c.GetSkillHead(ctx, "project", "research")
-	if current != head {
-		t.Fatal("submission installed source")
-	}
-	if _, err = skillManagementCall(t, c, request); err != nil {
-		t.Fatal("idempotency", err)
-	}
-	approve := map[string]any{"operation": "proposal.approve", "proposal_id": p.ID, "expected_state_version": p.StateVersion}
-	if _, err = skillManagementCall(t, c, approve); err == nil {
-		t.Fatal("silent script publication")
-	}
-	approve["acknowledge_unverified_scripts"] = "true"
-	if _, err = skillManagementCall(t, c, approve); err == nil {
-		t.Fatal("nonboolean ack")
-	}
-	approve["acknowledge_unverified_scripts"] = true
-	if _, err = skillManagementCall(t, c, approve); err != nil {
-		t.Fatal(err)
-	}
-	published, _ := c.GetSkillProposal(ctx, p.ID)
-	if published.Status != "published" || !published.Approval.Review.AcknowledgeUnverifiedScripts {
-		t.Fatal(published)
-	}
-	bad := target
-	bad.SourceIdentity = "wrong"
-	request["target"] = bad
-	request["request_key"] = "foreign"
-	if _, err = skillManagementCall(t, c, request); err == nil {
-		t.Fatal("source identity ignored")
+	page, err := c.ListSkillProposals(ctx, harness.SkillQuery{Limit: 10})
+	if err != nil || len(page.Proposals) != 0 {
+		t.Fatal("retired operation queued work", page, err)
 	}
 }
 
@@ -69,7 +37,7 @@ func TestOperatorDraftRejectsAmbiguousFiles(t *testing.T) {
 	}
 }
 
-func TestOperatorNewPythonSkillPublishesOnceWithExplicitNullBase(t *testing.T) {
+func TestOperatorNewPythonSkillCannotBypassExecutionWithNullBase(t *testing.T) {
 	c, _ := skillEvolutionClient(t)
 	ctx := context.Background()
 	p, err := c.SubmitSkillProposal(ctx, harness.SkillProposalRequest{
@@ -102,16 +70,11 @@ func TestOperatorNewPythonSkillPublishesOnceWithExplicitNullBase(t *testing.T) {
 		t.Fatal("risk acknowledgment bypassed the reviewed state precondition")
 	}
 	request["expected_state_version"] = p.StateVersion
-	result, err := skillManagementCall(t, c, request)
-	if err != nil {
-		t.Fatal("single explicit approval failed", err)
-	}
-	replayed, err := skillManagementCall(t, c, request)
-	if err != nil || result.(map[string]any)["catalog_version"] != replayed.(map[string]any)["catalog_version"] {
-		t.Fatal("duplicate click republished or lost the original decision", err)
+	if _, err = skillManagementCall(t, c, request); err == nil {
+		t.Fatal("retired acknowledgment accepted")
 	}
 	published, err := c.GetSkillProposal(ctx, p.ID)
-	if err != nil || published.Status != "published" || published.Approval == nil || !published.Approval.Review.AcknowledgeUnverifiedScripts {
-		t.Fatalf("approval evidence missing: %+v %v", published, err)
+	if err != nil || published.Status == "published" || published.Approval != nil {
+		t.Fatal("unexecuted scripts published", err)
 	}
 }

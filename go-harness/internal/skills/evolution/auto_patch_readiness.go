@@ -9,7 +9,7 @@ import (
 )
 
 func (s *Service) autoPatchReadiness(ctx context.Context) (*harness.SkillAutoPatchReadiness, error) {
-	r := &harness.SkillAutoPatchReadiness{State: "disabled", NewSkillsRequireReview: true, Reasons: []string{}}
+	r := &harness.SkillAutoPatchReadiness{State: "disabled", Reasons: []string{}}
 	allowedSources, where, args, _, err := s.querySources(harness.SkillQuery{Limit: 1}, "maintenance-readiness")
 	if err != nil {
 		return nil, err
@@ -100,7 +100,18 @@ func (s *Service) autoPatchReadiness(ctx context.Context) (*harness.SkillAutoPat
 		covered := false
 		if s.behavior != nil {
 			binding, ok := s.behavior.suites[item.source+"/"+item.name]
-			covered = ok && suiteCoversAutomaticBody(binding.suite)
+			if ok {
+				targeted, regression := false, false
+				err := walkBehaviorCases(ctx, tx, behaviorSnapshot{Suite: &binding.suite, SuiteDigest: binding.digest, CaseCount: binding.count, CaseRoot: binding.root}, func(c harness.SkillBehaviorCase) error {
+					targeted = targeted || c.Kind == "targeted"
+					regression = regression || c.Kind == "regression"
+					return nil
+				})
+				if err != nil {
+					return nil, err
+				}
+				covered = targeted && regression
+			}
 		}
 		if covered {
 			r.EligibleTargets++

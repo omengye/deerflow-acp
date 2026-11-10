@@ -27,22 +27,31 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/automation"
 	budgetledger "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	"github.com/omengye/deerflow-acp/go-harness/internal/channels"
+	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/learning"
 	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
+	"github.com/omengye/deerflow-acp/go-harness/internal/network"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
+	"github.com/omengye/deerflow-acp/go-harness/internal/runtimepaths"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills/evolution"
 	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
+	"github.com/omengye/deerflow-acp/go-harness/internal/websearch"
 )
 
 type Config struct {
+	RuntimeProfile         string // Host-selected portable user-data; empty for standalone SDK clients.
+	EvolutionMigrationID   string // Internal startup journal identity.
+	EvolutionMigrationPath string // Host launch path; not a customer setting.
+	Network                harness.NetworkConfig
 	// MaxArtifactBytes limits each output artifact. Zero uses 500 MiB.
 	MaxArtifactBytes int64
 	DataDir          string
 	Provider         string
+	API              harness.ModelAPI
 	APIKey           string
 	BaseURL          string
 	Model            string
@@ -71,6 +80,7 @@ type Config struct {
 	// configured model. Missing/empty entries do not expose an ACP selector.
 	ModelReasoningEfforts map[string][]string
 	ModelThinking         map[string]harness.ThinkingConfig
+	ModelOutputLimits     map[string]harness.ModelOutputLimits
 	DisableSubagents      bool
 	// Subagents defines host-owned builtin overrides and custom roles. Runtime
 	// model references are resolved by the configuration loader before Open.
@@ -81,8 +91,11 @@ type Config struct {
 	// BuiltinTools maps the portable tools list to native Go implementations.
 	// HostToolsAllowed separately opts into host_opencli. Nil preserves the SDK
 	// workspace tool surface and does not enable any network or host adapter.
-	BuiltinTools     []harness.BuiltinToolConfig
-	HostToolsAllowed bool
+	BuiltinTools       []harness.BuiltinToolConfig
+	HostToolsAllowed   bool
+	Search             harness.SearchConfig
+	SearchSettingsPath string
+	search             *websearch.Manager
 	// PermissionMode follows local_acp.permission_mode when set. Empty keeps
 	// the original Go SDK behavior for existing embedders.
 	PermissionMode harness.PermissionMode
@@ -179,6 +192,7 @@ type Config struct {
 }
 
 type Client struct {
+	search           *websearch.Manager
 	scheduler        *automation.Scheduler
 	channels         *channels.Manager
 	service          *hr.Service
@@ -296,6 +310,10 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if cfg.MemoryMode == "tool" && cfg.MemoryRetrievalEnabled != nil && !*cfg.MemoryRetrievalEnabled && (cfg.MemoryEnabled == nil || *cfg.MemoryEnabled) {
 		return nil, fmt.Errorf("%w: memory tool mode requires retrieval_enabled=true", harness.ErrInvalidInput)
 	}
+	if err := network.Validate(cfg.Network); err != nil {
+		return nil, err
+	}
+	cfg.Network = network.Clone(cfg.Network)
 	cfg.Media.VisionModels = slices.Clone(cfg.Media.VisionModels)
 	cfg.ModelRoutes = maps.Clone(cfg.ModelRoutes)
 	cfg.ModelThinking = maps.Clone(cfg.ModelThinking)
@@ -303,12 +321,18 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if cfg.Budget != nil {
 		thinkingOutputLimit = cfg.Budget.MaxOutputTokens
 	}
+	cfg.ModelOutputLimits = maps.Clone(cfg.ModelOutputLimits)
+	for name, output := range cfg.ModelOutputLimits {
+		if err := output.Validate(thinkingOutputLimit); err != nil {
+			return nil, fmt.Errorf("model %q: %w", name, err)
+		}
+	}
 	for name, thinking := range cfg.ModelThinking {
 		provider := cfg.Provider
 		if route, ok := cfg.ModelRoutes[name]; ok {
 			provider = route.Provider
 		}
-		if err := thinking.Validate(provider, cfg.ModelReasoningEfforts[name], thinkingOutputLimit); err != nil {
+		if err := thinking.Validate(provider, cfg.ModelReasoningEfforts[name], cfg.ModelOutputLimits[name].Effective(thinkingOutputLimit)); err != nil {
 			return nil, fmt.Errorf("model %q: %w", name, err)
 		}
 	}
@@ -350,6 +374,13 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.SearchSettingsPath == "" {
+		cfg.SearchSettingsPath = filepath.Join(cfg.DataDir, "search-providers.json")
+	}
+	cfg.search, err = websearch.New(cfg.SearchSettingsPath, websearch.Seed(cfg.Search, cfg.BuiltinTools, ""), cfg.Network)
+	if err != nil {
+		return nil, err
+	}
 	if len(cfg.ACPAgents) > 0 {
 		if _, err = acpclient.Tool(cfg.DataDir, harness.Session{ID: "configuration"}, cfg.ACPAgents); err != nil {
 			return nil, err
@@ -368,6 +399,11 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			_ = lock.Close()
 		}
 	}()
+	if cfg.RuntimeProfile != "" {
+		if _, err = runtimepaths.ResolvePortable(cfg.RuntimeProfile, cfg.DataDir); err != nil {
+			return nil, err
+		}
+	}
 	store, err := sqlite.Open(filepath.Join(cfg.DataDir, "harness.db"))
 	if err != nil {
 		return nil, err
@@ -377,6 +413,9 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			_ = store.Close()
 		}
 	}()
+	if err = runtimepaths.BindCreated(cfg.RuntimeProfile, cfg.DataDir); err != nil {
+		return nil, err
+	}
 	business, err := hr.NewStore(ctx, store.DB())
 	if err != nil {
 		return nil, err
@@ -401,11 +440,11 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			copy.Matching = &model
 		}
 		cfg.SkillLearning = &copy
-		if cfg.SkillGeneration != nil && cfg.SkillGeneration.Budget != copy.Budget {
-			return nil, fmt.Errorf("%w: learning and generation must share one maintenance budget", harness.ErrInvalidInput)
+		if cfg.SkillGeneration != nil && cfg.SkillGeneration.Policy != copy.Policy {
+			return nil, fmt.Errorf("%w: learning and generation must share one maintenance scheduling policy", harness.ErrInvalidInput)
 		}
 	}
-	learningStore, err := learning.New(ctx, store.DB(), cfg.SkillLearning)
+	learningStore, err := learning.New(skillmaintenance.WithMigrationID(ctx, cfg.EvolutionMigrationID), store.DB(), cfg.SkillLearning)
 	if err != nil {
 		return nil, err
 	}
@@ -473,9 +512,6 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			_ = registry.Close()
 		}
 	}()
-	if len(cfg.Skills.Install) > 128 {
-		return nil, fmt.Errorf("too many configured skill installations")
-	}
 	if err = registry.RecoverEdits(ctx); err != nil {
 		return nil, fmt.Errorf("recover installed skill edits: %w", err)
 	}
@@ -510,7 +546,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		if buildErr != nil {
 			return nil, buildErr
 		}
-		if err = skillEvolution.ConfigureGeneration(ctx, generator, cfg.SkillGeneration.Budget, cfg.SkillGeneration.Sources, cfg.SkillGeneration.AllowBuiltinOverlays); err != nil {
+		if err = skillEvolution.ConfigureGeneration(ctx, generator, cfg.SkillGeneration.Policy, cfg.SkillGeneration.Sources, cfg.SkillGeneration.AllowBuiltinOverlays); err != nil {
 			return nil, err
 		}
 	}
@@ -606,6 +642,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		return nil, fmt.Errorf("recover approved skill publications: %w", err)
 	}
 	cfg.skillEvolution = skillEvolution
+	business.CaptureSkillOracle = skillEvolution.CaptureTaskOracleTx
 	assetStore, err := assets.NewStoreWithArtifactLimit(ctx, filepath.Join(cfg.DataDir, "assets"), store.DB(), cfg.MaxArtifactBytes)
 	if err != nil {
 		return nil, err
@@ -624,7 +661,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		return nil, err
 	}
 	if cfg.MemorySingleUser && cfg.MemoryEmbeddingURL != "" {
-		embedder, embedErr := memory.NewHTTPEmbedder(cfg.MemoryEmbeddingURL, cfg.MemoryEmbeddingModel)
+		embedder, embedErr := memory.NewHTTPEmbedder(cfg.MemoryEmbeddingURL, cfg.MemoryEmbeddingModel, cfg.Network)
 		if embedErr != nil {
 			return nil, embedErr
 		}
@@ -664,7 +701,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		if admissionErr != nil {
 			return nil, admissionErr
 		}
-		engine, err = einoengine.New(ctx, einoengine.Config{Delegations: delegations, Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, OutputTokenParameter: cfg.OutputTokenParameter, ModelRoutes: cfg.ModelRoutes, ModelReasoningEfforts: cfg.ModelReasoningEfforts, ModelThinking: cfg.ModelThinking, Models: cfg.Models, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, Subagents: cfg.Subagents, ToolPolicy: cfg.ToolPolicy, PermissionMode: cfg.PermissionMode, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, ModelImageImporter: assetStore, ToolOutputStore: assetStore, TaskContextStore: business, GoalStore: business, GoalAutoContinue: cfg.GoalAutoContinue, Compaction: cfg.Compaction, ContextWindows: contextWindows})
+		engine, err = einoengine.New(ctx, einoengine.Config{API: cfg.API, Network: cfg.Network, Delegations: delegations, Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, OutputTokenParameter: cfg.OutputTokenParameter, ModelRoutes: cfg.ModelRoutes, ModelReasoningEfforts: cfg.ModelReasoningEfforts, ModelThinking: cfg.ModelThinking, ModelOutputLimits: cfg.ModelOutputLimits, Models: cfg.Models, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, Subagents: cfg.Subagents, ToolPolicy: cfg.ToolPolicy, PermissionMode: cfg.PermissionMode, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, ModelImageImporter: assetStore, ToolOutputStore: assetStore, TaskContextStore: business, GoalStore: business, GoalAutoContinue: cfg.GoalAutoContinue, Compaction: cfg.Compaction, ContextWindows: contextWindows})
 		if err != nil {
 			return nil, err
 		}
@@ -699,6 +736,13 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		if err = background.restoreHostResources(ctx); err != nil {
 			return nil, err
 		}
+	}
+	if cfg.EvolutionMigrationPath != "" {
+		if err = configschema.CompleteEvolutionFile(ctx, cfg.EvolutionMigrationPath, store.DB()); err != nil {
+			return nil, err
+		}
+	}
+	if background != nil {
 		if err = background.service.StartWorkers(context.Background()); err != nil {
 			return nil, err
 		}
@@ -721,7 +765,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if err = learningStore.Start(); err != nil {
 		return nil, err
 	}
-	client = &Client{service: service, store: store, mcp: manager, skills: registry, evolution: skillEvolution, learning: learningStore, assets: assetStore, budgets: ledger, background: background, retention: cfg.Retention, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}
+	client = &Client{search: cfg.search, service: service, store: store, mcp: manager, skills: registry, evolution: skillEvolution, learning: learningStore, assets: assetStore, budgets: ledger, background: background, retention: cfg.Retention, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}
 	client.dataDir, client.skillSelection = cfg.DataDir, cfg.SkillSelection
 	if cfg.SkillSelection.Names != nil {
 		client.skillSelection.Names = append([]string{}, cfg.SkillSelection.Names...)

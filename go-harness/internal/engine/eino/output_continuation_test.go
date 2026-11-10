@@ -116,7 +116,7 @@ func TestOutputContinuationBoundedAndExplicit(t *testing.T) {
 		progress bool
 		want     int
 	}{
-		{"no-visible-progress", false, 2},
+		{"no-visible-progress", false, 1},
 		{"bounded-progress", true, maxOutputContinuations + 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,7 +135,7 @@ func TestOutputContinuationBoundedAndExplicit(t *testing.T) {
 				}
 				return nil
 			}, nil)
-			if err != nil || result.StopReason != "max_tokens" || result.Limit != "" || fake.calls != tc.want || notice != 1 {
+			if err != nil || result.StopReason != "max_tokens" || result.Limit != "output_tokens" || fake.calls != tc.want || notice != 1 {
 				t.Fatalf("result=%+v err=%v calls=%d notices=%d", result, err, fake.calls, notice)
 			}
 		})
@@ -150,6 +150,38 @@ func TestOutputContinuationHonorsSharedBudget(t *testing.T) {
 	result, err := e.Run(context.Background(), request("budget"), nil, nil)
 	if err != nil || result.Limit != "model_calls" || fake.calls != 1 {
 		t.Fatalf("result=%+v err=%v calls=%d", result, err, fake.calls)
+	}
+}
+
+func TestReasoningOnlyOutputStopsWithoutIdenticalRetry(t *testing.T) {
+	store := einosession.NewInMemoryStore[*schema.Message](nil)
+	fake := &scriptedModel{stream: func(_ context.Context, call int, input []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		if call == 0 {
+			return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, ReasoningContent: "PRIVATE_REASONING", ResponseMeta: &schema.ResponseMeta{FinishReason: "length", Usage: &schema.TokenUsage{PromptTokens: 25813, CompletionTokens: 4096, TotalTokens: 29909, CompletionTokensDetails: schema.CompletionTokensDetails{ReasoningTokens: 4096}}}}}), nil
+		}
+		for _, msg := range input {
+			if strings.Contains(msg.Content, "PRIVATE_REASONING") || isOutputContinuation(msg) {
+				t.Error("reasoning-only response created unsafe continuation context")
+			}
+		}
+		return textStream("next turn completed"), nil
+	}}
+	e := newTestEngine(t, Config{ChatModel: fake, SessionStore: store, Budget: harness.BudgetLimits{MaxOutputTokens: 4096}})
+	var notice string
+	result, err := e.Run(context.Background(), request("reasoning-only"), func(_ context.Context, event harness.RunEvent) error {
+		if event.Kind == "output_limit" {
+			notice += event.Text
+		}
+		return nil
+	}, nil)
+	if err != nil || result.Limit != "output_tokens" || result.StopReason != "max_tokens" || fake.calls != 1 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, fake.calls, err)
+	}
+	if !strings.Contains(notice, "4096 tokens (4096 reasoning tokens)") || strings.Contains(notice, "PRIVATE_REASONING") || strings.Contains(notice, "context") {
+		t.Fatalf("incorrect notice: %s", notice)
+	}
+	if result, err := e.Run(context.Background(), request("next-reasoning-turn"), nil, nil); err != nil || result.StopReason != "end_turn" || fake.calls != 2 {
+		t.Fatalf("next turn result=%+v calls=%d err=%v", result, fake.calls, err)
 	}
 }
 
@@ -327,7 +359,7 @@ func TestOutputContinuationFailedRoleReturnsControlToParent(t *testing.T) {
 		if call == 0 {
 			return limitedOutput("", "tool_calls", schema.ToolCall{ID: "delegate", Type: "function", Function: schema.FunctionCall{Name: "task", Arguments: `{"subagent_type":"reader","prompt":"inspect","description":"inspect"}`}}), nil
 		}
-		if call < 3 {
+		if call == 1 {
 			return limitedOutput("", "length"), nil
 		}
 		return limitedOutput("The child could not complete; here are the confirmed results.", "stop"), nil
@@ -337,7 +369,7 @@ func TestOutputContinuationFailedRoleReturnsControlToParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := e.Run(context.Background(), request("role-output-failed"), nil, allowTool)
-	if err != nil || result.StopReason != "end_turn" || fake.calls != 4 {
+	if err != nil || result.StopReason != "end_turn" || fake.calls != 3 {
 		t.Fatalf("result=%+v err=%v calls=%d", result, err, fake.calls)
 	}
 }

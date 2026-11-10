@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"sort"
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -14,7 +13,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 )
 
-const MatchingPolicyVersion = "procedural-skill-match-v1"
+const MatchingPolicyVersion = "procedural-skill-match-v3"
 
 type matchChoice struct {
 	ID          string             `json:"id"`
@@ -23,16 +22,14 @@ type matchChoice struct {
 }
 
 type matchSnapshot struct {
-	ID                 string                            `json:"id"`
-	Session            string                            `json:"session"`
-	Owner              string                            `json:"owner"`
-	Pattern            patternDependency                 `json:"pattern"`
-	Catalog            int64                             `json:"catalog_revision"`
-	InventorySHA       string                            `json:"inventory_sha256"`
-	Choices            []matchChoice                     `json:"choices"`
-	View               harness.SkillExperienceMatchInput `json:"view"`
-	MaxDailyModelCalls int64                             `json:"max_daily_model_calls"`
-	MaxDailyTokens     int64                             `json:"max_daily_tokens"`
+	ID           string                            `json:"id"`
+	Session      string                            `json:"session"`
+	Owner        string                            `json:"owner"`
+	Pattern      patternDependency                 `json:"pattern"`
+	Catalog      int64                             `json:"catalog_revision"`
+	InventorySHA string                            `json:"inventory_sha256"`
+	Choices      []matchChoice                     `json:"choices"`
+	View         harness.SkillExperienceMatchInput `json:"view"`
 }
 
 func (s *Store) ConfigureMatching(matcher harness.SkillExperienceMatcher, access *skills.MatchAccess) error {
@@ -71,7 +68,7 @@ func (s *Store) QueueMatchOne(ctx context.Context) (bool, error) {
 	WHERE i.state='pending' AND i.sequence>(SELECT cursor FROM df_learning_match_scan WHERE id=1) AND j.state='completed'
  AND NOT EXISTS(SELECT 1 FROM df_learning_pattern_reviews review WHERE review.pattern_id=i.pattern_id
  AND (review.ignored=1 OR review.adjudication_revision=i.revision))
- AND NOT EXISTS(SELECT 1 FROM df_learning_pattern_members o WHERE o.pattern_id=i.pattern_id AND o.revision=i.revision AND `+episodeTailActivePredicate+`)
+ AND NOT EXISTS(SELECT 1 FROM df_learning_pattern_members o WHERE o.pattern_id=i.pattern_id AND o.revision<=i.revision AND `+episodeTailActivePredicate+`)
  AND NOT EXISTS(SELECT 1 FROM df_learning_matches a JOIN df_skill_maintenance_jobs active ON active.id=a.job_id
  WHERE a.pattern_id=i.pattern_id AND active.state IN ('queued','retry','running'))
  ORDER BY i.sequence LIMIT 1`).Scan(&sequence, &id, &revision, &session, &owner)
@@ -104,8 +101,7 @@ func (s *Store) QueueMatchOne(ctx context.Context) (bool, error) {
 
 func (s *Store) enqueueMatchTx(ctx context.Context, tx *sql.Tx, sequence int64, session, owner string, p patternSnapshot, inventory skills.MatchInventory, choices []matchChoice, view harness.SkillExperienceMatchInput, previous *matchSnapshot) (bool, error) {
 	id, revision := p.Pattern.ID, p.Pattern.Revision
-	snap := matchSnapshot{Session: session, Owner: owner, Pattern: patternDependency{ID: id, Revision: revision, SHA: encodedDigest(p)}, Catalog: inventory.Catalog, InventorySHA: encodedDigest(inventory), Choices: choices, View: view,
-		MaxDailyModelCalls: s.options.MaxDailyModelCalls, MaxDailyTokens: s.options.MaxDailyTokens}
+	snap := matchSnapshot{Session: session, Owner: owner, Pattern: patternDependency{ID: id, Revision: revision, SHA: encodedDigest(p)}, Catalog: inventory.Catalog, InventorySHA: encodedDigest(inventory), Choices: choices, View: view}
 	snap.ID = "lmatch_" + encodedDigest([]any{MatchingPolicyVersion, s.matcher.Identity(), s.matchAccess.Identity(), snap})
 	if previous != nil {
 		var exists bool
@@ -118,7 +114,7 @@ func (s *Store) enqueueMatchTx(ctx context.Context, tx *sql.Tx, sequence int64, 
 	}
 	payload, _ := json.Marshal(snap)
 	job, err := s.maintenance.EnqueueTx(ctx, tx, skillmaintenance.Request{Kind: skillmaintenance.SkillMatch, OwnerKind: skillmaintenance.WorkspaceOwner, OwnerKey: owner, Key: snap.ID, Reference: snap.ID, InputDigest: digest(payload)})
-	if errors.Is(err, skillmaintenance.ErrBudget) {
+	if errors.Is(err, skillmaintenance.ErrCapacity) {
 		_, err = tx.ExecContext(ctx, `UPDATE df_learning_match_inputs SET reason='queue_backpressure' WHERE sequence=?`, sequence)
 		if err != nil {
 			return false, err
@@ -148,6 +144,13 @@ func (s *Store) enqueueMatchTx(ctx context.Context, tx *sql.Tx, sequence int64, 
 }
 
 func matchQueueFailure(ctx context.Context, tx *sql.Tx, sequence int64, err error, reason string) (bool, error) {
+	if errors.Is(err, errMatchCatalogProgress) {
+		_, e := tx.ExecContext(ctx, `UPDATE df_learning_match_inputs SET reason='search_incomplete' WHERE sequence=?`, sequence)
+		if e != nil {
+			return false, e
+		}
+		return true, tx.Commit()
+	}
 	if errors.Is(err, harness.ErrPermissionDenied) || errors.Is(err, harness.ErrSkillConflict) || errors.Is(err, harness.ErrInvalidInput) || errors.Is(err, harness.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
 		return skipMatch(ctx, tx, sequence, reason)
 	}
@@ -162,10 +165,14 @@ func skipMatch(ctx context.Context, tx *sql.Tx, sequence int64, reason string) (
 }
 
 func (s *Store) matchViewTx(ctx context.Context, tx *sql.Tx, p patternSnapshot) (skills.MatchInventory, []matchChoice, harness.SkillExperienceMatchInput, error) {
-	return s.matchTargetViewTx(ctx, tx, p, nil)
+	return s.matchPageTargetViewTx(ctx, tx, p, nil, -1)
 }
 
 func (s *Store) matchTargetViewTx(ctx context.Context, tx *sql.Tx, p patternSnapshot, target *harness.SkillTarget) (skills.MatchInventory, []matchChoice, harness.SkillExperienceMatchInput, error) {
+	return s.matchPageTargetViewTx(ctx, tx, p, target, 0)
+}
+
+func (s *Store) matchPageTargetViewTx(ctx context.Context, tx *sql.Tx, p patternSnapshot, target *harness.SkillTarget, offset int) (skills.MatchInventory, []matchChoice, harness.SkillExperienceMatchInput, error) {
 	ctx = withEvidenceCache(ctx, tx)
 	view := harness.SkillExperienceMatchInput{PatternID: p.Pattern.ID, Revision: p.Pattern.Revision, Candidate: p.Pattern.Candidate, EvidenceState: p.Pattern.EvidenceState, Skills: []harness.SkillExperienceMatchChoice{}}
 	var cwd string
@@ -179,80 +186,94 @@ func (s *Store) matchTargetViewTx(ctx context.Context, tx *sql.Tx, p patternSnap
 	if workspaceKey(cwd) != owner {
 		return skills.MatchInventory{}, nil, view, harness.ErrPermissionDenied
 	}
-	inventory, err := s.matchAccess.InventoryTx(ctx, tx, cwd)
+	inventory, scanKey, err := s.matchCatalogTx(ctx, tx, p, cwd)
 	if err != nil {
 		return inventory, nil, view, err
 	}
-	if target != nil && !slices.ContainsFunc(inventory.Skills, func(e skills.MatchSkill) bool { return e.Target == *target }) {
-		return inventory, nil, view, harness.ErrPermissionDenied
+	var inventorySize int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM df_learning_match_catalog_entries WHERE scan_key=?`, scanKey).Scan(&inventorySize); err != nil {
+		return inventory, nil, view, err
 	}
-	reads := map[harness.SkillRef]bool{}
-	for _, dep := range p.Members {
-		var jobID string
-		if err = tx.QueryRowContext(ctx, `SELECT job_id FROM df_learning_extractions WHERE id=?`, dep.Extraction).Scan(&jobID); err != nil {
+	if offset < 0 {
+		var catalog int64
+		var sha string
+		err = tx.QueryRowContext(ctx, `SELECT catalog,inventory_sha,next_offset FROM df_learning_match_progress WHERE pattern_id=? AND revision=?`, p.Pattern.ID, p.Pattern.Revision).Scan(&catalog, &sha, &offset)
+		if errors.Is(err, sql.ErrNoRows) {
+			offset = 0
+			err = nil
+		}
+		if err != nil {
 			return inventory, nil, view, err
 		}
-		job, readErr := skillmaintenance.ReadJob(ctx, tx, jobID)
-		if readErr != nil {
-			return inventory, nil, view, readErr
-		}
-		extraction, _, readErr := s.readExtractionTx(ctx, tx, job)
-		if readErr != nil {
-			return inventory, nil, view, readErr
-		}
-		for _, ref := range extraction.View.References {
-			if ref.Kind == "skill_read" && ref.Skill != nil {
-				reads[*ref.Skill] = true
-			}
-		}
-		if len(reads) > 32 {
-			return inventory, nil, view, invalid("matching read inventory exceeds bounds")
+		if catalog != inventory.Catalog || sha != encodedDigest(inventory) {
+			offset = 0
 		}
 	}
-	type ranked struct {
-		skill skills.MatchSkill
-		reads []harness.SkillRef
-		score int
+	if offset < 0 || offset > inventorySize {
+		return inventory, nil, view, invalid("invalid search cursor")
 	}
-	query := proceduralTokens(p.Pattern.Candidate)
-	ranking := make([]ranked, 0, len(inventory.Skills))
-	for _, e := range inventory.Skills {
-		r := ranked{skill: e, reads: []harness.SkillRef{}}
-		for ref := range reads {
-			if ref.SourceID == e.Target.SourceID && ref.SourceIdentity == e.Target.SourceIdentity && ref.Name == e.Target.Name {
-				r.reads = append(r.reads, ref)
-			}
-		}
-		sort.Slice(r.reads, func(i, j int) bool { return r.reads[i].Version < r.reads[j].Version })
-		for token := range proceduralTokens(harness.SkillExperienceCandidate{Goal: e.Target.Name, Applicability: e.Description}) {
-			if query[token] {
-				r.score++
-			}
-		}
-		ranking = append(ranking, r)
+	if err = verifiedMatchPrefixTx(ctx, tx, p.Pattern.ID, p.Pattern.Revision, inventory.Catalog, encodedDigest(inventory), offset); err != nil {
+		return inventory, nil, view, err
 	}
-	sort.SliceStable(ranking, func(i, j int) bool {
-		if target != nil && (ranking[i].skill.Target == *target) != (ranking[j].skill.Target == *target) {
-			return ranking[i].skill.Target == *target
+	view.PageOffset, view.InventorySize = offset, inventorySize
+	targetName := ""
+	if target != nil {
+		targetName = target.Name
+		grant, e := s.matchAccess.InventoryNameTx(ctx, tx, cwd, target.Name)
+		if e != nil {
+			return inventory, nil, view, e
 		}
-		if (len(ranking[i].reads) != 0) != (len(ranking[j].reads) != 0) {
-			return len(ranking[i].reads) != 0
+		if !slices.ContainsFunc(grant.Skills, func(e skills.MatchSkill) bool { return e.Target == *target }) {
+			return inventory, nil, view, harness.ErrPermissionDenied
 		}
-		return ranking[i].score > ranking[j].score
-	})
-	view.InventoryComplete = len(ranking) <= 8
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT payload,payload_sha FROM df_learning_match_catalog_entries WHERE scan_key=? ORDER BY (name=?) DESC,was_read DESC,score DESC,name LIMIT 8 OFFSET ?`, scanKey, targetName, offset)
+	if err != nil {
+		return inventory, nil, view, err
+	}
+	var ranking []matchChoice
+	for rows.Next() {
+		var raw []byte
+		var sha string
+		var choice matchChoice
+		if err = rows.Scan(&raw, &sha); err != nil {
+			break
+		}
+		if len(raw) > 64<<10 || digest(raw) != sha || json.Unmarshal(raw, &choice) != nil {
+			err = invalid("catalog page integrity failure")
+			break
+		}
+		ranking = append(ranking, choice)
+	}
+	if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
+		return inventory, nil, view, err
+	}
+	view.InventoryComplete = offset+len(ranking) >= inventorySize
 	choices := make([]matchChoice, 0, min(len(ranking), 8))
-	for _, r := range ranking[:min(len(ranking), 8)] {
-		body, readErr := s.matchAccess.BodyTx(ctx, tx, inventory, r.skill)
+	for _, r := range ranking {
+		grant, readErr := s.matchAccess.InventoryNameTx(ctx, tx, cwd, r.Skill.Target.Name)
 		if readErr != nil {
 			return inventory, nil, view, readErr
 		}
-		id := "choice_" + encodedDigest(r.skill)
-		fixed := r.skill
+		body, readErr := s.matchAccess.BodyTx(ctx, tx, grant, r.Skill)
+		if readErr != nil {
+			return inventory, nil, view, readErr
+		}
+		id := "choice_" + encodedDigest(r.Skill)
+		fixed := r.Skill
 		fixed.Description = redact(fixed.Description, 4096)
-		choices = append(choices, matchChoice{ID: id, Skill: fixed, ActualReads: r.reads})
-		view.Skills = append(view.Skills, harness.SkillExperienceMatchChoice{ID: id, Name: r.skill.Target.Name, Description: fixed.Description, Body: redact(body, skills.MaxMatchBodyBytes), ActuallyRead: len(r.reads) != 0,
-			CurrentVersionRead: slices.ContainsFunc(r.reads, func(ref harness.SkillRef) bool { return ref.Version == r.skill.Head.Version })})
+		choices = append(choices, matchChoice{ID: id, Skill: fixed, ActualReads: r.ActualReads})
+		view.Skills = append(view.Skills, harness.SkillExperienceMatchChoice{ID: id, Name: r.Skill.Target.Name, Description: fixed.Description, Body: redact(body, skills.MaxMatchBodyBytes), ActuallyRead: len(r.ActualReads) != 0,
+			CurrentVersionRead: slices.ContainsFunc(r.ActualReads, func(ref harness.SkillRef) bool { return ref.Version == r.Skill.Head.Version })})
+		if data, _ := json.Marshal(view); len(data) > s.matchInputLimit() {
+			view.Skills = view.Skills[:len(view.Skills)-1]
+			choices = choices[:len(choices)-1]
+			if len(choices) == 0 {
+				return inventory, nil, view, invalid("matching body exceeds context capacity")
+			}
+			view.InventoryComplete = false
+			break
+		}
 	}
 	return inventory, choices, view, nil
 }

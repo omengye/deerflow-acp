@@ -11,6 +11,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -25,26 +26,29 @@ import (
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
 	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
+	"github.com/omengye/deerflow-acp/go-harness/internal/network"
 	"github.com/omengye/deerflow-acp/go-harness/internal/opencli"
 	"github.com/omengye/deerflow-acp/go-harness/internal/sandbox"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/tools"
+	"github.com/omengye/deerflow-acp/go-harness/internal/websearch"
 )
 
 // No credentials or mutable source text enter the persisted execution state.
 type extensionState struct {
-	Version              int                     `json:"version"`
-	Skills               []harness.SkillRef      `json:"skills"`
-	MCPGeneration        string                  `json:"mcpGeneration,omitempty"`
-	MCPResources         *harness.MCPResourceRef `json:"mcpResources,omitempty"`
-	SandboxPolicy        string                  `json:"sandboxPolicy"`
-	ExternalACPPolicy    string                  `json:"externalACPPolicy,omitempty"`
-	BuiltinToolPolicy    string                  `json:"builtinToolPolicy,omitempty"`
-	ToolPolicy           string                  `json:"toolPolicy,omitempty"`
-	MemoryPolicy         string                  `json:"memoryPolicy,omitempty"`
-	ExtractionEnabled    bool                    `json:"extractionEnabled,omitempty"`
-	SkillEvolutionPolicy string                  `json:"skillEvolutionPolicy,omitempty"`
-	Memory               []memorySnapshot        `json:"memory,omitempty"`
+	Version              int                        `json:"version"`
+	Skills               []harness.SkillRef         `json:"skills"`
+	MCPGeneration        string                     `json:"mcpGeneration,omitempty"`
+	MCPResources         *harness.MCPResourceRef    `json:"mcpResources,omitempty"`
+	SandboxPolicy        string                     `json:"sandboxPolicy"`
+	ExternalACPPolicy    string                     `json:"externalACPPolicy,omitempty"`
+	BuiltinToolPolicy    string                     `json:"builtinToolPolicy,omitempty"`
+	SearchResources      *harness.SearchResourceRef `json:"searchResources,omitempty"`
+	ToolPolicy           string                     `json:"toolPolicy,omitempty"`
+	MemoryPolicy         string                     `json:"memoryPolicy,omitempty"`
+	ExtractionEnabled    bool                       `json:"extractionEnabled,omitempty"`
+	SkillEvolutionPolicy string                     `json:"skillEvolutionPolicy,omitempty"`
+	Memory               []memorySnapshot           `json:"memory,omitempty"`
 }
 
 type memorySnapshot struct {
@@ -297,6 +301,10 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		}()
 		selection := selectionPolicy
 		selection.Workspace = req.Session.CWD
+		selection.RootID = req.RootBudgetID
+		if selection.RootID == "" {
+			selection.RootID = req.RunID
+		}
 		readOnly := req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly
 		var opencliPlan opencli.Launcher
 		var opencliErr error
@@ -309,12 +317,42 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			}
 		}
 		state := extensionState{Version: 1, SandboxPolicy: policyHash, ExternalACPPolicy: acpPolicy, ToolPolicy: toolPolicy, MemoryPolicy: memoryPolicy, ExtractionEnabled: cfg.MemoryExtraction}
+		var searchSnapshot *websearch.Snapshot
+		var searchEnabled bool
+		for _, setting := range cfg.BuiltinTools {
+			if setting.Name == "web_search" || setting.Name == "web_fetch" {
+				searchEnabled = true
+			}
+		}
+		if searchEnabled {
+			searchManager := cfg.search
+			if searchManager == nil {
+				searchManager, err = websearch.New(cfg.SearchSettingsPath, websearch.Seed(cfg.Search, cfg.BuiltinTools, ""), cfg.Network)
+				if err != nil {
+					return out, err
+				}
+			}
+			var previous extensionState
+			if pinned != nil {
+				if err = json.Unmarshal(pinned, &previous); err != nil {
+					return out, err
+				}
+			}
+			searchSnapshot, err = searchManager.Snapshot(previous.SearchResources)
+			if err != nil {
+				return out, err
+			}
+			state.SearchResources = &searchSnapshot.Ref
+			if pinned != nil && previous.SearchResources == nil {
+				state.SearchResources = nil
+			}
+		}
 		if len(cfg.SkillProposalSources) > 0 {
 			targets, sourceErr := registry.PublicationSources()
 			if sourceErr != nil {
 				return out, sourceErr
 			}
-			encoded, _ := json.Marshal([]any{cfg.SkillProposalSources, targets, "skill-manage-v1"})
+			encoded, _ := json.Marshal([]any{cfg.SkillProposalSources, targets, "skill-manage-automatic-v3"})
 			builtin, sourceErr := registry.BuiltinSources()
 			if sourceErr != nil {
 				return out, sourceErr
@@ -326,12 +364,15 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 				}
 			}
 			if len(grantedBuiltin) > 0 {
-				encoded, _ = json.Marshal([]any{cfg.SkillProposalSources, targets, "skill-manage-v2", grantedBuiltin})
+				encoded, _ = json.Marshal([]any{cfg.SkillProposalSources, targets, "skill-manage-automatic-v3-builtin", grantedBuiltin})
 			}
 			state.SkillEvolutionPolicy = fmt.Sprintf("%x", sha256.Sum256(encoded))
 		}
 		if len(cfg.BuiltinTools) > 0 {
 			secrets := []string{}
+			if cfg.Network.Proxy.Enabled {
+				secrets = append(secrets, network.Fingerprint(cfg.Network))
+			}
 			for _, setting := range cfg.BuiltinTools {
 				secrets = append(secrets, setting.APIKey, setting.HTTPSProxy)
 			}
@@ -392,7 +433,28 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		if err != nil {
 			return out, err
 		}
+		var snapshotMu sync.Mutex
+		snapshots := []*skills.Snapshot{snapshot}
+		defer func() {
+			prior := out.Cleanup
+			out.Cleanup = func() error {
+				var cleanupErr error
+				if prior != nil {
+					cleanupErr = prior()
+				}
+				snapshotMu.Lock()
+				defer snapshotMu.Unlock()
+				for _, handle := range snapshots {
+					cleanupErr = errors.Join(cleanupErr, handle.Close())
+				}
+				return cleanupErr
+			}
+		}()
 		snapshot = snapshot.WithReadObserver(skillReadObserver(req))
+		snapshots = append(snapshots, snapshot)
+		if err = registry.PinVersions(ctx, "checkpoint/"+req.RunID, "checkpoint", snapshot.Refs()); err != nil {
+			return out, err
+		}
 		state.Skills = snapshot.Refs()
 		out.SkillNames = make([]string, 0, len(state.Skills))
 		for _, ref := range state.Skills {
@@ -403,6 +465,9 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			if err != nil {
 				return nil, nil, err
 			}
+			snapshotMu.Lock()
+			snapshots = append(snapshots, child)
+			snapshotMu.Unlock()
 			if len(child.Refs()) == 0 {
 				return nil, nil, nil
 			}
@@ -497,13 +562,13 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		}
 		if len(state.Skills) > 0 {
 			out.Tools = append(out.Tools, snapshot.ReadFileTool())
-			if req.RootBudgetID == "" || req.RootBudgetID == req.RunID {
-				installed, toolErr := newInstalledSkillTools(registry, req, state.Skills, !readOnly && cfg.ToolPolicy.Allows("skill_edit"))
-				if toolErr != nil {
-					return out, toolErr
-				}
-				out.Tools = append(out.Tools, installed...)
+		}
+		if req.RootBudgetID == "" || req.RootBudgetID == req.RunID {
+			installed, toolErr := newInstalledSkillTools(registry, req, state.Skills, selection, !readOnly && cfg.ToolPolicy.Allows("skill_edit"))
+			if toolErr != nil {
+				return out, toolErr
 			}
+			out.Tools = append(out.Tools, installed...)
 		}
 		if !readOnly && len(cfg.SkillProposalSources) > 0 && cfg.ToolPolicy.Allows("skill_manage") {
 			manage, toolErr := newSkillManageTool(ctx, cfg, registry, req, state.Skills)
@@ -512,7 +577,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			}
 			if manage != nil {
 				out.Tools = append(out.Tools, manage)
-				out.InstructionAppend += "\n\nSkill authoring: read the current skill-creator before creating or publishing skills. Check the tool's candidate restrictions before choosing dependencies. Submit complete packages with skill_manage; filesystem drafts belong outside live skill roots. Do not write registry databases or use shell/SQL as a fallback after rejection. Report draft, pending review, published and availability-verified states separately. Only host results can establish publication and next-turn availability; never infer them from a script exit code or printed success message."
+				out.InstructionAppend += "\n\nSkill authoring: read the current skill-creator before creating or publishing skills. Check the tool's candidate restrictions before choosing dependencies. Submit complete packages with skill_manage; filesystem drafts belong outside live skill roots. Do not write registry databases or use shell/SQL as a fallback after rejection. Skill evolution validates and adopts eligible candidates automatically. If the current native user message explicitly confirms publication, the lead agent may get the candidate and call skill_manage publish with its proposal_id, candidate_sha256 and state_version to skip automatic evidence and observation gates. Do not ask again after explicit user confirmation; ordinary edit requests and quoted examples do not authorize publication. Preserve actual failed or unrun checks. Report evaluating, blocked evidence/runtime, observing, stable, rejected and withdrawn accurately. The host handles finite retries. Direct file editing is a separate workflow; command execution and external effects keep their existing permissions. Only host results can establish publication and next-turn availability; never infer them from a script exit code or printed success message."
 			}
 		}
 		out.ModelToolFactory = func(ctx context.Context, model string) ([]tool.BaseTool, error) {
@@ -556,7 +621,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 				continue
 			}
 			if setting.Name == "web_search" || setting.Name == "web_fetch" || setting.Name == "image_search" {
-				web, closeWeb, webErr := tools.WebTools(setting)
+				web, closeWeb, webErr := tools.WebToolsWithSearch(setting, searchSnapshot, cfg.Network)
 				if webErr != nil {
 					return out, webErr
 				}
@@ -567,6 +632,14 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		}
 		if readOnly {
 			return out, nil
+		}
+		if searchEnabled && cfg.search != nil && cfg.ToolPolicy.Allows("set_search_provider") {
+			preference, preferenceErr := tools.SearchPreferenceTool(cfg.search)
+			if preferenceErr != nil {
+				return out, preferenceErr
+			}
+			out.Tools = append(out.Tools, preference)
+			out.InstructionAppend += "\n\nWeb search: use web_search directly; a search skill is not required. Honor a user's explicit one-time provider with web_search.provider. Omit provider otherwise. Only call set_search_provider when the user explicitly asks to change their future default. The tool never accepts credentials. If a provider requires configuration, direct the user to Settings > Tools > web_search, never ask them to paste credentials into chat."
 		}
 		for _, setting := range cfg.BuiltinTools {
 			if setting.Name != "host_opencli" || !cfg.HostToolsAllowed || !cfg.ToolPolicy.Allows(setting.Name) {
@@ -586,6 +659,14 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			}
 			backend, createErr := sandbox.New(ctx, harness.SandboxConfig{Enabled: true, Provider: harness.SandboxLocal, AllowedExecutables: []string{opencliPlan.Executable}, Environment: opencliPlan.Environment, Limits: harness.CommandLimits{Timeout: time.Duration(timeout) * time.Second, OutputBytes: 1_000_000, MaxConcurrent: 1, MaxRetained: 4}}, req.Session.CWD)
 			if createErr != nil {
+				if ctx.Err() == nil && errors.Is(createErr, harness.ErrSandboxUnavailable) {
+					unavailable, toolErr := tools.UnavailableOpenCLITool(createErr, opencli.AllowedSites(setting))
+					if toolErr != nil {
+						return out, toolErr
+					}
+					out.Tools = append(out.Tools, unavailable)
+					continue
+				}
 				return out, createErr
 			}
 			previousCleanup := out.Cleanup
@@ -629,6 +710,13 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		}
 		commands, err := sandbox.New(ctx, commandPolicy, req.Session.CWD)
 		if err != nil {
+			if ctx.Err() == nil && errors.Is(err, harness.ErrSandboxUnavailable) {
+				// An optional command runtime must not prevent a greeting, a read
+				// or any other task that does not execute commands. Never switch
+				// providers or relax permissions to compensate for missing tools.
+				out.InstructionAppend += "\n\nCommand execution is currently unavailable because the configured runtime is unavailable. Continue tasks supported by the remaining tools. If the task requires commands, report the missing runtime; do not claim execution or substitute another provider. Command permissions are unchanged."
+				return out, nil
+			}
 			return out, err
 		}
 		workspaceCleanup := out.Cleanup

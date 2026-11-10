@@ -19,6 +19,7 @@ import (
 )
 
 type behaviorWorkspace struct {
+	scripts           []harness.SkillScriptExecution
 	directory         string
 	root              *os.Root
 	identity          os.FileInfo
@@ -100,6 +101,8 @@ func stringParam() harness.SkillBehaviorParameter {
 }
 func builtinBehaviorParameters(name string) map[string]harness.SkillBehaviorParameter {
 	switch name {
+	case "run_script":
+		return map[string]harness.SkillBehaviorParameter{"path": stringParam(), "args_json": {Type: "string", Description: "JSON-encoded array of string arguments; omit for no arguments. Example: []"}}
 	case "read_skill", "read_file":
 		return map[string]harness.SkillBehaviorParameter{"path": stringParam()}
 	case "write_file":
@@ -117,6 +120,9 @@ func behaviorInfo(name, description string, parameters map[string]harness.SkillB
 }
 func (w *behaviorWorkspace) infos() []*schema.ToolInfo {
 	infos := []*schema.ToolInfo{}
+	if skillbehavior.HasScripts(w.files) {
+		infos = append(infos, behaviorInfo("run_script", "Execute a package .py or .sh script in an isolated container without network. args_json is a JSON array of string arguments. Task files form the working directory.", builtinBehaviorParameters("run_script")))
+	}
 	for _, name := range []string{"read_skill", "read_file", "write_file", "list_files"} {
 		infos = append(infos, behaviorInfo(name, map[string]string{"read_skill": "Read a named immutable skill package file.", "read_file": "Read a UTF-8 task fixture file using its relative path.", "write_file": "Write a UTF-8 task fixture file using its relative path. Up to 64 KiB.", "list_files": "List task fixture file paths."}[name], builtinBehaviorParameters(name)))
 	}
@@ -169,6 +175,45 @@ func (w *behaviorWorkspace) invoke(ctx context.Context, name, raw string) (strin
 		return "", "invalid_tool_arguments"
 	}
 	switch name {
+	case "run_script":
+		var args []string
+		if input["args_json"] != "" && json.Unmarshal([]byte(input["args_json"]), &args) != nil {
+			return "", "invalid_tool_arguments"
+		}
+		fixtures := map[string]string{}
+		names, err := w.list()
+		if err != nil {
+			return "", "workspace_error"
+		}
+		for _, p := range names {
+			v, e := w.read(p)
+			if e != nil {
+				return "", "workspace_error"
+			}
+			fixtures[p] = v
+		}
+		r, err := skillbehavior.RunScript(ctx, w.files, fixtures, input["path"], args)
+		if errors.Is(err, skillbehavior.ErrRuntimeUnavailable) {
+			return "", "blocked_runtime"
+		}
+		if err != nil {
+			return "", "tool_error"
+		}
+		w.scripts = append(w.scripts, harness.SkillScriptExecution{Path: r.Path, Runtime: r.Runtime, ExitCode: r.ExitCode, Digest: r.Digest})
+		for _, p := range names {
+			if _, ok := r.Files[p]; !ok {
+				if err = w.root.Remove(filepath.FromSlash(p)); err != nil {
+					return "", "workspace_error"
+				}
+			}
+		}
+		for p, v := range r.Files {
+			if err = w.write(p, v); err != nil {
+				return "", "workspace_error"
+			}
+		}
+		encoded, _ := json.Marshal(r)
+		return string(encoded), ""
 	case "read_skill":
 		value, ok := w.files[input["path"]]
 		if !ok {

@@ -465,7 +465,7 @@ func TestConfigDaemonPublishesBridgeIdentity(t *testing.T) {
 		t.Fatal("fresh daemon manufactured skill evidence or omitted query contract")
 	}
 	var settings launch.AppliedSubagentSettings
-	if err := json.Unmarshal(status["subagent_settings"], &settings); err != nil || !settings.Enabled || settings.ConfiguredEnabled || settings.EnabledSource != "cli" || settings.MaxConcurrent != 3 || settings.ConcurrencySource != "yaml" {
+	if err := json.Unmarshal(status["subagent_settings"], &settings); err != nil || settings.ConfiguredEnabled || settings.EnabledSource != "cli" || settings.MaxConcurrent != 3 || settings.ConcurrencySource != "yaml" {
 		t.Fatalf("applied settings: %+v %v", settings, err)
 	}
 	client := acpClient(t, ep)
@@ -681,6 +681,16 @@ func TestExistingRustBridge(t *testing.T) {
 	if bridge == "" || testing.Short() {
 		t.Skip("set DEERFLOW_TEST_BRIDGE to a native Bridge executable")
 	}
+	// Keep the exact release binary while isolating its portable profile
+	// discovery from this test's temporary daemon and database.
+	bridgeBytes, err := os.ReadFile(bridge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge = filepath.Join(t.TempDir(), filepath.Base(bridge))
+	if err = os.WriteFile(bridge, bridgeBytes, 0755); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	runtimeDir := t.TempDir()
@@ -688,7 +698,7 @@ func TestExistingRustBridge(t *testing.T) {
 	ep := p.endpoint(t, runtimeDir)
 	invoke := func(mode, input string) []byte {
 		t.Helper()
-		cmd := exec.CommandContext(ctx, bridge, "--no-auto-start", "--runtime-dir", runtimeDir, mode)
+		cmd := exec.CommandContext(ctx, bridge, "--no-auto-start", "--runtime-dir", runtimeDir, "--data-dir", ep.DataDir, mode)
 		cmd.Stdin = strings.NewReader(input)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -708,7 +718,7 @@ func TestExistingRustBridge(t *testing.T) {
 	if out := invoke("--manage", `{"operation":"daemon.status"}`); !bytes.Contains(out, []byte(`"active_operations":0`)) || !bytes.Contains(out, []byte(`"draining":false`)) {
 		t.Fatalf("Bridge daemon status: %s", out)
 	}
-	proxy := exec.CommandContext(ctx, bridge, "--no-auto-start", "--runtime-dir", runtimeDir)
+	proxy := exec.CommandContext(ctx, bridge, "--no-auto-start", "--runtime-dir", runtimeDir, "--data-dir", ep.DataDir)
 	in, err := proxy.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

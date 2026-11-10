@@ -4,7 +4,7 @@
 
 当前版本固定 Eino `v0.10.0-alpha.35`、Go `1.26.8`。已实现子代理、技能审查发布和原生 Go 交付；完整范围及验收结果见[实施方案](docs/eino-subagents-skill-evolution-plan.md)和[实施记录](docs/eino-subagents-skill-evolution-status.md)。当前源码通过的测试不等同于新的桌面发行包已验收。
 
-当前 Windows 单用户桌面 MVP 的范围与检查结果见[2026-10-14 发版检查记录](docs/release-readiness-20261014.md)。新技能首次发布和超出自动维护范围的变更需要人工审核，符合条件的已有技能小补丁自动发布；不以新技能全自动发布作为本版目标。GitHub Windows 构建成功前不视为已验证的分发包，协议 fixture 也不替代真实 GUI 和在线模型验收。此前的[发版检查记录](docs/release-readiness-20261012.md)保留历史证据。
+技能自进化采用主模型自动完成经验提取、技能生成、验证、有限范围采用、观察及撤回，无独立配置、累计 token 额度或每日调用和发布配额。最终契约与验收要求见[技能自进化方案](docs/skill-evolution-final-plan-20261109.md)，历史发版记录保留其原有证据。
 
 ## 使用入口
 
@@ -65,7 +65,12 @@ Waku 桌面发行构建使用 `-Configuration Release -CreateZip`，要求干净
 
 桌面首次启动使用简体中文并创建 `user-data`。在 DeerFlow 设置中填入模型 Provider、模型 ID、Base URL 和 API Key，保存并应用，然后创建会话。支持的 Provider 为 `openai`（含兼容协议服务）和 `claude`，所有模型请求均使用流式传输。记忆、子代理及技能自动维护已预配置，维护模型默认继承所选模型，无需逐项填写；升级不覆盖已有语言和配置。
 
-新桌面配置默认允许本地命令和宿主工具，并使用 `dangerous` 权限模式，不是隔离沙箱。技能维护可能产生模型费用，每 UTC 日共享上限为 1000 次调用、600 万 Token，学习子额度为 50 次、100 万 Token；单维护任务 600 秒，并发 5。额度是上限而非固定消耗，也不等同于服务商货币账单。使用前应确认这些权限和费用符合预期，可在设置中调整或关闭新维护。搜索服务密钥和 OpenCLI 浏览器依赖为可选配置，不影响基本聊天。
+需要代理时，在“设置 → 常用 → 网络代理”启用并填写代理地址，然后点击“保存更改”。统一代理用于模型、搜索和网页抓取，支持 HTTP、HTTPS、SOCKS5 及绕过地址；工具和搜索服务的独立代理优先。关闭统一代理恢复原有连接配置，详见[网络代理说明](docs/go-native-tools.md#统一网络代理)。
+
+OpenAI 模型可在“设置 → 模型 → 接口协议”选择 Responses。`gpt-6.1-sol` 等要求 Responses 才能调用工具的模型应选择该协议；保留原服务地址（例如 `https://api.openai.com/v1`）和 API Key，输出上限参数使用“自动”。Responses 同样使用统一代理；已有模型的“自动”协议保留原连接方式。
+`gpt-6.1-sol` 的推理强度可使用 `low`、`medium`、`high`、`xhigh`、`max`；它不支持 `none`，因此“思考模式接口”应保持未配置或声明不支持切换，不能声明可关闭的思考开关。
+
+新桌面配置默认允许本地命令和宿主工具，并使用 `dangerous` 权限模式，不是隔离沙箱。技能自动维护沿用主模型，可能产生模型费用；不设置每日调用或累计 Token 额度，运行由并发、超时、去重及有限重试约束，实际使用量继续统计。脚本技能的自动验证仍要求真实隔离执行。搜索服务密钥和 OpenCLI 浏览器依赖为可选配置，不影响基本聊天。
 
 源码开发可从 [config.example.yaml](config.example.yaml) 复制配置；示例使用 OpenAI 兼容协议及 `DASHSCOPE_API_KEY` 环境变量。`models[].provider` 和 `sandbox.provider` 使用原生名称，工具按 `name` 选择。相对技能路径以配置文件所在目录解析。
 
@@ -85,23 +90,23 @@ ACP 客户端命令填写 Bridge 的绝对路径，使用相同的环境与 `--r
 
 - 会话持久化、流式响应、模型选择、工具权限、中断恢复、工具回执及效果核对。
 - 前后台子代理、角色配置、独立模型与工具/技能范围、共享根任务预算、嵌套等待及结果续跑；桌面[运行状态面板](docs/desktop-runtime-status.md)展示 Todo 和 Agent 执行状态，任务管理保留在详情中。MCP 资源重建及桌面真实交互仍待完成验收。
-- Go 原生网页搜索/抓取/图片搜索、文件工具、命令执行和 `host_opencli`。[工具配置说明](docs/go-native-tools.md)列出支持参数。OpenCLI 需要用户安装 OpenCLI/Node.js，浏览器命令还需要其浏览器桥接。
-- 技能安装、启停、不可变版本、候选、审查和发布/回滚；维护使用有界共享预算，真实读取、人工反馈及缺失报告持久保存。重复纠正、缺失报告和成功工具流程发现可生成候选。[行为评测](go-harness/internal/skills/evolution/behavior.md)由 Eino 在隔离工作区执行基础版与候选版，Go 检查实际产物并保存对照报告。新桌面配置使用 `auto_patch`，仅自动发布通过审查、证明实际改善且无回归的已有受管技能小补丁；当前默认最多修改 40 行、每天发布 2 次。新技能首次发布、删除及支持文件等超范围改动保留人工审核。设置中的技能中心提供“我的技能 / 进化记录 / 需要处理 / 自动化设置”，后台等待不计为人工待办。
+- Go 原生网页搜索/抓取/图片搜索、文件工具、命令执行和 `host_opencli`。[搜索插件](docs/search-plugins.md)支持 Brave、DeepSeek、SearXNG 在设置 → 工具 → `web_search` 中配置和即时切换，无需重启服务；SearXNG 地址必填、Key 选填。[工具配置说明](docs/go-native-tools.md)列出支持参数。OpenCLI 需要用户安装 OpenCLI/Node.js，浏览器命令还需要其浏览器桥接。
+- 技能安装、启停、不可变版本、候选、验证和发布/撤回；真实读取、宿主可验证结果及反馈持久保存。新技能与已有技能通过统一自动验证流程，脚本必须真实隔离执行。72 小时观察要求至少五个独立任务成功、关键行为覆盖且没有确认失败，未达要求自动撤回。前台任务固定版本，使用量继续统计。
 - Waku 设置按配置工具与运行 daemon 的能力显示，保存与应用状态分别处理；字段清理范围见[设置审计](docs/eino-waku-settings-audit.md)。
 
-桌面首次初始化自动写入可信 SearXNG 评测文件，但不安装个人技能、搜索地址或凭证。该套件只覆盖 `managed-evolution/searxng-web-search`；其他技能首次人工发布后仍需接入各自的可信评测，才可能自动维护。系统支持[多技能评测注册表](docs/skill-behavior-registry.md)，未覆盖时显示部分可用并保留审核，不假定所有技能已就绪。发布后观察仅采用现有可信反馈；关闭新自动发布后，服务仍可继续处理已有观察。
+桌面沿用主模型并自动准备受管技能空间。可信宿主套件和新任务的可验证结果用于评测；证据或隔离运行条件不足时等待条件变化。升级一次性删除旧技能进化配置，保留已安装技能和历史审计，不补跑历史阻断工作。
 
-上述自动化默认值仅适用于新桌面配置。独立 ACP 的 `resources/default-config.yaml` 和源码 `config.example.yaml` 保持显式启用策略；无配置文件的 SDK/ACP 默认值见 Go harness 文档。Go daemon 缺失时启动报错；没有 Python 后端回退。
+技能自进化采用统一的零配置流程；独立 ACP 的 `resources/default-config.yaml` 和源码 `config.example.yaml` 同样不再包含旧技能进化配置。命令执行、宿主工具及其他功能仍使用各入口的权限配置；无配置文件的 SDK/ACP 默认值见 Go harness 文档。Go daemon 缺失时启动报错；没有 Python 后端回退。
 
 ## 数据与升级
 
-桌面配置为 `user-data/config/config.yaml`，聊天与偏好位于 `user-data/desktop`，Go 状态位于 `user-data/data/go-harness`，daemon endpoint 位于 `user-data/runtime/acp-go`。升级使用新的程序目录，关闭程序与服务后再迁移用户数据，不要直接编辑运行中的数据库。MVP 不提供运行数据备份/恢复命令；会话持久化、断点与回执核对、技能版本回滚仍保留。
+桌面配置为 `user-data/config/config.yaml`，聊天与偏好位于 `user-data/desktop`，新建 Go 状态位于 `user-data/config/go-harness-state`，已有状态沿用 `user-data/config/runtime-data.json` 的绑定，daemon endpoint 位于 `user-data/runtime/acp-go`。启动时拒绝同时存在两份运行数据库；非活动库需先归档到运行目录之外。升级使用新的程序目录并保留现有绑定，不要直接编辑运行中的数据库。MVP 不提供运行数据备份/恢复命令；会话持久化、断点与回执核对、技能版本回滚仍保留。
 
 MVP 支持显式附加 UTF-8 TXT、Markdown、CSV、TSV、JSON、YAML 和 LOG 文件，每条消息最多 8 个、单文件 1 MiB、合计 4 MiB。服务保存会话私有快照，模型通过 `list_attachments` / `read_attachment` 分块读取，不会因附件获得任意宿主路径访问权。图片链路保留；PDF、Office、目录及 OCR 不在本版范围。
 
 默认不限制任务总执行时间、前台排队时间或原生子代理的累计执行时间，`run_timeout_seconds: 0` 表示不限时，可持续处理跨天任务；上下文自动压缩仍启用。工具调用、连接握手、后台租约和退出清理保留各自的超时与失效保护；模型请求仍可取消，不额外承诺所有 Provider 均有单次请求时限。已有配置中的显式时限不被静默覆盖，可在设置中改为 0；已有持久任务保留原预算，新请求使用新策略。持续运行需要主机与服务保持可用，这不等于断电后无条件自动完成。
 
-DeerFlow 常用设置提供本地能力就绪检查，不访问网络或消耗模型额度；模型和 OpenCLI 的实际连接能力需要另行主动验证。已有配置切换维护方式仍须保存并应用，不静默增加预算、扩展来源或开启跨会话共享。来源配置、聊天贡献和各阶段作业可在技能中心核对。当前实施范围见[技能自动维护说明](docs/skill-autonomy-ui-plan-20261013.md)，此前验收记录保留在 `docs/mvp-closure-20261011.md`。
+DeerFlow 常用设置提供本地能力就绪检查，不访问网络或消耗模型额度；模型和 OpenCLI 的实际连接能力需要另行主动验证。来源配置、聊天贡献和各阶段作业可在技能中心核对。当前实施范围见[技能自进化方案](docs/skill-evolution-final-plan-20261109.md)，此前验收记录保留在 `docs/mvp-closure-20261011.md`。
 
 桌面服务诊断日志位于 `user-data/logs/deerflow-acpd-<pid>-<唯一标识>.jsonl`，设置概览显示当前日志路径。日志记录启动/退出阶段和错误分类，不记录配置、模型/工具内容或原始错误文本；每次启动独立保存并轮转。独立 daemon 可通过 `--log-dir` 或 `DEERFLOW_GO_LOG_DIR` 指定目录，详见[日志说明](go-harness/internal/diagnostics/README.md)。
 

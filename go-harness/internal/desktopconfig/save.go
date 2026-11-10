@@ -12,7 +12,6 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
 	"github.com/omengye/deerflow-acp/go-harness/internal/launch"
-	"github.com/omengye/deerflow-acp/go-harness/internal/skills/evolution"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -99,6 +98,13 @@ func (s service) save(document map[string]any, validateOnly bool) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tools: %w", err)
 	}
+	network, err := validatedNetwork(document["network"], readObject(data, "network"))
+	if err != nil {
+		return nil, err
+	}
+	if _, err := launch.ResolveNetworkConfig(network); err != nil {
+		return nil, err
+	}
 
 	subagentsDoc, err := requireObject(document, "subagents")
 	if err != nil {
@@ -113,13 +119,10 @@ func (s service) save(document map[string]any, validateOnly bool) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	evolutionDoc, err := requireObject(document, "skill_evolution")
-	if err != nil {
-		return nil, err
-	}
-	evolution, err := validatedEvolution(evolutionDoc, readObject(data, "skill_evolution"), names, defaultModel, configRevision, document["skill_evolution_migration_ack"])
-	if err != nil {
-		return nil, err
+	for _, key := range []string{"skill_evolution", "skill_evolution_migration_ack", "skill_evolution_migration"} {
+		if _, present := document[key]; present {
+			return nil, fmt.Errorf("%s is no longer a configuration setting", key)
+		}
 	}
 	candidate := cloneMap(data)
 	candidate["config_version"] = configschema.NativeConfigVersion
@@ -128,8 +131,11 @@ func (s service) save(document map[string]any, validateOnly bool) (any, error) {
 	candidate["memory"] = memory
 	candidate["sandbox"] = sandbox
 	candidate["tools"] = tools
+	if document["network"] != nil {
+		candidate["network"] = network
+	}
 	candidate["subagents"] = subagents
-	candidate["skill_evolution"] = evolution
+	configschema.RemoveEvolutionConfiguration(candidate)
 	local := object(candidate, "local_acp")
 	delete(local, "subagent_enabled")
 	delete(local, "max_concurrent_subagents")
@@ -183,29 +189,11 @@ func (s service) save(document map[string]any, validateOnly bool) (any, error) {
 			}
 		}
 	}
-	if boolValue(evolution, "enabled", false) {
-		if !skillsEnabled {
-			return nil, errors.New("skill_evolution.enabled requires skills.enabled")
-		}
-	}
-	resolvedSkills, err := launch.InspectConfiguredSkills(s.config, candidate)
-	if err != nil {
+	if _, err := launch.InspectConfiguredSkills(s.config, candidate); err != nil {
 		return nil, err
 	}
-	if boolValue(evolution, "enabled", false) {
-		destinations, err := launch.SkillProposalDestinations(resolvedSkills, boolValue(evolution, "allow_builtin_overlays", false))
-		if err != nil {
-			return nil, err
-		}
-		if err := launch.ValidateGenerationDestinations(boolValue(readObject(evolution, "generation"), "enabled", false), destinations); err != nil {
-			return nil, err
-		}
-		behavior := readObject(evolution, "behavior")
-		if boolValue(behavior, "enabled", false) {
-			if _, err := launch.LoadBehaviorSuite(s.config, str(behavior, "suite_path", ""), destinations); err != nil {
-				return nil, err
-			}
-		}
+	if err := configschema.ValidateModelOutputLimits(candidate); err != nil {
+		return nil, err
 	}
 	if validateOnly {
 		return map[string]any{"valid": true, "migration_required": controls.Legacy}, nil
@@ -282,7 +270,7 @@ func validatedModels(incoming, existing []any) ([]any, map[string]bool, error) {
 		if parameter, present := model["output_token_parameter"]; present {
 			raw["output_token_parameter"] = parameter
 		}
-		for _, key := range []string{"thinking_parameter", "thinking_budget_tokens"} {
+		for _, key := range []string{"api", "thinking_parameter", "thinking_budget_tokens", "max_output_tokens", "max_supported_output_tokens"} {
 			if value, present := model[key]; present {
 				raw[key] = value
 			}
@@ -314,6 +302,11 @@ func validatedModels(incoming, existing []any) ([]any, map[string]bool, error) {
 		}
 		if _, ok := raw["api_key"]; !ok {
 			raw["api_key"] = ""
+		}
+		// Older clients can omit protocol/output fields. Validate the merged
+		// values so retained settings cannot form an unsupported combination.
+		if err := harness.ValidateModelAPIOptions(provider, harness.ModelAPI(str(raw, "api", "auto")), harness.OutputTokenParameter(str(raw, "output_token_parameter", "auto"))); err != nil {
+			return nil, nil, fmt.Errorf("模型 %s: %w", name, err)
 		}
 		output = append(output, raw)
 		names[name] = true
@@ -392,73 +385,8 @@ func validatedSubagents(document map[string]any, models map[string]bool, provide
 	}
 	return cloneMap(document), nil
 }
-func validatedEvolution(document, previous map[string]any, models map[string]bool, defaultModel, revision string, acknowledgment any) (map[string]any, error) {
-	original, ignored, err := configschema.ProjectEvolution(previous)
-	if err != nil {
-		return nil, err
-	}
-	ack, ok := acknowledgment.(string)
-	if acknowledgment != nil && (!ok || ack != "" && ack != revision) {
-		return nil, errors.New("skill_evolution 旧设置转换确认已过期，请重新加载并查看转换说明")
-	}
-	convert := ack != "" && ack == revision
-	dormant := original
-	if convert {
-		dormant = nil
-	}
-	if err := configschema.ValidateEvolutionDraft(document, dormant); err != nil {
-		return nil, err
-	}
-	enabled := document["enabled"] == true
-	if enabled && len(ignored) > 0 && !convert {
-		return nil, errors.New("skill_evolution 含当前运行时不读取的旧设置；请先确认转换为人工审核配置")
-	}
-	for _, key := range []string{"moderation_model_name", "evaluation_model_name", "generation_model_name"} {
-		selected := str(document, key, "")
-		active := enabled && (key != "generation_model_name" || boolValue(readObject(document, "generation"), "enabled", false))
-		if selected != "" && !models[selected] && (active || convert || !configschema.SameValue(document[key], original[key])) {
-			return nil, fmt.Errorf("skill_evolution.%s 引用了未知模型", key)
-		}
-	}
-	if convert && document["security_fail_closed"] != true {
-		return nil, errors.New("skill_evolution.security_fail_closed 必须为 true")
-	}
-	learning, oldLearning := readObject(document, "learning"), readObject(original, "learning")
-	selected := str(learning, "extraction_model_name", "")
-	if selected != "" && !models[selected] && (enabled && boolValue(learning, "enabled", false) || convert || !configschema.SameValue(learning["extraction_model_name"], oldLearning["extraction_model_name"])) {
-		return nil, errors.New("skill_evolution.learning.extraction_model_name references an unknown model")
-	}
-	selected = str(learning, "consolidation_model_name", "")
-	if selected != "" && !models[selected] && (enabled && boolValue(learning, "enabled", false) && boolValue(learning, "consolidation_enabled", false) || convert || !configschema.SameValue(learning["consolidation_model_name"], oldLearning["consolidation_model_name"])) {
-		return nil, errors.New("skill_evolution.learning.consolidation_model_name references an unknown model")
-	}
-	selected = str(learning, "matching_model_name", "")
-	if selected != "" && !models[selected] && (enabled && boolValue(learning, "enabled", false) && boolValue(learning, "matching_enabled", false) || convert || !configschema.SameValue(learning["matching_model_name"], oldLearning["matching_model_name"])) {
-		return nil, errors.New("skill_evolution.learning.matching_model_name references an unknown model")
-	}
-	raw := cloneMap(previous)
-	if convert {
-		raw = map[string]any{}
-	}
-	for key, value := range document {
-		if key == "validation" || key == "generation" || key == "learning" || key == "discovery" || key == "behavior" || key == "auto_patch" || key == "budget" {
-			limits := cloneMap(readObject(raw, key))
-			for name, limit := range value.(map[string]any) {
-				limits[name] = limit
-			}
-			raw[key] = limits
-		} else {
-			raw[key] = value
-		}
-	}
-	encoded, err := yaml.Marshal(raw)
-	if err != nil {
-		return nil, errors.New("skill_evolution 配置无法编码")
-	}
-	if _, err = evolution.DecodeReviewConfig(encoded, models, defaultModel); err != nil {
-		return nil, err
-	}
-	return raw, nil
+func validatedEvolution(document, previous map[string]any, models map[string]bool, defaultModel, revision string, ack any) (map[string]any, error) {
+	return nil, fmt.Errorf("skill_evolution settings have been removed")
 }
 
 func (s service) backup(paths configPaths) (string, error) {

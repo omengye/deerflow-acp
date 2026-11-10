@@ -5,20 +5,15 @@ import "time"
 // SkillDiscoveryOptions opts into explicitly selected automatic proposal
 // sources. It does not assess skill causality or publish skills.
 type SkillDiscoveryOptions struct {
-	DisableOperatorCorrections bool `json:"disable_operator_corrections,omitempty"`
-	MissingReportsEnabled      bool `json:"missing_reports_enabled,omitempty"`
-	SuccessfulWorkflowsEnabled bool `json:"successful_workflows_enabled,omitempty"`
-	ExperiencePatternsEnabled  bool `json:"experience_patterns_enabled,omitempty"`
-	ExperienceNewSkillsEnabled bool `json:"experience_new_skills_enabled,omitempty"`
+
 	// Review drafts are generated automatically from one observed episode,
 	// but never qualify for automatic publication.
-	ExperienceReviewDraftsEnabled bool   `json:"experience_review_drafts_enabled,omitempty"`
-	NewSkillSourceID              string `json:"new_skill_source_id,omitempty"`
-	RepeatThreshold               int    `json:"repeat_threshold"`
-	RepeatWindowDays              int    `json:"repeat_window_days"`
-	CooldownHours                 int    `json:"cooldown_hours"`
-	MaxDailyProposals             int    `json:"max_daily_proposals"`
-	MaxPendingProposals           int    `json:"max_pending_proposals"`
+
+	DestinationSourceID string `json:"destination_source_id,omitempty"`
+	RepeatThreshold     int    `json:"repeat_threshold"`
+	RepeatWindowDays    int    `json:"repeat_window_days"`
+	CooldownHours       int    `json:"cooldown_hours"`
+	MaxPendingProposals int    `json:"max_pending_proposals"`
 }
 
 type SkillDiscoveryStatus struct {

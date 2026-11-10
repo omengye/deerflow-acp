@@ -16,11 +16,25 @@ import (
 type Plugin struct {
 	client             *Client
 	id, origin, verify string
+	loginState         string
 	qr                 QR
 	expires            time.Time
 }
 
 func NewPlugin() *Plugin { return &Plugin{client: NewClient()} }
+
+func (p *Plugin) clearLogin() {
+	p.id, p.origin, p.verify, p.loginState = "", "", "", ""
+	p.qr = QR{}
+	p.expires = time.Time{}
+}
+
+func (p *Plugin) expiredLogin() channelproto.Login {
+	result := channelproto.Login{ID: p.id, State: "expired"}
+	p.clearLogin()
+	return result
+}
+
 func (p *Plugin) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	switch method {
 	case "initialize":
@@ -30,9 +44,9 @@ func (p *Plugin) Handle(ctx context.Context, method string, raw json.RawMessage)
 		if channelproto.Decode(raw, &in) != nil || in.Protocol != channelproto.Version {
 			return nil, errors.New("unsupported protocol")
 		}
-		return channelproto.Descriptor{ID: "wechat", Name: "WeChat", Version: "1.0.0", Protocol: 1, Login: []string{"qr"}, Messages: []string{"text"}, Fields: []channelproto.Field{}, RequiresReplyContext: true}, nil
+		return channelproto.Descriptor{ID: "wechat", Name: "WeChat", Version: "1.0.0", Protocol: 1, Login: []string{"qr"}, Messages: []string{"text"}, Fields: []channelproto.Field{}, RequiresReplyContext: true, IndependentPoll: true}, nil
 	case "login.start":
-		p.id, p.verify = "", ""
+		p.clearLogin()
 		ctx, cancel := context.WithTimeout(ctx, 7*time.Second)
 		defer cancel()
 		qr, err := p.client.QR(ctx)
@@ -40,31 +54,55 @@ func (p *Plugin) Handle(ctx context.Context, method string, raw json.RawMessage)
 			return nil, err
 		}
 		p.id, p.origin, p.qr, p.expires = rand.Text(), DefaultOrigin, qr, time.Now().Add(180*time.Second)
+		p.loginState = "pending"
 		return channelproto.Login{ID: p.id, State: "pending", QR: qr.Content, ExpiresIn: 180}, nil
 	case "login.poll":
 		var in struct {
 			ID     string `json:"id"`
 			Verify string `json:"verify_code"`
 		}
-		if channelproto.Decode(raw, &in) != nil || in.ID == "" || in.ID != p.id || time.Now().After(p.expires) {
+		if channelproto.Decode(raw, &in) != nil || in.ID == "" || in.ID != p.id {
 			return nil, channelproto.ErrAuthExpired
+		}
+		if !time.Now().Before(p.expires) {
+			return p.expiredLogin(), nil
 		}
 		if err := validateVerificationCode(in.Verify); err != nil {
 			return nil, err
 		}
 		if in.Verify != "" {
 			p.verify = in.Verify
+			if p.loginState == "verification_required" {
+				p.loginState = "pending"
+			}
 		}
-		ctx, cancel := context.WithTimeout(ctx, 7*time.Second)
+		deadline := time.Now().Add(7 * time.Second)
+		if p.expires.Before(deadline) {
+			deadline = p.expires
+		}
+		pollCtx, cancel := context.WithDeadline(ctx, deadline)
 		defer cancel()
-		v, err := p.client.loginAt(ctx, p.origin, p.qr.Code, p.verify)
+		v, err := p.client.loginAt(pollCtx, p.origin, p.qr.Code, p.verify)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !time.Now().Before(p.expires) || errors.Is(err, ErrExpired) {
+			return p.expiredLogin(), nil
+		}
 		if err != nil {
+			// iLink holds an unchanged QR status for about 30 seconds. Keep each
+			// management call bounded without invalidating the login on that wait.
+			// Only our poll deadline is recoverable; caller cancellation and
+			// provider/network failures must still reach the host.
+			if errors.Is(pollCtx.Err(), context.DeadlineExceeded) {
+				return channelproto.Login{ID: p.id, State: p.loginState}, nil
+			}
 			return nil, err
 		}
-		result := channelproto.Login{ID: p.id}
+		result := channelproto.Login{ID: p.id, State: p.loginState}
 		switch v.Status {
 		case "wait", "pending":
-			result.State = "pending"
+			// A wait does not undo a scan or acknowledge a verification code.
 		case "scaned_but_redirect":
 			p.origin = "https://" + v.RedirectHost
 			result.State = "scanned"
@@ -78,17 +116,19 @@ func (p *Plugin) Handle(ctx context.Context, method string, raw json.RawMessage)
 			secret, _ := json.Marshal(v.Credentials)
 			result.State = "confirmed"
 			result.Auth = &channelproto.Auth{Account: v.BotID, Owner: v.UserID, Secret: secret}
-			p.id, p.verify = "", ""
 		case "expired":
 			result.State = "expired"
-			p.id, p.verify = "", ""
 		default:
 			result.State = "failed"
-			p.id, p.verify = "", ""
+		}
+		if result.State == "confirmed" || result.State == "expired" || result.State == "failed" {
+			p.clearLogin()
+		} else {
+			p.loginState = result.State
 		}
 		return result, nil
 	case "login.cancel", "logout":
-		p.id, p.verify = "", ""
+		p.clearLogin()
 		return map[string]bool{"ok": true}, nil
 	case "poll":
 		var in channelproto.Poll
@@ -116,6 +156,7 @@ func (p *Plugin) Handle(ctx context.Context, method string, raw json.RawMessage)
 			}
 			msg := channelproto.Message{ID: m.key(), Conversation: m.From, Sender: m.From, Context: m.Context, Group: m.Group != ""}
 			var text strings.Builder
+			var quotes strings.Builder
 			for _, item := range m.Items {
 				if item.Type != 1 {
 					msg.Unsupported = true
@@ -123,8 +164,17 @@ func (p *Plugin) Handle(ctx context.Context, method string, raw json.RawMessage)
 					text.WriteString(item.Text.Text)
 					text.WriteByte('\n')
 				}
+				if item.Ref != nil {
+					quoted, complete := quotedText(item.Ref, 0)
+					if !complete {
+						msg.Unsupported = true
+					}
+					quotes.WriteString(quoted)
+					quotes.WriteByte('\n')
+				}
 			}
 			msg.Text = strings.TrimSpace(text.String())
+			msg.QuotedText = strings.TrimSpace(quotes.String())
 			result.Messages = append(result.Messages, msg)
 		}
 		return result, nil
@@ -145,4 +195,35 @@ func (p *Plugin) Handle(ctx context.Context, method string, raw json.RawMessage)
 	default:
 		return nil, errors.New("unsupported channel method")
 	}
+}
+
+func quotedText(ref *RefMessage, depth int) (string, bool) {
+	// Bound nested quotes and reject incomplete/media/partial quotes instead of
+	// silently dropping constraints. Partial selections need provider-specific
+	// offset/hash validation before they can be represented faithfully.
+	if depth >= 8 || ref.Item == nil || ref.Item.Type != 1 || strings.TrimSpace(ref.Item.Text.Text) == "" || (len(ref.PartialText) > 0 && string(ref.PartialText) != "null") {
+		return "【引用内容不可用，请粘贴原文】", false
+	}
+	var text strings.Builder
+	text.WriteString("【引用消息】\n")
+	line := func(value string) {
+		text.WriteString("> ")
+		text.WriteString(strings.ReplaceAll(value, "\n", "\n> "))
+		text.WriteByte('\n')
+	}
+	if ref.Title != "" {
+		line("标题：" + ref.Title)
+	}
+	if ref.ID != "" {
+		line("消息 ID：" + ref.ID)
+	}
+	line(ref.Item.Text.Text)
+	if ref.Item.Ref != nil {
+		nested, complete := quotedText(ref.Item.Ref, depth+1)
+		if !complete {
+			return "【引用内容不可用，请粘贴原文】", false
+		}
+		line(nested)
+	}
+	return strings.TrimSpace(text.String()), true
 }

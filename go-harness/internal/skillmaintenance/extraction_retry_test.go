@@ -71,7 +71,7 @@ func TestExtractionRetryKeepsLifetimeAccountingAndQueueCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.store.RetryFailedExtractionTx(ctx, tx, j.ID, j.StateVersion); err != ErrBudget {
+	if _, err = f.store.RetryFailedExtractionTx(ctx, tx, j.ID, j.StateVersion); err != ErrCapacity {
 		t.Fatal("retry bypassed learning queue cap", err)
 	}
 	_ = tx.Rollback()
@@ -81,10 +81,9 @@ func TestExtractionRetryKeepsLifetimeAccountingAndQueueCap(t *testing.T) {
 	}
 }
 
-func TestExtractionRetryRejectsBudgetConsumedByAnotherProducer(t *testing.T) {
+func TestExtractionRetryUnaffectedByOtherProducerUsage(t *testing.T) {
 	ctx := context.Background()
 	p := policy()
-	p.MaxDailyModelCalls = 2
 	f := newFixture(t, p)
 	r := Request{Kind: ExperienceExtract, OwnerKind: WorkspaceOwner, OwnerKey: strings.Repeat("a", 64), Key: "extract", Reference: "extract", InputDigest: strings.Repeat("b", 64)}
 	j, err := f.store.Enqueue(ctx, r)
@@ -118,16 +117,11 @@ func TestExtractionRetryRejectsBudgetConsumedByAnotherProducer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	available, err := f.store.BudgetAvailableTx(ctx, tx, j)
-	if err != nil || available {
-		t.Fatal("shared budget reported available", available, err)
+	retried, err := f.store.RetryFailedExtractionTx(ctx, tx, j.ID, j.StateVersion)
+	if err != nil || retried.ID != j.ID || retried.Attempts != j.Attempts || retried.Deadline != j.Deadline || retried.State != "queued" {
+		t.Fatal("retry changed lifetime or was blocked by usage", retried, err)
 	}
-	if _, err = f.store.RetryFailedExtractionTx(ctx, tx, j.ID, j.StateVersion); err != ErrBudget {
-		t.Fatal("retry bypassed shared exhaustion", err)
-	}
-	_ = tx.Rollback()
-	unchanged, err := f.store.Get(ctx, j.ID)
-	if err != nil || unchanged != j {
-		t.Fatal("budget rejection changed retry identity", unchanged, err)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 }

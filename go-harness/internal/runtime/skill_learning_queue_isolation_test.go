@@ -30,7 +30,7 @@ func TestSkillLearningQueueIsolatesOldUnfinishedRoots(t *testing.T) {
 			}
 			first := learningTestRun(t, s, x, "Read JSON")
 			learningTestFinish(t, s, first, "end_turn")
-			second := learningTestRun(t, s, x, "Correction: read the complete file")
+			second := learningTestRelatedRun(t, s, x, "Correction: read the complete file")
 			learningTestFinish(t, s, second, "end_turn")
 			learningTestQueue(t, s)
 			if worked, err := s.Store.Learning.RunOne(context.Background()); err != nil || !worked {
@@ -55,7 +55,7 @@ func TestSkillLearningQueueIsolatesOldUnfinishedRoots(t *testing.T) {
 			if err := s.Store.db.QueryRow(`SELECT status FROM harness_runs WHERE id=?`, old.RunID).Scan(&unchanged); err != nil || unchanged != status || users != 2 {
 				t.Fatal("isolation changed task state or lost correction context", unchanged, users, err)
 			}
-			if err := s.Store.db.QueryRow(`SELECT count(DISTINCT episode_id) FROM harness_learning_inputs`).Scan(&episodes); err != nil || episodes != 1 {
+			if err := s.Store.db.QueryRow(`SELECT count(DISTINCT episode_id) FROM harness_learning_inputs`).Scan(&episodes); err != nil || episodes != 2 {
 				t.Fatal("isolation fabricated independent episodes", episodes, err)
 			}
 			assertLearningSourceState(t, s, first.RunID, "processed", "")
@@ -90,6 +90,9 @@ func TestSkillLearningQueueUnsafeSourceDoesNotConsumeSafeTurn(t *testing.T) {
 			safe := learningTestRun(t, s, x, "Read complete configuration")
 			learningTestFinish(t, s, safe, "end_turn")
 			learningTestQueue(t, s)
+			if worked, err := s.Store.Learning.QueueOne(context.Background()); err != nil || !worked {
+				t.Fatal(worked, err)
+			}
 			if worked, err := s.Store.Learning.RunOne(context.Background()); err != nil || !worked || len(extractor.seen) != 1 {
 				t.Fatal("mixed source batch lost safe input", worked, err, len(extractor.seen))
 			}
@@ -117,14 +120,11 @@ func TestSkillLearningQueuedJobResumesPastAbandonedContinuation(t *testing.T) {
 	if _, err := s.Store.db.Exec(`UPDATE harness_runs SET status='needs_reconciliation' WHERE id=?`, abandoned.RunID); err != nil {
 		t.Fatal(err)
 	}
-	if worked, err := s.Store.Learning.RunOne(context.Background()); err != nil || worked {
-		t.Fatal("current unfinished continuation did not defer the queued job", worked, err)
+	if worked, err := s.Store.Learning.RunOne(context.Background()); err != nil || !worked {
+		t.Fatal("unrelated unfinished root blocked the queued job", worked, err)
 	}
 	later := learningTestRun(t, s, x, "Later safely finished check")
 	learningTestFinish(t, s, later, "end_turn")
-	if worked, err := s.Store.Learning.RunOne(context.Background()); err != nil || !worked {
-		t.Fatal("queued job remained blocked after a later completed input", worked, err)
-	}
 	learningTestQueue(t, s)
 	if worked, err := s.Store.Learning.RunOne(context.Background()); err != nil || !worked || len(extractor.seen) != 2 {
 		t.Fatal("later pending input could not follow the recovered queued job", worked, err)
@@ -142,8 +142,8 @@ func TestSkillLearningQueuedJobResumesPastAbandonedContinuation(t *testing.T) {
 			users++
 		}
 	}
-	if users != 2 || extractor.seen[0].EpisodeID != extractor.seen[1].EpisodeID {
-		t.Fatal("recovery lost safe correction history or invented independence", users)
+	if users != 1 || extractor.seen[0].EpisodeID == extractor.seen[1].EpisodeID {
+		t.Fatal("independent roots were conflated", users)
 	}
 	assertLearningSourceState(t, s, first.RunID, "processed", "")
 	assertLearningSourceState(t, s, later.RunID, "processed", "")
@@ -162,7 +162,12 @@ func TestSkillLearningQueueKeepsOwnUnfinishedDescendantsPending(t *testing.T) {
 	}
 	safe := learningTestRun(t, s, x, "Safely read another configuration")
 	learningTestFinish(t, s, safe, "end_turn")
-	learningTestQueue(t, s)
+	time.Sleep(1050 * time.Millisecond)
+	for range 2 {
+		if _, err := s.Store.Learning.QueueOne(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	assertLearningSourceState(t, s, parent.RunID, "pending", "tree_unsettled")
 	if worked, err := s.Store.Learning.RunOne(context.Background()); err != nil || !worked || len(extractor.seen) != 1 {
 		t.Fatal("old child blocked unrelated safe root", worked, err)
@@ -182,8 +187,8 @@ func TestSkillLearningQueueKeepsOwnUnfinishedDescendantsPending(t *testing.T) {
 		t.Fatal(worked, err)
 	}
 	assertLearningSourceState(t, s, parent.RunID, "processed", "")
-	if extractor.seen[0].EpisodeID != extractor.seen[1].EpisodeID {
-		t.Fatal("recovery fabricated an independent episode")
+	if extractor.seen[0].EpisodeID == extractor.seen[1].EpisodeID {
+		t.Fatal("recovery merged independent task roots")
 	}
 }
 
@@ -211,8 +216,10 @@ func TestSkillLearningQueueScansPastBlockedChunkAfterRestart(t *testing.T) {
 	}
 	s.Store.Learning = restarted
 	time.Sleep(1050 * time.Millisecond)
-	if worked, err := restarted.QueueOne(context.Background()); err != nil || worked {
-		t.Fatal("blocked first chunk was extracted", worked, err)
+	for range 9 {
+		if worked, err := restarted.QueueOne(context.Background()); err != nil || worked {
+			t.Fatal("blocked task was extracted", worked, err)
+		}
 	}
 	if worked, err := restarted.QueueOne(context.Background()); err != nil || !worked {
 		t.Fatal("safe old pending input beyond first chunk starved", worked, err)
@@ -245,7 +252,7 @@ func TestSkillLearningQueueSplitsCombinedBoundsWithoutLosingSources(t *testing.T
 	s.Store.Learning = l
 	var requests []harness.RunRequest
 	for range 3 {
-		req := learningTestRun(t, s, x, strings.Repeat("Structured configuration. ", 230))
+		req := learningTestRelatedRun(t, s, x, strings.Repeat("Structured configuration. ", 230))
 		learningTestFinish(t, s, req, "end_turn")
 		requests = append(requests, req)
 	}

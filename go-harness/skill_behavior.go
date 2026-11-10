@@ -25,3 +25,14 @@ func (c *Client) SkillBehaviorReceipts(ctx context.Context, proposalID string, a
 	defer done()
 	return c.evolution.BehaviorReceipts(ctx, proposalID, after, limit)
 }
+
+// SkillBehaviorEvaluationPage reads one immutable result page. The cursor is a
+// stored result sequence and is scoped by proposal identity on every request.
+func (c *Client) SkillBehaviorEvaluationPage(ctx context.Context, proposalID string, after int64, limit int) (harness.SkillBehaviorEvaluation, error) {
+	done, err := c.operation()
+	if err != nil {
+		return harness.SkillBehaviorEvaluation{}, err
+	}
+	defer done()
+	return c.evolution.BehaviorEvaluationPage(ctx, proposalID, after, limit)
+}

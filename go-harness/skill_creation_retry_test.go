@@ -66,20 +66,20 @@ func TestSkillLearningCreationRetrySDKManagementSharedDispatcherAndDisabledRepla
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Messages) != 2 || len(req.Tools) != 0 {
 			t.Error(req, err)
 		}
-		if !strings.Contains(req.Messages[0].Content, "instruction-only historical-experience") {
-			t.Error("retry not instruction-only")
+		if !strings.Contains(req.Messages[0].Content, "independent host validation and automatic adoption") {
+			t.Error("retry omitted host validation")
 		}
 		answer, _ := json.Marshal(map[string]any{"skill_name": "structured-source-audit", "base_version": "", "reason": "Read complete structured source",
 			"files": map[string]string{"SKILL.md": "---\nname: structured-source-audit\ndescription: Inspect structured sources\n---\nRead complete input and verify fields.\n"}})
 		_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 30, "total_tokens": 130}})
 	}))
 	defer server.Close()
-	budget := harness.SkillMaintenanceBudget{MaxDailyModelCalls: 25, MaxDailyTokens: 100000, MaxJobSeconds: 60, Workers: 1}
-	cfg.SkillLearning = &harness.SkillLearningOptions{Idle: time.Second, MaxDailyModelCalls: 15, MaxDailyTokens: 50000, Budget: budget, Consolidation: &harness.SkillGenerationModelConfig{}, Matching: &harness.SkillGenerationModelConfig{}}
+	budget := harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}
+	cfg.SkillLearning = &harness.SkillLearningOptions{Idle: time.Second, Policy: budget, Consolidation: &harness.SkillGenerationModelConfig{}, Matching: &harness.SkillGenerationModelConfig{}}
 	cfg.SkillExperienceExtractor, cfg.SkillExperienceConsolidator, cfg.SkillExperienceMatcher = &sdkMatchingExtractor{}, &sdkExperienceMerge{}, &sdkNewCapabilityMatcher{}
 	cfg.SkillValidator = &sdkExperienceReview{}
-	cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: harness.ModelRoute{Provider: "openai", Model: "fixture", BaseURL: server.URL, APIKey: "unused-fixture"}}, Budget: budget, Sources: []string{"project"}}
-	cfg.SkillDiscovery = &harness.SkillDiscoveryOptions{DisableOperatorCorrections: true, ExperiencePatternsEnabled: true, ExperienceNewSkillsEnabled: true, NewSkillSourceID: "project", RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxDailyProposals: 5, MaxPendingProposals: 20}
+	cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: harness.ModelRoute{Provider: "openai", Model: "fixture", BaseURL: server.URL, APIKey: "unused-fixture"}}, Policy: budget, Sources: []string{"project"}}
+	cfg.SkillDiscovery = &harness.SkillDiscoveryOptions{DestinationSourceID: "project", RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxPendingProposals: 20}
 	cfg.Skills.Install = []harness.SkillInstall{{SourceID: "project", Directory: "research", Enabled: true}}
 	cfg.Engine = engineFunc(func(ctx context.Context, req harness.RunRequest, emit harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
 		for _, kind := range []string{"tool_start", "tool_execute", "tool_end"} {
@@ -177,7 +177,7 @@ func TestSkillLearningCreationRetrySDKManagementSharedDispatcherAndDisabledRepla
 		time.Sleep(20 * time.Millisecond)
 	}
 	if retryProposal == "" || calls.Load() != 2 {
-		t.Fatal("retry did not settle one manual candidate", retryProposal, calls.Load())
+		t.Fatal("retry did not settle one candidate", retryProposal, calls.Load())
 	}
 	if err = c.Close(); err != nil {
 		t.Fatal(err)
@@ -195,9 +195,12 @@ func TestSkillLearningCreationRetrySDKManagementSharedDispatcherAndDisabledRepla
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err = c.ApproveSkillProposal(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "fixture-human"})
-	if err != nil || p.Status != "published" || calls.Load() != 2 {
-		t.Fatal("retry human recovery failed", p, err, calls.Load())
+	if _, err = c.ApproveSkillProposal(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "fixture-human"}); err == nil {
+		t.Fatal("retry bypassed automatic validation")
+	}
+	current, err := c.GetSkillHead(ctx, p.Target.SourceID, p.SkillName)
+	if err != nil || current != p.Base || calls.Load() != 2 {
+		t.Fatal("blocked retry changed head or repeated generation", current, err, calls.Load())
 	}
 	for query, want := range map[string]int{`SELECT count(*) FROM df_learning_new_skill_consumed`: 1, `SELECT count(*) FROM df_learning_new_skill_retry_spent`: 1, `SELECT count(*) FROM df_skill_discovery_episode_consumed`: 2} {
 		var count int

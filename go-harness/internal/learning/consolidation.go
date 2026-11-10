@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"slices"
 	"sort"
 	"time"
@@ -57,10 +58,10 @@ func (s *Store) readConsolidationTx(ctx context.Context, tx *sql.Tx, job skillma
 	if err != nil {
 		return snap, nil, err
 	}
-	if len(data) > s.consolidationInputLimit()+(32<<10) || digest(data) != sha || sha != job.Request.InputDigest || json.Unmarshal(data, &snap) != nil || snap.ID != job.Request.Reference || job.Request.Key != snap.ID || snap.Session != session || snap.Seed.ID != seed || snap.Seed.Session != session || job.Request.Kind != skillmaintenance.ExperienceConsolidate || job.Request.OwnerKind != skillmaintenance.WorkspaceOwner || job.Request.OwnerKey != snap.Owner || snap.MaxDailyModelCalls < 1 || snap.MaxDailyTokens < 1 || len(snap.Patterns) > 8 || len(snap.Patterns) != len(snap.View.Patterns) {
+	if len(data) > s.consolidationInputLimit()+(32<<10) || digest(data) != sha || sha != job.Request.InputDigest || json.Unmarshal(data, &snap) != nil || snap.ID != job.Request.Reference || job.Request.Key != snap.ID || snap.Session != session || snap.Seed.ID != seed || snap.Seed.Session != session || job.Request.Kind != skillmaintenance.ExperienceConsolidate || job.Request.OwnerKind != skillmaintenance.WorkspaceOwner || job.Request.OwnerKey != snap.Owner || len(snap.Patterns) > 8 || len(snap.Patterns) != len(snap.View.Patterns) {
 		return snap, nil, invalid("inconsistent consolidation identity")
 	}
-	if s.consolidator == nil || s.options.Consolidation == nil || policy != ConsolidationPolicyVersion || model != s.consolidator.Identity() {
+	if s.consolidator == nil || s.options.Consolidation == nil || policy != ConsolidationPolicyVersion || job.State != "completed" && model != s.consolidator.Identity() {
 		return snap, nil, harness.ErrSkillConflict
 	}
 	identity := snap
@@ -126,6 +127,11 @@ func (s *Store) readConsolidationTx(ctx context.Context, tx *sql.Tx, job skillma
 	if len(output) > 2*patternStorageLimit+(8<<10) || digest(output) != resultSHA || json.Unmarshal(output, &result) != nil || result.At.IsZero() {
 		return snap, nil, invalid("inconsistent consolidation result")
 	}
+	for i := range result.Patterns {
+		if err := expandPatternLedger(ctx, tx, &result.Patterns[i]); err != nil {
+			return snap, nil, err
+		}
+	}
 	decision, err := validateConsolidationDecision(snap.View, result.Decision)
 	if err != nil || encodedDigest(decision) != encodedDigest(result.Decision) {
 		return snap, nil, invalid("inconsistent saved consolidation decision")
@@ -176,8 +182,37 @@ func (s *Store) planConsolidationTx(ctx context.Context, tx *sql.Tx, snap consol
 			return nil, err
 		}
 	}
+	if target.LedgerDigest != "" {
+		target.Pattern.Revision++
+		target.Pattern.UpdatedAt = now
+		if decision.Relation == "equivalent" {
+			var exists bool
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_learning_pattern_members WHERE pattern_id=? AND experience_id=? AND revision<?)`, target.Pattern.ID, dep.ID, target.Pattern.Revision).Scan(&exists); err != nil {
+				return nil, err
+			}
+			if exists {
+				return nil, invalid("duplicate pattern member")
+			}
+			target.pending = []experienceDependency{dep}
+			if target.Pattern.Candidate.Outcome != "observed_execution" && seed.Candidate.Outcome == "observed_execution" {
+				target.Pattern.RepresentativeID = seed.ID
+			}
+			target, err = s.projectPagedPatternTx(ctx, tx, target, snap.Owner, false)
+			return []patternSnapshot{target}, err
+		}
+		if decision.Relation == "conflicting" {
+			id := "lpat_" + encodedDigest([]string{ConsolidationPolicyVersion, snap.Session, seed.ID})
+			p, err := buildPattern(id, snap.Session, 1, seed.ID, []experienceDependency{dep}, []harness.SkillExperience{seed}, []string{target.Pattern.ID}, false, now)
+			if err != nil {
+				return nil, err
+			}
+			target.Pattern.ConflictsWith = append(slices.Clone(target.Pattern.ConflictsWith), id)
+			target, err = s.projectPagedPatternTx(ctx, tx, target, snap.Owner, false)
+			return []patternSnapshot{{Pattern: p, Members: []experienceDependency{dep}, Shared: snap.Shared, ResolutionPolicy: snap.ResolutionPolicy}, target}, err
+		}
+	}
 	if decision.Relation == "equivalent" {
-		if len(target.Members) >= maxPatternMembers || slices.Contains(target.Pattern.ExperienceIDs, dep.ID) {
+		if slices.Contains(target.Pattern.ExperienceIDs, dep.ID) {
 			return nil, invalid("pattern member capacity or duplicate")
 		}
 		target.Members = append(target.Members, dep)
@@ -200,6 +235,11 @@ func (s *Store) planConsolidationTx(ctx context.Context, tx *sql.Tx, snap consol
 		target.Pattern.Revision++
 		target.Pattern.RepresentativeID, target.Pattern.UpdatedAt = representative, now
 		target.Pattern, err = projectPattern(target, members)
+		if err == nil && len(target.Members) > maxPatternMembers {
+			target = compactPattern(target)
+			target.pending = []experienceDependency{dep}
+			target, err = s.projectPagedPatternTx(ctx, tx, target, snap.Owner, false)
+		}
 		return []patternSnapshot{target}, err
 	}
 	newID := "lpat_" + encodedDigest([]string{ConsolidationPolicyVersion, snap.Session, seed.ID})
@@ -267,7 +307,33 @@ func (s *Store) HandleConsolidation(ctx context.Context, job skillmaintenance.Jo
 	if err = json.Unmarshal(data, &view); err != nil {
 		return learningFailure(err)
 	}
-	decision, err := s.consolidator.Consolidate(ctx, view)
+	var decision harness.SkillExperienceConsolidationDecision
+	var cached []byte
+	var inputSHA, sha string
+	err = s.db.QueryRowContext(ctx, `SELECT input_sha,payload,payload_sha FROM df_learning_paid_decisions WHERE job_id=?`, job.ID).Scan(&inputSHA, &cached, &sha)
+	if errors.Is(err, sql.ErrNoRows) {
+		decision, err = s.consolidator.Consolidate(ctx, view)
+		if err == nil {
+			decision, err = validateConsolidationDecision(snap.View, decision)
+		}
+		if err == nil {
+			cached, _ = json.Marshal(decision)
+			var record *sql.Tx
+			record, err = s.db.BeginTx(ctx, nil)
+			if err == nil {
+				err = skillmaintenance.GuardTx(ctx, record, job.ID)
+				if err == nil {
+					_, err = record.ExecContext(ctx, `INSERT INTO df_learning_paid_decisions VALUES(?,?,?,?)`, job.ID, job.Request.InputDigest, cached, digest(cached))
+				}
+				if err == nil {
+					err = record.Commit()
+				}
+				_ = record.Rollback()
+			}
+		}
+	} else if err == nil && (inputSHA != job.Request.InputDigest || digest(cached) != sha || json.Unmarshal(cached, &decision) != nil) {
+		err = invalid("inconsistent paid consolidation decision")
+	}
 	if err != nil {
 		return learningFailure(err)
 	}
@@ -300,6 +366,9 @@ func (s *Store) HandleConsolidation(ctx context.Context, job skillmaintenance.Jo
 			return learningFailure(err)
 		}
 	}
+	for i := range outputs {
+		outputs[i] = compactPattern(outputs[i])
+	}
 	data, _ = json.Marshal(consolidationResult{Decision: decision, Patterns: outputs, At: now})
 	if len(data) > 2*patternStorageLimit+(8<<10) {
 		return learningFailure(invalid("consolidation result exceeds bounds"))
@@ -329,7 +398,7 @@ func savePatternTx(ctx context.Context, tx *sql.Tx, snap consolidationSnapshot, 
 	if output.Shared != snap.Shared {
 		return harness.ErrPermissionDenied
 	}
-	data, _ := json.Marshal(output)
+	data, _ := json.Marshal(compactPattern(output))
 	if len(data) > patternStorageLimit {
 		return invalid("pattern revision exceeds storage bounds")
 	}
@@ -358,8 +427,8 @@ func savePatternTx(ctx context.Context, tx *sql.Tx, snap consolidationSnapshot, 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO df_learning_pattern_revisions VALUES(?,?,?,?,?)`, p.ID, p.Revision, snap.ID, data, digest(data)); err != nil {
 		return err
 	}
-	for _, dep := range output.Members {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO df_learning_pattern_members VALUES(?,?,?,?,?,?,?)`, p.ID, p.Revision, dep.ID, dep.SHA, dep.Episode, dep.Independent, dep.Epoch); err != nil {
+	for _, dep := range append(slices.Clone(output.Members), output.pending...) {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO df_learning_pattern_members SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM df_learning_pattern_members WHERE pattern_id=? AND experience_id=?)`, p.ID, p.Revision, dep.ID, dep.SHA, dep.Episode, dep.Independent, dep.Epoch, p.ID, dep.ID); err != nil {
 			return err
 		}
 	}

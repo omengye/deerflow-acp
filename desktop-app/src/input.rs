@@ -572,6 +572,8 @@ pub struct MediaPaste(pub Vec<ClipboardEntry>);
 /// Respect the representation priority chosen by the source application.
 /// Finder puts paths first (and a text fallback second), while screenshots put
 /// an image first. Text-first clipboard content remains ordinary text paste.
+/// Keep both paths and image data here: the background importer prefers usable
+/// originals and needs the bitmap if their source paths have disappeared.
 fn media_paste_entries(clipboard: &ClipboardItem) -> Option<Vec<ClipboardEntry>> {
     if !matches!(
         clipboard.entries().first(),

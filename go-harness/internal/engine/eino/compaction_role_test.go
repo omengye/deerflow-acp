@@ -31,7 +31,7 @@ func TestConfiguredRoleCompactionUsesIndependentThinkingWithinRoleCap(t *testing
 		if body["model"] != "role-wire-model" || r.Header.Get("Authorization") != "Bearer child-fixture-key" {
 			t.Error("role summary used the wrong model route or credentials")
 		}
-		if body["max_completion_tokens"] != float64(roleCap) || body["max_tokens"] != nil {
+		if body["max_completion_tokens"] != float64(roleCap/2) || body["max_tokens"] != nil {
 			t.Errorf("role output cap changed: completion=%v legacy=%v", body["max_completion_tokens"], body["max_tokens"])
 		}
 		messages, _ := body["messages"].([]any)
@@ -108,6 +108,7 @@ func TestConfiguredRoleCompactionUsesIndependentThinkingWithinRoleCap(t *testing
 		Budget:                harness.BudgetLimits{MaxModelCalls: 20, MaxOutputTokens: 4096},
 		ModelRoutes:           map[string]harness.ModelRoute{"research-route": {Provider: "openai", Model: "role-wire-model", BaseURL: provider.URL + "/v1", APIKey: "child-fixture-key"}},
 		ModelThinking:         map[string]harness.ThinkingConfig{"research-route": {Parameter: "enable_thinking"}},
+		ModelOutputLimits:     map[string]harness.ModelOutputLimits{"research-route": {MaxOutputTokens: roleCap / 2}},
 		ModelReasoningEfforts: map[string][]string{"research-route": {"high", "max"}},
 		Compaction:            harness.CompactionConfig{Enabled: true, ContextMessages: 6, ContextTokens: 100000, KeepRecentMessages: 2},
 		Subagents: &harness.SubagentsConfig{CustomAgents: map[string]harness.AgentConfig{

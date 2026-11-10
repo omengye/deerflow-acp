@@ -102,7 +102,7 @@ func TestSkillLearningCreationRetryCancelledAtomicReceiptAndManualPublish(t *tes
 		t.Fatal(worked, err)
 	}
 	generated, err := e.GetGeneration(ctx, result.GenerationID)
-	if err != nil || generated.State != "completed" || len(g.seen) != 1 || !g.seen[0].InstructionOnly {
+	if err != nil || generated.State != "completed" || len(g.seen) != 1 || g.seen[0].InstructionOnly {
 		t.Fatal(generated, err, g.seen)
 	}
 	proposal, err := e.Get(ctx, generated.ProposalID)
@@ -124,8 +124,8 @@ func TestSkillLearningCreationRetryCancelledAtomicReceiptAndManualPublish(t *tes
 		t.Fatal("retry rewrote original snapshot")
 	}
 	proposal, err = e.Approve(ctx, proposal.ID, harness.SkillReview{ExpectedStateVersion: proposal.StateVersion, Actor: "owner"})
-	if err != nil || proposal.Status != "published" {
-		t.Fatal(proposal, err)
+	if err == nil || proposal.Status == "published" {
+		t.Fatal("manual adoption bypassed", proposal, err)
 	}
 	replay, err = e.RetryNewSkill(ctx, x.ID, request)
 	if err != nil || replay != result || len(g.seen) != 1 {
@@ -209,7 +209,7 @@ func TestSkillLearningCreationRetryLiveRevocationRestartAndRehashedBinding(t *te
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restarted.Close() })
-	if err = restarted.ConfigureGeneration(ctx, g, consolidationTestOptions().Budget, []string{"project"}, false); err != nil {
+	if err = restarted.ConfigureGeneration(ctx, g, consolidationTestOptions().Policy, []string{"project"}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = restarted.ConfigureExperienceDiscoverySource(s.Store.Learning); err != nil {
@@ -303,12 +303,6 @@ func TestSkillLearningCreationRetryExactPinsQuotaAndExpiredEvidence(t *testing.T
 		t.Fatal(err)
 	}
 	if _, err = s.Store.db.Exec(`UPDATE df_skill_discovery_days SET reservations=5`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = e.RetryNewSkill(ctx, x.ID, request); !errors.Is(err, harness.ErrSkillConflict) {
-		t.Fatal("daily quota bypassed", err)
-	}
-	if _, err = s.Store.db.Exec(`UPDATE df_skill_discovery_days SET reservations=1`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = s.Store.db.Exec(`UPDATE harness_learning_outbox SET ended_at=?`, time.Now().Add(-31*24*time.Hour).UTC().Format(time.RFC3339Nano)); err != nil {
@@ -465,7 +459,7 @@ func TestSkillLearningCreationRetryWorkspaceNonmemberActorRevokesDerivedChain(t 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Close() })
-	if err = e.ConfigureGeneration(ctx, g, options.Budget, []string{"project"}, false); err != nil {
+	if err = e.ConfigureGeneration(ctx, g, options.Policy, []string{"project"}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = e.ConfigureExperienceDiscoverySource(l); err != nil {
@@ -521,7 +515,7 @@ func TestSkillLearningCreationRetryFailedOutputRestartsAsFreshManualCandidate(t 
 	experienceTwoEpisodes(t, s, x)
 	enableNewExperienceDiscovery(t, e)
 	ds := experienceDiscoveries(t, e)
-	g.extra = true
+	g.extraInstruction = "api_key=PRIVATE_FAKE_CREDENTIAL"
 	if worked, err := e.RunGeneration(ctx); err != nil || !worked {
 		t.Fatal(worked, err)
 	}
@@ -543,14 +537,14 @@ func TestSkillLearningCreationRetryFailedOutputRestartsAsFreshManualCandidate(t 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restarted.Close() })
-	if err = restarted.ConfigureGeneration(ctx, g, consolidationTestOptions().Budget, []string{"project"}, false); err != nil {
+	if err = restarted.ConfigureGeneration(ctx, g, consolidationTestOptions().Policy, []string{"project"}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = restarted.ConfigureExperienceDiscoverySource(s.Store.Learning); err != nil {
 		t.Fatal(err)
 	}
 	enableNewExperienceDiscovery(t, restarted)
-	g.extra = false
+	g.extraInstruction = ""
 	if worked, err := restarted.RunGeneration(ctx); err != nil || !worked {
 		t.Fatal(worked, err)
 	}

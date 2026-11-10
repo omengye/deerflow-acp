@@ -33,10 +33,10 @@ func (s *Store) readExtractionTx(ctx context.Context, tx *sql.Tx, job skillmaint
 	if err != nil {
 		return snap, result, err
 	}
-	if len(data) > s.inputLimit()+(32<<10) || digest(data) != sha || sha != job.Request.InputDigest || json.Unmarshal(data, &snap) != nil || snap.ID != job.Request.Reference || job.Request.Key != snap.ID || snap.Session != session || snap.Episode != episode || snap.Epoch != epoch || snap.MaxDailyModelCalls < 1 || snap.MaxDailyTokens < 1 || job.Request.Kind != skillmaintenance.ExperienceExtract || job.Request.OwnerKind != skillmaintenance.WorkspaceOwner || job.Request.OwnerKey != snap.Owner {
+	if len(data) > s.inputLimit()+(32<<10) || digest(data) != sha || sha != job.Request.InputDigest || json.Unmarshal(data, &snap) != nil || snap.ID != job.Request.Reference || job.Request.Key != snap.ID || snap.Session != session || snap.Episode != episode || snap.Epoch != epoch || job.Request.Kind != skillmaintenance.ExperienceExtract || job.Request.OwnerKind != skillmaintenance.WorkspaceOwner || job.Request.OwnerKey != snap.Owner {
 		return snap, result, invalid("inconsistent extraction identity")
 	}
-	if s.extractor == nil || policy != PolicyVersion || model != s.extractor.Identity() {
+	if s.extractor == nil || policy != PolicyVersion || job.State != "completed" && model != s.extractor.Identity() {
 		return snap, result, harness.ErrSkillConflict
 	}
 	if result != "" {
@@ -130,42 +130,13 @@ func (s *Store) AdmitTx(ctx context.Context, tx *sql.Tx, job skillmaintenance.Jo
 	}
 }
 
+// Revalidate immutable evidence and consent before each external request.
+// Usage counters never participate in authorization.
 func (s *Store) AdmitCallTx(ctx context.Context, tx *sql.Tx, job skillmaintenance.Job, call skillmaintenance.ModelCall, now time.Time) error {
-	maxCalls, maxTokens := s.options.MaxDailyModelCalls, s.options.MaxDailyTokens
-	if s.extractor != nil {
-		switch job.Request.Kind {
-		case skillmaintenance.ExperienceExtract:
-			snap, _, err := s.readExtractionTx(ctx, tx, job)
-			if err != nil {
-				return err
-			}
-			maxCalls, maxTokens = min(maxCalls, snap.MaxDailyModelCalls), min(maxTokens, snap.MaxDailyTokens)
-		case skillmaintenance.ExperienceConsolidate:
-			snap, _, err := s.readConsolidationTx(ctx, tx, job)
-			if err != nil {
-				return err
-			}
-			maxCalls, maxTokens = min(maxCalls, snap.MaxDailyModelCalls), min(maxTokens, snap.MaxDailyTokens)
-		case skillmaintenance.SkillMatch:
-			snap, _, err := s.readMatchTx(ctx, tx, job)
-			if err != nil {
-				return err
-			}
-			maxCalls, maxTokens = min(maxCalls, snap.MaxDailyModelCalls), min(maxTokens, snap.MaxDailyTokens)
-		default:
-			return invalid("unsupported learning call")
-		}
+	if s.extractor == nil {
+		return nil
 	}
-	var calls, tokens int64
-	err := tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(c.charged_tokens),0) FROM df_skill_maintenance_calls c
- JOIN df_skill_maintenance_jobs j ON j.id=c.job_id WHERE c.day=? AND j.job_kind IN ('experience_extract','experience_consolidate','skill_match')`, now.UTC().Format("2006-01-02")).Scan(&calls, &tokens)
-	if err != nil {
-		return err
-	}
-	if calls >= maxCalls || tokens > maxTokens-call.InputTokens-call.MaxOutputTokens {
-		return skillmaintenance.ErrBudget
-	}
-	return nil
+	return s.AdmitTx(ctx, tx, job)
 }
 
 func (s *Store) FinalizeTx(ctx context.Context, tx *sql.Tx, job skillmaintenance.Job) error {
@@ -196,8 +167,8 @@ func learningFailure(err error) (string, bool) {
 		return "evidence_changed", false
 	case errors.Is(err, harness.ErrSkillConflict):
 		return "configuration_changed", false
-	case errors.Is(err, skillmaintenance.ErrBudget):
-		return "budget_exhausted", false
+	case errors.Is(err, skillmaintenance.ErrCapacity):
+		return "deferred_capacity", true
 	case errors.Is(err, harness.ErrInvalidInput):
 		return "invalid_candidate", false
 	case errors.Is(err, harness.ErrSkillValidation):

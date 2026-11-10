@@ -72,11 +72,9 @@ func TestSkillLearningMatchingReassessmentAutomaticallyReachesReview(t *testing.
 	s, x, r, e, generator, _, matcher := experienceDiscoveryTest(t)
 	ctx := context.Background()
 	for _, text := range []string{"Inspect complete JSON configuration", "Correct the check using full text"} {
-		learningQueueReadinessTurn(t, s, learningTestRun(t, s, x, text))
+		consolidateExtract(t, s, x, text)
+		consolidateRun(t, s)
 	}
-	learningTestQueue(t, s)
-	matchingRun(t, s)
-	consolidateRun(t, s)
 	oldID := experienceMatch(t, s)
 	oldJobID, _ := matchingJob(t, s)
 	var payload, result []byte
@@ -111,7 +109,7 @@ func TestSkillLearningMatchingReassessmentAutomaticallyReachesReview(t *testing.
 	}
 	enableExperienceReviewDrafts(t, e, false)
 	discoveries := experienceDiscoveries(t, e)
-	if len(discoveries) != 1 || !discoveries[0].ReviewDraft || len(discoveries[0].Evidence) != 1 {
+	if len(discoveries) != 1 || discoveries[0].ReviewDraft || len(discoveries[0].Evidence) != 2 {
 		t.Fatal("automatic reassessment did not produce one review draft", discoveries)
 	}
 	proposal := experienceGenerate(t, e)
@@ -119,11 +117,11 @@ func TestSkillLearningMatchingReassessmentAutomaticallyReachesReview(t *testing.
 		t.Fatal(proposal, generator.seen)
 	}
 	approved, err := e.Approve(ctx, proposal.ID, harness.SkillReview{ExpectedStateVersion: proposal.StateVersion, Actor: "owner"})
-	if err != nil || approved.Status != "published" {
-		t.Fatal("human only approves the automatically generated candidate", approved, err)
+	if err == nil || approved.Status == "published" {
+		t.Fatal("reassessment enabled manual adoption", approved, err)
 	}
 	var feedback, consumed, calls, tokens int
-	if err := s.Store.db.QueryRow(`SELECT (SELECT count(*) FROM df_skill_feedback),(SELECT count(*) FROM df_skill_discovery_episode_consumed),count(*),sum(charged_tokens) FROM df_skill_maintenance_calls`).Scan(&feedback, &consumed, &calls, &tokens); err != nil || feedback != 0 || consumed != 1 || calls != 7 || tokens != 105 {
+	if err := s.Store.db.QueryRow(`SELECT (SELECT count(*) FROM df_skill_feedback),(SELECT count(*) FROM df_skill_discovery_episode_consumed),count(*),sum(actual_tokens) FROM df_skill_maintenance_calls`).Scan(&feedback, &consumed, &calls, &tokens); err != nil || feedback != 0 || consumed != 2 || calls != 9 || tokens != 135 {
 		t.Fatal("reassessment fabricated votes, refunded calls or duplicated generation", feedback, consumed, calls, tokens, err)
 	}
 }
@@ -227,7 +225,7 @@ func matchingReassessmentScan(t *testing.T, s *Service) bool {
 }
 
 func TestSkillLearningMatchingReassessmentBoundsCooldownAndQueueBudget(t *testing.T) {
-	for _, mode := range []string{"unchanged", "cooldown", "window", "lifetime", "backpressure", "paid-budget", "atomic"} {
+	for _, mode := range []string{"unchanged", "cooldown", "window", "lifetime", "backpressure", "usage", "atomic"} {
 		t.Run(mode, func(t *testing.T) {
 			s, x, r, _, matcher := newMatchingTest(t)
 			ctx := context.Background()
@@ -272,7 +270,7 @@ func TestSkillLearningMatchingReassessmentBoundsCooldownAndQueueBudget(t *testin
 					t.Fatal(count, err)
 				}
 			case "backpressure":
-				queue, err := skillmaintenance.New(ctx, s.Store.db, consolidationTestOptions().Budget)
+				queue, err := skillmaintenance.New(ctx, s.Store.db, consolidationTestOptions().Policy)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -299,26 +297,24 @@ func TestSkillLearningMatchingReassessmentBoundsCooldownAndQueueBudget(t *testin
 				}
 				matchingQueue(t, s)
 				matchingRun(t, s)
-			case "paid-budget":
+			case "usage":
 				matchingQueue(t, s)
-				// Exhaust only the existing global daily budget. Reassessment
-				// admission must not create a second budget or refund old calls.
-				if _, err := s.Store.db.Exec(`UPDATE df_skill_maintenance_days SET model_calls=30`); err != nil {
+				// Daily counters remain telemetry and cannot deny a new assessment.
+				if _, err := s.Store.db.Exec(`UPDATE df_skill_maintenance_days SET model_calls=1000000`); err != nil {
 					t.Fatal(err)
 				}
 				matchingRun(t, s)
 				freshID, _ := matchingJob(t, s)
 				fresh, err := skillmaintenance.ReadJob(ctx, s.Store.db, freshID)
-				if err != nil || fresh.State != "failed" || fresh.ErrorCode != "budget_exhausted" {
-					t.Fatal("fresh assessment escaped the shared paid budget", fresh, err)
+				if err != nil || fresh.State != "completed" || fresh.ErrorCode != "" {
+					t.Fatal("usage telemetry blocked fresh assessment", fresh, err)
 				}
 				var calls int
-				if err := s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_maintenance_calls WHERE job_id=?`, freshID).Scan(&calls); err != nil || calls != 0 {
+				if err := s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_maintenance_calls WHERE job_id=?`, freshID).Scan(&calls); err != nil || calls != 1 {
 					t.Fatal(calls, err)
 				}
-				matchingReassessmentChange(t, s, r)
 				if matchingReassessmentScan(t, s) {
-					t.Fatal("budget failure was resurrected as another fresh assessment")
+					t.Fatal("unchanged environment repeated a completed assessment")
 				}
 			case "atomic":
 				if _, err := s.Store.db.Exec(`CREATE TRIGGER reassessment_fail BEFORE INSERT ON df_learning_match_reassessments BEGIN SELECT RAISE(ABORT,'fixture'); END`); err != nil {
@@ -353,6 +349,10 @@ func TestSkillLearningMatchingReassessmentCannotReviveDeniedOrGeneratedWork(t *t
 			ctx := context.Background()
 			captured := consolidateExtract(t, s, x, "Inspect complete JSON input")
 			consolidateRun(t, s)
+			if mode == "reserved" || mode == "pending-review" {
+				consolidateExtract(t, s, x, "Independently inspect another JSON input")
+				consolidateRun(t, s)
+			}
 			if mode == "cancel" {
 				matchingQueue(t, s)
 				id, _ := matchingJob(t, s)
@@ -469,6 +469,16 @@ func TestSkillLearningMatchingReassessmentCannotReviveDeniedOrGeneratedWork(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
+			if mode == "model" {
+				if !matchingReassessmentScan(t, s) {
+					t.Fatal("new model environment did not schedule reassessment")
+				}
+				matchingRun(t, s)
+				if len(matcher.seen) != 2 || len(generator.seen) != 0 {
+					t.Fatal("model change regenerated or failed to re-evaluate")
+				}
+				return
+			}
 			if matchingReassessmentScan(t, s) {
 				t.Fatal("denied, controlled or already generated work got a fresh assessment", mode)
 			}
@@ -517,7 +527,7 @@ func TestSkillLearningMatchingReassessmentSharedSourcesAndAutomaticPublication(t
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = e.Close() })
-			if err := e.ConfigureGeneration(ctx, generator, o.Budget, []string{"project"}, false); err != nil {
+			if err := e.ConfigureGeneration(ctx, generator, o.Policy, []string{"project"}, false); err != nil {
 				t.Fatal(err)
 			}
 			if err := e.ConfigureExperienceDiscoverySource(l); err != nil {
@@ -528,7 +538,7 @@ func TestSkillLearningMatchingReassessmentSharedSourcesAndAutomaticPublication(t
 			for _, session := range []harness.Session{first, second} {
 				workspaceLearningConsent(t, s, session, true)
 				for _, text := range []string{"Inspect the complete configuration for " + session.ID, "Verify required fields from full text"} {
-					captured = learningTestRun(t, s, session, text)
+					captured = learningTestRelatedRun(t, s, session, text)
 					learningQueueReadinessTurn(t, s, captured)
 				}
 				learningTestQueue(t, s)
@@ -552,7 +562,7 @@ func TestSkillLearningMatchingReassessmentSharedSourcesAndAutomaticPublication(t
 			}
 			// Activity on an original member must defer the metadata-only scan;
 			// the ordinary continuation remains in its own terminal outbox.
-			active := learningTestRun(t, s, first, "Check another optional field")
+			active := learningTestRelatedRun(t, s, first, "Check another optional field")
 			if matchingReassessmentScan(t, s) {
 				t.Fatal("fresh assessment captured an active shared conversation")
 			}

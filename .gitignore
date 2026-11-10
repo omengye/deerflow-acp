@@ -13,6 +13,8 @@ desktop/target/
 .deerflow-config/
 .build-cache/
 /.config-backups/
+/.config-tool.lock
+/.skill-evolution-migration.json
 .eggs/
 *.egg-info/
 pip-wheel-metadata/

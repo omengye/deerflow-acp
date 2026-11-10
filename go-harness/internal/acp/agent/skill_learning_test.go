@@ -21,7 +21,7 @@ func TestSkillLearningACPOwnerConsentAndStrictFields(t *testing.T) {
 	f.service.Store.Learning = l
 	c := connect(t, f.service)
 	init := c.success(t, c.request(t, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}}))
-	if !bytes.Contains(init, []byte(`"skillLearning"`)) || !bytes.Contains(init, []byte(`"mode":"shadow"`)) {
+	if !bytes.Contains(init, []byte(`"skillLearning"`)) || !bytes.Contains(init, []byte(`"mode":"automatic"`)) {
 		t.Fatal("missing learning capabilities", string(init))
 	}
 	sid := c.newSession(t, f.cwd)

@@ -187,8 +187,8 @@ func TestSkillTriggerBudgetCancellationAndUnknownUsageRemainCharged(t *testing.T
 					t.Fatal(got, err)
 				}
 				got, err = e.Evaluate(ctx, in)
-				if err == nil || got.Passed || got.Selection != nil || got.ErrorCode != "budget_exhausted" {
-					t.Fatal("second selection bypassed budget", got, err)
+				if err != nil || !got.Passed || got.Selection == nil || got.ErrorCode != "" {
+					t.Fatal("second selection was blocked by a retired quota", got, err)
 				}
 			case "cancelled":
 				if err == nil || got.Passed || got.Selection != nil || got.ErrorCode != "cancelled" {
@@ -205,6 +205,9 @@ func TestSkillTriggerBudgetCancellationAndUnknownUsageRemainCharged(t *testing.T
 			}
 			receipts, err := s.Receipts(context.WithoutCancel(ctx), claim.Job.ID, 0, 10)
 			want := 1
+			if mode == "budget" {
+				want = 2
+			}
 			if mode == "input-limit" {
 				want = 0
 			}
@@ -212,7 +215,7 @@ func TestSkillTriggerBudgetCancellationAndUnknownUsageRemainCharged(t *testing.T
 				t.Fatal("unexpected selection calls/receipts", len(receipts), calls.Load(), err)
 			}
 			if mode == "cancelled" || mode == "unknown-usage" {
-				if !receipts[0].Estimated || receipts[0].ChargedTokens != receipts[0].ReservedTokens {
+				if !receipts[0].Estimated || receipts[0].ActualTokens != 0 {
 					t.Fatal("uncertain selection usage refunded", receipts[0])
 				}
 			}

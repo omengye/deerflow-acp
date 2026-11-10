@@ -46,7 +46,7 @@ func TestTypedMaintenanceLearningBackpressureKeepsSkillSlots(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := f.store.Enqueue(ctx, learningRequest("overflow")); !errors.Is(err, ErrBudget) {
+	if _, err := f.store.Enqueue(ctx, learningRequest("overflow")); !errors.Is(err, ErrCapacity) {
 		t.Fatal("learning inventory exceeded cap", err)
 	}
 	enqueue(t, f.store, "manual-generation")
@@ -104,7 +104,7 @@ func TestTypedMaintenanceScopeNamespaceAndProducerIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	reserve(t, f.store, g, "generation")
-	usage(t, f.store, 2, 600)
+	usage(t, f.store, 2, 0)
 }
 
 func TestTypedMaintenanceRejectsTargetsAndUnknownProducers(t *testing.T) {
@@ -157,7 +157,7 @@ func TestTypedMaintenanceLegacyBindingPreservesLeaseAndCharges(t *testing.T) {
 	if err != nil || fresh != old || token != nextToken || lease != nextLease {
 		t.Fatalf("migration reset execution: %+v %v", fresh, err)
 	}
-	usage(t, f.store, 1, 300)
+	usage(t, f.store, 1, 0)
 	unknown := enqueue(t, f.store, "orphan")
 	if _, err = f.db.DB().Exec(`UPDATE df_skill_maintenance_jobs SET job_kind='legacy' WHERE id=?`, unknown.ID); err != nil {
 		t.Fatal(err)

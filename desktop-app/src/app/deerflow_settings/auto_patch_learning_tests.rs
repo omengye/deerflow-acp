@@ -9,7 +9,7 @@ fn auto_patch_readiness_explains_actionable_and_unknown_reasons() {
     let parsed: Readiness = serde_json::from_value(readiness.clone()).unwrap();
     let summary = parsed.summary().unwrap();
     assert!(summary.contains("缺少可信评测覆盖"));
-    assert!(summary.contains("先安装目标技能"));
+    assert!(summary.contains("尚无符合条件的安装目标"));
     assert!(summary.contains("future_reason"));
     let mut invalid = readiness;
     invalid["reasons"] = json!(["bad\nreason"]);
@@ -22,7 +22,7 @@ fn auto_patch_readiness_explains_actionable_and_unknown_reasons() {
 }
 
 fn options() -> Value {
-    json!({"experience_patterns_enabled":true, "max_changed_lines":40, "max_daily_publications":2,
+    json!({"max_changed_lines":40,
         "observation_hours":72, "min_observations":3, "rollback_failure_threshold":2})
 }
 
@@ -41,7 +41,7 @@ fn observation() -> Value {
 }
 
 #[test]
-fn auto_patch_learning_status_preserves_old_disabled_grant() {
+fn auto_patch_learning_status_has_no_separate_grant() {
     let request = json!({"operation":"skill.auto_patch.status"});
     let mut opts = options();
     opts.as_object_mut()
@@ -61,7 +61,7 @@ fn auto_patch_learning_status_preserves_old_disabled_grant() {
             .as_ref()
             .unwrap()
             .1
-            .contains("学习来源自动补丁未授权")
+            .contains("累计 2 个独立任务质量失败撤回")
     );
     browser
         .accept(
@@ -76,7 +76,7 @@ fn auto_patch_learning_status_preserves_old_disabled_grant() {
             .as_ref()
             .unwrap()
             .1
-            .contains("学习来源自动补丁已授权")
+            .contains("累计 2 个独立任务质量失败撤回")
     );
 }
 
@@ -86,7 +86,7 @@ fn auto_patch_learning_observation_is_historical_and_keeps_withdrawal_distinct()
     let mut browser = AutoPatchBrowser::default();
     for (state, phrase) in [
         ("valid_at_publication", "不是当前来源授权"),
-        ("withdrawn", "已采用版本保留"),
+        ("withdrawn", "等待撤回处理"),
         ("unavailable", "不作为质量判断"),
     ] {
         let mut item = observation();
@@ -124,11 +124,30 @@ fn auto_patch_learning_invalid_source_cannot_replace_cached_history() {
         assert_eq!(browser.rows, original);
     }
     let mut item = observation();
-    item["options"]["experience_patterns_enabled"] = json!(false);
+    item["verification_state"] = json!("invented_pass");
     assert!(
         browser
             .accept(&request, json!({"observations":[item]}))
             .is_err()
     );
     assert_eq!(browser.rows, original);
+}
+
+#[test]
+fn automatic_verification_environment_is_visible() {
+    let request = json!({"operation":"skill.auto_patch.list", "limit":PAGE_SIZE});
+    let mut browser = AutoPatchBrowser::default();
+    for (state, phrase) in [
+        ("current", "当前环境验证有效"),
+        ("rechecking", "正在按当前环境重新验证"),
+        ("blocked_evidence", "等待可信验证证据"),
+    ] {
+        let mut item = observation();
+        item["verification_state"] = json!(state);
+        item["verification_identity"] = json!("f".repeat(64));
+        browser
+            .accept(&request, json!({"observations":[item]}))
+            .unwrap();
+        assert!(browser.rows[0].1.contains(phrase));
+    }
 }

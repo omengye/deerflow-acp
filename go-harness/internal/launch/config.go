@@ -22,8 +22,10 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
 	"github.com/omengye/deerflow-acp/go-harness/internal/runtimepaths"
+	"github.com/omengye/deerflow-acp/go-harness/internal/skillbehavior"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills/evolution"
+	"github.com/omengye/deerflow-acp/go-harness/internal/websearch"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -37,19 +39,22 @@ type ConfigSource struct {
 }
 
 type modelDocument struct {
-	Name                 string                       `yaml:"name"`
-	DisplayName          string                       `yaml:"display_name"`
-	Use                  string                       `yaml:"use"`
-	Provider             string                       `yaml:"provider"`
-	Model                string                       `yaml:"model"`
-	APIKey               string                       `yaml:"api_key"`
-	BaseURL              string                       `yaml:"base_url"`
-	SupportsVision       bool                         `yaml:"supports_vision"`
-	ContextWindow        int                          `yaml:"context_window"`
-	ReasoningEfforts     []string                     `yaml:"reasoning_efforts"`
-	ThinkingParameter    string                       `yaml:"thinking_parameter"`
-	ThinkingBudgetTokens int                          `yaml:"thinking_budget_tokens"`
-	OutputTokenParameter harness.OutputTokenParameter `yaml:"output_token_parameter"`
+	Name                     string                       `yaml:"name"`
+	DisplayName              string                       `yaml:"display_name"`
+	Use                      string                       `yaml:"use"`
+	Provider                 string                       `yaml:"provider"`
+	API                      harness.ModelAPI             `yaml:"api"`
+	Model                    string                       `yaml:"model"`
+	APIKey                   string                       `yaml:"api_key"`
+	BaseURL                  string                       `yaml:"base_url"`
+	SupportsVision           bool                         `yaml:"supports_vision"`
+	ContextWindow            int                          `yaml:"context_window"`
+	MaxOutputTokens          int                          `yaml:"max_output_tokens"`
+	MaxSupportedOutputTokens int                          `yaml:"max_supported_output_tokens"`
+	ReasoningEfforts         []string                     `yaml:"reasoning_efforts"`
+	ThinkingParameter        string                       `yaml:"thinking_parameter"`
+	ThinkingBudgetTokens     int                          `yaml:"thinking_budget_tokens"`
+	OutputTokenParameter     harness.OutputTokenParameter `yaml:"output_token_parameter"`
 }
 
 type runtimeDocument struct {
@@ -178,6 +183,16 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	if err != nil {
 		return result, err
 	}
+	if err := configschema.MigrateEvolutionFile(abs); err != nil {
+		return result, err
+	}
+	migrationID, migrationErr := configschema.EvolutionMigrationID(abs)
+	if migrationErr != nil {
+		return result, migrationErr
+	}
+	cfg.EvolutionMigrationID = migrationID
+	cfg.EvolutionMigrationPath = abs
+
 	file, err := os.Open(abs)
 	if err != nil {
 		return result, err
@@ -190,6 +205,14 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	if len(raw) > 2<<20 {
 		return result, fmt.Errorf("config exceeds 2 MiB")
 	}
+	cfg.Search, err = websearch.SeedYAML(raw)
+	if err != nil {
+		return result, err
+	}
+	if err = websearch.Validate(cfg.Search); err != nil {
+		return result, err
+	}
+	cfg.SearchSettingsPath = filepath.Join(filepath.Dir(abs), "search-providers.json")
 	var source runtimeDocument
 	if err = yaml.Unmarshal(raw, &source); err != nil {
 		return result, fmt.Errorf("parse config: %w", err)
@@ -199,6 +222,9 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 		return result, fmt.Errorf("parse native settings: %w", err)
 	}
 	if err = configschema.ValidateNative(native); err != nil {
+		return result, err
+	}
+	if cfg.Network, err = ResolveNetworkConfig(native["network"]); err != nil {
 		return result, err
 	}
 	artifactMiB, err := configschema.ArtifactSizeLimitMiB(native)
@@ -347,6 +373,12 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	// service. Never carry the selected Python model's credential or advertised
 	// model capabilities across that boundary.
 	sameBackend := cfg.Provider == provider && cfg.BaseURL == baseURL
+	if sameBackend && cfg.Model == model.Model {
+		cfg.API, err = harness.CanonicalModelAPI(provider, model.API)
+		if err != nil {
+			return result, err
+		}
+	}
 	if !explicit["output-token-parameter"] && sameBackend && cfg.Model == model.Model {
 		cfg.OutputTokenParameter = model.OutputTokenParameter
 	}
@@ -354,6 +386,10 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 		cfg.APIKey = apiKey
 	}
 	cfg.DataDir, err = runtimepaths.Resolve(abs, cfg.DataDir)
+	if err != nil {
+		return result, err
+	}
+	cfg.RuntimeProfile, err = runtimepaths.Profile(abs)
 	if err != nil {
 		return result, err
 	}
@@ -536,6 +572,7 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	cfg.ModelRoutes = nil
 	cfg.ModelReasoningEfforts = make(map[string][]string)
 	cfg.ModelThinking = make(map[string]harness.ThinkingConfig)
+	cfg.ModelOutputLimits = make(map[string]harness.ModelOutputLimits)
 	thinkingOutputLimit := harness.DefaultBudgetLimits().MaxOutputTokens
 	if cfg.Budget != nil {
 		thinkingOutputLimit = cfg.Budget.MaxOutputTokens
@@ -561,12 +598,16 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 		if providerErr != nil {
 			continue
 		}
+		optionAPI, err := harness.CanonicalModelAPI(optionProvider, option.API)
+		if err != nil {
+			return result, fmt.Errorf("model %q: %w", option.Name, err)
+		}
 		key, keyErr := resolveConfigValue(option.APIKey)
 		url, urlErr := resolveConfigValue(option.BaseURL)
 		if keyErr != nil || urlErr != nil {
 			continue
 		}
-		matchesDefaultBackend := sameBackend && optionProvider == cfg.Provider && key == cfg.APIKey && url == baseURL
+		matchesDefaultBackend := sameBackend && optionProvider == cfg.Provider && optionAPI == cfg.API && key == cfg.APIKey && url == baseURL
 		if !configuredRoutes && !matchesDefaultBackend {
 			continue
 		}
@@ -579,18 +620,26 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 				return result, fmt.Errorf("configured model choices must be unique")
 			}
 			usedChoices[choice] = true
-			cfg.ModelRoutes[choice] = harness.ModelRoute{Provider: optionProvider, Model: option.Model, BaseURL: url, APIKey: key, OutputTokenParameter: option.OutputTokenParameter}
+			cfg.ModelRoutes[choice] = harness.ModelRoute{Provider: optionProvider, API: optionAPI, Model: option.Model, BaseURL: url, APIKey: key, OutputTokenParameter: option.OutputTokenParameter, Network: cfg.Network}
 		}
 		if option.Name == selected {
 			choice = cfg.Model
 		}
 		modelChoices[option.Name] = choice
+		if err := harness.ValidateModelAPIOptions(optionProvider, option.API, option.OutputTokenParameter); err != nil {
+			return result, fmt.Errorf("model %q: %w", option.Name, err)
+		}
 		if err := harness.ValidateReasoningEfforts(optionProvider, option.ReasoningEfforts); err != nil {
 			return result, fmt.Errorf("model %q: %w", option.Name, err)
 		}
 		cfg.ModelReasoningEfforts[choice] = append([]string(nil), option.ReasoningEfforts...)
+		output := harness.ModelOutputLimits{MaxOutputTokens: option.MaxOutputTokens, MaxSupportedOutputTokens: option.MaxSupportedOutputTokens}
+		if err := output.Validate(thinkingOutputLimit); err != nil {
+			return result, fmt.Errorf("model %q: %w", option.Name, err)
+		}
+		cfg.ModelOutputLimits[choice] = output
 		thinking := harness.ThinkingConfig{Parameter: option.ThinkingParameter, BudgetTokens: option.ThinkingBudgetTokens}
-		if err := thinking.Validate(optionProvider, option.ReasoningEfforts, thinkingOutputLimit); err != nil {
+		if err := thinking.Validate(optionProvider, option.ReasoningEfforts, output.Effective(thinkingOutputLimit)); err != nil {
 			return result, fmt.Errorf("model %q: %w", option.Name, err)
 		}
 		cfg.ModelThinking[choice] = thinking
@@ -627,13 +676,6 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 }
 
 func applySkillEvolution(configPath string, source runtimeDocument, cfg *deerflow.Config, choices map[string]string, applied *evolution.ReviewSettings) error {
-	if source.SkillEvolution.Kind == 0 || source.SkillEvolution.Tag == "!!null" {
-		return nil
-	}
-	data, err := yaml.Marshal(&source.SkillEvolution)
-	if err != nil {
-		return fmt.Errorf("skill_evolution: %w", err)
-	}
 	models := make(map[string]bool, len(choices))
 	for name := range choices {
 		models[name] = true
@@ -642,28 +684,26 @@ func applySkillEvolution(configPath string, source runtimeDocument, cfg *deerflo
 	if defaultModel == "" && len(source.Models) > 0 {
 		defaultModel = source.Models[0].Name
 	}
-	settings, err := evolution.DecodeReviewConfig(data, models, defaultModel)
+	if !models[defaultModel] && cfg.Model != "" {
+		defaultModel = "host-primary"
+		models[defaultModel] = true
+		choices = map[string]string{defaultModel: cfg.Model}
+	}
+	settings, err := evolution.DecodeReviewConfig(nil, models, defaultModel)
 	if err != nil {
 		return err
 	}
-	if !settings.Enabled {
-		cfg.SkillProposalSources = nil
-		cfg.SkillGeneration = nil
-		cfg.SkillLearning, cfg.SkillExperienceExtractor, cfg.SkillExperienceConsolidator = nil, nil, nil
-		cfg.SkillExperienceMatcher = nil
-		cfg.SkillDiscovery = nil
-		cfg.SkillAutoPatch = nil
-		cfg.SkillBehavior, cfg.SkillBehaviorEvaluator = nil, nil
+	if source.Skills.Enabled != nil && !*source.Skills.Enabled {
 		return nil
 	}
-	if source.Skills.Enabled != nil && !*source.Skills.Enabled {
-		return fmt.Errorf("skill_evolution.enabled requires skills.enabled")
+	if err := provisionEvolutionSource(configPath, &cfg.Skills); err != nil {
+		return err
 	}
 	destinations, err := SkillProposalDestinations(cfg.Skills, settings.AllowBuiltinOverlays)
 	if err != nil {
 		return err
 	}
-	if err := ValidateGenerationDestinations(settings.Generation.Enabled, destinations); err != nil {
+	if err := ValidateGenerationDestinations(true, destinations); err != nil {
 		return err
 	}
 	resolve := func(name string) harness.ModelRoute {
@@ -671,34 +711,102 @@ func applySkillEvolution(configPath string, source runtimeDocument, cfg *deerflo
 		if route, ok := cfg.ModelRoutes[choice]; ok {
 			return route
 		}
-		return harness.ModelRoute{Provider: cfg.Provider, Model: choice, BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, OutputTokenParameter: cfg.OutputTokenParameter}
+		return harness.ModelRoute{Provider: cfg.Provider, API: cfg.API, Model: choice, BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, OutputTokenParameter: cfg.OutputTokenParameter, Network: cfg.Network}
 	}
-	validator, err := deerflow.NewSkillModelValidator(context.Background(), settings.ModelConfig(resolve(settings.ModerationModel), resolve(settings.EvaluationModel)))
+	validator, err := deerflow.NewSkillModelValidator(context.Background(), settings.ModelConfig(resolve(settings.PrimaryModel), resolve(settings.PrimaryModel)))
 	if err != nil {
 		return fmt.Errorf("skill_evolution: cannot initialize configured review models")
 	}
 	cfg.SkillValidator, cfg.SkillProposalSources = validator, destinations
-	cfg.SkillGeneration = settings.GenerationOptions(resolve(settings.GenerationModel), destinations)
-	cfg.SkillLearning = settings.LearningOptions(resolve(settings.Learning.ExtractionModel))
+	cfg.SkillGeneration = settings.GenerationOptions(resolve(settings.PrimaryModel), destinations)
+	cfg.SkillLearning = settings.LearningOptions(resolve(settings.PrimaryModel))
 	if cfg.SkillLearning != nil {
-		cfg.SkillLearning.Consolidation = settings.LearningConsolidationModel(resolve(settings.Learning.ConsolidationModel))
-		cfg.SkillLearning.Matching = settings.LearningMatchingModel(resolve(settings.Learning.MatchingModel))
+		cfg.SkillLearning.Consolidation = settings.LearningConsolidationModel(resolve(settings.PrimaryModel))
+		cfg.SkillLearning.Matching = settings.LearningMatchingModel(resolve(settings.PrimaryModel))
 	}
+	settings.Discovery.DestinationSourceID = destinations[0]
 	cfg.SkillDiscovery = settings.DiscoveryOptions()
 	cfg.SkillAutoPatch = settings.AutoPatchOptions()
 	cfg.SkillBehavior, cfg.SkillBehaviorEvaluator = nil, nil
-	if settings.Behavior.Enabled {
-		options, err := LoadBehaviorSuite(configPath, settings.Behavior.SuitePath, destinations)
-		if err != nil {
-			return err
-		}
-		evaluator, err := deerflow.NewSkillBehaviorEvaluator(context.Background(), settings.BehaviorModelConfig(resolve(settings.EvaluationModel)))
-		if err != nil {
-			return fmt.Errorf("skill_evolution.behavior: cannot initialize configured behavior model")
-		}
-		cfg.SkillBehavior, cfg.SkillBehaviorEvaluator = options, evaluator
+	evaluator, err := deerflow.NewSkillBehaviorEvaluator(context.Background(), settings.BehaviorModelConfig(resolve(settings.PrimaryModel)))
+	if err != nil {
+		return fmt.Errorf("automatic skill behavior evaluator: %w", err)
 	}
+	loader := func(visit func(harness.SkillBehaviorSuite) error) error {
+		return walkHostBehaviorSuites(filepath.Join(filepath.Dir(configPath), "skill-behavior"), destinations, visit)
+	}
+	if err := loader(func(harness.SkillBehaviorSuite) error { return nil }); err != nil {
+		return err
+	}
+	cfg.SkillBehavior, cfg.SkillBehaviorEvaluator = &harness.SkillBehaviorOptions{Load: loader}, evaluator
 	*applied = settings
+	return nil
+}
+
+// Host-owned storage is provisioned without adding settings to customer YAML.
+// Workspace visibility of automatically created packages is enforced by the
+// registry's provenance bindings, independently of the storage directory.
+func provisionEvolutionSource(configPath string, config *harness.SkillsConfig) error {
+	if _, err := SkillProposalDestinations(*config, false); err == nil {
+		return nil
+	}
+	root := filepath.Join(filepath.Dir(configPath), "skills", "evolved")
+	export := config.ExportRoot
+	if export == "" {
+		export = filepath.Join(filepath.Dir(configPath), "skills-exports")
+	}
+	for _, directory := range []string{root, export} {
+		if err := os.MkdirAll(directory, 0700); err != nil {
+			return fmt.Errorf("initialize automatic skill storage: %w", err)
+		}
+	}
+	config.Sources = append(config.Sources, harness.SkillSource{ID: "managed-evolution", Root: root, Scope: harness.SkillScopeGlobal})
+	config.ManagedSources = append(config.ManagedSources, "managed-evolution")
+	config.ExportRoot = export
+	return nil
+}
+
+func walkHostBehaviorSuites(directory string, sources []string, visit func(harness.SkillBehaviorSuite) error) error {
+	file, err := os.Open(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	for {
+		entries, readErr := file.ReadDir(32)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return readErr
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !entry.Type().IsRegular() || filepath.Ext(entry.Name()) != ".json" {
+				continue
+			}
+			body, e := os.Open(filepath.Join(directory, entry.Name()))
+			if e != nil {
+				return e
+			}
+			data, e := io.ReadAll(io.LimitReader(body, skillbehavior.MaxSuiteBytes+1))
+			e = errors.Join(e, body.Close())
+			if e != nil {
+				return e
+			}
+			suite, e := skillbehavior.Parse(data)
+			if e != nil {
+				return fmt.Errorf("host behavior suite %s: %w", entry.Name(), e)
+			}
+			if slices.Contains(sources, suite.SourceID) {
+				if e = visit(suite); e != nil {
+					return e
+				}
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+	}
 	return nil
 }
 
@@ -1093,9 +1201,6 @@ func applyConfiguredSkills(configPath string, source runtimeDocument, cfg *deerf
 				enabled = true
 			}
 			config.Install = append(config.Install, harness.SkillInstall{SourceID: id, Directory: filepath.ToSlash(rel), Enabled: enabled})
-			if len(config.Install) > 128 {
-				return fmt.Errorf("Skills configuration exceeds 128 installations")
-			}
 			return nil
 		})
 		if err != nil {

@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/gofrs/flock"
+	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
+	"github.com/omengye/deerflow-acp/go-harness/internal/websearch"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -56,6 +58,12 @@ func Run(options Options, operation string, input json.RawMessage) (any, error) 
 		return map[string]any{"initialized": true, "paths": map[string]any{"config": config, "user_data": userData}}, nil
 	case "snapshot":
 		return s.snapshot()
+	case "search-status", "search-select", "search-configure":
+		manager, err := s.searchManager()
+		if err != nil {
+			return nil, err
+		}
+		return websearch.ConfigureJSON(manager, operation, input)
 	case "bridge-policy":
 		data, err := readYAML(config)
 		if err != nil {
@@ -74,6 +82,12 @@ func Run(options Options, operation string, input json.RawMessage) (any, error) 
 			return nil, err
 		}
 		return s.testModel(request)
+	case "test-network":
+		var request map[string]any
+		if err := decodeRequest(input, &request); err != nil {
+			return nil, err
+		}
+		return s.testNetwork(request)
 	default:
 		return nil, fmt.Errorf("unsupported configuration operation %q", operation)
 	}
@@ -105,6 +119,7 @@ func (s *service) init() error {
 		if err != nil {
 			return fmt.Errorf("read default config: %w", err)
 		}
+		configschema.RemoveEvolutionConfiguration(data)
 		skills := object(data, "skills")
 		skills["path"] = "../skills"
 		skills["extensions_file"] = "./extensions_config.json"
@@ -117,11 +132,17 @@ func (s *service) init() error {
 	} else if err != nil {
 		return err
 	}
+	if err := configschema.MigrateEvolutionFileLocked(s.config); err != nil {
+		return err
+	}
 	data, err := readYAML(s.config)
 	if err != nil {
 		return err
 	}
 	if err := s.initializeDefaultBehaviorSuite(data); err != nil {
+		return err
+	}
+	if err := s.initializeSearchPlugins(); err != nil {
 		return err
 	}
 	paths := s.paths(data)
@@ -543,7 +564,7 @@ func bridgePolicy(data map[string]any) (map[string]any, error) {
 }
 
 func (s service) lock() (*flock.Flock, error) {
-	locker := flock.New(filepath.Join(s.userData, ".config-tool.lock"))
+	locker := flock.New(filepath.Join(filepath.Dir(s.config), ".config-tool.lock"))
 	if err := locker.Lock(); err != nil {
 		return nil, err
 	}

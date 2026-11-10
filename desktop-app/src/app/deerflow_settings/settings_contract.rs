@@ -44,6 +44,9 @@ impl Capabilities {
     }
 
     pub(super) fn allows(&self, path: &str) -> bool {
+        if path.starts_with("/skill_evolution") {
+            return false;
+        }
         // Other sections have independent existing contracts; this partial
         // schema is not evidence that arbitrary settings there are supported.
         if path == "/skill_sources/managed" {
@@ -76,20 +79,6 @@ impl Capabilities {
                     .all(|key| self.allowed.contains(&format!("{path}/*{key}")));
         }
         let canonical = schema_path(path);
-        for group in [
-            "validation",
-            "generation",
-            "learning",
-            "budget",
-            "discovery",
-            "behavior",
-            "auto_patch",
-        ] {
-            let parent = format!("/skill_evolution/{group}");
-            if path.starts_with(&format!("{parent}/")) {
-                return self.allowed.contains(&parent) && self.allowed.contains(path);
-            }
-        }
         if let Some((root, child)) = canonical.split_once("/*/") {
             if root.starts_with("/subagents/") {
                 return self.allowed.contains(root)
@@ -143,6 +132,7 @@ impl Capabilities {
             && document.get("skills").is_none()
             && self.evolution_can_save(document)
             && self.sources_can_save(document)
+            && self.network_can_save(document)
             && (document.get("config_migration_ack").is_none()
                 || self.allowed.contains("/config_migration_ack"))
             && self.allowed.contains("/models")
@@ -173,6 +163,26 @@ impl Capabilities {
                     })
             })
     }
+    fn network_can_save(&self, document: &Value) -> bool {
+        let Some(network) = document.get("network") else {
+            return true;
+        };
+        network
+            .as_object()
+            .is_some_and(|obj| obj.len() == 1 && obj.contains_key("proxy"))
+            && network["proxy"].as_object().is_some_and(|fields| {
+                ["enabled", "url", "clear_url", "no_proxy"]
+                    .iter()
+                    .all(|key| {
+                        fields.contains_key(*key)
+                            && self.allowed.contains(&format!("/network/proxy/{key}"))
+                    })
+                    && fields.keys().all(|key| {
+                        key == "url_configured"
+                            || self.allowed.contains(&format!("/network/proxy/{key}"))
+                    })
+            })
+    }
     fn sources_can_save(&self, document: &Value) -> bool {
         let Some(source) = document["skill_sources"].as_object() else {
             return false;
@@ -198,36 +208,7 @@ impl Capabilities {
             })
     }
     fn evolution_can_save(&self, document: &Value) -> bool {
-        let Some(fields) = document["skill_evolution"].as_object() else {
-            return false;
-        };
-        EVOLUTION_FIELDS.iter().all(|key| {
-            document["skill_evolution"].pointer(key).is_some()
-                && self.allows(&format!("/skill_evolution{key}"))
-        }) && fields
-            .keys()
-            .all(|key| self.allows(&format!("/skill_evolution/{key}")))
-            && [
-                "validation",
-                "generation",
-                "learning",
-                "budget",
-                "discovery",
-                "behavior",
-                "auto_patch",
-            ]
-            .into_iter()
-            .all(|group| {
-                document["skill_evolution"][group]
-                    .as_object()
-                    .is_some_and(|limits| {
-                        limits
-                            .keys()
-                            .all(|key| self.allows(&format!("/skill_evolution/{group}/{key}")))
-                    })
-            })
-            && document["skill_evolution_migration_ack"].is_string()
-            && self.allowed.contains("/skill_evolution_migration_ack")
+        document.get("skill_evolution").is_none()
     }
 }
 
@@ -238,6 +219,8 @@ fn scoped(path: &str) -> bool {
         || path.starts_with("/skills/")
         || path == "/runtime"
         || path == "/memory"
+        || path == "/network"
+        || path.starts_with("/network/")
         || path.starts_with("/runtime/")
         || path.starts_with("/memory/")
         || path == "/models"
@@ -318,8 +301,6 @@ const SOURCE_FIELDS: &[&str] = &["", "/id", "/root", "/scope", "/workspace"];
 
 const TOOL_FIELDS: &[&str] = &[
     "name",
-    "api_key",
-    "clear_api_key",
     "https_proxy",
     "clear_https_proxy",
     "timeout",
@@ -329,74 +310,13 @@ const TOOL_FIELDS: &[&str] = &[
     "allowed_sites",
 ];
 
-const EVOLUTION_FIELDS: &[&str] = &[
-    "/enabled",
-    "/mode",
-    "/allow_builtin_overlays",
-    "/moderation_model_name",
-    "/evaluation_model_name",
-    "/generation_model_name",
-    "/security_fail_closed",
-    "/validation",
-    "/validation/timeout_seconds",
-    "/validation/max_input_bytes",
-    "/validation/max_output_tokens",
-    "/validation/response_format",
-    "/generation",
-    "/generation/enabled",
-    "/generation/timeout_seconds",
-    "/generation/max_input_bytes",
-    "/generation/max_output_tokens",
-    "/learning",
-    "/learning/enabled",
-    "/learning/extraction_model_name",
-    "/learning/consolidation_enabled",
-    "/learning/consolidation_model_name",
-    "/learning/cross_session_enabled",
-    "/learning/matching_enabled",
-    "/learning/matching_model_name",
-    "/learning/idle_seconds",
-    "/learning/timeout_seconds",
-    "/learning/max_input_bytes",
-    "/learning/max_output_tokens",
-    "/learning/max_daily_model_calls",
-    "/learning/max_daily_tokens",
-    "/learning/external_context_policy",
-    "/discovery",
-    "/discovery/operator_corrections_enabled",
-    "/discovery/missing_reports_enabled",
-    "/discovery/successful_workflows_enabled",
-    "/discovery/experience_patterns_enabled",
-    "/discovery/experience_new_skills_enabled",
-    "/discovery/experience_review_drafts_enabled",
-    "/discovery/new_skill_source_id",
-    "/discovery/repeat_threshold",
-    "/discovery/repeat_window_days",
-    "/discovery/cooldown_hours",
-    "/discovery/max_daily_proposals",
-    "/discovery/max_pending_proposals",
-    "/behavior",
-    "/behavior/enabled",
-    "/behavior/suite_path",
-    "/behavior/timeout_seconds",
-    "/behavior/max_steps",
-    "/behavior/max_input_bytes",
-    "/behavior/max_output_tokens",
-    "/auto_patch",
-    "/auto_patch/experience_patterns_enabled",
-    "/auto_patch/max_changed_lines",
-    "/auto_patch/max_daily_publications",
-    "/auto_patch/observation_hours",
-    "/auto_patch/min_observations",
-    "/auto_patch/rollback_failure_threshold",
-    "/budget",
-    "/budget/max_daily_model_calls",
-    "/budget/max_daily_tokens",
-    "/budget/max_job_seconds",
-    "/budget/workers",
-];
-
 fn expected_type(path: &str) -> Option<&'static str> {
+    match path {
+        "/network/proxy/enabled" | "/network/proxy/clear_url" => return Some("boolean"),
+        "/network/proxy/url" => return Some("string"),
+        "/network/proxy/no_proxy" => return Some("string_array"),
+        _ => {}
+    }
     for root in ["/subagents/agents/*", "/subagents/custom_agents/*"] {
         if let Some(key) = path.strip_prefix(root) {
             return match key {
@@ -428,81 +348,13 @@ fn expected_type(path: &str) -> Option<&'static str> {
         | "/skill_sources/managed/*/scope"
         | "/skill_sources/managed/*/workspace" => Some("string"),
         "/skills_enabled" => Some("boolean"),
-        "/skill_evolution_migration_ack"
-        | "/skill_evolution/mode"
-        | "/skill_evolution/moderation_model_name"
-        | "/skill_evolution/generation_model_name"
-        | "/skill_evolution/evaluation_model_name"
-        | "/skill_evolution/validation/response_format"
-        | "/skill_evolution/learning/extraction_model_name"
-        | "/skill_evolution/learning/consolidation_model_name"
-        | "/skill_evolution/learning/matching_model_name"
-        | "/skill_evolution/learning/external_context_policy"
-        | "/skill_evolution/discovery/new_skill_source_id"
-        | "/skill_evolution/behavior/suite_path" => Some("string"),
-        "/skill_evolution/enabled"
-        | "/skill_evolution/allow_builtin_overlays"
-        | "/skill_evolution/generation/enabled"
-        | "/skill_evolution/learning/enabled"
-        | "/skill_evolution/learning/consolidation_enabled"
-        | "/skill_evolution/learning/cross_session_enabled"
-        | "/skill_evolution/learning/matching_enabled"
-        | "/skill_evolution/discovery/operator_corrections_enabled"
-        | "/skill_evolution/discovery/missing_reports_enabled"
-        | "/skill_evolution/discovery/successful_workflows_enabled"
-        | "/skill_evolution/discovery/experience_patterns_enabled"
-        | "/skill_evolution/discovery/experience_new_skills_enabled"
-        | "/skill_evolution/discovery/experience_review_drafts_enabled"
-        | "/skill_evolution/behavior/enabled"
-        | "/skill_evolution/auto_patch/experience_patterns_enabled"
-        | "/skill_evolution/security_fail_closed" => Some("boolean"),
-        "/skill_evolution/validation" => Some("review_limits"),
-        "/skill_evolution/generation" => Some("generation_settings"),
-        "/skill_evolution/learning" => Some("learning_settings"),
-        "/skill_evolution/discovery" => Some("discovery_settings"),
-        "/skill_evolution/behavior" => Some("behavior_settings"),
-        "/skill_evolution/auto_patch" => Some("auto_patch_settings"),
-        "/skill_evolution/budget" => Some("maintenance_budget"),
-        "/skill_evolution/validation/timeout_seconds"
-        | "/skill_evolution/validation/max_input_bytes"
-        | "/skill_evolution/validation/max_output_tokens"
-        | "/skill_evolution/generation/timeout_seconds"
-        | "/skill_evolution/generation/max_input_bytes"
-        | "/skill_evolution/generation/max_output_tokens"
-        | "/skill_evolution/learning/idle_seconds"
-        | "/skill_evolution/learning/timeout_seconds"
-        | "/skill_evolution/learning/max_input_bytes"
-        | "/skill_evolution/learning/max_output_tokens"
-        | "/skill_evolution/learning/max_daily_model_calls"
-        | "/skill_evolution/learning/max_daily_tokens"
-        | "/skill_evolution/discovery/repeat_threshold"
-        | "/skill_evolution/discovery/repeat_window_days"
-        | "/skill_evolution/discovery/cooldown_hours"
-        | "/skill_evolution/discovery/max_daily_proposals"
-        | "/skill_evolution/discovery/max_pending_proposals"
-        | "/skill_evolution/behavior/timeout_seconds"
-        | "/skill_evolution/behavior/max_steps"
-        | "/skill_evolution/behavior/max_input_bytes"
-        | "/skill_evolution/behavior/max_output_tokens"
-        | "/skill_evolution/auto_patch/max_changed_lines"
-        | "/skill_evolution/auto_patch/max_daily_publications"
-        | "/skill_evolution/auto_patch/observation_hours"
-        | "/skill_evolution/auto_patch/min_observations"
-        | "/skill_evolution/auto_patch/rollback_failure_threshold"
-        | "/skill_evolution/budget/max_daily_model_calls"
-        | "/skill_evolution/budget/max_daily_tokens"
-        | "/skill_evolution/budget/max_job_seconds"
-        | "/skill_evolution/budget/workers" => Some("integer"),
         "/tools" => Some("tool_catalog"),
-        "/tools/*/name"
-        | "/tools/*/api_key"
-        | "/tools/*/https_proxy"
-        | "/tools/*/executable"
-        | "/sandbox/provider" => Some("string"),
-        "/tools/*/clear_api_key"
-        | "/tools/*/clear_https_proxy"
-        | "/sandbox/allow_host_bash"
-        | "/sandbox/allow_host_tools" => Some("boolean"),
+        "/tools/*/name" | "/tools/*/https_proxy" | "/tools/*/executable" | "/sandbox/provider" => {
+            Some("string")
+        }
+        "/tools/*/clear_https_proxy" | "/sandbox/allow_host_bash" | "/sandbox/allow_host_tools" => {
+            Some("boolean")
+        }
         "/tools/*/timeout" | "/tools/*/max_results" | "/tools/*/max_output_chars" => {
             Some("integer")
         }
@@ -513,6 +365,7 @@ fn expected_type(path: &str) -> Option<&'static str> {
         | "/models/*/display_name"
         | "/models/*/description"
         | "/models/*/provider"
+        | "/models/*/api"
         | "/models/*/model"
         | "/models/*/api_key"
         | "/models/*/output_token_parameter"
@@ -522,6 +375,8 @@ fn expected_type(path: &str) -> Option<&'static str> {
         "/models/*/reasoning_efforts" => Some("reasoning_efforts"),
         "/models/*/context_window"
         | "/models/*/thinking_budget_tokens"
+        | "/models/*/max_output_tokens"
+        | "/models/*/max_supported_output_tokens"
         | "/subagents/max_turns"
         | "/subagents/max_concurrent"
         | "/subagents/max_depth"
@@ -606,8 +461,11 @@ mod tests {
         for (path, kind) in [
             ("/runtime/max_output_tokens", "integer"),
             ("/models/*/output_token_parameter", "string"),
+            ("/models/*/api", "string"),
             ("/models/*/thinking_parameter", "string"),
             ("/models/*/thinking_budget_tokens", "integer"),
+            ("/models/*/max_output_tokens", "integer"),
+            ("/models/*/max_supported_output_tokens", "integer"),
         ] {
             let field = json!({"path":path,"type":kind,"apply":"restart","operations":["validate","save"],"hash":"output-v1"});
             doc["config_schema"]["fields"]
@@ -623,6 +481,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn network_fields_require_matching_backend_capabilities() {
+        let mut doc = document();
+        doc["network"] = json!({"proxy":{"enabled":true,"url":"","url_configured":true,"clear_url":false,"no_proxy":["localhost"]}});
+        for key in ["enabled", "url", "clear_url", "no_proxy"] {
+            let path = format!("/network/proxy/{key}");
+            let kind = expected_type(&path).unwrap();
+            doc["config_schema"]["fields"].as_array_mut().unwrap().push(json!({"path":path,"type":kind,"apply":"restart","operations":["validate","save"],"hash":"network-v1"}));
+        }
+        let stopped = json!({"running":false});
+        assert!(Capabilities::read(&doc, &stopped).can_save(&doc));
+        let old = document();
+        let running = json!({"running":true,"config_schema":old["config_schema"]});
+        let contract = Capabilities::read(&doc, &running);
+        assert!(!contract.can_save(&doc));
+        assert!(!contract.allows("/network/proxy/url"));
+        doc["network"]["proxy"]["unexpected"] = json!(true);
+        assert!(!Capabilities::read(&doc, &stopped).can_save(&doc));
+    }
+
+    #[test]
+    fn retired_evolution_fields_are_never_writable() {
+        let mut doc = document();
+        let status = json!({"running":false});
+        let caps = Capabilities::read(&doc, &status);
+        assert!(caps.can_save(&doc));
+        for key in ["skill_evolution", "skill_evolution_migration_ack"] {
+            assert!(!caps.allows(&format!("/{key}")));
+        }
+        doc["skill_evolution"] = json!({"mode":"auto_patch"});
+        assert!(!caps.can_save(&doc));
+    }
+
     fn document() -> Value {
         let mut doc = json!({"runtime":{"max_active_runs":3},"memory":{"enabled":false},"subagents":{"enabled":false},"tools":[],"sandbox":{"provider":"local","allow_host_bash":false,"allow_host_tools":false},"models":[{"name":"example","provider":"openai","original_name":"example"}],"default_model":"example","config_schema":{
         "version":VERSION,"hash":"fixture-schema","sections":["runtime","memory"],"fields":[
@@ -634,16 +525,6 @@ mod tests {
             {"path":"/models/*/provider","type":"string","apply":"restart","operations":["validate","save"],"hash":"provider-v1"},
             {"path":"/default_model","type":"string","apply":"restart","operations":["validate","save"],"hash":"default-v1"}
         ]}});
-        doc["skill_evolution"] = json!({"enabled":false,"mode":"review","allow_builtin_overlays":false,
-            "moderation_model_name":"","evaluation_model_name":"","generation_model_name":"","security_fail_closed":true,
-            "validation":{"timeout_seconds":0,"max_input_bytes":0,"max_output_tokens":0,"response_format":"text"},
-            "generation":{"enabled":false,"timeout_seconds":0,"max_input_bytes":0,"max_output_tokens":0},
-            "learning":{"enabled":false,"extraction_model_name":null,"consolidation_enabled":false,"consolidation_model_name":null,"cross_session_enabled":false,"matching_enabled":false,"matching_model_name":null,"idle_seconds":300,"timeout_seconds":60,"max_input_bytes":131072,"max_output_tokens":4096,"max_daily_model_calls":10,"max_daily_tokens":50000,"external_context_policy":"hints_only"},
-            "discovery":{"operator_corrections_enabled":false,"missing_reports_enabled":false,"successful_workflows_enabled":false,"experience_patterns_enabled":false,"experience_new_skills_enabled":false,"experience_review_drafts_enabled":false,"new_skill_source_id":"","repeat_threshold":2,"repeat_window_days":30,"cooldown_hours":24,"max_daily_proposals":5,"max_pending_proposals":20},
-            "auto_patch":{"experience_patterns_enabled":false,"max_changed_lines":40,"max_daily_publications":2,"observation_hours":72,"min_observations":3,"rollback_failure_threshold":2},
-            "behavior":{"enabled":false,"suite_path":"","timeout_seconds":60,"max_steps":6,"max_input_bytes":131072,"max_output_tokens":1024},
-            "budget":{"max_daily_model_calls":30,"max_daily_tokens":100000,"max_job_seconds":300,"workers":1}});
-        doc["skill_evolution_migration_ack"] = json!("");
         doc["skills_enabled"] = json!(true);
         doc["skill_sources"] =
             json!({"import_path":"../skills","export_root":"","include_global":null,"managed":[]});
@@ -662,14 +543,6 @@ mod tests {
         {
             let kind = expected_type(&path).unwrap();
             fields.push(json!({"path":path,"type":kind,"apply":"restart","operations":["validate","save"],"hash":"sources-v1"}));
-        }
-        for path in std::iter::once("/skill_evolution_migration_ack".to_owned()).chain(
-            EVOLUTION_FIELDS
-                .iter()
-                .map(|key| format!("/skill_evolution{key}")),
-        ) {
-            let kind = expected_type(&path).unwrap();
-            fields.push(json!({"path":path,"type":kind,"apply":"restart","operations":["validate","save"],"hash":"review-v1"}));
         }
         for path in [
             "/skills_enabled",
@@ -700,32 +573,6 @@ mod tests {
         assert!(!contract.allows("/runtime/goal_auto_continue"));
         assert!(!contract.allows("/memory/advanced"));
         assert!(!contract.allows("/runtime"));
-    }
-
-    #[test]
-    fn deerflow_review_response_format_does_not_block_model_saves() {
-        let path = "/skill_evolution/validation/response_format";
-        for format in ["text", "json_schema"] {
-            let mut doc = document();
-            doc["skill_evolution"]["validation"]["response_format"] = json!(format);
-            let fields = doc["config_schema"]["fields"].as_array_mut().unwrap();
-            fields.retain(|field| field["path"] != path);
-            // Match Go's descriptor independently of the desktop type whitelist.
-            fields.push(json!({"path":path,"type":"string","default":"text",
-                "enum":["text","json_schema"],"apply":"restart",
-                "operations":["validate","save"],"hash":"response-format-v1"}));
-            doc["models"][0]["name"] = json!("edited-model");
-            doc["default_model"] = json!("edited-model");
-            let original = doc.clone();
-            for running in [false, true] {
-                let status = json!({"running":running,"config_schema":doc["config_schema"]});
-                let contract = Capabilities::read(&doc, &status);
-                assert!(contract.allows(path), "{format}, running={running}");
-                assert!(contract.can_save(&doc), "{format}, running={running}");
-                assert!(contract.issue.is_none());
-            }
-            assert_eq!(doc, original);
-        }
     }
 
     #[test]
@@ -766,7 +613,7 @@ mod tests {
                 assert!(!partial.can_save(&doc), "{path}");
                 assert!(!partial.allows("/skill_sources/managed"), "{path}");
                 assert!(!partial.allows("/skill_sources/managed/0/scope"), "{path}");
-                assert!(partial.allows("/skill_evolution/enabled"));
+                assert!(!partial.allows("/skill_evolution/enabled"));
             }
         }
         assert_eq!(doc, original);
@@ -778,124 +625,6 @@ mod tests {
             .unwrap()
             .remove("workspace");
         assert!(!full.can_save(&missing));
-    }
-
-    #[test]
-    fn deerflow_evolution_requires_complete_matching_nested_contract() {
-        let doc = document();
-        let original = doc.clone();
-        let stopped = Capabilities::read(&doc, &json!({"running":false}));
-        assert!(stopped.can_save(&doc));
-        for path in [
-            "/skill_evolution",
-            "/skill_evolution/advanced",
-            "/skill_evolution/discovery/enabled",
-            "/skill_evolution/validation/unknown",
-            "/skill_evolution/generation/unknown",
-            "/skill_evolution/budget/unknown",
-            "/skill_evolution/discovery/unknown",
-            "/skill_evolution/behavior/unknown",
-            "/skill_evolution/auto_patch/unknown",
-        ] {
-            assert!(!stopped.allows(path), "{path}");
-        }
-        for path in [
-            "/skill_evolution/validation",
-            "/skill_evolution/validation/max_input_bytes",
-            "/skill_evolution/validation/response_format",
-            "/skill_evolution/generation",
-            "/skill_evolution/generation/enabled",
-            "/skill_evolution/generation/max_output_tokens",
-            "/skill_evolution/generation_model_name",
-            "/skill_evolution/budget",
-            "/skill_evolution/budget/max_daily_tokens",
-            "/skill_evolution/discovery",
-            "/skill_evolution/discovery/operator_corrections_enabled",
-            "/skill_evolution/discovery/missing_reports_enabled",
-            "/skill_evolution/discovery/successful_workflows_enabled",
-            "/skill_evolution/discovery/experience_patterns_enabled",
-            "/skill_evolution/discovery/experience_new_skills_enabled",
-            "/skill_evolution/discovery/experience_review_drafts_enabled",
-            "/skill_evolution/discovery/new_skill_source_id",
-            "/skill_evolution/discovery/repeat_threshold",
-            "/skill_evolution/discovery/repeat_window_days",
-            "/skill_evolution/discovery/cooldown_hours",
-            "/skill_evolution/discovery/max_daily_proposals",
-            "/skill_evolution/discovery/max_pending_proposals",
-            "/skill_evolution/behavior",
-            "/skill_evolution/behavior/enabled",
-            "/skill_evolution/behavior/suite_path",
-            "/skill_evolution/behavior/timeout_seconds",
-            "/skill_evolution/behavior/max_steps",
-            "/skill_evolution/behavior/max_input_bytes",
-            "/skill_evolution/behavior/max_output_tokens",
-            "/skill_evolution/auto_patch",
-            "/skill_evolution/auto_patch/experience_patterns_enabled",
-            "/skill_evolution/auto_patch/max_changed_lines",
-            "/skill_evolution/auto_patch/max_daily_publications",
-            "/skill_evolution/auto_patch/observation_hours",
-            "/skill_evolution/auto_patch/min_observations",
-            "/skill_evolution/auto_patch/rollback_failure_threshold",
-            "/skill_evolution_migration_ack",
-            "/skills_enabled",
-        ] {
-            for remove in [false, true] {
-                let mut status = json!({"running":true,"config_schema":doc["config_schema"]});
-                let fields = status["config_schema"]["fields"].as_array_mut().unwrap();
-                if remove {
-                    fields.retain(|field| field["path"] != path);
-                } else {
-                    fields
-                        .iter_mut()
-                        .find(|field| field["path"] == path)
-                        .unwrap()["hash"] = json!("changed-review-contract");
-                }
-                let partial = Capabilities::read(&doc, &status);
-                assert!(!partial.can_save(&doc));
-                assert!(!partial.allows(path));
-                assert!(partial.allows("/skill_evolution/enabled"));
-                for (parent, child) in [
-                    ("validation", "timeout_seconds"),
-                    ("generation", "enabled"),
-                    ("budget", "workers"),
-                    ("discovery", "operator_corrections_enabled"),
-                    ("behavior", "enabled"),
-                    ("auto_patch", "max_changed_lines"),
-                ] {
-                    if path == format!("/skill_evolution/{parent}") {
-                        assert!(!partial.allows(&format!("{path}/{child}")));
-                    }
-                }
-            }
-        }
-        assert_eq!(doc, original);
-        let mut obsolete = doc.clone();
-        obsolete["skills"] = json!([]);
-        assert!(!stopped.can_save(&obsolete));
-        for pointer in [
-            "/skill_evolution",
-            "/skill_evolution/validation",
-            "/skill_evolution/generation",
-            "/skill_evolution/budget",
-            "/skill_evolution/discovery",
-            "/skill_evolution/behavior",
-            "/skill_evolution/auto_patch",
-        ] {
-            let mut invalid = doc.clone();
-            invalid
-                .pointer_mut(pointer)
-                .unwrap()
-                .as_object_mut()
-                .unwrap()
-                .insert("advanced".into(), json!({}));
-            assert!(!stopped.can_save(&invalid));
-        }
-        let mut incomplete = doc.clone();
-        incomplete["skill_evolution"]["validation"]
-            .as_object_mut()
-            .unwrap()
-            .remove("max_output_tokens");
-        assert!(!stopped.can_save(&incomplete));
     }
 
     #[test]
@@ -999,6 +728,42 @@ mod tests {
         assert_eq!(doc, original);
         doc["subagents"]["custom_agents"]["reviewer"]["model_settings"]["unknown"] = json!(1);
         assert!(!Capabilities::read(&doc, &Value::Null).can_save(&doc));
+    }
+
+    #[test]
+    fn deerflow_search_plugin_migration_keeps_settings_writable() {
+        let mut doc = document();
+        doc["tools"] = json!([{"name":"web_search","original_name":"web_search","max_results":5}]);
+        // The Go tool schema no longer advertises search credentials; they are
+        // configured independently through the search plugin settings.
+        doc["config_schema"]["fields"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|field| {
+                !matches!(
+                    field["path"].as_str(),
+                    Some("/tools/*/api_key" | "/tools/*/clear_api_key")
+                )
+            });
+        doc["models"][0]["name"] = json!("edited-model");
+        doc["default_model"] = json!("edited-model");
+        let original = doc.clone();
+        for running in [false, true] {
+            let status = json!({"running":running,"config_schema":doc["config_schema"]});
+            let contract = Capabilities::read(&doc, &status);
+            assert!(contract.allows("/tools"), "running={running}");
+            assert!(contract.allows("/tools/0/max_results"));
+            assert!(!contract.allows("/tools/0/api_key"));
+            assert!(!contract.allows("/tools/0/clear_api_key"));
+            assert!(contract.can_save(&doc), "running={running}");
+            assert!(contract.issue.is_none());
+            for key in ["api_key", "clear_api_key"] {
+                let mut legacy_draft = doc.clone();
+                legacy_draft["tools"][0][key] = json!("");
+                assert!(!contract.can_save(&legacy_draft));
+            }
+        }
+        assert_eq!(doc, original);
     }
 
     #[test]

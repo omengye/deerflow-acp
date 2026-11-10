@@ -29,8 +29,14 @@ type evidenceCache struct {
 }
 
 func (c *evidenceCache) admitSourceTurns(count int) bool {
-	if count < 1 || c.sourceTurns > 32-count {
+	if count < 1 || count > 32 {
 		return false
+	}
+	if c.sourceTurns > 32-count {
+		// This is a working-set boundary, not a lifetime evidence limit.
+		clear(c.extractions)
+		clear(c.experiences)
+		c.sourceTurns = 0
 	}
 	c.sourceTurns += count
 	return true

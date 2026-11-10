@@ -3,10 +3,10 @@ function Get-DeerFlowDataDirectory([string]$UserData) {
     $root = [IO.Path]::GetFullPath($UserData).TrimEnd('\', '/')
     $bindingPath = Join-Path $root 'config\runtime-data.json'
     if (-not (Test-Path -LiteralPath $bindingPath)) {
-        if (Test-Path -LiteralPath (Join-Path $root 'config\go-harness-state\harness.db') -PathType Leaf) {
+        if ((Test-Path -LiteralPath (Join-Path $root 'config\go-harness-state\harness.db') -PathType Leaf) -or (Test-Path -LiteralPath (Join-Path $root 'data\go-harness\harness.db') -PathType Leaf)) {
             throw 'runtime-data.json is missing while a historical database exists; refusing to choose another store'
         }
-        return Join-Path $root 'data\go-harness'
+        return Join-Path $root 'config\go-harness-state'
     }
     $file = Get-Item -LiteralPath $bindingPath
     if ($file.PSIsContainer -or $file.Length -gt 8192) { throw 'Invalid DeerFlow data directory binding' }
@@ -28,6 +28,10 @@ function Get-DeerFlowDataDirectory([string]$UserData) {
     while ($current.FullName -ine $root) {
         if (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Bound DeerFlow data directory contains a reparse point' }
         $current = $current.Parent
+    }
+    foreach ($relativeStore in @('config\go-harness-state', 'data\go-harness')) {
+        $other = [IO.Path]::GetFullPath((Join-Path $root $relativeStore))
+        if ($other -ine $selected -and (Test-Path -LiteralPath (Join-Path $other 'harness.db') -PathType Leaf)) { throw 'A second runtime database exists; archive the inactive store outside runtime paths before starting this profile, then use the archive for skill recovery' }
     }
     return $selected
 }

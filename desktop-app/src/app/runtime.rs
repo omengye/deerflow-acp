@@ -3170,6 +3170,12 @@ impl Waku {
         submission: ComposerSubmission,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .selected_session()
+            .is_some_and(|session| session.provider == ProviderKind::DeerFlow)
+        {
+            self.search_plugins_request("search-status", serde_json::json!({}), cx);
+        }
         let Some(session) = self.selected_session() else {
             return;
         };

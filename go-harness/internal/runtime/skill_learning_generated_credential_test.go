@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -57,8 +56,8 @@ func TestSkillLearningGeneratedCredentialsRejectedBeforeStaging(t *testing.T) {
 				enableExperienceReviewDrafts(t, e, test.newSkill)
 			}
 			ds := experienceDiscoveries(t, e)
-			if len(ds) != 1 || ds[0].ReviewDraft == test.automatic {
-				t.Fatal("automatic single-task draft was not admitted", ds)
+			if len(ds) != 1 || ds[0].ReviewDraft || len(ds[0].Evidence) != 2 {
+				t.Fatal("independent task evidence was not admitted", ds)
 			}
 			g.extraInstruction = test.instruction
 			if worked, err := e.RunGeneration(ctx); err != nil || !worked {
@@ -68,10 +67,10 @@ func TestSkillLearningGeneratedCredentialsRejectedBeforeStaging(t *testing.T) {
 			if err != nil || job.State != "failed" || job.ErrorCode != "invalid_candidate" || job.CandidateVersion != "" || job.ProposalID != "" || job.Attempts != 1 {
 				t.Fatal("generated credential reached retained candidate or review", job, err)
 			}
-			if len(g.seen) != 1 || !g.seen[0].InstructionOnly || v.calls != 0 {
+			if len(g.seen) != 1 || g.seen[0].InstructionOnly || v.calls != 0 {
 				t.Fatal("unsafe output reached paid content review", len(g.seen), v.calls)
 			}
-			versions, proposals, episodes := 1, 0, 1
+			versions, proposals, episodes := 1, 0, 2
 			if test.automatic {
 				versions, proposals, episodes = 2, 1, 2
 			}
@@ -91,7 +90,7 @@ func TestSkillLearningGeneratedCredentialsRejectedBeforeStaging(t *testing.T) {
 				}
 			}
 			receipts, err := e.GenerationReceipts(ctx, job.ID, 0, 10)
-			if err != nil || len(receipts) != 1 || receipts[0].Stage != "generation" || receipts[0].ChargedTokens != 15 {
+			if err != nil || len(receipts) != 1 || receipts[0].Stage != "generation" || receipts[0].ActualTokens != 15 {
 				t.Fatal("failed generation spending was lost or expanded", receipts, err)
 			}
 			if err := e.RunAutoPatch(ctx); err != nil {
@@ -164,7 +163,7 @@ func TestSkillLearningGeneratedLegacyCredentialsCannotResumeOrPublish(t *testing
 			job = retainLegacyCredentialCandidate(t, r, e, job)
 			beforeCalls := v.calls
 			var beforeTokens int
-			if err := s.Store.db.QueryRow(`SELECT COALESCE(sum(charged_tokens),0) FROM df_skill_maintenance_calls`).Scan(&beforeTokens); err != nil {
+			if err := s.Store.db.QueryRow(`SELECT COALESCE(sum(actual_tokens),0) FROM df_skill_maintenance_calls`).Scan(&beforeTokens); err != nil {
 				t.Fatal(err)
 			}
 			next, err := evolution.New(ctx, r, v)
@@ -172,7 +171,7 @@ func TestSkillLearningGeneratedLegacyCredentialsCannotResumeOrPublish(t *testing
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = next.Close() })
-			if err := next.ConfigureGeneration(ctx, g, consolidationTestOptions().Budget, []string{"project"}, false); err != nil {
+			if err := next.ConfigureGeneration(ctx, g, consolidationTestOptions().Policy, []string{"project"}, false); err != nil {
 				t.Fatal(err)
 			}
 			if err := next.ConfigureExperienceDiscoverySource(s.Store.Learning); err != nil {
@@ -189,7 +188,7 @@ func TestSkillLearningGeneratedLegacyCredentialsCannotResumeOrPublish(t *testing
 					t.Fatal("retained old proposal not valid", p, err)
 				}
 				p, err = next.Approve(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "owner"})
-				if !errors.Is(err, harness.ErrSkillValidation) || p.Status != "failed" || strings.Contains(p.Error, "GENERATED_PRIVATE") {
+				if err == nil || p.Status == "published" || strings.Contains(p.Error, "GENERATED_PRIVATE") {
 					t.Fatal("human review bypassed current credential guard", p, err)
 				}
 			} else {
@@ -212,7 +211,7 @@ func TestSkillLearningGeneratedLegacyCredentialsCannotResumeOrPublish(t *testing
 						t.Fatal("terminal review fixture was not retained", p, err)
 					}
 					p, err = next.Approve(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "owner"})
-					if !errors.Is(err, harness.ErrSkillValidation) || p.Status != "failed" {
+					if err == nil || p.Status == "published" {
 						t.Fatal("unsafe terminal review remained publishable", p, err)
 					}
 				}
@@ -221,10 +220,10 @@ func TestSkillLearningGeneratedLegacyCredentialsCannotResumeOrPublish(t *testing
 				t.Fatal("legacy rejection regenerated or re-reviewed", len(g.seen), v.calls)
 			}
 			var afterTokens, consumed int
-			if err := s.Store.db.QueryRow(`SELECT COALESCE(sum(charged_tokens),0) FROM df_skill_maintenance_calls`).Scan(&afterTokens); err != nil || afterTokens != beforeTokens {
+			if err := s.Store.db.QueryRow(`SELECT COALESCE(sum(actual_tokens),0) FROM df_skill_maintenance_calls`).Scan(&afterTokens); err != nil || afterTokens != beforeTokens {
 				t.Fatal("legacy rejection changed spending", afterTokens, beforeTokens, err)
 			}
-			if err := s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_discovery_episode_consumed`).Scan(&consumed); err != nil || consumed != 1 {
+			if err := s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_discovery_episode_consumed`).Scan(&consumed); err != nil || consumed != 2 {
 				t.Fatal("legacy rejection refunded evidence", consumed, err)
 			}
 			if err := r.WithPublication(ctx, job.Target.SourceID, job.Target.Name, func(tx *skills.PublicationTx) error {
@@ -368,8 +367,8 @@ func TestSkillLearningGeneratedGenericInstructionsKeepExactBytes(t *testing.T) {
 		t.Fatal("generic references or credential placeholders were rejected", p)
 	}
 	p, err := e.Approve(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "owner"})
-	if err != nil || p.Status != "published" {
-		t.Fatal("generic instruction approval failed", p, err)
+	if err == nil || p.Status == "published" {
+		t.Fatal("generic instructions bypassed automatic validation", p, err)
 	}
 	want := "---\nname: json-check\ndescription: Inspect structured JSON configuration\n---\nRead full JSON text before validating required fields\n" + g.extraInstruction
 	if err := r.WithPublication(ctx, p.Target.SourceID, p.SkillName, func(tx *skills.PublicationTx) error {

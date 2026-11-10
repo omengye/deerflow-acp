@@ -55,15 +55,12 @@ func sdkMatchingCall(ctx context.Context, stage string) error {
 }
 
 func TestSkillLearningMatchingSDKLifecycleSharedDispatcherAndBudget(t *testing.T) {
-	for _, mode := range []string{"learning-only", "generation-shared", "learning-cap", "tools-denied"} {
+	for _, mode := range []string{"learning-only", "generation-shared", "high-usage", "tools-denied"} {
 		t.Run(mode, func(t *testing.T) {
 			workspace, cfg := skillFixture(t)
 			extractor, consolidator, matcher := &sdkMatchingExtractor{}, &sdkExperienceConsolidator{}, &sdkExperienceMatcher{}
-			budget := harness.SkillMaintenanceBudget{MaxDailyModelCalls: 6, MaxDailyTokens: 100000, MaxJobSeconds: 60, Workers: 1}
-			cfg.SkillLearning = &harness.SkillLearningOptions{Idle: time.Second, MaxDailyModelCalls: 3, MaxDailyTokens: 50000, Budget: budget, Consolidation: &harness.SkillGenerationModelConfig{}, Matching: &harness.SkillGenerationModelConfig{}}
-			if mode == "learning-cap" {
-				cfg.SkillLearning.MaxDailyModelCalls = 2
-			}
+			budget := harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}
+			cfg.SkillLearning = &harness.SkillLearningOptions{Idle: time.Second, Policy: budget, Consolidation: &harness.SkillGenerationModelConfig{}, Matching: &harness.SkillGenerationModelConfig{}}
 			if mode == "tools-denied" {
 				cfg.ToolPolicy.Denylist = []string{"skill", "read_skill_file"}
 			}
@@ -92,7 +89,7 @@ func TestSkillLearningMatchingSDKLifecycleSharedDispatcherAndBudget(t *testing.T
 				if err != nil {
 					t.Fatal(err)
 				}
-				cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route}, Budget: budget, Sources: []string{"project"}}
+				cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route}, Policy: budget, Sources: []string{"project"}}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -101,6 +98,11 @@ func TestSkillLearningMatchingSDKLifecycleSharedDispatcherAndBudget(t *testing.T
 				t.Fatal(err)
 			}
 			defer c.Close()
+			if mode == "high-usage" {
+				if _, err = c.store.DB().Exec(`INSERT INTO df_skill_maintenance_days(day,model_calls,actual_tokens) VALUES(?,1000000,1000000000)`, time.Now().UTC().Format("2006-01-02")); err != nil {
+					t.Fatal(err)
+				}
+			}
 			x, err := c.NewSession(ctx, workspace)
 			if err != nil {
 				t.Fatal(err)
@@ -112,21 +114,13 @@ func TestSkillLearningMatchingSDKLifecycleSharedDispatcherAndBudget(t *testing.T
 			deadline := time.Now().Add(10 * time.Second)
 			for time.Now().Before(deadline) {
 				_ = c.store.DB().QueryRow(`SELECT j.state,j.error_code FROM df_learning_matches m JOIN df_skill_maintenance_jobs j ON j.id=m.job_id WHERE m.session_id=?`, x.ID).Scan(&jobState, &jobCode)
-				if jobState == "completed" || jobState == "failed" || mode == "learning-cap" && jobState == "queued" {
+				if jobState == "completed" || jobState == "failed" {
 					break
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
 			page, err := c.SkillExperienceMatches(ctx, x.ID, "", 10)
 			want, wantCalls := 1, int32(1)
-			if mode == "learning-cap" {
-				want, wantCalls = 0, 0
-				var attempts int
-				var deadlineNS int64
-				if err := c.store.DB().QueryRow(`SELECT j.attempts,j.deadline_ns FROM df_learning_matches m JOIN df_skill_maintenance_jobs j ON j.id=m.job_id WHERE m.session_id=?`, x.ID).Scan(&attempts, &deadlineNS); err != nil || jobState != "queued" || jobCode != "" || attempts != 0 || deadlineNS != 0 {
-					t.Fatal("matching must wait for shared learning quota without a claim", jobState, jobCode, attempts, deadlineNS, err)
-				}
-			}
 			if err != nil || len(page.Matches) != want || matcher.calls.Load() != wantCalls || extractor.calls.Load() != 1 || consolidator.calls.Load() != 1 {
 				var pending string
 				_ = c.store.DB().QueryRow(`SELECT group_concat(state||':'||reason) FROM df_learning_match_inputs`).Scan(&pending)
@@ -135,7 +129,7 @@ func TestSkillLearningMatchingSDKLifecycleSharedDispatcherAndBudget(t *testing.T
 			if mode == "tools-denied" && page.Matches[0].Target != nil {
 				t.Fatal("tool policy denial still exposed a skill", page)
 			}
-			if mode == "learning-only" || mode == "generation-shared" {
+			if mode != "tools-denied" {
 				m := page.Matches[0]
 				if m.Target == nil || m.Target.SourceID != "project" || m.Target.Name != "research" || len(m.ActualReads) != 0 || m.SourceState != "not_revalidated" {
 					t.Fatal("host-fixed identity or read attribution lost", m)
@@ -153,6 +147,12 @@ func TestSkillLearningMatchingSDKLifecycleSharedDispatcherAndBudget(t *testing.T
 			}
 			if err = c.store.DB().QueryRow(`SELECT count(*) FROM df_skill_maintenance_calls`).Scan(&calls); err != nil || calls != 2+int(wantCalls) {
 				t.Fatal("shared producer accounting incorrect", calls, err)
+			}
+			if mode == "high-usage" {
+				var dailyCalls, tokens int64
+				if err = c.store.DB().QueryRow(`SELECT SUM(model_calls),SUM(actual_tokens) FROM df_skill_maintenance_days`).Scan(&dailyCalls, &tokens); err != nil || dailyCalls != 1000003 || tokens != 1000000045 {
+					t.Fatal("large usage must remain telemetry while every learning stage completes", dailyCalls, tokens, err)
+				}
 			}
 			if _, err = c.SetSkillLearningControl(ctx, x.ID, harness.SkillLearningControlRequest{ExpectedEpoch: 1}); err != nil {
 				t.Fatal(err)

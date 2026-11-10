@@ -27,7 +27,7 @@ func TestSkillLearningNativeAdaptersPreserveTemporarySourceAdmission(t *testing.
 				t.Fatal(err)
 			}
 			defer db.Close()
-			queue, err := skillmaintenance.NewWithHooks(ctx, db.DB(), skillmaintenance.Policy{MaxDailyModelCalls: 5, MaxDailyTokens: 100000, MaxJobSeconds: 60, Workers: 1}, skillmaintenance.Hooks{Admission: func(context.Context, *sql.Tx, skillmaintenance.Job) error {
+			queue, err := skillmaintenance.NewWithHooks(ctx, db.DB(), skillmaintenance.Policy{MaxJobSeconds: 60, Workers: 1}, skillmaintenance.Hooks{Admission: func(context.Context, *sql.Tx, skillmaintenance.Job) error {
 				return fmt.Errorf("private-provider-and-source-details: %w", errors.Join(harness.ErrPermissionDenied, skillmaintenance.ErrSourceActive))
 			}})
 			if err != nil {

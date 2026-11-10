@@ -59,6 +59,22 @@ work. Queued messages cannot gain authority from a later upgrade.
 
 ## Chat commands and tool feedback
 
+WeChat sends a short `👌 收到` receipt as soon as an ordinary text message passes
+owner admission, deduplication and durable inbox storage, including messages queued
+behind an active task. This is a separate text message, not a reaction on the
+user's message. Host commands and unsupported attachments use their normal reply.
+Receipts do not invoke the model or enter its conversation history. They have a
+separate durable send key and are attempted at most once: an uncertain receipt
+is not retried and does not block the task or its final answer. Receipt batches
+have a short timeout so an unavailable provider cannot hold up execution.
+
+Incoming text quotes retain their content, title and original message ID in the
+stored model prompt. The user's current text stays separate during command
+recognition, so a quoted `/stop` reply still works as a command. Missing quoted
+content (including ID-only references), media quotes, partial selections and
+overly nested quotes receive an explanation instead of executing an incomplete
+instruction. The 16 KiB prompt limit includes quoted content.
+
 Ordinary messages reuse the same session for the same instance, account,
 conversation, sender and workspace. Send exactly `/new` (surrounding whitespace
 is allowed) to create and switch to a fresh session without calling the model.
@@ -78,7 +94,7 @@ Additional host commands (never sent to the model):
 | `/permission global` / `/permission read_only` | Lower channel policy |
 | `/resume` | Continue the existing checkpoint without resubmitting the prompt |
 | `/approve CODE` / `/deny CODE` | Decide the exact displayed pending call |
-| `/stop` | Cancel owned running/waiting work; an active stop discards queued prompts |
+| `/stop` | Cancel owned running/waiting work and earlier queued prompts, even if the last run already finished |
 
 Codes expire after ten minutes and bind identity, conversation, workspace, session,
 execution/intent/config versions, argument digest and policy revision. Complete
@@ -89,9 +105,12 @@ still require reconciliation, even under Full Access. A downgraded Full Access
 task cannot resume with its original broader authority: cancel and start again.
 
 One model execution remains active per channel, while polling and status/stop
-commands continue. Plugin transport remains serialized; provider polling latency
-still applies. Status/stop/help/permission controls can pass an uncertain-delivery
-fence but cannot authorize replay of quarantined work.
+commands continue. WeChat polls through a separate plugin process: queued work
+cannot starve incoming controls, and a long poll or its retry backoff cannot hold
+up a completed answer. Incoming batches and completed runs wake the sending
+worker. Both processes are cancelled and joined on disable, logout or update.
+Status/stop/help/permission controls can pass an uncertain-delivery fence but
+cannot authorize replay of quarantined work.
 
 Replies include a bounded tool-call summary (up to the last eight calls), sent
 together with the answer or permission notice, not as a live stream. Labels and
@@ -164,6 +183,14 @@ transport. Read-side reconnects reuse the **host-persisted** cursor; sending err
 are never assumed safe to retry. Default call ceiling is 45 seconds, additionally
 bounded by the caller's deadline.
 
+The optional descriptor capability `independent_poll` allows a second plugin
+process dedicated to polling. It is enabled by WeChat, whose `poll` and `send`
+operations use explicit auth/cursor inputs and require no process-local login
+state. Other plugins retain the original single-process behavior unless they
+advertise this capability. There is only one receiver per instance, and it commits
+each batch before requesting the next cursor. Send failures do not restart the
+receiver; receive failures do not delay the sender.
+
 Methods:
 
 | Method | Input | Result |
@@ -184,6 +211,14 @@ Plugins have no database handle or general host-management capability.
 The descriptor's `requires_reply_context` is true for WeChat; other providers can
 omit it when proactive sends need no prior conversation context. Provider message
 IDs must be unique within an account (prefix chat-local IDs if necessary).
+Inbound messages missing required reply context are stored as `ignored` for
+deduplication and history. They never invoke the model, attempt a reply or create
+an uncertain-delivery fence. Previously queued/ready records are checked again
+before dispatch. Existing `unknown` records still require explicit review.
+
+Normalized messages may include `quoted_text` alongside `text`. The host preserves
+it in ordinary prompts after command recognition. Plugins must mark incomplete or
+unsupported quoted content as `unsupported`, rather than silently omitting it.
 
 Descriptor fields are bounded text inputs. `login:true` marks transient login
 fields; `secret:true` additionally masks them and requires `login:true`. Tokens must
@@ -201,7 +236,8 @@ install public webhook listeners, tunnels or firewall rules.
 
 The host stores channel config, auth and cursors in `harness_channels`; inbox/outbox
 records in `harness_channel_messages`; conversation mappings in
-`harness_channel_threads`. No SQLite/network call runs on the GPUI render thread.
+`harness_channel_threads`; optional receipt attempts in `harness_channel_receipts`.
+No SQLite/network call runs on the GPUI render thread.
 Configuration applies transactionally with a monotonically increasing revision.
 
 Inbound identity is `(instance, account, provider message ID)`. Session identity

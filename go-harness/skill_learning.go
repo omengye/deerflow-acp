@@ -145,14 +145,14 @@ func (c *Client) skillLearningStatus(ctx context.Context) (harness.SkillLearning
 	if err != nil {
 		return status, err
 	}
-	status.ProposalDiscoveryEnabled = discovery.Enabled && discovery.Options != nil && discovery.Options.ExperiencePatternsEnabled
+	status.ProposalDiscoveryEnabled = discovery.Enabled && discovery.Options != nil
 	if status.ProposalDiscoveryEnabled {
-		status.Mode = "review_candidates"
+		status.Mode = "automatic"
 	}
 	patch, err := c.evolution.AutoPatchStatus(ctx)
-	status.AutoPatchEnabled = status.ProposalDiscoveryEnabled && patch.Enabled && patch.Options != nil && patch.Options.ExperiencePatternsEnabled
+	status.AutoPatchEnabled = status.ProposalDiscoveryEnabled && patch.Enabled && patch.Options != nil
 	if status.AutoPatchEnabled {
-		status.Mode = "guarded_auto_patch"
+		status.Mode = "automatic"
 	}
 	return status, err
 }

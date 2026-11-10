@@ -70,7 +70,7 @@ func TestSkillLearningInFlightNativeMatchingPreservesAdmissionCauseAndPaidRespon
 					return
 				}
 				if point == "response" && index == 1 {
-					started <- learningTestRun(t, s, x, "Also inspect the optional fields")
+					started <- learningTestRelatedRun(t, s, x, "Also inspect the optional fields")
 				}
 				answer, _ := json.Marshal(map[string]any{"pattern_id": input.PatternID, "revision": input.Revision, "relation": "body_gap", "skill_id": input.Skills[0].ID, "reason": "Add the complete-document check", "suggested_name": ""})
 				_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}})
@@ -82,11 +82,11 @@ func TestSkillLearningInFlightNativeMatchingPreservesAdmissionCauseAndPaidRespon
 			}
 			matcher := &learningInFlightNativeMatcher{SkillExperienceMatcher: native}
 			if point == "reservation" {
-				matcher.before = func() { started <- learningTestRun(t, s, x, "Also inspect the optional fields") }
+				matcher.before = func() { started <- learningTestRelatedRun(t, s, x, "Also inspect the optional fields") }
 			}
 			learningInFlightRestart(t, s, registry, extractor, &consolidationTestModel{}, matcher)
 			for _, text := range []string{"Inspect complete JSON configuration", "Correct the check with complete file text"} {
-				learningQueueReadinessTurn(t, s, learningTestRun(t, s, x, text))
+				learningQueueReadinessTurn(t, s, learningTestRelatedRun(t, s, x, text))
 			}
 			learningTestQueue(t, s)
 			matchingRun(t, s)
@@ -123,7 +123,7 @@ func TestSkillLearningInFlightNativeMatchingPreservesAdmissionCauseAndPaidRespon
 				t.Fatal("native matcher did not resume its original input", completed, calls.Load(), err)
 			}
 			var count, tokens, unsettled int
-			if err := s.Store.db.QueryRow(`SELECT count(*),sum(charged_tokens),sum(state<>'settled') FROM df_skill_maintenance_calls WHERE job_id=?`, id).Scan(&count, &tokens, &unsettled); err != nil || count != paid+1 || tokens != 15*count || unsettled != 0 {
+			if err := s.Store.db.QueryRow(`SELECT count(*),sum(actual_tokens),sum(state<>'settled') FROM df_skill_maintenance_calls WHERE job_id=?`, id).Scan(&count, &tokens, &unsettled); err != nil || count != paid+1 || tokens != 15*count || unsettled != 0 {
 				t.Fatal("native retry refunded or replayed settled accounting", count, tokens, unsettled, err)
 			}
 			page, err := s.Store.Learning.Matches(ctx, x.ID, "", 10)

@@ -94,7 +94,7 @@ func experienceDiscoveryTest(t *testing.T) (*Service, harness.Session, *skills.R
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Close() })
-	if err = e.ConfigureGeneration(context.Background(), g, consolidationTestOptions().Budget, []string{"project"}, false); err != nil {
+	if err = e.ConfigureGeneration(context.Background(), g, consolidationTestOptions().Policy, []string{"project"}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = e.ConfigureExperienceDiscoverySource(s.Store.Learning); err != nil {
@@ -105,14 +105,18 @@ func experienceDiscoveryTest(t *testing.T) (*Service, harness.Session, *skills.R
 
 func enableExperienceDiscovery(t *testing.T, e *evolution.Service) {
 	t.Helper()
-	if err := e.ConfigureDiscovery(harness.SkillDiscoveryOptions{DisableOperatorCorrections: true, ExperiencePatternsEnabled: true, RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxDailyProposals: 5, MaxPendingProposals: 20}); err != nil {
+	if err := e.ConfigureDiscovery(harness.SkillDiscoveryOptions{RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxPendingProposals: 20}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func experienceMatch(t *testing.T, s *Service) string {
 	t.Helper()
-	for range 8 {
+	var pending int
+	if err := s.Store.db.QueryRow(`SELECT count(*) FROM df_learning_match_inputs WHERE state='pending'`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	for range pending + 8 {
 		if _, err := s.Store.Learning.QueueMatchOne(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -174,7 +178,7 @@ func experienceGenerate(t *testing.T, e *evolution.Service) harness.SkillProposa
 	return page.Proposals[0]
 }
 
-func TestSkillLearningExperienceDiscoveryOptInIndependentEpisodesAndManualPublication(t *testing.T) {
+func TestSkillLearningExperienceDiscoveryIndependentRootsAndNoManualBypass(t *testing.T) {
 	s, x, r, e, g, _, _ := experienceDiscoveryTest(t)
 	ctx := context.Background()
 	consolidateExtract(t, s, x, "Check configuration")
@@ -182,8 +186,8 @@ func TestSkillLearningExperienceDiscoveryOptInIndependentEpisodesAndManualPublic
 	consolidateExtract(t, s, x, "Correct previous configuration check")
 	consolidateRun(t, s)
 	id := experienceMatch(t, s)
-	if _, err := s.Store.Learning.Promotion(ctx, id, 2, time.Now().Add(-24*time.Hour), time.Now()); err == nil {
-		t.Fatal("one multi-root episode authorized generation")
+	if _, err := s.Store.Learning.Promotion(ctx, id, 2, time.Now().Add(-24*time.Hour), time.Now()); err != nil {
+		t.Fatal("independent roots in one chat did not count", err)
 	}
 	if _, err := s.StartSkillLearningEpisode(ctx, "owner", x.ID); err != nil {
 		t.Fatal(err)
@@ -204,7 +208,7 @@ func TestSkillLearningExperienceDiscoveryOptInIndependentEpisodesAndManualPublic
 		t.Fatal("experience fabricated operator feedback", feedback, err)
 	}
 	p := experienceGenerate(t, e)
-	if p.Status != "pending_review" || p.Trigger.Type != "experience_pattern" || len(g.seen) != 1 || !g.seen[0].InstructionOnly || len(g.seen[0].Evidence) < 1 || strings.Contains(p.Reason, "PRIVATE_GENERATION_REASON") {
+	if p.Status != "pending_review" || p.Trigger.Type != "experience_pattern" || len(g.seen) != 1 || g.seen[0].InstructionOnly || len(g.seen[0].Evidence) < 1 || strings.Contains(p.Reason, "PRIVATE_GENERATION_REASON") {
 		t.Fatal("not an instruction-only redacted pending review", p, g.seen)
 	}
 	if err := r.WithPublication(ctx, p.Target.SourceID, p.SkillName, func(tx *skills.PublicationTx) error {
@@ -220,15 +224,15 @@ func TestSkillLearningExperienceDiscoveryOptInIndependentEpisodesAndManualPublic
 		t.Fatal("repeated scan duplicated discovery", ds)
 	}
 	p, err := e.Approve(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "owner", Note: "Reviewed the observed procedure"})
-	if err != nil || p.Status != "published" {
-		t.Fatal("manual publication failed", p, err)
+	if err == nil || p.Status == "published" {
+		t.Fatal("automatic proposal accepted manual adoption", p, err)
 	}
 	control, _ := s.Store.Learning.Control(ctx, x.ID)
 	if _, err = s.SetSkillLearningControl(ctx, "owner", x.ID, harness.SkillLearningControlRequest{Contribute: false, ExpectedEpoch: control.Epoch}); err != nil {
 		t.Fatal(err)
 	}
-	if adopted, err := e.Get(ctx, p.ID); err != nil || adopted.Status != "published" {
-		t.Fatal("revocation deleted adopted skill", adopted, err)
+	if _, err := e.Get(ctx, p.ID); !errors.Is(err, harness.ErrNotFound) {
+		t.Fatal("revoked unadopted proposal survived", err)
 	}
 }
 
@@ -250,7 +254,7 @@ func TestSkillLearningExperienceDiscoveryMatchingRelationsDoNotGrantNewTargets(t
 				t.Fatal("precise trigger mismatch did not pin existing target", ds)
 			}
 			p := experienceGenerate(t, e)
-			if p.Status != "pending_review" || p.Action != "edit" || !g.seen[0].InstructionOnly {
+			if p.Status != "pending_review" || p.Action != "edit" || g.seen[0].InstructionOnly {
 				t.Fatal("trigger mismatch granted creation or publication", p)
 			}
 		})
@@ -271,7 +275,7 @@ func TestSkillLearningExperienceDiscoveryRevocationCleansUnpublishedTextAndVersi
 		t.Fatal(p)
 	}
 	var charge int64
-	if err := s.Store.db.QueryRow(`SELECT sum(charged_tokens) FROM df_skill_maintenance_calls`).Scan(&charge); err != nil || charge < 1 {
+	if err := s.Store.db.QueryRow(`SELECT sum(actual_tokens) FROM df_skill_maintenance_calls`).Scan(&charge); err != nil || charge < 1 {
 		t.Fatal(charge, err)
 	}
 	control, _ := s.Store.Learning.Control(ctx, x.ID)
@@ -292,7 +296,7 @@ func TestSkillLearningExperienceDiscoveryRevocationCleansUnpublishedTextAndVersi
 		t.Fatal("revoked proposal published", err)
 	}
 	var retained int64
-	if err := s.Store.db.QueryRow(`SELECT sum(charged_tokens) FROM df_skill_maintenance_calls`).Scan(&retained); err != nil || retained != charge {
+	if err := s.Store.db.QueryRow(`SELECT sum(actual_tokens) FROM df_skill_maintenance_calls`).Scan(&retained); err != nil || retained != charge {
 		t.Fatal("revocation refunded spending", retained, charge, err)
 	}
 	if err := s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_versions WHERE version=?`, ds[0].Base.Version).Scan(&count); err != nil || count != 1 {
@@ -347,6 +351,13 @@ func TestSkillLearningExperienceDiscoveryHeadReceiptAndGenerationOutputGuards(t 
 			}
 			if worked, err := e.RunGeneration(ctx); err != nil || !worked {
 				t.Fatal(worked, err)
+			}
+			if mode == "support-file" {
+				p, err := e.GetGeneration(ctx, ds[0].GenerationID)
+				if err != nil || p.ProposalID == "" {
+					t.Fatal("complete candidate package not staged", err)
+				}
+				return
 			}
 			var proposal, versions int
 			if err := s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_proposals WHERE status='pending_review'`).Scan(&proposal); err != nil || proposal != 0 {
@@ -427,7 +438,7 @@ func TestSkillLearningExperienceDiscoveryApprovalRevalidatesLiveAuthority(t *tes
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { _ = next.Close() })
-				if err = next.ConfigureGeneration(ctx, g, consolidationTestOptions().Budget, []string{"project"}, false); err != nil {
+				if err = next.ConfigureGeneration(ctx, g, consolidationTestOptions().Policy, []string{"project"}, false); err != nil {
 					t.Fatal(err)
 				}
 				if mode != "host-disabled" {
@@ -447,7 +458,7 @@ func TestSkillLearningExperienceDiscoveryApprovalRevalidatesLiveAuthority(t *tes
 				if !errors.Is(err, harness.ErrNotFound) {
 					t.Fatal("revoked proposal survived", got, err)
 				}
-			} else if !errors.Is(err, harness.ErrSkillConflict) || got.Status != "stale" {
+			} else if err == nil || got.Status == "published" {
 				t.Fatal("invalid source remained publishable", got, err)
 			}
 			if err := r.WithPublication(ctx, "project", "json-check", func(tx *skills.PublicationTx) error {
@@ -506,7 +517,7 @@ func TestSkillLearningExperienceDiscoverySavedCandidateAndProposalRestartReuse(t
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = next.Close() })
-			if err = next.ConfigureGeneration(ctx, g, consolidationTestOptions().Budget, []string{"project"}, false); err != nil {
+			if err = next.ConfigureGeneration(ctx, g, consolidationTestOptions().Policy, []string{"project"}, false); err != nil {
 				t.Fatal(err)
 			}
 			if err = next.ConfigureExperienceDiscoverySource(s.Store.Learning); err != nil {
@@ -595,8 +606,8 @@ func TestSkillLearningExperienceDiscoveryRevocationPreservesIndependentRetention
 				}
 				if mode == "adopted-other-proposal" {
 					independent, err = other.Approve(ctx, independent.ID, harness.SkillReview{ExpectedStateVersion: independent.StateVersion, Actor: "owner"})
-					if err != nil || independent.Status != "published" {
-						t.Fatal("independent adoption failed", independent, err)
+					if err == nil || independent.Status == "published" {
+						t.Fatal("automatic bytes laundered through manual adoption", independent, err)
 					}
 				}
 			}
@@ -673,11 +684,11 @@ func TestSkillLearningExperienceDiscoverySharedQuotaCrossTriggerDedupAndAtomicit
 				if err = s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_generation_inputs`).Scan(&count); err != nil || count != 0 {
 					t.Fatal("partial generation enqueue", count, err)
 				}
-			} else if ds := experienceDiscoveries(t, e); len(ds) != 0 {
+			} else if ds := experienceDiscoveries(t, e); len(ds) != map[bool]int{true: 1, false: 0}[mode == "daily"] {
 				t.Fatal("shared gate bypassed", ds)
 			}
 			var count int
-			if err = s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_discoveries`).Scan(&count); err != nil || count != 0 {
+			if err = s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_discoveries`).Scan(&count); err != nil || count != map[bool]int{true: 1, false: 0}[mode == "daily"] {
 				t.Fatal("partial discovery", count, err)
 			}
 			if mode == "fault" {
@@ -730,32 +741,15 @@ func TestSkillLearningExperienceDiscoveryQueuedCancellationNeverRegenerates(t *t
 	}
 }
 
-func TestSkillLearningExperienceDiscoveryLegacyConsumedAliasDoesNotAddVote(t *testing.T) {
+func TestSkillLearningExperienceDiscoveryConsumedRootCannotBeReused(t *testing.T) {
 	s, x, _, e, g, _, _ := experienceDiscoveryTest(t)
 	ctx := context.Background()
-	first := consolidateExtract(t, s, x, "First part of one configuration task")
-	consolidateRun(t, s)
-	second := consolidateExtract(t, s, x, "Correction within the same configuration task")
-	consolidateRun(t, s)
-	if _, err := s.StartSkillLearningEpisode(ctx, "owner", x.ID); err != nil {
-		t.Fatal(err)
-	}
-	consolidateExtract(t, s, x, "Independent configuration task")
-	consolidateRun(t, s)
-	id := experienceMatch(t, s)
+	id := experienceTwoEpisodes(t, s, x)
 	p, err := s.Store.Learning.Promotion(ctx, id, 2, time.Now().Add(-24*time.Hour), time.Now())
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(p.Evidence) != 2 {
+		t.Fatal("independent roots unavailable", err)
 	}
-	alias := first.RootBudgetID
-	if first.RootBudgetID < second.RootBudgetID {
-		alias = second.RootBudgetID
-	}
-	for _, ref := range p.Evidence {
-		if ref.RootID == alias {
-			t.Fatal("fixture selected the legacy consumed root instead of its alias")
-		}
-	}
+	alias := p.Evidence[0].RootID
 	payload, _ := json.Marshal(map[string]any{"base": p.Head, "evidence": []any{map[string]any{"root_id": alias}}})
 	digest := sha256.Sum256(payload)
 	legacy, err := e.MaintenanceQueue().Enqueue(ctx, skillmaintenance.Request{SourceIdentity: p.Target.SourceIdentity, Name: p.Target.Name, Key: "legacy-dedup", Reference: "legacy-reference", InputDigest: strings.Repeat("e", 64)})
@@ -779,7 +773,7 @@ func TestSkillLearningExperienceDiscoveryLegacyConsumedAliasDoesNotAddVote(t *te
 	}
 	var count int
 	if err = s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_generation_inputs`).Scan(&count); err != nil || count != 0 || len(g.seen) != 0 {
-		t.Fatal("legacy same-episode reservation was spent again", count, len(g.seen), err)
+		t.Fatal("consumed root was spent again", count, len(g.seen), err)
 	}
 }
 
@@ -816,7 +810,7 @@ func TestSkillLearningExperienceDiscoverySharedSourceDeletionCleansForeignPropos
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Close() })
-	if err = e.ConfigureGeneration(ctx, g, opts.Budget, []string{"project"}, false); err != nil {
+	if err = e.ConfigureGeneration(ctx, g, opts.Policy, []string{"project"}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = e.ConfigureExperienceDiscoverySource(l); err != nil {

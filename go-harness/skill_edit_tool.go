@@ -33,36 +33,37 @@ type preparedSkillEdit struct {
 }
 type installedSkillTool struct {
 	toolidentity.Native
-	info     *schema.ToolInfo
-	registry *skills.Registry
-	run      harness.RunRequest
-	refs     []harness.SkillRef
+	info      *schema.ToolInfo
+	registry  *skills.Registry
+	run       harness.RunRequest
+	refs      []harness.SkillRef
+	selection harness.SkillSelection
 }
 
-func newInstalledSkillTools(registry *skills.Registry, req harness.RunRequest, refs []harness.SkillRef, editable bool) ([]tool.BaseTool, error) {
+func newInstalledSkillTools(registry *skills.Registry, req harness.RunRequest, refs []harness.SkillRef, selection harness.SkillSelection, editable bool) ([]tool.BaseTool, error) {
 	inspect, err := utils.GoStruct2ToolInfo[skillInspectInput]("skill_inspect", "Inspect the authoritative installed skill identity, source directory, immutable pinned version, current head and file manifest. A workspace copy is NOT the installation. Read file bodies using read_skill_file.")
 	if err != nil {
 		return nil, err
 	}
-	tools := []tool.BaseTool{&installedSkillTool{toolidentity.Builtin(inspect.Name), inspect, registry, req, refs}}
+	tools := []tool.BaseTool{&installedSkillTool{toolidentity.Builtin(inspect.Name), inspect, registry, req, refs, selection}}
 	if editable {
-		info, err := utils.GoStruct2ToolInfo[skillEditInput]("skill_edit", "Edit the authoritative installed directory, never a workspace copy or database-only overlay. First inspect, then prepare a bounded multi-file edit, then apply its edit_id. Apply ALWAYS requires explicit host confirmation of the exact redacted diff and target; general session permission is insufficient. Existing Python/scripts are structurally validated, never executed. Prepared is NOT applied. Only status=applied AND live_matches=true AND source_matches=true confirms success. Each new ordinary turn re-reads the source directory; this execution/resume stays pinned. skill_manage proposes autonomous evolution candidates; a proposal alone does not change files.")
+		info, err := utils.GoStruct2ToolInfo[skillEditInput]("skill_edit", "Edit the authoritative installed directory, never a workspace copy or database-only overlay. First inspect, then prepare a bounded multi-file edit, then apply its edit_id. Apply ALWAYS requires explicit host confirmation of the exact redacted diff and target; general session permission is insufficient. Existing Python/scripts are structurally validated, never executed. Prepared is NOT applied. Only status=applied AND live_matches=true AND source_matches=true confirms success. Each new ordinary turn re-reads the source directory; this execution/resume stays pinned. This direct directory edit is separate from automatic evolution. Use skill_manage for learned improvements: the host validates and adopts them automatically without this confirmation. A submitted candidate alone does not change files.")
 		if err != nil {
 			return nil, err
 		}
-		tools = append(tools, &installedSkillTool{toolidentity.Builtin(info.Name), info, registry, req, refs})
+		tools = append(tools, &installedSkillTool{toolidentity.Builtin(info.Name), info, registry, req, refs, selection})
 	}
 	return tools, nil
 }
 
 func (t *installedSkillTool) Info(context.Context) (*schema.ToolInfo, error) { return t.info, nil }
-func (t *installedSkillTool) ref(name string) (harness.SkillRef, error) {
+func (t *installedSkillTool) ref(ctx context.Context, name string) (harness.SkillRef, error) {
 	for _, ref := range t.refs {
 		if ref.Name == name {
 			return ref, nil
 		}
 	}
-	return harness.SkillRef{}, harness.ErrPermissionDenied
+	return harness.SkillRef{}, t.registry.VisibilityError(ctx, t.selection, name)
 }
 func (t *installedSkillTool) owner(ctx context.Context) (string, error) {
 	if _, active, err := einoengine.CurrentRole(ctx); active || err != nil {
@@ -82,7 +83,7 @@ func (t *installedSkillTool) review(ctx context.Context, id, owner string) (harn
 	if err != nil {
 		return review, err
 	}
-	ref, err := t.ref(review.Target.Name)
+	ref, err := t.ref(ctx, review.Target.Name)
 	if err != nil || ref.SourceID != review.Target.SourceID || ref.SourceIdentity != review.Target.SourceIdentity {
 		return harness.SkillEditReview{}, harness.ErrPermissionDenied
 	}
@@ -102,7 +103,7 @@ func (t *installedSkillTool) PrepareToolArguments(ctx context.Context, args stri
 		if err := decodeBackgroundArguments(args, &in); err != nil {
 			return "", harness.ErrInvalidInput
 		}
-		if _, err := t.ref(in.Name); err != nil {
+		if _, err := t.ref(ctx, in.Name); err != nil {
 			return "", err
 		}
 		return args, nil
@@ -120,7 +121,7 @@ func (t *installedSkillTool) PrepareToolArguments(ctx context.Context, args stri
 		if in.ID != "" {
 			return "", harness.ErrInvalidInput
 		}
-		ref, err := t.ref(in.Name)
+		ref, err := t.ref(ctx, in.Name)
 		if err != nil {
 			return "", err
 		}
@@ -158,7 +159,7 @@ func (t *installedSkillTool) InvokableRun(ctx context.Context, args string, _ ..
 		if err := decodeBackgroundArguments(args, &in); err != nil {
 			return "", harness.MarkToolNotExecuted(harness.ErrInvalidInput)
 		}
-		ref, e := t.ref(in.Name)
+		ref, e := t.ref(ctx, in.Name)
 		if e != nil {
 			return "", harness.MarkToolNotExecuted(e)
 		}
@@ -173,7 +174,7 @@ func (t *installedSkillTool) InvokableRun(ctx context.Context, args string, _ ..
 		}
 		switch in.Action {
 		case "prepare":
-			ref, e := t.ref(in.Name)
+			ref, e := t.ref(ctx, in.Name)
 			if e != nil {
 				return "", harness.MarkToolNotExecuted(e)
 			}

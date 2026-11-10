@@ -61,8 +61,8 @@ func (s *Service) recordApproval(ctx context.Context, id string, review Review) 
 		if err := s.guardAutoPatch(ctx, tx, *p, input); err != nil {
 			return err
 		}
-		if requiresScriptAcknowledgment(p.Evaluation, input) && !review.AcknowledgeUnverifiedScripts {
-			return invalid("publication requires explicit acknowledgment that support scripts were not execution-validated")
+		if requiresScriptAcknowledgment(p.Evaluation, input) {
+			return invalid("publication requires successful isolated execution of support scripts")
 		}
 		if err := s.guardBehaviorReport(ctx, tx.SQL(), *p, p.Evaluation); err != nil {
 			return err
@@ -97,6 +97,9 @@ func (s *Service) RetryPublication(ctx context.Context, id string, approvalVersi
 	}
 	if p.Approval == nil || p.Approval.Review.ExpectedStateVersion != approvalVersion {
 		return Proposal{}, ErrConflict
+	}
+	if p.Approval.UserConfirmation != nil {
+		return s.retryConfirmedPublication(ctx, id, approvalVersion)
 	}
 	if p.Approval.Review.Actor == "auto_patch" {
 		ctx = context.WithValue(ctx, autoPatchContextKey{}, true)

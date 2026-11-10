@@ -365,8 +365,8 @@ func TestLimitsAndAtomicInstallRollback(t *testing.T) {
 	r, db := registry(t, harness.SkillsConfig{Sources: []harness.SkillSource{{ID: "src", Root: root, Scope: harness.SkillScopeGlobal}}, Limits: harness.SkillLimits{MaxSkills: 1, MaxVersionsPerSkill: 2}})
 	first := installEnabled(t, r, "src", "limited")
 	writeSkill(t, root, "second", "two")
-	if _, err := r.Install(ctx, "src", "second"); !errors.Is(err, harness.ErrInvalidInput) {
-		t.Fatal("skill count bound", err)
+	if _, err := r.Install(ctx, "src", "second"); err != nil {
+		t.Fatal("skill count must not be a lifetime admission limit", err)
 	}
 	writeSkill(t, root, "limited", "second version")
 	if _, err := db.DB().Exec(`CREATE TRIGGER reject_skill_insert BEFORE INSERT ON df_skill_files BEGIN SELECT RAISE(ABORT,'fixture failure'); END`); err != nil {
@@ -382,7 +382,7 @@ func TestLimitsAndAtomicInstallRollback(t *testing.T) {
 		t.Fatal("historical version lost", err)
 	}
 	var count int
-	if err := db.DB().QueryRow(`SELECT COUNT(*) FROM df_skill_versions`).Scan(&count); err != nil || count != 1 {
+	if err := db.DB().QueryRow(`SELECT COUNT(*) FROM df_skill_versions`).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("rollback versions=%d err=%v", count, err)
 	}
 	if _, err := db.DB().Exec(`DROP TRIGGER reject_skill_insert`); err != nil {
@@ -393,11 +393,13 @@ func TestLimitsAndAtomicInstallRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSkill(t, root, "limited", "third version")
-	if _, err := r.Install(ctx, "src", "limited"); !errors.Is(err, harness.ErrInvalidInput) {
-		t.Fatal("retained version bound", err)
+	if _, err := r.Install(ctx, "src", "limited"); err != nil {
+		t.Fatal("version count must not block evolution", err)
 	}
-	if _, err := r.Snapshot(ctx, harness.SkillSelection{IncludeGlobal: true}); err == nil {
-		t.Fatal("version limit silently used stale content")
+	if next, err := r.Snapshot(ctx, harness.SkillSelection{IncludeGlobal: true}); err != nil {
+		t.Fatal("latest content unavailable", err)
+	} else if bytes, err := next.ReadFile(ctx, "limited", "SKILL.md"); err != nil || !strings.Contains(string(bytes), "third version") {
+		t.Fatal("snapshot returned stale content", err)
 	}
 	if _, err := r.Restore(ctx, harness.SkillSelection{IncludeGlobal: true}, []harness.SkillRef{second.Ref}); err != nil {
 		t.Fatal(err)
@@ -408,7 +410,7 @@ func TestLimitsAndAtomicInstallRollback(t *testing.T) {
 			writeSkill(t, other, "bounded", "bounded")
 			writeFile(t, filepath.Join(other, "bounded", "extra.txt"), []byte("extra"))
 			limited, _ := registry(t, harness.SkillsConfig{Sources: []harness.SkillSource{{ID: "src", Root: other, Scope: harness.SkillScopeGlobal}}, Limits: limits})
-			if _, err := limited.Install(ctx, "src", "bounded"); !errors.Is(err, harness.ErrInvalidInput) {
+			if _, err := limited.Install(ctx, "src", "bounded"); !errors.Is(err, harness.ErrInvalidInput) && !errors.Is(err, ErrCapacity) {
 				t.Fatal(err)
 			}
 		})

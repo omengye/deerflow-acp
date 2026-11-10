@@ -41,10 +41,12 @@ type bridgeV2Client struct {
 	permissions int
 }
 
-func launchBridgeV2(t *testing.T, bridge, runtimeDir string) *bridgeV2Client {
+func launchBridgeV2(t *testing.T, bridge, dataDir, runtimeDir string) *bridgeV2Client {
 	t.Helper()
+	// Keep the release binary's portable profile separate from this fixture's database.
+	bridge = copyPortableBinary(t, bridge, t.TempDir(), filepath.Base(bridge))
 	client := &bridgeV2Client{frames: make(chan bridgeV2Frame, 128), done: make(chan error, 1)}
-	client.cmd = exec.Command(bridge, "--protocol", "v2", "--no-auto-start", "--runtime-dir", runtimeDir)
+	client.cmd = exec.Command(bridge, "--protocol", "v2", "--no-auto-start", "--data-dir", dataDir, "--runtime-dir", runtimeDir)
 	var err error
 	client.input, err = client.cmd.StdinPipe()
 	if err != nil {
@@ -248,7 +250,7 @@ func TestExistingRustBridgeV2Lifecycle(t *testing.T) {
 	dataDir, runtimeDir, workspace := t.TempDir(), t.TempDir(), t.TempDir()
 	daemon := launchDaemon(t, dataDir, runtimeDir, provider.URL+"/v1", "--vision-model", "fixture-model")
 	ep := daemon.endpoint(t, runtimeDir)
-	client := launchBridgeV2(t, bridge, runtimeDir)
+	client := launchBridgeV2(t, bridge, dataDir, runtimeDir)
 	initialized := client.request(t, "initialize", map[string]any{"protocolVersion": 2, "capabilities": map[string]any{}, "info": map[string]string{"name": "go-v2-test", "version": "1"}})
 	if !bytes.Contains(initialized, []byte(`"protocolVersion":2`)) {
 		t.Fatalf("initialize: %s", initialized)
@@ -380,7 +382,7 @@ func TestExistingRustBridgeV2Lifecycle(t *testing.T) {
 	client.assertUpdateSession(t, secondStart, second)
 	client.close(t)
 
-	resumed := launchBridgeV2(t, bridge, runtimeDir)
+	resumed := launchBridgeV2(t, bridge, dataDir, runtimeDir)
 	resumed.request(t, "initialize", map[string]any{"protocolVersion": 2, "capabilities": map[string]any{}, "info": map[string]string{"name": "go-v2-resume-test", "version": "1"}})
 	resumed.request(t, "session/resume", map[string]any{"sessionId": first, "cwd": workspace, "additionalDirectories": []any{}, "mcpServers": []any{}, "replayFrom": map[string]string{"type": "start"}})
 	resumed.waitState(t, first, "idle")

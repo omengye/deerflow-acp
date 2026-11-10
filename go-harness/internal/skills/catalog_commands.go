@@ -133,6 +133,8 @@ func (r *Registry) catalogCommand(ctx context.Context, target harness.SkillTarge
 		expectedApplied = command.Expected
 	case harness.SkillDeletion:
 		expectedApplied = SkillHead{StateVersion: command.Expected.StateVersion + 1, Managed: true}
+	case harness.SkillRecovery:
+		expectedApplied = SkillHead{Version: command.Version, StateVersion: 1, Exists: true, Enabled: command.Enabled, Managed: true}
 	default:
 		return result, invalid("unsupported skill management command")
 	}

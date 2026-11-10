@@ -137,7 +137,7 @@ func ProposalFeedback(p Proposal) ValidationFeedback {
 		f.NextAction = "Address the failed checks in the candidate, preserve the original problem and unmet requirements in reason, then submit the revision to the same authorized source. Do not change source or weaken reason to obtain a passing review."
 	default:
 		if CanRetryReview(p) {
-			f.NextAction = "Ask the operator to use proposal.review_retry when available. It creates one budgeted successor with identical source, content, base and reason; it does not publish. Do not bypass the bound with a fresh request key or another source. Stop if the successor fails."
+			f.NextAction = "Ask the operator to use proposal.review_retry when available. It creates one recorded successor with identical source, content, base and reason; it does not publish. Do not bypass the bound with a fresh request key or another source. Stop if the successor fails."
 		}
 	}
 	return f

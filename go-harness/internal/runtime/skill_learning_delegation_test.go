@@ -202,7 +202,7 @@ func learningDelegationRestart(t *testing.T, s *Service, options *harness.SkillL
 	s.Store.Learning = next
 }
 
-func TestSkillLearningDelegatedExecutionAutomaticallyReachesReview(t *testing.T) {
+func TestSkillLearningDelegatedExecutionDoesNotGenerateFromSingleRoot(t *testing.T) {
 	s, x, _, evolution, generator, _, _ := experienceDiscoveryTest(t)
 	native := learningDelegationNative(t, s)
 	ctx := context.Background()
@@ -245,16 +245,8 @@ func TestSkillLearningDelegatedExecutionAutomaticallyReachesReview(t *testing.T)
 	experienceMatch(t, s)
 	enableExperienceReviewDrafts(t, evolution, false)
 	drafts := experienceDiscoveries(t, evolution)
-	if len(drafts) != 1 || !drafts[0].ReviewDraft || len(drafts[0].Evidence) != 1 || drafts[0].Evidence[0].RootID != parent.RootBudgetID {
-		t.Fatal("delegated evidence did not reach an automatic review-only discovery", drafts)
-	}
-	proposal := experienceGenerate(t, evolution)
-	if proposal.Status != "pending_review" || len(generator.seen) != 1 || !generator.seen[0].InstructionOnly {
-		t.Fatal(proposal, generator.seen)
-	}
-	approved, err := evolution.Approve(ctx, proposal.ID, harness.SkillReview{ExpectedStateVersion: proposal.StateVersion, Actor: "owner"})
-	if err != nil || approved.Status != "published" {
-		t.Fatal("system-generated delegated proposal could not be reviewed", approved, err)
+	if len(drafts) != 0 || len(generator.seen) != 0 {
+		t.Fatal("a delegated child fabricated independent evidence", drafts)
 	}
 }
 
@@ -354,7 +346,7 @@ func TestSkillLearningDelegatedExecutionSnapshotAndLiveAuthorityGuards(t *testin
 				t.Fatal("changed root source authorized extraction or retry", saved, len(extractor.seen), err)
 			}
 			var calls, charged int
-			if err = s.Store.db.QueryRow(`SELECT count(*),COALESCE(sum(charged_tokens),0) FROM df_skill_maintenance_calls WHERE job_id=?`, job).Scan(&calls, &charged); err != nil || calls != boolInt(paid) || charged != 15*calls {
+			if err = s.Store.db.QueryRow(`SELECT count(*),COALESCE(sum(actual_tokens),0) FROM df_skill_maintenance_calls WHERE job_id=?`, job).Scan(&calls, &charged); err != nil || calls != boolInt(paid) || charged != 15*calls {
 				t.Fatal("root invalidation changed shared paid accounting", calls, charged, err)
 			}
 		})
@@ -563,6 +555,13 @@ func TestSkillLearningDelegatedExecutionRestartReadsAndRevocation(t *testing.T) 
 				return
 			} else if mode == "publication-recheck" {
 				consolidateRun(t, s)
+				second := learningTestRun(t, s, x, "Independently validate another complete configuration")
+				other := learningDelegationCreate(t, s, native, second, "recheck-second")
+				learningTestFinish(t, s, second, "end_turn")
+				learningDelegationComplete(t, other, "read_file")
+				learningTestQueue(t, s)
+				matchingRun(t, s)
+				consolidateRun(t, s)
 				experienceMatch(t, s)
 				next, err := newLearningDelegationEvolution(ctx, registry, s.Store.Learning)
 				if err != nil {
@@ -573,12 +572,15 @@ func TestSkillLearningDelegatedExecutionRestartReadsAndRevocation(t *testing.T) 
 				if discoveries := experienceDiscoveries(t, next); len(discoveries) != 1 {
 					t.Fatal(discoveries)
 				}
-				p := experienceGenerate(t, next)
 				if _, err := s.Store.db.Exec(`UPDATE harness_tool_receipts SET version=version+1 WHERE run_id=?`, f.binding.TaskID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err = next.Approve(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "owner"}); err == nil {
-					t.Fatal("changed delegated receipt authorized publication")
+				if worked, err := next.RunGeneration(ctx); err != nil || !worked {
+					t.Fatal(worked, err)
+				}
+				page, err := next.QueryProposals(ctx, harness.SkillQuery{Limit: 10})
+				if err != nil || len(page.Proposals) != 0 {
+					t.Fatal("changed delegated receipt authorized a candidate", page, err)
 				}
 				return
 			}
@@ -606,7 +608,7 @@ func TestSkillLearningDelegatedExecutionRestartReadsAndRevocation(t *testing.T) 
 func newLearningDelegationEvolution(ctx context.Context, registry *skills.Registry, source *learning.Store) (*evolution.Service, error) {
 	e, err := evolution.New(ctx, registry, &experienceDiscoveryValidator{})
 	if err == nil {
-		err = e.ConfigureGeneration(ctx, &experienceDiscoveryGenerator{}, consolidationTestOptions().Budget, []string{"project"}, false)
+		err = e.ConfigureGeneration(ctx, &experienceDiscoveryGenerator{}, consolidationTestOptions().Policy, []string{"project"}, false)
 	}
 	if err == nil {
 		err = e.ConfigureExperienceDiscoverySource(source)
@@ -648,7 +650,7 @@ func TestSkillLearningDelegatedExecutionIndependentSharedAutoPublication(t *test
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = e.Close() })
-			if err = e.ConfigureGeneration(ctx, generator, o.Budget, []string{"project"}, false); err != nil {
+			if err = e.ConfigureGeneration(ctx, generator, o.Policy, []string{"project"}, false); err != nil {
 				t.Fatal(err)
 			}
 			if err = e.ConfigureExperienceDiscoverySource(s.Store.Learning); err != nil {
@@ -830,12 +832,8 @@ func TestSkillLearningDelegatedExecutionNestedAndNotificationContinuations(t *te
 			experienceMatch(t, s)
 			enableExperienceReviewDrafts(t, e, false)
 			drafts := experienceDiscoveries(t, e)
-			if len(drafts) != 1 || !drafts[0].ReviewDraft || len(drafts[0].Evidence) != 1 || drafts[0].Evidence[0].RootID != parent.RootBudgetID {
+			if len(drafts) != 0 {
 				t.Fatal("nested/continuation children counted as independent roots", drafts)
-			}
-			proposal := experienceGenerate(t, e)
-			if proposal.Status != "pending_review" {
-				t.Fatal(proposal)
 			}
 		})
 	}

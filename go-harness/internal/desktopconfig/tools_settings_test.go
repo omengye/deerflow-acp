@@ -119,8 +119,12 @@ func TestToolSettingsSaveLaunchAndNativeProxyRequest(t *testing.T) {
 		}
 	}
 	cfg, settings := loadToolSettings(t, options)
-	if !cfg.HostToolsAllowed || len(settings) != 13 || settings["web_search"].APIKey != "fixture-search-secret" || settings["web_search"].MaxResults != 7 || settings["web_search"].Timeout != 12 || settings["web_fetch"].HTTPSProxy != address.String() || settings["web_fetch"].Timeout != 2 {
+	if !cfg.HostToolsAllowed || len(settings) != 13 || settings["web_search"].APIKey != "" || settings["web_search"].MaxResults != 7 || settings["web_search"].Timeout != 0 || settings["web_fetch"].HTTPSProxy != address.String() || settings["web_fetch"].Timeout != 2 {
 		t.Fatal("tool routing or credentials not consumed")
+	}
+	provider := storedSearchProvider(t, options, "brave")
+	if provider["api_key"] != "fixture-search-secret" || number(provider, "timeout", 0) != 12 {
+		t.Fatal("legacy search credential or timeout was not migrated")
 	}
 	if settings["image_search"].MaxResults != 31 || settings["glob"].MaxResults != 301 || settings["grep"].MaxResults != 211 || settings["host_opencli"].Timeout != 71 || settings["host_opencli"].Executable != filepath.Join(filepath.Dir(options.Config), "fixture-opencli.cmd") {
 		t.Fatal("native limits or OpenCLI path not consumed")
@@ -150,7 +154,8 @@ func TestToolSettingsSaveLaunchAndNativeProxyRequest(t *testing.T) {
 	}
 	doc = run(t, options, "snapshot", nil)
 	toolByName(t, doc, "host_opencli")["allowed_sites"] = nil
-	toolByName(t, doc, "web_search")["clear_api_key"] = true
+	state := searchOperation(t, options, "search-status", nil)
+	searchOperation(t, options, "search-configure", map[string]any{"provider": "brave", "expected_revision": state.Revision, "clear_api_key": true})
 	toolByName(t, doc, "web_fetch")["clear_https_proxy"] = true
 	run(t, options, "save", doc)
 	_, settings = loadToolSettings(t, options)
@@ -202,7 +207,7 @@ func TestToolSettingsRejectInvalidDraftAndNativeParameters(t *testing.T) {
 func TestToolSettingsRejectOpaqueEditsAndCredentialRebinding(t *testing.T) {
 	options := setup(t)
 	doc := run(t, options, "snapshot", nil)
-	doc["tools"] = []any{map[string]any{"name": "web_search", "api_key": "retained-fixture-secret"}}
+	doc["tools"] = []any{map[string]any{"name": "web_search", "max_results": 5}}
 	run(t, options, "save", doc)
 	for _, change := range []func(map[string]any){
 		func(d map[string]any) { toolByName(t, d, "web_search")["use"] = "builtin:web_search" },

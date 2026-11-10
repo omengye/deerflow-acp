@@ -128,7 +128,7 @@ func TestSkillLearningWorkspaceConsentIsolationAndIndependentEpisodes(t *testing
 	}
 }
 
-func TestSkillLearningWorkspaceCopiedTaskLineageAndResumeDoNotAddVotes(t *testing.T) {
+func TestSkillLearningWorkspaceHostLineageAndResumePreserveTaskVotes(t *testing.T) {
 	s, x, _, _ := newWorkspaceLearningTest(t, false)
 	ctx := context.Background()
 	sourceControl := workspaceLearningConsent(t, s, x, true)
@@ -143,8 +143,10 @@ func TestSkillLearningWorkspaceCopiedTaskLineageAndResumeDoNotAddVotes(t *testin
 	consolidateExtract(t, s, copySession, "Identical accepted task")
 	consolidateRun(t, s)
 	page, err = s.Store.Learning.WorkspacePatterns(ctx, x.ID, "", 10)
-	if err != nil || page.Patterns[0].SupportEpisodes != 1 || page.Patterns[0].ObservedEpisodes != 1 {
-		t.Fatal("copied task inflated support", page, err)
+	// Identical text in a separately accepted root is independent evidence.
+	// Only an explicit host lineage may identify a copy of the original task.
+	if err != nil || page.Patterns[0].SupportEpisodes != 2 || page.Patterns[0].ObservedEpisodes != 2 {
+		t.Fatal("independent roots were deduplicated by text", page, err)
 	}
 	linked := workspaceLearningSession(t, s, x.CWD)
 	linkedControl := workspaceLearningConsent(t, s, linked, true)
@@ -165,10 +167,10 @@ func TestSkillLearningWorkspaceCopiedTaskLineageAndResumeDoNotAddVotes(t *testin
 	if _, err = s.Load(ctx, "owner", linked.ID, linked.CWD, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	consolidateExtract(t, s, linked, "Resume and correct this task")
+	consolidateRelatedExtract(t, s, linked, "Resume and correct this task")
 	consolidateRun(t, s)
 	page, err = s.Store.Learning.WorkspacePatterns(ctx, linked.ID, "", 10)
-	if err != nil || page.Patterns[0].SupportEpisodes != 1 || len(page.Patterns[0].ExperienceIDs) != 4 {
+	if err != nil || page.Patterns[0].SupportEpisodes != 2 || len(page.Patterns[0].ExperienceIDs) != 4 {
 		t.Fatal("linked/resumed task inflated support", page, err)
 	}
 	if _, err = s.StartSkillLearningEpisode(ctx, "owner", linked.ID); err != nil {
@@ -177,7 +179,7 @@ func TestSkillLearningWorkspaceCopiedTaskLineageAndResumeDoNotAddVotes(t *testin
 	consolidateExtract(t, s, linked, "Explicit independent task")
 	consolidateRun(t, s)
 	page, err = s.Store.Learning.WorkspacePatterns(ctx, linked.ID, "", 10)
-	if err != nil || page.Patterns[0].SupportEpisodes != 2 {
+	if err != nil || page.Patterns[0].SupportEpisodes != 3 {
 		t.Fatal("explicit independent task failed to add support", page, err)
 	}
 	foreign := workspaceLearningSession(t, s, t.TempDir())

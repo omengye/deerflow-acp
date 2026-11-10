@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -22,6 +23,10 @@ func manualBehaviorProposal(ctx context.Context, db rowReader, jobID string) (st
 }
 
 func (s *Service) admitMaintenance(ctx context.Context, tx *sql.Tx, job skillmaintenance.Job) error {
+	if strings.HasPrefix(job.Request.Reference, "regcheck_") {
+		_, err := s.regressionInputTx(ctx, tx, job)
+		return err
+	}
 	if producer, exists := s.maintenanceProducers[job.Request.Kind]; exists {
 		return producer.hooks.Admission(ctx, tx, job)
 	}
@@ -105,6 +110,9 @@ func (s *Service) reviewBehaviorManual(ctx context.Context, job skillmaintenance
 }
 
 func (s *Service) finalizeMaintenanceTx(ctx context.Context, tx *sql.Tx, job skillmaintenance.Job) error {
+	if strings.HasPrefix(job.Request.Reference, "regcheck_") {
+		return nil
+	}
 	if producer, exists := s.maintenanceProducers[job.Request.Kind]; exists {
 		return producer.hooks.Terminal(ctx, tx, job)
 	}

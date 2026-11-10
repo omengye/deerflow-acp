@@ -33,6 +33,10 @@ func TestReadinessChecksSavedConfigWithoutSecretsOrMutations(t *testing.T) {
 }
 
 func TestReadinessReportsMissingCredentialsAndAuthorization(t *testing.T) {
+	t.Setenv("USERPROFILE", t.TempDir())
+	for _, name := range []string{"BRAVE_API_KEY", "DEEPSEEK_API_KEY", "SEARXNG_BASE_URL", "SEARXNG_API_KEY", "SEARXNG_TOKEN"} {
+		t.Setenv(name, "")
+	}
 	t.Setenv("MVP_TEST_BRAVE", "")
 	data := map[string]any{"models": []any{map[string]any{"name": "first", "model": "fixture", "provider": "openai", "api_key": "${MVP_TEST_BRAVE:-not-configured}"}}, "tools": []any{map[string]any{"name": "web_search", "api_key": "${MVP_TEST_BRAVE:-}"}}}
 	states := map[string]string{}

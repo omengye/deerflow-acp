@@ -12,6 +12,17 @@ models:
     base_url: https://your-provider.example/v1
 default_model: primary
 
+network:
+  proxy:
+    enabled: true
+    url: http://127.0.0.1:7890
+    no_proxy: [localhost, 127.0.0.1, "::1"]
+
+search:
+  providers:
+    brave:
+      api_key: ${BRAVE_API_KEY}
+
 local_acp:
   enable_bash: true
   permission_mode: dangerous
@@ -31,16 +42,12 @@ tool_groups:
 tools:
   - name: web_search
     group: web
-    api_key: ${BRAVE_API_KEY}
-    https_proxy: http://127.0.0.1:11808
     max_results: 5
   - name: web_fetch
     group: web
-    https_proxy: http://127.0.0.1:11808
     timeout: 10
   - name: image_search
     group: web
-    https_proxy: http://127.0.0.1:11808
     max_results: 5
   - name: ls
     group: file:read
@@ -69,11 +76,32 @@ tools:
     group: bash
 ```
 
+## 统一网络代理
+
+在桌面“设置 → 常用”的“网络代理”区块中启用统一代理并填写地址，通过页面底部的
+“保存更改”应用。支持 `http://`、`https://`、`socks5://` 和 `socks5h://`；
+绕过列表用于本地或内网目标，默认包含 `localhost`、`127.0.0.1`、`::1`。
+代理连接测试使用当前草稿，经代理访问 `https://example.com` 验证 HTTPS 连接；
+该测试忽略绕过列表，不保存配置，也不调用模型。
+
+统一代理覆盖模型请求、模型连接测试、子代理和后台维护模型，以及 `web_search`、
+本地 `web_fetch`、DeepSeek Fetch 和 `image_search`。工具或搜索服务已配置的
+独立 `https_proxy` 优先于统一代理。DeepSeek Fetch 使用 DeepSeek 搜索服务的代理设置。
+启用统一代理时，绕过列表同样适用于独立代理，匹配的目标直接连接。
+关闭统一代理保留已保存地址，并恢复原有连接策略：模型可使用进程环境变量代理，
+网页工具只使用其独立代理，否则直连。该设置不修改 Windows 系统代理或 PAC，
+也不会替外部浏览器、OpenCLI、shell 命令配置网络。
+
+统一设置保存到 `config.yaml` 的 `network.proxy`，搜索服务的独立覆盖继续保存在
+`search-providers.json`。应用配置沿用现有等待活动任务结束、重建后端的流程；
+已保存与已生效状态分别显示。设置页以明文显示代理地址，重新打开页面时回填已保存地址；
+诊断输出仍会隐藏地址。留空保留已有地址，清除需使用显式清除操作。
+
 ## 实现与边界
 
 | 工具 | Go 实现 |
 | --- | --- |
-| `web_search` | Brave Search API；保留独立 API key、代理、结果上限和 day/week/month/year 时间过滤 |
+| `web_search` | Brave / DeepSeek / SearXNG 搜索插件；在设置 → 工具 → `web_search` 中配置并即时切换，保留统一结果及来源链接，详见[搜索插件](search-plugins.md) |
 | `web_fetch` | Go HTTP、显式代理、超时、2 MiB 响应上限，HTML 正文和 Markdown 提取；默认输出 4096 字符 |
 | `image_search` | DuckDuckGo 图片搜索，失败时使用 Bing；返回原图和缩略图 URL，支持尺寸、类型、布局过滤 |
 | `ls` | 两层目录列表，有界分页和目录版本校验 |

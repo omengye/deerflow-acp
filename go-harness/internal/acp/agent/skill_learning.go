@@ -22,7 +22,7 @@ const (
 )
 
 func learningCapabilities() map[string]any {
-	return map[string]any{"version": 1, "mode": "shadow", "getControlMethod": getLearningControlMethod, "setControlMethod": setLearningControlMethod, "workspaceSharingControl": true, "listMethod": listExperiencesMethod, "patternsMethod": listExperiencePatternsMethod, "matchesMethod": listExperienceMatchesMethod, "jobsMethod": listLearningJobsMethod, "startEpisodeMethod": startLearningEpisodeMethod, "cancelMethod": cancelLearningMethod}
+	return map[string]any{"version": 1, "mode": "automatic", "getControlMethod": getLearningControlMethod, "setControlMethod": setLearningControlMethod, "workspaceSharingControl": true, "listMethod": listExperiencesMethod, "patternsMethod": listExperiencePatternsMethod, "matchesMethod": listExperienceMatchesMethod, "jobsMethod": listLearningJobsMethod, "startEpisodeMethod": startLearningEpisodeMethod, "cancelMethod": cancelLearningMethod}
 }
 
 func (a *Agent) learningRequest(ctx context.Context, method string, raw json.RawMessage) (any, error) {

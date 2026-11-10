@@ -79,7 +79,7 @@ impl Queue {
 
 pub(super) fn reason(code: &str) -> String {
     let label = match code {
-        "host_disabled" => "全局学习关闭；在自动化设置启用并保存应用",
+        "host_disabled" => "后台学习未运行；请检查服务状态和技能加载状态",
         "contribution_disabled" => "此聊天未允许贡献；在学习详情检查贡献授权",
         "consent_changed" => "来源授权已变化；旧来源不可复用，仅捕获授权后的输入",
         "tree_unsettled" => "原任务或子任务尚未结算；可查看原任务的运行状态和执行记录",
@@ -105,7 +105,7 @@ pub(super) fn reason(code: &str) -> String {
         "source_bounds" | "capture_limited" => {
             "来源达到捕获边界；本段无法完整提取，开始新目标不会回填旧输入"
         }
-        "budget_exhausted" => "学习或共享维护额度不足；检查自动化设置中的额度，按 UTC 日重置",
+        "deferred_capacity" => "等待维护资源恢复，已保存的阶段进度将继续",
         "source_unavailable" => "完整来源已不可用；无法复用这次提取快照",
         "attempts_exhausted" => "已达到重试次数上限；不能重置尝试次数",
         "deadline_expired" => "原作业期限已到；不能通过重试延长期限",

@@ -20,7 +20,7 @@ func generationInput() skillmaintenance.GenerationInput {
 	return skillmaintenance.GenerationInput{Target: harness.SkillTarget{SourceID: "project", SourceIdentity: strings.Repeat("a", 64), Name: "research", Scope: harness.SkillScopeWorkspace}, Base: harness.SkillHead{Version: strings.Repeat("b", 64), Exists: true}, Reason: "Add a source verification step", BaseFiles: map[string][]byte{"SKILL.md": []byte("---\nname: research\ndescription: Research a topic\n---\nSummarize sources.\n")}, Evidence: []skillmaintenance.Evidence{{Reference: "user-feedback/1", Summary: "The operator explicitly requested source verification."}}}
 }
 
-func TestSkillGenerationAndBothReviewsShareMaintenanceBudget(t *testing.T) {
+func TestSkillGenerationAndBothReviewsRecordAllCallsWithoutQuota(t *testing.T) {
 	for _, allowed := range []int64{2, 3} {
 		t.Run(fmt.Sprint(allowed), func(t *testing.T) {
 			s, _, c, ctx := maintenanceReviewFixture(t, allowed)
@@ -82,21 +82,18 @@ func TestSkillGenerationAndBothReviewsShareMaintenanceBudget(t *testing.T) {
 				t.Fatal(e)
 			}
 			report, e := validator.Validate(ctx, harness.SkillValidationInput{Proposal: p, BaseFiles: input.BaseFiles, CandidateFiles: candidate.Files})
-			if allowed == 3 && (e != nil || report.Security != "passed" || report.Behavior != "not_run" || len(report.ModelChecks) != 2) {
+			if e != nil || report.Security != "passed" || report.Behavior != "not_run" || len(report.ModelChecks) != 2 {
 				t.Fatalf("review %+v %v", report, e)
 			}
-			if allowed == 2 && e == nil {
-				t.Fatal("quality review bypassed shared quota")
-			}
-			if int64(calls.Load()) != allowed {
+			if calls.Load() != 3 {
 				t.Fatalf("calls %d allowed %d", calls.Load(), allowed)
 			}
 			receipts, e := s.Receipts(context.Background(), c.Job.ID, 0, 100)
-			if e != nil || len(receipts) != int(allowed) {
+			if e != nil || len(receipts) != 3 {
 				t.Fatalf("receipts %+v %v", receipts, e)
 			}
 			for i, stage := range []string{"generation", "security", "quality"} {
-				if i < len(receipts) && (receipts[i].Stage != stage || receipts[i].ChargedTokens != 125 || receipts[i].Estimated) {
+				if i < len(receipts) && (receipts[i].Stage != stage || receipts[i].ActualTokens != 125 || receipts[i].Estimated) {
 					t.Fatalf("receipt %+v", receipts[i])
 				}
 			}

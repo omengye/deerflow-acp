@@ -285,6 +285,13 @@ impl Waku {
                         session.status = SessionStatus::Working;
                     }
                 }
+                if self.state.selected_session == Some(session_id)
+                    && self
+                        .selected_session()
+                        .is_some_and(|session| session.provider == ProviderKind::DeerFlow)
+                {
+                    self.search_plugins_request("search-status", serde_json::json!({}), cx);
+                }
             }
             DriverEvent::ToolApprovalChanged(mode) => {
                 self.record_deerflow_approval(session_id, mode);
@@ -479,6 +486,11 @@ impl Waku {
             }
             DriverEvent::RichActivity(item) => {
                 if self.accepts_turn_output(session_id) {
+                    if item.kind == ActivityKind::Search
+                        && self.state.selected_session == Some(session_id)
+                    {
+                        self.search_plugins_request("search-status", serde_json::json!({}), cx);
+                    }
                     let refresh_branch =
                         should_refresh_branch_after_activity(item.kind, item.complete)
                             && self.state.selected_session == Some(session_id);

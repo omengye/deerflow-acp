@@ -20,7 +20,7 @@ func skillMaintenanceFailure(err error) error {
 	if errors.Is(err, skillmaintenance.ErrMatchInventoryChanged) {
 		return errors.Join(harness.ErrSkillValidation, skillmaintenance.ErrMatchInventoryChanged, harness.ErrSkillConflict)
 	}
-	for _, cause := range []error{skillmaintenance.ErrBudget, skillmaintenance.ErrConflict, skillmaintenance.ErrClock, skillmaintenance.ErrInvalid, harness.ErrSkillConflict, skillmaintenance.ErrSourceActive, harness.ErrPermissionDenied} {
+	for _, cause := range []error{skillmaintenance.ErrCapacity, skillmaintenance.ErrConflict, skillmaintenance.ErrClock, skillmaintenance.ErrInvalid, harness.ErrSkillConflict, skillmaintenance.ErrSourceActive, harness.ErrPermissionDenied} {
 		if errors.Is(err, cause) {
 			return fmt.Errorf("%w: %w", harness.ErrSkillValidation, cause)
 		}
@@ -46,6 +46,7 @@ func generateSkillMaintenance(ctx context.Context, broker skillmaintenance.Broke
 		return nil, skillReviewError("maintenance input cannot be encoded")
 	}
 	identity, _ := json.Marshal([]any{route.Provider, route.Model, route.BaseURL, route.OutputTokenParameter, output})
+	identity = appendModelAPIIdentity(identity, route.API)
 	reservation, err := broker.Reserve(ctx, skillmaintenance.ModelCall{Stage: stage, ModelIdentity: fmt.Sprintf("%x", sha256.Sum256(identity)), InputDigest: fmt.Sprintf("%x", sha256.Sum256(payload)), InputTokens: int64(len(payload)) + 128, MaxOutputTokens: int64(output)})
 	if err != nil {
 		return nil, err

@@ -3,6 +3,7 @@ package eino
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"strings"
 	"time"
@@ -74,10 +75,21 @@ func outputConsolidated(msg *schema.Message) bool {
 	return msg != nil && msg.Extra[outputConsolidatedKey] == true
 }
 
-type outputContinuationError struct{ reason string }
+type outputContinuationError struct {
+	reason                        string
+	outputTokens, reasoningTokens int
+}
 
 func (e *outputContinuationError) Error() string {
-	return "The model reached its per-response output limit and automatic continuation could not finish (" + e.reason + "). Partial output was preserved; no truncated tool calls were executed. Increase the per-response output allowance or reduce reasoning effort before continuing."
+	usage := ""
+	if e.outputTokens > 0 {
+		usage = fmt.Sprintf(" Provider-reported output: %d tokens", e.outputTokens)
+		if e.reasoningTokens > 0 {
+			usage += fmt.Sprintf(" (%d reasoning tokens)", e.reasoningTokens)
+		}
+		usage += "."
+	}
+	return "The model reached its per-response output limit (" + e.reason + ")." + usage + " Any partial answer was preserved; truncated tool calls were not executed. Check this model's configured output allowance and service limit, or select a supported lower reasoning effort before continuing."
 }
 
 func outputExhausted(msg *schema.Message) bool {
@@ -111,7 +123,12 @@ func outputContinuationPolicy(compaction adk.ChatModelAgentMiddleware) *adk.Mode
 				if err := adk.SendEvent(ctx, outputContextReplacement(input, "output_incomplete")); err != nil {
 					return &adk.RetryDecision{RewriteError: err}
 				}
-				return &adk.RetryDecision{RewriteError: &outputContinuationError{reason: reason}}
+				failure := &outputContinuationError{reason: reason}
+				if usage := attempt.OutputMessage.ResponseMeta.Usage; usage != nil {
+					failure.outputTokens = usage.CompletionTokens
+					failure.reasoningTokens = usage.CompletionTokensDetails.ReasoningTokens
+				}
+				return &adk.RetryDecision{RewriteError: failure}
 			}
 			if attempt.RetryAttempt > maxOutputContinuations {
 				return stop("continuation limit reached")
@@ -124,6 +141,13 @@ func outputContinuationPolicy(compaction adk.ChatModelAgentMiddleware) *adk.Mode
 				}
 			}
 			noProgress := strings.TrimSpace(text) == ""
+			// Reasoning/empty output has no visible continuation point. A prompt
+			// asking for less reasoning cannot change a fixed provider effort or
+			// output allowance. Stop without another identical paid request.
+			// Incomplete tool groups retain their bounded, safe reissue path.
+			if noProgress && len(msg.ToolCalls) == 0 {
+				return stop("no answer or tool call to continue; retry with unchanged settings stopped")
+			}
 			for i := len(attempt.InputMessages) - 1; attempt.RetryAttempt > 1 && i >= 0; i-- {
 				previous := attempt.InputMessages[i]
 				if isOutputContinuation(previous) {
@@ -162,7 +186,7 @@ func outputContinuationPolicy(compaction adk.ChatModelAgentMiddleware) *adk.Mode
 				}
 				input = state.Messages
 			}
-			note := "[Host output-limit recovery] Your previous response exhausted its per-response output allowance. Continue the same task from the end of the visible answer without repeating it or restarting completed work. Keep the continuation concise and use less reasoning."
+			note := "[Host output-limit recovery] Your previous response exhausted its per-response output allowance. Continue the same task from the end of the visible answer without repeating it or restarting completed work. Keep the continuation concise."
 			if len(msg.ToolCalls) > 0 {
 				note += " The entire tool-call group in that response was discarded and NONE of those calls executed. Reissue any still-needed calls with complete arguments, using smaller operations. Do not repeat earlier completed tool calls."
 			}

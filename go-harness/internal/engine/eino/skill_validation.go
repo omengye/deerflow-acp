@@ -68,7 +68,7 @@ func NewSkillModelValidator(ctx context.Context, cfg harness.SkillModelReviewCon
 		if strings.TrimSpace(route.Model) == "" {
 			return nil, fmt.Errorf("%w: both skill review models are required", harness.ErrInvalidInput)
 		}
-		chat, err := newModelWithRetryPolicy(ctx, Config{Provider: route.Provider, APIKey: route.APIKey, BaseURL: route.BaseURL, Model: route.Model, OutputTokenParameter: route.OutputTokenParameter}, route.Model, true)
+		chat, err := newModelWithRetryPolicy(ctx, Config{API: route.API, Network: route.Network, Provider: route.Provider, APIKey: route.APIKey, BaseURL: route.BaseURL, Model: route.Model, OutputTokenParameter: route.OutputTokenParameter}, route.Model, true)
 		if err != nil {
 			return nil, &harness.SkillValidationFailure{Code: "review_configuration_error", Stage: "validation", DetailCode: "model_initialization_failed"}
 		}
@@ -77,6 +77,7 @@ func NewSkillModelValidator(ctx context.Context, cfg harness.SkillModelReviewCon
 	// Bind the effective endpoint and generation bounds without persisting
 	// credentials or raw URLs in the report. Credentials are transport data.
 	identity, _ := json.Marshal([]any{skillReviewPromptVersion, cfg.Moderation.Provider, cfg.Moderation.Model, cfg.Moderation.BaseURL, cfg.Moderation.OutputTokenParameter, cfg.Evaluation.Provider, cfg.Evaluation.Model, cfg.Evaluation.BaseURL, cfg.Evaluation.OutputTokenParameter, cfg.Timeout.String(), cfg.MaxInputBytes, cfg.MaxOutputTokens, cfg.ResponseFormat})
+	identity = appendModelAPIIdentity(identity, cfg.Moderation.API, cfg.Evaluation.API)
 	r.version = fmt.Sprintf("%s/%x", skillReviewPromptVersion, sha256.Sum256(identity))
 	return r, nil
 }
@@ -181,7 +182,7 @@ func (r *skillReviewer) Validate(ctx context.Context, input harness.SkillValidat
 				cause = ctx.Err()
 			}
 			failure := skillReviewRequestFailure(stage, cause)
-			if ctx.Err() != nil && failure.Code != "review_storage_error" && failure.Code != "review_budget_exhausted" {
+			if ctx.Err() != nil && failure.Code != "review_storage_error" && failure.Code != "review_runtime_unavailable" {
 				failure = skillReviewRequestFailure(stage, ctx.Err())
 			}
 			if maintenanceScope && err != nil {

@@ -18,7 +18,7 @@ import (
 )
 
 func TestSkillLearningNativeDelegatedPipelineAutomaticReviewAndPublication(t *testing.T) {
-	for _, automatic := range []bool{false, true} {
+	for _, automatic := range []bool{true} {
 		t.Run(fmt.Sprintf("automatic=%t", automatic), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 65*time.Second)
 			defer cancel()
@@ -43,11 +43,11 @@ func TestSkillLearningNativeDelegatedPipelineAutomaticReviewAndPublication(t *te
 			cfg.Subagents = &harness.SubagentsConfig{CustomAgents: map[string]harness.AgentConfig{"worker": {Description: "Verify complete local input", SystemPrompt: "Read the complete local JSON document", Model: "worker", Tools: []string{"skill", "read_file"}}}}
 			cfg.Budget = &harness.BudgetLimits{MaxModelCalls: 8, MaxToolCalls: 6, MaxTokens: 100000, MaxOutputTokens: 512}
 			cfg.Skills.Install = []harness.SkillInstall{{SourceID: "project", Directory: "research", Enabled: true}}
-			budget := harness.SkillMaintenanceBudget{MaxDailyModelCalls: 20, MaxDailyTokens: 200000, MaxJobSeconds: 60, Workers: 1}
+			budget := harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}
 			consolidation, matching := model("consolidate"), model("match")
 			cfg.SkillLearning = &harness.SkillLearningOptions{Model: model("extract"), Consolidation: &consolidation, Matching: &matching,
-				CrossSession: automatic, Idle: time.Second, Budget: budget, MaxDailyModelCalls: 6, MaxDailyTokens: 100000}
-			cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: model("generate"), Sources: []string{"project"}, Budget: budget}
+				CrossSession: automatic, Idle: time.Second, Policy: budget}
+			cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: model("generate"), Sources: []string{"project"}, Policy: budget}
 			var err error
 			cfg.SkillValidator, err = NewSkillModelValidator(ctx, harness.SkillModelReviewConfig{Moderation: route("security"), Evaluation: route("quality"), MaxOutputTokens: 512})
 			if err != nil {
@@ -59,12 +59,12 @@ func TestSkillLearningNativeDelegatedPipelineAutomaticReviewAndPublication(t *te
 			}
 			cfg.SkillBehavior = &harness.SkillBehaviorOptions{Suites: []harness.SkillBehaviorSuite{{Version: "skill-behavior-v1", ID: "native-delegated-json-check", SourceID: "project", Name: "research", Cases: []harness.SkillBehaviorCase{
 				{ID: "targeted", Kind: "targeted", Prompt: "Inspect the complete JSON document and report completion.", Repetitions: 1, Files: map[string]string{}, Fixtures: []harness.SkillBehaviorFixture{}, Assertions: []harness.SkillBehaviorAssertion{{ID: "oracle-delegated-complete", Kind: "output_equals", Expected: "verified"}}},
-				{ID: "regression", Kind: "regression", Prompt: "Retain the existing source research behavior.", Repetitions: 1, Files: map[string]string{}, Fixtures: []harness.SkillBehaviorFixture{}, Assertions: []harness.SkillBehaviorAssertion{{ID: "oracle-delegated-retained", Kind: "output_equals", Expected: "retained"}}},
+				{ID: "regression", Kind: "regression", Holdout: true, Prompt: "Retain the existing source research behavior.", Repetitions: 1, Files: map[string]string{}, Fixtures: []harness.SkillBehaviorFixture{}, Assertions: []harness.SkillBehaviorAssertion{{ID: "oracle-delegated-retained", Kind: "output_equals", Expected: "retained"}}},
 			}}}}
-			cfg.SkillDiscovery = &harness.SkillDiscoveryOptions{DisableOperatorCorrections: true, ExperiencePatternsEnabled: true, ExperienceReviewDraftsEnabled: !automatic,
-				RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxDailyProposals: 5, MaxPendingProposals: 20}
+			cfg.SkillDiscovery = &harness.SkillDiscoveryOptions{
+				RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxPendingProposals: 20}
 			if automatic {
-				cfg.SkillAutoPatch = &harness.SkillAutoPatchOptions{ExperiencePatternsEnabled: true, MaxChangedLines: 20, MaxDailyPublications: 2, ObservationHours: 72, MinObservations: 3, RollbackFailureThreshold: 2}
+				cfg.SkillAutoPatch = &harness.SkillAutoPatchOptions{MaxChangedLines: 20, ObservationHours: 72, MinObservations: 3, RollbackFailureThreshold: 2}
 			}
 			c, err := Open(ctx, cfg)
 			if err != nil {
@@ -218,7 +218,7 @@ func TestSkillLearningNativeDelegatedPipelineAutomaticReviewAndPublication(t *te
 				t.Fatal("native learning replayed delegated tools or reviews", counts)
 			}
 			var receipts, tokens, unsettled int
-			if err = c.store.DB().QueryRow(`SELECT count(*),COALESCE(sum(charged_tokens),0),COALESCE(sum(state<>'settled'),0) FROM df_skill_maintenance_calls`).Scan(&receipts, &tokens, &unsettled); err != nil ||
+			if err = c.store.DB().QueryRow(`SELECT count(*),COALESCE(sum(actual_tokens),0),COALESCE(sum(state<>'settled'),0) FROM df_skill_maintenance_calls`).Scan(&receipts, &tokens, &unsettled); err != nil ||
 				receipts != 3*tasks+7 || tokens != receipts*125 || unsettled != 0 {
 				t.Fatal("native delegated stages lost shared settled accounting", receipts, tokens, unsettled, err)
 			}
@@ -253,7 +253,16 @@ func TestSkillLearningNativeDelegatedPipelineAutomaticReviewAndPublication(t *te
 			if err != nil || result.Execution == nil || result.Execution.Status != harness.ExecutionCompleted {
 				t.Fatal("native adopted delegated run failed", result, err)
 			}
-			wait("published candidate read by the native child", func() bool {
+			// Reopening without workers preserves observation routing. The
+			// delegated task must read the version pinned by its root task.
+			var expectedVersion string
+			if err = c.store.DB().QueryRow(`SELECT version FROM df_skill_route_tasks WHERE root_id=(SELECT root_id FROM budget_members WHERE id=?) AND source_key=? AND name='research'`, result.Execution.RunID, proposal.Target.SourceIdentity).Scan(&expectedVersion); err != nil {
+				t.Fatal("new delegated task did not persist observation routing", err)
+			}
+			if expectedVersion != base.Version && expectedVersion != proposal.CandidateVersion {
+				t.Fatal("delegated task routed to unrelated version", expectedVersion)
+			}
+			wait("delegated read of the root-pinned skill version", func() bool {
 				var completed int
 				var version string
 				if err := c.store.DB().QueryRow(`SELECT count(*),COALESCE(MAX(r.version),'') FROM eino_background_tasks t
@@ -261,7 +270,10 @@ func TestSkillLearningNativeDelegatedPipelineAutomaticReviewAndPublication(t *te
  WHERE b.origin_run_id=? AND t.status='completed' AND r.name='research' AND r.path='SKILL.md'`, result.Execution.RunID).Scan(&completed, &version); err != nil {
 					t.Fatal(err)
 				}
-				return completed == 1 && version == head.Version
+				if completed > 0 && (completed != 1 || version != expectedVersion) {
+					t.Fatal("delegated skill read did not honor immutable root routing", completed, version, expectedVersion)
+				}
+				return completed == 1
 			})
 			counts["foreground"] += 2
 			counts["child"] += 3

@@ -12,8 +12,8 @@ impl Waku {
         let browser = &state.skill_browser.learning;
         let unavailable = state.busy() || state.applying() || state.status["running"] != true;
         let mut body = df_group(theme)
-            .child(df_label("学习流水线", "后台在线表示执行器可接收工作；是否已有产出请看经验、归并、匹配、生成和发布记录。状态是最近一次查询的快照。", theme))
-            .child(df_button("df-learning-overview-refresh", "刷新学习流水线", unavailable, false, theme, cx,
+            .child(df_label("自动进化状态", "汇总学习、发现和生成进度。进入页面时自动读取；后台在线表示可接收任务，是否已有产出请查看下方记录。", theme))
+            .child(df_button("df-learning-overview-refresh", "刷新状态与记录", unavailable, false, theme, cx,
                 |this, _, cx| this.deerflow_queue_skill_center(cx)));
         body = body.child(df_label(
             "全目录学习状态",
@@ -124,7 +124,7 @@ impl Waku {
         if diagnostics.inputs.is_empty() && diagnostics.jobs.is_empty() {
             body = body.child(df_label(
                 "此聊天暂无已捕获的学习输入或作业",
-                "检查全局学习和此聊天贡献。仅在开启后捕获新的真实输入，旧聊天不会回填。",
+                "新任务结束并产生有效证据后会自动学习；也可查看此聊天的贡献状态。历史任务不会补跑。",
                 theme,
             ));
         }
@@ -262,15 +262,13 @@ impl Waku {
     ) -> AnyElement {
         let state = &self.deerflow_settings;
         let browser = &state.skill_browser.learning;
-        let supported = state
-            .settings_contract
-            .allows("/skill_evolution/learning/enabled");
+        let supported = true;
         let unavailable =
             !supported || state.busy() || state.applying() || state.status["running"] != true;
         let mutation_disabled = unavailable || state.skill_browser.mutations_pending();
         let mut body = div().child(df_group(theme).child(df_label(
             "学习来源",
-            "系统在后台提取、归并和匹配真实用户多轮经验，并按授权自动生成提案；人工审核只需批准或驳回生成结果，不需手工整理或触发进化。以下内容是模型推断，质量未评估；历史查询不授予创建或发布权限。",
+            "系统在后台提取、归并和匹配真实用户多轮经验，并按授权自动生成提案；候选通过宿主验证后自动采用，无需手工触发或批准。以下内容是模型推断，质量未评估；历史查询不授予创建或发布权限。",
             theme,
         )));
         if !supported {
@@ -365,7 +363,7 @@ impl Waku {
                     },
                     contribution,
                     if contribute {
-                        "允许此会话之后的输入用于脱敏经验提取及已授权的后续学习阶段，可能消耗共享维护模型额度。不会回填历史聊天；这不授予技能发布权限。"
+                        "允许此会话之后的输入用于脱敏经验提取及后续学习阶段，可能产生主模型调用和用量。不会补跑历史聊天；候选仍须通过验证。"
                     } else {
                         "停止此会话贡献并撤销工作区共享；删除未发布学习来源及其全部传递派生内容，取消相关未完成作业。维护费用、已消费票和已采用的正式技能不会撤销。"
                     },
@@ -585,10 +583,11 @@ impl Waku {
             }
             if browser.pane == Pane::Patterns {
                 history = history.child(df_label("显式重试新技能创建",
-                    "仅适用于此归并结果已失败、已取消或提案已驳回的新技能创建。先在生成页刷新并选择原作业，再核对此处的完整条件。不能换名、换来源或升级旧归并修订；最多 3 次人工重试。复用原独立 episode 证据不新增票，不删除自动创建预留，不退旧消费；每次重新占用提案和维护额度，仍受 cooldown 限制。", theme))
-                    .child(df_button("df-learning-choose-retry", "去生成页选择 / 刷新原创建作业", unavailable, false, theme, cx,
+                    "仅适用于此归并结果已失败、已取消或提案已驳回的新技能创建。在上方生成记录中刷新并选择原作业，再核对重试条件。最多 3 次人工重试，保留原始证据、已发生用量和冷却限制；验证通过后自动采用。", theme))
+                    .child(df_button("df-learning-choose-retry", "刷新原创建作业", unavailable, false, theme, cx,
                         |this, _, cx| {
-                            this.deerflow_settings.skill_center_tab = presentation::SkillCenterTab::Generation;
+                            this.deerflow_settings.skill_center_tab = presentation::SkillCenterTab::History;
+                            this.deerflow_settings.show_more = true;
                             this.deerflow_settings.confirm_manage = None;
                             this.deerflow_request("manage", json!({"operation":"skill.generation.list", "limit":skills::PAGE_SIZE}), cx);
                         }));
@@ -633,7 +632,7 @@ impl Waku {
                     ));
                 }
                 history = history.child(df_label("人工重新裁决已有技能目标",
-                    "先在技能目录选择并刷新一个已启用技能，再回到本归并结果。目录选择不代表 runtime 访问授权；服务将重新核对来源、当前 head / overlay、归并修订与全部学习来源。此操作不调用匹配模型、不确认方法质量、不创建新技能，后续仍使用原 discovery 配额与独立证据；候选必须人工发布。", theme))
+                    "先在技能目录选择并刷新一个已启用技能，再回到本归并结果。系统会核对当前版本和全部学习来源；选择目标不会扩大访问权限。本操作只纠正匹配目标，不代表质量验证通过；新候选仍须验证后自动采用。", theme))
                     .child(df_button("df-learning-choose-target", "去技能目录选择 / 刷新目标", unavailable, false, theme, cx,
                         |this, _, cx| {
                             this.deerflow_settings.skill_center_tab = presentation::SkillCenterTab::Catalog;
@@ -653,7 +652,7 @@ impl Waku {
                             mutation_disabled || request.is_none(), false, theme, cx, move |this, _, cx| {
                                 if let Some(request) = &request {
                                     this.deerflow_settings.confirm_manage = Some((
-                                        "按已缓存的精确来源 / head / overlay 重新裁决当前归并目标，取消并清理旧的未发布候选。旧匹配记录保留为历史但不再授予准入。当前来源或目标变更会拒绝，不隐式 rebase、不重置消费和创建预留；允许提案时仍需原独立开关、证据和额度，候选必须人工发布。".into(), request.clone()));
+                                        "纠正当前归并目标，取消并清理旧的未发布候选，保留原始证据、匹配历史和已发生用量。当前来源或技能版本变化时将拒绝操作；新候选仍须重新验证后自动采用。".into(), request.clone()));
                                     cx.notify();
                                 }
                             }));
@@ -684,20 +683,20 @@ impl Waku {
                 ));
             }
         }
-        body = body.child(history).child(df_group(theme).child(df_label("进入现有审核流程",
-            "经验或匹配记录并不证明已生成提案。自动发现记录提供 match / pattern / episode 引用；关联生成作业提供候选、差异与评测。默认人工发布；独立授权的自动补丁由宿主准入，描述修改另需正负触发选择改善，新技能和其他元数据仍需人工审核。", theme))
+        body = body.child(history).child(df_group(theme).child(df_label("候选验证与采用",
+            "系统自动生成并验证候选。可查看发现来源、版本差异和验证结果；证据或运行条件不足时展示等待原因，通过验证后自动采用。", theme))
             .child(div().flex().flex_wrap().gap(px(6.0))
                 .child(df_button("df-learning-discovery", "查看自动发现来源", unavailable, false, theme, cx, |this, _, cx| {
-                    this.deerflow_settings.skill_center_tab = presentation::SkillCenterTab::Generation;
+                    this.deerflow_settings.skill_center_tab = presentation::SkillCenterTab::History;
                     this.deerflow_settings.show_more = true;
                     this.deerflow_settings.confirm_manage = None;
                     this.deerflow_request("manage", json!({"operation":"skill.discovery.list", "limit":skills::PAGE_SIZE}), cx);
                 }))
-                .child(df_button("df-learning-review", "查看待审核提案与差异", unavailable, false, theme, cx, |this, _, cx| {
+                .child(df_button("df-learning-review", "查看候选与验证结果", unavailable, false, theme, cx, |this, _, cx| {
                     this.deerflow_settings.skill_center_tab = presentation::SkillCenterTab::Review;
-                    this.deerflow_settings.show_more = false;
+                    this.deerflow_settings.show_more = true;
                     this.deerflow_settings.confirm_manage = None;
-                    this.deerflow_request("manage", json!({"operation":"proposal.list", "status":"pending_review", "limit":skills::PAGE_SIZE}), cx);
+                    this.deerflow_request("manage", json!({"operation":"proposal.list", "limit":skills::PAGE_SIZE}), cx);
                 }))));
         body.into_any_element()
     }

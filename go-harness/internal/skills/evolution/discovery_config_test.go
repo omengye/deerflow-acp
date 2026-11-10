@@ -1,31 +1,21 @@
 package evolution
 
 import (
-	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
 const discoveryConfigBase = "enabled: true\nmoderation_model_name: primary\nevaluation_model_name: primary\ngeneration_model_name: primary\ngeneration:\n  enabled: true\nbudget:\n  max_daily_model_calls: 30\n  max_daily_tokens: 100000\n  max_job_seconds: 300\n  workers: 1\n"
 
-func TestDiscoveryConfigExplicitOptInAndDefaults(t *testing.T) {
-	models := map[string]bool{"primary": true}
-	for _, suffix := range []string{"", "discovery:\n  operator_corrections_enabled: false\n", "discovery:\n  repeat_threshold: 3\n"} {
-		settings, err := DecodeReviewConfig([]byte(discoveryConfigBase+suffix), models, "primary")
-		if err != nil || settings.DiscoveryOptions() != nil {
-			t.Fatalf("configuration without native opt-in activated discovery: %+v %v", settings, err)
+func TestDiscoveryConfigurationRemovedAndDefaultsAutomatic(t *testing.T) {
+	settings := AutomaticSettings("primary")
+	if settings.DiscoveryOptions() == nil || settings.AutoPatchOptions() == nil {
+		t.Fatal("zero-config pipeline disabled")
+	}
+	for _, old := range []string{discoveryConfigBase, "enabled: false\n"} {
+		if _, err := DecodeReviewConfig([]byte(old), map[string]bool{"primary": true}, "primary"); err == nil {
+			t.Fatal("retired configuration accepted")
 		}
-	}
-	settings, err := DecodeReviewConfig([]byte(discoveryConfigBase+"discovery:\n  operator_corrections_enabled: true\n"), models, "primary")
-	want := &harness.SkillDiscoveryOptions{RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxDailyProposals: 5, MaxPendingProposals: 20}
-	if err != nil || !reflect.DeepEqual(settings.DiscoveryOptions(), want) {
-		t.Fatalf("native defaults: %+v %v", settings.DiscoveryOptions(), err)
-	}
-	settings, err = DecodeReviewConfig([]byte("enabled: false\ndiscovery:\n  enabled: true\n  min_tool_calls: 5\n"), models, "primary")
-	if err != nil || settings.DiscoveryOptions() != nil {
-		t.Fatalf("legacy flag activated discovery: %+v %v", settings, err)
 	}
 }
 

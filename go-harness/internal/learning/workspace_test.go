@@ -9,7 +9,7 @@ import (
 )
 
 func TestSkillLearningWorkspaceOptionsCannotGrantSharingWithoutConsolidation(t *testing.T) {
-	o := harness.SkillLearningOptions{CrossSession: true, Budget: harness.SkillMaintenanceBudget{MaxDailyModelCalls: 10, MaxDailyTokens: 10000, MaxJobSeconds: 60, Workers: 1}, MaxDailyModelCalls: 5, MaxDailyTokens: 5000}
+	o := harness.SkillLearningOptions{CrossSession: true, Policy: harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}}
 	if validateOptions(o) == nil {
 		t.Fatal("cross-session accepted without consolidation")
 	}

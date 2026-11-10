@@ -79,10 +79,19 @@ func windowCompaction(c harness.CompactionConfig, window, output int) harness.Co
 }
 
 func (m *trackedModel) windowOptions(messages []*schema.Message, opts []model.Option) ([]model.Option, error) {
+	// Apply route limits even for models with no declared context window.
+	// The same options reach both budget admission and the provider wire.
+	common := model.GetCommonOptions(&model.Options{}, opts...)
+	limit := m.outputLimits.Effective(m.budget.limits.MaxOutputTokens)
+	if common.MaxTokens != nil && *common.MaxTokens > 0 && (limit == 0 || *common.MaxTokens < limit) {
+		limit = *common.MaxTokens
+	}
 	if m.contextWindow == 0 {
+		if limit > 0 {
+			return append(append([]model.Option(nil), opts...), model.WithMaxTokens(limit)), nil
+		}
 		return opts, nil
 	}
-	common := model.GetCommonOptions(&model.Options{}, opts...)
 	tokens, err := estimateModelTokens(messages, common.Tools)
 	if err != nil {
 		return nil, err
@@ -91,9 +100,6 @@ func (m *trackedModel) windowOptions(messages []*schema.Message, opts []model.Op
 	if remaining < 1 {
 		return nil, fmt.Errorf("%w: estimated input %d exceeds configured window %d; compact history or use a larger-window model", harness.ErrContextLimit, tokens, m.contextWindow)
 	}
-	output := outputReserve(m.budget.limits.MaxOutputTokens, m.settings)
-	if common.MaxTokens != nil && *common.MaxTokens > 0 {
-		output = min(output, *common.MaxTokens)
-	}
+	output := outputReserve(limit, m.settings)
 	return append(append([]model.Option(nil), opts...), model.WithMaxTokens(min(output, int(remaining)))), nil
 }

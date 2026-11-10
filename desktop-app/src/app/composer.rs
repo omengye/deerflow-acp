@@ -2365,9 +2365,8 @@ impl Waku {
         true
     }
 
-    /// Stage the clipboard's primary image/file representation. On-disk paths
-    /// reuse drop handling immediately; raw image bytes are copied into Waku's
-    /// durable blob store on the background executor before their chip appears.
+    /// Prefer the clipboard's original files. Its bitmap is a fallback when no
+    /// file could be imported, rather than a second attachment of the same image.
     pub(super) fn stage_pasted_attachments(
         &mut self,
         entries: Vec<ClipboardEntry>,
@@ -2384,79 +2383,89 @@ impl Waku {
                 ClipboardEntry::String(_) | ClipboardEntry::Image(_) => {}
             }
         }
-        self.stage_attachment_paths(&paths, cx);
-        if images.is_empty() {
+        if paths.is_empty() && images.is_empty() {
             return;
         }
-
         let daemon = self.daemon.clone();
         let draft_owner = self.selected_composer_draft_key();
         cx.spawn(async move |waku, cx| {
-            let stored = cx
+            let (stored, errors) = cx
                 .background_executor()
                 .spawn(async move {
-                    let image_count = images.len();
-                    images
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, image)| {
-                            let preview_image = Arc::new(image);
-                            let bytes = preview_image.bytes.clone();
-                            let response = daemon
-                                .client()
-                                .request(
-                                    Uuid::nil(),
-                                    Uuid::nil(),
-                                    waku_client::Command::StoreBlob {
-                                        mime_type: preview_image.format.mime_type().to_owned(),
-                                        bytes,
-                                    },
-                                )
-                                .map_err(|error| error.to_string())?;
+                    import_clipboard_media(
+                        &paths,
+                        images,
+                        |source| {
+                            let (name, upload, image_bytes) = attachment_upload_from_path(source)?;
+                            let is_image = image_bytes.is_some();
+                            let preview = image_bytes.and_then(|bytes| {
+                                image_preview::image_format_for_name(&name)
+                                    .map(|format| Arc::new(gpui::Image::from_bytes(format, bytes)))
+                            });
+                            let response = daemon.client().request(
+                                Uuid::nil(),
+                                Uuid::nil(),
+                                waku_client::Command::ImportAttachment { name, upload },
+                            )?;
+                            let waku_client::ResponsePayload::AttachmentStored { attachment } =
+                                response
+                            else {
+                                anyhow::bail!("the daemon returned an invalid attachment response");
+                            };
+                            Ok((
+                                attachment.path,
+                                attachment.name,
+                                attachment.is_dir,
+                                is_image,
+                                attachment.reference,
+                                preview,
+                            ))
+                        },
+                        |index, count, image| {
+                            let preview = Arc::new(image);
+                            let response = daemon.client().request(
+                                Uuid::nil(),
+                                Uuid::nil(),
+                                waku_client::Command::StoreBlob {
+                                    mime_type: preview.format.mime_type().to_owned(),
+                                    bytes: preview.bytes.clone(),
+                                },
+                            )?;
                             let waku_client::ResponsePayload::BlobStored { reference, path } =
                                 response
                             else {
-                                return Err("the daemon returned an invalid blob response".into());
+                                anyhow::bail!("the daemon returned an invalid blob response");
                             };
                             let extension = path
                                 .extension()
-                                .and_then(|extension| extension.to_str())
+                                .and_then(|ext| ext.to_str())
                                 .unwrap_or("png");
-                            let name = if image_count == 1 {
+                            let name = if count == 1 {
                                 format!("image.{extension}")
                             } else {
                                 format!("image-{}.{extension}", index + 1)
                             };
-                            Ok::<_, String>((path, name, reference, preview_image))
-                        })
-                        .collect::<Result<Vec<_>, _>>()
+                            Ok((path, name, false, true, reference, Some(preview)))
+                        },
+                    )
                 })
                 .await;
-            let _ = waku.update(cx, |waku, cx| match stored {
-                Ok(stored) => {
-                    if waku.selected_composer_draft_key() != draft_owner {
-                        return;
-                    }
-                    let mut staged = false;
-                    for (path, name, reference, preview_image) in stored {
-                        staged |= waku.stage_daemon_attachment(
-                            path,
-                            name,
-                            false,
-                            true,
-                            reference,
-                            Some(preview_image),
-                        );
-                    }
-                    if staged {
-                        waku.schedule_composer_draft_save(cx);
-                        cx.notify();
-                    }
+            let _ = waku.update(cx, |waku, cx| {
+                if waku.selected_composer_draft_key() != draft_owner {
+                    return;
                 }
-                Err(error) => {
-                    waku.show_toast(tr!("errors.store_pasted_image", error = error));
-                    cx.notify();
+                let mut changed = false;
+                for (path, name, is_dir, is_image, reference, preview) in stored {
+                    changed |= waku
+                        .stage_daemon_attachment(path, name, is_dir, is_image, reference, preview);
                 }
+                if changed {
+                    waku.schedule_composer_draft_save(cx);
+                }
+                if !errors.is_empty() {
+                    waku.show_toast(errors.join("\n"));
+                }
+                cx.notify();
             });
         })
         .detach();
@@ -3136,6 +3145,7 @@ impl Waku {
                     card.child(self.render_composer_attachments(cx))
                 })
                 .child(div().pt(px(2.0)).child(self.composer.clone()))
+                .children(self.render_search_configuration_notice(cx))
                 .child(composer_toolbar(
                     composer_controls([self.render_provider_model_control(cx)])
                         .children(self.render_thinking_control(cx))
@@ -3915,6 +3925,123 @@ pub(super) fn visible_branch_entries(
 // one third of wire overhead. Stay comfortably below tungstenite's default
 // message limit until uploads move to a streaming content endpoint.
 const MAX_ATTACHMENT_BYTES: u64 = waku_client::attachments::MAX_ATTACHMENT_BYTES as u64;
+
+/// A file-list bitmap describes the same clipboard operation. Preserve every
+/// importable original; only use bitmap data if none of the originals succeeded.
+/// Partial multi-file failures remain visible without discarding successful files.
+fn import_clipboard_media<T>(
+    paths: &[PathBuf],
+    images: Vec<gpui::Image>,
+    mut import_path: impl FnMut(&Path) -> anyhow::Result<T>,
+    mut import_image: impl FnMut(usize, usize, gpui::Image) -> anyhow::Result<T>,
+) -> (Vec<T>, Vec<String>) {
+    let mut stored = Vec::new();
+    let mut errors = Vec::new();
+    for path in paths {
+        match import_path(path) {
+            Ok(value) => stored.push(value),
+            Err(error) => errors.push(error.to_string()),
+        }
+    }
+    if stored.is_empty() && !images.is_empty() {
+        errors.clear();
+        let count = images.len();
+        for (index, image) in images.into_iter().enumerate() {
+            match import_image(index, count, image) {
+                Ok(value) => stored.push(value),
+                Err(error) => errors.push(error.to_string()),
+            }
+        }
+    }
+    (stored, errors)
+}
+
+#[cfg(test)]
+mod clipboard_import_tests {
+    use super::*;
+
+    fn bitmap() -> gpui::Image {
+        gpui::Image::from_bytes(gpui::ImageFormat::Png, vec![1, 2, 3])
+    }
+
+    #[test]
+    fn clipboard_import_keeps_original_file_and_skips_its_bitmap() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("original.gif");
+        let original = b"original animated image bytes";
+        std::fs::write(&path, original).unwrap();
+        let (stored, errors) = import_clipboard_media(
+            &[path],
+            vec![bitmap()],
+            |path| {
+                let (name, _, preview) = attachment_upload_from_path(path)?;
+                assert_eq!(preview.as_deref(), Some(original.as_slice()));
+                Ok(name)
+            },
+            |_, _, _| panic!("a copied file must not also store its bitmap"),
+        );
+        assert_eq!(stored, ["original.gif"]);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn clipboard_import_falls_back_when_original_file_is_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let (stored, errors) = import_clipboard_media(
+            &[root.path().join("missing.png")],
+            vec![bitmap()],
+            |path| attachment_upload_from_path(path).map(|(name, _, _)| name),
+            |index, count, image| {
+                assert_eq!((index, count), (0, 1));
+                assert_eq!(image.bytes, [1, 2, 3]);
+                Ok("bitmap.png".to_owned())
+            },
+        );
+        assert_eq!(stored, ["bitmap.png"]);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn clipboard_import_keeps_multiple_files_and_reports_partial_failures() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("first.png");
+        let second = root.path().join("second.txt");
+        std::fs::write(&first, b"first").unwrap();
+        std::fs::write(&second, b"second").unwrap();
+        let (stored, errors) = import_clipboard_media(
+            &[first, root.path().join("missing.png"), second],
+            vec![bitmap()],
+            |path| attachment_upload_from_path(path).map(|(name, _, _)| name),
+            |_, _, _| panic!("the bitmap is a preview of the file list"),
+        );
+        assert_eq!(stored, ["first.png", "second.txt"]);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("missing.png"));
+    }
+
+    #[test]
+    fn clipboard_import_handles_bitmap_only_and_store_failures() {
+        let (stored, errors) = import_clipboard_media(
+            &[],
+            vec![bitmap(), bitmap()],
+            |_| panic!("no files"),
+            |index, count, _| {
+                assert_eq!(count, 2);
+                Ok(index)
+            },
+        );
+        assert_eq!(stored, [0, 1]);
+        assert!(errors.is_empty());
+        let (stored, errors) = import_clipboard_media::<()>(
+            &[PathBuf::from("missing.png")],
+            vec![bitmap()],
+            |_| anyhow::bail!("unreadable original"),
+            |_, _, _| anyhow::bail!("cannot store bitmap"),
+        );
+        assert!(stored.is_empty());
+        assert_eq!(errors, ["cannot store bitmap"]);
+    }
+}
 
 /// Reads a client-local drop into an upload payload. This is the explicit
 /// client/daemon boundary: none of these source paths are persisted or handed

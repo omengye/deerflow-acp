@@ -226,7 +226,7 @@ func TestSkillLearningReviewRetargetBeyondShortlistAndLiveRevocation(t *testing.
 		t.Fatal(ds)
 	}
 	proposal := experienceGenerate(t, e)
-	if proposal.Status != "pending_review" || proposal.Trigger.Type != "experience_pattern" || len(g.seen) != 1 || !g.seen[0].InstructionOnly {
+	if proposal.Status != "pending_review" || proposal.Trigger.Type != "experience_pattern" || len(g.seen) != 1 || g.seen[0].InstructionOnly {
 		t.Fatal(proposal, g.seen)
 	}
 	// Changing a real receipt after manual review cannot leave cached authority.
@@ -423,18 +423,38 @@ func TestSkillLearningReviewManualTargetDoesNotGrantAutoPatch(t *testing.T) {
 		t.Fatal("host target choice silently granted automatic publication", proposal, err)
 	}
 	proposal, err = e.Approve(ctx, proposal.ID, harness.SkillReview{ExpectedStateVersion: proposal.StateVersion, Actor: "owner"})
-	if err != nil || proposal.Status != "published" {
-		t.Fatal("explicit human publication was not available", proposal, err)
+	if err == nil || proposal.Status == "published" {
+		t.Fatal("manual target selection bypassed automatic verification", proposal, err)
+	}
+	ref := harness.SkillRef{SourceIdentity: proposal.Target.SourceIdentity, Name: proposal.SkillName, Version: proposal.CandidateVersion}
+	if err = r.PinVersions(ctx, "checkpoint/review-fixture", "checkpoint", []harness.SkillRef{ref}); err != nil {
+		t.Fatal(err)
 	}
 	ignored, err := s.Store.Learning.SetPatternIgnored(ctx, x.ID, harness.SkillLearningPatternIgnoreRequest{PatternID: p.ID, ExpectedPatternRevision: p.Revision,
 		ExpectedStateVersion: 1, Scope: "session", RequestKey: "ignore-after-adoption", Ignored: true})
 	if err != nil || !ignored.Review.Ignored {
 		t.Fatal(ignored, err)
 	}
+	if _, err = e.Get(ctx, proposal.ID); !errors.Is(err, harness.ErrNotFound) {
+		t.Fatal("revoked proposal survived", err)
+	}
+	if err = r.WithPublication(ctx, proposal.Target.SourceID, proposal.SkillName, func(pub *skills.PublicationTx) error {
+		_, err := pub.ReadVersion(proposal.CandidateVersion)
+		return err
+	}); err != nil {
+		t.Fatal("revocation deleted checkpoint-pinned bytes", err)
+	}
+	var saved int
+	if err = s.Store.db.QueryRow(`SELECT count(*) FROM df_skill_generation_outputs WHERE job_id=?`, ds[0].GenerationID).Scan(&saved); err != nil || saved != 0 {
+		t.Fatal("revoked output cache survived", saved, err)
+	}
+	if err = r.ReleaseVersions(ctx, "checkpoint/review-fixture", "checkpoint"); err != nil {
+		t.Fatal(err)
+	}
 	if err = r.WithPublication(ctx, "project", "json-check", func(pub *skills.PublicationTx) error {
 		head, err := pub.Current()
-		if err == nil && head.Version != proposal.CandidateVersion {
-			t.Fatal("ignore removed human-adopted skill", head)
+		if err == nil && head != proposal.Base {
+			t.Fatal("ignore changed the installed baseline", head)
 		}
 		return err
 	}); err != nil {

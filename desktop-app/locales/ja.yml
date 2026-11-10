@@ -84,7 +84,7 @@ settings.general_keywords: 一般 ローカル プロジェクト 会話 プラ�
 settings.appearance_keywords: 外観 テーマ システム ライト ダーク 言語 英語 中国語 簡体字 日本語 フォント サイズ 文字 エディタ
 settings.providers_keywords: プロバイダー エージェント モデル CLI バージョン インストール 検出 claude codex cursor opencode opencode2 amp grok pi deerflow
 settings.skills: スキル
-settings.skills_keywords: スキル ライブラリ エージェント 無効 有効 削除 claude codex cursor opencode pi amp 共有
+settings.skills_keywords: スキル ライブラリ 自動進化 学習 検出 生成 検証 採用 ロールバック 履歴 状態 エージェント 無効 有効 削除 claude codex cursor opencode pi amp 共有
 settings.usage_keywords: 使用状況 トークン キャッシュ 日別 グラフ モデル 内訳 履歴 claude codex
 settings.daemon_keywords: デーモン サーバー リモート ウェブ ネットワーク 公開 オリジン トークン ポート websocket
 settings.computer_use_keywords: コンピュータ 操作 画面収録 アクセシビリティ アプリ 制御 codex
@@ -646,7 +646,9 @@ session.failed_after_partial_response: このターンは完了前に失敗し�
 session.agent_exited_during_turn: このターンが完了する前にエージェントとの接続が終了しました。途中までの出力は保存されています。
 session.steer_rejected: エージェントに追加の指示を送れませんでした（%{error}）。メッセージはフォローアップとしてキューに追加されました
 session.steer_rejected_plain: エージェントに追加の指示を送れませんでした。メッセージはフォローアップとしてキューに追加されました
-session.agent_ran_out_of_context: このターンでエージェントのコンテキストが不足しました
+session.model_output_limit: モデルが1回の応答の出力上限に達しました。このターンは未完了です。
+session.run_token_budget_reached: このタスクのトークン予算を使い切りました。
+session.token_limit_reached: エージェントがトークン制限に達しました。このターンは未完了です。
 session.agent_declined_turn: エージェントはこのターンを辞退しました
 session.agent_stopped_reason: "エージェントが停止しました：%{reason}"
 

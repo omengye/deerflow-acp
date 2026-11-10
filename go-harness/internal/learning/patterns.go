@@ -30,6 +30,9 @@ type experienceDependency struct {
 }
 
 type patternSnapshot struct {
+	pending          []experienceDependency
+	ResolutionDigest string                         `json:"resolution_digest,omitempty"`
+	LedgerDigest     string                         `json:"ledger_digest,omitempty"`
 	Pattern          harness.SkillExperiencePattern `json:"pattern"`
 	Members          []experienceDependency         `json:"members"`
 	Shared           bool                           `json:"workspace_shared,omitempty"`
@@ -93,6 +96,9 @@ func (s *Store) patternTx(ctx context.Context, tx *sql.Tx, id string, revision i
 	if err = s.sharedPatternTx(ctx, tx, snap, owner); err != nil {
 		return snap, err
 	}
+	if snap.LedgerDigest != "" {
+		return snap, s.verifyPagedPatternTx(ctx, tx, snap, owner, true)
+	}
 	members := make([]harness.SkillExperience, 0, len(snap.Members))
 	for _, dep := range snap.Members {
 		e, liveDep, err := s.experienceTx(ctx, tx, dep.ID)
@@ -140,8 +146,11 @@ func (s *Store) patternRecordTx(ctx context.Context, tx *sql.Tx, id string, revi
 	if current && live != revision {
 		return snap, owner, harness.ErrSkillConflict
 	}
-	if len(data) > patternStorageLimit || digest(data) != sha || json.Unmarshal(data, &snap) != nil || snap.Pattern.ID != id || snap.Pattern.Revision != revision || snap.Pattern.SessionID != session || snap.Pattern.Origin != "model_extracted" || snap.Pattern.Quality != "unassessed" || snap.Pattern.SourceState != "checked_at_consolidation" || len(snap.Members) < 1 || len(snap.Members) > maxPatternMembers {
+	if len(data) > patternStorageLimit || digest(data) != sha || json.Unmarshal(data, &snap) != nil || snap.Pattern.ID != id || snap.Pattern.Revision != revision || snap.Pattern.SessionID != session || snap.Pattern.Origin != "model_extracted" || snap.Pattern.Quality != "unassessed" || snap.Pattern.SourceState != "checked_at_consolidation" || len(snap.Members) < 1 {
 		return snap, owner, invalid("inconsistent pattern revision")
+	}
+	if err := expandPatternLedger(ctx, tx, &snap); err != nil {
+		return snap, owner, err
 	}
 	var sharedOwner string
 	err = tx.QueryRowContext(ctx, `SELECT workspace_key FROM df_learning_pattern_sharing WHERE pattern_id=?`, id).Scan(&sharedOwner)
@@ -151,8 +160,11 @@ func (s *Store) patternRecordTx(ctx context.Context, tx *sql.Tx, id string, revi
 	if snap.Shared != (err == nil) || snap.Shared && sharedOwner != owner {
 		return snap, owner, invalid("inconsistent pattern sharing scope")
 	}
+	if snap.LedgerDigest != "" {
+		return snap, owner, s.verifyPagedPatternTx(ctx, tx, snap, owner, false)
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT experience_id,experience_sha,episode_id,independence_key,epoch
- FROM df_learning_pattern_members WHERE pattern_id=? AND revision=? ORDER BY experience_id LIMIT ?`, id, revision, maxPatternMembers+1)
+ FROM df_learning_pattern_members WHERE pattern_id=? AND revision<=? ORDER BY experience_id`, id, revision)
 	if err != nil {
 		return snap, owner, err
 	}
@@ -207,7 +219,7 @@ func buildPattern(id, session string, revision int64, representative string, dep
 
 func buildPatternResolved(id, session string, revision int64, representative string, deps []experienceDependency, experiences []harness.SkillExperience, conflicts []string, ambiguous bool, now time.Time, resolved map[string]bool) (harness.SkillExperiencePattern, error) {
 	p := harness.SkillExperiencePattern{ID: id, SessionID: session, Revision: revision, Origin: "model_extracted", Quality: "unassessed", SourceState: "checked_at_consolidation", RepresentativeID: representative, ExperienceIDs: []string{}, EpisodeIDs: []string{}, ConflictsWith: slices.Clone(conflicts), UpdatedAt: now}
-	if len(deps) != len(experiences) || len(deps) < 1 || len(deps) > maxPatternMembers || revision < 1 {
+	if len(deps) != len(experiences) || len(deps) < 1 || revision < 1 {
 		return p, invalid("invalid pattern member bounds")
 	}
 	if p.ConflictsWith == nil {

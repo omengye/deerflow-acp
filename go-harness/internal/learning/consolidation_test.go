@@ -46,7 +46,7 @@ func TestSkillLearningConsolidationEvidenceCacheIsTransactionBoundAndCapped(t *t
 			t.Fatal("valid source bound rejected")
 		}
 	}
-	if cache.admitSourceTurns(1) || cache.admitSourceTurns(0) || cache.admitSourceTurns(-1) {
+	if !cache.admitSourceTurns(1) || cache.admitSourceTurns(33) || cache.admitSourceTurns(0) || cache.admitSourceTurns(-1) {
 		t.Fatal("source validation inventory unbounded")
 	}
 }

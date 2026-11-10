@@ -33,8 +33,8 @@ func TestSkillLearningWorkspaceSDKManagementConsentLineageAndDispatcher(t *testi
 		}
 		t.Run(name, func(t *testing.T) {
 			workspace, cfg := skillFixture(t)
-			budget := harness.SkillMaintenanceBudget{MaxDailyModelCalls: 12, MaxDailyTokens: 100000, MaxJobSeconds: 60, Workers: 1}
-			cfg.SkillLearning = &harness.SkillLearningOptions{CrossSession: true, Idle: time.Second, Budget: budget, MaxDailyModelCalls: 10, MaxDailyTokens: 50000, Consolidation: &harness.SkillGenerationModelConfig{}, Matching: &harness.SkillGenerationModelConfig{}}
+			budget := harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}
+			cfg.SkillLearning = &harness.SkillLearningOptions{CrossSession: true, Idle: time.Second, Policy: budget, Consolidation: &harness.SkillGenerationModelConfig{}, Matching: &harness.SkillGenerationModelConfig{}}
 			extractor, consolidator, matcher := &sdkMatchingExtractor{}, &sdkWorkspaceConsolidator{}, &sdkExperienceMatcher{}
 			cfg.SkillExperienceExtractor, cfg.SkillExperienceConsolidator, cfg.SkillExperienceMatcher = extractor, consolidator, matcher
 			cfg.Skills.Install = []harness.SkillInstall{{SourceID: "project", Directory: "research", Enabled: true}}
@@ -61,7 +61,7 @@ func TestSkillLearningWorkspaceSDKManagementConsentLineageAndDispatcher(t *testi
 				if err != nil {
 					t.Fatal(err)
 				}
-				cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route}, Budget: budget, Sources: []string{"project"}}
+				cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route}, Policy: budget, Sources: []string{"project"}}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 			defer cancel()
@@ -170,7 +170,7 @@ func TestSkillLearningWorkspaceSDKManagementConsentLineageAndDispatcher(t *testi
 				t.Fatal("workspace calls do not share bounded stages")
 			}
 			status, err := c.SkillLearningStatus(ctx)
-			if err != nil || !status.CrossSessionEnabled || status.Mode != "shadow" {
+			if err != nil || !status.CrossSessionEnabled || status.Mode != "automatic" {
 				t.Fatal(status, err)
 			}
 		})

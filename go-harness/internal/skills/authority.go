@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -55,6 +56,15 @@ func (r *Registry) refreshSource(p *PublicationTx, dir string, initial *bool) er
 	} else if pending {
 		return p.recordSourceStatus(dir, "unavailable", "", "publication_reconciliation_required")
 	}
+	physical, scoped, err := p.physicalVersion(head)
+	if err != nil {
+		return err
+	}
+	if scoped && physical == "" {
+		if _, e := p.source.root.Lstat(dir); errors.Is(e, os.ErrNotExist) {
+			return p.recordSourceStatus(dir, "ready", head.Version, "")
+		}
+	}
 	if dir == "" {
 		return p.recordSourceStatus(dir, "unavailable", "", "legacy_database_only_requires_migration")
 	}
@@ -73,6 +83,22 @@ func (r *Registry) refreshSource(p *PublicationTx, dir string, initial *bool) er
 	second, err := r.readPackage(p.ctx, p.source, dir)
 	if err != nil || (&Candidate{pkg: second}).Version() != version {
 		return p.recordSourceStatus(dir, "unavailable", "", "source_changed_while_reading")
+	}
+	if scoped && version == physical {
+		return p.recordSourceStatus(dir, "ready", head.Version, "")
+	}
+	if err = guardAutomaticContent(p.ctx, p.tx, version); err != nil {
+		if errors.Is(err, harness.ErrPermissionDenied) {
+			confirmed, e := p.isConfirmedHead(head, version)
+			if e != nil {
+				return e
+			}
+			if confirmed {
+				return p.recordSourceStatus(dir, "ready", version, "")
+			}
+			return p.recordSourceStatus(dir, "unavailable", version, "automatic_candidate_requires_validation")
+		}
+		return err
 	}
 	if _, err = p.stagePackage(first); err != nil {
 		return err
@@ -210,6 +236,13 @@ func (s *Snapshot) SourceWarnings() string { return s.warnings }
 
 func (r *Registry) sourceWarnings(ctx context.Context, sources []*source, names []string) (string, error) {
 	var messages []string
+	findings, err := r.unregisteredFindings(ctx, sources, names)
+	if err != nil {
+		return "", err
+	}
+	for _, finding := range findings {
+		messages = append(messages, finding.Message)
+	}
 	for _, s := range sources {
 		rows, err := r.db.QueryContext(ctx, `SELECT st.name,st.directory,st.error_code FROM df_skill_source_status st LEFT JOIN df_skill_installs i ON i.source_key=st.source_key AND i.name=st.name
  WHERE st.source_key=? AND st.status<>'ready' AND (i.enabled=1 OR i.enabled IS NULL)

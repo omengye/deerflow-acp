@@ -219,7 +219,13 @@ impl NotificationState {
         }
         let _ = events.send(DriverEvent::TurnFinished {
             success,
-            summary: (!success).then(|| "自动执行已停止，请刷新任务状态查看原因。".into()),
+            summary: (!success).then(|| {
+                if params["result"]["stopReason"] == "max_tokens" {
+                    super::token_limit_summary(params["result"]["limit"].as_str())
+                } else {
+                    "自动执行已停止，请刷新任务状态查看原因。".into()
+                }
+            }),
         });
     }
 

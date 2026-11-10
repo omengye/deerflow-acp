@@ -17,6 +17,10 @@ func ConfirmedToolArguments(ctx context.Context, name, arguments string) bool {
 }
 
 func safePreparationError(err error) string {
+	var availability *harness.SkillAvailabilityError
+	if errors.As(err, &availability) {
+		return availability.Error()
+	}
 	switch {
 	case errors.Is(err, harness.ErrPermissionDenied):
 		return "Target or operation is not authorized."

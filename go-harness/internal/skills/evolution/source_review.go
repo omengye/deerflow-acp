@@ -19,7 +19,7 @@ func (s *Service) ReviewSource(ctx context.Context, id string, expected int64, k
 	var request Request
 	var prior Proposal
 	err := s.withProposal(ctx, id, func(tx *skills.PublicationTx, p *Proposal) error {
-		if p.Action != "create" || p.StateVersion != expected || p.Status != "stale" && p.Status != "failed" && p.Status != "rejected" {
+		if p.Origin == "automatic" || p.ContentExpired || p.Action != "create" || p.StateVersion != expected || p.Status != "stale" && p.Status != "failed" && p.Status != "rejected" {
 			return ErrConflict
 		}
 		request = Request{SourceID: p.Target.SourceID, Name: p.SkillName, Action: "create", RequestKey: "source-review/" + id + "/" + key, Reason: p.Reason, Author: "desktop", Origin: "manual_agent", Trigger: Trigger{Type: "operator_source_review", Summary: "Review current source for " + id}}

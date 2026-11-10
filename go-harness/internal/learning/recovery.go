@@ -41,7 +41,7 @@ func (s *Store) extractionRetryReasonTx(ctx context.Context, tx *sql.Tx, session
 		return "deadline_expired", nil
 	}
 	switch job.ErrorCode {
-	case "model_failed", "storage_error", "budget_exhausted", "source_active", "worker_interrupted":
+	case "model_failed", "storage_error", "source_active", "worker_interrupted", "deferred_capacity":
 	default:
 		return "non_retryable_failure", nil
 	}
@@ -65,20 +65,7 @@ func (s *Store) extractionRetryReasonTx(ctx context.Context, tx *sql.Tx, session
 	if cache.backpressure {
 		return "queue_backpressure", nil
 	}
-	available, err := s.maintenance.BudgetAvailableTx(ctx, tx, job)
-	if err != nil {
-		return "", err
-	}
-	if !available {
-		return "budget_exhausted", nil
-	}
-	ready, err := s.budgetReadyTx(ctx, tx, job)
-	if err != nil {
-		return "", err
-	}
-	if !ready {
-		return "budget_exhausted", nil
-	}
+
 	return "", nil
 }
 

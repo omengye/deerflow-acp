@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/checkpoint"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 )
 
@@ -174,8 +175,12 @@ func (s *Store) SuspendExecutionTx(ctx context.Context, tx *sql.Tx, lease Execut
 	if err != nil {
 		return row.State, err
 	}
-	if cp.ID != "harness/turn/v1/"+row.State.RunID || len(cp.Data) == 0 || len(cp.Data) > 64*1024*1024 {
-		return row.State, executionInvalid("invalid staged execution checkpoint")
+	if cp.ID != "harness/turn/v1/"+row.State.RunID || len(cp.Data) == 0 {
+		return row.State, fmt.Errorf("%w: invalid staged execution checkpoint identity or data", harness.ErrCheckpointInvalid)
+	}
+	_, checkpointStats, err := checkpoint.Metadata(cp.Data)
+	if err != nil {
+		return row.State, err
 	}
 	if err = validateExecutionConfig(ctx, tx, row); err != nil {
 		return row.State, err
@@ -234,7 +239,7 @@ func (s *Store) SuspendExecutionTx(ctx context.Context, tx *sql.Tx, lease Execut
 	if err = revokeExecutionGrants(ctx, tx, lease.Scope.AttemptID); err != nil {
 		return row.State, err
 	}
-	if err = executionAudit(ctx, tx, lease, "waiting_input", map[string]any{"checkpointSHA": m.CheckpointSHA, "eventCursor": m.EventCursor, "nativeHead": m.NativeHead}); err != nil {
+	if err = executionAudit(ctx, tx, lease, "waiting_input", map[string]any{"checkpointSHA": m.CheckpointSHA, "eventCursor": m.EventCursor, "nativeHead": m.NativeHead, "checkpoint": checkpointStats}); err != nil {
 		return row.State, err
 	}
 	row, err = readExecution(ctx, tx, row.State.SessionID, row.State.RunID)

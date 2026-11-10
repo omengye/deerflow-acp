@@ -9,6 +9,7 @@ import (
 
 func migrateConsolidation(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS df_learning_paid_decisions(job_id TEXT PRIMARY KEY,input_sha TEXT NOT NULL,payload BLOB NOT NULL,payload_sha TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS df_learning_consolidation_inputs(
  experience_id TEXT PRIMARY KEY REFERENCES df_learning_experiences(id) ON DELETE CASCADE,
  state TEXT NOT NULL DEFAULT 'pending',job_id TEXT NOT NULL DEFAULT '',reason TEXT NOT NULL DEFAULT '');
@@ -29,6 +30,12 @@ CREATE TABLE IF NOT EXISTS df_learning_patterns(
  id TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES harness_sessions(id) ON DELETE CASCADE,
  owner_key TEXT NOT NULL,current_revision INTEGER NOT NULL,updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS df_learning_pattern_session ON df_learning_patterns(session_id,updated_at,id);
+CREATE TABLE IF NOT EXISTS df_learning_pattern_catalog(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL);
+INSERT OR IGNORE INTO df_learning_pattern_catalog VALUES(1,0);
+CREATE TRIGGER IF NOT EXISTS df_pattern_scan_insert AFTER INSERT ON df_learning_patterns BEGIN UPDATE df_learning_pattern_catalog SET revision=revision+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS df_pattern_scan_update AFTER UPDATE ON df_learning_patterns BEGIN UPDATE df_learning_pattern_catalog SET revision=revision+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS df_pattern_scan_delete AFTER DELETE ON df_learning_patterns BEGIN UPDATE df_learning_pattern_catalog SET revision=revision+1 WHERE id=1; END;
+CREATE TABLE IF NOT EXISTS df_learning_pattern_scan_progress(key TEXT PRIMARY KEY,catalog INTEGER NOT NULL,cursor TEXT NOT NULL,ranked BLOB NOT NULL,ranked_sha TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS df_learning_pattern_revisions(
  pattern_id TEXT NOT NULL REFERENCES df_learning_patterns(id) ON DELETE CASCADE,revision INTEGER NOT NULL,
  consolidation_id TEXT NOT NULL REFERENCES df_learning_consolidations(id) ON DELETE CASCADE,
@@ -40,7 +47,10 @@ CREATE TABLE IF NOT EXISTS df_learning_pattern_members(
  PRIMARY KEY(pattern_id,revision,experience_id),
  FOREIGN KEY(pattern_id,revision) REFERENCES df_learning_pattern_revisions(pattern_id,revision) ON DELETE CASCADE);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	return migratePatternLedger(ctx, tx)
 }
 
 func disableConsolidationTx(ctx context.Context, tx *sql.Tx) error {

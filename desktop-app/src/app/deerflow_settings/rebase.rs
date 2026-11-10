@@ -49,6 +49,9 @@ pub(super) fn rebase_document(
         if draft.get("tools") != base.get("tools") {
             return Err(conflict("/tools"));
         }
+        if draft.get("network") != base.get("network") {
+            return Err(conflict("/network"));
+        }
     }
 
     let mut result = Map::new();
@@ -76,6 +79,7 @@ fn server_metadata(key: &str) -> bool {
         "config_revision"
             | "extensions_revision"
             | "config_schema"
+            | "search_plugins"
             | "paths"
             | "backup"
             | "config_migration"
@@ -142,6 +146,7 @@ fn validate_model_changes(
             "name",
             "original_name",
             "provider",
+            "api",
             "base_url",
             "api_key",
             "clear_api_key",
@@ -384,6 +389,7 @@ mod tests {
             ("api_key", json!("replacement-private-key")),
             ("clear_api_key", json!(true)),
             ("provider", json!("claude")),
+            ("api", json!("responses")),
             ("base_url", json!("https://other.test/v1")),
             ("name", json!("renamed")),
             ("original_name", json!("")),
@@ -416,6 +422,22 @@ mod tests {
             assert!(!error.contains("private-proxy"));
             assert!(rebase_document(&base, &draft, &base).is_ok(), "{key}");
         }
+    }
+
+    #[test]
+    fn network_draft_cannot_reuse_concurrently_replaced_hidden_proxy() {
+        let mut base = document();
+        base["network"] = serde_json::json!({"proxy":{"enabled":false,"url":"","url_configured":true,"clear_url":false,"no_proxy":[]}});
+        let latest = external_change(&base);
+        let mut draft = base.clone();
+        draft["network"]["proxy"]["enabled"] = serde_json::json!(true);
+        assert!(
+            rebase_document(&base, &draft, &latest)
+                .unwrap_err()
+                .contains("/network")
+        );
+        assert!(rebase_document(&base, &draft, &base).is_ok());
+        assert_eq!(rebase_document(&base, &base, &latest).unwrap(), latest);
     }
 
     #[test]

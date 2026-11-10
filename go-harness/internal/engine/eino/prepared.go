@@ -116,6 +116,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 			}
 			selected.Provider, selected.BaseURL, selected.APIKey = route.Provider, route.BaseURL, route.APIKey
 			selected.OutputTokenParameter = route.OutputTokenParameter
+			selected.API = route.API
 			modelID = route.Model
 		}
 		chatModel, err = newModel(ctx, selected, modelID)
@@ -304,7 +305,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	if extensions.ModelHandlerFactory != nil || extensions.PostRunFactory != nil {
 		privateMedia := *media
 		privateMedia.importer, privateMedia.publish = nil, nil
-		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel]}
+		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel], outputLimits: e.config.ModelOutputLimits[selectedModel]}
 		if extensions.ModelHandlerFactory != nil {
 			modelHandlers, err := extensions.ModelHandlerFactory(ctx, metered)
 			if err != nil {
@@ -328,14 +329,14 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	if e.config.Compaction.Enabled {
 		privateMedia := *media
 		privateMedia.importer, privateMedia.publish = nil, nil
-		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, tuning: e.compactionTuning(selectedModel), contextWindow: e.config.ContextWindows[selectedModel]}
-		compaction, err = newCompactionMiddleware(ctx, windowCompaction(e.config.Compaction, e.config.ContextWindows[selectedModel], outputReserve(b.limits.MaxOutputTokens, harness.AgentModelSettings{})), metered)
+		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, tuning: e.compactionTuning(selectedModel), contextWindow: e.config.ContextWindows[selectedModel], outputLimits: e.config.ModelOutputLimits[selectedModel]}
+		compaction, err = newCompactionMiddleware(ctx, windowCompaction(e.config.Compaction, e.config.ContextWindows[selectedModel], outputReserve(e.config.ModelOutputLimits[selectedModel].Effective(b.limits.MaxOutputTokens), harness.AgentModelSettings{})), metered)
 		if err != nil {
 			return p, fmt.Errorf("build context compaction: %w", err)
 		}
 		handlers = append(handlers, compaction)
 	}
-	handlers = append(handlers, &steeringHistory{}, &outputContinuationHistory{}, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel]}, mw)
+	handlers = append(handlers, &steeringHistory{}, &outputContinuationHistory{}, &modelLifecycle{io: ioLifecycle, budget: b, sink: sink, media: media, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel], outputLimits: e.config.ModelOutputLimits[selectedModel]}, mw)
 	delegationEnabled := !e.config.DisableSubAgent && e.config.ToolPolicy.Allows("task") && !(req.Session.ConfigVersion > 0 && !req.Session.Subagents)
 	var children []adk.Agent
 	if e.roles != nil && delegationEnabled {
@@ -348,7 +349,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	if goal != nil {
 		privateMedia := *media
 		privateMedia.importer, privateMedia.publish = nil, nil
-		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel]}
+		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel], outputLimits: e.config.ModelOutputLimits[selectedModel]}
 		retryPolicy = goalRetryPolicy(retryPolicy, e.config.GoalStore, req, goal, metered, e.config.GoalAutoContinue, sink)
 	}
 	p.Agent, err = deep.New(ctx, &deep.Config{

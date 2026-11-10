@@ -1,3 +1,10 @@
+# Shared outbound proxy; Settings > Common applies this to model and web requests.
+network:
+  proxy:
+    enabled: false
+    url: ''
+    no_proxy: [localhost, 127.0.0.1, '::1']
+
 # Eino Go harness configuration. Model keys are resolved from the environment.
 # Commands, OpenCLI, subagents and paid skill generation require explicit opt-in.
 config_version: eino-harness-v1
@@ -100,89 +107,21 @@ memory:
   injection_enabled: true
   retrieval_enabled: true
 
-skill_evolution:
-  # Manual candidates, optional operator generation, and user-approved publication.
-  # Null/empty model names inherit default_model; named overrides are optional.
-  enabled: false
-  mode: review
-  allow_builtin_overlays: false
-  moderation_model_name: null
-  evaluation_model_name: null
-  generation_model_name: null
-  security_fail_closed: true
-  validation:
-    # 0 uses the native defaults: 60 seconds, 131072 bytes, 1024 tokens.
-    timeout_seconds: 0
-    max_input_bytes: 0
-    max_output_tokens: 0
-  generation:
-    # Explicit requests and enabled discovery workers share this generation gate.
-    enabled: false
-    # 0 uses 60 seconds, 131072 bytes, 8192 output tokens.
-    timeout_seconds: 0
-    max_input_bytes: 0
-    max_output_tokens: 0
-  learning:
-    # Separate shadow extraction/consolidation/matching opt-ins. No publication.
-    # generation.enabled is not required; a positive shared budget is required.
-    enabled: false
-    extraction_model_name: null
-    consolidation_enabled: false
-    consolidation_model_name: null
-    cross_session_enabled: false
-    matching_enabled: false
-    matching_model_name: null
-    idle_seconds: 300
-    timeout_seconds: 60
-    max_input_bytes: 131072
-    max_output_tokens: 4096
-    # Sublimits inside budget below, not additional spending authority.
-    max_daily_model_calls: 10
-    max_daily_tokens: 50000
-    external_context_policy: hints_only
-  # Explicit native opt-in; legacy discovery.enabled does not enable this.
-  discovery:
-    operator_corrections_enabled: false
-    missing_reports_enabled: false
-    successful_workflows_enabled: false
-    experience_patterns_enabled: false
-    experience_new_skills_enabled: false
-    # Automatically draft from one observed task; drafts always need human approval.
-    experience_review_drafts_enabled: false
-    # Set an authorized non-builtin source before enabling a new-skill trigger.
-    new_skill_source_id: ""
-    repeat_threshold: 2
-    repeat_window_days: 30
-    cooldown_hours: 24
-    max_daily_proposals: 5
-    max_pending_proposals: 20
-  # Used only when mode=auto_patch and generation/behavior are enabled.
-  auto_patch:
-    experience_patterns_enabled: false
-    max_changed_lines: 40
-    max_daily_publications: 2
-    observation_hours: 72
-    min_observations: 3
-    rollback_failure_threshold: 2
-  behavior:
-    enabled: false
-    suite_path: ""
-    timeout_seconds: 60
-    max_steps: 6
-    max_input_bytes: 131072
-    max_output_tokens: 1024
-  budget:
-    # Shared UTC-day maintenance quota for learning, generation and reviews.
-    # All values must be positive; restart does not reset existing charges.
-    max_daily_model_calls: 30
-    max_daily_tokens: 100000
-    max_job_seconds: 300
-    workers: 1
+search:
+  default_provider: auto
+  fetch_provider: local
+  providers:
+    brave:
+      api_key: ${BRAVE_API_KEY:-}
+    deepseek:
+      api_key: ${DEEPSEEK_API_KEY:-}
+    searxng:
+      base_url: ${SEARXNG_BASE_URL:-}
+      api_key: ${SEARXNG_API_KEY:-${SEARXNG_TOKEN:-}}
 
 # Native tool settings; tool_allowlist/tool_denylist control access.
 tools:
   - name: web_search
-    api_key: ${BRAVE_API_KEY:-}
     max_results: 5
   - name: web_fetch
     timeout: 10

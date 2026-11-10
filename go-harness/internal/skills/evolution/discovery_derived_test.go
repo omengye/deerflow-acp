@@ -30,10 +30,8 @@ func derivedFixture(t *testing.T, missing, workflow bool) (*collectorFixture, *f
 	}
 	configureGeneration(t, f.service, g)
 	opts := discoveryOptions()
-	opts.DisableOperatorCorrections = true
-	opts.MissingReportsEnabled = missing
-	opts.SuccessfulWorkflowsEnabled = workflow
-	opts.NewSkillSourceID = "project"
+
+	opts.DestinationSourceID = "project"
 	if err := f.service.ConfigureDiscovery(opts); err != nil {
 		t.Fatal(err)
 	}

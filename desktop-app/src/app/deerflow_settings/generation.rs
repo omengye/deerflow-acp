@@ -5,9 +5,7 @@ use super::*;
 use serde::Deserialize;
 
 #[derive(Clone, Deserialize)]
-struct Budget {
-    max_daily_model_calls: u64,
-    max_daily_tokens: u64,
+struct Policy {
     max_job_seconds: u64,
     workers: u64,
 }
@@ -17,7 +15,7 @@ struct Status {
     version: String,
     enabled: bool,
     sources: Vec<Target>,
-    budget: Option<Budget>,
+    policy: Option<Policy>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -64,7 +62,13 @@ impl Job {
                 && self.attempts <= 3
                 && matches!(
                     self.state.as_str(),
-                    "queued" | "running" | "retry" | "completed" | "failed" | "cancelled"
+                    "queued"
+                        | "running"
+                        | "retry"
+                        | "waiting"
+                        | "completed"
+                        | "failed"
+                        | "cancelled"
                 )
                 && matches!(
                     self.phase.as_str(),
@@ -83,7 +87,10 @@ impl Job {
     }
 
     fn cancellable(&self) -> bool {
-        matches!(self.state.as_str(), "queued" | "running" | "retry")
+        matches!(
+            self.state.as_str(),
+            "queued" | "running" | "retry" | "waiting"
+        )
     }
 }
 
@@ -97,8 +104,8 @@ struct Receipt {
     stage: String,
     model_identity: String,
     input_digest: String,
-    reserved_tokens: u64,
-    charged_tokens: u64,
+    estimated_tokens: u64,
+    actual_tokens: u64,
     input_tokens: u64,
     output_tokens: u64,
     state: String,
@@ -306,20 +313,18 @@ impl GenerationBrowser {
                 );
                 if status.enabled {
                     let b = status
-                        .budget
+                        .policy
                         .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("缺少维护预算"))?;
+                        .ok_or_else(|| anyhow::anyhow!("缺少维护策略"))?;
                     anyhow::ensure!(
                         !status.sources.is_empty()
-                            && (1..=100000).contains(&b.max_daily_model_calls)
-                            && (1..=1000000000).contains(&b.max_daily_tokens)
                             && (1..=3600).contains(&b.max_job_seconds)
                             && (1..=16).contains(&b.workers),
-                        "维护预算无效"
+                        "维护策略无效"
                     );
                 } else {
                     anyhow::ensure!(
-                        status.sources.is_empty() && status.budget.is_none(),
+                        status.sources.is_empty() && status.policy.is_none(),
                         "关闭的生成能力仍声明授权"
                     );
                 }
@@ -481,8 +486,8 @@ impl GenerationBrowser {
                     )
                     && matches!(receipt.state.as_str(), "reserved" | "settled")
                     && [
-                        receipt.reserved_tokens,
-                        receipt.charged_tokens,
+                        receipt.estimated_tokens,
+                        receipt.actual_tokens,
                         receipt.input_tokens,
                         receipt.output_tokens
                     ]
@@ -563,7 +568,7 @@ impl Waku {
         let editable = state.generation_editable();
         let mut group = df_group(theme).child(df_label(
             "后台生成技能候选",
-            "生成请求使用独立维护预算。新技能及超出自动补丁范围的改动需要人工审核。",
+            "生成请求继承主模型并记录使用量。新技能和更新均由宿主验证后自动采用。",
             theme,
         ));
         group = group.child(df_button(
@@ -586,8 +591,15 @@ impl Waku {
                 ))
                 .into_any_element();
         };
-        if let Some(b) = &status.budget {
-            group = group.child(df_label("当前维护限额",format!("每日 {} 次 / {} Token（UTC）· 作业 {} 秒 · 并发 {}。这些是配置上限，剩余额度以实际执行为准。",b.max_daily_model_calls,b.max_daily_tokens,b.max_job_seconds,b.workers),theme));
+        if let Some(b) = &status.policy {
+            group = group.child(df_label(
+                "后台执行策略",
+                format!(
+                    "每批作业 {} 秒 · 并发 {}。调用和 Token 作为使用量统计，无累计额度闸门。",
+                    b.max_job_seconds, b.workers
+                ),
+                theme,
+            ));
         } else {
             group = group.child(df_label(
                 "生成已关闭",
@@ -914,13 +926,13 @@ impl Waku {
                         receipt.day
                     ),
                     format!(
-                        "计入 {} Token · 预留 {} · 输入 {} / 输出 {} · {}{}",
-                        receipt.charged_tokens,
-                        receipt.reserved_tokens,
+                        "计入 {} Token · 估计 {} · 输入 {} / 输出 {} · {}{}",
+                        receipt.actual_tokens,
+                        receipt.estimated_tokens,
                         receipt.input_tokens,
                         receipt.output_tokens,
                         if receipt.state == "reserved" {
-                            "已预留"
+                            "已估计"
                         } else {
                             "已结算"
                         },
@@ -943,6 +955,7 @@ fn job_state(state: &str) -> &'static str {
         "queued" => "等待执行",
         "running" => "执行中",
         "retry" => "等待重试",
+        "waiting" => "等待条件变化",
         "completed" => "审核已完成",
         "failed" => "失败",
         "cancelled" => "已取消",
@@ -968,7 +981,7 @@ fn stage_label(stage: &str) -> &'static str {
 }
 fn error_label(code: &str) -> &'static str {
     match code {
-        "budget_exhausted" => "维护额度已耗尽。",
+        "deferred_capacity" => "等待维护资源恢复。",
         "base_changed" => "技能基础版本已变化，需要重新检查并提交。",
         "evidence_changed" => "自动选择依据已撤回、更新或不再可用，后续生成及审查已停止。",
         "configuration_changed" => "生成或审查模型配置已变化，旧作业不会自动切换模型。",
@@ -996,7 +1009,7 @@ mod tests {
         let mut source = target();
         source["name"] = json!("");
         if enabled {
-            json!({"version":"skill-generation-v1","enabled":true,"sources":[source],"budget":{"max_daily_model_calls":30,"max_daily_tokens":100000,"max_job_seconds":300,"workers":1}})
+            json!({"version":"skill-generation-v1","enabled":true,"sources":[source],"policy":{"max_job_seconds":300,"workers":1}})
         } else {
             json!({"version":"skill-generation-v1","enabled":false,"sources":[]})
         }
@@ -1035,7 +1048,7 @@ mod tests {
             .unwrap();
     }
     fn receipt(sequence: u64, id: &str) -> Value {
-        json!({"sequence":sequence,"id":format!("smc_{sequence}"),"job_id":id,"attempt":1,"day":"2026-10-02","stage":"generation","model_identity":"b".repeat(64),"input_digest":"c".repeat(64),"reserved_tokens":9000,"charged_tokens":9000,"input_tokens":0,"output_tokens":0,"state":"reserved","estimated":true})
+        json!({"sequence":sequence,"id":format!("smc_{sequence}"),"job_id":id,"attempt":1,"day":"2026-10-02","stage":"generation","model_identity":"b".repeat(64),"input_digest":"c".repeat(64),"estimated_tokens":9000,"actual_tokens":9000,"input_tokens":0,"output_tokens":0,"state":"reserved","estimated":true})
     }
 
     #[test]
@@ -1135,7 +1148,7 @@ mod tests {
     fn deerflow_generation_rejects_malformed_capabilities_and_foreign_progress() {
         for (path, value) in [
             ("/version", json!("old")),
-            ("/budget/workers", json!(0)),
+            ("/policy/workers", json!(0)),
             ("/sources/0/name", json!("not-a-source")),
             ("/sources/0/source_identity", json!("unknown")),
         ] {

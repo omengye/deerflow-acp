@@ -36,11 +36,12 @@ func NewSkillExperienceExtractor(ctx context.Context, cfg harness.SkillGeneratio
 	if cfg.Timeout < time.Second || cfg.Timeout > 5*time.Minute || cfg.MaxInputBytes < 1024 || cfg.MaxInputBytes > 2<<20 || cfg.MaxOutputTokens < 128 || cfg.MaxOutputTokens > 32768 {
 		return nil, skillReviewError("invalid experience extraction limits")
 	}
-	chat, err := newModelWithRetryPolicy(ctx, Config{Provider: cfg.Route.Provider, Model: cfg.Route.Model, BaseURL: cfg.Route.BaseURL, APIKey: cfg.Route.APIKey, OutputTokenParameter: cfg.Route.OutputTokenParameter}, cfg.Route.Model, true)
+	chat, err := newModelWithRetryPolicy(ctx, Config{API: cfg.Route.API, Network: cfg.Route.Network, Provider: cfg.Route.Provider, Model: cfg.Route.Model, BaseURL: cfg.Route.BaseURL, APIKey: cfg.Route.APIKey, OutputTokenParameter: cfg.Route.OutputTokenParameter}, cfg.Route.Model, true)
 	if err != nil {
 		return nil, skillReviewError("cannot construct configured experience model")
 	}
 	identity, _ := json.Marshal([]any{experiencePromptVersion, cfg.Route.Provider, cfg.Route.Model, cfg.Route.BaseURL, cfg.Route.OutputTokenParameter, cfg.Timeout.String(), cfg.MaxInputBytes, cfg.MaxOutputTokens})
+	identity = appendModelAPIIdentity(identity, cfg.Route.API)
 	return &experienceExtractor{config: cfg, chat: chat, identity: fmt.Sprintf("%s/%x", experiencePromptVersion, sha256.Sum256(identity))}, nil
 }
 

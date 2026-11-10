@@ -79,11 +79,46 @@ Other unavailable tool names still return corrective feedback to the model.
 | `-32012` | A saved execution is waiting for input |
 | `-32013` | Execution version or identity conflicts with the request |
 | `-32014` | The saved checkpoint cannot safely continue with current evidence/resources |
+| `-32028` | The execution checkpoint exceeds its raw or stored byte budget |
+| `-32029` | The saved checkpoint frame or native envelope is invalid |
+| `-32030` | The execution checkpoint could not be committed |
 
 Error data includes the discovery/resume/cancel method names. Unknown internal
 errors use the transport's generic error response; raw provider or database
 errors are not serialized. Ordinary ownership, busy, and receipt error codes
 remain applicable.
+
+New harness turn checkpoints use a versioned `DFCP` binary frame. Small JSON
+metadata and opaque Eino native bytes are stored separately, without base64.
+Native state of at least 64 KiB uses Gzip at the fastest level when it reduces
+size; smaller or incompressible state stays raw. Both the stored frame and its
+uncompressed header/metadata/native total are limited to 64 MiB. Compression
+cannot bypass the decoded-state budget. The frame binds its version, codec,
+declared lengths, metadata and stored payload with SHA-256. Decoding rejects
+invalid lengths, unknown codecs, checksum mismatches, truncated streams, extra
+streams/trailing bytes and output beyond the declared decoded length.
+
+Legacy v1/v2 JSON envelopes remain readable with their original local/durable
+budget semantics. New writes keep those envelope metadata versions inside the
+frame. A previous executable cannot read new binary frames; finish or cancel
+waiting executions before rolling back the application. This codec covers
+`harness/turn/v1/` foreground and automatic-continuation checkpoints; native
+background executor checkpoints keep their existing format.
+
+The host checks frame metadata without inflating native state while holding a
+SQLite transaction. The manifest hashes the exact stored frame and still binds
+native history, permissions, task waits, resources and receipt frontiers. The
+`waiting_input` execution audit includes raw/stored/native/metadata byte counts
+and codec. Size failures retain the byte count and limit in local diagnostics
+and safe error metadata. Public errors contain a short explanation; desktop
+transcripts do not display the attached execution JSON or private diagnostics.
+
+Eino remains on the alpha.35 API via a source-pinned local replacement. The
+replacement ports upstream #1232's single canonical nested checkpoint payload
+and reference reconstruction; see `third_party/eino/PATCH.md`. It is independent
+of compression and preserves old inline native checkpoints. Checkpoint writes,
+manifest publication and budget settlement retain their existing transaction
+boundary. A codec failure does not publish a partial checkpoint or replay tools.
 
 Malformed JSON from the model response is reported as `-32026` with
 `kind: model_response_invalid` and a safe explanation. The original cause

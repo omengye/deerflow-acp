@@ -3,6 +3,7 @@ package desktopconfig
 import (
 	"bytes"
 	"fmt"
+	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
 	"os"
 	"path/filepath"
 	"slices"
@@ -42,8 +43,9 @@ func TestPortableLegacyCustomDirectorySupportsEvolution(t *testing.T) {
 				}
 				if copied {
 					after, err := os.ReadFile(options.Config)
-					if err != nil || !bytes.Equal(before, after) {
-						t.Fatal("initialization rewrote existing config", err)
+					expected, _, e := configschema.MigrateEvolutionYAML(before)
+					if err != nil || e != nil || !bytes.Equal(expected, after) {
+						t.Fatal("migration changed unrelated configuration", err)
 					}
 				}
 				readObject(doc, "skill_evolution")["enabled"] = true
@@ -172,8 +174,9 @@ func TestPortableManagedStoresInitializeForFreshAndCopiedConfig(t *testing.T) {
 				t.Fatal("existing data changed", err)
 			}
 			after, _ := os.ReadFile(options.Config)
-			if copied && !bytes.Equal(before, after) {
-				t.Fatal("copied configuration was rewritten")
+			expected, _, migrateErr := configschema.MigrateEvolutionYAML(before)
+			if copied && (migrateErr != nil || !bytes.Equal(expected, after)) {
+				t.Fatal("migration changed unrelated copied configuration")
 			}
 			var cfg deerflow.Config
 			connections := 32

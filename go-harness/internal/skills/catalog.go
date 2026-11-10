@@ -63,6 +63,19 @@ func (r *Registry) QueryCatalog(ctx context.Context, q harness.SkillQuery) (harn
 	sort.Slice(page.Sources, func(i, j int) bool {
 		return page.Sources[i].Target.SourceIdentity < page.Sources[j].Target.SourceIdentity
 	})
+	inventorySources := make([]*source, 0, len(page.Sources))
+	for _, source := range page.Sources {
+		inventorySources = append(inventorySources, allowed[source.Target.SourceIdentity])
+	}
+	var inventoryNames []string
+	if q.Name != "" {
+		inventoryNames = []string{q.Name}
+	}
+	findings, err := r.unregisteredFindings(ctx, inventorySources, inventoryNames)
+	if err != nil {
+		return page, err
+	}
+	page.Diagnostics = append(page.Diagnostics, findings...)
 	exportKey := ""
 	if r.export != nil {
 		exportKey = r.export.key

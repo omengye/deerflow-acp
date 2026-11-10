@@ -23,10 +23,6 @@ func TestSkillLearningNativePipelineAutomaticReviewAndPublication(t *testing.T) 
 	nativeLearningPipeline(t, false)
 }
 
-func TestSkillLearningNativeFollowupResolutionAutomaticReviewAndPublication(t *testing.T) {
-	nativeLearningPipeline(t, true)
-}
-
 func TestSkillLearningNativeAutomaticPipelineSurvivesHistoricalUnfinishedTasks(t *testing.T) {
 	for _, status := range []string{"waiting_input", "needs_reconciliation"} {
 		t.Run(status, func(t *testing.T) { nativeLearningPipeline(t, false, status) })
@@ -35,7 +31,7 @@ func TestSkillLearningNativeAutomaticPipelineSurvivesHistoricalUnfinishedTasks(t
 
 func nativeLearningPipeline(t *testing.T, resolution bool, historicalStatus ...string) {
 	t.Helper()
-	for _, automatic := range []bool{false, true} {
+	for _, automatic := range []bool{true} {
 		name := "review-draft"
 		if automatic {
 			name = "automatic-existing"
@@ -63,14 +59,14 @@ func nativeLearningPipeline(t *testing.T, resolution bool, historicalStatus ...s
 			cfg.ToolPolicy.Allowlist = []string{"skill", "read_file"}
 			cfg.Budget = &harness.BudgetLimits{MaxModelCalls: 6, MaxToolCalls: 4, MaxTokens: 100000, MaxOutputTokens: 512}
 			cfg.Skills.Install = []harness.SkillInstall{{SourceID: "project", Directory: "research", Enabled: true}}
-			budget := harness.SkillMaintenanceBudget{MaxDailyModelCalls: 20, MaxDailyTokens: 200000, MaxJobSeconds: 60, Workers: 1}
+			budget := harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}
 			consolidation, matching := model("consolidate"), model("match")
 			cfg.SkillLearning = &harness.SkillLearningOptions{Model: model("extract"), Consolidation: &consolidation, Matching: &matching,
-				CrossSession: automatic, Idle: time.Second, Budget: budget, MaxDailyModelCalls: 6, MaxDailyTokens: 100000}
+				CrossSession: automatic, Idle: time.Second, Policy: budget}
 			if resolution {
-				cfg.SkillLearning.MaxDailyModelCalls = 10
+
 			}
-			cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: model("generate"), Sources: []string{"project"}, Budget: budget}
+			cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: model("generate"), Sources: []string{"project"}, Policy: budget}
 			var err error
 			cfg.SkillValidator, err = NewSkillModelValidator(ctx, harness.SkillModelReviewConfig{Moderation: route("security"), Evaluation: route("quality"), MaxOutputTokens: 512})
 			if err != nil {
@@ -82,12 +78,12 @@ func nativeLearningPipeline(t *testing.T, resolution bool, historicalStatus ...s
 			}
 			cfg.SkillBehavior = &harness.SkillBehaviorOptions{Suites: []harness.SkillBehaviorSuite{{Version: "skill-behavior-v1", ID: "native-json-check", SourceID: "project", Name: "research", Cases: []harness.SkillBehaviorCase{
 				{ID: "targeted", Kind: "targeted", Prompt: "Inspect the complete JSON document and report completion.", Repetitions: 1, Files: map[string]string{}, Fixtures: []harness.SkillBehaviorFixture{}, Assertions: []harness.SkillBehaviorAssertion{{ID: "oracle-native-complete", Kind: "output_equals", Expected: "verified"}}},
-				{ID: "regression", Kind: "regression", Prompt: "Retain the existing source research behavior.", Repetitions: 1, Files: map[string]string{}, Fixtures: []harness.SkillBehaviorFixture{}, Assertions: []harness.SkillBehaviorAssertion{{ID: "oracle-native-retained", Kind: "output_equals", Expected: "retained"}}},
+				{ID: "regression", Kind: "regression", Holdout: true, Prompt: "Retain the existing source research behavior.", Repetitions: 1, Files: map[string]string{}, Fixtures: []harness.SkillBehaviorFixture{}, Assertions: []harness.SkillBehaviorAssertion{{ID: "oracle-native-retained", Kind: "output_equals", Expected: "retained"}}},
 			}}}}
-			cfg.SkillDiscovery = &harness.SkillDiscoveryOptions{DisableOperatorCorrections: true, ExperiencePatternsEnabled: true, ExperienceReviewDraftsEnabled: !automatic,
-				RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxDailyProposals: 5, MaxPendingProposals: 20}
+			cfg.SkillDiscovery = &harness.SkillDiscoveryOptions{
+				RepeatThreshold: 2, RepeatWindowDays: 30, CooldownHours: 24, MaxPendingProposals: 20}
 			if automatic {
-				cfg.SkillAutoPatch = &harness.SkillAutoPatchOptions{ExperiencePatternsEnabled: true, MaxChangedLines: 40, MaxDailyPublications: 2, ObservationHours: 72, MinObservations: 3, RollbackFailureThreshold: 2}
+				cfg.SkillAutoPatch = &harness.SkillAutoPatchOptions{MaxChangedLines: 40, ObservationHours: 72, MinObservations: 3, RollbackFailureThreshold: 2}
 			}
 			c, err := Open(ctx, cfg)
 			if err != nil {
@@ -165,7 +161,7 @@ func nativeLearningPipeline(t *testing.T, resolution bool, historicalStatus ...s
 					}
 					historicalRuns = append(historicalRuns, id)
 				}
-				for turn, prompt := range []string{fmt.Sprintf("Inspect JSON document %d using research", task+1), "Correct the previous inspection: read the complete document and verify required fields"} {
+				for turn, prompt := range []string{fmt.Sprintf("Inspect JSON document %d using research", task+1)} {
 					if result, err := c.Run(ctx, session.ID, []harness.Content{{Type: "text", Text: prompt}}, nil, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
 						return harness.AllowOnce, nil
 					}); err != nil || result.Execution == nil || result.Execution.Status != harness.ExecutionCompleted {
@@ -244,7 +240,7 @@ func nativeLearningPipeline(t *testing.T, resolution bool, historicalStatus ...s
 					t.Fatal("learning included an unsettled historical source", included, err)
 				}
 			}
-			batches, foreground := tasks, 6*tasks
+			batches, foreground := tasks, 3*tasks
 			if resolution {
 				batches, foreground = 2*tasks, 4*tasks
 				var members, observations, support, links int
@@ -267,7 +263,7 @@ func nativeLearningPipeline(t *testing.T, resolution bool, historicalStatus ...s
 				t.Fatal("native stages replayed foreground tools or bypassed fresh variant evaluations", counts)
 			}
 			var receipts, tokens, unsettled, feedback int
-			if err = c.store.DB().QueryRow(`SELECT count(*),COALESCE(sum(charged_tokens),0),COALESCE(sum(state<>'settled'),0) FROM df_skill_maintenance_calls`).Scan(&receipts, &tokens, &unsettled); err != nil ||
+			if err = c.store.DB().QueryRow(`SELECT count(*),COALESCE(sum(actual_tokens),0),COALESCE(sum(state<>'settled'),0) FROM df_skill_maintenance_calls`).Scan(&receipts, &tokens, &unsettled); err != nil ||
 				receipts != 2*batches+tasks+7 || tokens != receipts*125 || unsettled != 0 {
 				t.Fatal("native maintenance stages did not share settled accounting", receipts, tokens, unsettled, err)
 			}
@@ -323,8 +319,8 @@ func nativeLearningPipeline(t *testing.T, resolution bool, historicalStatus ...s
 			if err = c.Close(); err != nil {
 				t.Fatal(err)
 			}
-			// Turning learning off does not delete an adopted skill or restore its
-			// old import. A new native run must really read the published version.
+			// Reopening a host without workers preserves durable observation routing.
+			// A sampled root uses the candidate; other roots keep the stable baseline.
 			cfg.SkillLearning, cfg.SkillGeneration, cfg.SkillDiscovery, cfg.SkillAutoPatch = nil, nil, nil, nil
 			cfg.SkillBehavior, cfg.SkillBehaviorEvaluator = nil, nil
 			c, err = Open(ctx, cfg)
@@ -340,9 +336,16 @@ func nativeLearningPipeline(t *testing.T, resolution bool, historicalStatus ...s
 			if err != nil || result.Execution == nil || result.Execution.Status != harness.ExecutionCompleted {
 				t.Fatal("adopted skill failed in a new native run", result, err)
 			}
+			var expectedVersion string
+			if err = c.store.DB().QueryRow(`SELECT version FROM df_skill_route_tasks WHERE root_id=(SELECT root_id FROM budget_members WHERE id=?) AND source_key=? AND name='research'`, result.Execution.RunID, proposal.Target.SourceIdentity).Scan(&expectedVersion); err != nil {
+				t.Fatal("new task did not persist observation routing", err)
+			}
+			if expectedVersion != base.Version && expectedVersion != proposal.CandidateVersion {
+				t.Fatal("task routed to unrelated version", expectedVersion)
+			}
 			var readVersion string
-			if err = c.store.DB().QueryRow(`SELECT version FROM harness_skill_reads WHERE run_id=? AND name='research' AND path='SKILL.md'`, result.Execution.RunID).Scan(&readVersion); err != nil || readVersion != published.Version {
-				t.Fatal("new run loaded old skill instead of published candidate", readVersion, published, err)
+			if err = c.store.DB().QueryRow(`SELECT version FROM harness_skill_reads WHERE run_id=? AND name='research' AND path='SKILL.md'`, result.Execution.RunID).Scan(&readVersion); err != nil || readVersion != expectedVersion {
+				t.Fatal("skill read did not honor immutable root routing", readVersion, published, err)
 			}
 			for _, stage := range []string{"extract", "consolidate", "match", "generate", "security", "quality", "behavior"} {
 				if provider.Counts()[stage] != counts[stage] {
@@ -350,8 +353,8 @@ func nativeLearningPipeline(t *testing.T, resolution bool, historicalStatus ...s
 				}
 			}
 			original, err := os.ReadFile(filepath.Join(workspace, "skills", "research", "SKILL.md"))
-			if err != nil || !strings.Contains(string(original), nativeLearningInstruction) {
-				t.Fatal("evolution did not publish to authoritative source files", err)
+			if err != nil || strings.Contains(string(original), nativeLearningInstruction) {
+				t.Fatal("automatic observation rewrote shared source files", err)
 			}
 		})
 	}

@@ -49,6 +49,7 @@ func (m *Manager) joinActive(i *instance) {
 func (m *Manager) control(ctx context.Context, i *instance, auth channelproto.Auth, cfg Config, msg channelproto.Message, session string) error {
 	command := strings.TrimSpace(msg.Text)
 	reply := ""
+	var dropped int64
 	i.mu.Lock()
 	if i.auth.Account != auth.Account || i.auth.Owner != auth.Owner || i.cfg.Workspace != cfg.Workspace {
 		i.mu.Unlock()
@@ -66,6 +67,20 @@ func (m *Manager) control(ctx context.Context, i *instance, auth channelproto.Au
 	if d, ok := DispatchFromContext(ctx); !ok || d.Revision != i.revision {
 		i.mu.Unlock()
 		return userError("channel policy changed")
+	}
+	if command == "/stop" {
+		// A quick run can finish before /stop arrives. Cancel earlier queued
+		// prompts even then, while preserving controls and newer messages.
+		result, err := m.db.ExecContext(ctx, `UPDATE harness_channel_messages SET status='ignored' WHERE instance=? AND account=? AND conversation=? AND sender=? AND workspace=? AND status='queued' AND rowid<(SELECT rowid FROM harness_channel_messages WHERE instance=? AND account=? AND id=?) AND NOT (trim(text) IN ('/status','/stop','/help','/permission') OR trim(text) LIKE '/permission %')`, i.id, auth.Account, msg.Conversation, msg.Sender, cfg.Workspace, i.id, auth.Account, msg.ID)
+		if err != nil {
+			i.mu.Unlock()
+			return err
+		}
+		dropped, err = result.RowsAffected()
+		if err != nil {
+			i.mu.Unlock()
+			return err
+		}
 	}
 	switch {
 	case command == "/help":
@@ -93,12 +108,6 @@ func (m *Manager) control(ctx context.Context, i *instance, auth channelproto.Au
 		}
 	case active != nil && active.matches(auth, cfg, msg) && command == "/stop":
 		active.cancel()
-		// Explicit stop drops already queued ordinary prompts, never replays them.
-		_, err := m.db.ExecContext(ctx, `UPDATE harness_channel_messages SET status='ignored' WHERE instance=? AND account=? AND conversation=? AND sender=? AND workspace=? AND status='queued' AND id<>?`, i.id, auth.Account, msg.Conversation, msg.Sender, cfg.Workspace, msg.ID)
-		if err != nil {
-			i.mu.Unlock()
-			return err
-		}
 		reply = "已请求停止当前任务，正在等待工具清理完成。已取消排队的问题；已产生的效果不会自动撤销。"
 	case active != nil && active.matches(auth, cfg, msg) && command == "/status":
 		reply = "当前权限：" + approvalLabel(policy) + "\n任务正在运行。发送 /stop 可请求停止。\n会话：" + session
@@ -112,6 +121,9 @@ func (m *Manager) control(ctx context.Context, i *instance, auth channelproto.Au
 		}
 		if err != nil && reply == "" {
 			reply = "暂时无法读取或操作该任务，请稍后重试 /status。"
+		}
+		if dropped > 0 {
+			reply = "已取消排队的问题。\n" + reply
 		}
 	}
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)

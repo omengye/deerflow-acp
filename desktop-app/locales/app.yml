@@ -165,7 +165,7 @@ settings.providers_keywords:
 settings.skills:
   en: Skills
 settings.skills_keywords:
-  en: skills skill library agent disable enable delete claude codex cursor opencode pi amp shared
+  en: skills skill library evolution learning discovery generation validation adoption rollback history status agent disable enable delete claude codex cursor opencode pi amp shared
 settings.usage_keywords:
   en: usage tokens cache daily chart model breakdown history claude codex
 settings.daemon_keywords:
@@ -1272,8 +1272,12 @@ session.steer_rejected:
   en: The agent couldn't be steered (%{error}); the message was queued as a follow-up
 session.steer_rejected_plain:
   en: The agent couldn't be steered; the message was queued as a follow-up
-session.agent_ran_out_of_context:
-  en: The agent ran out of context for this turn
+session.model_output_limit:
+  en: The model reached its per-response output limit. This turn is incomplete.
+session.run_token_budget_reached:
+  en: The token budget for this task was exhausted.
+session.token_limit_reached:
+  en: The agent reached a token limit. This turn is incomplete.
 session.agent_declined_turn:
   en: The agent declined this turn
 session.agent_stopped_reason:

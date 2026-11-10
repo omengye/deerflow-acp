@@ -95,24 +95,6 @@ func (s *Store) queuedReasonTx(ctx context.Context, tx *sql.Tx, id string, cache
 		case !job.Deadline.IsZero() && !job.Deadline.After(s.now().UTC()):
 			reason = "deadline_expired"
 		default:
-			if s.maintenance != nil {
-				available, err := s.maintenance.BudgetAvailableTx(ctx, tx, job)
-				if err != nil {
-					return "", err
-				}
-				if !available {
-					reason = "budget_exhausted"
-					break
-				}
-			}
-			budget, err := s.budgetReadyTx(ctx, tx, job)
-			if err != nil {
-				return "", err
-			}
-			if !budget {
-				reason = "budget_exhausted"
-				break
-			}
 			ready, err := s.ReadyTx(ctx, tx, job)
 			if err != nil {
 				return "", err

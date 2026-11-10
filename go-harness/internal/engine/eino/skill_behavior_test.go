@@ -159,15 +159,15 @@ func TestSkillBehaviorClosedToolsBoundsAndOracleSeparation(t *testing.T) {
 				input.Case.Assertions[0].Expected = "done"
 			}
 			result, err := evaluator.Evaluate(ctx, input)
-			want := map[string]string{"unknown": "unknown_tool", "traversal": "invalid_tool_arguments", "duplicate": "duplicate_tool_call", "arguments": "invalid_tool_arguments", "exchange": "fixture_mismatch", "model-limit": "model_limit", "budget": "budget_exhausted", "oracle": "assertion_failed", "no-skill": ""}[mode]
-			if result.ErrorCode != want || result.Passed != (mode == "no-skill") || mode != "budget" && err != nil || mode == "budget" && err == nil {
+			want := map[string]string{"unknown": "unknown_tool", "traversal": "invalid_tool_arguments", "duplicate": "duplicate_tool_call", "arguments": "invalid_tool_arguments", "exchange": "fixture_mismatch", "model-limit": "model_limit", "budget": "model_limit", "oracle": "assertion_failed", "no-skill": ""}[mode]
+			if result.ErrorCode != want || result.Passed != (mode == "no-skill") || err != nil {
 				t.Fatalf("result %+v %v want%s", result, err, want)
 			}
 			if len(result.OutputDigest) != 64 || len(result.TraceDigest) != 64 || len(result.Checks) != 1 || len(result.Checks[0].ActualDigest) != 64 {
 				t.Fatalf("invalid digest report %+v", result)
 			}
-			if mode == "budget" && providerCalls.Load() != 1 {
-				t.Fatal("provider call bypassed budget")
+			if mode == "budget" && providerCalls.Load() != 2 {
+				t.Fatal("removed daily cap still blocked fixture execution")
 			}
 		})
 	}
@@ -270,7 +270,7 @@ func TestSkillBehaviorCancellationAndUnknownUsageKeepCharge(t *testing.T) {
 				t.Fatal("provider diagnostics leaked")
 			}
 			receipts, err := s.Receipts(parent, claim.Job.ID, 0, 100)
-			if err != nil || len(receipts) != 1 || receipts[0].ChargedTokens != receipts[0].ReservedTokens || !receipts[0].Estimated {
+			if err != nil || len(receipts) != 1 || receipts[0].ActualTokens != 0 || !receipts[0].Estimated {
 				t.Fatalf("failed/missing usage refunded %+v %v", receipts, err)
 			}
 		})

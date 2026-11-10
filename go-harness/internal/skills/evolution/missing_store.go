@@ -85,7 +85,7 @@ func missingSession(ctx context.Context, tx *sql.Tx, sessionID string) error {
 }
 
 // Resolve both the requested run and the original root run through real run
-// rows. Budget member/session columns alone are not a runtime ownership proof.
+// rows. Policy member/session columns alone are not a runtime ownership proof.
 func missingRoot(ctx context.Context, tx *sql.Tx, sessionID, runID string) (string, error) {
 	if err := missingSession(ctx, tx, sessionID); err != nil {
 		return "", err

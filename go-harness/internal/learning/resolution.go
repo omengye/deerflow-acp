@@ -65,7 +65,7 @@ func (s *Store) verifyPatternResolutionsTx(ctx context.Context, tx *sql.Tx, snap
 // Equivalent members retain their original outcomes. A canonical, source-only
 // link can remove a historical blocker, never add another independent vote.
 func (s *Store) planPatternResolutionsTx(ctx context.Context, tx *sql.Tx, snap patternSnapshot, members []harness.SkillExperience) ([]experienceResolution, error) {
-	if snap.ResolutionPolicy != ResolutionPolicyVersion || len(members) != len(snap.Members) || len(members) > maxPatternMembers {
+	if snap.ResolutionPolicy != ResolutionPolicyVersion || len(members) != len(snap.Members) {
 		return nil, invalid("invalid resolution plan")
 	}
 	captures := map[string]extractionSnapshot{}
@@ -77,9 +77,7 @@ func (s *Store) planPatternResolutionsTx(ctx context.Context, tx *sql.Tx, snap p
 		fixed, err := s.resolutionCaptureTx(ctx, tx, dep)
 		if err == nil {
 			sourceTurns += len(fixed.Sources) + rootObservationCount(fixed)
-			if sourceTurns > 32 {
-				return fixed, invalid("resolution source-turn bounds")
-			}
+
 			captures[dep.Extraction] = fixed
 		}
 		return fixed, err

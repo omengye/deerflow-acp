@@ -88,14 +88,14 @@ func TestSkillLearningCandidateHiddenCharactersCannotPersist(t *testing.T) {
 	}
 }
 
-func TestSkillLearningCallSublimitLeavesSharedBudgetForReview(t *testing.T) {
+func TestSkillLearningAndReviewShareConcurrencyWithoutUsageQuota(t *testing.T) {
 	db, err := sqlite.Open(t.TempDir() + "/quota.db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	s := &Store{options: harness.SkillLearningOptions{MaxDailyModelCalls: 1, MaxDailyTokens: 1000}}
-	queue, err := skillmaintenance.NewWithHooks(context.Background(), db.DB(), skillmaintenance.Policy{MaxDailyModelCalls: 3, MaxDailyTokens: 10000, MaxJobSeconds: 60, Workers: 1}, skillmaintenance.Hooks{CallAdmission: func(ctx context.Context, tx *sql.Tx, job skillmaintenance.Job, call skillmaintenance.ModelCall, now time.Time) error {
+	s := &Store{options: harness.SkillLearningOptions{}}
+	queue, err := skillmaintenance.NewWithHooks(context.Background(), db.DB(), skillmaintenance.Policy{MaxJobSeconds: 60, Workers: 1}, skillmaintenance.Hooks{CallAdmission: func(ctx context.Context, tx *sql.Tx, job skillmaintenance.Job, call skillmaintenance.ModelCall, now time.Time) error {
 		if job.Request.Kind == skillmaintenance.ExperienceExtract {
 			return s.AdmitCallTx(ctx, tx, job, call, now)
 		}
@@ -115,20 +115,13 @@ func TestSkillLearningCallSublimitLeavesSharedBudgetForReview(t *testing.T) {
 		}
 		b := queue.Broker(claim)
 		r, err := b.Reserve(context.Background(), skillmaintenance.ModelCall{Stage: "experience_extract", ModelIdentity: strings.Repeat("c", 64), InputDigest: strings.Repeat("d", 64), InputTokens: 100, MaxOutputTokens: 100})
-		if i == 0 {
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err = b.Settle(context.Background(), r, skillmaintenance.Usage{}); err != nil {
-				t.Fatal(err)
-			}
-		} else if err != skillmaintenance.ErrBudget {
-			t.Fatalf("sublimit bypassed %v", err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = b.Settle(context.Background(), r, skillmaintenance.Usage{}); err != nil {
+			t.Fatal(err)
 		}
 		code := ""
-		if i == 1 {
-			code = "budget_exhausted"
-		}
 		if err = queue.Finish(context.Background(), claim, code, false); err != nil {
 			t.Fatal(err)
 		}

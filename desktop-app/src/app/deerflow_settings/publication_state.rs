@@ -35,7 +35,9 @@ pub(super) fn retry_request(proposal: &Value) -> Option<Value> {
 }
 
 pub(super) fn can_review_source(proposal: &Value) -> bool {
-    proposal["action"] == "create"
+    proposal["content_expired"] != true
+        && proposal["origin"] != "automatic"
+        && proposal["action"] == "create"
         && matches!(
             proposal["status"].as_str(),
             Some("stale" | "failed" | "rejected")
@@ -52,6 +54,18 @@ pub(super) fn source_confirmation(proposal: &Value, request: &Value) -> bool {
 }
 
 pub(super) fn review_actions(proposal: &Value) -> (bool, bool) {
+    if proposal["content_expired"] == true {
+        return (false, false);
+    }
+    if proposal["origin"] == "automatic" {
+        return (
+            false,
+            matches!(
+                proposal["status"].as_str(),
+                Some("pending_review" | "validating")
+            ),
+        );
+    }
     if !proposal["approval"].is_null() {
         return (false, false);
     }
@@ -68,9 +82,9 @@ pub(super) struct ApprovalAction {
     pub(super) request: Value,
 }
 
-// Keep the visible risk acknowledgment bound to the exact candidate being approved.
+// Unexecuted scripts and automatic candidates have no manual publication path.
 pub(super) fn approval_action(proposal: &Value) -> Option<ApprovalAction> {
-    if !review_actions(proposal).0 {
+    if !review_actions(proposal).0 || proposal["script_review_required"] == true {
         return None;
     }
     let id = proposal["id"].as_str().filter(|id| !id.is_empty())?;
@@ -84,23 +98,22 @@ pub(super) fn approval_action(proposal: &Value) -> Option<ApprovalAction> {
     {
         return None;
     }
-    let mut action = ApprovalAction {
+    let action = ApprovalAction {
         label: "确认发布",
         warning: None,
         request: json!({"operation":"proposal.approve","proposal_id":id,
             "expected_base_sha256":base,"expected_state_version":state}),
     };
-    if proposal["script_review_required"] == true {
-        action.label = "确认脚本风险并发布";
-        action.warning = Some(
-            "点击“确认脚本风险并发布”即表示你已审查脚本并接受风险，将直接提交发布，不再弹出第二次确认。静态检查或模拟测试不代表脚本已真实执行或隔离验证。Python 和依赖需另行准备；运行仍受命令权限约束，本地、PowerShell 和 WSL 并非安全隔离。",
-        );
-        action.request["acknowledge_unverified_scripts"] = json!(true);
-    }
     Some(action)
 }
 
 pub(super) fn review_hint(proposal: &Value) -> &'static str {
+    if proposal["content_expired"] == true {
+        return "候选内容已按保留策略清理，审计记录仍保留；此版本不能恢复或发布。";
+    }
+    if proposal["origin"] == "automatic" {
+        return "此候选由宿主自动验证与采用。可查看证据、等待原因或撤回具体候选。";
+    }
     if !proposal["approval"].is_null() {
         return notice(proposal);
     }
@@ -144,7 +157,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn one_click_publication_binds_risk_copy_and_acknowledgment_to_the_candidate() {
+    fn publication_cannot_bypass_script_execution_or_automatic_validation() {
         let mut proposal = json!({"id":"p_reviewed","status":"pending_review",
             "state_version":2,"base_sha256":null,"script_review_required":false});
         let ordinary = approval_action(&proposal).unwrap();
@@ -158,18 +171,13 @@ mod tests {
 
         proposal["script_review_required"] = json!(true);
         proposal["base_sha256"] = json!("a".repeat(64));
-        let script = approval_action(&proposal).unwrap();
-        assert_eq!(script.label, "确认脚本风险并发布");
-        assert!(script.warning.unwrap().contains("不再弹出第二次确认"));
-        assert!(script.warning.unwrap().contains("并非安全隔离"));
-        assert_eq!(
-            script.request,
-            json!({"operation":"proposal.approve",
-            "proposal_id":"p_reviewed","expected_state_version":2,
-            "expected_base_sha256":"a".repeat(64),"acknowledge_unverified_scripts":true})
-        );
-        proposal["state_version"] = json!(3);
-        assert_ne!(approval_action(&proposal).unwrap().request, script.request);
+        assert!(approval_action(&proposal).is_none());
+        proposal["script_review_required"] = json!(false);
+        proposal["origin"] = json!("automatic");
+        assert!(approval_action(&proposal).is_none());
+        proposal["origin"] = json!("manual_agent");
+        proposal["content_expired"] = json!(true);
+        assert!(approval_action(&proposal).is_none());
     }
 
     #[test]

@@ -66,18 +66,7 @@ func normalizeConfig(cfg harness.SandboxConfig) (harness.SandboxConfig, error) {
 		if !cfg.AllowShell {
 			return cfg, fmt.Errorf("PowerShell requires explicit AllowShell")
 		}
-		if cfg.Shell == "" {
-			path, err := exec.LookPath("pwsh")
-			if err != nil && runtime.GOOS == "windows" {
-				path = filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-				err = nil
-			}
-			if err != nil {
-				return cfg, fmt.Errorf("%w: PowerShell executable not found", harness.ErrSandboxUnavailable)
-			}
-			cfg.Shell = path
-		}
-		path, err := absoluteExecutable(cfg.Shell)
+		path, err := resolvePowerShell(cfg.Shell)
 		if err != nil {
 			return cfg, err
 		}
@@ -149,6 +138,28 @@ func normalizeConfig(cfg harness.SandboxConfig) (harness.SandboxConfig, error) {
 		return cfg, fmt.Errorf("local resource limits require Windows Job Objects; use Docker for Unix memory/CPU/PID limits")
 	}
 	return cfg, nil
+}
+
+// PATH can retain a removed Store/runtime package or an unusable app alias.
+// Validate discovered executables before selecting one. An explicit configured
+// shell remains authoritative and never falls back to a different executable.
+func resolvePowerShell(configured string) (string, error) {
+	if configured != "" {
+		return absoluteExecutable(configured)
+	}
+	var candidates []string
+	if path, err := exec.LookPath("pwsh"); err == nil {
+		candidates = append(candidates, path)
+	}
+	if runtime.GOOS == "windows" {
+		candidates = append(candidates, filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
+	}
+	for _, candidate := range candidates {
+		if path, err := absoluteExecutable(candidate); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("%w: PowerShell executable not found", harness.ErrSandboxUnavailable)
 }
 
 func findExecutable(path, name string) (string, error) {

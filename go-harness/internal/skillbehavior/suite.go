@@ -30,7 +30,7 @@ func Text(s string, max int) bool {
 	return len(s) <= max && utf8.ValidString(s) && !strings.ContainsRune(s, 0)
 }
 func Builtin(name string) bool {
-	return name == "read_skill" || name == "read_file" || name == "write_file" || name == "list_files"
+	return name == "read_skill" || name == "read_file" || name == "write_file" || name == "list_files" || name == "run_script"
 }
 
 // ValidPath applies one portable contract on Windows and Unix; fixture files
@@ -190,17 +190,26 @@ func Digest(s harness.SkillBehaviorSuite) (string, error) {
 	if err := Validate(s); err != nil {
 		return "", err
 	}
-	data, _ := json.Marshal(s)
-	data, err := CanonicalJSON(data)
-	if err != nil {
-		return "", err
+	// Hash bounded cases individually; suite size is a storage concern, not a
+	// lifetime limit on trusted evaluation coverage.
+	header := s
+	header.Cases = nil
+	data, _ := json.Marshal(header)
+	chain := Hash(data)
+	for _, c := range s.Cases {
+		raw, _ := json.Marshal(c)
+		canonical, err := CanonicalJSON(raw)
+		if err != nil {
+			return "", err
+		}
+		chain = Hash([]byte(chain + Hash(canonical)))
 	}
-	return Hash(data), nil
+	return chain, nil
 }
 func Hash(data []byte) string { return fmt.Sprintf("%x", sha256.Sum256(data)) }
 
 func Validate(s harness.SkillBehaviorSuite) error {
-	if s.Version != Version && s.Version != TriggerVersion || !identifier.MatchString(s.ID) || !harness.ValidSkillName(s.SourceID) || !harness.ValidSkillName(s.Name) || len(s.Cases) < 1 || len(s.Cases) > 16 {
+	if s.Version != Version && s.Version != TriggerVersion || !identifier.MatchString(s.ID) || !harness.ValidSkillName(s.SourceID) || !harness.ValidSkillName(s.Name) || len(s.Cases) < 1 {
 		return invalid("suite identity or case count is invalid")
 	}
 	seen := map[string]bool{}
@@ -235,10 +244,6 @@ func Validate(s harness.SkillBehaviorSuite) error {
 	}
 	if s.Version == TriggerVersion && (!positive || !negative) {
 		return invalid("v2 suite requires positive and negative trigger cases")
-	}
-	data, err := json.Marshal(s)
-	if err != nil || len(data) > MaxSuiteBytes {
-		return invalid("suite exceeds bounds")
 	}
 	return nil
 }

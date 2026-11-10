@@ -23,11 +23,16 @@ func (m PermissionMode) Validate() error {
 
 // PermissionPolicyVersion is bound into every execution contract. Changing
 // classification invalidates checkpoints created under an older policy.
-const PermissionPolicyVersion = "trusted-builtins-v1"
+const PermissionPolicyVersion = "trusted-builtins-v2-automatic-skills"
 
 // RequiresPermission classifies an exact host-owned built-in identity. Engine
 // callers must use RequiresToolPermission for tools from external sources.
 func (m PermissionMode) RequiresPermission(name string) bool {
+	// Candidate submission only queues independent host validation. External
+	// tools cannot borrow this exemption, and command permissions are unchanged.
+	if name == "skill_manage" {
+		return false
+	}
 	switch m {
 	case PermissionModeOff:
 		return false
@@ -36,7 +41,7 @@ func (m PermissionMode) RequiresPermission(name string) bool {
 		case "skill", "skill_inspect", "read_skill_file", "schedule_read",
 			"ls", "list_directory", "read_file", "read_tool_output", "view_image",
 			"search_files", "glob", "grep", "list_attachments", "read_attachment", "analyze_attachment",
-			"search_memory", "history_search", "history_read", "task_note", "task", "task_status", "task_wait":
+			"search_memory", "history_search", "history_read", "task_note", "task", "task_status", "task_wait", "set_search_provider":
 			return false
 		}
 		return true

@@ -73,6 +73,53 @@ func profile(config string) (string, error) {
 	return UserData(config, os.Getenv("DEER_FLOW_PORTABLE_ROOT"), executable)
 }
 
+// Profile returns the explicitly selected portable user-data directory. It
+// does not inspect or open databases, and is empty for standalone SDK configs.
+func Profile(config string) (string, error) { return profile(config) }
+
+// BindCreated records the first successful database creation. Resolvers remain
+// read-only; an existing binding or unbound historical database is never chosen
+// or rewritten here. The caller holds the runtime lock across creation/binding.
+func BindCreated(userData, dataDir string) error {
+	if userData == "" {
+		return nil
+	}
+	path := filepath.Join(userData, "config", "runtime-data.json")
+	if _, err := os.Lstat(path); err == nil {
+		_, err = ResolvePortable(userData, dataDir)
+		return err
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if !samePath(dataDir, filepath.Join(userData, "config", "go-harness-state")) || !fileExists(filepath.Join(dataDir, "harness.db")) {
+		return fmt.Errorf("only the newly created canonical runtime database can be bound")
+	}
+	if fileExists(filepath.Join(userData, "data", "go-harness", "harness.db")) {
+		return fmt.Errorf("a second runtime database exists; refusing to create a binding")
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".runtime-data-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.WriteString("{\"data_dir\":\"config/go-harness-state\"}\n"); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	// Linking is atomic and refuses to replace a concurrently created binding.
+	if err = os.Link(f.Name(), path); err != nil && !os.IsExist(err) {
+		return err
+	}
+	_, err = ResolvePortable(userData, dataDir)
+	return err
+}
+
 // Config discovers only the selected portable config, never a file in cwd.
 func Config(requested string) (string, error) {
 	if requested != "" {
@@ -119,11 +166,11 @@ func Resolve(config, requested string) (string, error) {
 }
 
 func ResolvePortable(userData, requested string) (string, error) {
-	selected := filepath.Join(userData, "data", "go-harness")
+	selected := filepath.Join(userData, "config", "go-harness-state")
 	path := filepath.Join(userData, "config", "runtime-data.json")
 	file, err := os.Open(path)
 	if os.IsNotExist(err) {
-		if fileExists(filepath.Join(userData, "config", "go-harness-state", "harness.db")) {
+		if fileExists(filepath.Join(userData, "config", "go-harness-state", "harness.db")) || fileExists(filepath.Join(userData, "data", "go-harness", "harness.db")) {
 			return "", fmt.Errorf("runtime-data.json is missing while a historical database exists; refusing to choose another store")
 		}
 	} else if err != nil {
@@ -181,6 +228,12 @@ func ResolvePortable(userData, requested string) (string, error) {
 		rel, err := filepath.Rel(root, resolved)
 		if err != nil || !filepath.IsLocal(rel) {
 			return "", fmt.Errorf("bound data directory escapes user-data")
+		}
+	}
+	for _, relative := range []string{"config/go-harness-state", "data/go-harness"} {
+		other := filepath.Join(userData, filepath.FromSlash(relative))
+		if !samePath(other, selected) && fileExists(filepath.Join(other, "harness.db")) {
+			return "", fmt.Errorf("a second runtime database exists at %s; archive the inactive store outside runtime paths before starting this profile, then use the archive for skill recovery", other)
 		}
 	}
 	if requested != "" && !samePath(requested, selected) {

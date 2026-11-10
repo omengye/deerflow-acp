@@ -1,85 +1,77 @@
-# Trusted Skill Behavior Registry
+# Trusted skill behavior registry
 
-The desktop `skill_evolution.behavior.suite_path` accepts either an existing
-single `skill-behavior-v1` / `skill-behavior-v2` suite or a registry document:
+Skill evolution is automatic and inherits the primary model. Customers do not
+configure a skill-evolution block, review mode, budget, daily call limit or
+suite path. One-time migration removes old fields and retires old unfinished
+work while preserving skills, checkpoints and audit history.
 
-```json
-{
-  "version": "skill-behavior-registry-v1",
-  "suites": [
-    {
-      "version": "skill-behavior-v1",
-      "id": "example-target-regression-v1",
-      "source_id": "managed-skills",
-      "name": "example-skill",
-      "cases": []
-    }
-  ]
-}
-```
+The harness automatically derives host-checked examples from fresh tasks with
+explicit exact-output or exact-artifact requirements. Evidence without a
+trustworthy oracle waits for new evidence. A candidate needs independent
+support, held-out verification, demonstrated improvement, no critical
+regression and appropriate trigger/script coverage before automatic adoption.
 
-This is a shape illustration, **not a runnable or valid assessment**: replace
-`cases` with host-reviewed targeted and regression cases for the real target.
-See the existing `fixtures/skill-behavior-v2.json` fixture for
-the full v2 schema including positive and negative trigger selection checks.
-That fixture is test data, not coverage for an arbitrary installed skill.
+These evidence requirements apply to automatic adoption. An explicit native
+user instruction to publish authorizes `skill_manage.publish` for that user's
+exact candidate without those gates. The host binds session/run/input digest,
+source, base, candidate and state version, records `user_confirmation` in the
+approval, cancels pending validation and uses the normal file publication CAS.
+Results distinguish `mode=user_confirmed` and `evidence_gate_bypassed=true`
+from test success. Published files are available to ordinary subsequent tasks;
+there is no observation wait. Source authority, structural checks and version
+conflicts still apply, and script/external execution permissions do not change.
 
-## Bounds And Trust
+Conversation-submitted updates also bind their native source run, root,
+session, workspace and input digest. They do not require a discovery record.
+For an existing skill the host can use completed native reads of that exact
+installed baseline and user-supplied exact-output/artifact oracles from the
+originating session and workspace. Two independent task roots provide support;
+a separate task started after submission provides the holdout. Subsequent tasks
+can supply all three, so a candidate with no prior evidence can still progress.
+The submission task, other conversations, different skill versions, retired
+roots and revoked contribution epochs cannot qualify. Task text and expected
+answers are not included in diagnostic responses.
 
-- One regular file, at most 1 MiB total, with 1 through 32 embedded suites.
-- Each source must already be authorized for generation; the target is the
-  source/name pair. Duplicate targets and duplicate JSON keys are rejected.
-- Unknown registry fields, nested path lists and generated trust references
-  are not accepted. Each suite is validated by the existing strict parser.
-- Save validation and startup use the same loader. Startup retains an immutable
-  suite snapshot; changing the file requires the ordinary save/apply flow.
-- Candidates cannot install their own assertions or expected answers as trusted
-  coverage. A registry only wires independently maintained host assessments.
+The `evidence` object in `skill_manage` results and `proposal.behavior` reports
+the source binding, suite readiness, supporting and holdout counts, concrete
+`missing` items and `next_action`. A new skill without a baseline, or an SDK
+candidate without a native source task, still needs discovery-based matching or
+a trusted host suite. Natural-language self-reviews cannot supply an oracle.
+These are explicit validation limitations, not a recommendation to resubmit.
 
-## Automatic Adoption
+Maintainers can add trusted regression suites as regular JSON files in the
+`skill-behavior` directory next to the active config. These are optional host
+assets, never assertions uploaded by a candidate. Each file contains one
+`skill-behavior-v1` or `skill-behavior-v2` suite; see
+[the v2 fixture](fixtures/skill-behavior-v2.json) for the contract. A fixture's
+assertions only cover its own task and do not validate arbitrary skills.
 
-Existing managed, enabled, non-builtin SKILL.md patches need passing security
-and behavior reports, real targeted improvement, no regressions, current head
-and source checks, and the original bounded publication budget. Description
-changes require trusted v2 positive/negative selection comparisons. New skills,
-support-file changes and other metadata changes still require review.
+Files load in pages of 32 with a 1 MiB per-file bound. All cases are stored in
+immutable manifests and executed in bounded slices with durable progress.
+There is no 32-suite or 16-case lifetime limit. Source/name targets and case IDs
+must be unique; duplicate keys, unknown fields, unsafe paths and executable
+grading rules are rejected. Reloading assets changes verification identity.
 
-The host's `skill.auto_patch.status.readiness` reports installed and eligible
-targets, missing suites, and pending/attention/waiting counts. It is a capability
-projection, never permission to publish. A partially covered catalog stays
-`partial`; do not label an enabled switch as full coverage.
+The host records actual, estimated and unknown usage separately. Three total
+attempts bound transient failures; completed comparisons survive restart. No
+local daily quota participates in admission. Missing evidence and missing OCI
+capability remain visible waiting conditions for automatic adoption. New
+evidence or a changed environment can resume eligible work; explicit user
+confirmation can instead publish the existing candidate.
 
-`proposal.list` optionally accepts `needs_attention: true` together with
-`status: "pending_review"`. False selects background checks/waits instead;
-omitting it returns both. Filtered cursors bind the current host policy and
-source identities. Each pending row contains a read-only `disposition` with
-`needs_attention` and a reason code. Stored decision hints are fenced by proposal
-state version and policy identity; publication always revalidates live guards.
+When a matching host suite is added and loaded on restart, an existing waiting
+candidate gets a new behavior evaluation with its old binding and results
+archived. Its package, proposal ID and unchanged content review are retained.
+An obsolete generation job cannot close the replacement evaluation. Probes
+without a dependency change do not reset attempts or consume model calls;
+retired candidates are not resumed.
 
-Turning off new automatic publication retains non-paid observation of already
-adopted versions while the service is running. Quality votes still require the
-existing operator-confirmed evidence; this implementation does not introduce
-host-evaluated post-publication tests or new-skill runtime isolation.
+The desktop shows automatic validation, observation, stability, withdrawal and
+verification freshness. Adopted candidates are scoped to their source workspace
+and sampled into new roots; other tasks retain the stable baseline. Existing
+runs retain their pinned version. Five independent successes and critical
+coverage are required within 72 hours; unresolved regressions and inconclusive
+expiry trigger withdrawal. A source correction affects dependent verdicts.
 
-## Desktop First Run
-
-New desktop profiles use Simplified Chinese, automatic maintenance, inherited
-default-model routes and the selected maintenance limits: 1000 calls / 6000000
-tokens daily, 600 seconds per job and 5 workers. Learning shares those limits
-with a 50-call / 1000000-token sublimit. Publication remains limited to 40 changed
-lines and 2 releases per day. These are ceilings, not startup charges.
-
-The Go configuration service embeds the independently prepared two-case SearXNG
-suite in `internal/desktopconfig/defaults/searxng-web-search.json`. When the
-portable profile selects `./skill-behavior/searxng-web-search.json`, initialization
-creates that missing host file without network or model calls. Existing suites,
-other suite paths and existing user configuration are not replaced. Candidate
-skills cannot provision a different assessment through this mechanism.
-
-This bundle covers only `managed-evolution/searxng-web-search`; it does not
-install the user's skill content or search credentials, and it does not grant
-coverage to arbitrary new skills. A fresh profile may have no eligible target
-and report partial automation while normal chat, learning and generation remain
-available after model-only setup. New skills and uncovered targets still need
-review. Missing search credentials and optional browser dependencies do not
-block basic model setup. Changing defaults does not rewrite existing profiles.
+See [the final implementation plan](skill-evolution-final-plan-20261109.md)
+and [the evaluator contract](../go-harness/internal/skills/evolution/behavior.md).

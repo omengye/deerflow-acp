@@ -20,7 +20,7 @@ import (
 )
 
 func TestSkillGenerationSDKWorkerAndAuthenticatedManagement(t *testing.T) {
-	for _, mode := range []string{"review", "quality-rejected", "budget"} {
+	for _, mode := range []string{"review", "quality-rejected", "quota-free"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
 			var calls, runs atomic.Int32
@@ -55,7 +55,7 @@ func TestSkillGenerationSDKWorkerAndAuthenticatedManagement(t *testing.T) {
 				} else {
 					answer, _ = json.Marshal(map[string]any{"base_version": base, "candidate_version": candidate, "passed": mode != "quality-rejected" || req.Model != "evaluator", "reason": "Fixture content assessment"})
 				}
-				_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 25, "total_tokens": 125}})
+				_ = modelstreamtest.WriteCompletion(w, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": string(answer)}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 1000000, "completion_tokens": 25, "total_tokens": 1000025}})
 			}))
 			defer server.Close()
 			workspace, cfg := skillFixture(t)
@@ -72,11 +72,7 @@ func TestSkillGenerationSDKWorkerAndAuthenticatedManagement(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			budget := int64(10)
-			if mode == "budget" {
-				budget = 2
-			}
-			cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route("generator")}, Budget: harness.SkillMaintenanceBudget{MaxDailyModelCalls: budget, MaxDailyTokens: 100000, MaxJobSeconds: 60, Workers: 1}, Sources: []string{"project"}}
+			cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route("generator")}, Policy: harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}, Sources: []string{"project"}}
 			c, e := Open(ctx, cfg)
 			if e != nil {
 				t.Fatal(e)
@@ -128,7 +124,7 @@ func TestSkillGenerationSDKWorkerAndAuthenticatedManagement(t *testing.T) {
 			}
 			statusResponse := wire(map[string]any{"operation": "skill.generation.status"})
 			var generationStatus harness.SkillGenerationStatus
-			if string(statusResponse["ok"]) != "true" || json.Unmarshal(statusResponse["data"], &generationStatus) != nil || !generationStatus.Enabled || len(generationStatus.Sources) != 1 || generationStatus.Sources[0].SourceIdentity != target.SourceIdentity || generationStatus.Budget == nil || generationStatus.Budget.MaxDailyModelCalls != budget {
+			if string(statusResponse["ok"]) != "true" || json.Unmarshal(statusResponse["data"], &generationStatus) != nil || !generationStatus.Enabled || len(generationStatus.Sources) != 1 || generationStatus.Sources[0].SourceIdentity != target.SourceIdentity || generationStatus.Policy == nil || generationStatus.Policy.Workers != 1 {
 				t.Fatalf("status: %s", statusResponse)
 			}
 			prepareResponse := wire(map[string]any{"operation": "skill.generation.prepare", "target": target})
@@ -170,20 +166,14 @@ func TestSkillGenerationSDKWorkerAndAuthenticatedManagement(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			if mode == "review" {
+			if mode != "quality-rejected" {
 				if finished.State != "completed" || p.Status != "pending_review" || p.Evaluation.Behavior != "not_run" {
 					t.Fatalf("review %+v %+v", finished, p)
 				}
 			} else if finished.State != "failed" || p.Status != "failed" {
 				t.Fatalf("failed checks became reviewable %+v %+v", finished, p)
 			}
-			if mode == "budget" && finished.ErrorCode != "budget_exhausted" {
-				t.Fatalf("budget reason %+v", finished)
-			}
 			want := int32(3)
-			if mode == "budget" {
-				want = 2
-			}
 			if calls.Load() != want || runs.Load() != 0 {
 				t.Fatalf("calls=%d user-runs=%d", calls.Load(), runs.Load())
 			}
@@ -200,7 +190,7 @@ func TestSkillGenerationSDKWorkerAndAuthenticatedManagement(t *testing.T) {
 				t.Fatalf("receipts %+v %v", receipts, e)
 			}
 			for _, receipt := range receipts {
-				if receipt.Estimated || receipt.ChargedTokens != 125 {
+				if receipt.Estimated || receipt.ActualTokens != 1000025 {
 					t.Fatal(receipt)
 				}
 			}
@@ -213,9 +203,9 @@ func TestSkillGenerationSDKWorkerAndAuthenticatedManagement(t *testing.T) {
 			if _, e = c.Run(ctx, session.ID, []harness.Content{{Type: "text", Text: "Continue the conversation"}}, nil, nil); e != nil || runs.Load() != 1 {
 				t.Fatalf("maintenance blocked chat %v runs=%d", e, runs.Load())
 			}
-			if mode == "review" {
-				if _, e = c.ApproveSkillProposal(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "operator"}); e != nil {
-					t.Fatal(e)
+			if mode != "quality-rejected" {
+				if _, e = c.ApproveSkillProposal(ctx, p.ID, harness.SkillReview{ExpectedStateVersion: p.StateVersion, Actor: "operator"}); e == nil {
+					t.Fatal("generated candidate bypassed automatic adoption policy")
 				}
 			}
 			if e = host.Close(); e != nil {
@@ -232,7 +222,7 @@ func TestSkillGenerationSDKWorkerAndAuthenticatedManagement(t *testing.T) {
 			}
 			defer reopened.Close()
 			disabled, e := reopened.SkillGenerationStatus(ctx)
-			if e != nil || disabled.Enabled || len(disabled.Sources) != 0 || disabled.Budget != nil {
+			if e != nil || disabled.Enabled || len(disabled.Sources) != 0 || disabled.Policy != nil {
 				t.Fatal("disabled status advertises grants", e)
 			}
 			if _, e := reopened.PrepareSkillGeneration(ctx, target); e == nil {
@@ -279,7 +269,7 @@ func TestSkillGenerationSDKCloseJoinsModelAndPreservesCharge(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route}, Budget: harness.SkillMaintenanceBudget{MaxDailyModelCalls: 10, MaxDailyTokens: 100000, MaxJobSeconds: 60, Workers: 1}, Sources: []string{"project"}}
+	cfg.SkillGeneration = &harness.SkillGenerationOptions{Model: harness.SkillGenerationModelConfig{Route: route}, Policy: harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}, Sources: []string{"project"}}
 	c, e := Open(ctx, cfg)
 	if e != nil {
 		t.Fatal(e)
@@ -318,7 +308,7 @@ func TestSkillGenerationSDKCloseJoinsModelAndPreservesCharge(t *testing.T) {
 		t.Fatalf("shutdown job %+v %v", saved, e)
 	}
 	r, e := reopened.SkillGenerationReceipts(ctx, job.ID, 0, 10)
-	if e != nil || len(r) != 1 || !r[0].Estimated || r[0].ChargedTokens != r[0].ReservedTokens || r[0].ChargedTokens == 0 {
+	if e != nil || len(r) != 1 || !r[0].Estimated || r[0].ActualTokens != 0 || r[0].EstimatedTokens == 0 {
 		t.Fatalf("shutdown refunded uncertain call %+v %v", r, e)
 	}
 }

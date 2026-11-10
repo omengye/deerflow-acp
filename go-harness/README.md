@@ -13,12 +13,14 @@ class paths. See [native tool configuration and limits](../docs/go-native-tools.
 
 ## Build and start
 
-Go automatically selects the pinned `go1.26.8` toolchain. The module requires
-Go 1.26 because the pinned pure Go SQLite driver requires it. No system Go
-installation or global Go environment setting needs to be changed.
+Use `GOTOOLCHAIN=go1.26.8` to select the tested toolchain explicitly, including
+when the system Go version is newer. The module requires Go 1.26 because the
+pinned pure Go SQLite driver requires it. No system Go installation or global
+Go environment setting needs to be changed.
 
 ```powershell
 cd go-harness
+$env:GOTOOLCHAIN = "go1.26.8"
 go build -p=2 -o bin/deerflow-acp-go.exe ./cmd/deerflow-acp-go
 $env:DEERFLOW_MODEL = "your-model-id"
 $env:DEERFLOW_MODEL_API_KEY = "your-api-key"
@@ -47,105 +49,29 @@ Bridge. See [daemon setup and compatibility](internal/localhost/README.md).
 
 ## Skill evolution
 
-Native skill proposals, review, explicit generation, observed-use feedback and
-missing-capability reports use the Go registry and authenticated local management
-channel. Optional repeated-correction discovery now selects current feedback
-from distinct settled root tasks and enqueues generation under the independent
-maintenance budget. It defaults off and requires explicit generation configuration.
-Successful candidates await manual publication approval. See the
-[discovery contract](internal/skills/evolution/discovery.md) and
-[management/configuration reference](internal/acp/skill-evolution.md).
-Optional [behavior evaluations](internal/skills/evolution/behavior.md) execute
-both versions through Eino with local fixture tools and Go assertions. Results
-and maintenance receipts are durable and queryable; manual submissions use a
-dedicated job when enabled. Missing-report routing, repeated workflow discovery
-and optional automatic publication/rollback are implemented and default off.
-Confirmed skill quality uses explicit operator evidence; network, permission,
-quota and remote service failures cannot establish skill quality failure.
-Two bounded [business behavior suites](../resources/skill-behavior) cover code
-documentation and newsletter attribution, including regression cases.
+Native launch enables automatic skill evolution when skills are enabled and
+inherits the primary model. There is no `skill_evolution` configuration block,
+manual review setting or daily maintenance quota.
 
-Optional multi-turn procedural learning now captures real accepted inputs and
-extracts redacted experiences after an idle, settled task. A second, explicit
-opt-in enables bounded semantic consolidation, preserving conflicts and
-host-counted independent episodes. It defaults to one session; a separate
-workspace gate and each session's sharing consent permit cross-session grouping
-in the same private profile/workspace. Shared histories are host-management-only,
-and source revocation removes transitive derived text. Copied tasks use a durable
-lineage key rather than counting session IDs as successes. A third model-stage opt-in
-matches patterns to the session's authorized visible skill inventory, pinning
-source identity, publication head and overlay. Real reads stay separate from
-semantic relatedness. All three stages default
-off and share the maintenance budget and learning sublimits. They remain in
-**shadow** mode unless generation and the separate default-off
-`skill_evolution.discovery.experience_patterns_enabled` are also enabled.
-That bridge requires independently observed local completion receipts and a
-precise authorized existing target, then creates instruction-only SKILL.md
-changes as **pending-review proposals**. It never fabricates operator feedback.
-Before any generation reservation, a genuine catalog/head change can trigger a
-fresh automatic matching assessment, not a rebase or retry of the old result.
-Current source, sharing, consolidation and host model/access identities must
-still validate. At most two extra assessments per pattern are allowed, with a
-one-minute cooldown and a thirty-day window from the first match; they share the
-existing queue and paid budgets. Cancelled, host-controlled, revoked, corrupt or
-already-generated work is not revived. Old jobs, outputs and charges remain
-historical; only the current input binding can advance to discovery.
-For automatically generated review-only drafts without manually starting another
-episode or requesting generation, separately enable
-`skill_evolution.discovery.experience_review_drafts_enabled` (default false).
-One source-verified observed task can then draft SKILL.md through the same
-dispatcher, quotas, target matching and revocation guards. Immutable
-`review_draft=true` candidates always require human approval; even passing
-behavior tests and auto-patch opt-in cannot publish them automatically. Fully
-qualified multi-episode candidates retain the original automatic patch path.
-Learning proposals stay manual unless the separate default-off
-`skill_evolution.auto_patch.experience_patterns_enabled` is explicitly authorized
-with auto-patch mode, current experience discovery and trusted host behavior suites.
-Only an existing enabled managed skill's bounded SKILL.md patch qualifies, with
-at least one targeted assertion improvement and no regressions or operational
-fixture failures for body changes. A description-only edit instead requires
-a trusted v2 suite with positive/negative metadata-only Skill selections, an
-actual trigger assertion improvement and passing execution coverage. Combined
-description/body changes need both kinds of improvement. Other metadata changes,
-first import adoption, builtin overlays,
-support files and new capabilities remain manual. Publication-time source digests
-join the existing atomic observation/rollback record; withdrawal after adoption
-does not invent quality votes or delete the skill.
-Source withdrawal cleans unpublished derived text and exclusively learning-owned
-staged versions while preserving accounting and adopted skills. New-capability
-creation is a further default-off opt-in,
-`skill_evolution.discovery.experience_new_skills_enabled`, requiring the complete
-authorized inventory, a readable matcher suggestion and an explicitly selected
-non-builtin `new_skill_source_id`. The host checks source visibility and blocks
-existing, disabled, tombstoned or pending names; it never invents a hash fallback
-or retries the same pattern under another name. New candidates contain only
-SKILL.md and still require human approval. The desktop skill center now includes
-cached learning history, session contribution/sharing controls, explicit task
-boundaries, job cancellation, individual pattern ignore/restore and explicit
-existing-skill target adjudication in source. Original control/cancel/episode
-mutations are not blindly replayed. The two new host-only review mutations have
-original request-key receipts and exact pattern/review/head preconditions;
-replay remains bound to the original service store and returns a historical
-outcome, not current authority. Adjudication is `host_adjudicated / unassessed`,
-does not refund consumption or retry creation, and its candidates always need
-human publication. Explicit creation retry now has trusted SDK/MANAGE prepare
-and keyed enqueue, fixed original name/source/revision, terminal-job/proposal CAS,
-one successor per job and at most three host retries per pattern. It preserves the
-automatic lifetime reservation, reuses original episode evidence without votes or
-refunds, consumes fresh shared capacity and always needs human publication.
-Trusted SDK `SkillLearningSource` and MANAGE `skill.learning.source.get` inspect
-one experience or one current pattern member's cited, redacted capture view.
-Source reads revalidate consent and original task/receipt/read/result identities
-without model calls, votes or publication grants. They return at most 32 references
-in 512 KiB, never external/MCP result bodies, and distinguish `checked_at_read`
-from unassessed quality. Private inspection remains available with paid learning
-disabled; workspace access still requires independent sharing authority. Cached
-desktop source details clear on selection, service, scope and source changes.
-Isolated state/transport tests pass, but desktop build/visual and real-model
-semantic/trigger quality acceptance remain unfinished. Trigger fixtures prove
-only the fixed host catalog, not all runtime tasks or inventory. See the
-[learning implementation and controls](../docs/skill-learning-status-20261008.md)
-for configuration, SDK/ACP management and remaining phases.
+`skill_manage` submits exact candidate packages to the durable maintenance
+queue. The host independently checks safety, quality, behavior, improvement,
+triggering and holdout coverage, then automatically admits eligible candidates
+into scoped observation. Real task outcomes determine stabilization or
+withdrawal. Scripts require actual isolated execution. Missing evidence or
+runtime capability waits for those conditions. An explicit native user
+confirmation can publish an exact candidate through `skill_manage.publish`,
+with source permissions, ownership, content identity and version checks still
+enforced. Command execution permissions remain independent.
+
+Learned patterns and agent-authored packages share the same validation and
+adoption pipeline. Root/session/role ownership, authorized source identities,
+workspace visibility, exact base/content bindings and finite retries are checked
+at submission and adoption. Retired jobs remain history and do not replay.
+
+See the [candidate and management contract](internal/acp/skill-evolution.md),
+[discovery contract](internal/skills/evolution/discovery.md),
+[behavior evaluation](internal/skills/evolution/behavior.md) and
+[migration and acceptance record](../docs/skill-evolution-final-plan-20261109.md).
 
 ## Current execution path
 

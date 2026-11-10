@@ -20,13 +20,15 @@ Python source and text dependency declarations are supported skill resources. Py
 
 ## Managed DeerFlow skills
 
-`skill_manage` proposes changes; it does not authorize publication. Use host-provided destinations and the returned proposal ID. For multi-file creation, submit the complete `files` map, including `SKILL.md`, scripts and dependencies. Keep drafts outside configured skill roots. Never substitute a live directory write, database edit or source switch for failed review.
+`skill_manage` submits immutable candidates to automatic validation and adoption by default. When the user explicitly confirms publication in the current conversation message, the lead agent can use `get`, then `publish` with the returned `proposal_id`, `candidate_sha256` and `state_version`. For example, “确认发布这个技能，跳过证据门槛” or “Please publish this skill now.” Do not ask again when the user has already confirmed. Use the latest candidate for the named skill; if several skills exist in the session, the instruction must name the skill or proposal ID. The host verifies the native user message; ordinary editing requests, quoted examples and model-authored text do not authorize publication.
 
-After valid safety and quality review, script-bearing packages can enter operator review without execution evidence. Mark unexecuted scripts as `not_run`; do not fabricate isolated execution. They require manual approval, never automatic publication. Publication grants no additional execution permission. Any candidate file change invalidates the old approval.
+Use host-provided destinations and the returned proposal ID. For multi-file creation, submit the complete `files` map, including `SKILL.md`, scripts and dependencies. Keep drafts outside configured skill roots. Never substitute a live directory write, database edit or source switch for publication.
+
+Automatic adoption requires host-owned safety, behavior, trigger and script-execution evidence. User-confirmed publication can skip those automatic evidence and observation gates, including `blocked_evidence` and `blocked_runtime`. The host records `mode=user_confirmed` and `evidence_gate_bypassed=true`; it preserves actual checks and failures. Keep unexecuted scripts `not_run`. Publication grants no additional execution permission. Source permissions, structural validity, candidate identity and current-base checks always apply.
 
 | Claim | Required evidence |
 | --- | --- |
-| Published | Host `published=true` for the approved package |
+| Published | Host `published=true` for the exact automatic or user-confirmed package |
 | Available next turn | `availability_verified=true` or `skill.verify` with `available=true` for the intended session/version |
 | Runtime ready | Host runtime check for that snapshot/environment |
 | Script succeeded | Actual authorized execution result, including exit status |

@@ -58,6 +58,9 @@ impl Waku {
             self.deerflow_route_page(page, cx);
             self.ensure_deerflow_settings(cx);
         }
+        if page == SettingsPage::DeerFlowTools {
+            self.search_plugins_request("search-status", serde_json::json!({}), cx);
+        }
         // Each page starts at its own top; a scroll position carried over
         // from the previous page would land mid-content.
         self.settings_scroll.set_offset(gpui::Point::default());

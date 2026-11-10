@@ -115,32 +115,28 @@ captures the imported baseline so it is also a rollback target. Input intent,
 evaluation digest and displayed diff are checked against immutable versions.
 Duplicate submissions, reviews and keyed rollbacks do not publish twice.
 
-The public operator SDK and authenticated MANAGE channel share that service;
-see [skill management protocol](../acp/skill-evolution.md). Model tools do not
-inherit these operator APIs. Discovery, maintenance budgets,
-automatic publication and Waku integration
-are still separate work; the operator service does not enable those capabilities.
+The public SDK and authenticated MANAGE channel share the durable service;
+see the [automatic candidate contract](../acp/skill-evolution.md). Legacy
+approval records remain readable, while manual approval/review-retry/publication
+management endpoints are retired. Internal admission commits still use exact
+source, base, content and evaluation preconditions.
 
-`deerflow.NewSkillModelValidator` supplies explicit Eino security and quality
-content reviews, each with fresh context and no bound tools. Input/output/time
-limits are enforced and provider errors are sanitized. Reports retain model,
-prompt/config version, input digest and usage evidence. Behavior remains
-`not_run` and scripts remain ineligible unless a separate trusted host validator
-actually performs isolated behavioral checks. A nil validator fails closed.
+`deerflow.NewSkillModelValidator` supplies independent security and quality
+content checks, each with fresh context and no tools. Provider errors are
+sanitized. Behavior and actual script execution require separate trusted host
+evidence; model prose cannot mint it. A nil validator fails closed.
 
-The SDK exposes candidate submission through the native `skill_manage` tool only
-for explicit `Config.SkillProposalSources`. It checks workspace/global source
-scope, current attempt identity, role tool/skill subsets and pinned content.
-Candidate authors and idempotency keys are host-generated. Model reads are limited
-to the same author; the separate authenticated operator service manages reviews.
-Review calls inside a run share that run's durable model budget and usage events.
-No model tool changes the live publication pointer. Ordinary reviewer failures
-produce failed proposals; budget-storage errors remain runtime failures.
+The native `skill_manage` tool submits exact packages with `SubmitAutomatic`.
+It checks explicit source grants, workspace/global visibility, attempt identity,
+role subsets and pinned content. Proposal/job/behavior bindings commit together;
+no foreground review or live file edit occurs. Background workers independently
+validate and automatically adopt eligible changes, observe real task outcomes
+and withdraw regressions. Missing evidence/runtime waits for dependencies.
+Submission and `get` require no skill approval; command permissions stay
+independent. Root/session/role ownership and idempotency survive restart.
 
-The daemon and desktop config validator share strict parsing for the implemented
-manual-review YAML subset. See [the protocol and configuration guide](../acp/skill-evolution.md).
-Discovery, automatic publication and Waku review UI
-integration remain separate pending work.
+Native launch inherits the primary model and owns the automatic policy. The
+former manual-review YAML subset has been removed.
 
 ## Managed sources and recoverable exports
 
@@ -293,3 +289,9 @@ versions after source edits/deletion, enable/disable/delete, metadata-only loadi
 source ID reuse, scope/name filtering, path and symlink isolation, integrity
 checks, injected transaction rollback, count/size/version bounds, static findings,
 binary-tool rejection, and concurrent idempotent installation.
+
+### Missing managed registrations
+
+A bounded, read-only inventory reports `installation_missing` for unregistered packages under configured managed sources. It does not create `df_skill_source_status` rows or installation authority. Catalog diagnostics and scoped execution warnings share this inventory; disabled/deleted installations and pending creation guards are not imported.
+
+Host-only `skill.recovery.plan` / `skill.recovery.apply` can restore a missing installation from a matching historical published/manual proposal, applied file receipt and exact current package manifest. Recovery uses a read-only history connection and copies no conversations, jobs or checkpoints. Expected receipt/version checks, destination tombstones, transaction audit and request-key replay prevent stale or duplicate writes. Automatic candidate lifecycle state is intentionally not reconstructed by this limited repair.
