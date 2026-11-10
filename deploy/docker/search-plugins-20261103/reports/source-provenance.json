@@ -1,0 +1,91 @@
+{
+  "revision": "bd1588806b7184699ec6ce3d79abc8e8850233f5",
+  "source_state": "committed-source-plus-search-plugins-and-cancellation-fix-and-preserved-deployed-ready-fix",
+  "overlay_files": [
+    "config.example.yaml",
+    "desktop-app/crates/waku-core/src/daemon.rs",
+    "desktop-app/crates/waku-core/src/deerflow_config.rs",
+    "desktop-app/resources/deerflow/default-config.yaml",
+    "docs/go-native-tools.md",
+    "docs/search-plugins.md",
+    "go-harness/deerflow.go",
+    "go-harness/extensions.go",
+    "go-harness/harness/permission_mode.go",
+    "go-harness/harness/permission_mode_test.go",
+    "go-harness/harness/search.go",
+    "go-harness/internal/configschema/schema.go",
+    "go-harness/internal/configschema/tools.go",
+    "go-harness/internal/desktopconfig/builtin_tools_test.go",
+    "go-harness/internal/desktopconfig/document.go",
+    "go-harness/internal/desktopconfig/readiness.go",
+    "go-harness/internal/desktopconfig/readiness_test.go",
+    "go-harness/internal/desktopconfig/search.go",
+    "go-harness/internal/desktopconfig/search_test.go",
+    "go-harness/internal/desktopconfig/service.go",
+    "go-harness/internal/desktopconfig/tools_settings_test.go",
+    "go-harness/internal/launch/config.go",
+    "go-harness/internal/launch/config_test.go",
+    "go-harness/internal/tools/migrated_tools_test.go",
+    "go-harness/internal/tools/search_preference.go",
+    "go-harness/internal/tools/web.go",
+    "go-harness/internal/websearch/config.go",
+    "go-harness/internal/websearch/config_test.go",
+    "go-harness/internal/websearch/manager.go",
+    "go-harness/internal/websearch/operations.go",
+    "go-harness/internal/websearch/providers.go",
+    "go-harness/internal/websearch/providers_test.go",
+    "go-harness/management.go",
+    "go-harness/management_search.go",
+    "go-harness/search_plugins_test.go",
+    "resources/default-config.yaml",
+    "resources/desktop-default-config.yaml",
+    "go-harness/internal/runtime/automatic_executions.go",
+    "go-harness/internal/runtime/automatic_executions_test.go"
+  ],
+  "excluded_unrelated_changes": [
+    "go-harness/internal/runtime/session_delete_legacy.go",
+    "go-harness/internal/runtime/session_delete_interrupted_test.go",
+    "go-harness/internal/launch/oss_attachments_test.go",
+    "skills/custom",
+    "tests/oss_attachments"
+  ],
+  "preserved_deployed_files": {
+    "desktop-app/crates/waku-core/src/daemon.rs": "527541a4cc6a5065b07aedfdb0ceae92c2d491f48c0453af75253389261d3084"
+  },
+  "additional_validation_fixes": [
+    "Graceful cancellation when an automatic session subscriber is waiting on a database transaction; deterministic regression reproduced on the original implementation."
+  ],
+  "source_archive_sha256": "fa211d45c3d45bb03df774fcd7f8b92089a809469296f82a198bae7f19e23bb4",
+  "go_archive_sha256": "ed4e4d994852e0ec543cd9dc285242e9dc317183794888b8792a95b727db01f3",
+  "go_toolchain": "go version go1.26.8 windows/amd64; pinned compiler and GOROOT; GOOS=linux GOARCH=amd64 CGO_ENABLED=0",
+  "go_artifacts": {
+    "deerflow-acp-go": "5ecb45a9de610b4badb3f939a5f91a5a1426071aa39c0ba51791772a9b580578",
+    "deerflow-acpd.real": "8cab7b626f39dfd8050c975c82c832e492689493e85fb74e5469bd96f62d4b50",
+    "deerflow-config-go": "024a85c19027b97e6328e518e7c37c154c48f3a15f82189096283529bda2677f",
+    "deerflow-control-go": "9a7ec72dd12ad9d49d23448f01611a83c6d2141446d04a917703d60aefeeffa1",
+    "deerflow-skill-go": "da71d7a03bfc6d931d3548997de98c730ae087c9dca830af8727bbc290eb8053"
+  },
+  "go_tests": {
+    "configschema.test": "c6d77d31724c6609828658a0080b3075b42d39009c73acfce5e4aab45105749d",
+    "daemon.test": "45f65b8a5131480079fa109ea4d75e265eed1bec5defde3d3304e6d3f0a83b2a",
+    "desktopconfig.test": "7115c465e3cc6862682f4af28a7c7fc046cc09778f2f2a341e5021976ba95a03",
+    "harness.test": "dda17edc0e2d165175ef29f2c8c8a1402ef0e6ec35a6fcde28758a6544edccbd",
+    "launch.test": "6bccabec2281b54e8eb9f3de04b35034c4565cb6a4b24f2fe551e1b27fce7e0e",
+    "paths.test": "dda49c1b2b8d1615af08f56ecdc7b61737818a4fb620b72819071703441c0220",
+    "root.test": "fce882a23686a8dedaaebc2633ff3e15009f41a8d9df9633df6602d26e5dda08",
+    "runtime.test": "4943f487565fe025a37a52b0426d5520e821e6e4d1c8f8786a1cbeec4aa0375c",
+    "tools.test": "4b9a180ccbeefed83764b694548f55cdcd37e63d8166eaeead4b308605c33a8c",
+    "websearch.test": "adaa8cda1671080f625f4777f2afb1d5fe162ccdf64419910dba102a5c719fcf"
+  },
+  "deployment_scripts": {
+    "release.py": "678c06491a6123a082c1856565cd20735495cb32d204163e4a1ccd5af6e0fc21",
+    "build.py": "55f2f9553b4cd183da0bbecaf8f7265b99dd00ef751e773c5bbd4265c2b2c442",
+    "stage_search_probe.py": "ec353d5459d911351608bfe222b3c914182e0e934bd431747f90be82e725a9f2",
+    "ws_probe.py": "2091cce7ce20403516354e94ee2789533726cb00d868dbd3fb6ef80d865f4d0d",
+    "test_release.py": "690cb5f6ded66baa902ba130533a8ff0f3cf587cb18a4185aa1fb449674fc5d1",
+    "cleanup.py": "8fa62d0c002bdae1c1e6f83e6873db7f7bc4d2f5a468e82a905e6659c773b829",
+    "test_cleanup.py": "a5bc7932aa980e689be644160470b59bcc924e92627cf0b9833a84c610d9aa67"
+  },
+  "source_files": 1359,
+  "full_manifest_sha256": "944219c9115c5b2d07a1050e35c744f1694d91d1eb43587c677809b50b40dc16"
+}

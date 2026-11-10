@@ -1,0 +1,19 @@
+{
+  "active_image_preserved": true,
+  "backup_preserved": true,
+  "database_binding_unchanged": true,
+  "free_bytes_after": 55875674112,
+  "free_bytes_before": 54613712896,
+  "logical_bytes_removed": 1257533858,
+  "other_containers_preserved": true,
+  "passed": true,
+  "removed_builder": "a64113e680a136065aecccf7707a7b1b2fd1933cfb3b66d6e5b21a2d51303357",
+  "removed_temporary_paths": [
+    "build",
+    "go-artifacts.tar.gz",
+    "stage-3nh3x23_",
+    "image-s6jx63e5"
+  ],
+  "reports_and_source_archive_preserved": true,
+  "temporary_alias_removed": true
+}

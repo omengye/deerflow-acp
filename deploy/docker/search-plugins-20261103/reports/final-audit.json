@@ -1,0 +1,16 @@
+{
+  "backup_path": "/home/gen/deerflow-deploy/search-plugins-20261103-204617/backup",
+  "backup_present": true,
+  "build_id": "search-plugins-20261103-204617",
+  "cleanup_passed": true,
+  "data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+  "database_binding_unchanged": true,
+  "draining": false,
+  "health": "healthy",
+  "image_id": "sha256:95d806ba2e23832d33a732e17a38acfb0ecd8b9bc22daf2523df677272fc5d79",
+  "original_sessions_preserved": 74,
+  "other_original_containers_unchanged": 19,
+  "passed": true,
+  "search_live_switch_passed": true,
+  "temporary_containers_removed": true
+}

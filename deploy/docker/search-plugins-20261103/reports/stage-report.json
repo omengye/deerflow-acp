@@ -1,0 +1,46 @@
+{
+  "alternate_database_preserved": true,
+  "binaries": {
+    "deerflow-acp": "e48d9c6a0bfd7190f08dab38636bb004cbae5e71a7edcac9e0479297c2da29a1",
+    "deerflow-acp-go": "5ecb45a9de610b4badb3f939a5f91a5a1426071aa39c0ba51791772a9b580578",
+    "deerflow-acpd": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0",
+    "deerflow-acpd.real": "8cab7b626f39dfd8050c975c82c832e492689493e85fb74e5469bd96f62d4b50",
+    "deerflow-config-go": "024a85c19027b97e6328e518e7c37c154c48f3a15f82189096283529bda2677f",
+    "deerflow-control-go": "9a7ec72dd12ad9d49d23448f01611a83c6d2141446d04a917703d60aefeeffa1",
+    "deerflow-server-healthcheck": "d94e16b9fd1c9209bacd1727889e36486aba3cf97fa310dcdc60c79e4522a925",
+    "deerflow-skill-go": "da71d7a03bfc6d931d3548997de98c730ae087c9dca830af8727bbc290eb8053",
+    "waku-daemon": "2d5843e429ad3206d1d9741ef645bfde41d4f9c2e853b668958829b773b9dde6"
+  },
+  "config_apply": {
+    "config_applied": true,
+    "passed": true,
+    "prompts_submitted": 0,
+    "protocol": 12,
+    "sessions": 0
+  },
+  "image_id": "sha256:95d806ba2e23832d33a732e17a38acfb0ecd8b9bc22daf2523df677272fc5d79",
+  "passed": true,
+  "production_data_mounted": false,
+  "restart_resume": true,
+  "search_live_switch": {
+    "actual_http_requests": {
+      "brave": 2,
+      "deepseek": 1,
+      "searxng": 1
+    },
+    "credentials": "synthetic_only",
+    "paid_model_requests": 0,
+    "passed": true,
+    "production_data_mounted": false,
+    "provider_sequence": [
+      "brave",
+      "deepseek",
+      "searxng",
+      "brave"
+    ],
+    "same_container": true,
+    "same_daemon_instance": true,
+    "same_native_session": true,
+    "search_settings_changed_through_waku_rpc": true
+  }
+}

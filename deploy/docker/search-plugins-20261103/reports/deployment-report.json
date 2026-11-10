@@ -1,0 +1,121 @@
+{
+  "alternate_database_preserved": true,
+  "configuration_preserved": true,
+  "credentials_preserved": true,
+  "data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+  "database_binding_unchanged": true,
+  "health": "healthy",
+  "image_id": "sha256:95d806ba2e23832d33a732e17a38acfb0ecd8b9bc22daf2523df677272fc5d79",
+  "legacy_search_credentials_verified": true,
+  "migrated_search_fields": [
+    "api_key",
+    "https_proxy",
+    "timeout"
+  ],
+  "native_resume": {
+    "occupied_skipped": 0,
+    "passed": true,
+    "prompts_submitted": 0,
+    "resumed_original_count": 2,
+    "resumed_ids_sha256": "14398e577fe3ab8f02fa7148f748b6258858d630b6747c3a3da7133d028654c2"
+  },
+  "other_containers_preserved": true,
+  "passed": true,
+  "protocol": 12,
+  "records": {
+    "desktop": {
+      "messages": {
+        "after": 6,
+        "before": 6,
+        "missing": 0
+      },
+      "sessions": {
+        "after": 1,
+        "before": 1,
+        "missing": 0
+      }
+    },
+    "eino_checkpoints": {
+      "after": 0,
+      "before": 0,
+      "missing": 0
+    },
+    "eino_session_events": {
+      "after": 3350,
+      "before": 3350,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_channels": {
+      "after": 0,
+      "before": 0,
+      "missing": 0
+    },
+    "harness_events": {
+      "after": 11122,
+      "before": 11122,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_inputs": {
+      "after": 147,
+      "before": 147,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_runs": {
+      "after": 147,
+      "before": 147,
+      "missing": 0
+    },
+    "harness_session_configs": {
+      "after": 74,
+      "before": 74,
+      "missing": 0
+    },
+    "harness_sessions": {
+      "after": 74,
+      "before": 74,
+      "missing": 0
+    },
+    "harness_tool_receipts": {
+      "after": 299,
+      "before": 299,
+      "missing": 0
+    }
+  },
+  "search_live_switch": {
+    "actual_http_requests": {
+      "brave": 2,
+      "deepseek": 1,
+      "searxng": 1
+    },
+    "credentials": "synthetic_only",
+    "paid_model_requests": 0,
+    "passed": true,
+    "production_data_mounted": false,
+    "provider_sequence": [
+      "brave",
+      "deepseek",
+      "searxng",
+      "brave"
+    ],
+    "same_container": true,
+    "same_daemon_instance": true,
+    "same_native_session": true,
+    "search_settings_changed_through_waku_rpc": true
+  },
+  "search_rpc": {
+    "configured_providers_tested": [],
+    "default_provider_restored": true,
+    "passed": true,
+    "prompts_submitted": 0,
+    "providers": [
+      "brave",
+      "deepseek",
+      "searxng"
+    ],
+    "same_container": true,
+    "same_daemon_instance": true
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "default_provider": "brave",
+  "providers": [
+    {
+      "name": "brave",
+      "configured": true,
+      "api_key_configured": true,
+      "missing_fields": []
+    },
+    {
+      "name": "deepseek",
+      "configured": false,
+      "api_key_configured": false,
+      "missing_fields": [
+        "api_key"
+      ]
+    },
+    {
+      "name": "searxng",
+      "configured": false,
+      "api_key_configured": false,
+      "missing_fields": [
+        "base_url"
+      ]
+    }
+  ]
+}

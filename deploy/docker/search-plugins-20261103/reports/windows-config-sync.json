@@ -1,0 +1,34 @@
+{
+  "passed": true,
+  "completed_providers": [
+    "deepseek",
+    "searxng"
+  ],
+  "backup_path": "/home/gen/deerflow-deploy/search-config-sync-20261103-94e9f748b085/search-providers.before.json",
+  "health": "healthy",
+  "no_restart": true,
+  "same_daemon_instance": true,
+  "same_container": true,
+  "database_binding_unchanged": true,
+  "main_config_unchanged": true,
+  "brave_configuration_unchanged": true,
+  "default_selection_preserved": true,
+  "default_provider": "brave",
+  "other_containers_unchanged": 19,
+  "providers": {
+    "deepseek": {
+      "configured": true,
+      "api_key_configured": true,
+      "matches_windows_configuration": true
+    },
+    "searxng": {
+      "configured": true,
+      "api_key_configured": true,
+      "matches_windows_configuration": true
+    }
+  },
+  "external_search_requests": 0,
+  "credentials_transferred_via": "SSH stdin",
+  "windows_source_unchanged": true,
+  "source": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\config\\search-providers.json"
+}
