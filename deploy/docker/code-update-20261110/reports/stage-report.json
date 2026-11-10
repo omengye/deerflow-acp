@@ -1,0 +1,108 @@
+{
+  "passed": true,
+  "commit": "a7a030f95550814842f97848170cbc3472ce51db",
+  "image_id": "sha256:1db117c1db1e1fbfc689a0e819411ca7d5c588a5129f7b82659348dd43d9c4c5",
+  "binaries": {
+    "deerflow-acp": "86dda16d16b1316a31fb77ff879264bc9533d2ed9254c22b71593561fb79da0b",
+    "deerflow-acp-go": "44ccd65ebf2ea3f35b1e7c41b01e8f205b24d4e5293923d414f33aa9e015b49d",
+    "deerflow-acpd": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0",
+    "deerflow-acpd.real": "821fbfadb1ec27a6e278e03b799c35275bcc500d43e2b57d73a323add81634d2",
+    "deerflow-channel-wechat": "42594f16a853eab49dada4b0b2683af9ba42b12b69e984d15d2dcb14bef8314a",
+    "deerflow-config-go": "fb2c2f30914693bdca052ca055657f20e6a0112d59b81bd08a3a2f9202abd6d4",
+    "deerflow-control-go": "1c27f9a10e2fbd74ee5d6da3d20d69a7264774c99be3e8202934b0a4acf04b6c",
+    "deerflow-server-entrypoint": "808bb57ab2bfa6a9007b2dd98e0c119c94fe504cb882bd077da6a14bf836e428",
+    "deerflow-server-healthcheck": "d94e16b9fd1c9209bacd1727889e36486aba3cf97fa310dcdc60c79e4522a925",
+    "deerflow-skill-go": "5d9cef3b1803693d8f71594f42b3b8cfcd46d64e69ff4db2bfa31f3fa40753ca",
+    "waku-daemon": "64a744f2cd014c303d805aa961457d3caac19ed82cd16cfdc0184b8d66609819"
+  },
+  "production_data_mounted": false,
+  "network": "none",
+  "restart_resume": {
+    "passed": true,
+    "occupied_skipped": 0,
+    "prompts_submitted": 0,
+    "resumed_original_count": 2,
+    "resumed_ids_sha256": "3905ea985108d9c6a435b177a3537cbab69582425bf366679182f880641ada64"
+  },
+  "configuration_apply": {
+    "passed": true,
+    "protocol": 12,
+    "sessions": 2,
+    "prompts_submitted": 0,
+    "config_applied": true
+  },
+  "migration": {
+    "complete": true,
+    "policy_version": "skill-evolution-v2",
+    "input_watermark": 33873
+  },
+  "retired_config_sections": [
+    "skill_evolution"
+  ],
+  "provider_credentials_preserved": true,
+  "records": {
+    "harness_sessions": {
+      "before": 75,
+      "after": 75,
+      "missing": 0
+    },
+    "harness_runs": {
+      "before": 153,
+      "after": 153,
+      "missing": 0
+    },
+    "harness_events": {
+      "before": 9865,
+      "after": 9865,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_inputs": {
+      "before": 153,
+      "after": 153,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_tool_receipts": {
+      "before": 289,
+      "after": 289,
+      "missing": 0
+    },
+    "eino_session_events": {
+      "before": 3312,
+      "after": 3312,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "eino_checkpoints": {
+      "before": 0,
+      "after": 0,
+      "missing": 0
+    },
+    "harness_session_configs": {
+      "before": 75,
+      "after": 75,
+      "missing": 0
+    },
+    "harness_channels": {
+      "before": 0,
+      "after": 1,
+      "missing": 0
+    },
+    "df_skill_proposals": {
+      "before": 9,
+      "after": 9,
+      "missing": 0
+    },
+    "df_skill_maintenance_jobs": {
+      "before": 52,
+      "after": 52,
+      "missing": 0
+    },
+    "df_skill_maintenance_calls": {
+      "before": 67,
+      "after": 67,
+      "missing": 0
+    }
+  }
+}

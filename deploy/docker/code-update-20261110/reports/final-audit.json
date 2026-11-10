@@ -1,0 +1,82 @@
+{
+  "passed": true,
+  "checked_at": "2026-11-10T14:13:35.971265+00:00",
+  "commit": "a7a030f95550814842f97848170cbc3472ce51db",
+  "image_id": "sha256:1db117c1db1e1fbfc689a0e819411ca7d5c588a5129f7b82659348dd43d9c4c5",
+  "build_id": "git-a7a030f95550",
+  "health": "healthy",
+  "restart_count": 0,
+  "draining": false,
+  "activity": {
+    "active_operations": 0,
+    "active_runs": 0,
+    "queued_runs": 0
+  },
+  "database_integrity": "ok",
+  "run_states": {
+    "completed": 146,
+    "needs_reconciliation": 7
+  },
+  "bundled_channel_enabled": false,
+  "other_containers_preserved": true,
+  "other_container_count": 19,
+  "inactive_archive_preserved": true,
+  "backup_files": {
+    "compose": {
+      "bytes": 963,
+      "sha256": "0b0505144a5b2d0b561c60f1bd8adacc2474f0c3f07536909b4e9bf0770b4827"
+    },
+    "config": {
+      "bytes": 4987,
+      "sha256": "3bc5427b1ffed21636302aae32419c899c093be9b7db766d8490922b8a10d00b"
+    },
+    "desktop.db": {
+      "bytes": 806912,
+      "sha256": "eddcff9bedab24601de5f09306f1dae0a1c7732ff891cf7b1417fd08c6e7d7c5"
+    },
+    "desktop.db-shm": {
+      "bytes": 32768,
+      "sha256": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb"
+    },
+    "desktop.db-wal": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "env": {
+      "bytes": 335,
+      "sha256": "496af0b0a54471a10211cc90ccf7e8d8fe7b6d40576323128bec39c41dbf1d24"
+    },
+    "harness.db": {
+      "bytes": 23584768,
+      "sha256": "a0582354d6eb4ada6de6d2bb2ed88e50fb2bf19193e86ba2a82d52404b23382c"
+    },
+    "harness.db-shm": {
+      "bytes": 32768,
+      "sha256": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb"
+    },
+    "harness.db-wal": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runtime-data.json": {
+      "bytes": 39,
+      "sha256": "63c078f049da281e8d61f297c7f34a9336787fb9429336dbb305ce057320044e"
+    },
+    "search-providers.json": {
+      "bytes": 750,
+      "sha256": "aa5ff13407002911edc315b61d9377cfe4ec91f9d08b2ed056931858819feabd"
+    },
+    "skills.tar.gz": {
+      "bytes": 179154,
+      "sha256": "834277f9b086735cfcb1fa1e6d0c134f4d862240c5e5e1afd44e409e77f97485"
+    },
+    "user-data.tar.gz": {
+      "bytes": 19761556,
+      "sha256": "d92f87bb0a8a64c611ee994576279832789dbed191341b836cf84e2ad3e85f02"
+    },
+    "wrapper": {
+      "bytes": 1830,
+      "sha256": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0"
+    }
+  }
+}

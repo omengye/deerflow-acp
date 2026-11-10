@@ -1,0 +1,117 @@
+{
+  "passed": true,
+  "commit": "a7a030f95550814842f97848170cbc3472ce51db",
+  "build_id": "git-a7a030f95550",
+  "image_tag": "deerflow-server:git-a7a030f95550",
+  "image_id": "sha256:1db117c1db1e1fbfc689a0e819411ca7d5c588a5129f7b82659348dd43d9c4c5",
+  "health": "healthy",
+  "container_id": "dc981fc00e2446c6bef0e65ca6759f923005e49abf67c756a3a9db9b327b50fe",
+  "data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+  "database_binding_unchanged": true,
+  "configuration_preserved": true,
+  "retired_config_sections": [
+    "skill_evolution"
+  ],
+  "migration": {
+    "complete": true,
+    "policy_version": "skill-evolution-v2",
+    "input_watermark": 33873
+  },
+  "credentials_preserved": true,
+  "websocket": {
+    "passed": true,
+    "protocol": 12,
+    "sessions": 2,
+    "prompts_submitted": 0,
+    "config_applied": false
+  },
+  "native_resume": {
+    "passed": true,
+    "occupied_skipped": 0,
+    "prompts_submitted": 0,
+    "resumed_original_count": 2,
+    "resumed_ids_sha256": "3905ea985108d9c6a435b177a3537cbab69582425bf366679182f880641ada64"
+  },
+  "records": {
+    "harness_sessions": {
+      "before": 75,
+      "after": 75,
+      "missing": 0
+    },
+    "harness_runs": {
+      "before": 153,
+      "after": 153,
+      "missing": 0
+    },
+    "harness_events": {
+      "before": 9865,
+      "after": 9865,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_inputs": {
+      "before": 153,
+      "after": 153,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_tool_receipts": {
+      "before": 289,
+      "after": 289,
+      "missing": 0
+    },
+    "eino_session_events": {
+      "before": 3312,
+      "after": 3312,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "eino_checkpoints": {
+      "before": 0,
+      "after": 0,
+      "missing": 0
+    },
+    "harness_session_configs": {
+      "before": 75,
+      "after": 75,
+      "missing": 0
+    },
+    "harness_channels": {
+      "before": 0,
+      "after": 1,
+      "missing": 0
+    },
+    "df_skill_proposals": {
+      "before": 9,
+      "after": 9,
+      "missing": 0
+    },
+    "df_skill_maintenance_jobs": {
+      "before": 52,
+      "after": 52,
+      "missing": 0
+    },
+    "df_skill_maintenance_calls": {
+      "before": 67,
+      "after": 67,
+      "missing": 0
+    },
+    "desktop": {
+      "sessions": {
+        "before": 2,
+        "after": 2,
+        "missing": 0
+      },
+      "messages": {
+        "before": 18,
+        "after": 18,
+        "missing": 0
+      }
+    }
+  },
+  "inactive_database_archive": "/home/gen/deerflow-deploy/code-update-20261110-a7a030f95550/backup/inactive-go-harness",
+  "inactive_archive_preserved": true,
+  "backup": "/home/gen/deerflow-deploy/code-update-20261110-a7a030f95550/backup",
+  "other_containers_preserved": true,
+  "production_prompts_submitted": 0
+}

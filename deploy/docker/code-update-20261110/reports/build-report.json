@@ -1,0 +1,116 @@
+{
+  "passed": true,
+  "commit": "a7a030f95550814842f97848170cbc3472ce51db",
+  "image_tag": "deerflow-server:git-a7a030f95550",
+  "image_id": "sha256:1db117c1db1e1fbfc689a0e819411ca7d5c588a5129f7b82659348dd43d9c4c5",
+  "base_image_id": "sha256:9eb21e5b84b972015860983b8ad0dbbad87215f1d20db05b2ce40dc653a8f194",
+  "binaries": {
+    "deerflow-acp": "86dda16d16b1316a31fb77ff879264bc9533d2ed9254c22b71593561fb79da0b",
+    "deerflow-acp-go": "44ccd65ebf2ea3f35b1e7c41b01e8f205b24d4e5293923d414f33aa9e015b49d",
+    "deerflow-acpd": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0",
+    "deerflow-acpd.real": "821fbfadb1ec27a6e278e03b799c35275bcc500d43e2b57d73a323add81634d2",
+    "deerflow-config-go": "fb2c2f30914693bdca052ca055657f20e6a0112d59b81bd08a3a2f9202abd6d4",
+    "deerflow-control-go": "1c27f9a10e2fbd74ee5d6da3d20d69a7264774c99be3e8202934b0a4acf04b6c",
+    "deerflow-server-entrypoint": "808bb57ab2bfa6a9007b2dd98e0c119c94fe504cb882bd077da6a14bf836e428",
+    "deerflow-server-healthcheck": "d94e16b9fd1c9209bacd1727889e36486aba3cf97fa310dcdc60c79e4522a925",
+    "deerflow-skill-go": "5d9cef3b1803693d8f71594f42b3b8cfcd46d64e69ff4db2bfa31f3fa40753ca",
+    "waku-daemon": "64a744f2cd014c303d805aa961457d3caac19ed82cd16cfdc0184b8d66609819",
+    "deerflow-channel-wechat": "42594f16a853eab49dada4b0b2683af9ba42b12b69e984d15d2dcb14bef8314a"
+  },
+  "labels": {
+    "cc.sprwhisp.deerflow.rollout": "git-a7a030f95550",
+    "cc.sprwhisp.deerflow.waku-protocol": "12",
+    "cc.sprwhisp.deerflow.source-state": "clean-committed-tree",
+    "cc.sprwhisp.deerflow.source-revision": "a7a030f95550814842f97848170cbc3472ce51db",
+    "cc.sprwhisp.deerflow.source-manifest-sha256": "2c97b21b4cd488f8647cc59aec9170b20ceb9c08512d08d04a84b6a38cdcc918",
+    "org.opencontainers.image.revision": "a7a030f95550814842f97848170cbc3472ce51db"
+  },
+  "linux_tests": {
+    "channels": {
+      "passed": 43,
+      "skipped": 0,
+      "inventory": 43
+    },
+    "checkpoint": {
+      "passed": 4,
+      "skipped": 0,
+      "inventory": 4
+    },
+    "configschema": {
+      "passed": 12,
+      "skipped": 0,
+      "inventory": 12
+    },
+    "daemon": {
+      "passed": 12,
+      "skipped": 0,
+      "inventory": 12
+    },
+    "desktopconfig": {
+      "passed": 69,
+      "skipped": 0,
+      "inventory": 69
+    },
+    "eino-patch": {
+      "passed": 3,
+      "skipped": 0,
+      "inventory": 3
+    },
+    "engine": {
+      "passed": 54,
+      "skipped": 0,
+      "inventory": 54
+    },
+    "evolution": {
+      "passed": 161,
+      "skipped": 0,
+      "inventory": 161
+    },
+    "harness": {
+      "passed": 12,
+      "skipped": 0,
+      "inventory": 12
+    },
+    "launch": {
+      "passed": 54,
+      "skipped": 2,
+      "inventory": 56
+    },
+    "network": {
+      "passed": 4,
+      "skipped": 0,
+      "inventory": 4
+    },
+    "paths": {
+      "passed": 4,
+      "skipped": 0,
+      "inventory": 4
+    },
+    "root": {
+      "passed": 7,
+      "skipped": 0,
+      "inventory": 7
+    },
+    "runtime": {
+      "passed": 19,
+      "skipped": 0,
+      "inventory": 19
+    },
+    "skills": {
+      "passed": 62,
+      "skipped": 0,
+      "inventory": 62
+    },
+    "websearch": {
+      "passed": 7,
+      "skipped": 1,
+      "inventory": 8
+    }
+  },
+  "source_archive_sha256": "e0cc3692a935e327b2a2ffeafdca519c1b5db686826e828fa80b6a63119c2551",
+  "rust_tests": {
+    "passed": 191,
+    "failed": 0,
+    "ignored": 3
+  }
+}

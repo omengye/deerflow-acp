@@ -1,0 +1,52 @@
+{
+  "status": "passed",
+  "go": {
+    "packages": 57,
+    "top_level_passed": 1770,
+    "top_level_skipped": 31,
+    "full_inventory_covered": true
+  },
+  "rust": {
+    "bridge": {
+      "passed": 21,
+      "ignored": 0
+    },
+    "waku_core": {
+      "passed": 574,
+      "ignored": 37
+    },
+    "desktop": {
+      "passed": 708,
+      "ignored": 1
+    }
+  },
+  "additional_checks": {
+    "eino_checkpoint_compatibility": 7,
+    "python_passed": 21,
+    "python_skipped": 1,
+    "test_runner_checks": 388,
+    "desktop_source_identity_checks": 28,
+    "portable_data_directory_checks": "passed",
+    "race_packages": [
+      "channels",
+      "network",
+      "websearch",
+      "checkpoint"
+    ]
+  },
+  "resolved_regression": "Delegated skill reads now assert the exact root-pinned observation version; three repeated runs passed.",
+  "transient_test_failures": [
+    "HTTPS proxy fixture initially could not connect to its loopback listener; three isolated repetitions and the complete network race package passed.",
+    "Maintenance review fixture initially observed zero provider requests; all ten modes passed in three isolated repetitions."
+  ],
+  "source_hygiene": {
+    "project_whitespace": "passed",
+    "rustfmt": "passed",
+    "gofmt": "passed",
+    "vendor_whitespace": "Unmodified upstream fixtures, prompts and license retained.",
+    "vendor_production_changes": [
+      "adk/interrupt.go"
+    ],
+    "credential_scan": "Only two intentional redaction test fixtures matched."
+  }
+}

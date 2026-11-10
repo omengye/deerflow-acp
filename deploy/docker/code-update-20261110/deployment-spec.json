@@ -1,0 +1,8 @@
+{
+  "base_image_id": "sha256:9eb21e5b84b972015860983b8ad0dbbad87215f1d20db05b2ce40dc653a8f194",
+  "builder_image_id": "sha256:1bf2936d291c45d10273d2ddaefb3617fb490813f4b9137e215d2359f6c90241",
+  "build_id": "git-a7a030f95550",
+  "commit": "a7a030f95550814842f97848170cbc3472ce51db",
+  "release_support_sha256": "5c24315d0cb5f135d27ab198b5fa76c4cbec238eab26b2f819246da2ba301960",
+  "storage_support_sha256": "416142a8bcf4edea7c664a68760857f044015fed90be4d63400775d71c28516c"
+}

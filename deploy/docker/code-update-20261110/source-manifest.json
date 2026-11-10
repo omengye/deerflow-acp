@@ -1,0 +1,111 @@
+{
+  "binaries": {
+    "deerflow-acp-go": "44ccd65ebf2ea3f35b1e7c41b01e8f205b24d4e5293923d414f33aa9e015b49d",
+    "deerflow-acpd.real": "821fbfadb1ec27a6e278e03b799c35275bcc500d43e2b57d73a323add81634d2",
+    "deerflow-config-go": "fb2c2f30914693bdca052ca055657f20e6a0112d59b81bd08a3a2f9202abd6d4",
+    "deerflow-control-go": "1c27f9a10e2fbd74ee5d6da3d20d69a7264774c99be3e8202934b0a4acf04b6c",
+    "deerflow-skill-go": "5d9cef3b1803693d8f71594f42b3b8cfcd46d64e69ff4db2bfa31f3fa40753ca"
+  },
+  "build_id": "git-a7a030f95550",
+  "build_transformations": {
+    "desktop-app/Cargo.lock": "deploy/docker/Cargo.server.lock",
+    "desktop-app/Cargo.toml": "deploy/docker/Cargo.server.toml"
+  },
+  "candidate_wrapper_sha256": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0",
+  "cgo_enabled": false,
+  "commit": "a7a030f95550814842f97848170cbc3472ce51db",
+  "deployment_scripts": {
+    "build.py": "6abb362e5fe0630809df42634f39f9ec8299cbe99d52eecfdd64068a5f2d0956",
+    "preflight.py": "a98d47f1c94b182fc1c7700ddeeb11aac269edaeb4f7a1f426aa50693829004e"
+  },
+  "deployment_status": "remote-build-prepared",
+  "go_archive_sha256": "9e0fd273e526dc1309f0632a8375f0bee7292c3977d0e83f4b0cce41be9bf765",
+  "go_tests": {
+    "channels.test": "280d2fc959e19b95e10ab7e403900b8db0696c662b38430c34a2e4721672df9d",
+    "checkpoint.test": "42b7d1110147b0d840ed1b3b92f57b6419f5da3d2900f5e099f4f3e3f7df76c1",
+    "configschema.test": "441d7bf810194d58397b47e044bfe4de796120edfe3576e4c50fd5d690a0ede6",
+    "daemon.test": "5d31b99e4e52492870ae6f4ae02878a4f386d9cec91931c8a50d8c3c2495de86",
+    "desktopconfig.test": "496168344d384f3be6d52c14f9891b724e1de616263150c17673cb78f2ee5e76",
+    "eino-patch.test": "6c8379bf2c06999436004dee1ffd9afd9b3a881bc0689c12cdfec39d07e8d5c0",
+    "engine.test": "956b104578854de095130a51fc7a8a853974ebe827e6152c8c7de50a488a8e16",
+    "evolution.test": "faef31e1215663f727ccc2c51a15e4153c3ba450fa4dc2371914ede8540429e4",
+    "harness.test": "2ff111a3537de296754bd99ae92aeb5884047ca419e1d18aecc1277b555425ef",
+    "launch.test": "f7c7107140d74c143b32a8ca605195ec3d01ffebdc33f9203cccdd427b7f5bf9",
+    "network.test": "ed3d41ba9363b6e9fcdcf32e59b55909d967e318d1c50e4bd6f2da8ff43a86ac",
+    "paths.test": "a6b9f785e8020fb4c6518c6136420fd2209a4e4fb58f0f6de05663daebf6070d",
+    "root.test": "43afaf74e0dedcbd693b7a1819ac74fd0e1b0039be5f3f0608742a63bcfa868c",
+    "runtime.test": "76fff6954bf9242ddf8e9feaee9284b81171fc0aed872e3d4d75123cf64e9749",
+    "skills.test": "48131f4198950187b836254bd79070c74773fd3583c9489049cf6c0093f416eb",
+    "websearch.test": "275964f8b9a07fffa9c726bfd92fd640625513b54befc77f0b6522f24d58a5ec"
+  },
+  "go_toolchain": "go version go1.26.8 windows/amd64",
+  "linux_test_plan": {
+    "channels": {
+      "package": "./internal/channels",
+      "run": ""
+    },
+    "checkpoint": {
+      "package": "./internal/checkpoint",
+      "run": ""
+    },
+    "configschema": {
+      "package": "./internal/configschema",
+      "run": ""
+    },
+    "daemon": {
+      "package": "./cmd/deerflow-acpd-go",
+      "run": ""
+    },
+    "desktopconfig": {
+      "package": "./internal/desktopconfig",
+      "run": ""
+    },
+    "eino-patch": {
+      "package": "./third_party/eino",
+      "run": "^TestCheckpointPatch"
+    },
+    "engine": {
+      "package": "./internal/engine/eino",
+      "run": "^Test(Checkpoint|EinoNested|Model|Responses|Network|SharedProxy|Output)"
+    },
+    "evolution": {
+      "package": "./internal/skills/evolution",
+      "run": ""
+    },
+    "harness": {
+      "package": "./harness",
+      "run": ""
+    },
+    "launch": {
+      "package": "./internal/launch",
+      "run": ""
+    },
+    "network": {
+      "package": "./internal/network",
+      "run": ""
+    },
+    "paths": {
+      "package": "./internal/runtimepaths",
+      "run": ""
+    },
+    "root": {
+      "package": ".",
+      "run": "^Test(SearchPlugins|NetworkPolicy|SkillLearningNativeDelegated|SDKAutomaticNotification)"
+    },
+    "runtime": {
+      "package": "./internal/runtime",
+      "run": "^Test(Checkpoint|Automatic|ExplicitDelete|PortableBinding|SkillWorkspace|Skill.*Migration|Skill.*Epoch)"
+    },
+    "skills": {
+      "package": "./internal/skills",
+      "run": ""
+    },
+    "websearch": {
+      "package": "./internal/websearch",
+      "run": ""
+    }
+  },
+  "source_archive_sha256": "e0cc3692a935e327b2a2ffeafdca519c1b5db686826e828fa80b6a63119c2551",
+  "source_state": "clean-committed-tree",
+  "target": "linux/amd64"
+}
