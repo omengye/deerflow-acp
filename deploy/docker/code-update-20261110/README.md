@@ -52,10 +52,23 @@ Gentoo 发布目录：`/home/gen/deerflow-deploy/code-update-20261110-a7a030f955
 实际发布结果以 `reports/` 为准。
 
 本目录是此次发布的可审查记录，运行代码固定为上方提交；后续的记录提交不改变已部署程序。
-重新审计可在服务器发布目录执行 `python3 final-audit.py` 或 `python3 release.py verify`。
+重新审计可在服务器发布目录执行 `python3 -B final-audit.py` 或 `python3 -B release.py verify`。
 `rollback` 仅在排空且配置符合本次迁移结果时恢复原镜像及兼容配置，保留数据库和归档；
 不会用旧备份覆盖业务数据库。执行回退前应重新检查新产生的运行状态是否兼容旧程序。
 
 详细证据：[本机验证](reports/local-validation.json)、[预检](reports/prepare-report.json)、
 [Linux 构建](reports/build-report.json)、[隔离验证](reports/stage-report.json)、
 [生产数据保留](reports/deployment-report.json)、[最终审计](reports/final-audit.json)。
+
+## 本次临时文件清理
+
+2026-11-10 已按用户要求清理本次构建容器、`build/`、`stage/`、
+`go-artifacts.tar.gz`、`image-sg5xyt4g/` 和 `__pycache__/`，
+删除 1,454,404,062 字节临时文件（约 1.35 GiB）。
+同时移除临时别名 `deerflow-server:before-a7a030f95550`，原回退镜像仍保留。
+
+清理前核对容器完整 ID、退出状态、镜像和挂载，逐个验证删除路径位于本发布目录，
+且不与其他容器挂载重叠。运行容器与 daemon 均未重启，服务仍为 healthy；
+配置、完整备份、非活动库归档、源码归档和验收日志校验一致。
+原有共享构建镜像和缓存保留，未执行全局 prune。
+执行脚本见 `cleanup.py`，完整结果见[清理报告](reports/cleanup-report.json)。

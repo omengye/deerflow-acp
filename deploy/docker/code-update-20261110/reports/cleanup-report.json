@@ -1,0 +1,44 @@
+{
+  "passed": true,
+  "checked_at": "2026-11-10T15:02:18.125145+00:00",
+  "builder": "e81621f0e8de1704136a432d0edf4b44aa679d927db470f298544ad4071e6cce",
+  "temporary_paths": [
+    {
+      "name": "build",
+      "bytes": 825347630
+    },
+    {
+      "name": "stage",
+      "bytes": 137118891
+    },
+    {
+      "name": "go-artifacts.tar.gz",
+      "bytes": 246073777
+    },
+    {
+      "name": "image-sg5xyt4g",
+      "bytes": 245816747
+    },
+    {
+      "name": "__pycache__",
+      "bytes": 47017
+    }
+  ],
+  "temporary_alias": "deerflow-server:before-a7a030f95550",
+  "logical_bytes_to_remove": 1454404062,
+  "backup": "/home/gen/deerflow-deploy/code-update-20261110-a7a030f95550/backup",
+  "source_archive": "/home/gen/deerflow-deploy/code-update-20261110-a7a030f95550/source.tar.gz",
+  "logical_bytes_removed": 1454404062,
+  "free_bytes_before": 45522083840,
+  "free_bytes_after": 46987862016,
+  "health": "healthy",
+  "image_id": "sha256:1db117c1db1e1fbfc689a0e819411ca7d5c588a5129f7b82659348dd43d9c4c5",
+  "container_unchanged": true,
+  "daemon_unchanged": true,
+  "other_containers_preserved": true,
+  "configuration_preserved": true,
+  "backup_and_inactive_archive_preserved": true,
+  "source_archive_and_reports_preserved": true,
+  "shared_builder_image_preserved": true,
+  "rollback_image_preserved": true
+}
