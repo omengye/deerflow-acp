@@ -3,6 +3,9 @@ module github.com/omengye/deerflow-acp/go-harness
 // Stream-local error fix for eino-ext/claude v0.1.25; see third_party/eino-claude/PATCH.md.
 replace github.com/cloudwego/eino-ext/components/model/claude => ./third_party/eino-claude
 
+// alpha.35 API with the canonical nested checkpoint fix from upstream #1232.
+replace github.com/cloudwego/eino => ./third_party/eino
+
 go 1.26.0
 
 toolchain go1.26.8
@@ -24,6 +27,7 @@ require (
 require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/kr/text v0.2.0 // indirect
+	github.com/openai/openai-go/v3 v3.30.0
 	github.com/rogpeppe/go-internal v1.9.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect

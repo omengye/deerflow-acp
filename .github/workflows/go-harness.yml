@@ -58,6 +58,9 @@ jobs:
           go-version: "1.26.8"
           cache-dependency-path: go-harness/go.sum
       - run: go mod verify
+      - name: Verify Eino checkpoint compatibility patch
+        working-directory: go-harness/third_party/eino
+        run: go test -mod=readonly ./adk -run '^TestCheckpointPatch' -count=1 -timeout=2m
       - name: Test regression runner
         shell: pwsh
         run: ../scripts/test-go-test-batches.ps1
