@@ -1,0 +1,104 @@
+{
+  "activity": {
+    "active_operations": 0,
+    "active_runs": 0,
+    "queued_runs": 0
+  },
+  "backup_files": {
+    "compose": {
+      "bytes": 963,
+      "sha256": "0b0505144a5b2d0b561c60f1bd8adacc2474f0c3f07536909b4e9bf0770b4827"
+    },
+    "config": {
+      "bytes": 3230,
+      "sha256": "63bac636c75ee014ad0b61a0e675738cc3627f2a5b60ff61191a9c58ba88c8ad"
+    },
+    "desktop.db": {
+      "bytes": 806912,
+      "sha256": "c0d664217a4b8c3792621f2b6ca0b1e81cc3b25d0efd5d3655e104eb5b467ca4"
+    },
+    "desktop.db-shm": {
+      "bytes": 32768,
+      "sha256": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb"
+    },
+    "desktop.db-wal": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "env": {
+      "bytes": 335,
+      "sha256": "19846a236749d7f24fb7d0c477172e946a857a6419b4bbae57a5c51efafa6366"
+    },
+    "harness.db": {
+      "bytes": 23584768,
+      "sha256": "40e190f31711cea870a78a4d468e1629a1984d05b18e22f70130d6ed736043e6"
+    },
+    "harness.db-shm": {
+      "bytes": 32768,
+      "sha256": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb"
+    },
+    "harness.db-wal": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runtime-data.json": {
+      "bytes": 39,
+      "sha256": "63c078f049da281e8d61f297c7f34a9336787fb9429336dbb305ce057320044e"
+    },
+    "search-providers.json": {
+      "bytes": 750,
+      "sha256": "aa5ff13407002911edc315b61d9377cfe4ec91f9d08b2ed056931858819feabd"
+    },
+    "skills.tar.gz": {
+      "bytes": 179154,
+      "sha256": "079d63abbb4136bad12f537273e6e27f64bbcde410aa16fde2a3cad0d84a1ed7"
+    },
+    "user-data.tar.gz": {
+      "bytes": 18576689,
+      "sha256": "8d5ee8489821e46d7efc4c4ed449304df1736fc1a5c1105185c18eee3f96a02a"
+    },
+    "wrapper": {
+      "bytes": 1830,
+      "sha256": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0"
+    }
+  },
+  "build_id": "git-3722ca94e939",
+  "bundled_channel_enabled": false,
+  "candidate_lifecycle": {
+    "operations": {
+      "proposal.history": {
+        "detail_checked": true,
+        "rows_checked": 9,
+        "states": {
+          "historical": 7,
+          "rejected": 2
+        }
+      },
+      "proposal.list": {
+        "detail_checked": true,
+        "rows_checked": 9,
+        "states": {
+          "historical": 7,
+          "rejected": 2
+        }
+      }
+    },
+    "passed": true,
+    "prompts_submitted": 0
+  },
+  "checked_at": "2026-11-11T02:03:40.357106+00:00",
+  "commit": "3722ca94e939e5b67e28957e705caad07a51b05c",
+  "database_integrity": "ok",
+  "draining": false,
+  "health": "healthy",
+  "image_id": "sha256:8394da1e6d8beab4883f4268189bf80bd79ea23e514af1238ade8dbb7f796bbc",
+  "inactive_archive_preserved": true,
+  "other_container_count": 19,
+  "other_containers_preserved": true,
+  "passed": true,
+  "restart_count": 0,
+  "run_states": {
+    "completed": 139,
+    "needs_reconciliation": 7
+  }
+}

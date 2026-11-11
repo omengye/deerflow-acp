@@ -1,0 +1,52 @@
+{
+  "base_image_id": "sha256:1db117c1db1e1fbfc689a0e819411ca7d5c588a5129f7b82659348dd43d9c4c5",
+  "binaries": {
+    "deerflow-acp": "86dda16d16b1316a31fb77ff879264bc9533d2ed9254c22b71593561fb79da0b",
+    "deerflow-acp-go": "2b0b474a5101ad0bf050ad502bcba0ac8a6c3d4c1ea4ed1fe7092b8976cdde24",
+    "deerflow-acpd": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0",
+    "deerflow-acpd.real": "6cc1d9ffd107ed2bdce02ac9a144a7e2064a332968f28972fd03315c9b34be57",
+    "deerflow-channel-wechat": "42594f16a853eab49dada4b0b2683af9ba42b12b69e984d15d2dcb14bef8314a",
+    "deerflow-config-go": "07298669d3dc082c2600f0b87d6cb859385a41ddbee3c91388469bcca638fcb6",
+    "deerflow-control-go": "1c27f9a10e2fbd74ee5d6da3d20d69a7264774c99be3e8202934b0a4acf04b6c",
+    "deerflow-server-entrypoint": "808bb57ab2bfa6a9007b2dd98e0c119c94fe504cb882bd077da6a14bf836e428",
+    "deerflow-server-healthcheck": "d94e16b9fd1c9209bacd1727889e36486aba3cf97fa310dcdc60c79e4522a925",
+    "deerflow-skill-go": "f3d44140c50393f2a064d651ce5e7bbe2eb04b04271178ab11f1d57d65370403",
+    "waku-daemon": "64a744f2cd014c303d805aa961457d3caac19ed82cd16cfdc0184b8d66609819"
+  },
+  "changed_binaries": [
+    "deerflow-acpd.real",
+    "deerflow-acp-go",
+    "deerflow-config-go",
+    "deerflow-skill-go"
+  ],
+  "commit": "3722ca94e939e5b67e28957e705caad07a51b05c",
+  "image_id": "sha256:8394da1e6d8beab4883f4268189bf80bd79ea23e514af1238ade8dbb7f796bbc",
+  "image_tag": "deerflow-server:git-3722ca94e939",
+  "labels": {
+    "cc.sprwhisp.deerflow.rollout": "git-3722ca94e939",
+    "cc.sprwhisp.deerflow.source-manifest-sha256": "6edd3ba141b1b1333b5e89d6b146317b8772d2ffcd0fdfbca81cec9faee6e81d",
+    "cc.sprwhisp.deerflow.source-revision": "3722ca94e939e5b67e28957e705caad07a51b05c",
+    "cc.sprwhisp.deerflow.source-state": "clean-committed-tree",
+    "org.opencontainers.image.revision": "3722ca94e939e5b67e28957e705caad07a51b05c"
+  },
+  "linux_tests": {
+    "daemon": {
+      "inventory": 12,
+      "passed": 12,
+      "skipped": 0
+    },
+    "evolution": {
+      "inventory": 164,
+      "passed": 164,
+      "skipped": 0
+    },
+    "management": {
+      "inventory": 13,
+      "passed": 13,
+      "skipped": 0
+    }
+  },
+  "passed": true,
+  "rust_binaries_reused": true,
+  "source_archive_sha256": "59176e6b6829aa418deeb9ac5c72f60fc5d7374f972d880a77079b70e52a0b84"
+}

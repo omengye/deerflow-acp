@@ -1,0 +1,24 @@
+{
+  "commit": "3722ca94e939e5b67e28957e705caad07a51b05c",
+  "data_dir": "/var/lib/deerflow/user-data/config/go-harness-state",
+  "database": {
+    "learning_outbox": {
+      "processed": 32,
+      "skipped": 1
+    },
+    "maintenance_calls": {
+      "settled": 68
+    },
+    "maintenance_jobs": {
+      "cancelled": 2,
+      "completed": 45,
+      "failed": 6
+    },
+    "runs": {
+      "completed": 139,
+      "needs_reconciliation": 7
+    },
+    "sessions": 74
+  },
+  "passed": true
+}

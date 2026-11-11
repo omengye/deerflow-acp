@@ -1,0 +1,141 @@
+{
+  "binaries": {
+    "deerflow-acp": "86dda16d16b1316a31fb77ff879264bc9533d2ed9254c22b71593561fb79da0b",
+    "deerflow-acp-go": "2b0b474a5101ad0bf050ad502bcba0ac8a6c3d4c1ea4ed1fe7092b8976cdde24",
+    "deerflow-acpd": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0",
+    "deerflow-acpd.real": "6cc1d9ffd107ed2bdce02ac9a144a7e2064a332968f28972fd03315c9b34be57",
+    "deerflow-channel-wechat": "42594f16a853eab49dada4b0b2683af9ba42b12b69e984d15d2dcb14bef8314a",
+    "deerflow-config-go": "07298669d3dc082c2600f0b87d6cb859385a41ddbee3c91388469bcca638fcb6",
+    "deerflow-control-go": "1c27f9a10e2fbd74ee5d6da3d20d69a7264774c99be3e8202934b0a4acf04b6c",
+    "deerflow-server-entrypoint": "808bb57ab2bfa6a9007b2dd98e0c119c94fe504cb882bd077da6a14bf836e428",
+    "deerflow-server-healthcheck": "d94e16b9fd1c9209bacd1727889e36486aba3cf97fa310dcdc60c79e4522a925",
+    "deerflow-skill-go": "f3d44140c50393f2a064d651ce5e7bbe2eb04b04271178ab11f1d57d65370403",
+    "waku-daemon": "64a744f2cd014c303d805aa961457d3caac19ed82cd16cfdc0184b8d66609819"
+  },
+  "candidate_lifecycle": {
+    "operations": {
+      "proposal.history": {
+        "detail_checked": true,
+        "rows_checked": 9,
+        "states": {
+          "historical": 7,
+          "rejected": 2
+        }
+      },
+      "proposal.list": {
+        "detail_checked": true,
+        "rows_checked": 9,
+        "states": {
+          "historical": 7,
+          "rejected": 2
+        }
+      }
+    },
+    "passed": true,
+    "prompts_submitted": 0
+  },
+  "commit": "3722ca94e939e5b67e28957e705caad07a51b05c",
+  "configuration_apply": {
+    "candidate_lifecycle": {
+      "operations": {
+        "proposal.history": {
+          "detail_checked": true,
+          "rows_checked": 9
+        },
+        "proposal.list": {
+          "detail_checked": true,
+          "rows_checked": 9
+        }
+      },
+      "passed": true
+    },
+    "config_applied": true,
+    "passed": true,
+    "prompts_submitted": 0,
+    "protocol": 12,
+    "sessions": 1
+  },
+  "image_id": "sha256:8394da1e6d8beab4883f4268189bf80bd79ea23e514af1238ade8dbb7f796bbc",
+  "migration": {
+    "complete": true,
+    "input_watermark": 33873,
+    "policy_version": "skill-evolution-v2"
+  },
+  "network": "none",
+  "passed": true,
+  "production_data_mounted": false,
+  "provider_credentials_preserved": true,
+  "records": {
+    "df_skill_maintenance_calls": {
+      "after": 68,
+      "before": 68,
+      "missing": 0
+    },
+    "df_skill_maintenance_jobs": {
+      "after": 53,
+      "before": 53,
+      "missing": 0
+    },
+    "df_skill_proposals": {
+      "after": 9,
+      "before": 9,
+      "missing": 0
+    },
+    "eino_checkpoints": {
+      "after": 0,
+      "before": 0,
+      "missing": 0
+    },
+    "eino_session_events": {
+      "after": 3266,
+      "before": 3266,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_channels": {
+      "after": 1,
+      "before": 1,
+      "missing": 0
+    },
+    "harness_events": {
+      "after": 8130,
+      "before": 8130,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_inputs": {
+      "after": 146,
+      "before": 146,
+      "missing": 0,
+      "payloads_changed": 0
+    },
+    "harness_runs": {
+      "after": 146,
+      "before": 146,
+      "missing": 0
+    },
+    "harness_session_configs": {
+      "after": 74,
+      "before": 74,
+      "missing": 0
+    },
+    "harness_sessions": {
+      "after": 74,
+      "before": 74,
+      "missing": 0
+    },
+    "harness_tool_receipts": {
+      "after": 286,
+      "before": 286,
+      "missing": 0
+    }
+  },
+  "restart_resume": {
+    "occupied_skipped": 0,
+    "passed": true,
+    "prompts_submitted": 0,
+    "resumed_ids_sha256": "1023696c5f608c587a9fe1d15f1fefd95860a928ee812e6fa1222e9703d3cea1",
+    "resumed_original_count": 2
+  },
+  "retired_config_sections": []
+}

@@ -1,0 +1,40 @@
+{
+  "backup": "/home/gen/deerflow-deploy/candidate-lifecycle-20261111-3722ca94e939/backup",
+  "backup_and_inactive_archive_preserved": true,
+  "builder": "a9e99b5b938d86d63a6c1ffb4c6063a09cb3b2b9e5c1d9d9ed0ef31e76c12fcc",
+  "checked_at": "2026-11-11T02:03:52.116231+00:00",
+  "configuration_preserved": true,
+  "container_unchanged": true,
+  "daemon_unchanged": true,
+  "free_bytes_after": 46289268736,
+  "free_bytes_before": 45407203328,
+  "health": "healthy",
+  "image_id": "sha256:8394da1e6d8beab4883f4268189bf80bd79ea23e514af1238ade8dbb7f796bbc",
+  "logical_bytes_removed": 871187614,
+  "logical_bytes_to_remove": 871187614,
+  "other_containers_preserved": true,
+  "passed": true,
+  "rollback_image_preserved": true,
+  "shared_builder_image_preserved": true,
+  "source_archive": "/home/gen/deerflow-deploy/candidate-lifecycle-20261111-3722ca94e939/source.tar.gz",
+  "source_archive_and_reports_preserved": true,
+  "temporary_alias": "deerflow-server:before-3722ca94e939",
+  "temporary_paths": [
+    {
+      "bytes": 411178386,
+      "name": "build"
+    },
+    {
+      "bytes": 137110806,
+      "name": "stage"
+    },
+    {
+      "bytes": 119100529,
+      "name": "go-artifacts.tar.gz"
+    },
+    {
+      "bytes": 203797893,
+      "name": "image-context"
+    }
+  ]
+}

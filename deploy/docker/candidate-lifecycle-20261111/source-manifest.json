@@ -1,0 +1,41 @@
+{
+  "base_commit": "a7a030f95550814842f97848170cbc3472ce51db",
+  "binaries": {
+    "deerflow-acp-go": "2b0b474a5101ad0bf050ad502bcba0ac8a6c3d4c1ea4ed1fe7092b8976cdde24",
+    "deerflow-acpd.real": "6cc1d9ffd107ed2bdce02ac9a144a7e2064a332968f28972fd03315c9b34be57",
+    "deerflow-config-go": "07298669d3dc082c2600f0b87d6cb859385a41ddbee3c91388469bcca638fcb6",
+    "deerflow-skill-go": "f3d44140c50393f2a064d651ce5e7bbe2eb04b04271178ab11f1d57d65370403"
+  },
+  "build_id": "git-3722ca94e939",
+  "candidate_wrapper_sha256": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0",
+  "cgo_enabled": false,
+  "commit": "3722ca94e939e5b67e28957e705caad07a51b05c",
+  "go_archive_sha256": "832d4c7cb4cb81719e9a75048513104c4db58c4f8a2fdd24b7625890477807b2",
+  "go_tests": {
+    "daemon.test": "af9a1d9d71cfbe53c3f5cf55eaf84edbaa08c785063256368147b5c408b082e0",
+    "evolution.test": "136cab52bcf7c05ac94dcdae316781704aa5aeb676daadd4fe545a75c3212187",
+    "management.test": "ed9a94066cd7d273f46a86d0a593ce1467c84f7a2671f6b05e6f184063aadbc3"
+  },
+  "go_toolchain": "go version go1.26.8 windows/amd64",
+  "linux_test_plan": {
+    "daemon": {
+      "package": "./cmd/deerflow-acpd-go",
+      "run": "^(Test|Example|Fuzz)"
+    },
+    "evolution": {
+      "package": "./internal/skills/evolution",
+      "run": "^(Test|Example|Fuzz)"
+    },
+    "management": {
+      "package": ".",
+      "run": "^Test(SkillEvolution|ManagementCandidateLifecycle|ManagementLearning|SkillLearningReview|OperatorDraft|SkillBehaviorSDK|SkillCatalogManagement|SkillManagedSourceSDK|SkillFeedbackSDK)"
+    }
+  },
+  "runtime_source_changes": [
+    "go-harness/internal/skills/evolution/candidate_progress.go",
+    "go-harness/management_proposals.go"
+  ],
+  "source_archive_sha256": "59176e6b6829aa418deeb9ac5c72f60fc5d7374f972d880a77079b70e52a0b84",
+  "source_state": "clean-committed-tree",
+  "target": "linux/amd64"
+}

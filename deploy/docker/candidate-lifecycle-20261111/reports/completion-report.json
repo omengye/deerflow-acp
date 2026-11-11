@@ -1,0 +1,53 @@
+{
+  "checked_at": "2026-11-11T02:05:34.855724+00:00",
+  "commit": "3722ca94e939e5b67e28957e705caad07a51b05c",
+  "health": "healthy",
+  "image_id": "sha256:8394da1e6d8beab4883f4268189bf80bd79ea23e514af1238ade8dbb7f796bbc",
+  "passed": true,
+  "retained_directories": [
+    "backup"
+  ],
+  "retained_files": [
+    "alternate-hashes.json",
+    "baseline.json",
+    "build-report.json",
+    "build.py",
+    "builder-report.json",
+    "candidate-binding.json",
+    "candidate-wrapper.sh",
+    "cleanup-report.json",
+    "cleanup.py",
+    "deployment-report.json",
+    "deployment-spec.json",
+    "drain-report.json",
+    "entrypoint-baseline.sh",
+    "final-audit.json",
+    "final-audit.py",
+    "image-build.log",
+    "linux-tests.log",
+    "migration-baseline.json",
+    "other-containers.json",
+    "prepare-report.json",
+    "production-report.json",
+    "provider-baseline.json",
+    "release.py",
+    "source-manifest.json",
+    "source.tar.gz",
+    "stage-report.json",
+    "ws_probe.py"
+  ],
+  "rollback_image_preserved": true,
+  "source_manifest_matches_running_image": true,
+  "source_manifest_sha256": "6edd3ba141b1b1333b5e89d6b146317b8772d2ffcd0fdfbca81cec9faee6e81d",
+  "temporary_containers_absent": [
+    "deerflow-build-3722ca94e939",
+    "deerflow-stage-3722ca94e939"
+  ],
+  "temporary_files_absent": [
+    "build",
+    "stage",
+    "image-context",
+    "go-artifacts.tar.gz",
+    "__pycache__"
+  ]
+}

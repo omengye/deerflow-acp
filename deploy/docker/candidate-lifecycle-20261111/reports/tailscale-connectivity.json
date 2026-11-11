@@ -1,0 +1,7 @@
+{
+  "passed": true,
+  "checked_at": "2026-11-11T02:04:12.449011+00:00",
+  "transport": "TCP over Tailscale",
+  "host": "100.80.205.120",
+  "port": 18787
+}
