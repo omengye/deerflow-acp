@@ -154,12 +154,18 @@ func proposalPublication(p harness.SkillProposal) map[string]any {
 	return map[string]any{"state": state, "error_code": code, "retryable": retry}
 }
 
-func proposalProjections(proposals []harness.SkillProposal) []map[string]any {
-	result := make([]map[string]any, 0, len(proposals))
-	for _, p := range proposals {
-		result = append(result, proposalProjection(p))
+func (c *Client) managedProposalProjection(ctx context.Context, id string, detail bool) (map[string]any, error) {
+	p, progress, err := c.evolution.CandidateSnapshot(ctx, id)
+	if err != nil {
+		return nil, err
 	}
-	return result
+	if !detail {
+		p.Diff = ""
+	}
+	result := proposalProjection(p)
+	result["lifecycle"] = progress
+	result["review_retry_available"] = false
+	return result, nil
 }
 
 func (c *Client) managementProposals(ctx context.Context, request localhost.ManagementRequest) (any, error) {
@@ -184,10 +190,16 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 		if err != nil {
 			return nil, err
 		}
-		result := map[string]any{"proposals": proposalProjections(page.Proposals), "catalog_version": page.CatalogVersion, "next_cursor": page.Next, "truncated": page.Next != ""}
-		for i, projected := range result["proposals"].([]map[string]any) {
-			projected["review_retry_available"] = c.evolution.ReviewRetryAvailable(page.Proposals[i])
+		proposals := make([]map[string]any, 0, len(page.Proposals))
+		for _, p := range page.Proposals {
+			projected, err := c.managedProposalProjection(ctx, p.ID, false)
+			if err != nil {
+				return nil, err
+			}
+			proposals = append(proposals, projected)
 		}
+		result := map[string]any{"proposals": proposals, "catalog_version": page.CatalogVersion, "next_cursor": page.Next, "truncated": page.Next != ""}
+		result["capabilities"] = map[string]bool{"review": false, "automatic": true, "lifecycle": true}
 		if request.Operation == "proposal.list" {
 			return result, nil
 		}
@@ -208,7 +220,7 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 		// containers do not stand in for selection records or probation results.
 		result["signals"] = []any{}
 		result["probations"] = map[string]any{}
-		result["capabilities"] = map[string]bool{"review": false, "automatic": true, "rollback": true, "generation": c.evolution.GenerationEnabled(), "discovery": c.evolution.DiscoveryEnabled(), "probation": false}
+		result["capabilities"] = map[string]bool{"review": false, "automatic": true, "lifecycle": true, "rollback": true, "generation": c.evolution.GenerationEnabled(), "discovery": c.evolution.DiscoveryEnabled(), "probation": false}
 		return result, nil
 	case "proposal.get", "proposal.reject":
 		allowed := []string{"proposal_id"}
@@ -231,8 +243,10 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 			if err != nil {
 				return nil, err
 			}
-			result := proposalProjection(p)
-			result["review_retry_available"] = c.evolution.ReviewRetryAvailable(p)
+			result, err := c.managedProposalProjection(ctx, p.ID, true)
+			if err != nil {
+				return nil, err
+			}
 			result["current_head"] = head
 			result["catalog_version"] = catalog
 			return result, nil
@@ -267,7 +281,11 @@ func (c *Client) managementProposals(ctx context.Context, request localhost.Mana
 			return nil, err
 		}
 		_, _, catalog, err := c.evolution.Head(ctx, p.Target.SourceID, p.SkillName)
-		return map[string]any{"proposal": proposalProjection(p), "catalog_version": catalog}, err
+		if err != nil {
+			return nil, err
+		}
+		projected, err := c.managedProposalProjection(ctx, p.ID, true)
+		return map[string]any{"proposal": projected, "catalog_version": catalog}, err
 	case "proposal.rollback":
 		return c.managementSkillRollback(ctx, request)
 	}

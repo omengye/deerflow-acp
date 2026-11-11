@@ -13,12 +13,15 @@ import (
 // CandidateProgress translates historical storage states into automatic
 // lifecycle states. A pending_review row is never a request for human approval.
 type CandidateProgress struct {
-	Evidence       *harness.SkillBehaviorEvidence `json:"evidence,omitempty"`
-	Status         string                         `json:"status"`
-	Reason         string                         `json:"reason,omitempty"`
-	JobID          string                         `json:"job_id,omitempty"`
-	JobState       string                         `json:"job_state,omitempty"`
-	AutomaticRetry bool                           `json:"automatic_retry"`
+	StateVersion   int64                              `json:"state_version"`
+	CanCancel      bool                               `json:"can_cancel"`
+	Observation    *harness.SkillAutoPatchObservation `json:"observation,omitempty"`
+	Evidence       *harness.SkillBehaviorEvidence     `json:"evidence,omitempty"`
+	Status         string                             `json:"status"`
+	Reason         string                             `json:"reason,omitempty"`
+	JobID          string                             `json:"job_id,omitempty"`
+	JobState       string                             `json:"job_state,omitempty"`
+	AutomaticRetry bool                               `json:"automatic_retry"`
 }
 
 func CandidateStatus(p Proposal) string {
@@ -45,8 +48,24 @@ func CandidateStatus(p Proposal) string {
 }
 
 func (s *Service) CandidateProgress(ctx context.Context, id string) (out CandidateProgress, err error) {
+	_, out, err = s.CandidateSnapshot(ctx, id)
+	return
+}
+
+// CandidateSnapshot reads the candidate and its lifecycle under the same target
+// transaction. Consumers must not combine a new lifecycle with older candidate bytes.
+func (s *Service) CandidateSnapshot(ctx context.Context, id string) (proposal Proposal, out CandidateProgress, err error) {
 	err = s.withProposal(ctx, id, func(tx *skills.PublicationTx, p *Proposal) error {
+		proposal = *p
+		out.StateVersion = p.StateVersion
 		out.Status = CandidateStatus(*p)
+		if p.Status == "pending_review" {
+			disposition, err := s.proposalDispositionTx(ctx, tx.SQL(), id)
+			if err != nil {
+				return err
+			}
+			proposal.Disposition = disposition
+		}
 		if p.Approval != nil && p.Approval.UserConfirmation != nil {
 			out.Reason = "user_confirmed"
 			return nil
@@ -60,6 +79,7 @@ func (s *Service) CandidateProgress(ctx context.Context, id string) (out Candida
 			return nil
 		}
 		if observation, err := readAutoPatchObservation(ctx, tx.SQL(), id); err == nil {
+			out.Observation = &observation
 			out.Status = observation.Status
 			if out.Status == "rolled_back" || out.Status == "insufficient_evidence" {
 				out.Reason, out.Status = out.Status, "withdrawn"
@@ -68,12 +88,14 @@ func (s *Service) CandidateProgress(ctx context.Context, id string) (out Candida
 		} else if !errors.Is(err, harness.ErrNotFound) {
 			return err
 		}
+		out.CanCancel = p.Approval == nil && (p.Status == "validating" || p.Status == "pending_review")
+		// An old waiting job must not turn a cancelled/failed candidate back
+		// into an active one. Its failure evidence remains on the candidate.
+		if p.Status == "rejected" || p.Status == "failed" || p.Status == "stale" {
+			return nil
+		}
 		if p.Status == "pending_review" {
-			disposition, err := s.proposalDispositionTx(ctx, tx.SQL(), id)
-			if err != nil {
-				return err
-			}
-			out.Reason = disposition.Reason
+			out.Reason = proposal.Disposition.Reason
 		}
 		var jobID string
 		err := tx.SQL().QueryRowContext(ctx, `SELECT job_id FROM df_skill_generation_inputs WHERE proposal_id=?`, id).Scan(&jobID)
