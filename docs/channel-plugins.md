@@ -108,18 +108,52 @@ One model execution remains active per channel, while polling and status/stop
 commands continue. WeChat polls through a separate plugin process: queued work
 cannot starve incoming controls, and a long poll or its retry backoff cannot hold
 up a completed answer. Incoming batches and completed runs wake the sending
-worker. Both processes are cancelled and joined on disable, logout or update.
+worker. Active feedback uses a third, disposable plugin process. All processes
+are cancelled and joined on disable, logout or update.
 Status/stop/help/permission controls can pass an uncertain-delivery fence but
 cannot authorize replay of quarantined work.
 
-Replies include a bounded tool-call summary (up to the last eight calls), sent
-together with the answer or permission notice, not as a live stream. Labels and
-statuses are host-authored. Raw tool arguments, outputs, URLs, commands and errors
-are never copied into these summaries; unknown tools have a generic label.
+WeChat defaults to native tool progress: `TOOL_CALL_START` / `TOOL_CALL_RESULT`
+items are sent during execution, associated with a run and an opaque tool-call
+ID. `tool_start` and `tool_execute` share one start notification; permission waits
+send a `blocked` result. A tool with no terminal event when execution returns is
+closed as `unknown`, without claiming success. Checkpoint resumes start a fresh
+feedback attempt without replaying tools. Labels and statuses are host-authored.
+Raw tool arguments, outputs, URLs, commands and errors never enter progress or
+summaries; unknown tools have a generic label.
+
+The channel's optional `options.progress_mode` setting accepts `native` (the
+default, including an empty setting) or `summary`. Summary mode sends the previous
+bounded text summary (up to the last eight calls) with the answer/permission
+notice. Native mode falls back to that same summary when the plugin lacks the
+feedback capability, fails to start or acknowledge progress, exceeds the bounded
+queue (64 items / 256 distinct tool calls per dispatch), or cannot finish sending
+within a 200 ms end-of-execution grace period. Successfully acknowledged native
+progress is not repeated as a final text summary. Provider acknowledgements do
+not establish that every version of the WeChat client rendered the native items;
+choose `summary` if the client's display is incompatible.
+
+`options.typing` accepts `true` (default/empty) or `false`, independently of the
+progress mode. An actual model run starts the provider's typing indicator and
+refreshes it every five seconds. Normal completion, permission waits, failure and
+cancellation attempt to clear it. Status/help/new and follow-ups to an already
+waiting session do not start typing. Tickets are scoped to the account/recipient
+and held only in memory for that dispatch; ticket preparation precedes starting
+typing so an uncertain start can still be cancelled using a fresh process.
+
+Feedback RPCs have a two-second budget and run on a separate transport from
+polling, receipts and final replies. The event callback only enqueues; optional
+failure never cancels model/tool work, revokes credentials or creates a delivery
+fence. Progress is attempted at most once and is not replayed after restart.
+Typing failures do not disable otherwise working native tool progress. Final
+replies wake the sending worker before optional typing cleanup has finished;
+cleanup is joined before starting another execution or changing channel identity.
+
 Permission notices identify known pending tools, session and available chat/desktop
 review actions. A follow-up while the session is waiting repeats the pending
 tool explanation without invoking the model, changing config or granting approval.
 Normal model answer text is still delivered as before.
+This change does not stream answer text or change its existing length bounds.
 
 ## Local administration
 
@@ -201,6 +235,17 @@ Methods:
 | login.cancel / logout | no secret input required | acknowledgement |
 | poll | current auth, committed cursor, options | normalized messages and next cursor |
 | send | auth, destination/context, stable key, reply, options | `{ "sent": true }` |
+| progress | auth, destination/context, unique key, host-authored tool lifecycle | `{ "sent": true }` |
+| typing.prepare | auth, destination/context | opaque in-memory typing ticket, or empty when unavailable |
+| typing | auth, destination, prepared ticket, active flag | `{ "sent": true }` |
+
+The last three methods are optional protocol-v1 extensions advertised by
+`independent_feedback`. Advertising the capability promises that those methods
+accept explicit credentials/context and work in a separate process without a
+process-local login. The host never probes them on an older plugin. Feedback is
+not part of the durable final-answer outbox, and a failed/uncertain optional send
+must not be retried as a final answer. `progress_mode` and `typing` are bounded
+nonsecret settings exposed in the bundled plugin descriptor.
 
 The plugin itself must validate provider signatures/HTTPS origins and return only
 authenticated platform identities. `Auth` is an opaque provider secret plus account
@@ -281,5 +326,9 @@ not understand the new channel records.
 Offline tests cover protocol validation, real child-process handshake/timeouts,
 identity admission, dedupe, pairing, credential redaction, cancel/disable/logout,
 workspace fences, unknown sends, notifications, migration and plugin rollback.
+Feedback tests cover native payloads and business-error acknowledgements, typing
+start/keepalive/cancel, real child-process failures/timeouts, live delivery before
+model completion, bounded queues, fallback/redaction, permission waits/resumes,
+and final-answer delivery while typing cleanup is blocked.
 Actual WeChat QR login/send/receive requires a separate live-account acceptance
 test. No production account or user database is used by automated tests.

@@ -125,9 +125,10 @@ func (c *Client) channelExecutionCommand(ctx context.Context, id, workspace stri
 		}
 		return tools.observe(ctx, e)
 	}
+	channels.StartFeedback(ctx)
 	result, err := c.service.ResumeExecution(ctx, owner, id, harness.ResumeExecutionRequest{RunID: state.RunID, ExpectedVersion: state.Version}, emit, approve)
 	out.Text = strings.ToValidUTF8(answer.String(), "")
-	if s := tools.summary(result.Execution); s != "" {
+	if s := tools.finish(ctx, result.Execution); s != "" {
 		out.Text = s + "\n\n" + out.Text
 	}
 	if err != nil || result.Execution == nil || result.Execution.Status != harness.ExecutionCompleted {

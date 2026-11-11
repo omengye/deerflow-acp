@@ -23,6 +23,18 @@ type Plugin struct {
 
 func NewPlugin() *Plugin { return &Plugin{client: NewClient()} }
 
+func Descriptor() channelproto.Descriptor {
+	return channelproto.Descriptor{
+		ID: "wechat", Name: "WeChat", Version: "1.1.0", Protocol: channelproto.Version,
+		Login: []string{"qr"}, Messages: []string{"text"},
+		RequiresReplyContext: true, IndependentPoll: true, IndependentFeedback: true,
+		Fields: []channelproto.Field{
+			{Key: "progress_mode", Label: "工具进度：native（默认）或 summary（文字摘要）"},
+			{Key: "typing", Label: "正在输入：true（默认）或 false"},
+		},
+	}
+}
+
 func (p *Plugin) clearLogin() {
 	p.id, p.origin, p.verify, p.loginState = "", "", "", ""
 	p.qr = QR{}
@@ -44,7 +56,7 @@ func (p *Plugin) Handle(ctx context.Context, method string, raw json.RawMessage)
 		if channelproto.Decode(raw, &in) != nil || in.Protocol != channelproto.Version {
 			return nil, errors.New("unsupported protocol")
 		}
-		return channelproto.Descriptor{ID: "wechat", Name: "WeChat", Version: "1.0.0", Protocol: 1, Login: []string{"qr"}, Messages: []string{"text"}, Fields: []channelproto.Field{}, RequiresReplyContext: true, IndependentPoll: true}, nil
+		return Descriptor(), nil
 	case "login.start":
 		p.clearLogin()
 		ctx, cancel := context.WithTimeout(ctx, 7*time.Second)
@@ -178,6 +190,41 @@ func (p *Plugin) Handle(ctx context.Context, method string, raw json.RawMessage)
 			result.Messages = append(result.Messages, msg)
 		}
 		return result, nil
+	case "progress":
+		var in channelproto.Progress
+		if err := channelproto.Decode(raw, &in); err != nil {
+			return nil, err
+		}
+		var cred Credentials
+		if err := json.Unmarshal(in.Auth.Secret, &cred); err != nil {
+			return nil, err
+		}
+		err := p.client.SendProgress(ctx, cred, in.Message.Sender, in.Message.Context, in.Key, in.Tool)
+		if errors.Is(err, ErrExpired) {
+			err = channelproto.ErrAuthExpired
+		}
+		return map[string]bool{"sent": err == nil}, err
+	case "typing.prepare", "typing":
+		var in channelproto.Typing
+		if err := channelproto.Decode(raw, &in); err != nil {
+			return nil, err
+		}
+		var cred Credentials
+		if err := json.Unmarshal(in.Auth.Secret, &cred); err != nil {
+			return nil, err
+		}
+		var result channelproto.TypingResult
+		var err error
+		if method == "typing.prepare" {
+			result.Ticket, err = p.client.TypingTicket(ctx, cred, in.Message.Sender, in.Message.Context)
+		} else {
+			err = p.client.Typing(ctx, cred, in.Message.Sender, in.Ticket, in.Active)
+			result.Sent = err == nil
+		}
+		if errors.Is(err, ErrExpired) {
+			err = channelproto.ErrAuthExpired
+		}
+		return result, err
 	case "send":
 		var in channelproto.Send
 		if err := channelproto.Decode(raw, &in); err != nil {

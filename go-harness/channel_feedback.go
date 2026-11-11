@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/omengye/deerflow-acp/go-harness/channelproto"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/automation"
 	"github.com/omengye/deerflow-acp/go-harness/internal/channels"
@@ -59,7 +60,7 @@ func (c *Client) channelRun(ctx context.Context, existing, workspace, prompt, ap
 			}
 		}
 	}
-	if summary := tools.summary(execution); summary != "" {
+	if summary := tools.finish(ctx, execution); summary != "" {
 		out.Text = summary + "\n\n" + out.Text
 	}
 	return out, err
@@ -72,10 +73,17 @@ type channelTools struct {
 	omitted bool
 }
 
-func (t *channelTools) observe(_ context.Context, e harness.RunEvent) error {
+func (t *channelTools) observe(ctx context.Context, e harness.RunEvent) error {
 	if e.Kind != "tool_start" && e.Kind != "tool_execute" && e.Kind != "tool_end" {
 		return nil
 	}
+	phase := "start"
+	if e.Kind == "tool_end" {
+		phase = "end"
+	}
+	channels.PublishToolProgress(ctx, channelproto.ToolProgress{
+		RunID: e.RunID, ToolCallID: e.ToolCallID, ToolName: channelToolDescription(e.ToolName), Phase: phase, Status: e.Status,
+	})
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for i := range t.items {
@@ -90,6 +98,20 @@ func (t *channelTools) observe(_ context.Context, e harness.RunEvent) error {
 	}
 	t.items = append(t.items, channelTool{e.ToolCallID, e.ToolName, e.Status})
 	return nil
+}
+
+func (t *channelTools) finish(ctx context.Context, state *harness.ExecutionState) string {
+	if state != nil {
+		for _, pending := range state.WaitingInputs {
+			channels.PublishToolProgress(ctx, channelproto.ToolProgress{
+				RunID: state.RunID, ToolCallID: pending.ToolCallID, ToolName: channelToolDescription(pending.ToolName), Phase: "end", Status: "blocked",
+			})
+		}
+	}
+	if channels.FinishFeedback(ctx) {
+		return ""
+	}
+	return t.summary(state)
 }
 
 func (t *channelTools) summary(state *harness.ExecutionState) string {

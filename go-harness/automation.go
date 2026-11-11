@@ -93,6 +93,7 @@ func (c *Client) unattendedWithEvents(ctx context.Context, existing, workspace, 
 			return harness.PermissionCancelled, nil
 		}
 	}
+	channels.StartFeedback(ctx)
 	result, err := c.service.Run(ctx, owner, x.ID, []harness.Content{{Type: "text", Text: prompt}}, emit, approve)
 	out.Text = strings.ToValidUTF8(answer.String(), "")
 	out.Status = "needs_attention"

@@ -20,6 +20,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/channelproto"
 	"github.com/omengye/deerflow-acp/go-harness/internal/automation"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
+	"github.com/omengye/deerflow-acp/go-harness/internal/wechat"
 )
 
 type Config struct {
@@ -194,7 +195,7 @@ func (m *Manager) EnsureBundled(ctx context.Context) error {
 	// startup depend on a plugin process. Validate/handshake on first use instead.
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	manifest := Manifest{ID: "wechat", Command: path, SHA256: hex.EncodeToString(sum[:]), Descriptor: channelproto.Descriptor{ID: "wechat", Name: "WeChat", Version: "1.0.0", Protocol: 1, Login: []string{"qr"}, Messages: []string{"text"}, Fields: []channelproto.Field{}, RequiresReplyContext: true, IndependentPoll: true}}
+	manifest := Manifest{ID: "wechat", Command: path, SHA256: hex.EncodeToString(sum[:]), Descriptor: wechat.Descriptor()}
 	i := &instance{id: "wechat", manifest: manifest, revision: 1, cfg: Config{Options: map[string]string{}}}
 	if err = m.persist(ctx, i); err != nil {
 		return err
@@ -361,6 +362,11 @@ func (m *Manager) Configure(ctx context.Context, id string, revision int64, work
 	i.mu.Unlock()
 	if options == nil {
 		options = cfg.Options
+	}
+	if descriptor.IndependentFeedback {
+		if err := validateFeedbackOptions(options); err != nil {
+			return nil, err
+		}
 	}
 	next := map[string]string{}
 	for _, f := range descriptor.Fields {

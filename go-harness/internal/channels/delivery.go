@@ -444,6 +444,8 @@ func (m *Manager) execute(parent, ctx context.Context, i *instance, auth channel
 		return e
 	}
 	approval = dispatchApproval(admitted, approval)
+	ctx, feedback := m.withFeedback(ctx, i, auth, cfg, msg)
+	defer feedback.close()
 	out, runErr := m.run(ctx, session, cfg.Workspace, msg.Text, approval, func(id string) error {
 		tx, e := m.db.BeginTx(ctx, nil)
 		if e != nil {
@@ -484,6 +486,9 @@ func (m *Manager) execute(parent, ctx context.Context, i *instance, auth channel
 	if err != nil {
 		return err
 	}
+	// The answer is ready even if the independent feedback process is still
+	// cancelling typing. Do not wait for that optional network operation to send.
+	m.wakeWorker(i)
 	return nil
 }
 

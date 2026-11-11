@@ -32,6 +32,10 @@ type Descriptor struct {
 	// IndependentPoll permits polling in a second process using explicit auth
 	// and the host's committed cursor, without process-local login state.
 	IndependentPoll bool `json:"independent_poll,omitempty"`
+	// IndependentFeedback advertises stateless progress/typing methods that the
+	// host may call in a separate, disposable process. Optional feedback must
+	// never share the final answer's transport or delivery state.
+	IndependentFeedback bool `json:"independent_feedback,omitempty"`
 }
 type Auth struct {
 	Account string          `json:"account"`
@@ -70,6 +74,37 @@ type Send struct {
 	Key     string            `json:"key"`
 	Text    string            `json:"text"`
 	Options map[string]string `json:"options,omitempty"`
+}
+
+// ToolProgress contains host-authored labels and lifecycle state only. Raw
+// arguments, tool output, errors and model-authored descriptions do not belong here.
+type ToolProgress struct {
+	RunID      string `json:"run_id"`
+	ToolCallID string `json:"tool_call_id"`
+	ToolName   string `json:"tool_name"`
+	Phase      string `json:"phase"` // start or end
+	Status     string `json:"status,omitempty"`
+}
+
+type Progress struct {
+	Auth    Auth         `json:"auth"`
+	Message Message      `json:"message"`
+	Key     string       `json:"key"`
+	Tool    ToolProgress `json:"tool"`
+}
+
+// The host keeps the opaque typing ticket in memory for one execution only.
+// Supplying it explicitly lets a fresh feedback process cancel typing as well.
+type Typing struct {
+	Auth    Auth    `json:"auth"`
+	Message Message `json:"message"`
+	Ticket  string  `json:"ticket,omitempty"`
+	Active  bool    `json:"active"`
+}
+
+type TypingResult struct {
+	Sent   bool   `json:"sent"`
+	Ticket string `json:"ticket,omitempty"`
 }
 type Request struct {
 	JSONRPC string          `json:"jsonrpc"`
