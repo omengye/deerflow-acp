@@ -1,5 +1,17 @@
 _version: 1
 
+mermaid.show_diagram: 图形
+mermaid.show_source: 源码
+mermaid.expand: 查看大图
+mermaid.fit: 适应窗口
+mermaid.actual_size: 原始大小（100%）
+mermaid.zoom_in: 放大
+mermaid.zoom_out: 缩小
+mermaid.viewer_hint: 拖拽移动 · 滚轮缩放 · 双击适应窗口 · Esc 关闭
+mermaid.streaming: 回复完成后将显示图形。
+mermaid.rendering: 正在生成图形…
+mermaid.failed: 图形渲染失败，已保留原始代码。
+
 menu.about: 关于 %{app}
 menu.check_for_updates: 检查更新…
 menu.settings: 设置…

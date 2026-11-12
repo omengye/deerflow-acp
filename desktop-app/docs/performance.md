@@ -149,6 +149,39 @@ element per word or start an animation clock. Selection and search use the
 original LaTeX byte ranges. The manual measurement is
 `cargo test --locked -p waku --lib md::math::tests::benchmark_native_math_cache -- --ignored --nocapture`.
 
+## Markdown Mermaid
+
+Fenced `mermaid` blocks use the pinned native `mermaid-rs-renderer` engine
+([src/md/mermaid.rs](../src/md/mermaid.rs)). Parsing, layout, system-font
+resolution and SVG rasterization run on two background workers. Rendering
+requires no browser, Node.js or network service. The native engine supports
+common Mermaid diagram types; syntax it cannot render retains the selectable
+source with an error message instead of replacing it with an empty image.
+
+Streaming messages show source until completion, avoiding a layout job per
+delta. Completed diagrams fit both the message width and a 360px height cap.
+Clicking the preview or its keyboard-accessible toolbar opens a window-level
+viewer outside the virtualized transcript. The viewer retains the cached
+image and changes only its painted bounds for pointer-anchored zoom and pan;
+gestures never parse or rasterize diagrams. Fit mode tracks viewport resize,
+manual zoom preserves the user's view, and closing restores prior focus.
+The viewer traps Tab and consumes its wheel input without scrolling the chat.
+The inline preview leaves normal wheel scrolling to the transcript. Source search hits
+automatically show the code. Theme, font size, source and monitor scale are
+part of each immutable cache key, and a completed worker only notifies its
+observing panes. No polling or animation clock is used.
+
+Toolbar and scroll controls capture their owning view ID during rendering.
+Mouse and keyboard callbacks reuse that ID: calling `window.current_view()`
+from event dispatch panics because no view is being rendered at that point.
+The interaction regression tests dispatch clicks and keystrokes through GPUI.
+
+The queue is deduplicated and capped at 16 pending diagrams. The result cache
+holds up to 64 entries / 64 MiB and caches failures too; eviction releases
+the GPU sprite-atlas entries. Inputs are limited to 32 KiB, 256 graph nodes
+and 512 edges. Rasterization scales large diagrams down before allocating
+images, to at most 4096 pixels per side and eight million pixels overall.
+
 ## Measuring
 
 Sampling alone misled this investigation for hours; counters cracked it in one

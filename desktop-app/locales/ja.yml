@@ -1,5 +1,17 @@
 _version: 1
 
+mermaid.show_diagram: 図
+mermaid.show_source: ソース
+mermaid.expand: 図を拡大表示
+mermaid.fit: ウィンドウに合わせる
+mermaid.actual_size: 実際のサイズ（100%）
+mermaid.zoom_in: 拡大
+mermaid.zoom_out: 縮小
+mermaid.viewer_hint: ドラッグで移動 · ホイールで拡大縮小 · ダブルクリックで全体表示 · Esc で閉じる
+mermaid.streaming: 応答が完了すると図が表示されます。
+mermaid.rendering: 図を描画しています…
+mermaid.failed: 図を描画できませんでした。元のコードを表示しています。
+
 menu.about: "%{app} について"
 menu.check_for_updates: アップデートを確認…
 menu.settings: 設定…

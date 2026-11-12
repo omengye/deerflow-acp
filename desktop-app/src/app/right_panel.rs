@@ -2280,6 +2280,7 @@ impl Waku {
             || self.task_switcher.is_open()
             || self.commit_dialog.is_some()
             || self.image_preview.is_some()
+            || self.mermaid_preview.is_some()
             || self.composer.read(cx).context_menu_open(cx)
             || self
                 .right_panel_browsers

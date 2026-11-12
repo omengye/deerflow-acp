@@ -36,7 +36,28 @@ impl Waku {
         let content = div()
             .relative()
             .size_full()
+            .on_action(cx.listener(
+                |this, request: &crate::md::mermaid_viewer::OpenPreview, window, cx| {
+                    this.mermaid_preview = Some(crate::md::mermaid_viewer::Preview::new(
+                        request,
+                        window,
+                        cx,
+                        |this, window, cx| {
+                            if let Some(preview) = this.mermaid_preview.take() {
+                                preview.restore_focus(window, cx);
+                                cx.notify();
+                            }
+                        },
+                    ));
+                    cx.notify();
+                },
+            ))
             .child(content)
+            .children(
+                self.mermaid_preview
+                    .as_ref()
+                    .map(|preview| preview.render()),
+            )
             .children(self.render_deerflow_exit_dialog(cx))
             .into_any_element();
         let Decorations::Client { tiling } = window.window_decorations() else {

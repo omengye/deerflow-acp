@@ -1298,6 +1298,7 @@ pub struct Waku {
     /// cached attachment metadata; render never probes the filesystem.
     image_preview: Option<image_preview::ImagePreviewState>,
     image_preview_generation: u64,
+    mermaid_preview: Option<crate::md::mermaid_viewer::Preview>,
     /// In-memory GPUI images for daemon-owned bytes. A missing entry schedules
     /// one background fetch only when a visible row asks to render it; the
     /// desktop never creates another attachment file.
@@ -2955,6 +2956,7 @@ impl Waku {
                 composer_attachments,
                 image_preview: None,
                 image_preview_generation: 0,
+                mermaid_preview: None,
                 remote_images: RefCell::new(HashMap::new()),
                 event_wake_tx,
                 task_state_sync_tx,

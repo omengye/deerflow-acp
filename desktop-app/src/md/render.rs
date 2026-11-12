@@ -46,6 +46,7 @@ use crate::ui::menu::{ContextMenuHandle, context_menu};
 use crate::ui::tooltip::Tooltip;
 
 mod math_text;
+mod mermaid_block;
 
 /// Selection geometry: the laid-out text handle for one painted element.
 #[derive(Clone)]
@@ -466,6 +467,7 @@ pub struct MarkdownView {
     /// outside the parsed/flattened caches so a three-second icon change never
     /// invalidates text shaping.
     copied_code_blocks: Rc<RefCell<HashMap<usize, u64>>>,
+    mermaid_controls: RefCell<HashMap<usize, Rc<mermaid_block::Controls>>>,
     streaming: Cell<bool>,
 }
 
@@ -485,6 +487,7 @@ impl MarkdownView {
             style: Cell::new(None),
             veil: RefCell::new(RowVeil::default()),
             copied_code_blocks: Rc::new(RefCell::new(HashMap::new())),
+            mermaid_controls: RefCell::new(HashMap::new()),
             streaming: Cell::new(false),
         }
     }
@@ -522,6 +525,9 @@ impl MarkdownView {
         }
         let changed = self.parser.text() != text;
         let append = !changed || text.starts_with(self.parser.text());
+        if !append {
+            self.mermaid_controls.borrow_mut().clear();
+        }
         if changed {
             self.parser.set_text(text);
         }
@@ -1694,6 +1700,49 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElemen
         .is_some_and(|feedback| feedback.borrow().contains_key(&key.index));
     let keyboard_copy_feedback = copy_feedback.clone();
     let ordinal = key.index;
+    let mermaid_controls = language
+        .is_some_and(|language| language.eq_ignore_ascii_case("mermaid"))
+        .then(|| {
+            ctx.cache.map_or_else(
+                || Rc::new(mermaid_block::Controls::default()),
+                |view| {
+                    view.mermaid_controls
+                        .borrow_mut()
+                        .entry(ordinal)
+                        .or_default()
+                        .clone()
+                },
+            )
+        });
+    let body = div()
+        .w_full()
+        .min_w_0()
+        .whitespace_normal()
+        .text_size(px(ctx.metrics.code_text_size))
+        .line_height(px(ctx.metrics.code_line_height))
+        .text_color(ctx.palette.secondary)
+        .child(text_element(&flat, key.clone(), ctx))
+        .into_any_element();
+    let body = if let Some(controls) = &mermaid_controls {
+        mermaid_block::Body {
+            id: SharedString::from(format!("mermaid-{}-{}", key.row, ordinal)),
+            source: flat.text.clone(),
+            controls: controls.clone(),
+            palette: *ctx.palette,
+            font_size: ctx.metrics.text_size / Metrics::BODY.text_size * 16.0,
+            streaming: ctx.cache.is_some_and(|view| view.streaming.get()),
+            // Keep source search hits selectable and visible, including when
+            // a diagram was already rendered before the search began.
+            searching: ctx
+                .search
+                .as_ref()
+                .is_some_and(|search| search.matches.iter().any(|found| found.ordinal == ordinal)),
+            fallback: body,
+        }
+        .into_any_element()
+    } else {
+        body
+    };
     let copy_button = div()
         .id(SharedString::from(format!(
             "copy-code-{}-{}",
@@ -1776,6 +1825,16 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElemen
                             element.child(SharedString::from(label))
                         }),
                 )
+                .when_some(mermaid_controls, |header, controls| {
+                    header.child(mermaid_block::Toolbar {
+                        id: SharedString::from(format!("mermaid-tools-{}-{}", key.row, ordinal)),
+                        source: flat.text.clone(),
+                        font_size: ctx.metrics.text_size / Metrics::BODY.text_size * 16.0,
+                        streaming: ctx.cache.is_some_and(|view| view.streaming.get()),
+                        controls,
+                        palette: *ctx.palette,
+                    })
+                })
                 .child(copy_button),
         )
         .child(
@@ -1788,16 +1847,7 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElemen
                 .min_w_0()
                 .px(px(10.0))
                 .py(px(8.0))
-                .child(
-                    div()
-                        .w_full()
-                        .min_w_0()
-                        .whitespace_normal()
-                        .text_size(px(ctx.metrics.code_text_size))
-                        .line_height(px(ctx.metrics.code_line_height))
-                        .text_color(ctx.palette.secondary)
-                        .child(text_element(&flat, key, ctx)),
-                ),
+                .child(body),
         )
         .into_any_element()
 }

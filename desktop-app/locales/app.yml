@@ -1,5 +1,28 @@
 _version: 2
 
+mermaid.show_diagram:
+  en: Diagram
+mermaid.show_source:
+  en: Source
+mermaid.expand:
+  en: View large diagram
+mermaid.fit:
+  en: Fit window
+mermaid.actual_size:
+  en: Actual size (100%)
+mermaid.zoom_in:
+  en: Zoom in
+mermaid.zoom_out:
+  en: Zoom out
+mermaid.viewer_hint:
+  en: Drag to pan · Scroll to zoom · Double-click to fit · Esc to close
+mermaid.streaming:
+  en: The diagram will appear when the response is complete.
+mermaid.rendering:
+  en: Rendering diagram…
+mermaid.failed:
+  en: Unable to render this diagram. Source is shown below.
+
 menu.about:
   en: About %{app}
 menu.check_for_updates:

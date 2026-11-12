@@ -50,6 +50,8 @@ Thumbs.db
 .claude/
 .codex/
 .omc/
+.omo/
+.tmp/
 
 # Local environment and project runtime state
 .env
