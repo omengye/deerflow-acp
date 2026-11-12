@@ -3,6 +3,8 @@
 桌面模型设置可以从 models.dev 的公开目录补全 `context_window`、
 `supports_vision` 和当前适配器支持的 `reasoning_efforts`。下载、缓存、匹配和
 建议界面均在桌面 Rust 中实现；沿用 Go 后端已有的配置校验和保存协议。
+`supports_image_generation` 则依据内置的 Responses 官方工具支持规则补全，
+不从目录的图片输出模态或通用 `tool_call` 字段推断。
 
 ## 使用
 
@@ -14,6 +16,36 @@
   手动选择不会替换实际模型 ID、接口地址或密钥，也不持久化目录绑定。
 - 新建预设改变模型 ID、接口地址或适配器时，撤回为旧身份自动填入的值。
   用户手动编辑或明确采用的字段始终保留。保存后按已有预设处理。
+- 修改接口协议时，仅撤回尚未被用户采用的自动图片生成设置；上下文、视觉等
+  字段不受影响。手动开启后切换到不兼容协议会显示配置冲突，仍可关闭开关。
+
+## Responses 图片生成
+
+“启用 Responses 图片生成”是启用策略，不是在线能力检测结果。内部能力依据
+区分文档已确认支持、明确不适合作为对话模型和未知；不改变运行时的手动启用权。
+
+- 规则来源为 [OpenAI 图片生成工具文档](https://developers.openai.com/api/docs/guides/tools-image-generation)，
+  核验日期为 2026-11-11；规则保存在 `image_generation_capability.rs`，随代码维护。
+- 仅对 OpenAI 官方端点（或其默认地址）、明确列出的对话模型 ID 和 Responses
+  协议提供开启建议。模型别名、日期后缀、新模型不按前缀猜测。
+- 新预设沿用有效目录、唯一准确匹配和未手动编辑的条件自动填入草稿；已有预设
+  通过“填入选中字段”采用建议。显式 true/false 不会被后台补全覆盖。
+- 自定义网关即使手动选择同名官方目录条目，也保持未知；可按服务商说明手动
+  开启。缺少依据不会补 false 或清除现有值，规则表不作为后端模型白名单。
+- Chat Completions 和当前 OpenAI 的 auto 协议不提供开启建议，也不会被自动
+  改为 Responses。专用 GPT Image 模型不能作为这条链路的顶层聊天模型。
+- 目录的 `modalities.output` 和 `tool_call` 不能证明托管 `image_generation`
+  工具可用。文档支持也不等于当前账号有权限或额度。
+- 补全不会试生成图片。连接和 Agent 能力测试不验证图片生成；真实服务需另行
+  验证生成、保存重开及继续编辑。生成失败不修改开关，也不自动重放已开始的调用。
+- 对话请求使用 `store: false`，后续编辑从本地会话资产恢复图片并发送为
+  `input_image` 上下文；即使是同一端点，也不回传需要服务端持久化的图片调用 ID。
+  图片仍保留在原文字前后的位置；跨端点不会携带其他服务商的图片调用标识。
+- 官方 OpenAI 端点显式选择 `gpt-image-2.6-sunburst` 作为生图工具模型，并使用
+  它支持的 `complexity: high`。这与顶层聊天模型的 `reasoning.effort` 分开设置，
+  避免外层 high 被继承到不支持复杂度参数的旧图片模型。自定义网关仍使用其
+  服务端图片模型默认值，不强加官方模型名称。参数依据为
+  [Responses API 参考](https://developers.openai.com/api/reference/resources/responses/methods/create)。
 
 本期不调整 `thinking_parameter`、思考预算、最大输出或价格。只有 OpenAI
 兼容适配器导入明确声明的 low、medium、high、xhigh、max 档位；Claude 以及
@@ -40,12 +72,12 @@
 
 ## 实现与验证
 
-目录模块为 `desktop-app/src/app/deerflow_settings/models_dev.rs`；匹配和三字段
+目录模块为 `desktop-app/src/app/deerflow_settings/models_dev.rs`；匹配和字段
 映射位于 `model_metadata_logic.rs`；独立异步状态及草稿交互位于
 `model_metadata.rs`。所有目录扫描、JSON 解析、磁盘及网络操作在后台完成。
 渲染只使用已经缓存的状态，候选列表分页显示。
 
-查询结果使用独立 generation、模型身份与编辑 revision 校验。模型切换、
+查询结果使用独立 generation、包含协议的模型身份与编辑 revision 校验。模型切换、
 编辑、删除、保存、重载和用户选择建议均可使旧结果失效；更新目录时清除旧
 候选及差异，防止目录已经移除模型后仍应用旧建议。
 
@@ -57,3 +89,9 @@ cargo test --locked --offline --release -p waku --lib app::deerflow_settings::mo
 
 覆盖精确端点匹配、未知网关、显式 false/0、档位过滤、身份变化回退、旧响应、
 目录刷新移除模型、缓存、坏响应、超时、冷却、写盘失败和并发刷新。
+
+2026-11-11 另使用官方 `gpt-6.1-sol` 的 Responses 服务完成真实验收：生成图片、
+保存为本地资产、重新加载历史后修改图片均成功。该验收使用隔离的临时历史和
+图片文件，未修改运行配置；另以 `high` 推理强度通过完整 `Client.Run` 链路
+验证真实生图、资产事务提交、关闭客户端及重新加载后续改。常规测试仍使用
+fixture，不自动产生生图请求。

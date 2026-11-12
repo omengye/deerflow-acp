@@ -14,6 +14,7 @@ mod effective;
 mod evolution;
 mod feedback;
 mod generation;
+mod image_generation_capability;
 mod learning;
 mod learning_diagnostics;
 mod learning_state;
@@ -1682,7 +1683,7 @@ impl Waku {
         {
             number += 1;
         }
-        items.push(json!({"original_name":"", "name":format!("model-{number}"), "display_name":"", "description":"", "provider":"openai", "api":"auto", "model":"", "base_url":"", "api_key":"", "api_key_configured":false, "api_key_literal":false, "clear_api_key":false, "supports_vision":false, "context_window":0, "max_output_tokens":0, "max_supported_output_tokens":0, "output_token_parameter":"auto"}));
+        items.push(json!({"original_name":"", "name":format!("model-{number}"), "display_name":"", "description":"", "provider":"openai", "api":"auto", "model":"", "base_url":"", "api_key":"", "api_key_configured":false, "api_key_literal":false, "clear_api_key":false, "supports_vision":false, "supports_image_generation":false, "context_window":0, "max_output_tokens":0, "max_supported_output_tokens":0, "output_token_parameter":"auto"}));
         self.deerflow_settings.selected_model = items.len() - 1;
         self.deerflow_settings.model_metadata.added(items.len() - 1);
         self.deerflow_settings.dirty = true;
@@ -1775,6 +1776,12 @@ fn fields_for_section(state: &DeerFlowSettings, section: Section) -> Vec<Field> 
                 format!("{root}/supports_vision"),
                 "支持图片输入",
                 "请按服务商实际能力设置",
+                Kind::Bool,
+            );
+            add(
+                format!("{root}/supports_image_generation"),
+                "启用 Responses 图片生成",
+                &image_generation_capability::setting_hint(&doc["models"][state.selected_model]),
                 Kind::Bool,
             );
             add(
@@ -2834,7 +2841,14 @@ impl Waku {
                     SharedString::from(format!("df-toggle-{path}")),
                     checked,
                     !state.can_edit_field(&path)
-                        || (matches!(field.kind, Kind::TrueOnly) && checked),
+                        || (matches!(field.kind, Kind::TrueOnly) && checked)
+                        || (!checked
+                            && path.starts_with("/models/")
+                            && path.ends_with("/supports_image_generation")
+                            && !path
+                                .rsplit_once('/')
+                                .and_then(|(root, _)| state.draft.as_ref()?.pointer(root))
+                                .is_some_and(image_generation_capability::protocol_eligible)),
                     theme,
                     cx,
                     move |this, _, cx| this.deerflow_change(&path, json!(!checked), cx),

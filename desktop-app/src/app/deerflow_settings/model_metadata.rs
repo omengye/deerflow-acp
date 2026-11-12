@@ -96,6 +96,12 @@ impl MetadataState {
                     .collect();
             }
             if let Some(values) = self.automatic_values.get_mut(&index) {
+                if field == "api" {
+                    return values
+                        .remove("supports_image_generation")
+                        .map(|original| vec![("supports_image_generation", original)])
+                        .unwrap_or_default();
+                }
                 values.remove(field);
             }
         }
@@ -511,7 +517,7 @@ impl Waku {
         let mut group = df_group(theme)
             .child(df_label(
                 "模型信息补全",
-                "来源 models.dev。补全上下文、图片输入和兼容的推理强度；查询不可用时仍可手动配置。",
+                "models.dev 提供上下文、图片输入和推理强度；Responses 图片生成另按官方工具文档匹配。所有补全先写入草稿。",
                 theme,
             ))
             .child(
@@ -549,6 +555,17 @@ impl Waku {
                     .text_color(theme.text_secondary)
                     .child(notice.clone()),
             );
+        }
+        if let Some(model) = state
+            .draft
+            .as_ref()
+            .and_then(|doc| doc["models"].get(state.selected_model))
+        {
+            group = group.child(df_label(
+                "Responses 图片生成依据",
+                image_generation_capability::setting_hint(model),
+                theme,
+            ));
         }
         if let Some(snapshot) = &metadata.snapshot {
             let fetched = chrono::DateTime::from_timestamp(snapshot.fetched_at as i64, 0)
@@ -643,6 +660,7 @@ impl Waku {
                 let label = match field {
                     "context_window" => "上下文窗口",
                     "supports_vision" => "支持图片输入",
+                    "supports_image_generation" => "启用 Responses 图片生成（官方工具文档）",
                     _ => "推理强度",
                 };
                 group = group.child(df_button(
@@ -749,6 +767,35 @@ mod tests {
         assert_eq!(reverted, vec![("context_window", json!(0))]);
         assert!(state.new_models[&0].contains("supports_vision"));
         assert!(!state.automatic_values.contains_key(&0));
+    }
+
+    #[test]
+    fn protocol_changes_only_revert_unreviewed_image_generation_values() {
+        let mut state = MetadataState::default();
+        state.added(0);
+        state.automatic_values.insert(
+            0,
+            HashMap::from([
+                ("context_window", json!(0)),
+                ("supports_vision", json!(false)),
+                ("supports_image_generation", json!(false)),
+            ]),
+        );
+        let generation = state.generation;
+        assert_eq!(
+            state.edited("/models/0/api"),
+            vec![("supports_image_generation", json!(false))]
+        );
+        assert!(state.generation > generation);
+        assert_eq!(state.automatic_values[&0].len(), 2);
+        state
+            .automatic_values
+            .get_mut(&0)
+            .unwrap()
+            .insert("supports_image_generation", json!(false));
+        state.edited("/models/0/supports_image_generation");
+        assert!(state.edited("/models/0/api").is_empty());
+        assert!(state.new_models[&0].contains("supports_image_generation"));
     }
 
     #[test]

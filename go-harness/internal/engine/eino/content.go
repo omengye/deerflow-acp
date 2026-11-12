@@ -209,12 +209,33 @@ func ProjectToolContent(content []harness.Content) (*schema.ToolResult, error) {
 }
 
 type mediaProjection struct {
-	resolver         harness.AssetResolver
-	importer         harness.ModelImageImporter
-	publish          func(context.Context, harness.Content) error
-	request          harness.RunRequest
-	policy           harness.MediaConfig
-	sessionID, model string
+	resolver             harness.AssetResolver
+	importer             harness.ModelImageImporter
+	publish              func(context.Context, harness.Content) error
+	request              harness.RunRequest
+	policy               harness.MediaConfig
+	sessionID, model     string
+	allowImageGeneration bool
+}
+
+func (p *mediaProjection) imageGenerationEnabled() bool {
+	return p != nil && p.allowImageGeneration && p.importer != nil && p.publish != nil && p.policy.SupportsImageGeneration(p.model)
+}
+
+func (p *mediaProjection) imageGenerationInstruction() string {
+	if p == nil {
+		return ""
+	}
+	if !p.policy.SupportsImageGeneration(p.model) {
+		return "\nThe provider's native image_generation tool is not enabled in the selected model configuration. If it is needed, explain that the user can enable Responses image generation in model settings with a compatible provider. This configuration state does not establish that the model or provider lacks image generation capability.\n"
+	}
+	if !p.allowImageGeneration {
+		return "\nThe provider's native image_generation tool is unavailable under the current session mode or tool policy. Explain this restriction if image generation is requested.\n"
+	}
+	if p.importer == nil || p.publish == nil {
+		return "\nThe host cannot currently save and display generated images, so the provider's native image_generation tool is unavailable. Report the host limitation if it is needed.\n"
+	}
+	return "\nThe provider's image_generation tool is enabled in this conversation. Use it for requested image generation or editing. Generated images are displayed and saved by the host; do not invent image links or claim this conversation cannot output images without an actual provider failure.\n"
 }
 
 func (p *mediaProjection) hydrate(ctx context.Context, input []*schema.Message, opts []model.Option) ([]*schema.Message, error) {
@@ -312,8 +333,11 @@ func (p *mediaProjection) hydrate(ctx context.Context, input []*schema.Message, 
 			if err != nil {
 				return nil, err
 			}
-			if !p.policy.SupportsVision(selectedModel) || p.resolver == nil {
-				return nil, invalidMedia("generated image history requires a configured vision model and asset resolver")
+			if !p.policy.SupportsVision(selectedModel) && !p.policy.SupportsImageGeneration(selectedModel) {
+				return nil, harness.ErrModelVisionUnavailable
+			}
+			if p.resolver == nil {
+				return nil, invalidMedia("generated image history requires an asset resolver")
 			}
 			key := *part.Image.URL
 			cached, exists := cache[key]

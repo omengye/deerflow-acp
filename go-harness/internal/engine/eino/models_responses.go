@@ -29,11 +29,19 @@ type responsesModel struct {
 	name   string
 	origin string
 	tools  []map[string]any
+	// Official image models have their own complexity support. Do not let
+	// conversation reasoning silently choose parameters for a legacy default.
+	imageGenerationModel string
 }
 
 type responsesTuning struct {
-	effort      string
-	extraFields map[string]any
+	effort          string
+	extraFields     map[string]any
+	imageGeneration bool
+}
+
+func withResponsesImageGeneration(enabled bool) model.Option {
+	return model.WrapImplSpecificOptFn(func(o *responsesTuning) { o.imageGeneration = enabled })
 }
 
 func withResponsesTuning(effort string, extraFields map[string]any) model.Option {
@@ -51,7 +59,7 @@ func newResponsesModel(_ context.Context, cfg Config, name string, client *http.
 	if client != nil {
 		opts = append(opts, option.WithHTTPClient(client))
 	}
-	return &responsesModel{client: openaisdk.NewClient(opts...), name: name, origin: fmt.Sprintf("%x", sha256.Sum256([]byte(strings.TrimRight(baseURL, "/"))))}, nil
+	return &responsesModel{client: openaisdk.NewClient(opts...), name: name, origin: fmt.Sprintf("%x", sha256.Sum256([]byte(strings.TrimRight(baseURL, "/")))), imageGenerationModel: responsesImageModel(baseURL)}, nil
 }
 
 func (m *responsesModel) GetType() string          { return "OpenAIResponses" }
@@ -143,10 +151,15 @@ func (m *responsesModel) request(input []*schema.Message, opts ...model.Option) 
 			return responses.ResponseNewParams{}, err
 		}
 	}
+	imageGeneration := tuning.imageGeneration && (common.ToolChoice == nil || *common.ToolChoice != schema.ToolChoiceForbidden)
 	if len(common.AllowedToolNames) > 0 {
 		allowed := map[string]bool{}
 		for _, name := range common.AllowedToolNames {
 			allowed[name] = true
+		}
+		imageGeneration = imageGeneration && allowed["image_generation"]
+		if imageGeneration {
+			delete(allowed, "image_generation")
 		}
 		var selected []map[string]any
 		for _, tool := range tools {
@@ -159,6 +172,18 @@ func (m *responsesModel) request(input []*schema.Message, opts ...model.Option) 
 			return invalid("Responses allowed tool is not bound")
 		}
 		tools = selected
+	}
+	if imageGeneration {
+		// Copy the bound slice: concurrent calls must not mutate each other's
+		// tools. PNG also gives older providers an unambiguous default format.
+		imageTool := map[string]any{"type": "image_generation", "output_format": "png"}
+		if m.imageGenerationModel != "" {
+			imageTool["model"] = m.imageGenerationModel
+			// Independent from reasoning.effort (including xhigh/max). High is
+			// the documented default supported by the selected image model.
+			imageTool["complexity"] = "high"
+		}
+		tools = append(append([]map[string]any(nil), tools...), imageTool)
 	}
 	if len(tools) > 0 {
 		body["tools"] = tools
@@ -195,7 +220,7 @@ func (m *responsesModel) Stream(ctx context.Context, input []*schema.Message, op
 	if err = stream.Err(); err != nil {
 		cancel()
 		_ = stream.Close()
-		return nil, responsesError(err)
+		return nil, classifyResponsesImageError(responsesError(err))
 	}
 	reader, writer := schema.Pipe[*schema.Message](1)
 	type received struct {
@@ -255,7 +280,7 @@ func (m *responsesModel) Stream(ctx context.Context, input []*schema.Message, op
 					return
 				}
 				if next.err != nil {
-					fail(responsesError(next.err))
+					fail(classifyResponsesImageError(responsesError(next.err)))
 					return
 				}
 				event = next.event
@@ -298,10 +323,10 @@ func (m *responsesModel) Stream(ctx context.Context, input []*schema.Message, op
 				}
 			case "response.failed":
 				writer.Send(&schema.Message{Role: schema.Assistant, ResponseMeta: &schema.ResponseMeta{Usage: responsesUsage(event.Response)}}, nil)
-				fail(responsesProviderError(string(event.Response.Error.Code), event.Response.Error.Message))
+				fail(classifyResponsesImageError(responsesProviderError(string(event.Response.Error.Code), event.Response.Error.Message)))
 				return
 			case "error":
-				fail(responsesProviderError(event.Code, event.Message))
+				fail(classifyResponsesImageError(responsesProviderError(event.Code, event.Message)))
 				return
 			}
 		}

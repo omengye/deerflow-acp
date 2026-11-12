@@ -599,6 +599,7 @@ pub struct Ctx<'a> {
     selection: TranscriptSelection,
     search: Option<SearchHighlights>,
     link_handler: Option<LinkHandler>,
+    images: Rc<HashMap<String, std::sync::Arc<gpui::Image>>>,
     /// Cross-frame flatten cache, when this render has one to consult.
     cache: Option<&'a MarkdownView>,
     next_ordinal: Cell<usize>,
@@ -625,6 +626,7 @@ impl<'a> Ctx<'a> {
             selection,
             search: None,
             link_handler: None,
+            images: Rc::default(),
             cache: None,
             next_ordinal: Cell::new(0),
             starts_block: Cell::new(true),
@@ -642,6 +644,11 @@ impl<'a> Ctx<'a> {
 
     pub fn with_link_handler(mut self, handler: LinkHandler) -> Self {
         self.link_handler = Some(handler);
+        self
+    }
+
+    pub fn with_images(mut self, images: HashMap<String, std::sync::Arc<gpui::Image>>) -> Self {
+        self.images = Rc::new(images);
         self
     }
 
@@ -682,6 +689,7 @@ impl<'a> Ctx<'a> {
             selection: self.selection.clone(),
             search: self.search.clone(),
             link_handler: self.link_handler.clone(),
+            images: self.images.clone(),
             cache: Some(view),
             next_ordinal: Cell::new(self.next_ordinal.get()),
             starts_block: Cell::new(self.starts_block.get()),
@@ -1548,15 +1556,31 @@ fn checkbox(checked: bool, ctx: &Ctx) -> AnyElement {
         .into_any_element()
 }
 
-/// An inline image. Data URLs decode in place; anything else is handed to GPUI
-/// to load. The alt text renders beneath as a caption when there is one, so a
-/// failed or slow load still says what it was.
+/// Daemon images are fetched by the transcript's background image cache.
+/// Other URLs keep the ordinary GPUI loading path.
 fn render_image(url: &str, alt: &str, ctx: &Ctx) -> AnyElement {
     const MAX_HEIGHT: f32 = 320.0;
 
     let key = ctx.next_key();
     let id = SharedString::from(format!("image-{}-{}", key.row, key.index));
-    let image = match decode_data_url(url) {
+    if waku_protocol::blob::is_reference(url) && !ctx.images.contains_key(url) {
+        return div()
+            .id(id)
+            .w_full()
+            .h(px(MAX_HEIGHT))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(ctx.palette.ghost)
+            .child("图片加载中…")
+            .into_any_element();
+    }
+    let image = match ctx
+        .images
+        .get(url)
+        .cloned()
+        .or_else(|| decode_data_url(url))
+    {
         Some(decoded) => img(decoded).id(id),
         None => img(url.to_owned()).id(id),
     };
@@ -1568,6 +1592,11 @@ fn render_image(url: &str, alt: &str, ctx: &Ctx) -> AnyElement {
         .gap(px(4.0))
         .child(
             image
+                // Keep virtualized row geometry stable while the daemon fetch
+                // and GPUI's asynchronous image decode complete.
+                .when(waku_protocol::blob::is_reference(url), |image| {
+                    image.h(px(MAX_HEIGHT))
+                })
                 .max_w(relative(1.0))
                 .max_h(px(MAX_HEIGHT))
                 .rounded(px(6.0))

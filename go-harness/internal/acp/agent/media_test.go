@@ -156,6 +156,67 @@ func collectMediaResponse(t *testing.T, c *client, id int) ([]sessionUpdate, wir
 	}
 }
 
+func TestLongHistoryReplaysFinalImageWithBackpressure(t *testing.T) {
+	var f *fixture
+	raw := mediaImage(3 * 1024 * 1024)
+	f = newFixture(t, engineFunc(func(ctx context.Context, req harness.RunRequest, emit harness.EventHandler, _ harness.PermissionHandler) (harness.RunResult, error) {
+		image, err := f.service.Assets.StageModelImage(ctx, req.Session, req.RunID, raw)
+		if err != nil {
+			return harness.RunResult{}, err
+		}
+		if err := emit(ctx, harness.RunEvent{Kind: "image_delta", Content: []harness.Content{image}}); err != nil {
+			return harness.RunResult{}, err
+		}
+		return harness.RunResult{StopReason: "end_turn"}, nil
+	}))
+	enableMedia(t, f, "fake-model")
+	c := connect(t, f.service)
+	mediaInitialize(t, c)
+	sid := c.newSession(t, f.cwd)
+	const chunks = 512
+	for i := 0; i < chunks; i++ {
+		_, err := f.service.Store.Append(t.Context(), harness.RunEvent{SessionID: sid, RunID: "previous-run", Kind: "text_delta", Text: strings.Repeat("x", 2048)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := c.request(t, "session/prompt", map[string]any{"sessionId": sid, "prompt": []harness.Content{{Type: "text", Text: "draw"}}})
+	_, response := collectMediaResponse(t, c, id)
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	id = c.request(t, "session/load", map[string]any{"sessionId": sid, "cwd": f.cwd, "mcpServers": []any{}})
+	// Fill the reader channel and OS pipe before consuming replay. A replay
+	// must wait for this reader rather than closing the bounded live queue.
+	time.Sleep(100 * time.Millisecond)
+	updates, response := collectMediaResponse(t, c, id)
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	textChunks, images := 0, 0
+	for _, update := range updates {
+		if update.Update.Kind != "agent_message_chunk" {
+			continue
+		}
+		var content harness.Content
+		if err := json.Unmarshal(update.Update.Content, &content); err != nil {
+			t.Fatal(err)
+		}
+		switch content.Type {
+		case "text":
+			textChunks++
+		case "image":
+			images++
+			if textChunks != chunks || content.Data != raw.Data {
+				t.Fatal("final image was reordered or damaged")
+			}
+		}
+	}
+	if textChunks != chunks || images != 1 {
+		t.Fatalf("replay text chunks=%d images=%d", textChunks, images)
+	}
+}
+
 func TestMediaCapabilityRequiresAvailableVisionModelAndStorage(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

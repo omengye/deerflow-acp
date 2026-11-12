@@ -315,6 +315,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	}
 	cfg.Network = network.Clone(cfg.Network)
 	cfg.Media.VisionModels = slices.Clone(cfg.Media.VisionModels)
+	cfg.Media.ImageGenerationModels = slices.Clone(cfg.Media.ImageGenerationModels)
 	cfg.ModelRoutes = maps.Clone(cfg.ModelRoutes)
 	cfg.ModelThinking = maps.Clone(cfg.ModelThinking)
 	thinkingOutputLimit := harness.DefaultBudgetLimits().MaxOutputTokens

@@ -666,6 +666,7 @@ impl Backend for WakuBackend {
                             &cwd,
                             session_id,
                             VISIBLE_TURN_LIMIT,
+                            &self.task_store.blobs(),
                         )?
                     }
                     ProviderResumeCursor::DeepSeek { session_id } => {

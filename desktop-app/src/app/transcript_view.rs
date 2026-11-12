@@ -1317,6 +1317,12 @@ impl Waku {
                             MarkdownMetrics::BODY
                         });
                     let animate_streaming = message.streaming && !cx.reduce_motion();
+                    let images = waku_protocol::blob::references(message.visible_content())
+                        .filter_map(|reference| {
+                            self.image_for_reference(reference, None, None, cx)
+                                .map(|image| (reference.to_owned(), image))
+                        })
+                        .collect();
                     let mut ctx = self
                         .markdown_ctx(
                             format!("message-{}", message.id),
@@ -1324,7 +1330,8 @@ impl Waku {
                             metrics,
                             animate_streaming,
                         )
-                        .with_context_menu(menu.clone());
+                        .with_context_menu(menu.clone())
+                        .with_images(images);
                     if let Some(highlights) = self.transcript_search_highlights(message_index) {
                         ctx = ctx.with_search_highlights(highlights);
                     }

@@ -1,5 +1,6 @@
 //! Matching and draft changes for model metadata. These functions perform no I/O.
 
+use super::image_generation_capability::{self, Support};
 use super::models_dev::{Catalog, CatalogEntry};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -64,7 +65,7 @@ pub(super) fn match_candidates(catalog: &Catalog, model: &Value) -> CandidateMat
     CandidateMatches { indices, automatic }
 }
 
-fn normalized_endpoint(raw: &str) -> Option<String> {
+pub(super) fn normalized_endpoint(raw: &str) -> Option<String> {
     let url = Url::parse(raw.trim()).ok()?;
     if !matches!(url.scheme(), "https" | "http")
         || url.host_str().is_none()
@@ -113,6 +114,14 @@ pub(super) fn suggested_patch(entry: &CatalogEntry, model: &Value) -> Vec<Metada
     if let Some(vision) = entry.supports_vision {
         add("supports_vision", vision.into());
     }
+    // Selecting an official catalog entry never changes the actual endpoint.
+    // Output modalities and generic tool_call flags are not hosted-tool evidence.
+    if entry.provider_id == "openai"
+        && entry.model_id == string_field(model, "model")
+        && image_generation_capability::evidence(model) == Support::Supported
+    {
+        add("supports_image_generation", true.into());
+    }
     // This adapter supports a narrower set than the external catalog. Changing
     // levels underneath an explicitly configured on/off interface can invalidate
     // its current choices, so leave that configuration entirely user-owned.
@@ -158,15 +167,22 @@ pub(super) fn automatic_patch(
 /// revision. Credentials are intentionally neither captured nor compared.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RequestGuard {
-    identity: [String; 5],
+    identity: [String; 6],
     revision: u64,
 }
 
 impl RequestGuard {
     pub(super) fn capture(model: &Value, revision: u64) -> Self {
         Self {
-            identity: ["name", "original_name", "provider", "model", "base_url"]
-                .map(|field| string_field(model, field).to_owned()),
+            identity: [
+                "name",
+                "original_name",
+                "provider",
+                "model",
+                "base_url",
+                "api",
+            ]
+            .map(|field| string_field(model, field).to_owned()),
             revision,
         }
     }
@@ -176,11 +192,11 @@ impl RequestGuard {
     }
 }
 
-fn string_field<'a>(model: &'a Value, key: &str) -> &'a str {
+pub(super) fn string_field<'a>(model: &'a Value, key: &str) -> &'a str {
     model.get(key).and_then(Value::as_str).unwrap_or("").trim()
 }
 
-fn adapter(model: &Value) -> &str {
+pub(super) fn adapter(model: &Value) -> &str {
     match string_field(model, "provider") {
         "" => "openai",
         provider => provider,
@@ -445,12 +461,70 @@ mod tests {
     }
 
     #[test]
+    fn image_generation_suggestions_preserve_manual_choices_and_unknown_hosts() {
+        let mut metadata = entry("openai", None);
+        metadata.model_id = "gpt-5.2".into();
+        let mut current = json!({"provider":"openai", "api":"responses", "model":"gpt-5.2", "base_url":"", "supports_image_generation":false});
+        let has_image = |changes: Vec<MetadataChange>| {
+            changes.iter().any(|change| {
+                change.field == "supports_image_generation" && change.suggested == true
+            })
+        };
+        assert!(has_image(suggested_patch(&metadata, &current)));
+        assert!(has_image(automatic_patch(
+            &metadata,
+            &current,
+            true,
+            &HashSet::new()
+        )));
+        assert!(!has_image(automatic_patch(
+            &metadata,
+            &current,
+            false,
+            &HashSet::new()
+        )));
+        assert!(!has_image(automatic_patch(
+            &metadata,
+            &current,
+            true,
+            &HashSet::from(["supports_image_generation".into()])
+        )));
+        current["supports_image_generation"] = true.into();
+        assert!(!has_image(suggested_patch(&metadata, &current)));
+        current["supports_image_generation"] = false.into();
+        for api in ["auto", "chat_completions", ""] {
+            current["api"] = api.into();
+            assert!(!has_image(suggested_patch(&metadata, &current)));
+        }
+        current["api"] = "responses".into();
+        current["base_url"] = "https://gateway.example/v1".into();
+        assert!(!has_image(suggested_patch(&metadata, &current)));
+        current["base_url"] = "".into();
+        current["model"] = "gpt-image-1.5".into();
+        metadata.model_id = "gpt-image-1.5".into();
+        assert!(!has_image(suggested_patch(&metadata, &current)));
+        current["supports_image_generation"] = true.into();
+        assert!(
+            !suggested_patch(&metadata, &current)
+                .iter()
+                .any(|change| change.field == "supports_image_generation")
+        );
+    }
+
+    #[test]
     fn request_guard_rejects_selection_identity_and_revision_changes() {
         let current = model();
         let guard = RequestGuard::capture(&current, 7);
         assert!(guard.matches(&current, 7));
         assert!(!guard.matches(&current, 8));
-        for field in ["name", "original_name", "provider", "model", "base_url"] {
+        for field in [
+            "name",
+            "original_name",
+            "provider",
+            "model",
+            "base_url",
+            "api",
+        ] {
             let mut changed = current.clone();
             changed[field] = "different".into();
             assert!(!guard.matches(&changed, 7), "{field}");

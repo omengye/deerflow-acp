@@ -48,6 +48,7 @@ type modelDocument struct {
 	APIKey                   string                       `yaml:"api_key"`
 	BaseURL                  string                       `yaml:"base_url"`
 	SupportsVision           bool                         `yaml:"supports_vision"`
+	SupportsImageGeneration  bool                         `yaml:"supports_image_generation"`
 	ContextWindow            int                          `yaml:"context_window"`
 	MaxOutputTokens          int                          `yaml:"max_output_tokens"`
 	MaxSupportedOutputTokens int                          `yaml:"max_supported_output_tokens"`
@@ -659,6 +660,12 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 		}
 		if option.SupportsVision {
 			cfg.Media.VisionModels = append(cfg.Media.VisionModels, choice)
+		}
+		if err := harness.ValidateImageGeneration(optionProvider, optionAPI, option.SupportsImageGeneration); err != nil {
+			return result, fmt.Errorf("model %q: %w", option.Name, err)
+		}
+		if option.SupportsImageGeneration {
+			cfg.Media.ImageGenerationModels = append(cfg.Media.ImageGenerationModels, choice)
 		}
 	}
 	if err := applySubagents(source, cfg, explicit, modelChoices, controls); err != nil {

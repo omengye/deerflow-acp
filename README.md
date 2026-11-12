@@ -68,6 +68,7 @@ Waku 桌面发行构建使用 `-Configuration Release -CreateZip`，要求干净
 需要代理时，在“设置 → 常用 → 网络代理”启用并填写代理地址，然后点击“保存更改”。统一代理用于模型、搜索和网页抓取，支持 HTTP、HTTPS、SOCKS5 及绕过地址；工具和搜索服务的独立代理优先。关闭统一代理恢复原有连接配置，详见[网络代理说明](docs/go-native-tools.md#统一网络代理)。
 
 OpenAI 模型可在“设置 → 模型 → 接口协议”选择 Responses。`gpt-6.1-sol` 等要求 Responses 才能调用工具的模型应选择该协议；保留原服务地址（例如 `https://api.openai.com/v1`）和 API Key，输出上限参数使用“自动”。Responses 同样使用统一代理；已有模型的“自动”协议保留原连接方式。
+服务商支持 Responses 图片生成时，在“设置 → 模型 → 更多参数”开启“启用 Responses 图片生成”（配置项 `models[].supports_image_generation: true`，同时设置 `api: responses`），保存并应用后即可在会话中请求生成或修改图片。图片沿用会话资产保存和回放，后续回合可继续编辑。该选项是启用策略，默认关闭，与“支持图片输入”独立；私有的摘要、记忆维护调用不会启用图片生成。兼容接口必须实际支持 [`image_generation` 工具](https://developers.openai.com/api/docs/guides/tools-image-generation)，仅支持文本 Responses 的服务不能据此获得生图能力。“补全模型信息”仅在官方端点、明确支持的聊天模型和 Responses 协议匹配时建议开启；未知网关保持手动设置，详见 [模型信息补全规则](docs/desktop-model-metadata.md)。
 `gpt-6.1-sol` 的推理强度可使用 `low`、`medium`、`high`、`xhigh`、`max`；它不支持 `none`，因此“思考模式接口”应保持未配置或声明不支持切换，不能声明可关闭的思考开关。
 
 新桌面配置默认允许本地命令和宿主工具，并使用 `dangerous` 权限模式，不是隔离沙箱。技能自动维护沿用主模型，可能产生模型费用；不设置每日调用或累计 Token 额度，运行由并发、超时、去重及有限重试约束，实际使用量继续统计。脚本技能的自动验证仍要求真实隔离执行。搜索服务密钥和 OpenCLI 浏览器依赖为可选配置，不影响基本聊天。

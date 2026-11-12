@@ -22,6 +22,7 @@ func modelAgentFields() []Field {
 		{Path: "/models/*/base_url", Type: "string", Default: ""},
 		{Path: "/models/*/output_token_parameter", Type: "string", Default: "auto", Enum: []string{"auto", "max_tokens", "max_completion_tokens"}},
 		{Path: "/models/*/supports_vision", Type: "boolean", Default: false},
+		{Path: "/models/*/supports_image_generation", Type: "boolean", Default: false},
 		{Path: "/models/*/thinking_parameter", Type: "string", Default: "", Enum: []string{"", "unsupported", "enable_thinking", "thinking_type", "reasoning_effort", "claude"}},
 		numeric("models/*", "thinking_budget_tokens", "integer", 0, 0, (1<<30)-1),
 		{Path: "/models/*/reasoning_efforts", Type: "reasoning_efforts", Nullable: true, Default: nil},
@@ -151,7 +152,7 @@ func ValidateModelDraft(model map[string]any) error {
 	}
 	for _, field := range Describe().Fields {
 		if key, ok := strings.CutPrefix(field.Path, "/models/*/"); ok {
-			if key == "api" || key == "reasoning_efforts" || key == "output_token_parameter" || key == "thinking_parameter" || key == "thinking_budget_tokens" || key == "max_output_tokens" || key == "max_supported_output_tokens" {
+			if key == "api" || key == "supports_image_generation" || key == "reasoning_efforts" || key == "output_token_parameter" || key == "thinking_parameter" || key == "thinking_budget_tokens" || key == "max_output_tokens" || key == "max_supported_output_tokens" {
 				continue // Older desktop drafts preserve these optional settings.
 			}
 			if _, exists := model[key]; !exists {
@@ -184,6 +185,10 @@ func validateModelReasoning(model map[string]any) error {
 	api, _ := model["api"].(string)
 	if err := harness.ValidateModelAPIOptions(provider, harness.ModelAPI(api), harness.OutputTokenParameter(parameter)); err != nil {
 		return fmt.Errorf("/models/*/api: %w", err)
+	}
+	imageGeneration, _ := model["supports_image_generation"].(bool)
+	if err := harness.ValidateImageGeneration(provider, harness.ModelAPI(api), imageGeneration); err != nil {
+		return fmt.Errorf("/models/*/supports_image_generation: %w", err)
 	}
 	if _, err := harness.ResolveOutputTokenParameter(provider, "", harness.OutputTokenParameter(parameter)); err != nil {
 		return fmt.Errorf("/models/*/output_token_parameter: %w", err)

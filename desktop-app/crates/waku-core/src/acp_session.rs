@@ -18,6 +18,7 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo};
 use anyhow::{Context as _, anyhow};
+use base64::Engine as _;
 use parking_lot::Mutex;
 use serde_json::Value;
 use uuid::Uuid;
@@ -192,6 +193,7 @@ pub fn provider_session_history(
     cwd: &Path,
     session_id: &str,
     visible_turn_limit: usize,
+    blobs: &crate::blob_store::BlobStore,
 ) -> anyhow::Result<ProviderSessionHistory> {
     if session_id.trim().is_empty() || visible_turn_limit == 0 {
         return Ok(ProviderSessionHistory::default());
@@ -248,19 +250,31 @@ pub fn provider_session_history(
     .with_context(|| format!("{} could not replay the session", provider.display_name()))?;
 
     let updates = std::mem::take(&mut *updates.lock());
-    let mut history = history_from_updates(provider, &updates);
+    let mut history = history_from_updates_with_images(provider, &updates, Some(blobs));
     retain_recent_messages(&mut history, visible_turn_limit);
     Ok(history)
 }
 
+#[cfg(test)]
 fn history_from_updates(provider: ProviderKind, updates: &[Value]) -> ProviderSessionHistory {
+    history_from_updates_with_images(provider, updates, None)
+}
+
+fn history_from_updates_with_images(
+    provider: ProviderKind,
+    updates: &[Value],
+    blobs: Option<&crate::blob_store::BlobStore>,
+) -> ProviderSessionHistory {
     let mut history = ProviderSessionHistory::default();
     let mut saw_agent_activity = true;
 
     for update in updates {
         let kind = update.get("sessionUpdate").and_then(Value::as_str);
         if kind == Some("user_message_chunk") {
-            let Some(text) = update.get("content").and_then(content_text) else {
+            let Some(text) = update
+                .get("content")
+                .and_then(|content| content_markdown(content, blobs))
+            else {
                 continue;
             };
             if history.turns.is_empty() || saw_agent_activity {
@@ -303,7 +317,10 @@ fn history_from_updates(provider: ProviderKind, updates: &[Value]) -> ProviderSe
         if kind != Some("agent_message_chunk") {
             continue;
         }
-        let Some(text) = update.get("content").and_then(content_text) else {
+        let Some(text) = update
+            .get("content")
+            .and_then(|content| content_markdown(content, blobs))
+        else {
             continue;
         };
         if provider == ProviderKind::Fx
@@ -359,6 +376,63 @@ pub(crate) fn content_text(content: &Value) -> Option<String> {
     }
 }
 
+/// Called only by ACP/background workers. Image bytes never enter the UI
+/// event stream or persisted message text; both live and replay use one blob.
+pub(crate) fn content_markdown(
+    content: &Value,
+    blobs: Option<&crate::blob_store::BlobStore>,
+) -> Option<String> {
+    if content.get("type").and_then(Value::as_str) != Some("image") {
+        return content_text(content);
+    }
+    Some(match store_image_content(content, blobs) {
+        Ok(reference) => format!("\n\n![]({reference})\n\n"),
+        Err(_) => {
+            "\n\n图片无法显示：图片数据无效或本地存储失败，请检查存储空间后重新加载会话。\n\n"
+                .into()
+        }
+    })
+}
+
+fn store_image_content(
+    content: &Value,
+    blobs: Option<&crate::blob_store::BlobStore>,
+) -> anyhow::Result<String> {
+    const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+    let mime = content
+        .get("mimeType")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    anyhow::ensure!(
+        matches!(
+            mime,
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+        ),
+        "unsupported image type"
+    );
+    let data = content
+        .get("data")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    anyhow::ensure!(
+        !data.is_empty() && data.len() <= MAX_IMAGE_BYTES.div_ceil(3) * 4,
+        "invalid image size"
+    );
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
+    anyhow::ensure!(bytes.len() <= MAX_IMAGE_BYTES, "image is too large");
+    let valid = match mime {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "image/webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP".as_slice()),
+        _ => false,
+    };
+    anyhow::ensure!(valid, "image type does not match its bytes");
+    Ok(blobs
+        .ok_or_else(|| anyhow!("image store unavailable"))?
+        .store_image_bytes(mime, &bytes)?)
+}
+
 fn retain_recent_messages(history: &mut ProviderSessionHistory, limit: usize) {
     let retained = history
         .turns
@@ -374,6 +448,60 @@ fn retain_recent_messages(history: &mut ProviderSessionHistory, limit: usize) {
 
 #[cfg(test)]
 mod tests {
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jQ1sAAAAASUVORK5CYII=";
+
+    #[test]
+    fn acp_images_survive_replay_in_order_without_inline_payloads() {
+        let root = std::env::temp_dir().join(format!("waku-acp-images-{}", Uuid::new_v4()));
+        let blobs = crate::blob_store::BlobStore::new(root.clone());
+        let image = json!({"type":"image","mimeType":"image/png","data":PNG});
+        let history = history_from_updates_with_images(
+            ProviderKind::DeerFlow,
+            &[
+                json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"draw"}}),
+                json!({"sessionUpdate":"agent_message_chunk","content":image}),
+                json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"edit"}}),
+                json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"before"}}),
+                json!({"sessionUpdate":"agent_message_chunk","content":image}),
+                json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"after"}}),
+            ],
+            Some(&blobs),
+        );
+        assert_eq!(history.turns.len(), 2);
+        assert_eq!(history.messages.len(), 4);
+        let first = &history.messages[1].content;
+        assert!(first.starts_with("\n\n![](waku-blob:"));
+        assert!(!first.contains(PNG));
+        assert_eq!(history.messages[3].content, format!("before{first}after"));
+        let reference = waku_protocol::blob::references(first).next().unwrap();
+        assert_eq!(
+            fs::read(blobs.path_for(reference).unwrap()).unwrap(),
+            base64::engine::general_purpose::STANDARD
+                .decode(PNG)
+                .unwrap()
+        );
+        let reopened = crate::blob_store::BlobStore::new(root.clone());
+        assert_eq!(
+            content_markdown(&image, Some(&reopened)).as_deref(),
+            Some(first.as_str())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn acp_invalid_images_show_a_visible_failure() {
+        for image in [
+            json!({"type":"image","mimeType":"image/png","data":"invalid"}),
+            json!({"type":"image","mimeType":"image/png","uri":"file:///private/file"}),
+            json!({"type":"image","mimeType":"image/svg+xml","data":PNG}),
+            json!({"type":"image","mimeType":"image/jpeg","data":PNG}),
+        ] {
+            let text = content_markdown(&image, None).unwrap();
+            assert!(text.contains("图片无法显示"));
+            assert!(!text.contains("file:///"));
+        }
+    }
+
     #[test]
     fn deerflow_artifact_links_survive_history_replay() {
         let history = history_from_updates(

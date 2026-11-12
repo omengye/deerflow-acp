@@ -152,6 +152,7 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 	}
 	config.Handlers = append([]adk.ChatModelAgentMiddleware(nil), config.Handlers...)
 	config.Media.VisionModels = append([]string(nil), config.Media.VisionModels...)
+	config.Media.ImageGenerationModels = append([]string(nil), config.Media.ImageGenerationModels...)
 	config.ContextWindows = maps.Clone(config.ContextWindows)
 	config.ModelRoutes = maps.Clone(config.ModelRoutes)
 	if config.ChatModel == nil {
@@ -168,6 +169,15 @@ func New(ctx context.Context, config Config) (*Engine, error) {
 		config.ModelRoutes[name] = route
 		if _, err := harness.ResolveOutputTokenParameter(route.Provider, route.BaseURL, route.OutputTokenParameter); err != nil {
 			return nil, err
+		}
+	}
+	for _, name := range config.Media.ImageGenerationModels {
+		provider, api := config.Provider, config.API
+		if route, ok := config.ModelRoutes[name]; ok {
+			provider, api = route.Provider, route.API
+		}
+		if err := harness.ValidateImageGeneration(provider, api, true); err != nil {
+			return nil, fmt.Errorf("model %q: %w", name, err)
 		}
 	}
 	config.ModelOutputLimits = maps.Clone(config.ModelOutputLimits)

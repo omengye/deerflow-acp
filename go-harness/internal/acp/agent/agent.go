@@ -118,6 +118,7 @@ func mapError(err error) (mapped error) {
 	var p *protocol.Error
 	var skillConflict *harness.SkillNameConflictError
 	var compaction *harness.CompactionError
+	var imageFailure *harness.ImageGenerationError
 	if errors.As(err, &p) {
 		return err
 	}
@@ -180,6 +181,12 @@ func mapError(err error) (mapped error) {
 			return err
 		}
 		return &protocol.Error{Code: -32031, Message: "当前模型在 Chat Completions 接口下不支持此工具调用配置。请使用 Responses 接口，或切换到兼容工具调用的模型；已保存的执行记录会保留。", Data: map[string]any{"kind": "model_tools_require_responses", "automaticReplay": false}}
+	case errors.As(err, &imageFailure):
+		var persistence interface{ PersistenceFailure() bool }
+		if errors.As(err, &persistence) && persistence.PersistenceFailure() {
+			return err
+		}
+		return imageGenerationError(imageFailure)
 	}
 	return err
 }
@@ -340,7 +347,7 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err != nil {
 			return nil, err
 		}
-		x, err := a.service.Load(ctx, a.owner, sessionID, cwd, method == "session/load", a.emit, servers...)
+		x, err := a.service.Load(ctx, a.owner, sessionID, cwd, method == "session/load", a.emitReplay, servers...)
 		if err != nil {
 			return nil, err
 		}
@@ -484,7 +491,19 @@ func (a *Agent) update(ctx context.Context, id string, update any) error {
 }
 
 func (a *Agent) updateAsync(ctx context.Context, id string, update any) error {
+	if replay, _ := ctx.Value(replayUpdateKey{}).(bool); replay {
+		return a.update(ctx, id, update)
+	}
 	return a.connectionError(ctx, a.peer.NotifyAsync(ctx, "session/update", map[string]any{"sessionId": id, "update": update}))
+}
+
+type replayUpdateKey struct{}
+
+// Stored deltas arrive in a burst, unlike live provider output. Pace replay
+// through the writer so a long history cannot overflow the live event queue
+// and disconnect before its final image. The request context bounds the wait.
+func (a *Agent) emitReplay(ctx context.Context, e harness.RunEvent) error {
+	return a.emit(context.WithValue(ctx, replayUpdateKey{}, true), e)
 }
 
 func (a *Agent) connectionError(ctx context.Context, err error) error {

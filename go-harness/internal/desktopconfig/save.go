@@ -270,7 +270,7 @@ func validatedModels(incoming, existing []any) ([]any, map[string]bool, error) {
 		if parameter, present := model["output_token_parameter"]; present {
 			raw["output_token_parameter"] = parameter
 		}
-		for _, key := range []string{"api", "thinking_parameter", "thinking_budget_tokens", "max_output_tokens", "max_supported_output_tokens"} {
+		for _, key := range []string{"api", "supports_image_generation", "thinking_parameter", "thinking_budget_tokens", "max_output_tokens", "max_supported_output_tokens"} {
 			if value, present := model[key]; present {
 				raw[key] = value
 			}
@@ -306,6 +306,9 @@ func validatedModels(incoming, existing []any) ([]any, map[string]bool, error) {
 		// Older clients can omit protocol/output fields. Validate the merged
 		// values so retained settings cannot form an unsupported combination.
 		if err := harness.ValidateModelAPIOptions(provider, harness.ModelAPI(str(raw, "api", "auto")), harness.OutputTokenParameter(str(raw, "output_token_parameter", "auto"))); err != nil {
+			return nil, nil, fmt.Errorf("模型 %s: %w", name, err)
+		}
+		if err := harness.ValidateImageGeneration(provider, harness.ModelAPI(str(raw, "api", "auto")), boolValue(raw, "supports_image_generation", false)); err != nil {
 			return nil, nil, fmt.Errorf("模型 %s: %w", name, err)
 		}
 		output = append(output, raw)

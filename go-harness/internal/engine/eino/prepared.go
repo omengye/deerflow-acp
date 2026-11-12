@@ -235,6 +235,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		selectedModel = e.config.Model
 	}
 	media := &mediaProjection{resolver: e.config.AssetResolver, importer: e.config.ModelImageImporter, request: req, policy: e.config.Media, sessionID: req.Session.ID, model: selectedModel,
+		allowImageGeneration: e.config.ToolPolicy.Allows("image_generation") && req.Session.Mode != "plan" && req.Session.ApprovalMode != harness.ApprovalReadOnly && req.Session.ApprovalMode != harness.ApprovalRejectAlways,
 		publish: func(ctx context.Context, content harness.Content) error {
 			return sink.emit(ctx, harness.RunEvent{Kind: "image_delta", Content: []harness.Content{content}})
 		}}
@@ -353,7 +354,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		retryPolicy = goalRetryPolicy(retryPolicy, e.config.GoalStore, req, goal, metered, e.config.GoalAutoContinue, sink)
 	}
 	p.Agent, err = deep.New(ctx, &deep.Config{
-		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend + toolFailureInstruction + stoppedToolInstruction(ctx),
+		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend + toolFailureInstruction + stoppedToolInstruction(ctx) + media.imageGenerationInstruction(),
 		ChatModel: chatModel, MaxIteration: nativeMaxIterations(e.config.MaxIterations),
 		ModelRetryConfig: retryPolicy,
 		ToolsConfig:      adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools, UnknownToolsHandler: unavailableToolHandler}},

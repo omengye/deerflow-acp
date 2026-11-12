@@ -276,6 +276,12 @@ const SEARCH_TARGETS: &[SearchSeed] = &[
         "vision 图片 视觉"
     ),
     target!(
+        "图片生成",
+        "/models/*/supports_image_generation",
+        Models,
+        "image generation 图片 生图 画图"
+    ),
+    target!(
         "工具审批",
         "/runtime/permission_mode",
         Tools,
@@ -1080,6 +1086,7 @@ mod tests {
         for key in [
             "description",
             "supports_vision",
+            "supports_image_generation",
             "context_window",
             "reasoning_efforts",
             "thinking_parameter",

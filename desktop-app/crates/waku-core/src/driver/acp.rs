@@ -501,7 +501,12 @@ async fn run_sdk_connection(
     events: DriverEventSender,
 ) -> agent_client_protocol::Result<()> {
     let suppress_session_updates = Arc::new(AtomicBool::new(false));
-    let stream_state = Arc::new(Mutex::new(AcpStreamState::default()));
+    let stream_state = Arc::new(Mutex::new(AcpStreamState {
+        image_store: Some(Arc::new(crate::blob_store::BlobStore::new(
+            waku_protocol::identity::desktop_data_directory().join("blobs"),
+        ))),
+        ..AcpStreamState::default()
+    }));
     let pending_permissions: PendingPermissions = Arc::new(Mutex::new(HashMap::new()));
     let pending_user_inputs: PendingAcpUserInputs = Arc::new(Mutex::new(HashMap::new()));
     let prompt_requests = Arc::new(Mutex::new(PendingPrompts {
@@ -3083,10 +3088,9 @@ fn handle_session_update(
     }
     match kind {
         Some("agent_message_chunk") => {
-            if let Some(text) = update
-                .get("content")
-                .and_then(crate::acp_session::content_text)
-            {
+            if let Some(text) = update.get("content").and_then(|content| {
+                crate::acp_session::content_markdown(content, state.image_store.as_deref())
+            }) {
                 let _ = events.send(DriverEvent::TextDelta(text));
             }
         }
@@ -3215,6 +3219,7 @@ fn fx_context_notice(text: &str) -> bool {
 
 #[derive(Default)]
 struct AcpStreamState {
+    image_store: Option<Arc<crate::blob_store::BlobStore>>,
     deerflow_steering: Option<deerflow_steering::State>,
     deerflow_config_options: Option<Vec<SessionConfigOption>>,
     deerflow_applying_model: bool,
@@ -5326,6 +5331,46 @@ mod tests {
                 context_window: Some(500000),
             }
         ));
+    }
+
+    #[test]
+    fn acp_image_chunks_reach_the_desktop_as_ordered_message_content() {
+        let root =
+            std::env::temp_dir().join(format!("waku-acp-live-image-{}", uuid::Uuid::new_v4()));
+        let blobs = Arc::new(crate::blob_store::BlobStore::new(root.clone()));
+        let (events, received) = crossbeam_channel::unbounded();
+        let mut state = AcpStreamState {
+            image_store: Some(blobs.clone()),
+            ..AcpStreamState::default()
+        };
+        let bytes = b"\x89PNG\r\n\x1a\nfixture";
+        let content = [
+            json!({"type":"text","text":"before"}),
+            json!({"type":"image","mimeType":"image/png","data":base64::engine::general_purpose::STANDARD.encode(bytes)}),
+            json!({"type":"text","text":"after"}),
+        ];
+        for content in content {
+            let notification: SessionNotification = serde_json::from_value(json!({
+                "sessionId":"s", "update":{"sessionUpdate":"agent_message_chunk","content":content}
+            }))
+            .unwrap();
+            handle_session_update(ProviderKind::DeerFlow, notification, &events, &mut state)
+                .unwrap();
+        }
+        let seen = received.try_iter().collect::<Vec<_>>();
+        assert_eq!(seen.len(), 3);
+        assert!(matches!(&seen[0], DriverEvent::TextDelta(text) if text == "before"));
+        assert!(matches!(&seen[2], DriverEvent::TextDelta(text) if text == "after"));
+        let DriverEvent::TextDelta(image) = &seen[1] else {
+            panic!("image chunk was discarded")
+        };
+        let reference = waku_protocol::blob::references(image).next().unwrap();
+        assert_eq!(
+            std::fs::read(blobs.path_for(reference).unwrap()).unwrap(),
+            bytes
+        );
+        assert!(state.produced_content);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

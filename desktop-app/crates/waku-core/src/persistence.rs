@@ -674,7 +674,11 @@ fn live_references(connection: &Connection, scheme: &str) -> io::Result<HashSet<
         .prepare(
             "SELECT data FROM session_details
              UNION ALL
-             SELECT attachments FROM messages WHERE attachments != '[]'",
+             SELECT attachments FROM messages WHERE attachments != '[]'
+             UNION ALL
+             SELECT content FROM messages
+             UNION ALL
+             SELECT display_content FROM messages WHERE display_content IS NOT NULL",
         )
         .map_err(to_io_error)?;
     let mut references = HashSet::new();
@@ -698,6 +702,10 @@ fn collect_attachment_references(data: &str, references: &mut HashSet<String>) {
 }
 
 fn collect_references(data: &str, scheme: &str, references: &mut HashSet<String>) {
+    if scheme == crate::blob_store::BLOB_SCHEME {
+        references.extend(waku_protocol::blob::references(data).map(str::to_owned));
+        return;
+    }
     let mut rest = data;
     while let Some(start) = rest.find(scheme) {
         rest = &rest[start..];
@@ -2614,6 +2622,47 @@ mod tests {
         );
 
         fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn blob_sweep_keeps_assistant_images_after_restart() {
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
+        let bytes = b"\x89PNG\r\n\x1a\nimage";
+        let reference = store.blobs().store_image_bytes("image/png", bytes).unwrap();
+        let path = store.blobs().path_for(&reference).unwrap();
+        // Exceed the sweep grace period to verify actual retention, not age.
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH)
+            .unwrap();
+        state.sessions[0].begin_turn("draw");
+        state.sessions[0].push_message(
+            MessageRole::Assistant,
+            format!("before\n\n![]({reference})\n\nafter"),
+        );
+        state.sessions[0].finish_active_turn(crate::model::TurnStatus::Completed);
+        store.save(&mut state).unwrap();
+        let reopened = store_in(&directory);
+        let unloaded = reopened.load().unwrap();
+        assert!(!unloaded.sessions[0].detail_loaded);
+        reopened.blob_sweep()();
+        assert_eq!(fs::read(path).unwrap(), bytes);
+        let restored = load_hydrated(&reopened);
+        assert!(
+            restored.sessions[0]
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains(&reference)
+        );
+        drop(reopened);
+        drop(store);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

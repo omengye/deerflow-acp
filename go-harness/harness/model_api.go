@@ -46,6 +46,17 @@ func ValidateModelAPIOptions(provider string, configured ModelAPI, output Output
 	return nil
 }
 
+func ValidateImageGeneration(provider string, configured ModelAPI, enabled bool) error {
+	if !enabled {
+		return nil
+	}
+	api, err := ResolveModelAPI(provider, configured)
+	if err != nil || api != ModelAPIResponses {
+		return fmt.Errorf("supports_image_generation requires an OpenAI-compatible provider with api responses")
+	}
+	return nil
+}
+
 // CanonicalModelAPI keeps the legacy default absent from host route identities.
 // Selecting auto or explicit Chat Completions must not invalidate existing runs.
 func CanonicalModelAPI(provider string, configured ModelAPI) (ModelAPI, error) {

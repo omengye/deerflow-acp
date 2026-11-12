@@ -15,12 +15,19 @@ const responsesTextKey = "deerflow_responses_text"
 const responsesOriginKey = "deerflow_responses_origin"
 
 type responsesItem struct {
-	Type      string `json:"type"`
-	ID        string `json:"id,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Content   []struct {
+	Type         string `json:"type"`
+	ID           string `json:"id,omitempty"`
+	CallID       string `json:"call_id,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Arguments    string `json:"arguments,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Result       string `json:"result,omitempty"`
+	OutputFormat string `json:"output_format,omitempty"`
+	Error        *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+	Content []struct {
 		Type    string `json:"type"`
 		Text    string `json:"text,omitempty"`
 		Refusal string `json:"refusal,omitempty"`
@@ -38,6 +45,7 @@ func responsesInputForOrigin(messages []*schema.Message, origin string) ([]any, 
 			return nil, fmt.Errorf("%w: nil Responses message", harness.ErrInvalidInput)
 		}
 		if message.Role == schema.Assistant {
+			images := responsesAssistantImages(message)
 			if saved, ok := message.Extra[responsesOutputKey].(string); ok && saved != "" && (origin == "" || message.Extra[responsesOriginKey] == origin) {
 				var raw []json.RawMessage
 				if len(saved) > 16<<20 || json.Unmarshal([]byte(saved), &raw) != nil {
@@ -54,6 +62,7 @@ func responsesInputForOrigin(messages []*schema.Message, origin string) ([]any, 
 					calls[call.ID] = call
 				}
 				messageWritten := false
+				imageIndex := 0
 				for _, entry := range raw {
 					var item responsesItem
 					if json.Unmarshal(entry, &item) != nil {
@@ -86,6 +95,22 @@ func responsesInputForOrigin(messages []*schema.Message, origin string) ([]any, 
 							edited["name"], edited["arguments"] = call.Function.Name, call.Function.Arguments
 							items = append(items, edited)
 						}
+					case "image_generation_call":
+						// Requests use store:false. Even with result bytes present,
+						// replaying this provider ID causes an upstream lookup/404.
+						// Restore the session asset as explicit image context at
+						// its original position, including on the same endpoint.
+						if imageIndex < len(images) {
+							if item.ID == "" || item.Status != "completed" {
+								return nil, fmt.Errorf("%w: invalid Responses image history", harness.ErrModelResponseInvalid)
+							}
+							var err error
+							items, err = responsesAppendImageContext(items, images[imageIndex:imageIndex+1])
+							if err != nil {
+								return nil, err
+							}
+							imageIndex++
+						}
 					default:
 						return nil, fmt.Errorf("%w: unsupported Responses history item", harness.ErrModelResponseInvalid)
 					}
@@ -98,6 +123,11 @@ func responsesInputForOrigin(messages []*schema.Message, origin string) ([]any, 
 						items = append(items, responsesFunctionCall(call))
 					}
 				}
+				var err error
+				items, err = responsesAppendImageContext(items, images[imageIndex:])
+				if err != nil {
+					return nil, err
+				}
 				continue
 			}
 			if message.Content != "" {
@@ -105,6 +135,11 @@ func responsesInputForOrigin(messages []*schema.Message, origin string) ([]any, 
 			}
 			for _, call := range message.ToolCalls {
 				items = append(items, responsesFunctionCall(call))
+			}
+			var err error
+			items, err = responsesAppendImageContext(items, images)
+			if err != nil {
+				return nil, err
 			}
 			continue
 		}
@@ -200,6 +235,8 @@ func responsesOutput(response responses.Response, incomplete bool) (*schema.Mess
 	var raw []json.RawMessage
 	var text strings.Builder
 	seen := map[string]bool{}
+	seenImages := map[string]bool{}
+	imageLimit := modelImageLimit{}
 	for index, output := range response.Output {
 		encoded := json.RawMessage(output.RawJSON())
 		var item responsesItem
@@ -225,6 +262,29 @@ func responsesOutput(response responses.Response, incomplete bool) (*schema.Mess
 			seen[item.CallID] = true
 			message.ToolCalls = append(message.ToolCalls, schema.ToolCall{Index: &index, ID: item.CallID, Type: "function", Function: schema.FunctionCall{Name: item.Name, Arguments: item.Arguments}})
 		case "reasoning": // Kept opaque for the next model call, never shown.
+		case "image_generation_call":
+			if item.Status == "failed" {
+				code, detail := "image_generation_failed", "provider did not complete the image generation call"
+				if item.Error != nil {
+					code, detail = item.Error.Code, item.Error.Message
+				}
+				return nil, responsesImageFailure(code, detail)
+			}
+			if incomplete && (item.Status == "in_progress" || item.Status == "generating") {
+				continue // Partial images are not durable generated output.
+			}
+			if item.ID == "" || seenImages[item.ID] || item.Status != "completed" || item.Result == "" {
+				return nil, fmt.Errorf("%w: Responses image generation did not return a completed image", harness.ErrModelResponseInvalid)
+			}
+			seenImages[item.ID] = true
+			part, err := responsesGeneratedImage(item, &imageLimit)
+			if err != nil {
+				return nil, err
+			}
+			message.AssistantGenMultiContent = append(message.AssistantGenMultiContent, part)
+			// Never persist provider base64 in Extra alongside the asset. Retain
+			// only identity/order so the next request can restore image context.
+			encoded, _ = json.Marshal(map[string]any{"type": item.Type, "id": item.ID, "status": item.Status})
 		default:
 			return nil, fmt.Errorf("%w: unsupported Responses output item", harness.ErrModelResponseInvalid)
 		}

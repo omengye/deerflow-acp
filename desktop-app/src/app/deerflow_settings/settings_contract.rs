@@ -384,6 +384,7 @@ fn expected_type(path: &str) -> Option<&'static str> {
         | "/subagents/max_tasks_per_root"
         | "/subagents/max_auto_continuations" => Some("integer"),
         "/models/*/supports_vision"
+        | "/models/*/supports_image_generation"
         | "/models/*/clear_api_key"
         | "/subagents/enabled"
         | "/subagents/auto_continue" => Some("boolean"),

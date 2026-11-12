@@ -212,6 +212,7 @@ func modelDocument(raw map[string]any) map[string]any {
 		"base_url":               str(raw, "base_url", ""),
 		"output_token_parameter": str(raw, "output_token_parameter", "auto"),
 		"supports_vision":        boolValue(raw, "supports_vision", false), "context_window": contextWindow,
+		"supports_image_generation":   boolValue(raw, "supports_image_generation", false),
 		"reasoning_efforts":           raw["reasoning_efforts"],
 		"thinking_parameter":          str(raw, "thinking_parameter", ""),
 		"thinking_budget_tokens":      thinkingBudget,

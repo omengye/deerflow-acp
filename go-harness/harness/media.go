@@ -77,6 +77,18 @@ type ModelImageImporter interface {
 // and remains disabled when empty; provider names do not imply capabilities.
 type MediaConfig struct {
 	VisionModels []string `json:"visionModels,omitempty"`
+	// ImageGenerationModels enables the Responses image_generation tool for
+	// these session model choices. It does not imply arbitrary image input.
+	ImageGenerationModels []string `json:"imageGenerationModels,omitempty"`
+}
+
+func (c MediaConfig) SupportsImageGeneration(model string) bool {
+	for _, allowed := range c.ImageGenerationModels {
+		if model != "" && model == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func (c MediaConfig) SupportsVision(model string) bool {

@@ -373,6 +373,9 @@ func (m *trackedModel) recordAdmissionFailure(err error) {
 
 func (m *trackedModel) providerOptions(reservation *modelReservation, opts []model.Option) ([]model.Option, error) {
 	result, err := m.tuning.afterReservation(opts)
+	// Only visible agent calls may create images. Summarization, memory and
+	// other private model calls must never inherit provider-side media tools.
+	result = append(result, withResponsesImageGeneration(m.nativeEndpoint && m.media.imageGenerationEnabled()))
 	if err != nil {
 		// Reservation succeeded but no provider call has begun. Keep the model
 		// admission count and release every held token, recording zero usage.
