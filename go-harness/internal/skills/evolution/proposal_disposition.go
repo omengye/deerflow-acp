@@ -37,7 +37,7 @@ func (s *Service) autoPatchPolicyIdentity() string {
 	if s.behavior != nil {
 		evaluator = s.behavior.identity
 	}
-	return encodedHash([]any{"maintenance-policy-v2", options, generation, discovery, bindings, builtin, evaluator})
+	return encodedHash([]any{"maintenance-policy-v3", options, generation, discovery, bindings, builtin, evaluator})
 }
 
 // Correlated against df_skill_proposals p, so both page rows and the total

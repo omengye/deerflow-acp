@@ -67,3 +67,18 @@ critical-behavior coverage and no unresolved failures. Source withdrawal,
 confirmed regression or inconclusive expiry withdraws the candidate. A manual
 head change supersedes the old observation. Historical observations finish at
 their original deadline; retired learning and generation work never replays.
+
+## External provenance
+
+Learning never receives result bodies from network, MCP or attachment tools,
+but injected content in those results can still steer the assistant text and
+later local actions that are learned. When more than half of a learned
+candidate's supporting experiences come from episodes that consumed such
+content (`harness.ExternalContentTool`), automatic adoption stops with
+`external_provenance_confirmation`. Behavior evaluation cannot detect a dormant
+injected instruction, so the proposal stays pending and needs attention until
+the user publishes it once with `skill_manage.publish`. Unreadable evidence
+counts as external. Explicit memory writes follow the same rule: after a
+session consumes external content they must pass the automatic-extraction
+content filters and are labelled `external_context` wherever memory is shown
+to a model.

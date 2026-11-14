@@ -50,6 +50,17 @@ func personalMemoryTools(store *memory.Store, req harness.RunRequest, cfg Config
 		if len(strings.TrimSpace(in.Evidence)) < 2 || !strings.Contains(text, in.Evidence) {
 			return nil, fmt.Errorf("%w: quote the current user message", harness.ErrInvalidInput)
 		}
+		policy := memory.ExplicitPolicy
+		external, err := store.SessionConsumedExternalContent(ctx, req.Session.ID)
+		if err != nil {
+			return nil, err
+		}
+		if external {
+			if err = memory.CheckExternalContextWrite(in.Content, in.Evidence); err != nil {
+				return nil, err
+			}
+			policy = memory.ExternalContextPolicy
+		}
 		kind := harness.MemoryScope(in.Scope)
 		if kind != harness.MemoryGlobal && kind != harness.MemoryWorkspace {
 			return nil, harness.ErrInvalidInput
@@ -63,7 +74,7 @@ func personalMemoryTools(store *memory.Store, req harness.RunRequest, cfg Config
 		}
 		key := memory.CanonicalKey(in.Key)
 		operation := memory.OperationID(req.InputID, action, string(kind), key, in.Content, fmt.Sprint(in.ExpectedRevision))
-		return store.Mutate(ctx, scope, memory.Mutation{OperationID: operation, Action: action, Key: key, Content: in.Content, Category: in.Category, ExpectedRevision: in.ExpectedRevision, Source: memory.Source{ID: operation, Kind: "operator", ActorID: "single-user", RunID: req.RunID, InputID: req.InputID, EventSequence: sequence, PolicyVersion: "personal-explicit-v1"}})
+		return store.Mutate(ctx, scope, memory.Mutation{OperationID: operation, Action: action, Key: key, Content: in.Content, Category: in.Category, ExpectedRevision: in.ExpectedRevision, Source: memory.Source{ID: operation, Kind: "operator", ActorID: "single-user", RunID: req.RunID, InputID: req.InputID, EventSequence: sequence, PolicyVersion: policy}})
 	})
 }
 

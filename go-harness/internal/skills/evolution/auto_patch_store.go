@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -185,6 +186,18 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 			}
 			return autoPatchDecision("blocked_evidence")
 		}
+		if learningCandidate {
+			derived, err := s.externallyDerived(ctx, tx, d.Evidence)
+			if err != nil {
+				return err
+			}
+			if derived {
+				// Behavior evaluation cannot detect a dormant injected instruction.
+				// The proposal stays pending until the user publishes it once with
+				// skill_manage.publish (PublishConfirmed).
+				return autoPatchDecision("external_provenance_confirmation")
+			}
+		}
 	} else if learningCandidate {
 		return autoPatchDecision("blocked_evidence")
 	}
@@ -300,4 +313,33 @@ func learningAutoPatchImproved(report harness.SkillBehaviorReport) bool {
 		return improved
 	}
 	return report.TargetedImprovements > 0
+}
+
+// externallyDerived reports whether most supporting experiences of a learned
+// candidate come from episodes that consumed third-party content.
+func (s *Service) externallyDerived(ctx context.Context, tx *skills.PublicationTx, evidence []harness.SkillDiscoveryEvidence) (bool, error) {
+	influenced := map[string]bool{}
+	for _, item := range evidence {
+		if item.Experience == nil {
+			continue
+		}
+		members, err := s.experienceSource.ExternalInfluenceTx(ctx, tx.SQL(), item.Experience.PatternID, item.Experience.PatternRevision)
+		if err != nil {
+			return false, err
+		}
+		maps.Copy(influenced, members)
+	}
+	return mostlyExternal(influenced), nil
+}
+
+// mostlyExternal is true when more than half of the distinct supporting
+// experiences were influenced by external content.
+func mostlyExternal(influenced map[string]bool) bool {
+	external := 0
+	for _, value := range influenced {
+		if value {
+			external++
+		}
+	}
+	return external*2 > len(influenced)
 }
