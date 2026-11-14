@@ -17,6 +17,7 @@ var (
 type binding struct {
 	owner        string
 	busy         bool
+	maintenance  bool
 	closing      bool
 	cancel       context.CancelCauseFunc
 	done         chan struct{}
@@ -165,6 +166,10 @@ func (c *Coordinator) Authorize(id, owner string) error {
 func (c *Coordinator) Attach(id, owner string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Housekeeping holds the session for one bounded transaction only.
+	if err := c.awaitMaintenanceLocked(context.Background(), id); err != nil {
+		return false, err
+	}
 	return c.attachLocked(id, owner)
 }
 
@@ -193,6 +198,9 @@ func (c *Coordinator) attachLocked(id, owner string) (bool, error) {
 func (c *Coordinator) AttachAndBegin(parent context.Context, id, owner string) (context.Context, func(), bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.awaitMaintenanceLocked(parent, id); err != nil {
+		return nil, nil, false, err
+	}
 	fresh, err := c.attachLocked(id, owner)
 	if err != nil {
 		return nil, nil, false, err
@@ -206,7 +214,44 @@ func (c *Coordinator) AttachAndBegin(parent context.Context, id, owner string) (
 func (c *Coordinator) Begin(parent context.Context, id, owner string) (context.Context, func(), error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.awaitMaintenanceLocked(parent, id); err != nil {
+		return nil, nil, err
+	}
 	return c.beginLocked(parent, id, owner)
+}
+
+// BeginMaintenance reserves an idle session for short periodic housekeeping
+// (a single bounded transaction). Housekeeping yields to real work: Begin,
+// AttachAndBegin and CancelOrBegin wait for it to release instead of failing
+// with ErrBusy or mistaking it for an active run to cancel.
+func (c *Coordinator) BeginMaintenance(parent context.Context, id, owner string) (context.Context, func(), error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ctx, release, err := c.beginLocked(parent, id, owner)
+	if err == nil {
+		c.bindings[id].maintenance = true
+	}
+	return ctx, release, err
+}
+
+// awaitMaintenanceLocked waits, with c.mu held on entry and return, until the
+// session is not reserved by housekeeping.
+func (c *Coordinator) awaitMaintenanceLocked(parent context.Context, id string) error {
+	for {
+		b := c.bindings[id]
+		if b == nil || !b.busy || !b.maintenance {
+			return nil
+		}
+		done := b.done
+		c.mu.Unlock()
+		select {
+		case <-done:
+			c.mu.Lock()
+		case <-parent.Done():
+			c.mu.Lock()
+			return context.Cause(parent)
+		}
+	}
 }
 
 func (c *Coordinator) beginLocked(parent context.Context, id, owner string) (context.Context, func(), error) {
@@ -231,7 +276,7 @@ func (c *Coordinator) beginLocked(parent context.Context, id, owner string) (con
 			cancel(nil)
 			c.mu.Lock()
 			defer c.mu.Unlock()
-			b.busy = false
+			b.busy, b.maintenance = false, false
 			b.cancel = nil
 			close(b.done)
 			if b.closing && b.cleanup == nil && b.closeAttempt != nil {
@@ -267,6 +312,12 @@ func (c *Coordinator) CancelOrBegin(ctx context.Context, id, owner string) (cont
 	defer c.mu.Unlock()
 	b := c.bindings[id]
 	if b == nil || b.owner != owner || c.retired[owner] || b.closing {
+		return nil, nil, harness.ErrNotAttached
+	}
+	if err := c.awaitMaintenanceLocked(ctx, id); err != nil {
+		return nil, nil, err
+	}
+	if b = c.bindings[id]; b == nil || b.owner != owner || c.retired[owner] || b.closing {
 		return nil, nil, harness.ErrNotAttached
 	}
 	if b.busy {

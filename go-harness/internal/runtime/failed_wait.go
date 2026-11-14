@@ -123,7 +123,7 @@ func (s *Store) closeFailedTaskWaitTx(ctx context.Context, tx *sql.Tx, owner, se
 }
 
 func (s *Service) closeFailedTaskWait(ctx context.Context, owner, sessionID string) (*harness.ExecutionState, error) {
-	ctx, release, err := s.Coordinator.Begin(ctx, sessionID, owner)
+	ctx, release, err := s.Coordinator.BeginMaintenance(ctx, sessionID, owner)
 	if err != nil {
 		return nil, err
 	}
