@@ -72,7 +72,9 @@ func (c *Client) unattendedWithEvents(ctx context.Context, existing, workspace, 
 	}
 	var mu sync.Mutex
 	var answer strings.Builder
+	images := channelImages{session: x.ID}
 	emit := func(ctx context.Context, e harness.RunEvent) error {
+		images.observe(e)
 		if e.Kind == "text_delta" && (e.AgentName == "" || e.AgentName == "deerflow") {
 			mu.Lock()
 			defer mu.Unlock()
@@ -96,6 +98,7 @@ func (c *Client) unattendedWithEvents(ctx context.Context, existing, workspace, 
 	channels.StartFeedback(ctx)
 	result, err := c.service.Run(ctx, owner, x.ID, []harness.Content{{Type: "text", Text: prompt}}, emit, approve)
 	out.Text = strings.ToValidUTF8(answer.String(), "")
+	images.finish(&out)
 	out.Status = "needs_attention"
 	if err == nil && result.StopReason == "end_turn" && (result.Execution == nil || result.Execution.Status == harness.ExecutionCompleted) {
 		out.Status = "completed"
@@ -121,6 +124,7 @@ func (c *Client) startAutomation(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	c.channels.ResolveImage = c.channelImage
 	if err = c.channels.EnsureBundled(ctx); err != nil {
 		return err
 	}

@@ -155,6 +155,43 @@ tool explanation without invoking the model, changing config or granting approva
 Normal model answer text is still delivered as before.
 This change does not stream answer text or change its existing length bounds.
 
+## Outbound images
+
+The bundled WeChat plugin (1.2.0+) sends generated images as native image messages.
+The host collects committed `image_delta` events, successful image-producing tool
+results and image artifacts published by `present_files` during the current turn,
+including a resumed permission wait. Repeated references to the same image bytes
+are deduplicated within that turn. `view_image`, arbitrary paths in model text and
+old session artifacts are not automatically forwarded. A tool that creates a file
+should publish it with `present_files` after writing it under `.deerflow/outputs`.
+
+Each reply may contain up to 16 images, each at most 20 MiB, in PNG, JPEG, GIF or
+WebP format. These are host limits. Unsupported, unavailable or oversized images
+produce a text notice; remaining valid images and the text answer still deliver.
+Image-only answers work without a placeholder text response. Scheduled channel
+notifications use the same image outbox.
+
+Only durable asset references are stored in `harness_channel_images`, atomically
+with the ready reply. At delivery the host rechecks the session, workspace and
+snapshot digest, then passes a local immutable snapshot descriptor through stdio.
+The plugin checks its size, SHA-256 and actual MIME type before uploading. Image
+bytes do not enter the 4 MiB JSON frame. No model-provided URL is fetched.
+
+WeChat upload uses `getuploadurl`, AES-128-ECB with PKCS#7 padding, a CDN POST and
+then `sendmessage` with an `image_item`. Bot credentials are never sent to the CDN;
+HTTPS Weixin origins are required and redirects are refused. Transient CDN uploads
+may be retried up to three times with the same ciphertext. The final message send
+is attempted once with a stable key per image. Each image has its own delivery
+receipt. A pre-send failure permits a safe text notice; an ambiguous send stops
+the reply in `unknown` and requires review, including after restart. Successful
+parts are not automatically replayed. Image RPCs have a two-minute overall budget.
+
+Protocol v1 adds optional descriptor `outbound_images` and `send.image` fields.
+`send.image` contains `path`, `sha256`, `size` and `mime_type`, and is sent separately
+from text. Older plugins receive text plus a notice. Error `-32002` means the plugin
+failed **before** attempting a provider image message; it must never describe an
+ambiguous message-send outcome. Incoming attachments remain unsupported.
+
 ## Local administration
 
 Use the authenticated local management endpoint via `deerflow-control-go`.
@@ -234,7 +271,7 @@ Methods:
 | login.poll | attempt ID, optional verification code | normalized login state |
 | login.cancel / logout | no secret input required | acknowledgement |
 | poll | current auth, committed cursor, options | normalized messages and next cursor |
-| send | auth, destination/context, stable key, reply, options | `{ "sent": true }` |
+| send | auth, destination/context, stable key, text or image, options | `{ "sent": true }` |
 | progress | auth, destination/context, unique key, host-authored tool lifecycle | `{ "sent": true }` |
 | typing.prepare | auth, destination/context | opaque in-memory typing ticket, or empty when unavailable |
 | typing | auth, destination, prepared ticket, active flag | `{ "sent": true }` |
@@ -269,8 +306,9 @@ Descriptor fields are bounded text inputs. `login:true` marks transient login
 fields; `secret:true` additionally masks them and requires `login:true`. Tokens must
 be supplied this way, never through persistent `options`. QR and verification-code
 flows are implemented; token-login plugins can return confirmed auth directly from
-`login.start`. OAuth browser navigation/callback UI, arbitrary HTML, attachment
-transfers, group admission and custom plugin UI are not implemented in v1.
+`login.start`. OAuth browser navigation/callback UI, arbitrary HTML, inbound
+attachments, general file transfers, group admission and custom plugin UI are not
+implemented in v1.
 
 The `poll` contract supports polling, or draining an internal WebSocket/callback
 queue. A plugin must not irreversibly advance its provider acknowledgement before
@@ -281,7 +319,8 @@ install public webhook listeners, tunnels or firewall rules.
 
 The host stores channel config, auth and cursors in `harness_channels`; inbox/outbox
 records in `harness_channel_messages`; conversation mappings in
-`harness_channel_threads`; optional receipt attempts in `harness_channel_receipts`.
+`harness_channel_threads`; optional receipt attempts in `harness_channel_receipts`;
+outbound image references and delivery states in `harness_channel_images`.
 No SQLite/network call runs on the GPUI render thread.
 Configuration applies transactionally with a monotonically increasing revision.
 
@@ -329,6 +368,9 @@ workspace fences, unknown sends, notifications, migration and plugin rollback.
 Feedback tests cover native payloads and business-error acknowledgements, typing
 start/keepalive/cancel, real child-process failures/timeouts, live delivery before
 model completion, bounded queues, fallback/redaction, permission waits/resumes,
-and final-answer delivery while typing cleanup is blocked.
+and final-answer delivery while typing cleanup is blocked. Image tests cover
+runtime-to-stdio delivery, `present_files`, permission resume, files larger than
+the stdio frame, byte-exact CDN encryption, upload retries, cancellation, rejected
+URLs, text compatibility, atomic queue persistence, and partial-send recovery.
 Actual WeChat QR login/send/receive requires a separate live-account acceptance
 test. No production account or user database is used by automated tests.

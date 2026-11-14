@@ -1,4 +1,4 @@
-// Package wechat implements the iLink text channel, not WeCom or UI automation.
+// Package wechat implements the iLink channel, not WeCom or UI automation.
 package wechat
 
 import (

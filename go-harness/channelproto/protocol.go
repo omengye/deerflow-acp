@@ -36,6 +36,8 @@ type Descriptor struct {
 	// host may call in a separate, disposable process. Optional feedback must
 	// never share the final answer's transport or delivery state.
 	IndependentFeedback bool `json:"independent_feedback,omitempty"`
+	// OutboundImages opts into Send.Image; Messages still describes inbound types.
+	OutboundImages bool `json:"outbound_images,omitempty"`
 }
 type Auth struct {
 	Account string          `json:"account"`
@@ -73,7 +75,29 @@ type Send struct {
 	Message Message           `json:"message"`
 	Key     string            `json:"key"`
 	Text    string            `json:"text"`
+	Image   *Image            `json:"image,omitempty"`
 	Options map[string]string `json:"options,omitempty"`
+}
+
+const MaxImageBytes int64 = 20 << 20
+const MaxReplyImages = 16
+
+// Image names a host-authorized immutable snapshot on the shared filesystem.
+// Bytes stay out of bounded stdio frames. The plugin must verify size and digest
+// before upload, and must not interpret model-authored paths or remote URLs.
+type Image struct {
+	Path     string `json:"path"`
+	SHA256   string `json:"sha256"`
+	Size     int64  `json:"size"`
+	MimeType string `json:"mime_type"`
+}
+
+func ImageMIME(mime string) bool {
+	switch mime {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return true
+	}
+	return false
 }
 
 // ToolProgress contains host-authored labels and lifecycle state only. Raw
@@ -125,6 +149,10 @@ type Response struct {
 
 var ErrAuthExpired = errors.New("channel authentication expired")
 
+// ErrImageNotSent is only valid before any provider message-send attempt.
+// It allows the host to deliver a failure notice without replaying the image.
+var ErrImageNotSent = errors.New("image was not sent")
+
 type Handler interface {
 	Handle(context.Context, string, json.RawMessage) (any, error)
 }
@@ -146,6 +174,9 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, handler Handler) er
 			if errors.Is(err, ErrAuthExpired) {
 				response.Error.Code = -32001
 				response.Error.Message = "authentication expired"
+			} else if errors.Is(err, ErrImageNotSent) {
+				response.Error.Code = -32002
+				response.Error.Message = "image was not sent"
 			}
 		} else {
 			response.Result, err = json.Marshal(value)

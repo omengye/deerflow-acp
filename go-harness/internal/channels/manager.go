@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/channelproto"
+	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/automation"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 	"github.com/omengye/deerflow-acp/go-harness/internal/wechat"
@@ -63,6 +64,9 @@ type Manager struct {
 	items  map[string]*instance
 	closed bool
 	start  func(context.Context, Manifest) (transport, channelproto.Descriptor, error)
+	// ResolveImage authorizes a durable asset for this session/workspace and
+	// returns its verified local snapshot. Set before starting workers.
+	ResolveImage func(context.Context, string, string, harness.AssetRef) (channelproto.Image, error)
 }
 
 func New(ctx context.Context, db *sql.DB, run Runner) (*Manager, error) {
@@ -70,13 +74,15 @@ func New(ctx context.Context, db *sql.DB, run Runner) (*Manager, error) {
 CREATE TABLE IF NOT EXISTS harness_channel_messages(instance TEXT NOT NULL,account TEXT NOT NULL,id TEXT NOT NULL,conversation TEXT NOT NULL,sender TEXT NOT NULL,context TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,reply TEXT NOT NULL DEFAULT '',session_id TEXT NOT NULL DEFAULT '',client_id TEXT NOT NULL,workspace TEXT NOT NULL,created_ms INTEGER NOT NULL,PRIMARY KEY(instance,account,id));
 CREATE INDEX IF NOT EXISTS harness_channel_pending ON harness_channel_messages(instance,status,created_ms);
 CREATE INDEX IF NOT EXISTS harness_channel_message_id ON harness_channel_messages(id);
+CREATE TABLE IF NOT EXISTS harness_channel_images(instance TEXT NOT NULL,account TEXT NOT NULL,id TEXT NOT NULL,position INTEGER NOT NULL,asset BLOB NOT NULL,status TEXT NOT NULL DEFAULT 'pending',PRIMARY KEY(instance,account,id,position));
 CREATE TABLE IF NOT EXISTS harness_channel_threads(instance TEXT NOT NULL,account TEXT NOT NULL,conversation TEXT NOT NULL,sender TEXT NOT NULL,workspace TEXT NOT NULL,session_id TEXT NOT NULL,PRIMARY KEY(instance,account,conversation,sender,workspace));
 CREATE TABLE IF NOT EXISTS harness_channel_admissions(instance TEXT NOT NULL,account TEXT NOT NULL,id TEXT NOT NULL,approval TEXT NOT NULL,PRIMARY KEY(instance,account,id));
 CREATE TABLE IF NOT EXISTS harness_channel_receipts(instance TEXT NOT NULL,account TEXT NOT NULL,id TEXT NOT NULL,client_id TEXT NOT NULL,status TEXT NOT NULL,PRIMARY KEY(instance,account,id));
 CREATE INDEX IF NOT EXISTS harness_channel_receipts_pending ON harness_channel_receipts(instance,account,status);
 CREATE TABLE IF NOT EXISTS harness_channel_confirmations(code TEXT PRIMARY KEY,scope TEXT NOT NULL,session_id TEXT NOT NULL,run_id TEXT NOT NULL,execution_version INTEGER NOT NULL,intent_id TEXT NOT NULL,intent_version INTEGER NOT NULL,digest TEXT NOT NULL,config_version INTEGER NOT NULL,policy_revision INTEGER NOT NULL,expires_ms INTEGER NOT NULL,decision TEXT NOT NULL DEFAULT '',used INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS harness_channel_policy_audit(id INTEGER PRIMARY KEY,instance TEXT NOT NULL,account TEXT NOT NULL,owner TEXT NOT NULL,workspace TEXT NOT NULL,approval TEXT NOT NULL,source TEXT NOT NULL,revision INTEGER NOT NULL,created_ms INTEGER NOT NULL);
-UPDATE harness_channel_messages SET status='unknown' WHERE status IN ('running','sending');`)
+UPDATE harness_channel_messages SET status='unknown' WHERE status IN ('running','sending');
+UPDATE harness_channel_images SET status='unknown' WHERE status='sending';`)
 	if err != nil {
 		return nil, err
 	}

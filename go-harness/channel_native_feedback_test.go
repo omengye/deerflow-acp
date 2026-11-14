@@ -63,6 +63,16 @@ func (p nativeFeedbackFixture) Handle(_ context.Context, method string, raw json
 				return nil, err
 			}
 			name = "reply-" + in.Message.ID + ".json"
+			if strings.HasSuffix(in.Key, "-image-notice") {
+				name = "image-notice-" + in.Message.ID + ".json"
+			}
+			if in.Image != nil {
+				data, err := os.ReadFile(in.Image.Path)
+				if err != nil || int64(len(data)) != in.Image.Size || fmt.Sprintf("%x", sha256.Sum256(data)) != in.Image.SHA256 {
+					return nil, errors.New("invalid fixture image snapshot")
+				}
+				name = "image-" + in.Message.ID + "-" + in.Key + ".json"
+			}
 		}
 		if err := os.WriteFile(filepath.Join(p.dir, name), raw, 0600); err != nil {
 			return nil, err

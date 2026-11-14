@@ -133,7 +133,11 @@ func (p *process) Close() {
 	p.once.Do(func() { p.in.Close(); _ = p.cmd.Process.Kill(); _ = p.cmd.Wait() })
 }
 func (p *process) Call(ctx context.Context, method string, input, out any) error {
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	timeout := 45 * time.Second
+	if send, ok := input.(channelproto.Send); method == "send" && ok && send.Image != nil {
+		timeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	select {
 	case p.gate <- struct{}{}:
@@ -185,6 +189,9 @@ func (p *process) Call(ctx context.Context, method string, input, out any) error
 		if v.r.Error != nil {
 			if v.r.Error.Code == -32001 {
 				return channelproto.ErrAuthExpired
+			}
+			if v.r.Error.Code == -32002 {
+				return channelproto.ErrImageNotSent
 			}
 			return fmt.Errorf("channel %s failed (code %d)", method, v.r.Error.Code)
 		}

@@ -25,9 +25,10 @@ func NewPlugin() *Plugin { return &Plugin{client: NewClient()} }
 
 func Descriptor() channelproto.Descriptor {
 	return channelproto.Descriptor{
-		ID: "wechat", Name: "WeChat", Version: "1.1.0", Protocol: channelproto.Version,
+		ID: "wechat", Name: "WeChat", Version: "1.2.0", Protocol: channelproto.Version,
 		Login: []string{"qr"}, Messages: []string{"text"},
 		RequiresReplyContext: true, IndependentPoll: true, IndependentFeedback: true,
+		OutboundImages: true,
 		Fields: []channelproto.Field{
 			{Key: "progress_mode", Label: "工具进度：native（默认）或 summary（文字摘要）"},
 			{Key: "typing", Label: "正在输入：true（默认）或 false"},
@@ -234,7 +235,15 @@ func (p *Plugin) Handle(ctx context.Context, method string, raw json.RawMessage)
 		if err := json.Unmarshal(in.Auth.Secret, &cred); err != nil {
 			return nil, err
 		}
-		err := p.client.Send(ctx, cred, in.Message.Sender, in.Message.Context, in.Key, in.Text)
+		var err error
+		if in.Image != nil {
+			if in.Text != "" {
+				return nil, channelproto.ErrImageNotSent
+			}
+			err = p.client.SendImage(ctx, cred, in.Message.Sender, in.Message.Context, in.Key, *in.Image)
+		} else {
+			err = p.client.Send(ctx, cred, in.Message.Sender, in.Message.Context, in.Key, in.Text)
+		}
 		if errors.Is(err, ErrExpired) {
 			err = channelproto.ErrAuthExpired
 		}

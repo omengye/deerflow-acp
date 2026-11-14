@@ -271,7 +271,7 @@ func (m *Manager) process(ctx context.Context, i *instance, p transport, auth ch
 				return true, err
 			}
 		}
-		if err = m.db.QueryRowContext(ctx, `SELECT reply FROM harness_channel_messages WHERE instance=? AND account=? AND id=?`, i.id, auth.Account, msg.ID).Scan(&reply); err != nil {
+		if err = m.db.QueryRowContext(ctx, `SELECT reply,session_id FROM harness_channel_messages WHERE instance=? AND account=? AND id=?`, i.id, auth.Account, msg.ID).Scan(&reply, &session); err != nil {
 			return true, err
 		}
 	}
@@ -285,13 +285,7 @@ func (m *Manager) process(ctx context.Context, i *instance, p transport, auth ch
 	if n, e := claim.RowsAffected(); e != nil || n != 1 {
 		return true, e
 	}
-	var ack struct {
-		Sent bool `json:"sent"`
-	}
-	err = p.Call(ctx, "send", channelproto.Send{Auth: auth, Message: msg, Key: key, Text: reply, Options: cfg.Options}, &ack)
-	if err == nil && !ack.Sent {
-		err = userError("plugin did not acknowledge delivery")
-	}
+	err = m.sendReply(ctx, i, p, auth, cfg, msg, session, key, reply)
 	terminal := "sent"
 	if err != nil {
 		terminal = "unknown"
@@ -427,8 +421,14 @@ func (m *Manager) EnqueueNotificationTx(ctx context.Context, tx *sql.Tx, spec au
 		state = "unknown"
 	}
 	reply := boundedText(fmt.Sprintf("Scheduled task: %s\nStatus: %s\nSession: %s\n%s", spec.Name, occ.Outcome.Status, occ.Outcome.SessionID, occ.Outcome.Text))
-	_, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO harness_channel_messages(instance,account,id,conversation,sender,context,text,status,reply,session_id,client_id,workspace,created_ms) VALUES(?,?,?,?,?,?,'',?,?,?,?,?,?)`, target.Channel, target.Account, "schedule-"+occ.ID, target.Conversation, target.Sender, contextToken, state, reply, occ.Outcome.SessionID, "df-schedule-"+occ.ID, cfg.Workspace, time.Now().UnixMilli())
-	return err
+	inserted, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO harness_channel_messages(instance,account,id,conversation,sender,context,text,status,reply,session_id,client_id,workspace,created_ms) VALUES(?,?,?,?,?,?,'',?,?,?,?,?,?)`, target.Channel, target.Account, "schedule-"+occ.ID, target.Conversation, target.Sender, contextToken, state, reply, occ.Outcome.SessionID, "df-schedule-"+occ.ID, cfg.Workspace, time.Now().UnixMilli())
+	if err != nil {
+		return err
+	}
+	if n, err := inserted.RowsAffected(); err != nil || n != 1 {
+		return err
+	}
+	return saveImagesTx(ctx, tx, target.Channel, target.Account, "schedule-"+occ.ID, occ.Outcome.Images)
 }
 
 func (m *Manager) execute(parent, ctx context.Context, i *instance, auth channelproto.Auth, cfg Config, msg channelproto.Message, session string) error {
@@ -472,18 +472,32 @@ func (m *Manager) execute(parent, ctx context.Context, i *instance, auth channel
 		}
 		reply = attentionReply(notice, reply)
 	}
-	if reply == "" {
+	if reply == "" && len(out.Images) == 0 {
 		reply = "Completed. Desktop session: " + session
 	}
 	reply = boundedText(reply)
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	terminal := "ready"
 	if parent.Err() != nil {
 		terminal = "unknown"
 	}
-	_, err := m.db.ExecContext(persist, `UPDATE harness_channel_messages SET status=?,reply=? WHERE instance=? AND account=? AND id=? AND status='running'`, terminal, reply, i.id, auth.Account, msg.ID)
-	cancel()
+	tx, err := m.db.BeginTx(persist, nil)
 	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	updated, err := tx.ExecContext(persist, `UPDATE harness_channel_messages SET status=?,reply=?,session_id=? WHERE instance=? AND account=? AND id=? AND status='running'`, terminal, reply, session, i.id, auth.Account, msg.ID)
+	if err != nil {
+		return err
+	}
+	if n, e := updated.RowsAffected(); e != nil || n != 1 {
+		return e
+	}
+	if err = saveImagesTx(persist, tx, i.id, auth.Account, msg.ID, out.Images); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
 		return err
 	}
 	// The answer is ready even if the independent feedback process is still

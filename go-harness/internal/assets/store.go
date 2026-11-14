@@ -334,6 +334,20 @@ func (s *Store) LocalURI(ctx context.Context, sessionID string, ref harness.Asse
 	return s.localURI(ref), nil
 }
 
+// SnapshotPath validates an authorized reference before handing its immutable
+// blob to a local transport. The consumer must recheck its digest before use.
+func (s *Store) SnapshotPath(ctx context.Context, sessionID string, ref harness.AssetRef) (string, error) {
+	s.lifecycle.RLock()
+	defer s.lifecycle.RUnlock()
+	if s.closed {
+		return "", errors.New("asset store is closed")
+	}
+	if _, err := s.resolve(ctx, sessionID, ref); err != nil {
+		return "", err
+	}
+	return filepath.Join(s.path, ref.ID+".blob"), nil
+}
+
 // localURI only formats a reference already verified by the calling operation.
 func (s *Store) localURI(ref harness.AssetRef) string {
 	p := filepath.ToSlash(filepath.Join(s.path, ref.ID+".blob"))

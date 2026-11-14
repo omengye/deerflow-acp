@@ -15,6 +15,7 @@ import (
 	_ "time/tzdata"
 	"unicode/utf8"
 
+	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/robfig/cron/v3"
 )
 
@@ -51,9 +52,10 @@ type Schedule struct {
 	Last        *Occurrence `json:"last,omitempty"`
 }
 type Outcome struct {
-	SessionID string `json:"session_id"`
-	Status    string `json:"status"`
-	Text      string `json:"text"`
+	SessionID string             `json:"session_id"`
+	Status    string             `json:"status"`
+	Text      string             `json:"text"`
+	Images    []harness.AssetRef `json:"images,omitempty"`
 	// Attention is a host-authored, credential-free channel recovery notice.
 	Attention string `json:"attention,omitempty"`
 }

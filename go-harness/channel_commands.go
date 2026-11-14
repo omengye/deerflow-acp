@@ -115,7 +115,9 @@ func (c *Client) channelExecutionCommand(ctx context.Context, id, workspace stri
 	var tools channelTools
 	var mu sync.Mutex
 	var answer strings.Builder
+	images := channelImages{session: id}
 	emit := func(ctx context.Context, e harness.RunEvent) error {
+		images.observe(e)
 		if e.Kind == "text_delta" && (e.AgentName == "" || e.AgentName == "deerflow") {
 			mu.Lock()
 			if answer.Len() < 16000 {
@@ -128,6 +130,7 @@ func (c *Client) channelExecutionCommand(ctx context.Context, id, workspace stri
 	channels.StartFeedback(ctx)
 	result, err := c.service.ResumeExecution(ctx, owner, id, harness.ResumeExecutionRequest{RunID: state.RunID, ExpectedVersion: state.Version}, emit, approve)
 	out.Text = strings.ToValidUTF8(answer.String(), "")
+	images.finish(&out)
 	if s := tools.finish(ctx, result.Execution); s != "" {
 		out.Text = s + "\n\n" + out.Text
 	}
