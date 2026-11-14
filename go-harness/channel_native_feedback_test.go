@@ -199,12 +199,17 @@ func TestChannelNativeFeedbackAndTextFallbackThroughPlugin(t *testing.T) {
 						return harness.RunResult{}, err
 					}
 				}
-				if mode != "summary" {
-					// The model cannot finish until native progress reaches the
-					// plugin: this detects accidental end-of-turn buffering.
-					if _, err := awaitFeedbackFile(ctx, dir, "progress-*.json", func(body []byte) bool { return strings.Contains(string(body), `"phase":"start"`) }); err != nil {
-						return harness.RunResult{}, err
-					}
+				// The model cannot finish until feedback reaches the plugin: this
+				// detects accidental end-of-turn buffering. Summary mode has no
+				// native progress, so it waits for the typing indicator instead;
+				// an answer ready before the plugin starts intentionally skips
+				// typing, which made a fast engine race the plugin process start.
+				pattern, marker := "progress-*.json", `"phase":"start"`
+				if mode == "summary" {
+					pattern, marker = "typing-*.json", `"active":true`
+				}
+				if _, err := awaitFeedbackFile(ctx, dir, pattern, func(body []byte) bool { return strings.Contains(string(body), marker) }); err != nil {
+					return harness.RunResult{}, err
 				}
 				if err := emit(ctx, harness.RunEvent{Kind: "tool_end", ToolCallID: "PRIVATE-ID", ToolName: toolName, Status: "completed", Content: []harness.Content{{Type: "text", Text: "PRIVATE-OUTPUT"}}}); err != nil {
 					return harness.RunResult{}, err
