@@ -56,7 +56,7 @@ func personalMemoryTools(store *memory.Store, req harness.RunRequest, cfg Config
 			return nil, err
 		}
 		if external {
-			if err = memory.CheckExternalContextWrite(in.Content, in.Evidence); err != nil {
+			if err = memory.CheckExternalContextWrite(in.Content, in.Evidence, text); err != nil {
 				return nil, err
 			}
 			policy = memory.ExternalContextPolicy
