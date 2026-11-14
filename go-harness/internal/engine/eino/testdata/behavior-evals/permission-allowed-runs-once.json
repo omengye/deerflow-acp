@@ -1,0 +1,48 @@
+{
+  "name": "permission-allowed-runs-once",
+  "category": "permissions",
+  "description": "An approved permission runs the effect exactly once and returns its result to the model.",
+  "permissionMode": "all",
+  "tools": [
+    {
+      "name": "send_email",
+      "results": [
+        {
+          "output": "email queued id=77"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "send_email"
+        }
+      ]
+    },
+    {
+      "text": "Sent.",
+      "expectInput": {
+        "contains": [
+          "email queued id=77"
+        ],
+        "closedHistory": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Send the report.",
+      "expect": {
+        "stopReason": "end_turn",
+        "permissions": 1
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "send_email": 1
+    }
+  }
+}

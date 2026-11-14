@@ -1,0 +1,30 @@
+{
+  "name": "transient-provider-error-retried",
+  "category": "resilience",
+  "description": "A 503 before streaming is retried with backoff and the run still completes.",
+  "tools": [],
+  "model": [
+    {
+      "error": {
+        "status": 503
+      }
+    },
+    {
+      "text": "recovered after outage"
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Hello",
+      "expect": {
+        "stopReason": "end_turn",
+        "textContains": [
+          "recovered"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "modelCalls": 2
+  }
+}

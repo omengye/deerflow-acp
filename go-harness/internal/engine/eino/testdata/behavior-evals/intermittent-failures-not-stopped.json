@@ -1,0 +1,55 @@
+{
+  "name": "intermittent-failures-not-stopped",
+  "category": "recovery",
+  "description": "Different failures followed by success are progress, not a loop.",
+  "tools": [
+    {
+      "name": "fetch",
+      "results": [
+        {
+          "error": "timeout A"
+        },
+        {
+          "error": "timeout B"
+        },
+        {
+          "error": "timeout C"
+        },
+        {
+          "output": "payload"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "fetch"
+        }
+      ],
+      "repeat": 4
+    },
+    {
+      "text": "Got the payload.",
+      "expectInput": {
+        "contains": [
+          "payload"
+        ]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Fetch it.",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "fetch": 4
+    }
+  }
+}

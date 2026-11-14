@@ -1,0 +1,66 @@
+{
+  "name": "crash-during-tool-then-continue",
+  "category": "interruption",
+  "description": "A process crash during a tool keeps completed results; after restart the user continues from them without replaying effects.",
+  "tools": [
+    {
+      "name": "migrate",
+      "results": [
+        {
+          "output": "migration 1 applied"
+        },
+        {
+          "hang": true
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "migrate"
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "migrate"
+        }
+      ]
+    },
+    {
+      "text": "Resuming after migration 1.",
+      "expectInput": {
+        "contains": [
+          "migration 1 applied"
+        ],
+        "systemContains": [
+          "stopped or failed tool calls"
+        ],
+        "closedHistory": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "action": "crashDuringTool",
+      "prompt": "Apply all migrations.",
+      "expect": {
+        "stopReason": "crashed"
+      }
+    },
+    {
+      "prompt": "continue",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "migrate": 2
+    }
+  }
+}

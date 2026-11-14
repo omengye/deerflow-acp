@@ -1,0 +1,79 @@
+{
+  "name": "budget-stop-then-continue",
+  "category": "budget",
+  "description": "After a quota stop the user can continue in a new turn with a fresh per-turn quota and the earlier results.",
+  "budget": {
+    "maxModelCalls": 3,
+    "maxToolCalls": 20
+  },
+  "tools": [
+    {
+      "name": "work",
+      "results": [
+        {
+          "output": "chunk 0"
+        },
+        {
+          "output": "chunk 1"
+        },
+        {
+          "output": "chunk 2"
+        },
+        {
+          "output": "chunk 3"
+        },
+        {
+          "output": "chunk 4"
+        },
+        {
+          "output": "chunk 5"
+        },
+        {
+          "output": "chunk 6"
+        },
+        {
+          "output": "chunk 7"
+        },
+        {
+          "output": "chunk 8"
+        },
+        {
+          "output": "chunk 9"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "work"
+        }
+      ],
+      "repeat": 3
+    },
+    {
+      "text": "Finished remaining chunks.",
+      "expectInput": {
+        "contains": [
+          "chunk 1"
+        ],
+        "closedHistory": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Process everything.",
+      "expect": {
+        "stopReason": "max_turn_requests"
+      }
+    },
+    {
+      "prompt": "continue",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    }
+  ]
+}

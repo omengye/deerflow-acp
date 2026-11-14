@@ -1,0 +1,142 @@
+{
+  "name": "distinct-progress-long-task",
+  "category": "long-task",
+  "description": "A 30-step task with distinct observations runs to completion without tripping the loop guard.",
+  "budget": {
+    "maxModelCalls": 40,
+    "maxToolCalls": 40
+  },
+  "tools": [
+    {
+      "name": "step",
+      "results": [
+        {
+          "output": "step 0 complete"
+        },
+        {
+          "output": "step 1 complete"
+        },
+        {
+          "output": "step 2 complete"
+        },
+        {
+          "output": "step 3 complete"
+        },
+        {
+          "output": "step 4 complete"
+        },
+        {
+          "output": "step 5 complete"
+        },
+        {
+          "output": "step 6 complete"
+        },
+        {
+          "output": "step 7 complete"
+        },
+        {
+          "output": "step 8 complete"
+        },
+        {
+          "output": "step 9 complete"
+        },
+        {
+          "output": "step 10 complete"
+        },
+        {
+          "output": "step 11 complete"
+        },
+        {
+          "output": "step 12 complete"
+        },
+        {
+          "output": "step 13 complete"
+        },
+        {
+          "output": "step 14 complete"
+        },
+        {
+          "output": "step 15 complete"
+        },
+        {
+          "output": "step 16 complete"
+        },
+        {
+          "output": "step 17 complete"
+        },
+        {
+          "output": "step 18 complete"
+        },
+        {
+          "output": "step 19 complete"
+        },
+        {
+          "output": "step 20 complete"
+        },
+        {
+          "output": "step 21 complete"
+        },
+        {
+          "output": "step 22 complete"
+        },
+        {
+          "output": "step 23 complete"
+        },
+        {
+          "output": "step 24 complete"
+        },
+        {
+          "output": "step 25 complete"
+        },
+        {
+          "output": "step 26 complete"
+        },
+        {
+          "output": "step 27 complete"
+        },
+        {
+          "output": "step 28 complete"
+        },
+        {
+          "output": "step 29 complete"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "step"
+        }
+      ],
+      "repeat": 30
+    },
+    {
+      "text": "All 30 steps complete.",
+      "expectInput": {
+        "contains": [
+          "step 29 complete"
+        ],
+        "closedHistory": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Run all migration steps.",
+      "expect": {
+        "stopReason": "end_turn",
+        "textContains": [
+          "30 steps"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "step": 30
+    },
+    "modelCalls": 31
+  }
+}

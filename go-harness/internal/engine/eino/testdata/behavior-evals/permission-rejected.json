@@ -1,0 +1,49 @@
+{
+  "name": "permission-rejected",
+  "category": "permissions",
+  "description": "A rejected permission prevents the effect and tells the model, which ends the turn normally.",
+  "permissionMode": "all",
+  "tools": [
+    {
+      "name": "delete_files",
+      "results": [
+        {
+          "output": "deleted"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "delete_files"
+        }
+      ]
+    },
+    {
+      "text": "I did not delete anything.",
+      "expectInput": {
+        "contains": [
+          "denied"
+        ],
+        "closedHistory": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Clean up.",
+      "permission": "reject",
+      "expect": {
+        "stopReason": "end_turn",
+        "permissions": 1
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "delete_files": 0
+    }
+  }
+}

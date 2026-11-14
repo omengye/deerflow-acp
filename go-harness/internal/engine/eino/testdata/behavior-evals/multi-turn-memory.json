@@ -1,0 +1,37 @@
+{
+  "name": "multi-turn-memory",
+  "category": "basic",
+  "description": "Earlier turns stay in context for later turns of the same session.",
+  "tools": [],
+  "model": [
+    {
+      "text": "Noted: the codename is BLUEBIRD."
+    },
+    {
+      "text": "It is BLUEBIRD.",
+      "expectInput": {
+        "contains": [
+          "BLUEBIRD",
+          "What was the codename?"
+        ]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Remember codename BLUEBIRD.",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    },
+    {
+      "prompt": "What was the codename?",
+      "expect": {
+        "stopReason": "end_turn",
+        "textContains": [
+          "BLUEBIRD"
+        ]
+      }
+    }
+  ]
+}

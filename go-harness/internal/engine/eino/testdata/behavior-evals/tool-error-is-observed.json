@@ -1,0 +1,62 @@
+{
+  "name": "tool-error-is-observed",
+  "category": "recovery",
+  "description": "A failing tool reports a host-prefixed failure to the model, which can recover in the same turn.",
+  "tools": [
+    {
+      "name": "deploy",
+      "results": [
+        {
+          "error": "connection refused"
+        },
+        {
+          "output": "deployed"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "deploy"
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "deploy"
+        }
+      ],
+      "expectInput": {
+        "contains": [
+          "Tool failed",
+          "connection refused"
+        ],
+        "closedHistory": true
+      }
+    },
+    {
+      "text": "Deployed on retry.",
+      "expectInput": {
+        "contains": [
+          "deployed"
+        ]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Deploy.",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "deploy": 2
+    }
+  }
+}

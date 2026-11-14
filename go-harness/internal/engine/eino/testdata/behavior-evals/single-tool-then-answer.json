@@ -1,0 +1,54 @@
+{
+  "name": "single-tool-then-answer",
+  "category": "basic",
+  "description": "The model reads a tool result before answering; the result reaches the next model call.",
+  "tools": [
+    {
+      "name": "lookup",
+      "results": [
+        {
+          "output": "inventory=17"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "lookup"
+        }
+      ]
+    },
+    {
+      "text": "There are 17 items.",
+      "expectInput": {
+        "contains": [
+          "inventory=17"
+        ],
+        "closedHistory": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "How many items?",
+      "expect": {
+        "stopReason": "end_turn",
+        "textContains": [
+          "17"
+        ],
+        "eventKinds": [
+          "tool_start",
+          "tool_end"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "lookup": 1
+    },
+    "modelCalls": 2
+  }
+}

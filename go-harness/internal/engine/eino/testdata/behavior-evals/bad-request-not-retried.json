@@ -1,0 +1,34 @@
+{
+  "name": "bad-request-not-retried",
+  "category": "resilience",
+  "description": "A non-transient 400 is not retried; the run fails promptly and the session stays usable.",
+  "tools": [],
+  "model": [
+    {
+      "error": {
+        "status": 400,
+        "message": "invalid tool schema"
+      }
+    },
+    {
+      "text": "fine now"
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Hi",
+      "expect": {
+        "error": "*"
+      }
+    },
+    {
+      "prompt": "Try again",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "expect": {
+    "modelCalls": 2
+  }
+}

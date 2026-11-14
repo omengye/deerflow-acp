@@ -61,6 +61,8 @@ jobs:
       - name: Verify Eino checkpoint compatibility patch
         working-directory: go-harness/third_party/eino
         run: go test -mod=readonly ./adk -run '^TestCheckpointPatch' -count=1 -timeout=2m
+      - name: Harness behavior evals (gate)
+        run: go test -mod=readonly ./internal/engine/eino -run '^TestBehaviorEval$' -count=1 -timeout=10m
       - name: Test regression runner
         shell: pwsh
         run: ../scripts/test-go-test-batches.ps1

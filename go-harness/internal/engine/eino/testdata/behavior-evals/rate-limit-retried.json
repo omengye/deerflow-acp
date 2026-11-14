@@ -1,0 +1,31 @@
+{
+  "name": "rate-limit-retried",
+  "category": "resilience",
+  "description": "A 429 rate limit before streaming is retried and the run completes.",
+  "tools": [],
+  "model": [
+    {
+      "error": {
+        "status": 429,
+        "message": "Rate limit reached"
+      }
+    },
+    {
+      "text": "ok after rate limit"
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Hi",
+      "expect": {
+        "stopReason": "end_turn",
+        "textContains": [
+          "ok after rate limit"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "modelCalls": 2
+  }
+}

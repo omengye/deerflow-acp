@@ -1,0 +1,65 @@
+{
+  "name": "small-output-stays-inline",
+  "category": "context",
+  "description": "Short results stay inline even after large outputs used up the per-call allowance.",
+  "tools": [
+    {
+      "name": "big",
+      "results": [
+        {
+          "output": "x",
+          "repeatOutput": 40000
+        }
+      ]
+    },
+    {
+      "name": "small",
+      "results": [
+        {
+          "output": "exit status 1: tiny"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "big"
+        },
+        {
+          "name": "big"
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "small"
+        }
+      ]
+    },
+    {
+      "text": "done",
+      "expectInput": {
+        "contains": [
+          "exit status 1: tiny"
+        ]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Do it.",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "big": 2,
+      "small": 1
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "name": "cancel-during-tool-then-followup",
+  "category": "interruption",
+  "description": "Cancelling a running tool closes the tool history, flags the stopped call and does not replay it on the next prompt.",
+  "tools": [
+    {
+      "name": "long_job",
+      "results": [
+        {
+          "hang": true
+        },
+        {
+          "output": "second job done"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "long_job"
+        }
+      ]
+    },
+    {
+      "text": "Started fresh.",
+      "expectInput": {
+        "systemContains": [
+          "stopped or failed tool calls"
+        ],
+        "closedHistory": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "action": "cancelDuringTool",
+      "prompt": "Run the long job.",
+      "expect": {
+        "stopReason": "cancelled"
+      }
+    },
+    {
+      "prompt": "Something else instead.",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "long_job": 1
+    }
+  }
+}

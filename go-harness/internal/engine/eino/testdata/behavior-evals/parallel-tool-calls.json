@@ -1,0 +1,59 @@
+{
+  "name": "parallel-tool-calls",
+  "category": "basic",
+  "description": "Parallel tool calls in one step all run and all results reach the model.",
+  "tools": [
+    {
+      "name": "alpha",
+      "results": [
+        {
+          "output": "alpha-result"
+        }
+      ]
+    },
+    {
+      "name": "beta",
+      "results": [
+        {
+          "output": "beta-result"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "alpha"
+        },
+        {
+          "name": "beta"
+        }
+      ]
+    },
+    {
+      "text": "combined",
+      "expectInput": {
+        "contains": [
+          "alpha-result",
+          "beta-result"
+        ],
+        "closedHistory": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Do both.",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "alpha": 1,
+      "beta": 1
+    }
+  }
+}

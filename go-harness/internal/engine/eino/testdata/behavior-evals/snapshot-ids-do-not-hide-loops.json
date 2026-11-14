@@ -1,0 +1,42 @@
+{
+  "name": "snapshot-ids-do-not-hide-loops",
+  "category": "loop-guard",
+  "description": "Oversized identical outputs are stored under fresh snapshot IDs, but the loop guard still recognises the repetition.",
+  "budget": {
+    "maxModelCalls": 60,
+    "maxToolCalls": 60
+  },
+  "tools": [
+    {
+      "name": "read_file",
+      "results": [
+        {
+          "output": "same large log line\n",
+          "repeatOutput": 2000
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "read_file"
+        }
+      ],
+      "repeat": 30,
+      "optional": true
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Check the log.",
+      "expect": {
+        "error": "identical observations"
+      }
+    }
+  ],
+  "expect": {
+    "maxModelCalls": 10
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "name": "permission-wait-then-resume",
+  "category": "permissions",
+  "description": "An unanswered permission leaves the execution waiting; resuming asks again and runs the effect exactly once.",
+  "permissionMode": "all",
+  "tools": [
+    {
+      "name": "publish",
+      "results": [
+        {
+          "output": "published v2"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "publish"
+        }
+      ]
+    },
+    {
+      "text": "Published.",
+      "expectInput": {
+        "contains": [
+          "published v2"
+        ],
+        "closedHistory": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Publish.",
+      "permission": "cancel",
+      "expect": {
+        "executionStatus": "waiting_input",
+        "permissions": 1
+      }
+    },
+    {
+      "action": "resume",
+      "permission": "allow",
+      "expect": {
+        "stopReason": "end_turn",
+        "permissions": 1
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "publish": 1
+    }
+  }
+}

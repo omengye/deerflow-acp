@@ -1,0 +1,63 @@
+{
+  "name": "permission-wait-survives-restart",
+  "category": "permissions",
+  "description": "A pending permission wait survives a process restart and can be resumed without re-running the model step that requested it.",
+  "permissionMode": "all",
+  "tools": [
+    {
+      "name": "publish",
+      "results": [
+        {
+          "output": "published after restart"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "publish"
+        }
+      ]
+    },
+    {
+      "text": "Published.",
+      "expectInput": {
+        "contains": [
+          "published after restart"
+        ],
+        "closedHistory": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Publish.",
+      "permission": "cancel",
+      "expect": {
+        "executionStatus": "waiting_input"
+      }
+    },
+    {
+      "action": "restart",
+      "expect": {
+        "executionStatus": "waiting_input"
+      }
+    },
+    {
+      "action": "resume",
+      "permission": "allow",
+      "expect": {
+        "stopReason": "end_turn",
+        "permissions": 1
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "publish": 1
+    },
+    "modelCalls": 2
+  }
+}

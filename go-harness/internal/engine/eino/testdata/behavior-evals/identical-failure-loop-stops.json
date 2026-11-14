@@ -1,0 +1,44 @@
+{
+  "name": "identical-failure-loop-stops",
+  "category": "loop-guard",
+  "description": "The same failing call with the same error is warned about and then stopped as no progress instead of burning the budget.",
+  "budget": {
+    "maxModelCalls": 60,
+    "maxToolCalls": 60
+  },
+  "tools": [
+    {
+      "name": "make",
+      "results": [
+        {
+          "error": "exit status 2: same compiler error"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "make"
+        }
+      ],
+      "repeat": 30,
+      "optional": true
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Build until it passes.",
+      "expect": {
+        "error": "identical observations",
+        "eventKinds": [
+          "no_progress"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "maxModelCalls": 14
+  }
+}

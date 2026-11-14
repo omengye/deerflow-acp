@@ -1,0 +1,61 @@
+{
+  "name": "context-overflow-compacts-and-retries",
+  "category": "context",
+  "description": "A provider context-length rejection triggers compaction and a single retry instead of failing the long conversation.",
+  "compaction": {
+    "enabled": true,
+    "contextMessages": 1000,
+    "contextTokens": 1000000,
+    "keepRecentMessages": 1
+  },
+  "tools": [],
+  "model": [
+    {
+      "text": "first answer"
+    },
+    {
+      "text": "second answer"
+    },
+    {
+      "error": {
+        "status": 400,
+        "code": "context_length_exceeded",
+        "message": "This model's maximum context length is 128000 tokens"
+      }
+    },
+    {
+      "text": "third answer",
+      "expectInput": {
+        "contains": [
+          "<conversation_summary>"
+        ]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "first request",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    },
+    {
+      "prompt": "second request",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    },
+    {
+      "prompt": "third request",
+      "expect": {
+        "stopReason": "end_turn",
+        "textContains": [
+          "third answer"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "summaries": 1
+  }
+}

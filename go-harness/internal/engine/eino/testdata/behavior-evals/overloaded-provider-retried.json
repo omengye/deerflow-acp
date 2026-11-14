@@ -1,0 +1,30 @@
+{
+  "name": "overloaded-provider-retried",
+  "category": "resilience",
+  "description": "A 529 overloaded response is treated as transient and retried.",
+  "tools": [],
+  "model": [
+    {
+      "error": {
+        "status": 529
+      }
+    },
+    {
+      "text": "ok after overload"
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Hi",
+      "expect": {
+        "stopReason": "end_turn",
+        "textContains": [
+          "ok after overload"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "modelCalls": 2
+  }
+}

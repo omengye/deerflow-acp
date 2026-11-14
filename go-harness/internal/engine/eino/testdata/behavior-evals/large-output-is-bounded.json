@@ -1,0 +1,48 @@
+{
+  "name": "large-output-is-bounded",
+  "category": "context",
+  "description": "A huge tool result reaches the model as a bounded preview with a snapshot reference, not inline.",
+  "tools": [
+    {
+      "name": "cat",
+      "results": [
+        {
+          "output": "0123456789abcdef",
+          "repeatOutput": 20000
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "cat"
+        }
+      ]
+    },
+    {
+      "text": "Summarised the file.",
+      "expectInput": {
+        "contains": [
+          "[Tool output:",
+          "read_tool_output"
+        ],
+        "maxBytes": 20000
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Read the big file.",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "cat": 1
+    }
+  }
+}

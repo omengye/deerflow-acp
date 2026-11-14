@@ -1,0 +1,58 @@
+{
+  "name": "failed-run-keeps-progress",
+  "category": "resilience",
+  "description": "A non-retryable provider failure after tool work keeps the completed tool result for the follow-up without re-running it.",
+  "tools": [
+    {
+      "name": "build",
+      "results": [
+        {
+          "output": "build-step-1-done"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "build"
+        }
+      ]
+    },
+    {
+      "error": {
+        "status": 400,
+        "message": "unrecoverable request"
+      }
+    },
+    {
+      "text": "Continuing from step 1.",
+      "expectInput": {
+        "contains": [
+          "build-step-1-done"
+        ],
+        "closedHistory": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Run the long build.",
+      "expect": {
+        "error": "*"
+      }
+    },
+    {
+      "prompt": "continue",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "build": 1
+    }
+  }
+}

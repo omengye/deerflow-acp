@@ -1,0 +1,41 @@
+{
+  "name": "unknown-tool-is-reported",
+  "category": "recovery",
+  "description": "A call to a tool that does not exist is reported back to the model instead of failing the run.",
+  "tools": [
+    {
+      "name": "real",
+      "results": [
+        {
+          "output": "real-output"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "imaginary_tool"
+        }
+      ]
+    },
+    {
+      "text": "That tool does not exist; answering directly.",
+      "optional": false
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Use the tool.",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "expect": {
+    "toolRuns": {
+      "real": 0
+    }
+  }
+}

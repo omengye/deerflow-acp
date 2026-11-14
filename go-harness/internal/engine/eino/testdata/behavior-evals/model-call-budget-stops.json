@@ -1,0 +1,68 @@
+{
+  "name": "model-call-budget-stops",
+  "category": "budget",
+  "description": "Exhausting the model-call quota stops the turn with a quota stop reason.",
+  "budget": {
+    "maxModelCalls": 3,
+    "maxToolCalls": 20
+  },
+  "tools": [
+    {
+      "name": "work",
+      "results": [
+        {
+          "output": "chunk 0"
+        },
+        {
+          "output": "chunk 1"
+        },
+        {
+          "output": "chunk 2"
+        },
+        {
+          "output": "chunk 3"
+        },
+        {
+          "output": "chunk 4"
+        },
+        {
+          "output": "chunk 5"
+        },
+        {
+          "output": "chunk 6"
+        },
+        {
+          "output": "chunk 7"
+        },
+        {
+          "output": "chunk 8"
+        },
+        {
+          "output": "chunk 9"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "work"
+        }
+      ],
+      "repeat": 10,
+      "optional": true
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Process everything.",
+      "expect": {
+        "stopReason": "max_turn_requests"
+      }
+    }
+  ],
+  "expect": {
+    "maxModelCalls": 3
+  }
+}

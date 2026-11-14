@@ -1,0 +1,56 @@
+{
+  "name": "followup-after-loop-stop",
+  "category": "loop-guard",
+  "description": "After the loop guard stops a run, the next instruction starts cleanly with the failed observations still visible.",
+  "budget": {
+    "maxModelCalls": 60,
+    "maxToolCalls": 60
+  },
+  "tools": [
+    {
+      "name": "make",
+      "results": [
+        {
+          "error": "exit status 2: same compiler error"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "make"
+        }
+      ],
+      "repeat": 30,
+      "optional": true,
+      "turn": 0
+    },
+    {
+      "turn": 1,
+      "text": "The build keeps failing with the same compiler error; here is the fix.",
+      "expectInput": {
+        "contains": [
+          "same compiler error",
+          "Try a different approach."
+        ],
+        "closedHistory": true
+      }
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Build until it passes.",
+      "expect": {
+        "error": "identical observations"
+      }
+    },
+    {
+      "prompt": "Try a different approach.",
+      "expect": {
+        "stopReason": "end_turn"
+      }
+    }
+  ]
+}

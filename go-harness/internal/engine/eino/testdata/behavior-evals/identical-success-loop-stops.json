@@ -1,0 +1,44 @@
+{
+  "name": "identical-success-loop-stops",
+  "category": "loop-guard",
+  "description": "Repeating an identical successful read-only observation is warned about and stopped; unknown tools that may mutate state are left to the budget.",
+  "budget": {
+    "maxModelCalls": 60,
+    "maxToolCalls": 60
+  },
+  "tools": [
+    {
+      "name": "web_fetch",
+      "results": [
+        {
+          "output": "still pending"
+        }
+      ]
+    }
+  ],
+  "model": [
+    {
+      "toolCalls": [
+        {
+          "name": "web_fetch"
+        }
+      ],
+      "repeat": 30,
+      "optional": true
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "Wait for it.",
+      "expect": {
+        "error": "identical observations",
+        "eventKinds": [
+          "no_progress"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "maxModelCalls": 10
+  }
+}

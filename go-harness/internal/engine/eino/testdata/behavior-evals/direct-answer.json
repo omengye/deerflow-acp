@@ -1,0 +1,25 @@
+{
+  "name": "direct-answer",
+  "category": "basic",
+  "description": "A question with no tool use streams the answer and ends the turn.",
+  "tools": [],
+  "model": [
+    {
+      "text": "The answer is 42."
+    }
+  ],
+  "turns": [
+    {
+      "prompt": "What is the answer?",
+      "expect": {
+        "stopReason": "end_turn",
+        "textContains": [
+          "42"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "modelCalls": 1
+  }
+}
