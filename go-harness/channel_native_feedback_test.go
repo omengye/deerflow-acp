@@ -138,6 +138,10 @@ func putFeedbackMessage(t *testing.T, dir string, n int, text string) {
 	}
 }
 
+// feedbackWaitTimeout bounds waits that include starting the plugin process (a
+// copy of the large test binary) and is generous for loaded CI machines.
+const feedbackWaitTimeout = 30 * time.Second
+
 func waitFeedbackFile(t *testing.T, dir, pattern string, check func([]byte) bool) []byte {
 	t.Helper()
 	body, err := awaitFeedbackFile(t.Context(), dir, pattern, check)
@@ -148,7 +152,7 @@ func waitFeedbackFile(t *testing.T, dir, pattern string, check func([]byte) bool
 }
 
 func awaitFeedbackFile(ctx context.Context, dir, pattern string, check func([]byte) bool) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, feedbackWaitTimeout)
 	defer cancel()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -164,6 +168,30 @@ func awaitFeedbackFile(ctx context.Context, dir, pattern string, check func([]by
 		case <-ctx.Done():
 			return nil, fmt.Errorf("waiting for %s: %w", pattern, ctx.Err())
 		case <-ticker.C:
+		}
+	}
+}
+
+// awaitTypingStarts waits until n feedback processes have shown typing, one per
+// started run.
+func awaitTypingStarts(ctx context.Context, dir string, n int) error {
+	ctx, cancel := context.WithTimeout(ctx, feedbackWaitTimeout)
+	defer cancel()
+	for {
+		paths, _ := filepath.Glob(filepath.Join(dir, "typing-*.json"))
+		started := 0
+		for _, path := range paths {
+			if body, err := os.ReadFile(path); err == nil && strings.Contains(string(body), `"active":true`) {
+				started++
+			}
+		}
+		if started >= n {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for %d typing starts: %w", n, ctx.Err())
+		case <-time.After(10 * time.Millisecond):
 		}
 	}
 }
@@ -271,7 +299,13 @@ func TestChannelNativeFeedbackOnPermissionWaitAndResume(t *testing.T) {
 	}))
 	defer target.Close()
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		modelCalls.Add(1)
+		// A real model call outlasts the per-run feedback process start. The
+		// instant fixture must not finish (or reach the permission wait) before
+		// that process is up, or native progress correctly degrades to the
+		// text summary and the native assertions below race process startup.
+		if err := awaitTypingStarts(r.Context(), dir, int(modelCalls.Add(1))); err != nil {
+			t.Error(err)
+		}
 		var req struct {
 			Stream   bool
 			Messages []struct{ Role string }
