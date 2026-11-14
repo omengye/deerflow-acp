@@ -153,7 +153,7 @@ func TestResponsesSelectedRouteEngineToolRoundTripUsesProxy(t *testing.T) {
 	}
 }
 
-func TestResponsesRootEngineDoesNotRetryProviderServerErrors(t *testing.T) {
+func TestResponsesRootEngineRetriesProviderServerErrorsWithinBudget(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -165,11 +165,13 @@ func TestResponsesRootEngineDoesNotRetryProviderServerErrors(t *testing.T) {
 		fmt.Fprint(w, `{"error":{"type":"server_error","message":"fixture unavailable"}}`)
 	}))
 	defer server.Close()
-	e := newTestEngine(t, Config{Provider: "openai", API: harness.ModelAPIResponses, Model: "responses-model", BaseURL: server.URL + "/v1", APIKey: "fixture-key", Budget: harness.BudgetLimits{MaxOutputTokens: 64, MaxModelCalls: 4}})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// A 503 before any stream opens is retried with backoff, but every attempt
+	// is a charged model call: the run budget still bounds the retries.
+	e := newTestEngine(t, Config{Provider: "openai", API: harness.ModelAPIResponses, Model: "responses-model", BaseURL: server.URL + "/v1", APIKey: "fixture-key", Budget: harness.BudgetLimits{MaxOutputTokens: 64, MaxModelCalls: 2}})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err := e.Run(ctx, request("responses-server-failure"), nil, nil)
-	if err == nil || requests.Load() != 1 {
-		t.Fatalf("Responses server failure was hidden or automatically retried: err=%v requests=%d", err, requests.Load())
+	result, err := e.Run(ctx, request("responses-server-failure"), nil, nil)
+	if requests.Load() != 2 || ctx.Err() != nil || err == nil && result.Limit == "" {
+		t.Fatalf("server failure was not retried within budget: result=%+v err=%v requests=%d", result, err, requests.Load())
 	}
 }

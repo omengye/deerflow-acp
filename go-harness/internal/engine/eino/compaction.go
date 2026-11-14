@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -56,9 +58,15 @@ func newCompactionMiddleware(ctx context.Context, c harness.CompactionConfig, tr
 		ModelOptions:    []model.Option{model.WithMaxTokens(4096)},
 		UserInstruction: compactionInstruction,
 		Trigger:         &summarization.TriggerCondition{ContextMessages: c.ContextMessages, ContextTokens: c.ContextTokens},
-		TokenCounter: func(_ context.Context, input *summarization.TokenCounterInput) (int, error) {
+		TokenCounter: func(ctx context.Context, input *summarization.TokenCounterInput) (int, error) {
+			if forcedCompaction(ctx) {
+				return math.MaxInt32, nil
+			}
 			tokens, err := estimateModelTokens(input.Messages, input.Tools)
-			return int(tokens), err
+			if err != nil {
+				return 0, err
+			}
+			return int(float64(tokens) * contextEstimateScale(ctx)), nil
 		},
 		Finalize: func(_ context.Context, original []*schema.Message, summary *schema.Message) ([]*schema.Message, error) {
 			return finalizeCompaction(original, summary, c.KeepRecentMessages)
@@ -85,6 +93,62 @@ func (m *guardedCompaction) BeforeModelRewriteState(ctx context.Context, state *
 		return ctx, state, nil
 	}
 	return m.ChatModelAgentMiddleware.BeforeModelRewriteState(ctx, state, modelCtx)
+}
+
+type forceCompactionKey struct{}
+
+func forcedCompaction(ctx context.Context) bool {
+	forced, _ := ctx.Value(forceCompactionKey{}).(bool)
+	return forced
+}
+
+// After a provider rejects an input that the local estimate accepted, later
+// trigger checks in the same run scale estimates up so compaction starts
+// earlier. The scale is run-local and bounded.
+const contextEstimateScaleKey = "deerflow_context_estimate_scale_v1"
+
+func contextEstimateScale(ctx context.Context) float64 {
+	value, ok, err := adk.GetRunLocalValue(ctx, contextEstimateScaleKey)
+	if err != nil || !ok {
+		return 1
+	}
+	text, _ := value.(string)
+	scale, err := strconv.ParseFloat(text, 64)
+	if err != nil || scale < 1 || scale > 2 {
+		return 1
+	}
+	return scale
+}
+
+// recoverContextOverflow summarizes older history immediately after the
+// provider rejected a request as too long. It returns false when no older
+// history can be summarized, so the original context-limit error stands.
+func recoverContextOverflow(ctx context.Context, compaction adk.ChatModelAgentMiddleware, input []*schema.Message, tools, deferred []*schema.ToolInfo) ([]*schema.Message, bool, error) {
+	if compaction == nil {
+		return nil, false, nil
+	}
+	if _, err := finalizeCompaction(input, schema.AssistantMessage("compaction eligibility", nil), keepRecent(compaction)); err != nil {
+		return nil, false, nil
+	}
+	// Run-local values are checkpointed; keep the same plain-string encoding
+	// as the progress guard.
+	_ = adk.SetRunLocalValue(ctx, contextEstimateScaleKey, strconv.FormatFloat(min(2, contextEstimateScale(ctx)*1.25), 'f', 4, 64))
+	forced := context.WithValue(ctx, forceCompactionKey{}, true)
+	_, state, err := compaction.BeforeModelRewriteState(forced, &adk.ChatModelAgentState{Messages: input, ToolInfos: tools, DeferredToolInfos: deferred}, &adk.ModelContext{Tools: tools})
+	if err != nil {
+		return nil, false, err
+	}
+	if state == nil || len(state.Messages) >= len(input) {
+		return nil, false, nil
+	}
+	return state.Messages, true, nil
+}
+
+func keepRecent(compaction adk.ChatModelAgentMiddleware) int {
+	if guarded, ok := compaction.(*guardedCompaction); ok {
+		return guarded.keep
+	}
+	return 8
 }
 
 func finalizeCompaction(original []*schema.Message, summary *schema.Message, keep int) ([]*schema.Message, error) {
@@ -157,8 +221,24 @@ func finalizeCompaction(original []*schema.Message, summary *schema.Message, kee
 				return nil, err
 			}
 		}
-		if len(recent) > maxRetainedBytes {
-			return nil, errors.New("context limit: active conversation exceeds the safe recent window")
+		// Still too large: the summary already covers every message, so retain a
+		// shorter recent window instead of failing the task. Drop whole leading
+		// messages, never starting on an orphaned tool result, and keep the active
+		// user request separately below.
+		for len(recent) > maxRetainedBytes {
+			next := 1
+			for next < len(recentMessages) && recentMessages[next].Role == schema.Tool {
+				next++
+			}
+			if next >= len(recentMessages) {
+				return nil, errors.New("context limit: active conversation exceeds the safe recent window")
+			}
+			recentMessages = recentMessages[next:]
+			start += next
+			recent, err = json.Marshal(recentMessages)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	skills := preserveSkillEvidence(original[systemEnd:start])

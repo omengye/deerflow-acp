@@ -3,9 +3,11 @@ package eino
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	openaiapi "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
 	einosession "github.com/cloudwego/eino/adk/session"
 	"github.com/cloudwego/eino/components/tool"
@@ -216,4 +218,49 @@ func TestCompactionFailurePreservesNativeHistory(t *testing.T) {
 			t.Fatal("failed summary replaced native history")
 		}
 	}
+}
+
+func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
+	store := einosession.NewInMemoryStore[*schema.Message](nil)
+	summaries, rejected := 0, 0
+	model := &scriptedModel{stream: func(_ context.Context, _ int, messages []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
+		if len(messages) > 0 && (strings.Contains(messages[0].Content, "tasked with summarizing conversations") || strings.Contains(messages[0].Content, "负责总结对话")) {
+			summaries++
+			return textStream("Earlier requests were answered."), nil
+		}
+		summarized, third := false, false
+		for _, message := range messages {
+			summarized = summarized || strings.Contains(message.Content, "<conversation_summary>")
+			third = third || message.Content == "third request"
+		}
+		if third && !summarized {
+			rejected++
+			return nil, fmt.Errorf("%w: %w", harness.ErrContextLimit, &openaiapi.APIError{HTTPStatusCode: 400, Code: "context_length_exceeded"})
+		}
+		return textStream("answer"), nil
+	}}
+	// Thresholds are far above the fixture size: only the provider rejection
+	// can trigger this compaction.
+	engine := newTestEngine(t, Config{ChatModel: model, SessionStore: store, Budget: harness.DefaultBudgetLimits(), Compaction: harness.CompactionConfig{Enabled: true, ContextMessages: 1000, ContextTokens: 1_000_000, KeepRecentMessages: 1}})
+	for i, prompt := range []string{"first request", "second request", "third request"} {
+		req := request(string(rune('a' + i)))
+		req.Input[0].Text = prompt
+		result, err := engine.Run(context.Background(), req, nil, nil)
+		if err != nil || result.StopReason != "end_turn" {
+			t.Fatalf("turn %d: result=%+v err=%v", i, result, err)
+		}
+	}
+	if rejected != 1 || summaries != 1 {
+		t.Fatalf("rejected=%d summaries=%d", rejected, summaries)
+	}
+	events, err := store.LoadEvents(context.Background(), "test-session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events.Events {
+		if event.Kind == adk.SessionEventMessagesReplaced {
+			return
+		}
+	}
+	t.Fatal("overflow compaction was not persisted to the session")
 }

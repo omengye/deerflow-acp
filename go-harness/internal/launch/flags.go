@@ -31,8 +31,8 @@ func RuntimeFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
 	})
 	budget := harness.DefaultBudgetLimits()
 	cfg.Budget = &budget
-	flags.IntVar(&budget.MaxModelCalls, "max-model-calls", budget.MaxModelCalls, "model calls across main and child agents; 0 disables")
-	flags.IntVar(&budget.MaxToolCalls, "max-tool-calls", budget.MaxToolCalls, "tool calls across main and child agents; 0 disables")
+	flags.IntVar(&budget.MaxModelCalls, "max-model-calls", budget.MaxModelCalls, "model calls across main and child agents; 0 uses the long-task safety checkpoint (4000)")
+	flags.IntVar(&budget.MaxToolCalls, "max-tool-calls", budget.MaxToolCalls, "tool calls across main and child agents; 0 uses the long-task safety checkpoint (12000)")
 	flags.Int64Var(&budget.MaxTokens, "max-tokens", budget.MaxTokens, "aggregate run token budget, estimated until provider usage arrives; 0 disables")
 	flags.IntVar(&budget.MaxOutputTokens, "max-output-tokens", budget.MaxOutputTokens, "output token cap per model request; 0 disables")
 	flags.Func("output-token-parameter", "default route output limit field: auto, max_tokens, or max_completion_tokens", func(value string) error {
@@ -77,4 +77,17 @@ func RuntimeFlags(flags *flag.FlagSet, cfg *deerflow.Config) {
 		cfg.ACPAgents = agents
 		return nil
 	})
+}
+
+// ApplyLongTaskSafety runs after flags and configuration are resolved. A zero
+// model/tool call quota no longer means "unbounded" for the local executables:
+// it selects the long-task safety checkpoint so a runaway loop cannot spend
+// without limit. Set a larger positive value to raise it.
+func ApplyLongTaskSafety(cfg *deerflow.Config) {
+	limits := harness.DefaultBudgetLimits()
+	if cfg.Budget != nil {
+		limits = *cfg.Budget
+	}
+	limits = limits.WithLongTaskSafety()
+	cfg.Budget = &limits
 }

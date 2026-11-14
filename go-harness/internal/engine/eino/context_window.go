@@ -7,23 +7,60 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	openaiapi "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	openaisdk "github.com/meguminnnnnnnnn/go-openai"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
 func classifyModelContextError(err error) error {
-	var api *openaiapi.APIError
-	if errors.Is(err, harness.ErrContextLimit) || !errors.As(err, &api) || api.HTTPStatusCode != 400 {
+	if err == nil || errors.Is(err, harness.ErrContextLimit) || !providerContextOverflow(err) {
 		return err
 	}
-	code, _ := api.Code.(string)
-	message := strings.ToLower(strings.TrimSpace(api.Message))
-	if code == "context_length_exceeded" || strings.HasPrefix(message, "the input token count exceeds the maximum number of tokens allowed") || strings.HasPrefix(message, "this model's maximum context length is") {
-		return fmt.Errorf("%w: %w", harness.ErrContextLimit, err)
+	return fmt.Errorf("%w: %w", harness.ErrContextLimit, err)
+}
+
+// providerContextOverflow recognizes a provider's explicit "input too long"
+// rejection. Only HTTP 400 responses qualify; other failures keep their class.
+func providerContextOverflow(err error) bool {
+	var api *openaiapi.APIError
+	if errors.As(err, &api) && api.HTTPStatusCode == 400 {
+		code, _ := api.Code.(string)
+		if code == "context_length_exceeded" || contextOverflowMessage(api.Message) {
+			return true
+		}
 	}
-	return err
+	var request *openaisdk.RequestError
+	if errors.As(err, &request) && request.HTTPStatusCode == 400 {
+		if contextOverflowMessage(string(request.Body)) || request.Err != nil && contextOverflowMessage(request.Err.Error()) {
+			return true
+		}
+	}
+	var claude *anthropic.Error
+	if errors.As(err, &claude) && claude.StatusCode == 400 && contextOverflowMessage(claude.RawJSON()) {
+		return true
+	}
+	return false
+}
+
+func contextOverflowMessage(message string) bool {
+	message = strings.ToLower(message)
+	for _, marker := range []string{
+		"context_length_exceeded",
+		"the input token count exceeds the maximum number of tokens allowed",
+		"this model's maximum context length is",
+		"prompt is too long",
+		"exceed context limit",
+		"exceeds the context window",
+		"maximum context length",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Estimates remain estimates; reported provider usage is authoritative at settlement.

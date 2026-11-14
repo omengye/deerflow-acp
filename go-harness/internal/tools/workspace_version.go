@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -28,6 +29,51 @@ func readVersionedFile(ctx context.Context, root *os.Root, path string) (string,
 		Version string `json:"version"`
 		Content string `json:"content"`
 	}{fileVersion(content), content})
+}
+
+const maxRangedFileBytes = 8 << 20
+const defaultReadLines = 400
+const maxReadRangeBytes = 256 << 10
+
+// readVersionedFileRange returns a line range. The version still identifies the
+// complete file, so a ranged read can authorize a later write or edit.
+func readVersionedFileRange(ctx context.Context, root *os.Root, path string, offset, limit int) (string, error) {
+	if offset < 0 || limit < 0 {
+		return "", errors.New("offset and limit must not be negative")
+	}
+	if offset == 0 {
+		offset = 1
+	}
+	if limit == 0 {
+		limit = defaultReadLines
+	}
+	content, err := readRootFileLimit(ctx, root, path, maxRangedFileBytes)
+	if err != nil {
+		return "", err
+	}
+	lines := strings.SplitAfter(content, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	result := struct {
+		Version    string `json:"version"`
+		StartLine  int    `json:"startLine"`
+		EndLine    int    `json:"endLine"`
+		TotalLines int    `json:"totalLines"`
+		Truncated  bool   `json:"truncated,omitempty"`
+		Content    string `json:"content"`
+	}{Version: fileVersion(content), StartLine: offset, EndLine: offset - 1, TotalLines: len(lines)}
+	var b strings.Builder
+	for i := offset - 1; i >= 0 && i < len(lines) && i < offset-1+limit; i++ {
+		if b.Len()+len(lines[i]) > maxReadRangeBytes {
+			result.Truncated = true
+			break
+		}
+		b.WriteString(lines[i])
+		result.EndLine = i + 1
+	}
+	result.Content = b.String()
+	return marshalString(result)
 }
 
 // An omitted version means create-only, never an unconditional overwrite.

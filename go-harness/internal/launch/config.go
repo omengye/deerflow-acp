@@ -454,7 +454,7 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 			continue
 		}
 		if *limit.value < 0 {
-			return result, fmt.Errorf("local_acp.%s must not be negative; 0 disables the limit", limit.name)
+			return result, fmt.Errorf("local_acp.%s must not be negative; 0 uses the long-task safety checkpoint", limit.name)
 		}
 		if explicit[limit.flag] {
 			continue

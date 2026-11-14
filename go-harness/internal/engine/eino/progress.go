@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/cloudwego/eino/adk"
@@ -62,7 +63,7 @@ func (*progressGuard) BeforeModelRewriteState(ctx context.Context, state *adk.Ch
 		return ctx, state, err
 	}
 	advanceProgress(&s, state.Messages)
-	stop := repeatedCycles(s.Recent) >= 5 && s.Warned && !hasRecoveryObservations(s)
+	stop := shouldStopWithoutProgress(s)
 	s.Warned = s.Warning != ""
 	encoded, err := json.Marshal(s)
 	if err == nil {
@@ -115,7 +116,7 @@ func advanceProgress(s *progressState, messages []*schema.Message) {
 			continue
 		}
 		// Successful mutations/commands may change state despite returning "OK".
-		failed := strings.Contains(m.Content, "Tool failed:") || strings.HasPrefix(m.Content, "Tool permission denied;")
+		failed := failedToolObservation(m.Content)
 		eligible := failed
 		switch m.ToolName {
 		case "read_file", "search_files", "web_search", "web_fetch", "glob", "grep", "ls", "list_directory", "history_search":
@@ -129,7 +130,7 @@ func advanceProgress(s *progressState, messages []*schema.Message) {
 			s.Warned = false
 			continue
 		}
-		b, _ := json.Marshal([]string{m.ToolName, arguments, m.Content})
+		b, _ := json.Marshal([]string{m.ToolName, arguments, stableObservation(m.Content)})
 		s.Recent = append(s.Recent, fmt.Sprintf("%x", sha256.Sum256(b)))
 		s.Failures = append(s.Failures, failed)
 		if len(s.Recent) > 20 {
@@ -140,14 +141,54 @@ func advanceProgress(s *progressState, messages []*schema.Message) {
 		}
 		if repeatedCycles(s.Recent) >= 3 {
 			s.Warning = "Progress warning: the same tool calls and observations are repeating without new evidence. Assess whether another attempt is useful, change the approach, ask for necessary information, or clearly explain the blocker. Inspect possible partial effects before repeating a mutation."
-			if !hasRecoveryObservations(*s) {
-				s.Warning += " Continued identical observations will stop this run as incomplete."
-			}
+			s.Warning += " Continued identical observations will stop this run as incomplete."
 		} else {
 			s.Warning = ""
 			s.Warned = false
 		}
 	}
+}
+
+// Identical successful observations stop after five cycles. Identical failures
+// get more room for deliberate recovery (for example waiting for a service),
+// but an unchanged failing call can no longer loop without bound.
+const (
+	noProgressStopCycles       = 5
+	failedNoProgressStopCycles = 8
+)
+
+func shouldStopWithoutProgress(s progressState) bool {
+	if !s.Warned {
+		return false
+	}
+	cycles := repeatedCycles(s.Recent)
+	if hasRecoveryObservations(s) {
+		return cycles >= failedNoProgressStopCycles
+	}
+	return cycles >= noProgressStopCycles
+}
+
+// failedToolObservation recognizes host-written failure text, including a
+// failure whose oversized text was replaced by a snapshot marker and preview.
+// Tool content that merely mentions the phrase is not a failure.
+func failedToolObservation(content string) bool {
+	if strings.HasPrefix(content, "[Tool output:") {
+		_, content, _ = strings.Cut(content, "\n")
+	}
+	return strings.HasPrefix(content, "Tool failed:") || strings.HasPrefix(content, "Tool permission denied;")
+}
+
+// Snapshot references are random per stored output. Remove them so repeated
+// identical oversized observations still compare equal; the byte count and
+// preview remain part of the observation.
+var toolOutputSnapshotID = regexp.MustCompile(`session snapshot "[^"]*"|id="[^"]*"`)
+
+func stableObservation(content string) string {
+	if !strings.HasPrefix(content, "[Tool output:") {
+		return content
+	}
+	line, rest, _ := strings.Cut(content, "\n")
+	return toolOutputSnapshotID.ReplaceAllString(line, "") + "\n" + rest
 }
 
 func hasRecoveryObservations(s progressState) bool {

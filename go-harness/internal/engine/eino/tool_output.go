@@ -6,13 +6,31 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 )
 
 const maxInlineToolOutput = 8 << 10
 const toolOutputHead = 3 << 10
 const toolOutputTail = 1 << 10
+
+// maxInlineRunToolOutput bounds inline tool text added between two model
+// calls. It is replenished before each model request: compaction, not a
+// whole-run allowance, governs long-run context growth. A per-run allowance
+// would hide every later result behind a snapshot in multi-hour tasks.
 const maxInlineRunToolOutput = 16 << 10
+
+// Short results, including most failure messages, always stay inline so the
+// model never needs an extra read_tool_output call just to see "ok" or an error.
+const alwaysInlineToolOutput = 2 << 10
+
+// Preview retained after the inline allowance is spent.
+const exhaustedPreviewHead = 1 << 10
+const exhaustedPreviewTail = 512
+
+// Matches the asset store's snapshot cap. Larger output is truncated instead of
+// failing the whole execution.
+const maxToolOutputSnapshot = 4 << 20
 
 func (m *toolMiddleware) reserveInlineToolOutput(n int) bool {
 	m.outputMu.Lock()
@@ -24,6 +42,21 @@ func (m *toolMiddleware) reserveInlineToolOutput(n int) bool {
 	return true
 }
 
+func (m *toolMiddleware) chargeInlineToolOutput(n int) {
+	m.outputMu.Lock()
+	m.outputBytes += n
+	m.outputMu.Unlock()
+}
+
+// BeforeModelRewriteState replenishes the inline allowance for the tool
+// results produced after this model request.
+func (m *toolMiddleware) BeforeModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, _ *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
+	m.outputMu.Lock()
+	m.outputBytes = 0
+	m.outputMu.Unlock()
+	return ctx, state, nil
+}
+
 // modelToolOutput keeps a complete, private snapshot before replacing an
 // oversized result in the native model history. Durable tool events and
 // receipts retain the original result; only the next model input is bounded.
@@ -31,26 +64,51 @@ func (m *toolMiddleware) modelToolOutput(ctx context.Context, output string) (st
 	if m.outputs == nil {
 		return output, nil
 	}
+	output = strings.ToValidUTF8(output, "\uFFFD")
+	if len(output) <= alwaysInlineToolOutput {
+		m.chargeInlineToolOutput(len(output))
+		return output, nil
+	}
 	if len(output) <= maxInlineToolOutput && m.reserveInlineToolOutput(len(output)) {
 		return output, nil
 	}
-	ref, err := m.outputs.StoreToolOutput(ctx, m.sink.request.Session, output)
+	stored, dropped := output, 0
+	if len(stored) > maxToolOutputSnapshot {
+		end := maxToolOutputSnapshot
+		for end > 0 && !utf8.RuneStart(stored[end]) {
+			end--
+		}
+		stored, dropped = stored[:end], len(output)-end
+	}
+	ref, err := m.outputs.StoreToolOutput(ctx, m.sink.request.Session, stored)
 	if err != nil {
 		return "", fmt.Errorf("store complete tool output: %w", err)
 	}
 	marker := fmt.Sprintf("[Tool output: %d UTF-8 bytes; session snapshot %q. Read with read_tool_output using id=%q and offset=0.]", len(output), ref.ID, ref.ID)
-	if len(output) <= maxInlineToolOutput || !m.reserveInlineToolOutput(toolOutputHead+toolOutputTail) {
-		return marker, nil
+	if dropped > 0 {
+		marker = fmt.Sprintf("[Tool output: %d UTF-8 bytes; session snapshot %q keeps only the first %d bytes, the last %d bytes were dropped. Read with read_tool_output using id=%q and offset=0.]", len(output), ref.ID, len(stored), dropped, ref.ID)
 	}
-	headEnd := toolOutputHead
+	head, tail := toolOutputHead, toolOutputTail
+	if !m.reserveInlineToolOutput(head + tail) {
+		head, tail = exhaustedPreviewHead, exhaustedPreviewTail
+		m.chargeInlineToolOutput(head + tail)
+	}
+	return marker + "\n" + previewToolOutput(output, head, tail), nil
+}
+
+func previewToolOutput(output string, head, tail int) string {
+	if len(output) <= head+tail {
+		return output
+	}
+	headEnd := head
 	for headEnd > 0 && !utf8.RuneStart(output[headEnd]) {
 		headEnd--
 	}
-	tailStart := len(output) - toolOutputTail
+	tailStart := len(output) - tail
 	for tailStart < len(output) && !utf8.RuneStart(output[tailStart]) {
 		tailStart++
 	}
-	return fmt.Sprintf("%s\n%s\n[... %d bytes omitted ...]\n%s", marker, output[:headEnd], tailStart-headEnd, output[tailStart:]), nil
+	return fmt.Sprintf("%s\n[... %d bytes omitted ...]\n%s", output[:headEnd], tailStart-headEnd, output[tailStart:])
 }
 
 // modelEnhancedToolOutput applies the same bound to text from enhanced MCP

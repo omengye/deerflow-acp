@@ -11,6 +11,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
 const maxOutputContinuations = 4
@@ -107,6 +108,20 @@ func outputContinuationPolicy(compaction adk.ChatModelAgentMiddleware) *adk.Mode
 		MaxRetries:  maxOutputContinuations,
 		BackoffFunc: func(context.Context, int) time.Duration { return 0 },
 		ShouldRetry: func(ctx context.Context, attempt *adk.RetryContext) *adk.RetryDecision {
+			// The provider (or window preflight) rejected the whole request before
+			// any output: nothing was streamed or executed, so summarize older
+			// history once and resend instead of ending the session's usefulness.
+			if attempt.Err != nil && attempt.OutputMessage == nil && attempt.RetryAttempt == 1 && errors.Is(attempt.Err, harness.ErrContextLimit) && ctx.Err() == nil {
+				common := model.GetCommonOptions(nil, attempt.Options...)
+				input, recovered, err := recoverContextOverflow(ctx, compaction, attempt.InputMessages, common.Tools, common.DeferredTools)
+				if err != nil {
+					return &adk.RetryDecision{RewriteError: errors.Join(attempt.Err, err)}
+				}
+				if recovered {
+					return &adk.RetryDecision{Retry: true, ModifiedInputMessages: input, PersistModifiedInputMessages: true, Backoff: time.Millisecond, RejectReason: "Older history was summarized after the model rejected an over-long request."}
+				}
+				return nil
+			}
 			if attempt.Err != nil || !outputExhausted(attempt.OutputMessage) {
 				return nil // Never guess from punctuation, or replay failed provider I/O.
 			}

@@ -26,3 +26,28 @@ type BudgetLimits struct {
 func DefaultBudgetLimits() BudgetLimits {
 	return BudgetLimits{MaxOutputTokens: 4096}
 }
+
+// Long-task safety checkpoint used by the local ACP executables when model or
+// tool call quotas are configured as 0. The values are sized so an ordinary
+// three-hour task, including parallel subagents sharing the root budget, does
+// not reach them: about one model call every 2.7s for three hours, with up to
+// three tool calls per model call. A runaway loop still stops after a bounded
+// amount of work. Reaching the checkpoint ends the run like any quota stop
+// (max_turn_requests); the conversation is kept and the user continues by
+// sending another message, which starts a fresh allowance.
+const (
+	LongTaskSafetyModelCalls = 4000
+	LongTaskSafetyToolCalls  = 12000
+)
+
+// WithLongTaskSafety replaces disabled (zero) call quotas with the long-task
+// safety checkpoint. Explicit positive limits are kept unchanged.
+func (l BudgetLimits) WithLongTaskSafety() BudgetLimits {
+	if l.MaxModelCalls == 0 {
+		l.MaxModelCalls = LongTaskSafetyModelCalls
+	}
+	if l.MaxToolCalls == 0 {
+		l.MaxToolCalls = LongTaskSafetyToolCalls
+	}
+	return l
+}

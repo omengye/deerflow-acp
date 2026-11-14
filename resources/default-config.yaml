@@ -10,7 +10,9 @@ network:
 config_version: eino-harness-v1
 
 local_acp:
-  # Optional call/iteration quotas; 0 disables. Run deadlines still apply.
+  # max_iterations: 0 disables. Model/tool calls: 0 selects the long-task safety
+  # checkpoint (4000 model / 12000 tool calls per task, sized for 3-hour tasks);
+  # the user continues with another message. Set a larger value to raise it.
   max_iterations: 0
   max_model_calls: 0
   max_tool_calls: 0

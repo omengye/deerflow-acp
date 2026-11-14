@@ -113,6 +113,7 @@ func run(args []string) (err error) {
 		}
 		hostCfg.ConfigPath = imported.Path
 	}
+	launch.ApplyLongTaskSafety(&cfg)
 	if cfg.APIKey == "" {
 		cfg.APIKey = os.Getenv("DEERFLOW_MODEL_API_KEY")
 	}

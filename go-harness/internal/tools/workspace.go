@@ -22,6 +22,11 @@ const maxFileBytes = 512 << 10
 type pathInput struct {
 	Path string `json:"path" jsonschema:"description=Path relative to the session workspace"`
 }
+type readInput struct {
+	Path   string `json:"path" jsonschema:"description=Path relative to the session workspace"`
+	Offset int    `json:"offset,omitempty" jsonschema:"description=Optional 1-based first line to return; use with limit to page through long or large files"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"description=Optional maximum number of lines to return (default 400 when offset is set)"`
+}
 type writeInput struct {
 	Path            string `json:"path"`
 	Content         string `json:"content"`
@@ -84,7 +89,12 @@ func ConfiguredWorkspaceFactory(ctx context.Context, req harness.RunRequest, con
 }
 
 func workspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root) ([]tool.BaseTool, error) {
-	read, err := inferTool("read_file", "Read a UTF-8 text file inside the workspace, at most 512 KiB. Returns content and version; pass version as expected_version when writing or editing.", func(ctx context.Context, in pathInput) (string, error) { return readVersionedFile(ctx, root, in.Path) })
+	read, err := inferTool("read_file", "Read a UTF-8 text file inside the workspace. Without offset/limit the whole file is returned (at most 512 KiB). With offset (1-based line) and/or limit (lines) a line range is returned from files up to 8 MiB, with startLine, endLine and totalLines. Returns version; pass it as expected_version when writing or editing.", func(ctx context.Context, in readInput) (string, error) {
+		if in.Offset == 0 && in.Limit == 0 {
+			return readVersionedFile(ctx, root, in.Path)
+		}
+		return readVersionedFileRange(ctx, root, in.Path, in.Offset, in.Limit)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -250,6 +260,10 @@ func readFile(ctx context.Context, cwd, path string) (string, error) {
 	return readRootFile(ctx, root, path)
 }
 func readRootFile(ctx context.Context, root *os.Root, path string) (string, error) {
+	return readRootFileLimit(ctx, root, path, maxFileBytes)
+}
+
+func readRootFileLimit(ctx context.Context, root *os.Root, path string, limit int) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -269,12 +283,15 @@ func readRootFile(ctx context.Context, root *os.Root, path string) (string, erro
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("not a regular file")
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
 	if err != nil {
 		return "", err
 	}
-	if len(data) > maxFileBytes {
-		return "", fmt.Errorf("file exceeds 512 KiB")
+	if len(data) > limit {
+		if limit == maxFileBytes {
+			return "", fmt.Errorf("file exceeds 512 KiB; read it in line ranges with offset and limit")
+		}
+		return "", fmt.Errorf("file exceeds %d MiB", limit>>20)
 	}
 	if !utf8.Valid(data) {
 		return "", fmt.Errorf("file is not valid UTF-8 text")

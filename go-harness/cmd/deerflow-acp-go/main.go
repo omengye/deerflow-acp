@@ -48,6 +48,7 @@ func run() error {
 			return err
 		}
 	}
+	launch.ApplyLongTaskSafety(&cfg)
 	if cfg.APIKey == "" {
 		cfg.APIKey = os.Getenv("DEERFLOW_MODEL_API_KEY")
 	}

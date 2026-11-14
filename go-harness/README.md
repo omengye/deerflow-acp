@@ -77,8 +77,14 @@ See the [candidate and management contract](internal/acp/skill-evolution.md),
 
 Native file writes now require the version returned by `read_file` before
 overwriting existing content. A bounded no-progress guard stops repeated identical
-successful observations as incomplete; ordinary tool failures are left to agent
-recovery without a fixed retry count. The lead agent has session-local `task_note`,
+observations as incomplete: five identical cycles after a warning, or eight when
+the repeated observation is an identical failure. Snapshot IDs are ignored when
+comparing observations. The local executables treat a model/tool call quota of 0
+as the long-task safety checkpoint (4000 model and 12000 tool calls per task,
+sized for three-hour tasks); reaching it stops with `max_turn_requests` and the
+user continues with another message. Transient provider failures (5xx, 529,
+dropped connections) that occur before a stream opens are retried up to six times
+with 2s-60s backoff. The lead agent has session-local `task_note`,
 `history_search` and `history_read` tools. These add no Goal mode or auxiliary
 model requests. See [contracts and limits](../docs/harness-reliability-20261012.md),
 including the compatibility boundary for older paused executions.
@@ -207,7 +213,15 @@ retained. `summarization.enabled: false` or `--context-compaction=false` opts ou
 Summaries preserve the active user request even during a long first turn; earlier
 exchanges can be summarized without keeping the whole turn in model context.
 Full tool results remain in receipts and private snapshots; model previews are
-bounded to 8 KiB per result and 16 KiB per run, with `read_tool_output` for details.
+bounded to 8 KiB per result and 16 KiB per model call (replenished before each
+request), with `read_tool_output` for details. Results up to 2 KiB, including most
+failures, always stay inline; later large results keep a short preview. Output
+beyond the 4 MiB snapshot cap or invalid UTF-8 is truncated or replaced instead
+of failing the run. When a provider rejects a request as too long, older history
+is summarized once and the request is resent; later trigger estimates in that
+run are scaled up. If compaction still cannot fit the recent window, fewer recent
+messages are kept rather than failing. `read_file` accepts `offset`/`limit` line
+ranges for files up to 8 MiB.
 SDK embedders enable compaction with `Config.Compaction.Enabled`.
 
 Hidden summaries use a concise factual handoff, not the main turn's reasoning

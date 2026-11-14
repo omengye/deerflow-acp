@@ -42,7 +42,7 @@ func TestManyLargeToolResultsStayWithinCurrentTurnCompactionWindow(t *testing.T)
 		id := fmt.Sprintf("call-%d", i)
 		messages = append(messages, &schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: id, Type: "function", Function: schema.FunctionCall{Name: "read_file", Arguments: `{"path":"big.txt"}`}}}}, &schema.Message{Role: schema.Tool, ToolName: "read_file", ToolCallID: id, Content: preview})
 	}
-	if outputs.stored != 20 || mw.outputBytes > maxInlineRunToolOutput {
+	if outputs.stored != 20 {
 		t.Fatalf("snapshots=%d inline=%d", outputs.stored, mw.outputBytes)
 	}
 	if _, err := finalizeCompaction(messages, schema.AssistantMessage("The current task and prior tool findings are summarized.", nil), 2); err != nil {
