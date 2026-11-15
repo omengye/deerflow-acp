@@ -20,7 +20,7 @@ const MAX_NODES: usize = 2048;
 const MAX_CACHE_BYTES: usize = 16 * 1024 * 1024;
 type Key = (String, String);
 
-fn sync_task_rows(list: &ListState, previous: &mut Vec<Key>, next: Vec<Key>) {
+fn sync_task_rows<T: PartialEq>(list: &ListState, previous: &mut Vec<T>, next: Vec<T>) {
     if *previous == next {
         return;
     }
@@ -1707,16 +1707,30 @@ impl Waku {
                 .into_any_element(),
         )
     }
-    pub(super) fn render_deerflow_runtime(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_deerflow_runtime(&mut self, cx: &mut Context<Self>) -> AnyElement {
         // Decisions stay outside every scrolling subpage, including task details.
         let attention = self.render_deerflow_attention(cx);
-        let body = self.render_deerflow_runtime_body(cx);
+        let subpage = self
+            .state
+            .selected_session
+            .and_then(|session| self.deerflow_tasks.get(&session))
+            .is_some_and(|browser| browser.show_management || browser.show_receipts);
+        let body = if subpage {
+            self.render_deerflow_runtime_body(cx)
+        } else {
+            self.render_deerflow_runtime_view(cx)
+        };
         div()
-            .size_full()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .flex()
             .flex_col()
-            .children(self.render_conversation_capability(cx))
-            .children(self.render_session_budget(cx))
+            .when(subpage, |panel| {
+                panel
+                    .children(self.render_conversation_capability(cx))
+                    .children(self.render_session_budget(cx))
+            })
             .children(attention.map(|card| div().flex_none().px(px(12.0)).pt(px(12.0)).child(card)))
             .child(div().flex_1().min_h_0().overflow_hidden().child(body))
             .into_any_element()
@@ -1730,16 +1744,7 @@ impl Waku {
         {
             return self.render_deerflow_receipt_history(cx);
         }
-        let management = self
-            .state
-            .selected_session
-            .and_then(|session| self.deerflow_tasks.get(&session))
-            .is_some_and(|browser| browser.show_management);
-        if management {
-            self.render_deerflow_task_tree(cx)
-        } else {
-            self.render_deerflow_runtime_view(cx)
-        }
+        self.render_deerflow_task_tree(cx)
     }
     fn render_deerflow_task_tree(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::current(cx);

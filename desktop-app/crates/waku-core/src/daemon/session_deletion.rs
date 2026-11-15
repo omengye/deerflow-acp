@@ -92,9 +92,6 @@ impl DeletionContext {
                 {
                     self.task_store.hydrate(&mut state.sessions[index])?;
                     let session = &state.sessions[index];
-                    if session.is_busy() || !session.queued_messages.is_empty() {
-                        bail!("会话仍有运行或等待中的任务，请先完成或停止任务后再删除");
-                    }
                     if session.provider == ProviderKind::DeerFlow {
                         match session.provider_cursor.as_ref() {
                             Some(ProviderResumeCursor::DeerFlow { session_id })
@@ -110,6 +107,17 @@ impl DeletionContext {
                             }
                             None => {}
                         }
+                    }
+                    // A mobile projection may still say Working after the native
+                    // turn ended, especially when its transcript was too large to
+                    // save. The native deletion fence checks active executions,
+                    // background tasks and unresolved receipts atomically. Let it
+                    // decide for an identified DeerFlow session; queued Waku work
+                    // and sessions without that native authority remain guarded.
+                    if !session.queued_messages.is_empty()
+                        || (session.is_busy() && native_session_id.is_none())
+                    {
+                        bail!("会话仍有运行或等待中的任务，请先完成或停止任务后再删除");
                     }
                     workspace_path =
                         session.workspace.path().map(Path::to_path_buf).or_else(|| {
@@ -351,6 +359,75 @@ mod tests {
             })
         });
         assert!(result.is_err());
+        assert!(f.context.task_store.session_deletions().unwrap().is_empty());
+        assert!(!f.context.removed_session_ids.lock().contains(&f.id));
+        assert_eq!(f.context.task_store.load().unwrap().sessions.len(), 1);
+    }
+
+    #[test]
+    fn session_deletion_native_confirmation_can_remove_a_stale_busy_projection() {
+        let f = Fixture::new();
+        f.context.task_state.lock().sessions[0].status = crate::model::SessionStatus::Working;
+        f.context
+            .remove_with(f.id, |entry| {
+                assert_eq!(
+                    entry.native_session_id.as_deref(),
+                    Some("go-native-fixture")
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert!(f.context.task_store.load().unwrap().sessions.is_empty());
+    }
+
+    #[test]
+    fn session_deletion_native_busy_refusal_keeps_history_and_releases_the_fence() {
+        let f = Fixture::new();
+        f.context.task_state.lock().sessions[0].status = crate::model::SessionStatus::Working;
+        let mut checked_native = false;
+        let result = f.context.remove_with(f.id, |_| {
+            checked_native = true;
+            Err(DeleteFailure {
+                definite_refusal: true,
+                message: "rejected: session is busy".into(),
+            })
+        });
+        assert!(checked_native);
+        assert!(result.is_err());
+        assert_eq!(f.context.task_store.load().unwrap().sessions.len(), 1);
+        assert!(f.context.task_store.session_deletions().unwrap().is_empty());
+        assert!(!f.context.removed_session_ids.lock().contains(&f.id));
+    }
+
+    #[test]
+    fn session_deletion_busy_without_native_authority_is_still_rejected() {
+        let f = Fixture::new();
+        {
+            let mut state = f.context.task_state.lock();
+            state.sessions[0].provider = ProviderKind::Codex;
+            state.sessions[0].status = crate::model::SessionStatus::Working;
+        }
+        assert!(
+            f.context
+                .remove_with(f.id, |_| panic!(
+                    "busy session has no native deletion fence"
+                ))
+                .is_err()
+        );
+        assert!(f.context.task_store.session_deletions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn session_deletion_queued_work_is_guarded_even_with_native_authority() {
+        let f = Fixture::new();
+        f.context.task_state.lock().sessions[0]
+            .queued_messages
+            .push(crate::model::QueuedMessage::new("queued task"));
+        assert!(
+            f.context
+                .remove_with(f.id, |_| panic!("queued work must be preserved"))
+                .is_err()
+        );
         assert!(f.context.task_store.session_deletions().unwrap().is_empty());
         assert!(!f.context.removed_session_ids.lock().contains(&f.id));
         assert_eq!(f.context.task_store.load().unwrap().sessions.len(), 1);
