@@ -554,11 +554,7 @@ impl Paths {
             .arg("--runtime-dir")
             .arg(&self.runtime)
             .envs(self.environment());
-        let output = run(
-            command,
-            input,
-            Duration::from_secs(if mode == "--start-daemon" { 130 } else { 30 }),
-        )?;
+        let output = run(command, input, bridge_command_timeout(mode))?;
         if mode == "--start-daemon" {
             self.verify_running_data_directory(true)?;
         }
@@ -939,6 +935,24 @@ fn validate_management_envelope(envelope: Value) -> Result<Value> {
     }
 }
 
+fn bridge_command_timeout(mode: &str) -> Duration {
+    let variable = match mode {
+        "--start-daemon" => "DEER_FLOW_ACP_DAEMON_START_TIMEOUT_MS",
+        "--stop-daemon" => "DEER_FLOW_ACP_DAEMON_STOP_TIMEOUT_MS",
+        _ => return Duration::from_secs(30),
+    };
+    lifecycle_command_timeout(std::env::var(variable).ok().as_deref())
+}
+
+fn lifecycle_command_timeout(configured: Option<&str>) -> Duration {
+    let timeout = configured
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_secs(120));
+    // The bridge owns its lifecycle deadline and should report its own error.
+    timeout.saturating_add(Duration::from_secs(10))
+}
+
 fn hidden_command(program: &Path) -> Command {
     let mut command = Command::new(program);
     #[cfg(windows)]
@@ -1023,6 +1037,25 @@ fn run(mut command: Command, input: Option<&Value>, timeout: Duration) -> Result
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lifecycle_wait_allows_the_bridge_to_report_its_deadline() {
+        use super::lifecycle_command_timeout;
+        use std::time::Duration;
+        assert_eq!(lifecycle_command_timeout(None), Duration::from_secs(130));
+        assert_eq!(
+            lifecycle_command_timeout(Some("invalid")),
+            Duration::from_secs(130)
+        );
+        assert_eq!(
+            lifecycle_command_timeout(Some("180000")),
+            Duration::from_secs(190)
+        );
+        assert_eq!(
+            lifecycle_command_timeout(Some("0")),
+            Duration::from_secs(10)
+        );
+    }
+
     use super::*;
     #[test]
     fn client_mcp_config_redacts_env_and_requires_host_allowlist() {

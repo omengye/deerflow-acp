@@ -12,9 +12,62 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
+
+type retryListener struct {
+	net.Listener
+	errors []error
+	conn   net.Conn
+	calls  int
+	cancel context.CancelFunc
+}
+
+func (l *retryListener) Accept() (net.Conn, error) {
+	l.calls++
+	if l.cancel != nil {
+		l.cancel()
+	}
+	if len(l.errors) == 0 {
+		return l.conn, nil
+	}
+	err := l.errors[0]
+	l.errors = l.errors[1:]
+	return nil, err
+}
+
+func TestAcceptRetriesResourcePressureWithoutClosingListener(t *testing.T) {
+	for _, cause := range []error{syscall.EMFILE, syscall.ENFILE, syscall.ENOBUFS, syscall.ENOMEM, syscall.ECONNABORTED} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			left, right := net.Pipe()
+			defer left.Close()
+			defer right.Close()
+			listener := &retryListener{errors: []error{fmt.Errorf("accept: %w", cause), cause}, conn: left}
+			conn, err := acceptWithRetry(context.Background(), listener)
+			if err != nil || conn != left || listener.calls != 3 {
+				t.Fatalf("conn=%v err=%v calls=%d", conn, err, listener.calls)
+			}
+		})
+	}
+}
+
+func TestAcceptRetryStopsOnCancellationAndPermanentErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	listener := &retryListener{errors: []error{syscall.EMFILE}, cancel: cancel}
+	started := time.Now()
+	if _, err := acceptWithRetry(ctx, listener); err == nil || listener.calls != 1 || time.Since(started) > time.Second {
+		t.Fatalf("err=%v calls=%d", err, listener.calls)
+	}
+	for _, cause := range []error{net.ErrClosed, errors.New("permanent listener failure")} {
+		listener := &retryListener{errors: []error{cause}}
+		if _, err := acceptWithRetry(context.Background(), listener); !errors.Is(err, cause) || listener.calls != 1 {
+			t.Fatalf("err=%v calls=%d", err, listener.calls)
+		}
+	}
+}
 
 func startHost(t *testing.T, cfg Config) (*Host, Endpoint) {
 	t.Helper()

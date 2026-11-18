@@ -28,6 +28,23 @@ The Bridge does not search PATH, virtual environments or interpreter bundles.
 `--python` is removed and returns a migration error; `DEER_FLOW_ACP_PYTHON` no
 longer affects startup. A portable root is identified by its config/resources,
 not an embedded interpreter. Windows daemon startup uses `CREATE_NO_WINDOW`.
+Unix startup creates a separate process group so Ctrl+C in the launching
+terminal does not stop the shared daemon.
+
+Status and stop recognize stale endpoints as `DeerFlow ACP daemon is not
+running`. Cleanup takes the daemon's runtime lock and checks the instance
+identity before removing a file; an unreachable but still-owned runtime is
+reported separately. STOP waits for that lock to be released after all daemon
+cleanup, with a default deadline of 120 seconds. Set
+`DEER_FLOW_ACP_DAEMON_STOP_TIMEOUT_MS` to override the wait. A deadline reports
+an error without forcibly terminating the daemon or discarding its endpoint;
+another stop can wait for cleanup to finish. Restart proceeds only after stop
+succeeds or the previous instance is confirmed absent.
+
+ACP live events use bounded backpressure: temporary frame/byte queue pressure
+waits for the client to catch up, while a client stalled for 30 seconds is
+disconnected. Prompt cancellation interrupts admission without closing other
+requests on the connection. Admitted events remain ordered before replies.
 
 `--manage` forwards one JSON request on stdin through authenticated DFACP/1
 MANAGE. Host-approved MCP commands can be passed with repeated absolute

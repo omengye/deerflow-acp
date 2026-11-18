@@ -69,7 +69,7 @@ func TestCompletedReplyQueueIsBounded(t *testing.T) {
 	writer := &blockedEventWriter{started: make(chan struct{}), release: make(chan struct{})}
 	peer := NewPeer(input, writer, func(context.Context, string, json.RawMessage) (any, error) {
 		return nil, nil
-	}, Options{MaxConcurrentRequests: 1, WriteQueueCapacity: 1})
+	}, Options{MaxConcurrentRequests: 1, WriteQueueCapacity: 1, EventQueueTimeout: 100 * time.Millisecond})
 	finished := make(chan error, 1)
 	go func() { finished <- peer.Serve(t.Context()) }()
 	t.Cleanup(func() {
@@ -77,15 +77,25 @@ func TestCompletedReplyQueueIsBounded(t *testing.T) {
 		client.Close()
 	})
 	for id := 1; id <= 3; id++ {
-		// Dispatch serially and join handler completion, not transport delivery.
-		// Only Serve's writer runs; the input reader has no requests to dispatch.
+		// The final reply cannot enter the full queue. Its handler must retain
+		// admission capacity while applying bounded backpressure.
 		peer.dispatchRequest(envelope{JSONRPC: "2.0", ID: json.RawMessage(fmt.Sprint(id)), Method: "complete"})
 		joined := make(chan struct{})
 		go func() { peer.handlers.Wait(); close(joined) }()
+		if id == 3 {
+			select {
+			case <-joined:
+				t.Fatal("full reply queue disconnected without a grace period")
+			case <-time.After(20 * time.Millisecond):
+			}
+			if len(peer.requestSlots) != 1 {
+				t.Fatal("waiting reply released its admission capacity")
+			}
+		}
 		select {
 		case <-joined:
 		case <-time.After(5 * time.Second):
-			t.Fatal("completed handler waited for the blocked transport")
+			t.Fatal("reply admission exceeded its bounded wait")
 		}
 		if id == 1 {
 			select {

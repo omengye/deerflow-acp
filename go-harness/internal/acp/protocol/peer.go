@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const DefaultMaxFrameBytes = 64 << 20
@@ -37,6 +38,9 @@ type Options struct {
 	MaxPendingCalls       int
 	WriteQueueCapacity    int
 	MaxQueuedEventBytes   int64
+	// EventQueueTimeout bounds waiting for a slow client to free event capacity.
+	// Admitted events still outlive the prompt context, preserving wire order.
+	EventQueueTimeout     time.Duration
 	NotificationQueueSize int
 	Admit                 Admission
 }
@@ -57,6 +61,9 @@ func (o Options) defaults() Options {
 	if o.MaxQueuedEventBytes <= 0 {
 		o.MaxQueuedEventBytes = 64 << 20
 	}
+	if o.EventQueueTimeout <= 0 {
+		o.EventQueueTimeout = 30 * time.Second
+	}
 	if o.NotificationQueueSize <= 0 {
 		o.NotificationQueueSize = 64
 	}
@@ -64,10 +71,11 @@ func (o Options) defaults() Options {
 }
 
 type writeJob struct {
-	ctx        context.Context
-	frame      []byte
-	done       chan error
-	eventBytes int64
+	ctx         context.Context
+	frame       []byte
+	done        chan error
+	eventBytes  int64
+	beforeWrite func()
 }
 
 type notificationKey struct{}
@@ -95,6 +103,8 @@ type Peer struct {
 	serving              atomic.Bool
 	nextID               atomic.Uint64
 	queuedEvents         atomic.Int64
+	eventMu              sync.Mutex
+	eventSpace           chan struct{}
 	queuedNotifications  atomic.Uint64
 	handledNotifications atomic.Uint64
 	writes               chan writeJob
@@ -201,11 +211,10 @@ func (p *Peer) Notify(ctx context.Context, method string, params any) error {
 	return p.send(ctx, envelope{JSONRPC: "2.0", Method: method, Params: raw})
 }
 
-// NotifyAsync accepts a bounded event frame without waiting for the client to
-// read it. Once admitted, the connection owns delivery, including after the
-// prompt context ends. The single writer preserves queue order with replies;
-// a full queue terminates the connection so unsent events can be replayed from
-// the durable session log instead of being silently dropped.
+// NotifyAsync normally queues without waiting for delivery. A full queue applies
+// cancellable, bounded backpressure instead of disconnecting on a short burst.
+// Once admitted, the connection owns delivery even after the prompt ends. A
+// persistently stalled client is closed so unsent events can be replayed.
 func (p *Peer) NotifyAsync(ctx context.Context, method string, params any) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -228,34 +237,90 @@ func (p *Peer) NotifyAsync(ctx context.Context, method string, params any) error
 		return err
 	}
 	size := int64(len(frame))
+	if size > p.opts.MaxQueuedEventBytes {
+		p.shutdown(ErrBackpressure)
+		return ErrBackpressure
+	}
+	// Allocate a timer only on the slow path, and share one deadline across
+	// byte-budget and queue-slot waits.
+	var timer *time.Timer
+	deadline := func() <-chan time.Time {
+		if timer == nil {
+			timer = time.NewTimer(p.opts.EventQueueTimeout)
+		}
+		return timer.C
+	}
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
 	for {
-		current := p.queuedEvents.Load()
-		if size > p.opts.MaxQueuedEventBytes-current {
+		p.eventMu.Lock()
+		if size <= p.opts.MaxQueuedEventBytes-p.queuedEvents.Load() {
+			p.queuedEvents.Add(size)
+			p.eventMu.Unlock()
+			break
+		}
+		if p.eventSpace == nil {
+			p.eventSpace = make(chan struct{})
+		}
+		space := p.eventSpace
+		p.eventMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-p.ctx.Done():
+			return ErrClosed
+		case <-space:
+		case <-deadline():
 			p.shutdown(ErrBackpressure)
 			return ErrBackpressure
 		}
-		if p.queuedEvents.CompareAndSwap(current, current+size) {
-			break
-		}
 	}
 	job := writeJob{ctx: p.ctx, frame: frame, eventBytes: size}
+	admitted := false
+	defer func() {
+		if !admitted {
+			p.releaseEventBytes(size)
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
-	case <-ctx.Done():
-		p.queuedEvents.Add(-size)
-		return ctx.Err()
 	case <-p.ctx.Done():
-		p.queuedEvents.Add(-size)
 		return ErrClosed
 	case p.writes <- job:
+		admitted = true
 		if p.ctx.Err() != nil {
 			return ErrClosed
 		}
 		return nil
 	default:
-		p.queuedEvents.Add(-size)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.ctx.Done():
+		return ErrClosed
+	case p.writes <- job:
+		admitted = true
+		return nil
+	case <-deadline():
 		p.shutdown(ErrBackpressure)
 		return ErrBackpressure
 	}
+}
+
+func (p *Peer) releaseEventBytes(size int64) {
+	p.eventMu.Lock()
+	p.queuedEvents.Add(-size)
+	if p.eventSpace != nil {
+		close(p.eventSpace)
+		p.eventSpace = nil
+	}
+	p.eventMu.Unlock()
 }
 
 // Call sends an agent-to-client request and routes its response independently of
@@ -363,9 +428,12 @@ func (p *Peer) writeLoop() {
 		case <-p.ctx.Done():
 			return
 		case job := <-p.writes:
+			if job.beforeWrite != nil {
+				job.beforeWrite()
+			}
 			if err := job.ctx.Err(); err != nil {
 				if job.eventBytes != 0 {
-					p.queuedEvents.Add(-job.eventBytes)
+					p.releaseEventBytes(job.eventBytes)
 				}
 				if job.done != nil {
 					job.done <- err
@@ -394,7 +462,7 @@ func (p *Peer) writeLoop() {
 				job.done <- err
 			}
 			if job.eventBytes != 0 {
-				p.queuedEvents.Add(-job.eventBytes)
+				p.releaseEventBytes(job.eventBytes)
 			}
 			if err != nil {
 				p.shutdown(err)
@@ -490,20 +558,18 @@ func (p *Peer) dispatchRequest(msg envelope) {
 	p.handlers.Add(1)
 	go func() {
 		defer p.handlers.Done()
-		finished := false
+		var finishOnce sync.Once
 		finish := func() {
-			if finished {
-				return
-			}
-			finished = true
-			if release != nil {
-				release()
-			}
-			cancel()
-			p.mu.Lock()
-			delete(p.inflight, key)
-			p.mu.Unlock()
-			<-p.requestSlots
+			finishOnce.Do(func() {
+				if release != nil {
+					release()
+				}
+				cancel()
+				p.mu.Lock()
+				delete(p.inflight, key)
+				p.mu.Unlock()
+				<-p.requestSlots
+			})
 		}
 		defer finish()
 		result, err := p.invoke(ctx, msg.Method, msg.Params)
@@ -521,16 +587,23 @@ func (p *Peer) dispatchRequest(msg envelope) {
 			p.shutdown(err)
 			return
 		}
-		// A peer may receive the response before Write returns. Release the
-		// request ID and capacity before publishing it, not after send joins.
-		finish()
-		// A canceled prompt can still return its ACP stopReason. Only connection
-		// cancellation should suppress the final response. Queue without waiting
-		// so released slots cannot leave unbounded goroutines behind a slow writer.
+		// Retain request capacity while waiting for space, bounding blocked reply
+		// goroutines. Release before the writer publishes the response so an
+		// immediate follow-up request sees the session as idle.
+		job := writeJob{ctx: p.ctx, frame: frame, beforeWrite: finish}
 		select {
 		case <-p.ctx.Done():
-		case p.writes <- writeJob{ctx: p.ctx, frame: frame}:
+			return
+		case p.writes <- job:
+			return
 		default:
+		}
+		timer := time.NewTimer(p.opts.EventQueueTimeout)
+		defer timer.Stop()
+		select {
+		case <-p.ctx.Done():
+		case p.writes <- job:
+		case <-timer.C:
 			p.shutdown(ErrBackpressure)
 		}
 	}()

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -193,7 +194,7 @@ func (h *Host) serve() {
 	go func() { defer close(watchDone); <-h.ctx.Done(); h.stopConnections() }()
 	var serveErr error
 	for {
-		conn, err := h.listener.Accept()
+		conn, err := acceptWithRetry(h.ctx, h.listener)
 		if err != nil {
 			if h.ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
 				serveErr = err
@@ -227,6 +228,37 @@ func (h *Host) serve() {
 	h.closed = true
 	h.mu.Unlock()
 	close(h.done)
+}
+
+// Resource pressure is transient and must not shut down existing ACP sessions.
+// Keep retries bounded in frequency and interruptible by STOP or a signal.
+func acceptWithRetry(ctx context.Context, listener net.Listener) (net.Conn, error) {
+	delay := 5 * time.Millisecond
+	for {
+		conn, err := listener.Accept()
+		if err == nil {
+			return conn, nil
+		}
+		if ctx.Err() != nil || errors.Is(err, net.ErrClosed) || !retryableAcceptError(err) {
+			return nil, err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(2*delay, time.Second)
+	}
+}
+
+func retryableAcceptError(err error) bool {
+	var temporary interface{ Temporary() bool }
+	return errors.As(err, &temporary) && temporary.Temporary() ||
+		errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) ||
+		errors.Is(err, syscall.ECONNABORTED)
 }
 
 func (h *Host) handle(conn net.Conn) {

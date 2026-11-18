@@ -70,9 +70,10 @@ func TestAsyncEventPrecedesPromptResponse(t *testing.T) {
 }
 
 type blockedEventWriter struct {
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
+	started     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+	releaseOnce sync.Once
 }
 
 func (w *blockedEventWriter) Write(data []byte) (int, error) {
@@ -82,18 +83,14 @@ func (w *blockedEventWriter) Write(data []byte) (int, error) {
 }
 
 func (w *blockedEventWriter) Close() error {
-	select {
-	case <-w.release:
-	default:
-		close(w.release)
-	}
+	w.releaseOnce.Do(func() { close(w.release) })
 	return nil
 }
 
-func TestAsyncEventQueueIsBoundedAndClosesSlowClient(t *testing.T) {
+func TestAsyncEventQueueIsBoundedAndClosesStalledClientAfterTimeout(t *testing.T) {
 	in, client := io.Pipe()
 	w := &blockedEventWriter{started: make(chan struct{}), release: make(chan struct{})}
-	p := NewPeer(in, w, nil, Options{WriteQueueCapacity: 1, MaxQueuedEventBytes: 1 << 20})
+	p := NewPeer(in, w, nil, Options{WriteQueueCapacity: 1, MaxQueuedEventBytes: 1 << 20, EventQueueTimeout: 40 * time.Millisecond})
 	finished := make(chan error, 1)
 	go func() { finished <- p.Serve(context.Background()) }()
 	defer client.Close()
@@ -140,5 +137,145 @@ func TestAsyncEventByteBudget(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("byte budget failed to close peer")
+	}
+}
+
+func TestAsyncEventBackpressureRecoversWithoutDisconnect(t *testing.T) {
+	for _, limit := range []string{"frames", "bytes"} {
+		t.Run(limit, func(t *testing.T) {
+			in, client := io.Pipe()
+			defer client.Close()
+			w := &blockedEventWriter{started: make(chan struct{}), release: make(chan struct{})}
+			options := Options{WriteQueueCapacity: 1, EventQueueTimeout: time.Second}
+			if limit == "bytes" {
+				frame, err := marshalFrame(envelope{JSONRPC: "2.0", Method: "event"}, DefaultMaxFrameBytes)
+				if err != nil {
+					t.Fatal(err)
+				}
+				options.MaxQueuedEventBytes = int64(len(frame))
+			}
+			p := NewPeer(in, w, nil, options)
+			defer p.Close()
+			finished := make(chan error, 1)
+			go func() { finished <- p.Serve(context.Background()) }()
+			if err := p.NotifyAsync(context.Background(), "event", nil); err != nil {
+				t.Fatal(err)
+			}
+			<-w.started
+			if limit == "frames" {
+				if err := p.NotifyAsync(context.Background(), "event", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			pending := make(chan error, 1)
+			go func() { pending <- p.NotifyAsync(context.Background(), "event", nil) }()
+			select {
+			case err := <-pending:
+				t.Fatalf("full %s budget failed without waiting: %v", limit, err)
+			case <-time.After(20 * time.Millisecond):
+			}
+			w.Close()
+			select {
+			case err := <-pending:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("event did not resume after client recovered")
+			}
+			if p.ctx.Err() != nil {
+				t.Fatal("slow client disconnected")
+			}
+			p.Close()
+			select {
+			case <-finished:
+			case <-time.After(time.Second):
+				t.Fatal("peer did not close")
+			}
+		})
+	}
+}
+
+func TestAsyncBackpressureCancellationReleasesReservationAndPreservesPeer(t *testing.T) {
+	in, client := io.Pipe()
+	defer client.Close()
+	w := &blockedEventWriter{started: make(chan struct{}), release: make(chan struct{})}
+	p := NewPeer(in, w, nil, Options{WriteQueueCapacity: 1, EventQueueTimeout: time.Second})
+	defer p.Close()
+	finished := make(chan error, 1)
+	go func() { finished <- p.Serve(context.Background()) }()
+	if err := p.NotifyAsync(context.Background(), "event", nil); err != nil {
+		t.Fatal(err)
+	}
+	<-w.started
+	if err := p.NotifyAsync(context.Background(), "event", nil); err != nil {
+		t.Fatal(err)
+	}
+	reserved := p.queuedEvents.Load()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pending := make(chan error, 1)
+	go func() { pending <- p.NotifyAsync(ctx, "event", nil) }()
+	select {
+	case err := <-pending:
+		t.Fatalf("full queue failed without waiting: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-pending:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not unblock admission")
+	}
+	if p.ctx.Err() != nil || p.queuedEvents.Load() != reserved {
+		t.Fatal("cancellation closed peer or leaked event capacity")
+	}
+	go func() { pending <- p.NotifyAsync(context.Background(), "event", nil) }()
+	p.Close()
+	select {
+	case err := <-pending:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close did not unblock admission")
+	}
+	<-finished
+}
+
+func TestPromptResponseWaitsBehindFullEventQueue(t *testing.T) {
+	var peer *Peer
+	queued := make(chan struct{})
+	c := connection(t, func(ctx context.Context, _ string, _ json.RawMessage) (any, error) {
+		for _, text := range []string{"first", "second"} {
+			if err := peer.NotifyAsync(ctx, "session/update", map[string]string{"text": text}); err != nil {
+				return nil, err
+			}
+		}
+		close(queued)
+		return map[string]string{"stopReason": "end_turn"}, nil
+	}, Options{WriteQueueCapacity: 1, EventQueueTimeout: time.Second})
+	peer = c.peer
+	c.write(t, `{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{}}`)
+	select {
+	case <-queued:
+	case <-time.After(time.Second):
+		t.Fatal("events did not fill queue")
+	}
+	select {
+	case <-peer.Done():
+		t.Fatal("reply overflow disconnected the session")
+	case <-time.After(20 * time.Millisecond):
+	}
+	for i := 0; i < 2; i++ {
+		if msg := c.read(t); msg.Method != "session/update" {
+			t.Fatalf("out of order event: %+v", msg)
+		}
+	}
+	if msg := c.read(t); string(msg.ID) != "1" || msg.Error != nil {
+		t.Fatalf("missing final response: %+v", msg)
 	}
 }

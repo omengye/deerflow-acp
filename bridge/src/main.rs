@@ -21,8 +21,7 @@ mod windows_daemon;
 const HANDSHAKE_VERSION: &str = "DFACP/1";
 const ENDPOINT_FILENAME: &str = "endpoint.json";
 const DEFAULT_START_TIMEOUT: Duration = Duration::from_secs(120);
-const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(10);
-const FORCED_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(120);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 const MANAGEMENT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -475,6 +474,118 @@ fn endpoint_is_live(endpoint: &Endpoint) -> bool {
     status(endpoint).is_ok()
 }
 
+#[derive(Debug, PartialEq)]
+enum EndpointLease {
+    Owned,
+    Removed,
+    Replaced,
+}
+
+// Use the same OS lock as the Go host. An unreachable socket does not prove
+// death: the host retains this lease throughout connection and worker cleanup.
+fn remove_unowned_endpoint(path: &Path, expected: &Endpoint) -> Result<EndpointLease> {
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path.with_file_name("daemon.lock"))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => {
+            if let Ok(current) = load_endpoint(path)
+                && !same_instance(&current, expected)
+            {
+                return Ok(EndpointLease::Replaced);
+            }
+            return Ok(EndpointLease::Owned);
+        }
+        Err(fs::TryLockError::Error(error)) => return Err(error.into()),
+    }
+    // Re-read under the lease so a concurrent startup cannot lose its endpoint.
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(EndpointLease::Removed);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let current: Endpoint = serde_json::from_str(&content)?;
+    if !same_instance(&current, expected) {
+        return Ok(EndpointLease::Replaced);
+    }
+    fs::remove_file(path)?;
+    Ok(EndpointLease::Removed)
+}
+
+fn same_instance(left: &Endpoint, right: &Endpoint) -> bool {
+    left.pid == right.pid && left.token == right.token && left.instance_id == right.instance_id
+}
+
+fn control_error(path: &Path, endpoint: &Endpoint, error: ConnectError) -> AnyError {
+    match error {
+        ConnectError::Unavailable(message) => match remove_unowned_endpoint(path, endpoint) {
+            Ok(EndpointLease::Removed) => "DeerFlow ACP daemon is not running".into(),
+            Ok(EndpointLease::Replaced) => "DeerFlow ACP daemon instance changed; retry the command".into(),
+            Ok(EndpointLease::Owned) => format!(
+                "DeerFlow ACP daemon is unreachable or still shutting down (runtime lock is held): {message}"
+            ).into(),
+            Err(error) => format!("cannot verify DeerFlow ACP daemon state: {error}; connection error: {message}").into(),
+        },
+        error => error.into(),
+    }
+}
+
+fn checked_status(cli: &Cli, path: &Path) -> Result<(Endpoint, String)> {
+    let endpoint = load_endpoint(path).map_err(|_| "DeerFlow ACP daemon is not running")?;
+    // Validate configuration only after liveness, since a dead instance may
+    // refer to an old config/database selected before the user's last change.
+    let response = status(&endpoint).map_err(|error| control_error(path, &endpoint, error))?;
+    validate_config(&endpoint, cli.config.as_deref())?;
+    if cli.mode != Mode::Stop {
+        validate_data_directory(&endpoint, cli.data_dir.as_deref())?;
+    }
+    Ok((endpoint, response))
+}
+
+fn wait_for_shutdown(path: &Path, endpoint: &Endpoint, timeout: Duration) -> Result<()> {
+    let started = Instant::now();
+    loop {
+        match remove_unowned_endpoint(path, endpoint)? {
+            EndpointLease::Removed | EndpointLease::Replaced => return Ok(()),
+            EndpointLease::Owned => {}
+        }
+        if started.elapsed() >= timeout {
+            return Err(format!(
+                "DeerFlow ACP daemon pid={} still holds its runtime after {} ms; it may still be cleaning up and was not forcibly terminated. Increase DEER_FLOW_ACP_DAEMON_STOP_TIMEOUT_MS to wait longer",
+                endpoint.pid, timeout.as_millis()
+            ).into());
+        }
+        thread::sleep(Duration::from_millis(50).min(timeout.saturating_sub(started.elapsed())));
+    }
+}
+
+fn stop_daemon(cli: &Cli, path: &Path, timeout: Duration) -> Result<()> {
+    let endpoint = load_endpoint(path).map_err(|_| "DeerFlow ACP daemon is not running")?;
+    match status(&endpoint) {
+        Ok(_) => {
+            validate_config(&endpoint, cli.config.as_deref())?;
+            connect_command(&endpoint, "STOP")
+                .map_err(|error| control_error(path, &endpoint, error))?;
+        }
+        Err(error @ ConnectError::Unavailable(_)) => {
+            if remove_unowned_endpoint(path, &endpoint)? != EndpointLease::Owned {
+                return Err(control_error(path, &endpoint, error));
+            }
+            validate_config(&endpoint, cli.config.as_deref())?;
+            // A previous STOP closes the listener before cleanup releases the
+            // lease. A second stop must be able to join that cleanup safely.
+        }
+        Err(error) => return Err(error.into()),
+    }
+    wait_for_shutdown(path, &endpoint, timeout)
+}
+
 fn find_daemon(cli: &Cli) -> Result<PathBuf> {
     let configured = env::var_os("DEER_FLOW_ACP_DAEMON").map(PathBuf::from);
     let executable = env::current_exe()?;
@@ -585,6 +696,11 @@ fn spawn_detached(
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     command.spawn().map(DaemonProcess)
 }
 
@@ -602,129 +718,6 @@ fn stop_timeout() -> Duration {
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_millis)
         .unwrap_or(DEFAULT_STOP_TIMEOUT)
-}
-
-#[cfg(windows)]
-fn wait_for_process_exit(pid: u32, timeout: Duration) -> io::Result<bool> {
-    use std::ffi::c_void;
-
-    const SYNCHRONIZE: u32 = 0x0010_0000;
-    const WAIT_OBJECT_0: u32 = 0x0000_0000;
-    const WAIT_TIMEOUT: u32 = 0x0000_0102;
-    const WAIT_FAILED: u32 = 0xffff_ffff;
-    const ERROR_INVALID_PARAMETER: i32 = 87;
-
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn OpenProcess(access: u32, inherit_handle: i32, process_id: u32) -> *mut c_void;
-        fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
-        fn CloseHandle(handle: *mut c_void) -> i32;
-    }
-
-    let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
-    if handle.is_null() {
-        let error = io::Error::last_os_error();
-        return match error.raw_os_error() {
-            Some(ERROR_INVALID_PARAMETER) => Ok(true),
-            _ => Err(error),
-        };
-    }
-    let milliseconds = timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32;
-    let result = unsafe { WaitForSingleObject(handle, milliseconds) };
-    unsafe {
-        CloseHandle(handle);
-    }
-    match result {
-        WAIT_OBJECT_0 => Ok(true),
-        WAIT_TIMEOUT => Ok(false),
-        WAIT_FAILED => Err(io::Error::last_os_error()),
-        value => Err(io::Error::other(format!(
-            "unexpected process wait result: {value}"
-        ))),
-    }
-}
-
-#[cfg(windows)]
-fn force_terminate_process(pid: u32) -> io::Result<()> {
-    use std::ffi::c_void;
-
-    const PROCESS_TERMINATE: u32 = 0x0000_0001;
-    const ERROR_INVALID_PARAMETER: i32 = 87;
-
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn OpenProcess(access: u32, inherit_handle: i32, process_id: u32) -> *mut c_void;
-        fn TerminateProcess(process: *mut c_void, exit_code: u32) -> i32;
-        fn CloseHandle(handle: *mut c_void) -> i32;
-    }
-
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-    if handle.is_null() {
-        let error = io::Error::last_os_error();
-        return match error.raw_os_error() {
-            Some(ERROR_INVALID_PARAMETER) => Ok(()),
-            _ => Err(error),
-        };
-    }
-    let terminated = unsafe { TerminateProcess(handle, 1) };
-    let error = if terminated == 0 {
-        Some(io::Error::last_os_error())
-    } else {
-        None
-    };
-    unsafe {
-        CloseHandle(handle);
-    }
-    match error {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
-}
-
-#[cfg(unix)]
-fn process_is_running(pid: u32) -> io::Result<bool> {
-    const ESRCH: i32 = 3;
-
-    unsafe extern "C" {
-        fn kill(pid: i32, signal: i32) -> i32;
-    }
-
-    if unsafe { kill(pid as i32, 0) } == 0 {
-        return Ok(true);
-    }
-    let error = io::Error::last_os_error();
-    match error.raw_os_error() {
-        Some(ESRCH) => Ok(false),
-        _ => Err(error),
-    }
-}
-
-#[cfg(unix)]
-fn wait_for_process_exit(pid: u32, timeout: Duration) -> io::Result<bool> {
-    let deadline = Instant::now() + timeout;
-    while process_is_running(pid)? && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(50));
-    }
-    Ok(!process_is_running(pid)?)
-}
-
-#[cfg(unix)]
-fn force_terminate_process(pid: u32) -> io::Result<()> {
-    const ESRCH: i32 = 3;
-    const SIGKILL: i32 = 9;
-
-    unsafe extern "C" {
-        fn kill(pid: i32, signal: i32) -> i32;
-    }
-
-    if unsafe { kill(pid as i32, SIGKILL) } == 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
-    match error.raw_os_error() {
-        Some(ESRCH) => Ok(()),
-        _ => Err(error),
-    }
 }
 
 fn wait_for_status(cli: &Cli, path: &Path, process: &mut DaemonProcess) -> Result<Endpoint> {
@@ -947,10 +940,7 @@ async fn run_local_mode(cli: &Cli, path: &Path) -> Result<()> {
             }
         },
         Mode::Status => {
-            let endpoint = load_endpoint(path).map_err(|_| "DeerFlow ACP daemon is not running")?;
-            validate_config(&endpoint, cli.config.as_deref())?;
-            validate_data_directory(&endpoint, cli.data_dir.as_deref())?;
-            let response = status(&endpoint).map_err(|error| error.to_string())?;
+            let (endpoint, response) = checked_status(cli, path)?;
             println!(
                 "running pid={} build={} endpoint={}:{} ({response})",
                 endpoint.pid, endpoint.build_id, endpoint.host, endpoint.port
@@ -966,29 +956,7 @@ async fn run_local_mode(cli: &Cli, path: &Path) -> Result<()> {
             Ok(())
         }
         Mode::Stop => {
-            let endpoint = load_endpoint(path).map_err(|_| "DeerFlow ACP daemon is not running")?;
-            validate_config(&endpoint, cli.config.as_deref())?;
-            connect_command(&endpoint, "STOP").map_err(|error| error.to_string())?;
-            if !wait_for_process_exit(endpoint.pid, stop_timeout())? {
-                eprintln!(
-                    "deerflow-acp: daemon pid={} did not exit after STOP; forcing termination",
-                    endpoint.pid
-                );
-                force_terminate_process(endpoint.pid)?;
-                if !wait_for_process_exit(endpoint.pid, FORCED_STOP_TIMEOUT)? {
-                    return Err(format!(
-                        "daemon pid={} did not exit after forced termination",
-                        endpoint.pid
-                    )
-                    .into());
-                }
-            }
-            if let Ok(current) = load_endpoint(path)
-                && current.pid == endpoint.pid
-                && current.token == endpoint.token
-            {
-                fs::remove_file(path)?;
-            }
+            stop_daemon(cli, path, stop_timeout())?;
             println!("stopped");
             Ok(())
         }
@@ -1032,6 +1000,212 @@ async fn main() {
 #[cfg(test)]
 mod process_tests {
     use super::*;
+
+    fn endpoint_fixture() -> (tempfile::TempDir, PathBuf, Endpoint) {
+        let root = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = Endpoint {
+            host: "127.0.0.1".into(),
+            port: listener.local_addr().unwrap().port(),
+            token: "test-token".into(),
+            pid: std::process::id(),
+            build_id: "test".into(),
+            config_path: String::new(),
+            data_dir: String::new(),
+            instance_id: "first".into(),
+        };
+        drop(listener);
+        let path = root.path().join(ENDPOINT_FILENAME);
+        write_test_endpoint(&path, &endpoint);
+        (root, path, endpoint)
+    }
+
+    fn write_test_endpoint(path: &Path, endpoint: &Endpoint) {
+        fs::write(path, serde_json::to_vec(&serde_json::json!({
+            "host": endpoint.host, "port": endpoint.port, "token": endpoint.token,
+            "pid": endpoint.pid, "build_id": endpoint.build_id, "config_path": endpoint.config_path,
+            "data_dir": endpoint.data_dir, "instance_id": endpoint.instance_id,
+        })).unwrap()).unwrap();
+    }
+
+    fn own_runtime(path: &Path) -> fs::File {
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path.with_file_name("daemon.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        lock
+    }
+
+    #[tokio::test]
+    async fn stale_controls_report_not_running_even_after_configuration_changes() {
+        for mode in [Mode::Status, Mode::Stop] {
+            let (_root, path, _) = endpoint_fixture();
+            let mut cli = parse_args(std::iter::empty()).unwrap();
+            cli.mode = mode;
+            cli.config = Some(path.with_file_name("changed-config.yaml"));
+            cli.data_dir = Some(path.with_file_name("changed-database"));
+            let error = run_local_mode(&cli, &path).await.unwrap_err().to_string();
+            assert_eq!(error, "DeerFlow ACP daemon is not running");
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
+    fn unavailable_live_owner_and_rejected_handshakes_keep_the_endpoint() {
+        let (_root, path, endpoint) = endpoint_fixture();
+        let lock = own_runtime(&path);
+        let error = control_error(
+            &path,
+            &endpoint,
+            ConnectError::Unavailable("timeout".into()),
+        );
+        assert!(error.to_string().contains("runtime lock is held"));
+        assert!(path.exists());
+        drop(lock);
+        let error = control_error(
+            &path,
+            &endpoint,
+            ConnectError::Rejected("UNAUTHORIZED".into()),
+        );
+        assert_eq!(error.to_string(), "UNAUTHORIZED");
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn stale_cleanup_and_stop_preserve_a_replacement_instance() {
+        let (_root, path, mut endpoint) = endpoint_fixture();
+        let original = load_endpoint(&path).unwrap();
+        endpoint.instance_id = "replacement".into();
+        write_test_endpoint(&path, &endpoint);
+        for owned in [false, true] {
+            let _lock = owned.then(|| own_runtime(&path));
+            assert_eq!(
+                remove_unowned_endpoint(&path, &original).unwrap(),
+                EndpointLease::Replaced
+            );
+            wait_for_shutdown(&path, &original, Duration::ZERO).unwrap();
+            assert_eq!(load_endpoint(&path).unwrap().instance_id, "replacement");
+        }
+    }
+
+    #[test]
+    fn stop_timeout_leaves_cleanup_alive_and_a_retry_joins_it() {
+        let (_root, path, endpoint) = endpoint_fixture();
+        let lock = own_runtime(&path);
+        let error = wait_for_shutdown(&path, &endpoint, Duration::from_millis(10)).unwrap_err();
+        assert!(error.to_string().contains("not forcibly terminated"));
+        assert!(path.exists());
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            drop(lock);
+        });
+        wait_for_shutdown(&path, &endpoint, Duration::from_secs(1)).unwrap();
+        release.join().unwrap();
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawned_daemon_has_an_independent_process_group() {
+        unsafe extern "C" {
+            fn getpgid(pid: i32) -> i32;
+            fn getpgrp() -> i32;
+        }
+        let mut child =
+            spawn_detached(Path::new("/bin/sleep"), &[OsString::from("10")], None).unwrap();
+        let pid = child.0.id();
+        let group = unsafe { getpgid(pid as i32) };
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        assert_eq!(group, pid as i32);
+        assert_ne!(group, unsafe { getpgrp() });
+    }
+
+    // Run in a subprocess with its own group so the test never signals the
+    // test runner or the user's terminal. Catch SIGINT only in this launcher;
+    // the spawned sleep retains the daemon's normal signal disposition.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sigint_launcher_helper() {
+        let Some(ready) = env::var_os("DEERFLOW_TEST_SIGINT_READY") else {
+            return;
+        };
+        let mut interrupt =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
+        let mut child =
+            spawn_detached(Path::new("/bin/sleep"), &[OsString::from("30")], None).unwrap();
+        fs::write(ready, child.0.id().to_string()).unwrap();
+        interrupt.recv().await.unwrap();
+        thread::sleep(Duration::from_millis(100));
+        let exited = child.0.try_wait().unwrap();
+        if exited.is_none() {
+            child.0.kill().unwrap();
+        }
+        child.0.wait().unwrap();
+        assert!(
+            exited.is_none(),
+            "launcher SIGINT terminated the shared daemon: {exited:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_survives_sigint_to_the_launcher_process_group() {
+        use std::os::unix::process::CommandExt;
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let ready = root.path().join("daemon-pid");
+        let mut launcher = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "process_tests::sigint_launcher_helper",
+                "--nocapture",
+            ])
+            .env("DEERFLOW_TEST_SIGINT_READY", &ready)
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        while !ready.exists() && started.elapsed() < Duration::from_secs(5) {
+            if launcher.try_wait().unwrap().is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        if !ready.exists() {
+            let _ = launcher.kill();
+            let output = launcher.wait_with_output().unwrap();
+            panic!("signal fixture did not start: {output:?}");
+        }
+        let signaled = unsafe { kill(-(launcher.id() as i32), 2) };
+        let sent = Instant::now();
+        while launcher.try_wait().unwrap().is_none() && sent.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if launcher.try_wait().unwrap().is_none() {
+            // Both PIDs belong to this fixture; reap/terminate them on failure.
+            if let Ok(pid) = fs::read_to_string(&ready).unwrap().parse::<i32>() {
+                unsafe {
+                    kill(pid, 9);
+                }
+            }
+            launcher.kill().unwrap();
+        }
+        let output = launcher.wait_with_output().unwrap();
+        assert_eq!(signaled, 0, "failed to signal isolated launcher group");
+        assert!(
+            output.status.success(),
+            "SIGINT isolation failed: {output:?}"
+        );
+    }
 
     #[test]
     fn daemon_exit_is_reported_without_waiting_for_startup_timeout() {
@@ -1082,11 +1256,6 @@ mod process_tests {
         assert!(push_mcp_allow_command(&mut commands, temporary.path().join("missing")).is_err());
         push_mcp_allow_command(&mut commands, allowed).unwrap();
         assert_eq!(commands.len(), 1);
-    }
-
-    #[test]
-    fn current_process_is_not_reported_as_exited() {
-        assert!(!wait_for_process_exit(std::process::id(), Duration::ZERO).unwrap());
     }
 
     #[test]

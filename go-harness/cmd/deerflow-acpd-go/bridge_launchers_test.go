@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -112,6 +114,30 @@ func TestExistingRustBridgeGoLaunchScripts(t *testing.T) {
 	invoke("stop", true)
 	invoke("stop", true) // Idempotent stop must work with Windows PowerShell 5.1 too.
 	invoke("status", false)
+	// Simulate an abrupt exit by restoring a dead instance's endpoint. Each
+	// launcher must recover without requiring manual deletion of runtime files.
+	stale, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"status", "stop", "restart"} {
+		if err := os.WriteFile(filepath.Join(ipc, localhost.EndpointFilename), stale, 0600); err != nil {
+			t.Fatal(err)
+		}
+		out := invoke(action, action != "status")
+		if action == "status" && !bytes.Contains(out, []byte("DeerFlow ACP daemon is not running")) {
+			t.Fatalf("stale status: %s", out)
+		}
+		if action == "restart" {
+			if next := endpoint(); next.Token == first.Token {
+				t.Fatal("stale restart reused dead instance")
+			}
+			invoke("stop", true)
+		}
+		if _, err := os.Stat(filepath.Join(ipc, localhost.EndpointFilename)); !os.IsNotExist(err) {
+			t.Fatalf("stale %s did not clear endpoint", action)
+		}
+	}
 	if out := invoke("removed-python", false); !strings.Contains(string(out), "has been removed") {
 		t.Fatalf("missing migration diagnostic: %s", out)
 	}
@@ -122,5 +148,71 @@ func TestExistingRustBridgeGoLaunchScripts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ipc, localhost.EndpointFilename)); !os.IsNotExist(err) {
 		t.Fatal("stopped daemon still has an endpoint")
+	}
+}
+
+func TestExistingRustBridgeGracefulShutdownLease(t *testing.T) {
+	bridge := os.Getenv("DEERFLOW_TEST_BRIDGE")
+	if testing.Short() || bridge == "" {
+		t.Skip("set DEERFLOW_TEST_BRIDGE to a built binary")
+	}
+	dir := t.TempDir()
+	config := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(config, []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	finishCleanup := func() { once.Do(func() { close(release) }) }
+	host, err := localhost.New(localhost.Config{
+		RuntimeDir: dir, ConfigPath: config,
+		ServeACP: func(context.Context, io.ReadCloser, io.WriteCloser) error { return nil },
+		Cleanup:  func() error { close(started); <-release; return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		finishCleanup()
+		if err := host.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	invoke := func(mode string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bridge, mode, "--config", config, "--runtime-dir", dir)
+		for _, item := range os.Environ() {
+			key, _, _ := strings.Cut(item, "=")
+			if !strings.EqualFold(key, "DEER_FLOW_PORTABLE_ROOT") && !strings.EqualFold(key, "DEER_FLOW_ACP_DAEMON_STOP_TIMEOUT_MS") {
+				cmd.Env = append(cmd.Env, item)
+			}
+		}
+		cmd.Env = append(cmd.Env, "DEER_FLOW_ACP_DAEMON_STOP_TIMEOUT_MS=30")
+		return cmd.CombinedOutput()
+	}
+	if out, err := invoke("--stop-daemon"); err == nil || !bytes.Contains(out, []byte("not forcibly terminated")) {
+		t.Fatalf("stop lost graceful deadline: %v %s", err, out)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("STOP did not start cleanup")
+	}
+	if out, err := invoke("--status"); err == nil || bytes.Contains(out, []byte("is not running")) {
+		t.Fatalf("live Go lock was ignored: %v %s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, localhost.EndpointFilename)); err != nil {
+		t.Fatal("endpoint removed during cleanup: ", err)
+	}
+	finishCleanup()
+	if err := host.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := invoke("--stop-daemon"); err == nil || !bytes.Contains(out, []byte("is not running")) {
+		t.Fatalf("finished cleanup not recognized: %v %s", err, out)
 	}
 }
