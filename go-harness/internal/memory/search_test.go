@@ -97,7 +97,7 @@ func TestSearchChineseQuestionAndLargeSnapshot(t *testing.T) {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO memory_facts VALUES(?,?,1,0,?)`, id, scope.Key(), target.CreatedAt.Format("2006-01-02T15:04:05.999999999Z07:00")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO memory_fact_revisions SELECT ?,1,1,'unrelated fact','project',0.1,?,'operator','','','',0,'',0,created_at FROM memory_fact_revisions WHERE fact_id=?`, id, id, target.ID); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO memory_fact_revisions(fact_id,revision,scope_revision,content,category,confidence,source_id,source_kind,source_actor_id,source_run_id,source_input_id,source_event_sequence,policy_version,deleted,created_at) SELECT ?,1,1,'unrelated fact','project',0.1,?,'operator','','','',0,'',0,created_at FROM memory_fact_revisions WHERE fact_id=?`, id, id, target.ID); err != nil {
 			t.Fatal(err)
 		}
 	}

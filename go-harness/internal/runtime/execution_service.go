@@ -378,6 +378,10 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 			if _, err = s.Memory.SettleStagingTx(persist, tx, lease.Scope.MemberID, lease.Scope.AttemptID, publish); err != nil {
 				return err
 			}
+			if err = s.Memory.SettleInputDecisionTx(persist, tx, lease.Scope.MemberID, state.Status,
+				result.OptionalPostRunSkipped && runErr == nil && budgetRecoveryErr == nil); err != nil {
+				return err
+			}
 		}
 		if state.Status != harness.ExecutionWaitingInput {
 			if roleFailure && state.Status == harness.ExecutionFailed && state.BlockedReason == "" {

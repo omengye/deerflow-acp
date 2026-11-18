@@ -3,9 +3,10 @@ package main
 import "path/filepath"
 
 // Exercise the delivered desktop management transport only in the disposable
-// package. The fixture keeps evolution disabled, so deletion cannot need review.
+// package. Direct deletion must remain available without retired review settings.
 func (s *smoke) directSkillDelete() func() {
-	need(object(s.waku.deerflow("snapshot")["skill_evolution"])["enabled"] == false, "delete fixture unexpectedly enabled review")
+	_, hasEvolution := s.waku.deerflow("snapshot")["skill_evolution"]
+	need(!hasEvolution, "delete fixture exposed retired skill_evolution configuration")
 	page := s.waku.deerflow("manage", obj{"operation": "skill.list", "status": "current", "name": "bootstrap", "limit": 100})
 	need(len(array(page["skills"])) == 1, "missing isolated deletion fixture")
 	entry := object(array(page["skills"])[0])

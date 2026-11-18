@@ -3,10 +3,8 @@ package memory
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"regexp"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
@@ -21,15 +19,20 @@ const (
 	ExternalContextPolicy = "personal-explicit-external-context-v1"
 	// ExternalContextProvenance labels such facts in model-visible memory.
 	ExternalContextProvenance = "external_context"
+	UnknownProvenance         = "unknown"
+	UserSupportedProvenance   = "user_supported"
 )
 
-// Provenance returns the model-visible provenance label of a fact, or "" for
-// facts that carry no external-content provenance.
+// Provenance is independent of validation policy. Historical facts without
+// verifiable context retain "unknown"; a policy upgrade never establishes trust.
 func Provenance(f Fact) string {
+	if f.Source.Provenance != "" {
+		return f.Source.Provenance
+	}
 	if f.Source.PolicyVersion == ExternalContextPolicy {
 		return ExternalContextProvenance
 	}
-	return ""
+	return UnknownProvenance
 }
 
 // SessionConsumedExternalContent reports whether any tool call in the session
@@ -47,31 +50,17 @@ func (s *Store) SessionConsumedExternalContent(ctx context.Context, sessionID st
 		if err = rows.Scan(&name); err != nil {
 			return false, err
 		}
-		if harness.ExternalContentTool(name.String) {
+		if harness.UntrustedMemoryContentTool(name.String) {
 			return true, nil
 		}
 	}
 	return false, rows.Err()
 }
 
-// CheckExternalContextWrite applies value-level provenance to an explicit
-// write made after the session consumed external content. Injected content
-// tries to persist actionable values (links, domains, paths, commands, contact
-// addresses, markup), so every such token in the fact must have been typed by
-// the user in the current message. Ordinary text, including "A/B" or "1/2"
-// the user wrote, is unaffected; a value that exists only in third-party
-// content is rejected. Multi-line facts and secret-like values are rejected.
+// CheckExternalContextWrite is a compatibility entry point for the same
+// deterministic declaration validator used by all model write channels.
 func CheckExternalContextWrite(content, evidence, userText string) error {
-	if utf8.RuneCountInString(strings.TrimSpace(evidence)) < 4 {
-		return fmt.Errorf("%w: this session read external content; quote a longer phrase from the current user message as evidence", harness.ErrInvalidInput)
-	}
-	if strings.ContainsAny(content, "\r\n") || credentialLike.MatchString(strings.ToLower(content)) {
-		return fmt.Errorf("%w: this session read external content; memory written now must be a single line without secret-like values", harness.ErrInvalidInput)
-	}
-	if ungrounded := UngroundedActionableTokens(content, userText); len(ungrounded) > 0 {
-		return fmt.Errorf("%w: this session read external content; links, domains, paths, addresses or markup in memory must be copied from the current user message, not from tool results: %s", harness.ErrInvalidInput, strings.Join(ungrounded, " "))
-	}
-	return nil
+	return validateLegacyContent(content, evidence, userText)
 }
 
 // actionableRun is a maximal run of characters that can form a link, domain,

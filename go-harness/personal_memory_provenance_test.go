@@ -51,7 +51,7 @@ func TestPersonalMemoryAfterExternalContentKeepsProvenance(t *testing.T) {
 		systemPrompts, toolResults = append(systemPrompts, system), append(toolResults, tool)
 		mu.Unlock()
 		remember := func(id, content string) map[string]any {
-			args, _ := json.Marshal(map[string]any{"scope": "global", "key": "profile.last_reported_location", "category": "profile", "content": content, "evidence": "我在北京", "expected_revision": 0})
+			args, _ := json.Marshal(map[string]any{"scope": "global", "key": "profile.last_reported_location", "category": "profile", "content": content, "value": "北京", "evidence": "我在北京", "evidence_start": 4, "evidence_end": 8, "expected_revision": 0})
 			return map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"id": id, "type": "function", "function": map[string]any{"name": "remember_memory", "arguments": string(args)}}}}
 		}
 		message, reason := map[string]any{"role": "assistant", "content": "ok"}, "stop"
@@ -89,11 +89,11 @@ func TestPersonalMemoryAfterExternalContentKeepsProvenance(t *testing.T) {
 	if _, err = c.Run(ctx, a.ID, []harness.Content{{Type: "text", Text: "请记住，我在北京"}}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	var policy, content string
-	if err = c.store.DB().QueryRow(`SELECT policy_version,content FROM memory_fact_revisions`).Scan(&policy, &content); err != nil {
+	var policy, content, provenance string
+	if err = c.store.DB().QueryRow(`SELECT policy_version,content,provenance FROM memory_fact_revisions`).Scan(&policy, &content, &provenance); err != nil {
 		t.Fatalf("expected exactly the clean fact: %v", err)
 	}
-	if policy != memory.ExternalContextPolicy || strings.Contains(content, "evil") {
+	if policy != memory.ExplicitPolicyV2 || provenance != memory.ExternalContextProvenance || strings.Contains(content, "evil") {
 		t.Fatalf("fact policy=%q content=%q", policy, content)
 	}
 	b, err := c.NewSession(ctx, t.TempDir())
@@ -105,7 +105,7 @@ func TestPersonalMemoryAfterExternalContentKeepsProvenance(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(toolResults) < 3 || !strings.Contains(toolResults[2], "external content") {
+	if len(toolResults) < 3 || !strings.Contains(toolResults[2], "unsupported_value_or_content") {
 		t.Fatalf("injected write was not rejected with guidance: %q", toolResults)
 	}
 	last := systemPrompts[len(systemPrompts)-1]

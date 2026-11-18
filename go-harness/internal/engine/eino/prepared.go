@@ -26,20 +26,21 @@ import (
 // native runner, persistence and attempt lease; this value owns only the agent
 // and its real I/O/resources. Do not reuse it across attempts.
 type PreparedAttempt struct {
-	Agent        adk.ResumableAgent
-	Contract     string
-	State        json.RawMessage
-	ctx          context.Context
-	budget       *runBudget
-	io           *runIO
-	sink         *eventSink
-	cleanups     []func() error
-	resourceOnce sync.Once
-	resourceErr  error
-	joinOnce     sync.Once
-	executionErr error
-	cleanupErr   error
-	postRun      func(context.Context, string, bool) error
+	Agent           adk.ResumableAgent
+	Contract        string
+	resumeContracts []string
+	State           json.RawMessage
+	ctx             context.Context
+	budget          *runBudget
+	io              *runIO
+	sink            *eventSink
+	cleanups        []func() error
+	resourceOnce    sync.Once
+	resourceErr     error
+	joinOnce        sync.Once
+	executionErr    error
+	cleanupErr      error
+	postRun         func(context.Context, string, bool) error
 }
 
 // PrepareAttempt requires the already-active trusted budget scope when a
@@ -229,6 +230,24 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	p.Contract, err = e.executionContract(contracts, extensions.State, trusted)
 	if err != nil {
 		return p, err
+	}
+	if pinned != nil && trusted["read_file"] {
+		for index, info := range contracts {
+			legacy, legacyErr := harnesstools.LegacyWorkspaceReadInfo(ctx, info)
+			if legacyErr != nil {
+				return p, legacyErr
+			}
+			if legacy == nil {
+				continue
+			}
+			previous := append([]*schema.ToolInfo(nil), contracts...)
+			previous[index] = legacy
+			alias, aliasErr := e.executionContract(previous, extensions.State, trusted)
+			if aliasErr != nil {
+				return p, aliasErr
+			}
+			p.resumeContracts = append(p.resumeContracts, alias)
+		}
 	}
 	selectedModel := req.Session.Model
 	if selectedModel == "" {

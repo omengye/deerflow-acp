@@ -308,6 +308,13 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		return harness.RunResult{}, err
 	}
 	callerCtx := ctx
+	var postRunAvailable, postRunInvoked bool
+	defer func() {
+		// Budget termination is normalized by later defers. Decide only after
+		// that normalization and after all persistence/cleanup errors are known.
+		result.OptionalPostRunSkipped = returnErr == nil && callerCtx.Err() == nil && postRunAvailable && !postRunInvoked &&
+			result.StopReason != "waiting_input" && result.StopReason != "cancelled"
+	}()
 	defer func() {
 		// A root admission gate may win the race with the cancellation monitor.
 		// Confirm the exact durable root stop after every cleanup defer, and
@@ -518,7 +525,7 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		result.StopReason = "waiting_input"
 		return nil
 	}
-	loop, checkpoints, err := e.turnLoop(ctx, req, resumeID, prepared.Contract, prepared.State, budget, savedCheckpoint, prepared.Agent, func(iter *adk.AsyncIterator[*adk.AgentEvent]) error {
+	loop, checkpoints, err := e.turnLoop(ctx, req, resumeID, prepared.Contract, prepared.resumeContracts, prepared.State, budget, savedCheckpoint, prepared.Agent, func(iter *adk.AsyncIterator[*adk.AgentEvent]) error {
 		for {
 			event, ok := iter.Next()
 			if !ok {
@@ -630,7 +637,9 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		runErr, _ = removeErrorLeaves(runErr, func(err error) bool { _, ok := err.(*outputContinuationError); return ok })
 		runErr = errors.Join(runErr, sink.emit(context.WithoutCancel(ctx), harness.RunEvent{Kind: "output_limit", Text: "\n\n" + outputLimit.Error()}))
 	}
+	postRunAvailable = prepared.postRun != nil
 	if runErr == nil && result.StopReason == "end_turn" && ctx.Err() == nil && lastRootAnswer != "" && prepared.postRun != nil {
+		postRunInvoked = true
 		runErr = errors.Join(runErr, prepared.postRun(ctx, lastRootAnswer, budget.canOptionalModelCall(ctx, 2048)))
 	}
 	ioLifecycle.closeAndWait()

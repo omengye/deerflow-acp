@@ -71,7 +71,7 @@ func (c *Client) managementPersonalMemory(ctx context.Context, r localhost.Manag
 			ProfileID string `json:"profile_id"`
 			memory.Mutation
 		}
-		if err = decodeManagement(r, &in, "profile_id", "operation_id", "action", "key", "content", "category", "expected_revision"); err != nil {
+		if err = decodeManagement(r, &in, "profile_id", "operation_id", "action", "key", "fact_id", "content", "category", "expected_revision", "schema_version"); err != nil {
 			return nil, err
 		}
 		if in.ProfileID != c.service.MemoryGlobalID {

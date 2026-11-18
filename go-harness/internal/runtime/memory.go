@@ -9,29 +9,110 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
 )
 
-// FlushMemory waits for an active foreground run to leave the session slot,
-// then observes the synchronous extraction transaction. Context bounds the
-// wait; there is no independent queue or model retry hidden in this operation.
 func (s *Service) FlushMemory(ctx context.Context, owner, sessionID string) error {
+	status, err := s.FlushMemoryWithStatus(ctx, owner, sessionID)
+	if err != nil {
+		return err
+	}
+	return status.Err()
+}
+
+// FlushMemoryWithStatus fixes the input set while holding the foreground slot,
+// then releases it before observing asynchronous work. It never dispatches work.
+func (s *Service) FlushMemoryWithStatus(ctx context.Context, owner, sessionID string) (status harness.MemoryFlushStatus, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	var set memory.FlushSet
 	for {
-		barrier, _, done, err := s.memoryScope(ctx, owner, sessionID, harness.MemorySession)
-		if err == nil {
-			defer done()
-			return s.Memory.Flush(barrier)
+		barrier, _, done, acquireErr := s.memoryScope(ctx, owner, sessionID, harness.MemorySession)
+		if acquireErr == nil {
+			if s.MemoryAsync {
+				set, err = s.Memory.CaptureFlush(barrier, sessionID)
+			} else {
+				err = s.Memory.Flush(barrier)
+			}
+			done()
+			if err != nil {
+				return status, err
+			}
+			if !s.MemoryAsync {
+				status.Flushed = true
+				status.Reason = "complete"
+				return status, nil
+			}
+			break
 		}
-		if !errors.Is(err, harness.ErrBusy) {
-			return err
+		if ctx.Err() != nil {
+			status.Reason = "foreground_timeout"
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return status, ctx.Err()
+			}
+			return status, nil
 		}
-		timer := time.NewTimer(25 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
+		if !errors.Is(acquireErr, harness.ErrBusy) {
+			return status, acquireErr
+		}
+		if err = waitMemoryPoll(ctx); err != nil {
+			status.Reason = "foreground_timeout"
+			if errors.Is(err, context.Canceled) {
+				return status, err
+			}
+			return status, nil
 		}
 	}
+	return s.waitMemoryFlush(ctx, set, waitMemoryPoll)
+}
+
+func (s *Service) waitMemoryFlush(ctx context.Context, set memory.FlushSet, poll func(context.Context) error) (status harness.MemoryFlushStatus, err error) {
+	for {
+		observed, e := s.Memory.ObserveFlush(ctx, set)
+		if e != nil {
+			if ctx.Err() != nil {
+				return flushDeadline(ctx, status)
+			}
+			return observed, e
+		}
+		status = observed
+		if status.Pending == 0 && status.Blocked == 0 && status.Failed == 0 {
+			if err = s.Memory.Flush(ctx); err != nil {
+				return status, err
+			}
+			status.Flushed = true
+			status.Reason = "complete"
+			return status, nil
+		}
+		if status.Blocked > 0 || status.Failed > 0 {
+			return status, nil
+		}
+		if !s.Memory.ExtractionWorkerRunning() {
+			status.WaitReason = status.Reason
+			status.Reason = "worker_not_running"
+			return status, nil
+		}
+		if err = poll(ctx); err != nil {
+			return flushDeadline(ctx, status)
+		}
+	}
+}
+
+func waitMemoryPoll(ctx context.Context) error {
+	timer := time.NewTimer(25 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+func flushDeadline(ctx context.Context, status harness.MemoryFlushStatus) (harness.MemoryFlushStatus, error) {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		status.Reason = "cancelled"
+		return status, ctx.Err()
+	}
+	status.WaitReason = status.Reason
+	status.Reason = "timeout"
+	return status, nil
 }
 
 func (s *Service) ImportDeerMem(ctx context.Context, owner, sessionID string, kind harness.MemoryScope, raw []byte) (harness.LegacyImportReport, error) {
@@ -108,7 +189,7 @@ func (s *Service) PromoteMemoryFact(ctx context.Context, owner, sessionID string
 
 func memoryFact(f memory.Fact, kind harness.MemoryScope) harness.MemoryFact {
 	return harness.MemoryFact{ID: f.ID, Scope: kind, Revision: f.Revision, Content: f.Content, Category: f.Category, Confidence: f.Confidence, CreatedAt: f.CreatedAt, UpdatedAt: f.UpdatedAt,
-		Source: harness.MemorySource{ID: f.Source.ID, Kind: f.Source.Kind, ActorID: f.Source.ActorID, RunID: f.Source.RunID, InputID: f.Source.InputID, EventSequence: f.Source.EventSequence, PolicyVersion: f.Source.PolicyVersion}}
+		Source: harness.MemorySource{ID: f.Source.ID, Kind: f.Source.Kind, ActorID: f.Source.ActorID, RunID: f.Source.RunID, InputID: f.Source.InputID, EventSequence: f.Source.EventSequence, PolicyVersion: f.Source.PolicyVersion, Provenance: memory.Provenance(f)}}
 }
 
 func memoryConflict(err error) error {

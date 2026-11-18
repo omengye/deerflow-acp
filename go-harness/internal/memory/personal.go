@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
@@ -87,24 +88,33 @@ func (s *Store) ChannelPreferences(ctx context.Context, workspace string) (strin
 }
 
 type Mutation struct {
-	OperationID      string `json:"operation_id"`
-	Action           string `json:"action"`
-	Key              string `json:"key"`
-	Content          string `json:"content,omitempty"`
-	Category         string `json:"category,omitempty"`
-	ExpectedRevision int64  `json:"expected_revision"`
-	Source           Source `json:"-"`
-	Automatic        bool   `json:"-"`
+	Validated        *ValidatedWrite `json:"-"`
+	OperationID      string          `json:"operation_id"`
+	Action           string          `json:"action"`
+	Key              string          `json:"key"`
+	Content          string          `json:"content,omitempty"`
+	Category         string          `json:"category,omitempty"`
+	ExpectedRevision int64           `json:"expected_revision"`
+	Source           Source          `json:"-"`
+	Automatic        bool            `json:"-"`
+	SchemaVersion    int             `json:"schema_version,omitempty"`
+	FactID           string          `json:"fact_id,omitempty"`
+	RequireSnapshot  bool            `json:"-"`
 }
 
 type Receipt struct {
-	OperationID string    `json:"operation_id"`
-	Status      string    `json:"status"`
-	Key         string    `json:"key"`
-	FactID      string    `json:"fact_id"`
-	Revision    int64     `json:"revision"`
-	Scope       ScopeKind `json:"scope"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Reason        string    `json:"reason,omitempty"`
+	OperationID   string    `json:"operation_id"`
+	Status        string    `json:"status"`
+	Key           string    `json:"key"`
+	FactID        string    `json:"fact_id"`
+	Revision      int64     `json:"revision"`
+	Scope         ScopeKind `json:"scope"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	SchemaVersion int       `json:"schema_version,omitempty"`
+	TargetKind    string    `json:"target_kind,omitempty"`
+	TargetID      string    `json:"target_id,omitempty"`
+	Barrier       bool      `json:"barrier,omitempty"`
 }
 
 var slotPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,95}$`)
@@ -153,121 +163,274 @@ func slotHead(ctx context.Context, tx *sql.Tx, scope Scope, key string) (Fact, b
 
 // Mutate atomically commits the fact and its delivery receipt. The expected
 // revision is per attribute, so unrelated concurrent facts cannot invalidate it.
-// Automatic jobs can never resurrect tombstones or overwrite a newer revision.
+// Automatic jobs cannot overwrite newer revisions. Tombstone restoration also
+// requires a fresh source and a different, host-validated structured value.
 func (s *Store) Mutate(ctx context.Context, scope Scope, in Mutation) (Receipt, error) {
-	in.Key = CanonicalKey(in.Key)
-	if !slotPattern.MatchString(in.Key) || in.OperationID == "" || len(in.OperationID) > 180 || in.ExpectedRevision < 0 || !validSource(in.Source) || (in.Action != "remember" && in.Action != "forget") {
-		return Receipt{}, harness.ErrInvalidInput
-	}
-	if in.Action == "remember" && (!validCandidate(Candidate{Content: in.Content, Category: in.Category, Confidence: 1, Source: in.Source}) || len(in.Content) > 2048 || (in.Category != "profile" && in.Category != "preference" && in.Category != "project")) {
-		return Receipt{}, harness.ErrInvalidInput
-	}
-	if scope.kind == GlobalScope && in.Category == "project" {
-		return Receipt{}, harness.ErrInvalidInput
-	}
-	if in.Action == "remember" && credentialLike.MatchString(in.Content) {
-		return Receipt{}, harness.ErrInvalidInput
-	}
-	raw, _ := json.Marshal(in)
-	digest := sha256.Sum256(raw)
-	requestSHA := hex.EncodeToString(digest[:])
 	var receipt Receipt
 	err := transact(ctx, s.db, func(tx *sql.Tx) error {
-		var oldSHA, oldScope string
-		var oldReceipt []byte
-		err := tx.QueryRowContext(ctx, `SELECT scope_key,request_sha,receipt FROM memory_operations WHERE operation_id=?`, in.OperationID).Scan(&oldScope, &oldSHA, &oldReceipt)
-		if err == nil {
-			if oldScope != scope.key || oldSHA != requestSHA {
-				return ErrVersionConflict
-			}
-			return json.Unmarshal(oldReceipt, &receipt)
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		version, err := checkScope(ctx, tx, scope, true)
-		if err != nil {
-			return err
-		}
-		f, deleted, err := slotHead(ctx, tx, scope, in.Key)
-		if err != nil {
-			return err
-		}
-		now := time.Now().UTC()
-		receipt = Receipt{OperationID: in.OperationID, Key: in.Key, Scope: scope.kind, FactID: f.ID, Revision: f.Revision, UpdatedAt: now}
-		switch {
-		case in.Automatic && (deleted || f.Revision != in.ExpectedRevision):
-			receipt.Status = "superseded"
-		case f.Revision != in.ExpectedRevision:
-			return fmt.Errorf("%w: current_revision=%d deleted=%t key=%s", ErrVersionConflict, f.Revision, deleted, in.Key)
-		case in.Action == "forget" && (f.ID == "" || deleted):
-			// A tombstone also records forgetting an attribute not previously saved.
-			if f.ID != "" {
-				receipt.Status = "forgotten"
-				break
-			}
-			fallthrough
-		default:
-			if in.Action == "remember" && !deleted && f.Content == in.Content && f.Category == in.Category {
-				receipt.Status = "unchanged"
-				break
-			}
-			version, err = bumpScope(ctx, tx, scope, version)
-			if err != nil {
-				return err
-			}
-			isNew := f.ID == ""
-			if isNew {
-				hash := sha256.Sum256([]byte(scope.key + "\x00" + in.Key))
-				f = Fact{ID: "mem-" + hex.EncodeToString(hash[:16]), ScopeKey: scope.key, CreatedAt: now}
-				if _, err = tx.ExecContext(ctx, `INSERT INTO memory_facts(id,scope_key,head_revision,created_at) VALUES(?,?,0,?)`, f.ID, scope.key, now.Format(time.RFC3339Nano)); err != nil {
-					return err
-				}
-				if _, err = tx.ExecContext(ctx, `INSERT INTO memory_slots(scope_key,slot_key,fact_id) VALUES(?,?,?)`, scope.key, in.Key, f.ID); err != nil {
-					return err
-				}
-			}
-			f.Revision++
-			f.Source = in.Source
-			f.Source.ID = "operation/" + in.OperationID
-			f.UpdatedAt = now
-			deleted = in.Action == "forget"
-			if !deleted {
-				f.Content, f.Category, f.Confidence = in.Content, in.Category, 1
-			}
-			if f.Category == "" {
-				f.Category = "profile"
-			}
-			if _, err = tx.ExecContext(ctx, `UPDATE memory_facts SET head_revision=?,deleted=? WHERE id=?`, f.Revision, deleted, f.ID); err != nil {
-				return err
-			}
-			if err = insertRevision(ctx, tx, f, version, deleted); err != nil {
-				return err
-			}
-			if _, err = tx.ExecContext(ctx, `DELETE FROM memory_vectors WHERE fact_id=?`, f.ID); err != nil {
-				return err
-			}
-			receipt.FactID, receipt.Revision = f.ID, f.Revision
-			receipt.Status = "saved"
-			if !isNew {
-				receipt.Status = "updated"
-			}
-			if deleted {
-				receipt.Status = "forgotten"
-			}
-		}
-		encoded, err := json.Marshal(receipt)
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO memory_operations(operation_id,scope_key,request_sha,receipt,created_at) VALUES(?,?,?,?,?)`, in.OperationID, scope.key, requestSHA, encoded, now.Format(time.RFC3339Nano))
+		var err error
+		receipt, err = s.mutateTx(ctx, tx, scope, in)
 		return err
 	})
 	return receipt, err
 }
 
+func (s *Store) mutateTx(ctx context.Context, tx *sql.Tx, scope Scope, in Mutation) (Receipt, error) {
+	in.Key = CanonicalKey(in.Key)
+	byID := in.FactID != ""
+	if in.OperationID == "" || len(in.OperationID) > 180 || in.ExpectedRevision < 0 || !validSource(in.Source) ||
+		(in.SchemaVersion != 0 && in.SchemaVersion != 2) || (in.Action != "remember" && in.Action != "forget") ||
+		(!byID && !slotPattern.MatchString(in.Key)) ||
+		(byID && (in.Key != "" || in.Action != "forget" || len(in.FactID) > 256 || !utf8.ValidString(in.FactID) || strings.ContainsRune(in.FactID, 0))) {
+		return Receipt{}, harness.ErrInvalidInput
+	}
+	if in.Action == "remember" && (!validCandidate(Candidate{Content: in.Content, Category: in.Category, Confidence: 1, Source: in.Source}) ||
+		len(in.Content) > 2048 || (in.Category != "profile" && in.Category != "preference" && in.Category != "project") ||
+		(scope.kind == GlobalScope && in.Category == "project") || credentialLike.MatchString(in.Content)) {
+		return Receipt{}, harness.ErrInvalidInput
+	}
+	raw, _ := json.Marshal(in)
+	// Preserve the exact v1 encoding for legacy receipt replay. Only the v2
+	// request digest includes the host-bound input identity.
+	if in.SchemaVersion == 2 {
+		raw, _ = json.Marshal([]any{in, in.Source.RunID, in.Source.InputID, in.Source.EventSequence, in.Automatic})
+	}
+	digest := sha256.Sum256(raw)
+	requestSHA := hex.EncodeToString(digest[:])
+	var oldSHA, oldScope string
+	var oldReceipt []byte
+	err := tx.QueryRowContext(ctx, `SELECT scope_key,request_sha,receipt FROM memory_operations WHERE operation_id=?`, in.OperationID).Scan(&oldScope, &oldSHA, &oldReceipt)
+	if err == nil {
+		if oldScope != scope.key || oldSHA != requestSHA {
+			return Receipt{}, ErrVersionConflict
+		}
+		var receipt Receipt
+		err = json.Unmarshal(oldReceipt, &receipt)
+		return receipt, err
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Receipt{}, err
+	}
+	version, err := checkScope(ctx, tx, scope, true)
+	if err != nil {
+		return Receipt{}, err
+	}
+	key := in.Key
+	var f Fact
+	var deleted bool
+	if byID {
+		f, deleted, err = factHeadTx(ctx, tx, scope, in.FactID)
+		if err == nil && f.ID != "" {
+			err = tx.QueryRowContext(ctx, `SELECT slot_key FROM memory_slots WHERE scope_key=? AND fact_id=?`, scope.key, f.ID).Scan(&key)
+			if errors.Is(err, sql.ErrNoRows) {
+				err = nil
+			}
+		}
+	} else {
+		f, deleted, err = slotHead(ctx, tx, scope, key)
+	}
+	if err != nil {
+		return Receipt{}, err
+	}
+	superseded := false
+	var manifest InputSnapshot
+	var proof *writeProof
+	if in.RequireSnapshot {
+		pinned, sourceErr := sourceScopeTx(ctx, tx, scope, in.Source, in.Action == "forget" && !in.Automatic)
+		if sourceErr != nil {
+			if in.Automatic && errors.Is(sourceErr, ErrSourceSuperseded) {
+				superseded = true
+			} else {
+				return Receipt{}, sourceErr
+			}
+		} else if in.Automatic {
+			in.ExpectedRevision = pinned.Slots[key]
+		} else if in.Action == "remember" && f.ID != "" && key != "" {
+			var lastDelete int64
+			if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM memory_fact_revisions WHERE fact_id=? AND deleted=1`, f.ID).Scan(&lastDelete); err != nil {
+				return Receipt{}, err
+			}
+			if pinned.Slots[key] < lastDelete {
+				return Receipt{}, ErrSourceSuperseded
+			}
+		}
+		if !superseded {
+			manifest, err = inputSnapshot(ctx, tx, in.Source.RunID, in.Source.InputID)
+			if err != nil {
+				return Receipt{}, err
+			}
+			proof, err = mutationWriteProof(manifest, in)
+			if err != nil {
+				return Receipt{}, err
+			}
+		}
+	}
+	now := time.Now().UTC()
+	kind, target := "key", in.Key
+	if byID {
+		kind, target = "fact_id", in.FactID
+	}
+	receipt := Receipt{OperationID: in.OperationID, Key: key, Scope: scope.kind, FactID: f.ID, Revision: f.Revision, UpdatedAt: now,
+		SchemaVersion: 2, TargetKind: kind, TargetID: target, Barrier: deleted}
+	var restoreStatus, restoreReason string
+	if !superseded && deleted && in.Action == "remember" && f.Revision == in.ExpectedRevision {
+		restoreStatus, restoreReason, err = relearnDecisionTx(ctx, tx, f, in, manifest, proof)
+		if err != nil {
+			return Receipt{}, err
+		}
+	}
+	switch {
+	case superseded || in.Automatic && f.Revision != in.ExpectedRevision:
+		receipt.Status = "superseded"
+	case restoreStatus != "":
+		receipt.Status, receipt.Reason = restoreStatus, restoreReason
+	case byID && f.ID == "":
+		receipt.Status = "not_found"
+	case f.Revision != in.ExpectedRevision:
+		return Receipt{}, &StateConflict{State: KeyState{Scope: scope.kind, Key: key, Revision: f.Revision, Deleted: deleted, Exists: f.ID != ""}}
+	case in.Action == "forget" && deleted:
+		receipt.Status = "already_forgotten"
+	case in.Action == "forget" && f.ID != "":
+		f, err = deleteFactTx(ctx, tx, scope, f, version, Source{ID: "operation/" + in.OperationID, Kind: in.Source.Kind, ActorID: in.Source.ActorID,
+			RunID: in.Source.RunID, InputID: in.Source.InputID, EventSequence: in.Source.EventSequence, PolicyVersion: in.Source.PolicyVersion}, true)
+		if err != nil {
+			return Receipt{}, err
+		}
+		receipt.Status, receipt.Revision, receipt.Barrier = "forgotten", f.Revision, true
+	case in.Action == "remember" && !deleted && f.ID != "" && f.Content == in.Content && f.Category == in.Category:
+		receipt.Status = "unchanged"
+	default:
+		version, err = bumpScope(ctx, tx, scope, version)
+		if err != nil {
+			return Receipt{}, err
+		}
+		isNew := f.ID == ""
+		if isNew {
+			hash := sha256.Sum256([]byte(scope.key + "\x00" + key))
+			f = Fact{ID: "mem-" + hex.EncodeToString(hash[:16]), ScopeKey: scope.key, CreatedAt: now}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO memory_facts(id,scope_key,head_revision,created_at) VALUES(?,?,0,?)`, f.ID, scope.key, now.Format(time.RFC3339Nano)); err != nil {
+				return Receipt{}, err
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO memory_slots(scope_key,slot_key,fact_id) VALUES(?,?,?)`, scope.key, key, f.ID); err != nil {
+				return Receipt{}, err
+			}
+		}
+		f.Revision++
+		f.Source = in.Source
+		f.Source.ID = "operation/" + in.OperationID
+		f.UpdatedAt = now
+		deleted = in.Action == "forget"
+		if !deleted {
+			f.Content, f.Category, f.Confidence = in.Content, in.Category, 1
+		}
+		if f.Category == "" {
+			f.Category = "profile"
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE memory_facts SET head_revision=?,deleted=? WHERE id=?`, f.Revision, deleted, f.ID); err != nil {
+			return Receipt{}, err
+		}
+		if err = insertRevision(ctx, tx, f, version, deleted); err != nil {
+			return Receipt{}, err
+		}
+		if !deleted {
+			if err = recordValueIdentityTx(ctx, tx, f, manifest, proof); err != nil {
+				return Receipt{}, err
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM memory_vectors WHERE fact_id=?`, f.ID); err != nil {
+			return Receipt{}, err
+		}
+		receipt.FactID, receipt.Revision, receipt.Barrier = f.ID, f.Revision, deleted
+		receipt.Reason = restoreReason
+		receipt.Status = "saved"
+		if !isNew {
+			receipt.Status = "updated"
+		}
+		if deleted {
+			receipt.Status = "not_found"
+		} // Newly created empty tombstone.
+	}
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO memory_operations(operation_id,scope_key,request_sha,receipt,created_at) VALUES(?,?,?,?,?)`, in.OperationID, scope.key, requestSHA, encoded, now.Format(time.RFC3339Nano)); err != nil {
+		return Receipt{}, err
+	}
+	if !in.Automatic && in.Source.Kind == "operator" && in.Source.RunID != "" && in.Source.InputID != "" {
+		_, err = tx.ExecContext(ctx, `INSERT INTO memory_operation_sources(operation_id,run_id,input_id,action,target_kind,target_id) VALUES(?,?,?,?,?,?)`,
+			in.OperationID, in.Source.RunID, in.Source.InputID, in.Action, kind, target)
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `UPDATE memory_inputs SET decision='explicit_action' WHERE run_id=? AND input_id=?`, in.Source.RunID, in.Source.InputID)
+		}
+	}
+	return receipt, err
+}
+
+func factHeadTx(ctx context.Context, tx *sql.Tx, scope Scope, id string) (Fact, bool, error) {
+	var deleted bool
+	err := tx.QueryRowContext(ctx, `SELECT deleted FROM memory_facts WHERE scope_key=? AND id=?`, scope.key, id).Scan(&deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Fact{}, false, nil
+	}
+	if err != nil {
+		return Fact{}, false, err
+	}
+	f, err := scanFact(tx.QueryRowContext(ctx, `SELECT `+factColumns+` FROM memory_facts f JOIN memory_fact_revisions r ON r.fact_id=f.id AND r.revision=f.head_revision WHERE f.scope_key=? AND f.id=?`, scope.key, id))
+	return f, deleted, err
+}
+
+type KeyState struct {
+	Scope    ScopeKind `json:"scope"`
+	Key      string    `json:"key"`
+	Revision int64     `json:"current_revision"`
+	Deleted  bool      `json:"deleted"`
+	Exists   bool      `json:"exists"`
+}
+
+type StateConflict struct{ State KeyState }
+
+func (e *StateConflict) Error() string {
+	raw, _ := json.Marshal(e.State)
+	return fmt.Sprintf("%v: %s", ErrVersionConflict, raw)
+}
+func (e *StateConflict) Unwrap() error { return ErrVersionConflict }
+func (s *Store) KeyState(ctx context.Context, scope Scope, key string) (KeyState, error) {
+	key = CanonicalKey(key)
+	if !slotPattern.MatchString(key) {
+		return KeyState{}, harness.ErrInvalidInput
+	}
+	var state KeyState
+	err := transact(ctx, s.db, func(tx *sql.Tx) error {
+		if _, err := checkScope(ctx, tx, scope, false); err != nil {
+			return err
+		}
+		f, deleted, err := slotHead(ctx, tx, scope, key)
+		state = KeyState{Scope: scope.kind, Key: key, Revision: f.Revision, Deleted: deleted, Exists: f.ID != ""}
+		return err
+	})
+	return state, err
+}
+
+// MutationOperationID separates targets, profiles, actions and source inputs.
+func MutationOperationID(scope Scope, in Mutation) string {
+	kind, target := "key", CanonicalKey(in.Key)
+	if in.FactID != "" {
+		kind, target = "fact_id", in.FactID
+	}
+	raw, _ := json.Marshal([]any{in.Source.RunID, in.Source.InputID, scope.key, in.Action, kind, target,
+		in.ExpectedRevision, in.Category, in.Content})
+	return OperationID("memory-op-v2", string(raw))
+}
+
 func (s *Store) SlotVersions(ctx context.Context, scope Scope) (map[string]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT k.slot_key,f.head_revision FROM memory_slots k JOIN memory_facts f ON f.id=k.fact_id WHERE k.scope_key=?`, scope.key)
+	return slotVersions(ctx, s.db, scope)
+}
+
+func slotVersions(ctx context.Context, q interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, scope Scope) (map[string]int64, error) {
+	rows, err := q.QueryContext(ctx, `SELECT k.slot_key,f.head_revision FROM memory_slots k JOIN memory_facts f ON f.id=k.fact_id WHERE k.scope_key=?`, scope.key)
 	if err != nil {
 		return nil, err
 	}

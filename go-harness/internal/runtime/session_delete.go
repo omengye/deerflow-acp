@@ -9,6 +9,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/learning"
+	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
 )
 
 // purgeSession removes a detached foreground session and its private durable
@@ -67,6 +68,9 @@ func (s *Store) purgeSession(ctx context.Context, id string, automatic bool) (bo
 	}
 	for _, target := range targets {
 		if err = learning.ForgetSessionTx(ctx, tx, target); err != nil {
+			return false, nil, err
+		}
+		if err = memory.DiscardSessionJobsTx(ctx, tx, target); err != nil {
 			return false, nil, err
 		}
 		if !tables["harness_assets"] {

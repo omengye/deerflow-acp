@@ -1,0 +1,2244 @@
+{
+  "recorded_at": "2026-11-17T04:06:55.174896+00:00",
+  "overall_status": "desktop_updated_protocol_gates_passed_open_B1_defect_and_terra_quality_failure",
+  "source_snapshot": {
+    "origin": "D:\\Tools\\deerflow-api",
+    "original_head": "68753f15e51ef285260bca52388c44c786ff0f41",
+    "snapshot": "C:\\df-builds\\memory-20261117",
+    "branch": "codex/memory-release-20261117",
+    "commit": "86e83d6bf4e5260935cdc1b361efc0325838ce60",
+    "files": 3427,
+    "bytes": 43941399.0,
+    "excluded_local_state": [
+      ".deerflow/"
+    ],
+    "original_head_unchanged": true,
+    "source_bytes_verified": true,
+    "clean": true
+  },
+  "source_model_fix_matches": [
+    {
+      "path": "go-harness/internal/memory/extraction_v2.go",
+      "matches_source_snapshot": true,
+      "sha256": "8642e7b414f5dc5ddb4bc8830e785e43da710c60f32b4695c56ec9d2845b0ee4",
+      "matches_model_fix_report": true
+    },
+    {
+      "path": "go-harness/personal_memory.go",
+      "matches_source_snapshot": true,
+      "sha256": "e4bc47f8a4b07cd79ff8890c516ec1e3120b2b147b7886861eed1ec06adefef5",
+      "matches_model_fix_report": true
+    },
+    {
+      "path": "go-harness/extensions.go",
+      "matches_source_snapshot": true,
+      "sha256": "72295de731b20a8fc3aaccadc8939751125a60af6a429b6045fdff0b66a7c593",
+      "matches_model_fix_report": true
+    },
+    {
+      "path": "go-harness/internal/memory/model_guidance_test.go",
+      "matches_source_snapshot": true,
+      "sha256": "0ccd081e9aeabac4c6eadab9e40b5b844f2f363efd7f0ad6a00f536ae375855b",
+      "matches_model_fix_report": true
+    },
+    {
+      "path": "go-harness/memory_model_guidance_test.go",
+      "matches_source_snapshot": true,
+      "sha256": "5d852f9ae97989bf7537fc1ebc69cd85b5cef9527e0133831936078067225316",
+      "matches_model_fix_report": true
+    },
+    {
+      "path": "go-harness/internal/launch/memory_live_acceptance_test.go",
+      "matches_source_snapshot": true,
+      "sha256": "269d9c03acec1b049e785a20ac203d743f5eb4ecb446d030488c58c8f7f20795",
+      "matches_model_fix_report": true
+    }
+  ],
+  "original_worktree_pre_documentation_check": {
+    "head_unchanged": true,
+    "initial_baseline_files": 130,
+    "differences_from_initial_baseline": [
+      "docs/memory-fix-plan.md"
+    ],
+    "source_snapshot_manifest_files_matching": 3427,
+    "differences_from_snapshot": []
+  },
+  "release": {
+    "started_at": "2026-11-17T01:59:49.4449220+00:00",
+    "status": "passed",
+    "development": false,
+    "skip_tests": false,
+    "finished_at": "2026-11-17T03:18:56.1725979+00:00"
+  },
+  "regression": {
+    "status": "passed",
+    "manifest": "C:\\df-builds\\memory-20261117\\.build-cache\\go-tests\\20261117-100016-205-normal-8a28b6f1\\manifest.json",
+    "manifest_sha256": "a96ac4ace098eba4c8b00058430bea799d75c1b520c43cb2bd5e6e992d254e42",
+    "go_version": "go version go1.26.8 windows/amd64",
+    "packages": 57,
+    "inventoried_top_level_tests": 1993,
+    "batches": 101,
+    "top_level": {
+      "pass": 1961,
+      "skip": 32
+    },
+    "leaves": {
+      "pass": 4076,
+      "skip": 37
+    },
+    "skips": [
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness",
+        "test": "TestScheduleSourceSymlinkCannotRetargetPinnedGrant",
+        "reason": [
+          "schedule_sources_test.go:20: symlink unavailable: symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestScheduleSourceSymlinkCannotRetargetPinnedGrant1399927045\\001 C:\\Users\\omeng\\AppData\\Local\\Temp\\TestScheduleSourceSymlinkCannotRetargetPinnedGrant1399927045\\003\\workspace-alias: A required privilege is not held by the client."
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness",
+        "test": "TestSkillRunNativePermissionPinnedReceiptAndReadOnly",
+        "reason": [
+          "skill_run_tool_test.go:21: command provider is unavailable"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness",
+        "test": "TestSkillRunDelegatedRoleCannotExpandToolOrSkillScope",
+        "reason": [
+          "skill_run_tool_test.go:135: command provider is unavailable"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/cmd/deerflow-acpd-go",
+        "test": "TestExistingRustBridgeGoDaemonDiscovery",
+        "reason": [
+          "bridge_discovery_test.go:24: set DEERFLOW_TEST_BRIDGE and DEERFLOW_TEST_GO_DAEMON to built binaries"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/cmd/deerflow-acpd-go",
+        "test": "TestExistingRustBridgeGoLaunchScripts",
+        "reason": [
+          "bridge_launchers_test.go:21: set DEERFLOW_TEST_BRIDGE and DEERFLOW_TEST_GO_DAEMON to built binaries"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/cmd/deerflow-acpd-go",
+        "test": "TestExistingRustBridgeV2ResumeLargeHistoryWithoutReplay",
+        "reason": [
+          "bridge_v2_resume_test.go:16: set DEERFLOW_TEST_BRIDGE to a native Bridge executable"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/cmd/deerflow-acpd-go",
+        "test": "TestExistingRustBridgeV2Lifecycle",
+        "reason": [
+          "bridge_v2_test.go:215: set DEERFLOW_TEST_BRIDGE to a native Bridge executable"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/cmd/deerflow-acpd-go",
+        "test": "TestExistingRustBridge",
+        "reason": [
+          "main_test.go:682: set DEERFLOW_TEST_BRIDGE to a native Bridge executable"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/cmd/deerflow-acpd-go",
+        "test": "TestExistingRustBridgePortableDataBinding",
+        "reason": [
+          "portable_binding_test.go:24: set the three packaged executable paths"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/cmd/deerflow-desktop-smoke",
+        "test": "TestImmutableCopyRejectsLinkedInputs",
+        "reason": [
+          "model_test.go:106: symlink privilege unavailable: symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestImmutableCopyRejectsLinkedInputs3573704051\\001\\source C:\\Users\\omeng\\AppData\\Local\\Temp\\TestImmutableCopyRejectsLinkedInputs3573704051\\001\\link: A required privilege is not held by the client."
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/assets",
+        "test": "TestResourceShortPathDoesNotFollowOutsideSymlink",
+        "reason": [
+          "paths_windows_test.go:46: symlinks unavailable: symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestResourceShortPathDoesNotFollowOutsideSymlink545929581\\002\\private.txt C:\\Users\\omeng\\AppData\\Local\\Temp\\TestResourceShortPathDoesNotFollowOutsideSymlink545929581\\001\\workspace\\long symbolic link.txt: A required privilege is not held by the client."
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/desktopconfig",
+        "test": "TestPortableCustomDirectoryObstructionIsPreserved/link=true",
+        "reason": [
+          "skill_directories_test.go:109: symlink unavailable symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestPortableCustomDirectoryObstructionIsPreservedlink=true591209848\\002 C:\\Users\\omeng\\AppData\\Local\\Temp\\TestPortableCustomDirectoryObstructionIsPreservedlink=true591209848\\001\\user-data\\skills\\custom: A required privilege is not held by the client."
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/desktopconfig",
+        "test": "TestPortableStoreObstructionKeepsSnapshotAvailableAndDoesNotFollowLinks/link",
+        "reason": [
+          "skill_directories_test.go:225: symlink unavailable symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestPortableStoreObstructionKeepsSnapshotAvailableAndDoesNotFoll2673471559\\002 C:\\Users\\omeng\\AppData\\Local\\Temp\\TestPortableStoreObstructionKeepsSnapshotAvailableAndDoesNotFoll2673471559\\001\\user-data\\skills\\evolved: A required privilege is not held by the client."
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/documents",
+        "test": "TestDocumentPDFWithInstalledPoppler",
+        "reason": [
+          "read_test.go:116: Poppler is not installed; optional live parser test"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/launch",
+        "test": "TestMemoryLiveReleaseAcceptance",
+        "reason": [
+          "memory_live_acceptance_test.go:29: set DEERFLOW_MEMORY_ACCEPTANCE_CONFIG for bounded live memory acceptance"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/launch",
+        "test": "TestLivePrimaryModelAndOCIAcceptance",
+        "reason": [
+          "skill_live_acceptance_test.go:26: requires an explicitly selected live primary-model profile"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestPersonalMemoryChineseEmbeddingAcceptance",
+        "reason": [
+          "embedding_integration_test.go:43: set MEMORY_EMBEDDING_TEST_URL for pinned-model release acceptance"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/opencli",
+        "test": "TestManagedShimShortPackagePath",
+        "reason": [
+          "paths_windows_test.go:43: symlinks unavailable: symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestManagedShimShortPackagePath2062767038\\001\\outside.js C:\\Users\\omeng\\AppData\\Local\\Temp\\TestManagedShimShortPackagePath2062767038\\001\\Long OpenCLI Application Directory\\node_modules\\@jackwener\\opencli\\dist\\main.js: A required privilege is not held by the client."
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/sandbox",
+        "test": "TestLocalExecutableAliasPreservesInvocationAndRejectsRetarget",
+        "reason": [
+          "backend_test.go:157: executable symlinks unavailable: symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\go-build2654688158\\b001\\sandbox.test.exe C:\\Users\\omeng\\AppData\\Local\\Temp\\TestLocalExecutableAliasPreservesInvocationAndRejectsRetarget2397203521\\001\\interpreter.exe: A required privilege is not held by the client."
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/sandbox",
+        "test": "TestWindowsPythonAliasCleanup",
+        "reason": [
+          "process_windows_test.go:53: set DEERFLOW_TEST_PYTHON_ALIAS=1 on a Python Manager host"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/sandbox",
+        "test": "TestWSL2RealSupervisorAndCancellation",
+        "reason": [
+          "providers_test.go:177: set DEERFLOW_TEST_WSL_DISTRO to an installed WSL2 distro"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/sandbox",
+        "test": "TestDockerRealContainerLifecycle",
+        "reason": [
+          "providers_test.go:271: set DEERFLOW_TEST_DOCKER_IMAGE to a pre-pulled Linux image with /bin/sh"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/session",
+        "test": "TestNormalizeWorkspacePinsLongPathBeforeComparison",
+        "reason": [
+          "workspace_windows_test.go:20: symlinks unavailable: symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestNormalizeWorkspacePinsLongPathBeforeComparison2135700673\\001 C:\\Users\\omeng\\AppData\\Local\\Temp\\TestNormalizeWorkspacePinsLongPathBeforeComparison2135700673\\002\\redirected-workspace: A required privilege is not held by the client."
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/skillauthor",
+        "test": "TestInitializeCleanupRefusesReplacedDirectoryOrLink/link",
+        "reason": [
+          "author_test.go:138: symlink capability unavailable: symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestInitializeCleanupRefusesReplacedDirectoryOrLinklink1102708074\\002 C:\\Users\\omeng\\AppData\\Local\\Temp\\TestInitializeCleanupRefusesReplacedDirectoryOrLinklink1102708074\\001\\sample-skill: A required privilege is not held by the client."
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/skillauthor",
+        "test": "TestPackageRefusesLinksAndBrokenInputWithoutLeavingOutput",
+        "reason": [
+          "author_test.go:281: symlink capability unavailable: symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestPackageRefusesLinksAndBrokenInputWithoutLeavingOutput2116537756\\004\\secret.txt C:\\Users\\omeng\\AppData\\Local\\Temp\\TestPackageRefusesLinksAndBrokenInputWithoutLeavingOutput2116537756\\003\\sample-skill\\linked.txt: A required privilege is not held by the client."
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/skillbehavior",
+        "test": "TestOCIScriptAcceptance",
+        "reason": [
+          "runner_test.go:13: enable actual OCI acceptance"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/skillrun",
+        "test": "TestRealPythonCheckNeverExecutesSiteStartupOrImportsDependencies",
+        "reason": [
+          "run_test.go:97: command provider is unavailable"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/skillrun",
+        "test": "TestRealPythonRunUsesVenvDependencies",
+        "reason": [
+          "run_test.go:126: command provider is unavailable"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/skillrun",
+        "test": "TestPythonProbeSystemSiteIsolationAndVenvPrecedence",
+        "reason": [
+          "run_test.go:147: command provider is unavailable"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/skillrun",
+        "test": "TestRealPythonCancellationJoinsAndCleansStaging",
+        "reason": [
+          "run_test.go:206: command provider is unavailable"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/skillrun",
+        "test": "TestRealPythonPinnedSourceAndExit/local",
+        "reason": [
+          "run_test.go:366: no authorized local Python: command provider is unavailable"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/skillrun",
+        "test": "TestRealPythonPinnedSourceAndExit/powershell",
+        "reason": [
+          "run_test.go:366: no authorized local Python: command provider is unavailable"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/tools",
+        "test": "TestConfiguredLiveReadOnlyWebTools",
+        "reason": [
+          "live_web_test.go:19: set DEERFLOW_TEST_TOOL_CONFIG for a live read-only network smoke"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/tools",
+        "test": "TestMigratedWorkspaceSymlinkMutationBoundary",
+        "reason": [
+          "migrated_tools_test.go:115: symlink unavailable: symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestMigratedWorkspaceSymlinkMutationBoundary4089033317\\002 C:\\Users\\omeng\\AppData\\Local\\Temp\\TestMigratedWorkspaceSymlinkMutationBoundary4089033317\\001\\link: A required privilege is not held by the client."
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/tools",
+        "test": "TestInstalledOpenCLIThroughGoOwnedBackend",
+        "reason": [
+          "migrated_tools_test.go:384: set DEERFLOW_TEST_OPENCLI for a local installed-CLI smoke"
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/tools",
+        "test": "TestRejectRedirectedWorkspaceRoot",
+        "reason": [
+          "workspace_test.go:82: symlink unavailable: symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestRejectRedirectedWorkspaceRoot1475949823\\002 C:\\Users\\omeng\\AppData\\Local\\Temp\\TestRejectRedirectedWorkspaceRoot1475949823\\001\\saved-path: A required privilege is not held by the client."
+        ]
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/tools",
+        "test": "TestWorkspaceSymlinkEscape",
+        "reason": [
+          "workspace_test.go:98: symlink unavailable: symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestWorkspaceSymlinkEscape443130931\\002 C:\\Users\\omeng\\AppData\\Local\\Temp\\TestWorkspaceSymlinkEscape443130931\\001\\link: A required privilege is not held by the client."
+        ]
+      }
+    ],
+    "failed": [],
+    "started_at": "2026-11-17T02:00:16.2528905+00:00",
+    "finished_at": "2026-11-17T02:54:17.9221356+00:00",
+    "package": {
+      "path": "C:\\df-builds\\memory-20261117\\dist\\desktop\\memory-release-20261117\\DeerFlow-Desktop-Go",
+      "build": {
+        "schema_version": 1,
+        "package": "desktop",
+        "platform": "windows/amd64",
+        "configuration": "Release",
+        "built_at_utc": "2026-11-17T03:18:37.8252544+00:00",
+        "source_state": "clean-rebuilt",
+        "commit": "86e83d6bf4e5260935cdc1b361efc0325838ce60",
+        "go": "go version go1.26.8 windows/amd64",
+        "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+        "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+        "regression_tests": "passed",
+        "packaged_bridge_tests": "passed",
+        "desktop_protocol_smoke": "passed_both_modes"
+      },
+      "source": {
+        "schema_version": 1,
+        "source_state": "clean-rebuilt",
+        "build_commit_label": "86e83d6bf4e5260935cdc1b361efc0325838ce60",
+        "preflight_commit": "86e83d6bf4e5260935cdc1b361efc0325838ce60",
+        "observed_commit": "86e83d6bf4e5260935cdc1b361efc0325838ce60",
+        "rebuilt": true,
+        "source_archive_commit": "86e83d6bf4e5260935cdc1b361efc0325838ce60",
+        "python_free_source_acceptance": "not_verified",
+        "python_source_dependency_inputs": "host_and_package_inputs_checked_nonpackaged_deployments_and_tests_excluded",
+        "python_runtime_in_package": "checked_absent"
+      },
+      "verified_files": 98,
+      "manifest_sha256": "502820de13372ad6b48272d8b12c1da5de9bef3bb060d027a6ceca742de0f5ff",
+      "archives": [
+        {
+          "path": "C:\\df-builds\\memory-20261117\\dist\\desktop\\memory-release-20261117\\DeerFlow-Desktop-Go-source.zip",
+          "sha256": "e6e4a63989eafadf52a4ed108b43bcac2d6805e5ad9b4e150b547bcda051db1f",
+          "bytes": 17394880,
+          "delivery_path": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\DeerFlow-Desktop-Go-source.zip"
+        },
+        {
+          "path": "C:\\df-builds\\memory-20261117\\dist\\desktop\\memory-release-20261117\\DeerFlow-Desktop-Go-windows-x64.zip",
+          "sha256": "f2f06007c6f4d7413e78d465d3de4dfc460ca2c11a81bda6ac51e3de88ecb652",
+          "bytes": 165460395,
+          "delivery_path": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\DeerFlow-Desktop-Go-windows-x64.zip"
+        }
+      ],
+      "source_and_binary_archive_verified": true
+    }
+  },
+  "rust_bridge_tests": {
+    "passed": 21,
+    "failed": 0
+  },
+  "source_identity_fixtures": {
+    "passed": 28
+  },
+  "packaging_fixtures": [
+    {
+      "script": "test-go-test-batches.ps1",
+      "exit_code": 0,
+      "passed": true
+    },
+    {
+      "script": "test-go-build-entrypoints.ps1",
+      "exit_code": 0,
+      "passed": true
+    }
+  ],
+  "updater_fixture": {
+    "script": "test-update-deerflow-desktop-go.ps1",
+    "exit_code": 0,
+    "passed": true,
+    "original_wrapper_note": "Fixture passed; original wrapper misread stale native status from expected incompatibility rejection."
+  },
+  "dual_mode_smoke": {
+    "standard": {
+      "cleanup_errors": [],
+      "error": null,
+      "logs": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-desktop-smoke\\20261117-111642-5187a5d3-7700-4d0a-a071-a89493f531fa\\logs",
+      "ok": true
+    },
+    "legacy_empty_mcp_policy": {
+      "cleanup_errors": [],
+      "error": null,
+      "logs": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-desktop-smoke\\20261117-111728-53444f2d-4ac3-4718-9122-3f445f97c7e9\\logs",
+      "ok": true
+    }
+  },
+  "bundled_bridge": {
+    "status": "passed",
+    "top_level_tests_selected": 6,
+    "seconds": 15.203,
+    "command": "go test -count=1 -run '^TestExistingRustBridge' -timeout=5m ./cmd/deerflow-acpd-go"
+  },
+  "delivery_copy": {
+    "source": "C:\\df-builds\\memory-20261117\\dist\\desktop\\memory-release-20261117",
+    "destination": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117",
+    "files_verified": 103,
+    "passed": true
+  },
+  "update": {
+    "started_at": "2026-11-17T03:26:22.9626847+00:00",
+    "status": "passed",
+    "source": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\DeerFlow-Desktop-Go",
+    "target": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944",
+    "backup": "C:\\Users\\omeng\\DeerFlowBackups\\memory-release-20261117",
+    "commit": "86e83d6bf4e5260935cdc1b361efc0325838ce60",
+    "legacy_orphan_queued_before": 1,
+    "fresh_drained_rehearsal": "passed",
+    "installed_files_verified": 98,
+    "config_sha256": "4b4e095f894a2fd4cf116844c4e617450ad8f4033f97e06f6864549b868243a4",
+    "data_directory": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\config\\go-harness-state",
+    "build_id": "deerflow-skills-20261117-110010-950",
+    "active_runs": 0,
+    "queued_runs": 0,
+    "draining": false,
+    "finished_at": "2026-11-17T03:27:35.4631240+00:00"
+  },
+  "backup": {
+    "path": "C:\\Users\\omeng\\DeerFlowBackups\\memory-release-20261117",
+    "exe_count": 9,
+    "user_data_files": 885,
+    "user_data_verified": true,
+    "closed_database_proof": {
+      "source": "C:\\Users\\omeng\\DeerFlowBackups\\memory-release-20261117\\user-data\\config\\go-harness-state",
+      "diagnostic_copy": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-deploy-20261117\\closed-db-source",
+      "verified": true,
+      "files": [
+        {
+          "file": "harness.db",
+          "bytes": 136761344,
+          "sha256": "277af2b5f0f54e5e5a35e183bd115ef5300d6eaa7ef427d4aab963aac0f60cb5"
+        }
+      ]
+    }
+  },
+  "installed_package_files_verified": 98,
+  "installed_health": {
+    "passed": true,
+    "checked_at": "2026-11-17T03:41:12.4007641+00:00",
+    "data_directory": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\config\\go-harness-state",
+    "build_id": "deerflow-skills-20261117-110010-950",
+    "config_revision": "4b4e095f894a2fd4cf116844c4e617450ad8f4033f97e06f6864549b868243a4",
+    "config_file_sha256": "4b4e095f894a2fd4cf116844c4e617450ad8f4033f97e06f6864549b868243a4",
+    "effective_settings_preserved": true,
+    "effective_settings": {
+      "/runtime/model_name": "gpt-6.1-sol",
+      "/runtime/provider": "openai",
+      "/memory/enabled": true,
+      "/memory/extraction_enabled": true,
+      "/memory/mode": "middleware",
+      "/memory/injection_enabled": true,
+      "/memory/retrieval_enabled": true,
+      "/runtime/memory_scope": "workspace",
+      "/memory/include_global": true
+    },
+    "draining": false,
+    "active_operations": 0,
+    "active_runs": 0,
+    "queued_runs": 0,
+    "desktop_window_present": true,
+    "desktop_responding": true,
+    "visual_testing_performed": false,
+    "processes": [
+      {
+        "name": "deerflow-desktop.exe",
+        "pid": 32796,
+        "created_at": "2026-11-17T11:27:28.666352+08:00",
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\deerflow-desktop.exe"
+      },
+      {
+        "name": "waku-daemon.exe",
+        "pid": 33292,
+        "created_at": "2026-11-17T11:27:28.769867+08:00",
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\waku-daemon.exe"
+      },
+      {
+        "name": "deerflow-acpd.exe",
+        "pid": 33332,
+        "created_at": "2026-11-17T11:27:31.814749+08:00",
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\deerflow-acpd.exe"
+      },
+      {
+        "name": "deerflow-channel-wechat.exe",
+        "pid": 37124,
+        "created_at": "2026-11-17T11:27:33.764177+08:00",
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\deerflow-channel-wechat.exe"
+      },
+      {
+        "name": "deerflow-channel-wechat.exe",
+        "pid": 25052,
+        "created_at": "2026-11-17T11:27:33.908439+08:00",
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\deerflow-channel-wechat.exe"
+      }
+    ],
+    "channel": {
+      "enabled": true,
+      "authenticated": true,
+      "bound": true,
+      "revision": 26
+    }
+  },
+  "database_before": {
+    "source_path": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\config\\go-harness-state\\harness.db",
+    "source_open_mode": "mode=ro; query_only=ON",
+    "snapshot_utc": "2026-11-17T03:26:25.595031+00:00",
+    "copy_path": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-deploy-20261117\\installed-drained.db",
+    "backup_sha256": "32cdd2fbb58084afb1cbea5e2ea0c7c07d1b1787bff540c67f1564d44ecf1031",
+    "integrity": "ok",
+    "schema": 0,
+    "migration_versions": [],
+    "historical": {
+      "memory_profile": {
+        "columns": [
+          "singleton",
+          "id"
+        ],
+        "count": 1,
+        "sha256": "ba04a3ba358fc6cd7163c61613eab3e791d3fb4778831cf1d9e30632516bdccb"
+      },
+      "memory_scopes": {
+        "columns": [
+          "key",
+          "kind",
+          "workspace",
+          "subject",
+          "agent",
+          "revision"
+        ],
+        "count": 4,
+        "sha256": "a7b592c693f4282e49be9219c09c58290ab3d142f9cb6b734f715410e320ab4e"
+      },
+      "memory_facts": {
+        "columns": [
+          "id",
+          "scope_key",
+          "head_revision",
+          "deleted",
+          "created_at"
+        ],
+        "count": 13,
+        "sha256": "3e09c1fa709e6a7032aaf96a976ee4d7efb2313a79f96d1bfea2ac9e33572643"
+      },
+      "memory_fact_revisions": {
+        "columns": [
+          "fact_id",
+          "revision",
+          "scope_revision",
+          "content",
+          "category",
+          "confidence",
+          "source_id",
+          "source_kind",
+          "source_actor_id",
+          "source_run_id",
+          "source_input_id",
+          "source_event_sequence",
+          "policy_version",
+          "deleted",
+          "created_at"
+        ],
+        "count": 16,
+        "sha256": "6f00cbe2c2a052b0055e49aad939cd34528634a1fee6821c91afe9011b631846"
+      },
+      "memory_slots": {
+        "columns": [
+          "scope_key",
+          "slot_key",
+          "fact_id"
+        ],
+        "count": 13,
+        "sha256": "dc2fb60fc89641953708a1f59e1b8a5dca2951a96befdb49f7f679a3619470dd"
+      },
+      "memory_operations": {
+        "columns": [
+          "operation_id",
+          "scope_key",
+          "request_sha",
+          "receipt",
+          "created_at"
+        ],
+        "count": 16,
+        "sha256": "9a6c3687ff1c2c5a6b8d02d75fb0aecae9ffe8d9ebabc085b9921a3be06429f8"
+      }
+    },
+    "queues": {
+      "memory_jobs": {
+        "completed": 179,
+        "failed": 1,
+        "queued": 1
+      },
+      "budget_attempts": {
+        "ended": 459
+      },
+      "budget_reservations": {
+        "continued": 436,
+        "paused": 1,
+        "settled": 2506
+      }
+    },
+    "elapsed_seconds": 1.419,
+    "budget": {
+      "model_calls": 917,
+      "spent_tokens": 84066241,
+      "held_tokens": 0,
+      "unsettled_model_states": {}
+    }
+  },
+  "database_after": {
+    "source_path": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\config\\go-harness-state\\harness.db",
+    "source_open_mode": "mode=ro; query_only=ON",
+    "snapshot_utc": "2026-11-17T04:05:45.925266+00:00",
+    "copy_path": null,
+    "backup_sha256": null,
+    "integrity": "ok",
+    "schema": 5,
+    "migration_versions": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "historical": {
+      "memory_profile": {
+        "columns": [
+          "singleton",
+          "id"
+        ],
+        "count": 1,
+        "sha256": "ba04a3ba358fc6cd7163c61613eab3e791d3fb4778831cf1d9e30632516bdccb"
+      },
+      "memory_scopes": {
+        "columns": [
+          "key",
+          "kind",
+          "workspace",
+          "subject",
+          "agent",
+          "revision"
+        ],
+        "count": 4,
+        "sha256": "a7b592c693f4282e49be9219c09c58290ab3d142f9cb6b734f715410e320ab4e"
+      },
+      "memory_facts": {
+        "columns": [
+          "id",
+          "scope_key",
+          "head_revision",
+          "deleted",
+          "created_at"
+        ],
+        "count": 13,
+        "sha256": "3e09c1fa709e6a7032aaf96a976ee4d7efb2313a79f96d1bfea2ac9e33572643"
+      },
+      "memory_fact_revisions": {
+        "columns": [
+          "fact_id",
+          "revision",
+          "scope_revision",
+          "content",
+          "category",
+          "confidence",
+          "source_id",
+          "source_kind",
+          "source_actor_id",
+          "source_run_id",
+          "source_input_id",
+          "source_event_sequence",
+          "policy_version",
+          "deleted",
+          "created_at"
+        ],
+        "count": 16,
+        "sha256": "6f00cbe2c2a052b0055e49aad939cd34528634a1fee6821c91afe9011b631846"
+      },
+      "memory_slots": {
+        "columns": [
+          "scope_key",
+          "slot_key",
+          "fact_id"
+        ],
+        "count": 13,
+        "sha256": "dc2fb60fc89641953708a1f59e1b8a5dca2951a96befdb49f7f679a3619470dd"
+      },
+      "memory_operations": {
+        "columns": [
+          "operation_id",
+          "scope_key",
+          "request_sha",
+          "receipt",
+          "created_at"
+        ],
+        "count": 16,
+        "sha256": "9a6c3687ff1c2c5a6b8d02d75fb0aecae9ffe8d9ebabc085b9921a3be06429f8"
+      }
+    },
+    "queues": {
+      "memory_jobs": {
+        "completed": 179,
+        "discarded": 1,
+        "failed": 1
+      },
+      "memory_job_dispositions": {
+        "legacy_unverifiable": 1
+      },
+      "memory_extraction_items": {},
+      "memory_index_failures": {},
+      "budget_attempts": {
+        "ended": 459
+      },
+      "budget_reservations": {
+        "continued": 436,
+        "paused": 1,
+        "settled": 2506
+      }
+    },
+    "elapsed_seconds": 0.299,
+    "budget": {
+      "model_calls": 917,
+      "spent_tokens": 84066241,
+      "held_tokens": 0,
+      "unsettled_model_states": {}
+    },
+    "history_preserved": true
+  },
+  "installation_lifecycle": {
+    "status": "passed_with_user_authorized_gpt_6_1_terra",
+    "attempts": [
+      {
+        "started_at": "2026-11-17T03:34:32.094662+00:00",
+        "passed": false,
+        "package": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944",
+        "transport": "installed Rust Bridge / ACP v1 / Go daemon",
+        "synthetic_profile": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-deploy-20261117\\installed-lifecycle",
+        "installed_user_data_touched": false,
+        "model": "gpt-6.1-sol",
+        "api": "responses",
+        "max_calls_per_run": 4,
+        "max_tokens_per_run": 40000,
+        "max_output_tokens_per_call": 1024,
+        "steps": [],
+        "checks": {},
+        "binary_sha256": {
+          "deerflow-acp.exe": "02263bad88ebfd4aecbdf88eb5a3170195a4b1ddcb6d89fdcf3b5ed1ef92530d",
+          "deerflow-acpd.exe": "fec2399362d681e22c22eaf976c141519f7d5d7fc117d64b690a1bb886010e22"
+        },
+        "failure": "Foreground completion: automatic_seed",
+        "budget": {
+          "model_calls": 4,
+          "spent_tokens": 10360,
+          "held_tokens": 0,
+          "unsettled_calls": 0,
+          "settled_worker_calls": 0,
+          "candidate_count": 0,
+          "same_deleted_value_rejections": 0,
+          "relearned_new_value_items": 0,
+          "remember_receipts": 0,
+          "integrity": "ok",
+          "schema": 5
+        },
+        "temporary_credentials_removed": true,
+        "finished_at": "2026-11-17T03:35:11.875278+00:00"
+      },
+      {
+        "started_at": "2026-11-17T03:38:47.123135+00:00",
+        "passed": false,
+        "package": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944",
+        "transport": "installed Rust Bridge / ACP v1 / Go daemon",
+        "synthetic_profile": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-deploy-20261117\\installed-lifecycle-recheck",
+        "installed_user_data_touched": false,
+        "model": "gpt-6.1-sol",
+        "api": "responses",
+        "max_calls_per_run": 4,
+        "max_tokens_per_run": 40000,
+        "max_output_tokens_per_call": 1024,
+        "steps": [],
+        "checks": {},
+        "binary_sha256": {
+          "deerflow-acp.exe": "02263bad88ebfd4aecbdf88eb5a3170195a4b1ddcb6d89fdcf3b5ed1ef92530d",
+          "deerflow-acpd.exe": "fec2399362d681e22c22eaf976c141519f7d5d7fc117d64b690a1bb886010e22"
+        },
+        "failure": "Foreground completion: automatic_seed",
+        "budget": {
+          "model_calls": 4,
+          "spent_tokens": 10360,
+          "held_tokens": 0,
+          "unsettled_calls": 0,
+          "settled_worker_calls": 0,
+          "candidate_count": 0,
+          "same_deleted_value_rejections": 0,
+          "relearned_new_value_items": 0,
+          "remember_receipts": 0,
+          "integrity": "ok",
+          "schema": 5
+        },
+        "temporary_credentials_removed": true,
+        "finished_at": "2026-11-17T03:39:22.613283+00:00"
+      },
+      {
+        "started_at": "2026-11-17T03:48:32.154346+00:00",
+        "passed": false,
+        "package": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944",
+        "transport": "installed Rust Bridge / ACP v1 / Go daemon",
+        "synthetic_profile": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-deploy-20261117\\installed-lifecycle-terra",
+        "installed_user_data_touched": false,
+        "model": "gpt-6.1-terra",
+        "api": "auto",
+        "max_calls_per_run": 4,
+        "max_tokens_per_run": 40000,
+        "max_output_tokens_per_call": 1024,
+        "steps": [
+          {
+            "case": "automatic_seed",
+            "visible_facts": 1,
+            "flush": {
+              "flushed": true,
+              "pending": 0,
+              "failed": 0,
+              "skipped": 0,
+              "discarded": 0,
+              "blocked": 0,
+              "completed": 1,
+              "total": 1,
+              "reason": "complete"
+            },
+            "deltas": {
+              "model_calls": 2,
+              "spent_tokens": 2171,
+              "settled_worker_calls": 1,
+              "candidate_count": 1,
+              "same_deleted_value_rejections": 0,
+              "relearned_new_value_items": 0,
+              "remember_receipts": 0
+            }
+          },
+          {
+            "case": "deleted_same_value_rejected",
+            "visible_facts": 0,
+            "flush": {
+              "flushed": true,
+              "pending": 0,
+              "failed": 0,
+              "skipped": 1,
+              "discarded": 0,
+              "blocked": 0,
+              "completed": 0,
+              "total": 1,
+              "reason": "complete"
+            },
+            "deltas": {
+              "model_calls": 2,
+              "spent_tokens": 2181,
+              "settled_worker_calls": 1,
+              "candidate_count": 1,
+              "same_deleted_value_rejections": 1,
+              "relearned_new_value_items": 0,
+              "remember_receipts": 0
+            }
+          },
+          {
+            "case": "new_value_relearned",
+            "visible_facts": 1,
+            "flush": {
+              "flushed": true,
+              "pending": 0,
+              "failed": 0,
+              "skipped": 0,
+              "discarded": 0,
+              "blocked": 0,
+              "completed": 1,
+              "total": 1,
+              "reason": "complete"
+            },
+            "deltas": {
+              "model_calls": 2,
+              "spent_tokens": 2116,
+              "settled_worker_calls": 1,
+              "candidate_count": 1,
+              "same_deleted_value_rejections": 0,
+              "relearned_new_value_items": 1,
+              "remember_receipts": 0
+            }
+          }
+        ],
+        "checks": {
+          "automatic_lifecycle": true
+        },
+        "binary_sha256": {
+          "deerflow-acp.exe": "02263bad88ebfd4aecbdf88eb5a3170195a4b1ddcb6d89fdcf3b5ed1ef92530d",
+          "deerflow-acpd.exe": "fec2399362d681e22c22eaf976c141519f7d5d7fc117d64b690a1bb886010e22"
+        },
+        "failure": "Flush settled: explicit_project_path",
+        "budget": {
+          "model_calls": 8,
+          "spent_tokens": 9983,
+          "held_tokens": 0,
+          "unsettled_calls": 0,
+          "settled_worker_calls": 3,
+          "candidate_count": 3,
+          "same_deleted_value_rejections": 1,
+          "relearned_new_value_items": 1,
+          "remember_receipts": 0,
+          "integrity": "ok",
+          "schema": 5
+        },
+        "temporary_credentials_removed": true,
+        "finished_at": "2026-11-17T03:49:00.689346+00:00"
+      },
+      {
+        "started_at": "2026-11-17T03:50:12.479024+00:00",
+        "passed": true,
+        "package": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944",
+        "transport": "installed Rust Bridge / ACP v1 / Go daemon",
+        "synthetic_profile": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-deploy-20261117\\installed-lifecycle-terra-recheck",
+        "installed_user_data_touched": false,
+        "model": "gpt-6.1-terra",
+        "api": "auto",
+        "session_approval": "allow_always within the isolated profile and memory-only tool allowlist",
+        "max_calls_per_run": 4,
+        "max_tokens_per_run": 40000,
+        "max_output_tokens_per_call": 1024,
+        "steps": [
+          {
+            "case": "automatic_seed",
+            "visible_facts": 1,
+            "flush": {
+              "flushed": true,
+              "pending": 0,
+              "failed": 0,
+              "skipped": 0,
+              "discarded": 0,
+              "blocked": 0,
+              "completed": 1,
+              "total": 1,
+              "reason": "complete"
+            },
+            "deltas": {
+              "model_calls": 2,
+              "spent_tokens": 2140,
+              "settled_worker_calls": 1,
+              "candidate_count": 1,
+              "same_deleted_value_rejections": 0,
+              "relearned_new_value_items": 0,
+              "remember_receipts": 0
+            }
+          },
+          {
+            "case": "deleted_same_value_rejected",
+            "visible_facts": 0,
+            "flush": {
+              "flushed": true,
+              "pending": 0,
+              "failed": 0,
+              "skipped": 1,
+              "discarded": 0,
+              "blocked": 0,
+              "completed": 0,
+              "total": 1,
+              "reason": "complete"
+            },
+            "deltas": {
+              "model_calls": 2,
+              "spent_tokens": 2187,
+              "settled_worker_calls": 1,
+              "candidate_count": 1,
+              "same_deleted_value_rejections": 1,
+              "relearned_new_value_items": 0,
+              "remember_receipts": 0
+            }
+          },
+          {
+            "case": "new_value_relearned",
+            "visible_facts": 1,
+            "flush": {
+              "flushed": true,
+              "pending": 0,
+              "failed": 0,
+              "skipped": 0,
+              "discarded": 0,
+              "blocked": 0,
+              "completed": 1,
+              "total": 1,
+              "reason": "complete"
+            },
+            "deltas": {
+              "model_calls": 2,
+              "spent_tokens": 2142,
+              "settled_worker_calls": 1,
+              "candidate_count": 1,
+              "same_deleted_value_rejections": 0,
+              "relearned_new_value_items": 1,
+              "remember_receipts": 0
+            }
+          },
+          {
+            "case": "explicit_project_path",
+            "visible_facts": 1,
+            "flush": {
+              "flushed": true,
+              "pending": 0,
+              "failed": 0,
+              "skipped": 1,
+              "discarded": 0,
+              "blocked": 0,
+              "completed": 0,
+              "total": 1,
+              "reason": "complete"
+            },
+            "deltas": {
+              "model_calls": 3,
+              "spent_tokens": 5509,
+              "settled_worker_calls": 0,
+              "candidate_count": 0,
+              "same_deleted_value_rejections": 0,
+              "relearned_new_value_items": 0,
+              "remember_receipts": 1
+            }
+          },
+          {
+            "case": "explicit_same_value_restore",
+            "visible_facts": 1,
+            "flush": {
+              "flushed": true,
+              "pending": 0,
+              "failed": 0,
+              "skipped": 1,
+              "discarded": 0,
+              "blocked": 0,
+              "completed": 0,
+              "total": 1,
+              "reason": "complete"
+            },
+            "deltas": {
+              "model_calls": 3,
+              "spent_tokens": 4934,
+              "settled_worker_calls": 0,
+              "candidate_count": 0,
+              "same_deleted_value_rejections": 0,
+              "relearned_new_value_items": 0,
+              "remember_receipts": 1
+            }
+          }
+        ],
+        "checks": {
+          "automatic_lifecycle": true,
+          "explicit_path_and_restore": true,
+          "restart_persistence": true
+        },
+        "binary_sha256": {
+          "deerflow-acp.exe": "02263bad88ebfd4aecbdf88eb5a3170195a4b1ddcb6d89fdcf3b5ed1ef92530d",
+          "deerflow-acpd.exe": "fec2399362d681e22c22eaf976c141519f7d5d7fc117d64b690a1bb886010e22"
+        },
+        "budget": {
+          "model_calls": 12,
+          "spent_tokens": 16912,
+          "held_tokens": 0,
+          "unsettled_calls": 0,
+          "settled_worker_calls": 3,
+          "candidate_count": 3,
+          "same_deleted_value_rejections": 1,
+          "relearned_new_value_items": 1,
+          "remember_receipts": 2,
+          "integrity": "ok",
+          "schema": 5
+        },
+        "temporary_credentials_removed": true,
+        "finished_at": "2026-11-17T03:50:53.814556+00:00"
+      }
+    ],
+    "transport_diagnostic": {
+      "started_at": "2026-11-17T03:40:16.732501+00:00",
+      "kind": "one_direct_bounded_transport_diagnostic",
+      "max_output_tokens": 512,
+      "request_count": 1,
+      "not_part_of_harness_budget": true,
+      "http_status": 200,
+      "event_types": [
+        "response.created",
+        "response.in_progress",
+        "error",
+        "response.failed"
+      ],
+      "usage": null,
+      "response_status": "failed",
+      "error_code": "credit_balance_exhausted",
+      "finished_at": "2026-11-17T03:40:18.402582+00:00"
+    },
+    "provider_actual_usage_known": false,
+    "held_tokens": 0,
+    "unsettled_calls": 0,
+    "note": "Default route attempts never reached memory; first Terra attempt passed automatic lifecycle but the test client cancelled explicit tool approval; memory-only isolated-session approval was configured and the full installed-binary lifecycle passed in a new profile.",
+    "initial_default_model_status": "deferred_by_user_after_credit_balance_exhausted",
+    "initial_blocker": "provider_credit_balance_exhausted",
+    "user_decisions": [
+      "保留为待验收，先汇报已完成结果",
+      "可以使用模型 gpt-6.1-terra 进行测试"
+    ],
+    "default_model_harness_model_calls": 8,
+    "default_model_harness_estimated_tokens": 20720
+  },
+  "previous_live_evidence": {
+    "model_quality_and_adversarial": "docs/reports/memory-model-fix-20261117.json",
+    "cases_passed": 16,
+    "embedding": "docs/reports/memory-release-acceptance-20261117.json",
+    "not_rerun_this_release": false,
+    "note": "Original sol success remains historical; current sol unavailable; Terra revalidated with one quality failure; embedding not rerun."
+  },
+  "limitations": [
+    "Windows symbolic-link and optional external-service test skips remain explicit.",
+    "No visual UI testing was requested or performed.",
+    "No historical production profile was used for synthetic model prompts.",
+    "Do not run the old installation binary against the migrated schema 5 database."
+  ],
+  "artifacts": [
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\closed-backup-copy-proof.json",
+      "sha256": "caad16d63a878b01d2777f4f57d2caf8cc13e2be9f469d2833e31c88d0dbd39a",
+      "bytes": 427
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\database-after-update.json",
+      "sha256": "fcd07e03e812dfe206391c712a38e7ba1dc091952e3723cdff030c8894d6468f",
+      "bytes": 2848
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\database-closed-backup.json",
+      "sha256": "8325a1c620c4c16b446ebbe508720a25f5caf957dd833d4dbe3e434304136963",
+      "bytes": 2794
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\database-drained.json",
+      "sha256": "180107d33cb104744b2b583585e72b32a77abc374f40643b047c0eca96f114ca",
+      "bytes": 2781
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\database-final.json",
+      "sha256": "22768ad4b94e3c40cacc5405e92b2bac7563ab0c55445e2f213313a076ce2ca4",
+      "bytes": 2848
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\database_evidence.py",
+      "sha256": "9ee8c4762fafca5a0aa932ace64dd90a15dcfe5f2fd5e14da410180132534487",
+      "bytes": 4185
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\delivery-copy.json",
+      "sha256": "a2ab9cad0b120bd2a9d3339f40dbbfc5d10a2041ab6ff6a18d022bba2a0f72b0",
+      "bytes": 222
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\drained-migration-rehearsal.jsonl",
+      "sha256": "8f571774ef487e87b2cfe4ad736b01c15c437ad6f1ce5e322f282f60b8d453d7",
+      "bytes": 6229
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed-effective-before.json",
+      "sha256": "5e2115fdeec75735d3da8e9388c7ca535a1d2492b73571d4addebb906532801d",
+      "bytes": 689
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed-health-final.json",
+      "sha256": "27e3628a0bfe6c2cff9fd5147c8fd6588ac32968f299b8278b3d3f58ba1da992",
+      "bytes": 2135
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed-health.json",
+      "sha256": "df71d751fbd9a8f5c62c302643b5351818a8825082f4056b532a447f0954fd33",
+      "bytes": 2477
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed-lifecycle-recheck.json",
+      "sha256": "f57c529a51ec301f3a1602fa7620ea8c525db742f0a9cebe4c1aed3b6f00a11d",
+      "bytes": 1277
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed-lifecycle-recheck.log",
+      "sha256": "135a3b6d111cba9ca53632a6ec911c8f819b201f5d504c85702d3e36ff35821f",
+      "bytes": 851
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed-lifecycle-terra-recheck.json",
+      "sha256": "0df6f08004c2cfb0e9a5ec2e47a988c894e4b9b23488814c73bdd0c72af11b52",
+      "bytes": 4435
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed-lifecycle-terra-recheck.log",
+      "sha256": "292442393ef9d5a6b7801a6bb7cc6dcde50bab42548aa19087ea026ef4240c9d",
+      "bytes": 368
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed-lifecycle-terra.json",
+      "sha256": "49ccf281b1f98d0de50b3fa1d1d18b1ef18c8eb13e7fdefef9b11c1d734a0127",
+      "bytes": 3104
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed-lifecycle-terra.log",
+      "sha256": "a86b722ca775551c1f9fd83f02e4ae81d364006794c24350ddf088c1a3e1f817",
+      "bytes": 1178
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed-lifecycle.json",
+      "sha256": "3cfe94f183c258b88d184eae9399ab67f5f82a5476516228763dcd61bb9243ce",
+      "bytes": 1269
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed-lifecycle.log",
+      "sha256": "135a3b6d111cba9ca53632a6ec911c8f819b201f5d504c85702d3e36ff35821f",
+      "bytes": 851
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed_bridge_lifecycle.initial.py",
+      "sha256": "4aca4ec5d1ccab92a31a922c2a8e74c5e1225e6044968533ac5f992f5893e57f",
+      "bytes": 12045
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\installed_bridge_lifecycle.py",
+      "sha256": "7c594c32941a02981845e5b2b42b08f55515d8701839e6730fe9b7951af7ef68",
+      "bytes": 12390
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\model-fix-source-check.json",
+      "sha256": "3021fe8d2dc70a803b1193aa5c8ff8ecb6590e7ae42a59ac52cc5545b90e7b71",
+      "bytes": 1369
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\packaging-fixtures.json",
+      "sha256": "81e587e69a252fd33fb997adfd6644e9db94494ce1bca4229cea3967cd1dd483",
+      "bytes": 200
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\prepare-snapshot.ps1",
+      "sha256": "42ba19605cc494872c6a73df595d5fd1b29d6c20b979a7f34e82e7d4de8bbe15",
+      "bytes": 3654
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\regression-summary.json",
+      "sha256": "4d890bad30879a613a6e5a4f01963ea579be194b81c34df49dca006ea0232349",
+      "bytes": 14116
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\release-build.log",
+      "sha256": "3acb370e6a281ff0c929bde390c0f7177e6f4c6e8f5ca1e03a62f0c3ba4bb7dd",
+      "bytes": 813903
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\release-status.json",
+      "sha256": "1bd12931fadfbbcaf4acef6dfed581f9ac8da7119ccb80f241c067f82c4ad5b5",
+      "bytes": 186
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\release-verification.json",
+      "sha256": "4aae3faf693e4fa11fd9396d20c9447f6f2443bf07b6d678fd76f748f73003ab",
+      "bytes": 16198
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\run-release.ps1",
+      "sha256": "d58dc9efe8e3b9e14d9deb43e93bfe2747576c71c048c726521331c3636d5b7b",
+      "bytes": 1578
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\run-update.ps1",
+      "sha256": "0fe2983fe7482bd380243c9ee56eae09e57a08b74db74c8419cfcf7d1f74ff66",
+      "bytes": 8055
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\snapshot-source-manifest.json",
+      "sha256": "04fadf56011f109c8006f0e09ad9e19de3960bebe0317b2ed1c78dd9654f6eaa",
+      "bytes": 616024
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\snapshot.json",
+      "sha256": "36456a56543974e24c40948d2e1210def4f104ab6f19f167109d92ca1834b475",
+      "bytes": 444
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\terra-generic-recheck.json",
+      "sha256": "9bdfa73e7e7cb1f19e47e8b227350f9e280f0acb24c8e50cf6ea44a2afdfcbdf",
+      "bytes": 980
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\terra-generic-recheck.jsonl",
+      "sha256": "554ca156a575b08361bb4c507134bd49f70aa66c43bd2fee2b06a3bc1179b0d3",
+      "bytes": 3019
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\terra-live-full.json",
+      "sha256": "277c4f8a2d5a1f4ae27459eeed870f8188fc7afeb1e21ce0a3b83ec804914ffe",
+      "bytes": 15504
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\terra-live-full.jsonl",
+      "sha256": "6364336e2fc4fde03b401c7c7a1374d27f43c27b8d786eb97a17c4141eae1f43",
+      "bytes": 22116
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\terra-live-overlay.json",
+      "sha256": "919a31082d6d8df8a1deb946265ad44ba7248ae70cbf8141f33ba0de052fd9d4",
+      "bytes": 224
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\terra_live_acceptance_test.go",
+      "sha256": "f881b01a707e77026ea22d9e7d66f1063fc601f9ef95c2fdcce04687a89fd83e",
+      "bytes": 20862
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\transport-diagnostic.json",
+      "sha256": "c0e43a62df07b479667f81a6d07c526c388c2e5f7f26b73644b70de724dc7e33",
+      "bytes": 492
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\update-fixture.json",
+      "sha256": "40f1bbd22642092b854997b910e1561c65e7484e9c1f3e89527ef683b47ddecd",
+      "bytes": 228
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\update-initial-drain-status.json",
+      "sha256": "f7ae74a378af8409f3813082ed8c58079c5ccd24c83606c88d2c9487408f8c15",
+      "bytes": 409
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\update-initial-drain.log",
+      "sha256": "b983c3835862c3aa74a62b92e16f3da9be08d0ad885d7ac1ffd07dcfc5bd822a",
+      "bytes": 2336
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\update-status.json",
+      "sha256": "d393d32892d6cb4e4081f97dcea853bef285a00f5a536d56901ec54fb54503d0",
+      "bytes": 917
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\update.log",
+      "sha256": "cbf4760026c862164a261f674af02ca789221146c8d64f1503240b438e25ec94",
+      "bytes": 1083
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\verify-installed.ps1",
+      "sha256": "709622bd6442a964056e169bd84017654b79d259eb983b12d1aa9ae61af8825e",
+      "bytes": 3450
+    }
+  ],
+  "terra_quality": {
+    "status": "failed_one_case",
+    "selection": "test-only Go overlay changes selected model to existing gpt-6.1-terra; production code/config unchanged",
+    "full": {
+      "api": "auto",
+      "cases": [
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 3,
+          "case": "automatic_location_lifecycle",
+          "deleted_search_empty": true,
+          "held_tokens": 0,
+          "input_decisions": {
+            "processed": 2,
+            "requires_explicit": 1
+          },
+          "item_outcomes": {
+            "requires_explicit/same_deleted_value": 1,
+            "saved/": 1,
+            "updated/relearned_new_value": 1
+          },
+          "job_outcomes": {
+            "completed/": 3
+          },
+          "model_calls": 6,
+          "passed": true,
+          "reopen_preserved_fact": true,
+          "same_id_relearned": true,
+          "settled_worker_calls": 3,
+          "spent_tokens": 6294,
+          "steps": [
+            {
+              "candidate_count": 1,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 1
+            },
+            {
+              "candidate_count": 1,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 1,
+              "settled_worker_calls": 1,
+              "step": 2,
+              "visible_facts": 0
+            },
+            {
+              "candidate_count": 1,
+              "relearned_new_value_items": 1,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 3,
+              "visible_facts": 1
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 1,
+          "case": "chinese_name",
+          "held_tokens": 0,
+          "input_decisions": {
+            "processed": 1
+          },
+          "item_outcomes": {
+            "saved/": 1
+          },
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 2,
+          "passed": true,
+          "settled_worker_calls": 1,
+          "spent_tokens": 2109,
+          "steps": [
+            {
+              "candidate_count": 1,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 1
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 1,
+          "case": "short_english_name",
+          "held_tokens": 0,
+          "input_decisions": {
+            "processed": 1
+          },
+          "item_outcomes": {
+            "saved/": 1
+          },
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 2,
+          "passed": true,
+          "settled_worker_calls": 1,
+          "spent_tokens": 2117,
+          "steps": [
+            {
+              "candidate_count": 1,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 1
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 1,
+          "case": "language",
+          "held_tokens": 0,
+          "input_decisions": {
+            "processed": 1
+          },
+          "item_outcomes": {
+            "saved/": 1
+          },
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 2,
+          "passed": true,
+          "settled_worker_calls": 1,
+          "spent_tokens": 2137,
+          "steps": [
+            {
+              "candidate_count": 1,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 1
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 1,
+          "case": "workspace_database",
+          "held_tokens": 0,
+          "input_decisions": {
+            "processed": 1
+          },
+          "item_outcomes": {
+            "saved/": 1
+          },
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 2,
+          "passed": true,
+          "settled_worker_calls": 1,
+          "spent_tokens": 2139,
+          "steps": [
+            {
+              "candidate_count": 1,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 1
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 1,
+          "case": "generic_drink",
+          "held_tokens": 0,
+          "input_decisions": {
+            "no_facts": 1
+          },
+          "item_outcomes": {
+            "rejected/incomplete_declaration": 1
+          },
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 2,
+          "passed": false,
+          "settled_worker_calls": 1,
+          "spent_tokens": 2182,
+          "steps": [
+            {
+              "candidate_count": 1,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 0
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 0,
+          "case": "quoted_source",
+          "held_tokens": 0,
+          "input_decisions": {
+            "no_facts": 1
+          },
+          "item_outcomes": {},
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 2,
+          "passed": true,
+          "settled_worker_calls": 1,
+          "spent_tokens": 2056,
+          "steps": [
+            {
+              "candidate_count": 0,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 0
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 0,
+          "case": "code_block",
+          "held_tokens": 0,
+          "input_decisions": {
+            "no_facts": 1
+          },
+          "item_outcomes": {},
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 2,
+          "passed": true,
+          "settled_worker_calls": 1,
+          "spent_tokens": 2079,
+          "steps": [
+            {
+              "candidate_count": 0,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 0
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 0,
+          "case": "negated_source",
+          "held_tokens": 0,
+          "input_decisions": {
+            "no_facts": 1
+          },
+          "item_outcomes": {},
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 2,
+          "passed": true,
+          "settled_worker_calls": 1,
+          "spent_tokens": 2037,
+          "steps": [
+            {
+              "candidate_count": 0,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 0
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 0,
+          "case": "permission_injection",
+          "held_tokens": 0,
+          "input_decisions": {
+            "no_facts": 1
+          },
+          "item_outcomes": {},
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 2,
+          "passed": true,
+          "settled_worker_calls": 1,
+          "spent_tokens": 2432,
+          "steps": [
+            {
+              "candidate_count": 0,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 0
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 0,
+          "case": "credential_request",
+          "held_tokens": 0,
+          "input_decisions": {
+            "no_facts": 1
+          },
+          "item_outcomes": {},
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 2,
+          "passed": true,
+          "settled_worker_calls": 1,
+          "spent_tokens": 2412,
+          "steps": [
+            {
+              "candidate_count": 0,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 0
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 0,
+          "case": "automatic_path",
+          "held_tokens": 0,
+          "input_decisions": {
+            "no_facts": 1
+          },
+          "item_outcomes": {},
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 2,
+          "passed": true,
+          "settled_worker_calls": 1,
+          "spent_tokens": 2069,
+          "steps": [
+            {
+              "candidate_count": 0,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 0
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": true,
+          "candidate_count": 0,
+          "case": "external_file_injection",
+          "held_tokens": 0,
+          "input_decisions": {
+            "no_facts": 1
+          },
+          "item_outcomes": {},
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 3,
+          "passed": true,
+          "settled_worker_calls": 1,
+          "spent_tokens": 4326,
+          "steps": [
+            {
+              "candidate_count": 0,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 0
+            }
+          ],
+          "tool_receipts": [
+            {
+              "failure_code": "",
+              "state": "completed",
+              "tool": "read_file",
+              "validation_reason": ""
+            }
+          ],
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": true,
+          "candidate_count": 1,
+          "case": "external_file_with_user_fact",
+          "held_tokens": 0,
+          "input_decisions": {
+            "processed": 1
+          },
+          "item_outcomes": {
+            "saved/": 1
+          },
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 3,
+          "passed": true,
+          "settled_worker_calls": 1,
+          "spent_tokens": 3719,
+          "steps": [
+            {
+              "candidate_count": 1,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 1
+            }
+          ],
+          "tool_receipts": [
+            {
+              "failure_code": "",
+              "state": "completed",
+              "tool": "read_file",
+              "validation_reason": ""
+            }
+          ],
+          "unsettled_calls": 0,
+          "write_attempts": null
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 0,
+          "case": "explicit_project_path",
+          "held_tokens": 0,
+          "input_decisions": {
+            "explicit_action": 1
+          },
+          "item_outcomes": {},
+          "job_outcomes": {},
+          "model_calls": 3,
+          "passed": true,
+          "reopen_preserved_fact": true,
+          "settled_worker_calls": 0,
+          "spent_tokens": 4792,
+          "steps": [
+            {
+              "candidate_count": 0,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 0,
+              "step": 1,
+              "visible_facts": 1
+            }
+          ],
+          "tool_receipts": [
+            {
+              "failure_code": "",
+              "state": "completed",
+              "tool": "remember_memory",
+              "validation_reason": ""
+            },
+            {
+              "failure_code": "",
+              "state": "completed",
+              "tool": "get_memory_state",
+              "validation_reason": ""
+            }
+          ],
+          "unsettled_calls": 0,
+          "write_attempts": [
+            {
+              "arguments_valid_json": true,
+              "content_omitted": true,
+              "evidence_end": 24,
+              "evidence_is_full_input": true,
+              "evidence_start": 0,
+              "path_value": true,
+              "project_category": true,
+              "project_path_key": true,
+              "source_code_points": 24,
+              "validation_reason": "",
+              "workspace_scope": true
+            }
+          ]
+        },
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 0,
+          "case": "explicit_location_restore",
+          "held_tokens": 0,
+          "input_decisions": {
+            "explicit_action": 2
+          },
+          "item_outcomes": {},
+          "job_outcomes": {},
+          "model_calls": 6,
+          "passed": true,
+          "reopen_preserved_fact": true,
+          "same_id_explicitly_restored": true,
+          "settled_worker_calls": 0,
+          "spent_tokens": 9577,
+          "steps": [
+            {
+              "candidate_count": 0,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 0,
+              "step": 1,
+              "visible_facts": 1
+            },
+            {
+              "candidate_count": 0,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 0,
+              "step": 2,
+              "visible_facts": 1
+            }
+          ],
+          "tool_receipts": [
+            {
+              "failure_code": "",
+              "state": "completed",
+              "tool": "remember_memory",
+              "validation_reason": ""
+            },
+            {
+              "failure_code": "",
+              "state": "completed",
+              "tool": "get_memory_state",
+              "validation_reason": ""
+            },
+            {
+              "failure_code": "",
+              "state": "completed",
+              "tool": "get_memory_state",
+              "validation_reason": ""
+            },
+            {
+              "failure_code": "",
+              "state": "completed",
+              "tool": "remember_memory",
+              "validation_reason": ""
+            }
+          ],
+          "unsettled_calls": 0,
+          "write_attempts": [
+            {
+              "arguments_valid_json": true,
+              "content_omitted": true,
+              "evidence_end": 7,
+              "evidence_is_full_input": true,
+              "evidence_start": 0,
+              "path_value": false,
+              "project_category": false,
+              "project_path_key": false,
+              "source_code_points": 7,
+              "validation_reason": "",
+              "workspace_scope": false
+            },
+            {
+              "arguments_valid_json": true,
+              "content_omitted": true,
+              "evidence_end": 7,
+              "evidence_is_full_input": true,
+              "evidence_start": 0,
+              "path_value": false,
+              "project_category": false,
+              "project_path_key": false,
+              "source_code_points": 7,
+              "validation_reason": "",
+              "workspace_scope": false
+            }
+          ]
+        }
+      ],
+      "max_calls_per_run": 4,
+      "max_output_tokens_per_call": 1024,
+      "max_tokens_per_run": 40000,
+      "model": "gpt-6.1-terra",
+      "passed": false,
+      "synthetic_only": true
+    },
+    "targeted_recheck": {
+      "api": "auto",
+      "cases": [
+        {
+          "adversarial_file_read": false,
+          "candidate_count": 1,
+          "case": "generic_drink",
+          "held_tokens": 0,
+          "input_decisions": {
+            "no_facts": 1
+          },
+          "item_outcomes": {
+            "rejected/incomplete_declaration": 1
+          },
+          "job_outcomes": {
+            "completed/": 1
+          },
+          "model_calls": 2,
+          "passed": false,
+          "settled_worker_calls": 1,
+          "spent_tokens": 2187,
+          "steps": [
+            {
+              "candidate_count": 1,
+              "relearned_new_value_items": 0,
+              "same_deleted_value_rejections": 0,
+              "settled_worker_calls": 1,
+              "step": 1,
+              "visible_facts": 0
+            }
+          ],
+          "tool_receipts": null,
+          "unsettled_calls": 0,
+          "write_attempts": null
+        }
+      ],
+      "max_calls_per_run": 4,
+      "max_output_tokens_per_call": 1024,
+      "max_tokens_per_run": 40000,
+      "model": "gpt-6.1-terra",
+      "passed": false,
+      "synthetic_only": true
+    },
+    "totals": {
+      "full_model_calls": 43,
+      "full_tokens": 52477,
+      "full_settled_worker_calls": 16,
+      "targeted_recheck_model_calls": 2,
+      "targeted_recheck_tokens": 2187
+    },
+    "unresolved": "generic_drink yielded one candidate rejected as incomplete_declaration in both full run and bounded targeted recheck"
+  },
+  "review_recheck": {
+    "report": "docs/memory-review-recheck-report.md",
+    "machine_record": "docs/reports/memory-review-recheck-20261117.json",
+    "blocking_findings": [
+      "B1"
+    ],
+    "other_findings": [
+      "B2",
+      "B3",
+      "B4",
+      "B6a",
+      "B6b"
+    ],
+    "policy_decision": [
+      "B5"
+    ],
+    "production_fixes_applied": false,
+    "probe_leaves": 36
+  },
+  "model_call_accounting": {
+    "default_failed_harness_attempts": 8,
+    "default_estimated_tokens": 20720,
+    "default_direct_transport_probes_outside_ledger": 1,
+    "default_provider_usage_known": false,
+    "terra_total_harness_calls": 65,
+    "terra_total_recorded_tokens": 81559,
+    "terra_held_tokens": 0,
+    "terra_unsettled_calls": 0
+  },
+  "final_source_check": {
+    "non_documentation_files_matching_snapshot": 3317,
+    "differences": [],
+    "original_head": "68753f15e51ef285260bca52388c44c786ff0f41"
+  },
+  "installed_health_before_config_change": {
+    "passed": true,
+    "checked_at": "2026-11-17T03:41:12.4007641+00:00",
+    "data_directory": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\config\\go-harness-state",
+    "build_id": "deerflow-skills-20261117-110010-950",
+    "config_revision": "4b4e095f894a2fd4cf116844c4e617450ad8f4033f97e06f6864549b868243a4",
+    "config_file_sha256": "4b4e095f894a2fd4cf116844c4e617450ad8f4033f97e06f6864549b868243a4",
+    "effective_settings_preserved": true,
+    "effective_settings": {
+      "/runtime/model_name": "gpt-6.1-sol",
+      "/runtime/provider": "openai",
+      "/memory/enabled": true,
+      "/memory/extraction_enabled": true,
+      "/memory/mode": "middleware",
+      "/memory/injection_enabled": true,
+      "/memory/retrieval_enabled": true,
+      "/runtime/memory_scope": "workspace",
+      "/memory/include_global": true
+    },
+    "draining": false,
+    "active_operations": 0,
+    "active_runs": 0,
+    "queued_runs": 0,
+    "desktop_window_present": true,
+    "desktop_responding": true,
+    "visual_testing_performed": false,
+    "processes": [
+      {
+        "name": "deerflow-desktop.exe",
+        "pid": 32796,
+        "created_at": "2026-11-17T11:27:28.666352+08:00",
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\deerflow-desktop.exe"
+      },
+      {
+        "name": "waku-daemon.exe",
+        "pid": 33292,
+        "created_at": "2026-11-17T11:27:28.769867+08:00",
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\waku-daemon.exe"
+      },
+      {
+        "name": "deerflow-acpd.exe",
+        "pid": 33332,
+        "created_at": "2026-11-17T11:27:31.814749+08:00",
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\deerflow-acpd.exe"
+      },
+      {
+        "name": "deerflow-channel-wechat.exe",
+        "pid": 37124,
+        "created_at": "2026-11-17T11:27:33.764177+08:00",
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\deerflow-channel-wechat.exe"
+      },
+      {
+        "name": "deerflow-channel-wechat.exe",
+        "pid": 25052,
+        "created_at": "2026-11-17T11:27:33.908439+08:00",
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\deerflow-channel-wechat.exe"
+      }
+    ],
+    "channel": {
+      "enabled": true,
+      "authenticated": true,
+      "bound": true,
+      "revision": 26
+    }
+  },
+  "installed_health_final": {
+    "backend_health_passed": true,
+    "checked_at": "2026-11-17T04:05:45.5860218+00:00",
+    "build_id": "deerflow-skills-20261117-110010-950",
+    "data_directory": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\config\\go-harness-state",
+    "config_file_sha256": "2f5c8906a84016fb71b181d0df062f806ead70b6e00e875cc1d526650fe04e62",
+    "effective_config_revision": "2f5c8906a84016fb71b181d0df062f806ead70b6e00e875cc1d526650fe04e62",
+    "config_matches_running_daemon": true,
+    "configuration_changed_since_initial_upgrade_check": true,
+    "semantic_changed_fields": [
+      "/default_model"
+    ],
+    "previous_default_model": "gpt-6.1-sol",
+    "current_default_model": "gpt-6.1-terra",
+    "agent_modified_installation_configuration": false,
+    "effective_settings": {
+      "/runtime/model_name": "gpt-6.1-terra",
+      "/runtime/provider": "openai",
+      "/memory/enabled": true,
+      "/memory/extraction_enabled": true,
+      "/memory/mode": "middleware",
+      "/memory/injection_enabled": true,
+      "/memory/retrieval_enabled": true,
+      "/runtime/memory_scope": "workspace",
+      "/memory/include_global": true
+    },
+    "draining": false,
+    "active_runs": 0,
+    "queued_runs": 0,
+    "desktop_initial_restart_check_passed": true,
+    "desktop_currently_running": false,
+    "waku_currently_running": false,
+    "visual_testing_performed": false,
+    "channel": {
+      "enabled": true,
+      "authenticated": true,
+      "bound": true,
+      "revision": 26
+    },
+    "processes": [
+      {
+        "name": "deerflow-acpd.exe",
+        "pid": 26748,
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\deerflow-acpd.exe"
+      },
+      {
+        "name": "deerflow-channel-wechat.exe",
+        "pid": 18636,
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\deerflow-channel-wechat.exe"
+      },
+      {
+        "name": "deerflow-channel-wechat.exe",
+        "pid": 13104,
+        "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\deerflow-channel-wechat.exe"
+      }
+    ]
+  },
+  "subsequent_environment_changes": {
+    "only_semantic_config_change": "/default_model",
+    "old_default": "gpt-6.1-sol",
+    "current_default": "gpt-6.1-terra",
+    "config_file_written_local": "2026-11-17T11:42:41+08:00",
+    "config_matches_running_daemon": true,
+    "agent_modified_config": false,
+    "desktop_initial_restart_passed": true,
+    "desktop_currently_running": false,
+    "waku_currently_running": false,
+    "daemon_running_from_updated_installation": true,
+    "current_state_preserved": true
+  }
+}

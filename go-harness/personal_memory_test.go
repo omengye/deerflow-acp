@@ -59,7 +59,7 @@ func TestPersonalMemoryToolCommitsBeforeAnswerAndNewSessionReadsIt(t *testing.T)
 		message := map[string]any{"role": "assistant", "content": "已记住"}
 		reason := "stop"
 		if call == 1 {
-			args := `{"scope":"global","key":"profile.last_reported_location","category":"profile","content":"用户最近告知所在地是北京。","evidence":"我在北京","expected_revision":0}`
+			args := `{"scope":"global","key":"profile.last_reported_location","category":"profile","value":"北京","evidence":"我在北京","evidence_start":4,"evidence_end":8,"expected_revision":0}`
 			message = map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"id": "remember-1", "type": "function", "function": map[string]any{"name": "remember_memory", "arguments": args}}}}
 			reason = "tool_calls"
 		} else if call == 2 {
@@ -97,7 +97,7 @@ func TestPersonalMemoryToolCommitsBeforeAnswerAndNewSessionReadsIt(t *testing.T)
 	}
 	// A poll that finds only explicit turns must still commit its queue cleanup.
 	_, err = c.store.DB().Exec(`INSERT INTO memory_jobs(id,run_id,input_id,attempt_id,payload,status,available_at,updated_at)
-SELECT 'explicit-job',source_run_id,source_input_id,'fixture','{}','queued','2000-01-01','2000-01-01' FROM memory_fact_revisions WHERE policy_version='personal-explicit-v1' LIMIT 1`)
+SELECT 'explicit-job',source_run_id,source_input_id,'fixture',json_object('version',2,'budget_policy','memory-job-budget-v1','write_policy','memory-write-v2','extraction_schema',2,'run_id',source_run_id,'input_id',source_input_id),'queued','2000-01-01','2000-01-01' FROM memory_fact_revisions WHERE policy_version='personal-explicit-v2' LIMIT 1`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,16 +136,16 @@ func TestPersonalMemoryBackgroundQueueSurvivesClientRestart(t *testing.T) {
 		text := "done"
 		extract := false
 		for _, m := range request.Messages {
-			extract = extract || strings.Contains(string(m.Content), "Extract at most 4")
+			extract = extract || strings.Contains(string(m.Content), "Extract only durable facts")
 		}
 		if extract && fail.Load() {
 			http.Error(w, "temporarily unavailable", 503)
 			return
 		}
 		if extract {
-			text = `{"facts":[{"scope":"global","key":"city","category":"profile","content":"用户最近告知所在地是北京。","evidence":"我在北京"},{"scope":"global","key":"preference.language","category":"preference","content":"用户偏好中文。","evidence":"偏好中文"}]}`
+			text = `{"schema_version":2,"facts":[{"scope":"global","key":"city","category":"profile","value":"北京","evidence":"我在北京","evidence_start":0,"evidence_end":4,"durability":"durable","authority":"descriptive","confidence":0.9},{"scope":"global","key":"preference.language","category":"preference","value":"中文","evidence":"以后请用中文回答","evidence_start":5,"evidence_end":13,"durability":"durable","authority":"descriptive","confidence":0.9}]}`
 		}
-		_ = modelstreamtest.WriteCompletion(w, map[string]any{"id": "fixture", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": text}, "finish_reason": "stop"}}})
+		_ = modelstreamtest.WriteCompletion(w, map[string]any{"id": "fixture", "object": "chat.completion", "usage": map[string]int{"prompt_tokens": 16, "completion_tokens": 8, "total_tokens": 24}, "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": text}, "finish_reason": "stop"}}})
 	}))
 	defer provider.Close()
 	ctx := context.Background()
@@ -154,11 +154,14 @@ func TestPersonalMemoryBackgroundQueueSurvivesClientRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Stop before accepting input so this tests queued restart, not an uncertain in-flight call.
+	c.memoryCancel()
+	<-c.memoryDone
 	a, err := c.NewSession(ctx, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = c.Run(ctx, a.ID, []harness.Content{{Type: "text", Text: "我在北京，偏好中文"}}, nil, nil); err != nil {
+	if _, err = c.Run(ctx, a.ID, []harness.Content{{Type: "text", Text: "我在北京，以后请用中文回答"}}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	var pending int

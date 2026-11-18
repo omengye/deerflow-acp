@@ -15,10 +15,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
@@ -103,6 +106,7 @@ type Source struct {
 	InputID       string
 	EventSequence int64
 	PolicyVersion string
+	Provenance    string
 }
 
 type Candidate struct {
@@ -131,9 +135,18 @@ type Page struct {
 }
 
 type Store struct {
-	db       *sql.DB
-	fts      bool
-	embedder Embedder
+	ledger            *budget.Ledger
+	db                *sql.DB
+	fts               bool
+	embedder          Embedder
+	dailyAttempts     int
+	auditFailures     atomic.Uint64
+	extractionRunning atomic.Bool
+	embedMu           sync.RWMutex
+	embedGeneration   uint64
+	indexMu           sync.Mutex
+	indexConfig       harness.MemoryIndexConfig
+	indexNow          func() time.Time
 }
 
 func New(ctx context.Context, db *sql.DB) (*Store, error) {
@@ -173,8 +186,11 @@ CREATE TABLE IF NOT EXISTS memory_fact_revisions (
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{db: db}
+	store := &Store{db: db, dailyAttempts: 200}
 	if err = store.initPersonal(ctx); err != nil {
+		return nil, err
+	}
+	if err = store.initSourceProtocol(ctx); err != nil {
 		return nil, err
 	}
 	if _, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS memory_fts_state(scope_key TEXT PRIMARY KEY, revision INTEGER NOT NULL);`); err != nil {
@@ -201,7 +217,8 @@ func validSource(s Source) bool {
 	return s.ID != "" && len(s.ID) <= 256 && utf8.ValidString(s.ID) && !strings.ContainsRune(s.ID, 0) &&
 		(s.Kind == "model" || s.Kind == "operator") && s.EventSequence >= 0 &&
 		len(s.ActorID) <= 256 && len(s.RunID) <= 256 && len(s.InputID) <= 256 && len(s.PolicyVersion) <= 128 &&
-		utf8.ValidString(s.ActorID) && utf8.ValidString(s.RunID) && utf8.ValidString(s.InputID) && utf8.ValidString(s.PolicyVersion)
+		utf8.ValidString(s.ActorID) && utf8.ValidString(s.RunID) && utf8.ValidString(s.InputID) && utf8.ValidString(s.PolicyVersion) &&
+		(s.Provenance == "" || s.Provenance == UnknownProvenance || s.Provenance == UserSupportedProvenance || s.Provenance == ExternalContextProvenance)
 }
 
 func validCandidate(c Candidate) bool {
@@ -266,8 +283,8 @@ func insertRevision(ctx context.Context, tx *sql.Tx, f Fact, scopeRevision int64
 	if deleted {
 		flag = 1
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO memory_fact_revisions(fact_id,revision,scope_revision,content,category,confidence,source_id,source_kind,source_actor_id,source_run_id,source_input_id,source_event_sequence,policy_version,deleted,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		f.ID, f.Revision, scopeRevision, f.Content, f.Category, f.Confidence, f.Source.ID, f.Source.Kind, f.Source.ActorID, f.Source.RunID, f.Source.InputID, f.Source.EventSequence, f.Source.PolicyVersion, flag, f.UpdatedAt.Format(time.RFC3339Nano))
+	_, err := tx.ExecContext(ctx, `INSERT INTO memory_fact_revisions(fact_id,revision,scope_revision,content,category,confidence,source_id,source_kind,source_actor_id,source_run_id,source_input_id,source_event_sequence,policy_version,deleted,created_at,provenance) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		f.ID, f.Revision, scopeRevision, f.Content, f.Category, f.Confidence, f.Source.ID, f.Source.Kind, f.Source.ActorID, f.Source.RunID, f.Source.InputID, f.Source.EventSequence, f.Source.PolicyVersion, flag, f.UpdatedAt.Format(time.RFC3339Nano), Provenance(f))
 	return err
 }
 
@@ -298,13 +315,13 @@ func readFact(ctx context.Context, tx *sql.Tx, scope Scope, id string) (Fact, er
 	return scanFact(tx.QueryRowContext(ctx, `SELECT `+factColumns+` FROM memory_facts f JOIN memory_fact_revisions r ON r.fact_id=f.id AND r.revision=f.head_revision WHERE f.id=? AND f.scope_key=? AND f.deleted=0`, id, scope.key))
 }
 
-const factColumns = `f.id,f.scope_key,r.revision,r.content,r.category,r.confidence,r.source_id,r.source_kind,r.source_actor_id,r.source_run_id,r.source_input_id,r.source_event_sequence,r.policy_version,f.created_at,r.created_at`
+const factColumns = `f.id,f.scope_key,r.revision,r.content,r.category,r.confidence,r.source_id,r.source_kind,r.source_actor_id,r.source_run_id,r.source_input_id,r.source_event_sequence,r.policy_version,f.created_at,r.created_at,r.provenance`
 
 func scanFact(row interface{ Scan(...any) error }) (Fact, error) {
 	var f Fact
 	var created, updated string
 	err := row.Scan(
-		&f.ID, &f.ScopeKey, &f.Revision, &f.Content, &f.Category, &f.Confidence, &f.Source.ID, &f.Source.Kind, &f.Source.ActorID, &f.Source.RunID, &f.Source.InputID, &f.Source.EventSequence, &f.Source.PolicyVersion, &created, &updated)
+		&f.ID, &f.ScopeKey, &f.Revision, &f.Content, &f.Category, &f.Confidence, &f.Source.ID, &f.Source.Kind, &f.Source.ActorID, &f.Source.RunID, &f.Source.InputID, &f.Source.EventSequence, &f.Source.PolicyVersion, &created, &updated, &f.Source.Provenance)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Fact{}, harness.ErrNotFound
 	}
@@ -431,22 +448,48 @@ func (s *Store) Delete(ctx context.Context, scope Scope, id string, expectedRevi
 		if f.Revision != expectedRevision {
 			return ErrVersionConflict
 		}
-		version, err = bumpScope(ctx, tx, scope, version)
-		if err != nil {
-			return err
-		}
-		f.Revision++
-		f.Source, f.UpdatedAt = source, time.Now().UTC()
-		res, err := tx.ExecContext(ctx, `UPDATE memory_facts SET head_revision=?,deleted=1 WHERE id=? AND scope_key=? AND head_revision=? AND deleted=0`, f.Revision, id, scope.key, expectedRevision)
-		if err != nil {
-			return err
-		}
-		changed, err := res.RowsAffected()
-		if err != nil || changed != 1 {
-			return ErrVersionConflict
-		}
-		return insertRevision(ctx, tx, f, version, true)
+		_, err = deleteFactTx(ctx, tx, scope, f, version, source, true)
+		return err
 	})
+}
+
+// deleteFactTx is shared by legacy CRUD and receipt-bearing deletion. Slots
+// remain attached to tombstones; unslotted deletion fences the whole scope.
+func deleteFactTx(ctx context.Context, tx *sql.Tx, scope Scope, f Fact, version int64, source Source, fenceUnslotted bool) (Fact, error) {
+	version, err := bumpScope(ctx, tx, scope, version)
+	if err != nil {
+		return Fact{}, err
+	}
+	if fenceUnslotted {
+		var slotted bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM memory_slots WHERE scope_key=? AND fact_id=?)`, scope.key, f.ID).Scan(&slotted); err != nil {
+			return Fact{}, err
+		}
+		if !slotted {
+			if err = bumpDeletionEpochTx(ctx, tx, scope); err != nil {
+				return Fact{}, err
+			}
+		}
+	}
+	old := f.Revision
+	f.Revision++
+	f.Source, f.UpdatedAt = source, time.Now().UTC()
+	res, err := tx.ExecContext(ctx, `UPDATE memory_facts SET head_revision=?,deleted=1 WHERE id=? AND scope_key=? AND head_revision=? AND deleted=0`, f.Revision, f.ID, scope.key, old)
+	if err != nil {
+		return Fact{}, err
+	}
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return Fact{}, err
+	}
+	if changed != 1 {
+		return Fact{}, ErrVersionConflict
+	}
+	if err = insertRevision(ctx, tx, f, version, true); err != nil {
+		return Fact{}, err
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM memory_vectors WHERE fact_id=?`, f.ID)
+	return f, err
 }
 
 func (s *Store) Clear(ctx context.Context, scope Scope, expectedScopeRevision int64, sourcePrefix, actorID string) (int, error) {
@@ -455,7 +498,7 @@ func (s *Store) Clear(ctx context.Context, scope Scope, expectedScopeRevision in
 	}
 	cleared := 0
 	err := transact(ctx, s.db, func(tx *sql.Tx) error {
-		version, err := checkScope(ctx, tx, scope, false)
+		version, err := checkScope(ctx, tx, scope, true)
 		if err != nil {
 			return err
 		}
@@ -480,27 +523,27 @@ func (s *Store) Clear(ctx context.Context, scope Scope, expectedScopeRevision in
 		if err != nil {
 			return err
 		}
+		if err = bumpDeletionEpochTx(ctx, tx, scope); err != nil {
+			return err
+		}
+		// Empty Clear must also invalidate the ordinary pipeline's scope CAS.
+		if len(ids) == 0 {
+			_, err = bumpScope(ctx, tx, scope, version)
+			return err
+		}
 		for _, id := range ids {
 			f, err := readFact(ctx, tx, scope, id)
 			if err != nil {
 				return err
 			}
-			version, err = bumpScope(ctx, tx, scope, version)
-			if err != nil {
-				return err
-			}
-			f.Revision++
-			f.Source = Source{ID: sourcePrefix + "/" + id, Kind: "operator", ActorID: actorID}
-			if !validSource(f.Source) {
+			source := Source{ID: sourcePrefix + "/" + id, Kind: "operator", ActorID: actorID}
+			if !validSource(source) {
 				return harness.ErrInvalidInput
 			}
-			f.UpdatedAt = time.Now().UTC()
-			if _, err = tx.ExecContext(ctx, `UPDATE memory_facts SET head_revision=?,deleted=1 WHERE id=? AND scope_key=?`, f.Revision, id, scope.key); err != nil {
+			if _, err = deleteFactTx(ctx, tx, scope, f, version, source, false); err != nil {
 				return err
 			}
-			if err = insertRevision(ctx, tx, f, version, true); err != nil {
-				return err
-			}
+			version++
 			cleared++
 		}
 		return nil
@@ -524,8 +567,8 @@ func (s *Store) InspectRevision(ctx context.Context, scope Scope, id string, rev
 	var f Fact
 	var created, updated string
 	var deleted bool
-	err := s.db.QueryRowContext(ctx, `SELECT f.id,f.scope_key,r.revision,r.content,r.category,r.confidence,r.source_id,r.source_kind,r.source_actor_id,r.source_run_id,r.source_input_id,r.source_event_sequence,r.policy_version,f.created_at,r.created_at,r.deleted FROM memory_facts f JOIN memory_fact_revisions r ON r.fact_id=f.id WHERE f.id=? AND f.scope_key=? AND r.revision=?`, id, scope.key, revision).Scan(
-		&f.ID, &f.ScopeKey, &f.Revision, &f.Content, &f.Category, &f.Confidence, &f.Source.ID, &f.Source.Kind, &f.Source.ActorID, &f.Source.RunID, &f.Source.InputID, &f.Source.EventSequence, &f.Source.PolicyVersion, &created, &updated, &deleted)
+	err := s.db.QueryRowContext(ctx, `SELECT `+factColumns+`,r.deleted FROM memory_facts f JOIN memory_fact_revisions r ON r.fact_id=f.id WHERE f.id=? AND f.scope_key=? AND r.revision=?`, id, scope.key, revision).Scan(
+		&f.ID, &f.ScopeKey, &f.Revision, &f.Content, &f.Category, &f.Confidence, &f.Source.ID, &f.Source.Kind, &f.Source.ActorID, &f.Source.RunID, &f.Source.InputID, &f.Source.EventSequence, &f.Source.PolicyVersion, &created, &updated, &f.Source.Provenance, &deleted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Fact{}, false, harness.ErrNotFound
 	}

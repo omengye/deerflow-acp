@@ -111,15 +111,19 @@ type runtimeDocument struct {
 		IncludeGlobal  *bool  `yaml:"include_global"`
 	} `yaml:"skills"`
 	Memory struct {
-		SingleUser       bool   `yaml:"single_user"`
-		EmbeddingURL     string `yaml:"embedding_url"`
-		EmbeddingModel   string `yaml:"embedding_model"`
-		Enabled          *bool  `yaml:"enabled"`
-		Mode             string `yaml:"mode"`
-		InjectionEnabled *bool  `yaml:"injection_enabled"`
-		RetrievalEnabled *bool  `yaml:"retrieval_enabled"`
-		IncludeGlobal    *bool  `yaml:"include_global"`
-		BackendConfig    struct {
+		SingleUser           bool   `yaml:"single_user"`
+		DailyAttempts        *int   `yaml:"daily_attempts"`
+		EmbeddingURL         string `yaml:"embedding_url"`
+		EmbeddingModel       string `yaml:"embedding_model"`
+		IndexMaxAttempts     int    `yaml:"index_max_attempts"`
+		IndexRetrySeconds    int    `yaml:"index_retry_seconds"`
+		IndexMaxRetrySeconds int    `yaml:"index_max_retry_seconds"`
+		Enabled              *bool  `yaml:"enabled"`
+		Mode                 string `yaml:"mode"`
+		InjectionEnabled     *bool  `yaml:"injection_enabled"`
+		RetrievalEnabled     *bool  `yaml:"retrieval_enabled"`
+		IncludeGlobal        *bool  `yaml:"include_global"`
+		BackendConfig        struct {
 			RetrievalEnabled *bool `yaml:"retrieval_enabled"`
 		} `yaml:"backend_config"`
 	} `yaml:"memory"`
@@ -500,8 +504,21 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 		cfg.Instruction = base + "<deployment_instructions>\n" + overlay + "\n</deployment_instructions>"
 	}
 	cfg.MemorySingleUser = source.Memory.SingleUser
+	cfg.MemoryDailyAttempts = source.Memory.DailyAttempts
+	if cfg.MemoryDailyAttempts != nil && (*cfg.MemoryDailyAttempts < 0 || *cfg.MemoryDailyAttempts > 1000000) {
+		return result, fmt.Errorf("memory.daily_attempts must be between 0 and 1000000")
+	}
 	cfg.MemoryEmbeddingURL = source.Memory.EmbeddingURL
 	cfg.MemoryEmbeddingModel = source.Memory.EmbeddingModel
+	if source.Memory.IndexMaxAttempts < 0 || source.Memory.IndexMaxAttempts > 20 || source.Memory.IndexRetrySeconds < 0 || source.Memory.IndexRetrySeconds > 86400 || source.Memory.IndexMaxRetrySeconds < 0 || source.Memory.IndexMaxRetrySeconds > 86400 {
+		return result, fmt.Errorf("invalid memory index retry configuration")
+	}
+	cfg.MemoryIndex = harness.MemoryIndexConfig{MaxAttempts: source.Memory.IndexMaxAttempts, RetryDelay: time.Duration(source.Memory.IndexRetrySeconds) * time.Second, MaxRetryDelay: time.Duration(source.Memory.IndexMaxRetrySeconds) * time.Second}
+	indexConfig, indexErr := cfg.MemoryIndex.WithDefaults()
+	if indexErr != nil {
+		return result, fmt.Errorf("invalid memory index retry configuration: %w", indexErr)
+	}
+	cfg.MemoryIndex = indexConfig
 	if cfg.MemorySingleUser && (source.Memory.IncludeGlobal != nil && !*source.Memory.IncludeGlobal || source.LocalACP.MemoryScope == "session") {
 		return result, fmt.Errorf("single_user memory requires a shared global profile")
 	}

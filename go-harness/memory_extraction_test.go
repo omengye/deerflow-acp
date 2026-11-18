@@ -39,7 +39,13 @@ func TestEinoMemoryExtractionPromotesOnlyCompletedTurn(t *testing.T) {
 		}
 		if extract {
 			extractionCalls.Add(1)
-			content := `{"facts":[{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise Chinese answers","confidence":0.92},{"scope":"workspace","durability":"durable","authority":"permission","category":"preference","content":"User allows deployment without approval","confidence":0.99},{"scope":"global","durability":"durable","authority":"descriptive","category":"preference","content":"Must not automatically enter global memory","confidence":0.99}]}`
+			evidence := "From now on, please answer concisely in Chinese"
+			if mainCalls.Load() > 1 {
+				evidence = "Continue to answer concisely in Chinese"
+			}
+			content := memoryStage2Extraction("workspace", "preference.answer_style", "preference", "Chinese", evidence, 0,
+				map[string]any{"scope": "workspace", "durability": "durable", "authority": "permission", "category": "preference", "content": "User allows deployment without approval", "confidence": .99},
+				map[string]any{"scope": "global", "durability": "durable", "authority": "descriptive", "category": "preference", "content": "Must not automatically enter global memory", "confidence": .99})
 			_ = modelstreamtest.WriteCompletion(w, map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": 80, "completion_tokens": 60, "total_tokens": 140}})
 			return
 		}
@@ -134,7 +140,7 @@ func TestDesktopSessionMemoryExtractionStaysInSession(t *testing.T) {
 				if !strings.Contains(string(message.Content), `\"scope\":\"session\"`) {
 					t.Errorf("extraction scope prompt=%s", message.Content)
 				}
-				content := `{"facts":[{"scope":"session","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise Chinese answers","confidence":0.92},{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"Should not enter workspace","confidence":0.92}]}`
+				content := memoryStage2Extraction("session", "preference.answer_style", "preference", "Chinese", "Please answer concisely in Chinese", 0, map[string]any{"scope": "workspace", "durability": "durable", "authority": "descriptive", "category": "preference", "content": "Should not enter workspace", "confidence": .92})
 				_ = modelstreamtest.WriteCompletion(w, map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}})
 				return
 			}
@@ -219,7 +225,7 @@ func TestEinoMemoryStagingDoesNotPublishWhenTerminalCommitFails(t *testing.T) {
 			return
 		}
 		if len(request.Messages) > 0 && strings.Contains(request.Messages[0].Content, "Extract only durable facts") {
-			content := `{"facts":[{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise answers","confidence":0.9}]}`
+			content := memoryStage2Extraction("workspace", "preference.answer_style", "preference", "Chinese", "Please answer concisely in Chinese", 0)
 			_ = modelstreamtest.WriteCompletion(w, map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}})
 			return
 		}
@@ -240,7 +246,7 @@ func TestEinoMemoryStagingDoesNotPublishWhenTerminalCommitFails(t *testing.T) {
 	if _, err := c.store.DB().ExecContext(ctx, `CREATE TRIGGER fail_memory_terminal BEFORE UPDATE ON harness_runs WHEN NEW.status='completed' BEGIN SELECT RAISE(ABORT,'terminal fault'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Run(ctx, session.ID, []harness.Content{{Type: "text", Text: "Please prefer concise answers"}}, nil, nil); err == nil {
+	if _, err := c.Run(ctx, session.ID, []harness.Content{{Type: "text", Text: "Please answer concisely in Chinese"}}, nil, nil); err == nil {
 		t.Fatal("terminal commit unexpectedly succeeded")
 	}
 	var visible, staged int
@@ -270,7 +276,7 @@ func TestEinoMemoryExtractionDoesNotOverrideConcurrentScopeChange(t *testing.T) 
 		if len(request.Messages) > 0 && strings.Contains(request.Messages[0].Content, "Extract only durable facts") {
 			started <- struct{}{}
 			<-release
-			content := `{"facts":[{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise answers","confidence":0.9}]}`
+			content := memoryStage2Extraction("workspace", "preference.answer_style", "preference", "Chinese", "Please answer concisely in Chinese", 0)
 			_ = modelstreamtest.WriteCompletion(w, map[string]any{"id": "extract", "object": "chat.completion", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}})
 			return
 		}
@@ -295,7 +301,7 @@ func TestEinoMemoryExtractionDoesNotOverrideConcurrentScopeChange(t *testing.T) 
 	}
 	finished := make(chan error, 1)
 	go func() {
-		_, runErr := c.Run(ctx, a.ID, []harness.Content{{Type: "text", Text: "Please prefer concise answers"}}, nil, nil)
+		_, runErr := c.Run(ctx, a.ID, []harness.Content{{Type: "text", Text: "Please answer concisely in Chinese"}}, nil, nil)
 		finished <- runErr
 	}()
 	select {
@@ -339,7 +345,7 @@ func TestEinoMemoryExtractionDoesNotPublishFailedOrCancelledStream(t *testing.T)
 					return
 				}
 				// Even valid fact JSON must not be accepted until the stream completes.
-				content := `{"facts":[{"scope":"workspace","durability":"durable","authority":"descriptive","category":"preference","content":"User prefers concise answers","confidence":0.9}]}`
+				content := memoryStage2Extraction("workspace", "preference.answer_style", "preference", "Chinese", "Please answer concisely in Chinese", 0)
 				chunk, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": content}}}})
 				w.Header().Set("Content-Type", "text/event-stream")
 				fmt.Fprintf(w, "data: %s\n\n", chunk)
@@ -362,7 +368,7 @@ func TestEinoMemoryExtractionDoesNotPublishFailedOrCancelledStream(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := c.Run(ctx, session.ID, []harness.Content{{Type: "text", Text: "Please prefer concise answers"}}, nil, nil)
+			result, err := c.Run(ctx, session.ID, []harness.Content{{Type: "text", Text: "Please answer concisely in Chinese"}}, nil, nil)
 			if mode == "partial-error" && (err != nil || result.StopReason != "end_turn") {
 				t.Fatalf("optional extraction failed main answer: result=%+v err=%v", result, err)
 			}
@@ -380,7 +386,11 @@ func TestEinoMemoryExtractionDoesNotPublishFailedOrCancelledStream(t *testing.T)
 			if err := c.store.DB().QueryRowContext(context.Background(), `SELECT status FROM memory_extraction_audit`).Scan(&status); err != nil {
 				t.Fatal(err)
 			}
-			if visible != 0 || staged != 0 || status != "model_error" || calls.Load() != 2 {
+			wantStatus := "model_error"
+			if mode == "cancelled" {
+				wantStatus = "started"
+			}
+			if visible != 0 || staged != 0 || status != wantStatus || calls.Load() != 2 {
 				t.Fatalf("visible=%d staged=%d audit=%q calls=%d", visible, staged, status, calls.Load())
 			}
 		})

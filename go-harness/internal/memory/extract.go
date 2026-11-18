@@ -20,9 +20,8 @@ type ExtractedFact struct {
 
 var credentialLike = regexp.MustCompile(`(?i)(?:sk-[a-z0-9]{12,}|[a-f0-9]{32,})`)
 
-// FilterExtraction applies host policy to advisory model JSON. It intentionally
-// prefers false negatives: a candidate must be durable, descriptive, bounded,
-// and free of permission, secret, path, or current-task claims.
+// FilterExtraction filters legacy import records, not model write authority.
+// Both live extraction pipelines use ParseExtraction and accepted-user evidence.
 func FilterExtraction(raw []byte, userEnabled bool) ([]ExtractedFact, []string, error) {
 	allowed := []ScopeKind{WorkspaceScope}
 	if userEnabled {
@@ -31,9 +30,8 @@ func FilterExtraction(raw []byte, userEnabled bool) ([]ExtractedFact, []string, 
 	return FilterExtractionForScopes(raw, allowed)
 }
 
-// FilterExtractionForScopes constrains model-proposed facts to host-selected
-// destinations. The desktop session policy uses this to avoid writing into a
-// workspace scope after selecting session-isolated memory.
+// FilterExtractionForScopes retains the legacy import format. It does not
+// establish that a candidate was supported by an accepted user declaration.
 func FilterExtractionForScopes(raw []byte, allowed []ScopeKind) ([]ExtractedFact, []string, error) {
 	if len(raw) == 0 || len(raw) > 16*1024 || !utf8.Valid(raw) {
 		return nil, nil, errors.New("invalid extraction response size or encoding")

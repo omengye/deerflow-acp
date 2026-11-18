@@ -46,6 +46,7 @@ func (s *Store) Promote(ctx context.Context, origin, global Scope, id string, ex
 			return ErrVersionConflict
 		}
 		source.InputID = fact.ID
+		source.Provenance = Provenance(fact)
 		source.PolicyVersion = fmt.Sprintf("global-promotion-v1/revision-%d", fact.Revision)
 		if !validSource(source) {
 			return harness.ErrInvalidInput

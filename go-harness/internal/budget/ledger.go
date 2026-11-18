@@ -710,12 +710,22 @@ func (l *Ledger) MarkDispatched(ctx context.Context, grant Reservation) (first b
 }
 
 func (l *Ledger) Settle(ctx context.Context, grant Reservation, s Settlement) (usage harness.Usage, err error) {
+	err = l.transaction(ctx, "settle", func(tx *sql.Tx) error {
+		var e error
+		usage, e = l.SettleTx(ctx, tx, grant, s)
+		return e
+	})
+	return
+}
+
+func (l *Ledger) SettleTx(ctx context.Context, tx *sql.Tx, grant Reservation, s Settlement) (usage harness.Usage, err error) {
+	defer func() { err = persist("settle", err) }()
 	if s.Usage.InputTokens < 0 || s.Usage.OutputTokens < 0 || s.Usage.TotalTokens < 0 || s.Usage.InputTokens > math.MaxInt64-s.Usage.OutputTokens {
 		return usage, ErrScope
 	}
 	raw, _ := json.Marshal(s)
 	digest := fmt.Sprintf("%x", sha256.Sum256(raw))
-	err = l.transaction(ctx, "settle", func(tx *sql.Tx) error {
+	err = func() error {
 		old, _, e := readReservation(ctx, tx, grant.OperationID)
 		if errors.Is(e, sql.ErrNoRows) {
 			return ErrScope
@@ -783,6 +793,6 @@ func (l *Ledger) Settle(ctx context.Context, grant Reservation, s Settlement) (u
 			return e
 		}
 		return saveRoot(ctx, tx, r)
-	})
+	}()
 	return
 }

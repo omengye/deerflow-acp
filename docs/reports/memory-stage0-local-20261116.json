@@ -1,0 +1,207 @@
+{
+  "scope": "current local desktop installation only",
+  "read_only": true,
+  "process": {
+    "pid": 32012,
+    "executable": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\deerflow-acpd.exe",
+    "selected_arguments": {
+      "data-dir": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\config/go-harness-state",
+      "config": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\config\\config.yaml",
+      "runtime-dir": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\runtime/acp-go"
+    }
+  },
+  "config_path": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\config\\config.yaml",
+  "memory_config": {
+    "enabled": true,
+    "single_user": true,
+    "mode": "middleware",
+    "include_global": true,
+    "injection_enabled": true,
+    "retrieval_enabled": true,
+    "embedding_url_configured": false,
+    "embedding_model_configured": false,
+    "local_acp_memory_scope": "workspace",
+    "memory_extraction_effective": true
+  },
+  "binary": {
+    "vcs.revision": "68753f15e51ef285260bca52388c44c786ff0f41",
+    "vcs.time": "2026-11-15T02:29:25Z",
+    "vcs.modified": "true",
+    "go_version": "go1.27.3",
+    "sha256": "fd958006085a35390a66c0060b44f874138291e2c77cbc079d81b007000a66f6",
+    "mtime_utc": "2026-11-16T06:16:44.492265+00:00"
+  },
+  "inventory": {
+    "snapshot_utc": "2026-11-16T09:20:08.172766+00:00",
+    "database_path": "D:\\Tools\\deerflow-api\\dist\\desktop\\DeerFlow-Desktop-Go-20261010-103944\\user-data\\config\\go-harness-state\\harness.db",
+    "database_file_bytes": 136761344,
+    "pragma_user_version": 0,
+    "schema_tables": [
+      "eino_schema_migrations",
+      "memory_channel_bindings",
+      "memory_channel_preferences",
+      "memory_extraction_audit",
+      "memory_fact_revisions",
+      "memory_facts",
+      "memory_facts_fts",
+      "memory_facts_fts_config",
+      "memory_facts_fts_content",
+      "memory_facts_fts_data",
+      "memory_facts_fts_docsize",
+      "memory_facts_fts_idx",
+      "memory_fts_state",
+      "memory_jobs",
+      "memory_migrations",
+      "memory_operations",
+      "memory_profile",
+      "memory_scopes",
+      "memory_slots",
+      "memory_staged_facts",
+      "memory_vectors"
+    ],
+    "selected_table_columns": {
+      "memory_scopes": [
+        "key",
+        "kind",
+        "workspace",
+        "subject",
+        "agent",
+        "revision"
+      ],
+      "memory_facts": [
+        "id",
+        "scope_key",
+        "head_revision",
+        "deleted",
+        "created_at"
+      ],
+      "memory_fact_revisions": [
+        "fact_id",
+        "revision",
+        "scope_revision",
+        "content",
+        "category",
+        "confidence",
+        "source_id",
+        "source_kind",
+        "source_actor_id",
+        "source_run_id",
+        "source_input_id",
+        "source_event_sequence",
+        "policy_version",
+        "deleted",
+        "created_at"
+      ],
+      "memory_slots": [
+        "scope_key",
+        "slot_key",
+        "fact_id"
+      ],
+      "memory_operations": [
+        "operation_id",
+        "scope_key",
+        "request_sha",
+        "receipt",
+        "created_at"
+      ],
+      "memory_jobs": [
+        "id",
+        "run_id",
+        "input_id",
+        "attempt_id",
+        "payload",
+        "result",
+        "status",
+        "attempts",
+        "available_at",
+        "error_code",
+        "updated_at"
+      ],
+      "memory_vectors": [
+        "fact_id",
+        "revision",
+        "model",
+        "vector"
+      ],
+      "memory_migrations": [
+        "name",
+        "report",
+        "created_at"
+      ]
+    },
+    "jobs_by_status": [
+      {
+        "status": "completed",
+        "count": 171
+      }
+    ],
+    "jobs_by_attempts": [
+      {
+        "attempts": 1,
+        "count": 168
+      },
+      {
+        "attempts": 2,
+        "count": 3
+      }
+    ],
+    "jobs_with_saved_result": [
+      {
+        "status": "completed",
+        "count": 171
+      }
+    ],
+    "pending_by_source_run": [],
+    "oldest_pending": [
+      {
+        "oldest_updated_at": null,
+        "earliest_available_at": null
+      }
+    ],
+    "facts_by_scope": [
+      {
+        "kind": "global",
+        "deleted": 0,
+        "count": 4
+      },
+      {
+        "kind": "workspace",
+        "deleted": 0,
+        "count": 9
+      }
+    ],
+    "visible_unslotted_facts": 0,
+    "tombstone_slots": 0,
+    "operation_count": 16,
+    "vector_count": 0,
+    "run_status_counts": [
+      {
+        "status": "cancelled",
+        "count": 1
+      },
+      {
+        "status": "completed",
+        "count": 42
+      },
+      {
+        "status": "failed",
+        "count": 2
+      }
+    ],
+    "fact_revision_policy_counts": [
+      {
+        "policy_version": "personal-explicit-v1",
+        "count": 1
+      },
+      {
+        "policy_version": "personal-extraction-v1",
+        "count": 15
+      }
+    ]
+  },
+  "notes": [
+    "No memory text, job payload, input text or credentials exported.",
+    "No application restart, queue change, migration, checkpoint or backup performed.",
+    "Existing running backend and dirty binary are not asserted to equal the source under test."
+  ]
+}

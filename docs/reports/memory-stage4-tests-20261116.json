@@ -1,0 +1,1225 @@
+{
+  "stage": 4,
+  "date": "2026-11-16",
+  "base_commit": "68753f15e51ef285260bca52388c44c786ff0f41",
+  "scope": "uncommitted working tree; no deployment, installed data/config changes, or live model calls",
+  "environment": {
+    "go": "go1.26.8",
+    "os": "windows",
+    "arch": "amd64",
+    "CGO_ENABLED": "0",
+    "GOROOT": "D:\\GO_ENV\\GOPATH\\pkg\\mod\\golang.org\\toolchain@v0.0.1-go1.26.8.windows-amd64",
+    "GOTOOLCHAIN": "local"
+  },
+  "counting": "leaf test cases only; collections overlap and must not be added as independent tests",
+  "collections": [
+    {
+      "name": "baseline",
+      "command": "go test -tags memory_fix_repro . ./internal/memory -run '^TestMemoryFixRepro' -timeout=180s -json -count=1",
+      "working_directory": "D:\\Tools\\deerflow-api\\go-harness",
+      "exit_code": 1,
+      "counts": {
+        "pass": 0,
+        "fail": 2,
+        "skip": 0
+      },
+      "package_outcomes": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "outcome": "fail",
+          "elapsed_seconds": 0.23
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "outcome": "fail",
+          "elapsed_seconds": 0.716
+        }
+      ],
+      "started_at": "2026-11-16T21:28:35.8661377+08:00",
+      "finished_at": "2026-11-16T21:28:36.5820774+08:00",
+      "raw_log": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-stage4-20261116\\baseline.jsonl",
+      "raw_log_sha256": "bbadddd9e223a6bc24816c21247ced38e4a3dd2fffd385d5cc0277488da0d42f",
+      "failure_and_skip_details": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryFixReproIndexPendingDoesNotStarveHealthyFacts",
+          "outcome": "fail",
+          "output": [
+            "=== RUN   TestMemoryFixReproIndexPendingDoesNotStarveHealthyFacts",
+            "fix_plan_repro_test.go:54: P2-10: one rejected input starved healthy facts across repeated batches; indexed=0 want=16",
+            "--- FAIL: TestMemoryFixReproIndexPendingDoesNotStarveHealthyFacts (0.14s)"
+          ]
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestMemoryFixReproFlushDoesNotSucceedWithPendingJob",
+          "outcome": "fail",
+          "output": [
+            "=== RUN   TestMemoryFixReproFlushDoesNotSucceedWithPendingJob",
+            "memory_fix_repro_test.go:33: P1-3: FlushMemory reported success while its session still had a pending job",
+            "--- FAIL: TestMemoryFixReproFlushDoesNotSucceedWithPendingJob (0.58s)"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "stage4_final_acceptance",
+      "command": "go test . ./internal/memory ./internal/runtime ./internal/launch ./internal/acp/agent -run '^TestMemoryStage4|^TestMemoryFixRepro' -timeout=180s -json -count=1",
+      "working_directory": "D:\\Tools\\deerflow-api\\go-harness",
+      "exit_code": 0,
+      "counts": {
+        "pass": 55,
+        "fail": 0,
+        "skip": 0
+      },
+      "package_outcomes": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/acp/agent",
+          "outcome": "pass",
+          "elapsed_seconds": 0.405
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "outcome": "pass",
+          "elapsed_seconds": 4.459
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/launch",
+          "outcome": "pass",
+          "elapsed_seconds": 11.986
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/runtime",
+          "outcome": "pass",
+          "elapsed_seconds": 18.097
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "outcome": "pass",
+          "elapsed_seconds": 34.17
+        }
+      ],
+      "started_at": "2026-11-16T22:04:31.4191337+08:00",
+      "finished_at": "2026-11-16T22:05:05.5889719+08:00",
+      "raw_log": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-stage4-20261116\\acceptance-final.jsonl",
+      "raw_log_sha256": "ed4497a2cff2b6a95eb89131e83892e22e1dd8277bc63fc4ba8978fa97621c15",
+      "failure_and_skip_details": [],
+      "stage4_tests": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushClassification/queued",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/acp/agent",
+          "test": "TestMemoryStage4ACPFlushOldAndNewClients",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushClassification/daily",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushClassification/held",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushClassification/unknown",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushClassification/waiting",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushClassification/failed_source",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushClassification/cancelled_source",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushClassification/historical_failure",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushClassification/quota_job",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushClassification/no_facts",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushClassification/published",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushFixedSetAndMissingRows",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushNoJobDecisions/quota_skip",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushNoJobDecisions/disabled",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushNoJobDecisions/explicit_action",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushNoJobDecisions/enqueue_error",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushNoJobDecisions/pending",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushReportsRetryTime",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushStateErrorsAndOrphan/missing_input",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushStateErrorsAndOrphan/query_failure",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushStateErrorsAndOrphan/orphan_run",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4FlushStateErrorsAndOrphan/orphan_session",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4RecoveryDiscardsFailedSourcesWithoutWorker",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4DeletedSessionRetainsNoJobSkip",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4IndexIsolatesPoisonAndCapsRetries",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4IndexOutageBackoffSurvivesReopen",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4IndexLateResultsAndCancellation/delete",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4IndexLateResultsAndCancellation/correct",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4IndexLateResultsAndCancellation/model",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4IndexLateResultsAndCancellation/cancel",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4IndexConfigAndSplitBound",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4IndexRevisionResetsTerminalFailure",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4IndexConcurrentCallsAndMalformedVector",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4IndexTimeoutPersistsBackoff",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4IndexMigrationAtomicAndRepeatable",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestMemoryStage4LoweredIndexCapAppliesToPersistedRetries",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/launch",
+          "test": "TestMemoryStage4IndexRetryConfig/defaults",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/launch",
+          "test": "TestMemoryStage4IndexRetryConfig/custom",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/launch",
+          "test": "TestMemoryStage4IndexRetryConfig/negative",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/launch",
+          "test": "TestMemoryStage4IndexRetryConfig/too_many",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/launch",
+          "test": "TestMemoryStage4IndexRetryConfig/reversed",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/launch",
+          "test": "TestMemoryStage4IndexRetryConfig/overflow",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/runtime",
+          "test": "TestMemoryStage4FixedFlushWaitAllowsNewForeground",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestMemoryStage4SDKStatusAndCompatibility",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestMemoryStage4FlushTimeoutCancellationAndReleasedSlot",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestMemoryStage4FlushTotalTenSecondBound",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestMemoryStage4FlushWaitsForPaidResultPublication",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestMemoryStage4SessionDeletionDisposesJobsAtomically",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestMemoryStage4DeletionPreservesUnknownBudget",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestMemoryStage4IndexWorkerIndependentAndDisabled/enabled",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestMemoryStage4IndexWorkerIndependentAndDisabled/disabled",
+          "outcome": "pass"
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestMemoryStage4IndexCloseJoinsProvider",
+          "outcome": "pass"
+        }
+      ],
+      "stage4_leaf_pass": 53,
+      "baseline_reproductions_now_default": [
+        "TestMemoryFixReproIndexPendingDoesNotStarveHealthyFacts",
+        "TestMemoryFixReproFlushDoesNotSucceedWithPendingJob"
+      ]
+    },
+    {
+      "name": "related_regression",
+      "command": "go test . ./internal/memory ./internal/runtime ./internal/launch ./internal/acp/agent -run 'Memory|Personal|Session.*(Delete|Archive|Retention|Cleanup)' -timeout=300s -json -count=1",
+      "working_directory": "D:\\Tools\\deerflow-api\\go-harness",
+      "exit_code": 0,
+      "counts": {
+        "pass": 270,
+        "fail": 0,
+        "skip": 1
+      },
+      "package_outcomes": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/acp/agent",
+          "outcome": "pass",
+          "elapsed_seconds": 3.489
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "outcome": "pass",
+          "elapsed_seconds": 14.166
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/launch",
+          "outcome": "pass",
+          "elapsed_seconds": 16.836
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/runtime",
+          "outcome": "pass",
+          "elapsed_seconds": 20.834
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "outcome": "pass",
+          "elapsed_seconds": 108.022
+        }
+      ],
+      "started_at": "2026-11-16T21:53:42.7469459+08:00",
+      "finished_at": "2026-11-16T21:55:30.7685549+08:00",
+      "raw_log": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-stage4-20261116\\final-related.jsonl",
+      "raw_log_sha256": "f285db6f08f2a44483108ddfbc5e0167a74a16bb8a1471df1a66b235e876e2d7",
+      "failure_and_skip_details": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestPersonalMemoryChineseEmbeddingAcceptance",
+          "outcome": "skip",
+          "output": [
+            "=== RUN   TestPersonalMemoryChineseEmbeddingAcceptance",
+            "embedding_integration_test.go:17: set MEMORY_EMBEDDING_TEST_URL for pinned-model release acceptance",
+            "--- SKIP: TestPersonalMemoryChineseEmbeddingAcceptance (0.00s)"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "related_full_packages",
+      "command": "go test ./internal/memory ./internal/budget ./internal/engine/eino ./internal/launch ./internal/acp/agent ./internal/configschema -timeout=300s -json -count=1",
+      "working_directory": "D:\\Tools\\deerflow-api\\go-harness",
+      "exit_code": 0,
+      "counts": {
+        "pass": 1277,
+        "fail": 0,
+        "skip": 2
+      },
+      "package_outcomes": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/configschema",
+          "outcome": "pass",
+          "elapsed_seconds": 0.369
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/budget",
+          "outcome": "pass",
+          "elapsed_seconds": 23.589
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/launch",
+          "outcome": "pass",
+          "elapsed_seconds": 16.507
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "outcome": "pass",
+          "elapsed_seconds": 41.525
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/acp/agent",
+          "outcome": "pass",
+          "elapsed_seconds": 46.566
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino",
+          "outcome": "pass",
+          "elapsed_seconds": 83.026
+        }
+      ],
+      "started_at": "2026-11-16T21:53:39.2509049+08:00",
+      "finished_at": "2026-11-16T21:55:21.7766619+08:00",
+      "raw_log": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-stage4-20261116\\packages-final.jsonl",
+      "raw_log_sha256": "b62c51eb10471b7115ac2c6fb74c3e2a397cf550cb1e1ee4cc8c014d02bdf17c",
+      "failure_and_skip_details": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestPersonalMemoryChineseEmbeddingAcceptance",
+          "outcome": "skip",
+          "output": [
+            "=== RUN   TestPersonalMemoryChineseEmbeddingAcceptance",
+            "embedding_integration_test.go:17: set MEMORY_EMBEDDING_TEST_URL for pinned-model release acceptance",
+            "--- SKIP: TestPersonalMemoryChineseEmbeddingAcceptance (0.00s)"
+          ]
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/launch",
+          "test": "TestLivePrimaryModelAndOCIAcceptance",
+          "outcome": "skip",
+          "output": [
+            "=== RUN   TestLivePrimaryModelAndOCIAcceptance",
+            "skill_live_acceptance_test.go:26: requires an explicitly selected live primary-model profile",
+            "--- SKIP: TestLivePrimaryModelAndOCIAcceptance (0.00s)"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "runtime_regression",
+      "command": "go test ./internal/runtime -run 'Memory|Execution|Continuation|Background|RunQueue|Budget|Session.*(Delete|Archive|Retention|Cleanup)|SkillLearningAutoPatch' -timeout=420s -json -count=1",
+      "working_directory": "D:\\Tools\\deerflow-api\\go-harness",
+      "exit_code": 0,
+      "counts": {
+        "pass": 310,
+        "fail": 0,
+        "skip": 0
+      },
+      "package_outcomes": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/runtime",
+          "outcome": "pass",
+          "elapsed_seconds": 210.635
+        }
+      ],
+      "started_at": "2026-11-16T21:49:01.921629+08:00",
+      "finished_at": "2026-11-16T21:52:32.556223+08:00",
+      "raw_log": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-stage4-20261116\\runtime.jsonl",
+      "raw_log_sha256": "8fbbefe020fdd593f19f97da1f08bc1afeef3f7fa58454978861e1c4e226afbc",
+      "failure_and_skip_details": []
+    },
+    {
+      "name": "root_full_package",
+      "command": "go test . -timeout=900s -json -count=1",
+      "working_directory": "D:\\Tools\\deerflow-api\\go-harness",
+      "exit_code": 0,
+      "counts": {
+        "pass": 434,
+        "fail": 0,
+        "skip": 3
+      },
+      "package_outcomes": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "outcome": "pass",
+          "elapsed_seconds": 576.506
+        }
+      ],
+      "started_at": "2026-11-16T21:49:02.4562179+08:00",
+      "finished_at": "2026-11-16T21:58:38.961929+08:00",
+      "raw_log": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-stage4-20261116\\root.jsonl",
+      "raw_log_sha256": "df5a2a28d27c556152a641f7cd54d910bc1713557268e032e862c81e4760d133",
+      "failure_and_skip_details": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestScheduleSourceSymlinkCannotRetargetPinnedGrant",
+          "outcome": "skip",
+          "output": [
+            "=== RUN   TestScheduleSourceSymlinkCannotRetargetPinnedGrant",
+            "schedule_sources_test.go:20: symlink unavailable: symlink C:\\Users\\omeng\\AppData\\Local\\Temp\\TestScheduleSourceSymlinkCannotRetargetPinnedGrant1397655931\\001 C:\\Users\\omeng\\AppData\\Local\\Temp\\TestScheduleSourceSymlinkCannotRetargetPinnedGrant1397655931\\003\\workspace-alias: A required privilege is not held by the client.",
+            "--- SKIP: TestScheduleSourceSymlinkCannotRetargetPinnedGrant (0.01s)"
+          ]
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestSkillRunNativePermissionPinnedReceiptAndReadOnly",
+          "outcome": "skip",
+          "output": [
+            "=== RUN   TestSkillRunNativePermissionPinnedReceiptAndReadOnly",
+            "skill_run_tool_test.go:21: command provider is unavailable",
+            "--- SKIP: TestSkillRunNativePermissionPinnedReceiptAndReadOnly (0.01s)"
+          ]
+        },
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness",
+          "test": "TestSkillRunDelegatedRoleCannotExpandToolOrSkillScope",
+          "outcome": "skip",
+          "output": [
+            "=== RUN   TestSkillRunDelegatedRoleCannotExpandToolOrSkillScope",
+            "skill_run_tool_test.go:135: command provider is unavailable",
+            "--- SKIP: TestSkillRunDelegatedRoleCannotExpandToolOrSkillScope (0.01s)"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "memory_migration_fix",
+      "command": "go test ./internal/memory -timeout=180s -json -count=1",
+      "working_directory": "D:\\Tools\\deerflow-api\\go-harness",
+      "exit_code": 0,
+      "counts": {
+        "pass": 130,
+        "fail": 0,
+        "skip": 1
+      },
+      "package_outcomes": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "outcome": "pass",
+          "elapsed_seconds": 21.157
+        }
+      ],
+      "started_at": "2026-11-16T21:49:34.9274282+08:00",
+      "finished_at": "2026-11-16T21:49:56.0840756+08:00",
+      "raw_log": "C:\\Users\\omeng\\AppData\\Local\\Temp\\deerflow-memory-stage4-20261116\\memory-final.jsonl",
+      "raw_log_sha256": "beed013faa3db1a6c1b6bc76e5c998664380a2c040bfdd92d0235a30b3f7d738",
+      "failure_and_skip_details": [
+        {
+          "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+          "test": "TestPersonalMemoryChineseEmbeddingAcceptance",
+          "outcome": "skip",
+          "output": [
+            "=== RUN   TestPersonalMemoryChineseEmbeddingAcceptance",
+            "embedding_integration_test.go:17: set MEMORY_EMBEDDING_TEST_URL for pinned-model release acceptance",
+            "--- SKIP: TestPersonalMemoryChineseEmbeddingAcceptance (0.00s)"
+          ]
+        }
+      ]
+    }
+  ],
+  "iteration_findings": [
+    {
+      "description": "Initial stage4 code/tests had two signature/return-type compilation mistakes; fixed before successful acceptance."
+    },
+    {
+      "description": "SQLite multi-statement fixture reused parameters for each statement; split parameterized statements without weakening assertions."
+    },
+    {
+      "description": "HTTP cancellation fixture needed to consume the request body to observe connection cancellation; original run timed out during httptest cleanup, later fixed and Close cancellation passed."
+    },
+    {
+      "description": "Runtime concurrency fixture used nil for a variadic MCPServer; removed the invalid argument."
+    },
+    {
+      "description": "Full package regression found no harness_runs table in legacy memory-only migration; skip source reconciliation when no queued jobs remain. Memory/full-package reruns passed."
+    },
+    {
+      "description": "Review found breadth-first bounded splitting could starve leaves of an all-bad batch. Depth-first splitting plus 17 all-bad facts reaches terminal retry caps."
+    },
+    {
+      "description": "Final review ensures lowered retry caps mark persisted failures terminal; increasing cap does not revive an already terminal revision/model."
+    }
+  ],
+  "coverage_timing": [
+    "Root full and broad runtime runs started before the final empty-queue legacy guard and resolved no-job skip handling; those branches were covered by subsequent memory/full-package and related regressions.",
+    "Related/full-package runs started before the final lowered-index-cap addition; the final 55-leaf acceptance suite includes that change and SDK worker/Close/config coverage.",
+    "No full repository, full runtime package, race, real embedding/model quality, installed database-copy upgrade/rollback, or release build pass is claimed."
+  ],
+  "not_run": [
+    "go test -race: CGO_ENABLED=0 and no gcc/clang discovered",
+    "real model/embedding acceptance",
+    "installed database-copy full upgrade/rollback",
+    "release build/deployment"
+  ],
+  "checks": {
+    "git_diff_check": "passed (CRLF normalization warnings only)",
+    "changed_go_files_gofmt": "passed for 28 stage4 Go files",
+    "documentation_links": {
+      "checked": 42,
+      "issues": 0
+    }
+  },
+  "workspace_baseline": {
+    "recorded_files": 88,
+    "unchanged_count": 69,
+    "changed_count": 19,
+    "changed": [
+      {
+        "status": " M",
+        "path": "config.example.yaml",
+        "sha256": "dc0f9e94eecf4f25eab2dc5f196c6ac4f22bb7902f8fdf13f71f5b7a03d6f151",
+        "final_sha256": "fbcc0fd9c9dee9113599e0204eb7f6b435cd029da4853f811beb591b975bb8b6"
+      },
+      {
+        "status": " M",
+        "path": "docs/eino-global-memory.md",
+        "sha256": "d2a44f40c729bb16a5ef8fede022735b3ba883e0902298d5ae58589f01239360",
+        "final_sha256": "30605bc88449cc38c006861434eb026545e4f78804b24eddcbefc82fe017ebd2"
+      },
+      {
+        "status": " M",
+        "path": "docs/eino-go-config-bridge.md",
+        "sha256": "35eafb45f56868a52361d6e872c03e584948244cff2bbfb8b06769d18757e79b",
+        "final_sha256": "75883e5fd2fdcad87b5b2abb5d252fb4c772a47007e7325948378b19123e752d"
+      },
+      {
+        "status": " M",
+        "path": "docs/eino-memory-context-design.md",
+        "sha256": "e5c21238d6eab7b41aeb4993d27f9310aa1a1bd252d81efae6de9993f9991bf0",
+        "final_sha256": "29a13b7342971941daddcffdca22d341183bdda9973d456cf43a56b2640e814a"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/deerflow.go",
+        "sha256": "ec710394603ae0927dcad34e2d90d7cec8920e11078db3b061334c3065a09c35",
+        "final_sha256": "50f6f2f376734d0a50133f8387079b88ec809523383a6ae9dc307f92ced10c62"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/configschema/schema.go",
+        "sha256": "7d1d82b8c6aa33307e8dec037e0d5762ed82038ae3f1bf0994d4e26eb9b28c2c",
+        "final_sha256": "1c94f1b2c9bff26bc2d109356b8e15b62b8d8247a9a8919ea35902d91c1d8aa7"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/launch/config.go",
+        "sha256": "9015aea204b6b1468d011ad4e520e5196925cfc2e950ce116c1792e15c481471",
+        "final_sha256": "32c4293e5fb01934f6fc10e61ca16d347f9b43d438a4821703dd9281e9a14d07"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/jobs.go",
+        "sha256": "ce8d96a5321d089c90fd1bc3cba9fef05698c7739fb72184a38cda13cf36a6c6",
+        "final_sha256": "edbf020e7f57c4de8da60f473797bc0483d367aaa4ea9f619b2e1bbc3108685f"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/store.go",
+        "sha256": "72b86b22e36ab96675ac1a2e263559685386e25b5c97da711be0e9d369996b9b",
+        "final_sha256": "32777df5da9f4584276a83ade94aa1391318da5a4cbe3c2efe5f96aa952384ed"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/runtime/memory.go",
+        "sha256": "867d88aff63478860c992296a3af315deddf8d427140d0e404a0c08e0e5fc4b7",
+        "final_sha256": "66f3e1c9e8a260c134d1fdedf5f8a18c5375200cccad9bc95cbe4c72138edf66"
+      },
+      {
+        "status": "??",
+        "path": "docs/memory-fix-plan.md",
+        "sha256": "27ce0f25397b4ab58432568782fac3db3c6ec3986e8cfec536197c12404f9517",
+        "final_sha256": "f6a388d86aa36c41799e6ba6377c1b328d184be6de8e009db009fdbf89956471"
+      },
+      {
+        "status": "??",
+        "path": "docs/memory-write-policy.md",
+        "sha256": "150184005d5a15f35ce91db57bf06302094dd144983f64e8afc5b8cd736bb69d",
+        "final_sha256": "12987a4adb27834102c2119e36a7a61698f6b848135fe361bf8431af6b3fe631"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/fix_plan_repro_test.go",
+        "sha256": "20b075e8f510f2b283d4e491613c7266d407418c7b9e82aab329aa0d0635011a",
+        "final_sha256": "46e81127cc9c5088296feff8ee0c7ecf07f929fc51410b1f855d4d522c175da3"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/job_budget.go",
+        "sha256": "c9e418eb7beb6fb8e798531f4d4fda846de610b155d256308049c899663c1c6a",
+        "final_sha256": "b578e9ad7b0b3469ce3be1b6b8871db1bb0c45a335a0b4b2604737b3a88d87d2"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/source.go",
+        "sha256": "9ebd634c86bcbf9c15022fa5d5f9f1009102a0e2ced662fdb63d2b864113e6f1",
+        "final_sha256": "f98530a9864dbf2c7fa41078fea6ad4c3d92cf55d166d64bab682f53ad74d75d"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/source_test.go",
+        "sha256": "2e5a47fe985004bdea86669695f79761c06b78c277314eb2840fbc150c529bbb",
+        "final_sha256": "5c6e9ba6d8f749c384ca48233bb07cfed8d8b7a91b5060239a169afea39375bb"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/stage3_test.go",
+        "sha256": "2342330cbb079e0fc5895921a6d7b850356b867b0e6f9a76e5bd72a81e62efd3",
+        "final_sha256": "1c6e87cff5e95e963633c2b0f22573d11daea0b8e81130724f7a70fc0d3acb68"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/memory_fix_repro_test.go",
+        "sha256": "08adac5faa3ac4355258ff1c9f25cc368685b58eb1a033cc28c62285e31e1fa4",
+        "final_sha256": "0a5e4a6135cbbfaf6b9bfd0ddcf032015468b47ce690cc97fb15e608709137a1"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/memory_worker.go",
+        "sha256": "391b393d52647ae5078da5a496982c44d36777ce10dec1ee8ad8a378c83dd9ff",
+        "final_sha256": "ea610f6d0a914133c8563d5452052c55e54c1831116a06bec0b9cc5894499d79"
+      }
+    ],
+    "unchanged": [
+      {
+        "status": " M",
+        "path": "desktop-app/crates/waku-core/src/driver/acp.rs",
+        "sha256": "86b8aa8c6ba4c7daaba5736c68215749b2619cedb8bc5e3a2894e4d6ce87f570",
+        "final_sha256": "86b8aa8c6ba4c7daaba5736c68215749b2619cedb8bc5e3a2894e4d6ce87f570"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/cmd/deerflow-desktop-smoke/main.go",
+        "sha256": "34de01947c4dc22d3bc872c6a5298c240632457bff3ce683b89ee7bc77fda592",
+        "final_sha256": "34de01947c4dc22d3bc872c6a5298c240632457bff3ce683b89ee7bc77fda592"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/cmd/deerflow-desktop-smoke/skill_delete.go",
+        "sha256": "2ef92722ecb627b52e2ffec992a51b52cc416f888c969e685ed5998c870dd40b",
+        "final_sha256": "2ef92722ecb627b52e2ffec992a51b52cc416f888c969e685ed5998c870dd40b"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/extensions.go",
+        "sha256": "81a3ec45a060c43cab9f2b25976191d5c454b1f09144cb3382dfcb63d49b0f15",
+        "final_sha256": "81a3ec45a060c43cab9f2b25976191d5c454b1f09144cb3382dfcb63d49b0f15"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/harness/external_content.go",
+        "sha256": "9b882423a23de17f71bb341cb84cdc1c0006b72191988b417c88323dd9acdaec",
+        "final_sha256": "9b882423a23de17f71bb341cb84cdc1c0006b72191988b417c88323dd9acdaec"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/harness/memory.go",
+        "sha256": "1b65a6a4d53401b4a3a7e08f616e5015e15a140b7e327389fdeb389ff3cd58a9",
+        "final_sha256": "1b65a6a4d53401b4a3a7e08f616e5015e15a140b7e327389fdeb389ff3cd58a9"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/harness/permission_mode.go",
+        "sha256": "7d939d875dc7a9054d4c9ae5eddd6b7377129399b89e779dfd4f37c34fafd632",
+        "final_sha256": "7d939d875dc7a9054d4c9ae5eddd6b7377129399b89e779dfd4f37c34fafd632"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/acp/agent/agent.go",
+        "sha256": "1bcaebaff348e06a1862b41cdffb234c32d2001ddeecf67b10a54435f6355f0c",
+        "final_sha256": "1bcaebaff348e06a1862b41cdffb234c32d2001ddeecf67b10a54435f6355f0c"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/budget/ledger.go",
+        "sha256": "6295a61a1116167734110197a91af364c081f327b2ac76780f523d5044e2b9ce",
+        "final_sha256": "6295a61a1116167734110197a91af364c081f327b2ac76780f523d5044e2b9ce"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/budget/task_tree.go",
+        "sha256": "13a5d2059bb5c329b24ff23d4d05a8ff62c400a53ec1fbc7fa254d42dfa93a5e",
+        "final_sha256": "13a5d2059bb5c329b24ff23d4d05a8ff62c400a53ec1fbc7fa254d42dfa93a5e"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/engine/eino/engine.go",
+        "sha256": "35dba686989b50ebd260789c6cfe2b4b22beb2753cbc50230a5c32e356db0034",
+        "final_sha256": "35dba686989b50ebd260789c6cfe2b4b22beb2753cbc50230a5c32e356db0034"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/engine/eino/memory_extractor.go",
+        "sha256": "15512dc1517e904863296388f5132bf2581ca639bcf3de64eb06465bb9fefb9b",
+        "final_sha256": "15512dc1517e904863296388f5132bf2581ca639bcf3de64eb06465bb9fefb9b"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/engine/eino/model_rate_limit.go",
+        "sha256": "b84a155674efa78ca1bba82b10b0c642312138b9ccdfa6f3dc27cd097fe60aee",
+        "final_sha256": "b84a155674efa78ca1bba82b10b0c642312138b9ccdfa6f3dc27cd097fe60aee"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/engine/eino/output_tokens.go",
+        "sha256": "95cfff0b1765a0d26bcbcada0f8f3edec3a345c814b75dcf99f3ea57b1c387e4",
+        "final_sha256": "95cfff0b1765a0d26bcbcada0f8f3edec3a345c814b75dcf99f3ea57b1c387e4"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/engine/eino/prepared.go",
+        "sha256": "c09e291a29042bc7d7d6b6dd9d1d2673227bfe202e02b742f9b1d47ef852b087",
+        "final_sha256": "c09e291a29042bc7d7d6b6dd9d1d2673227bfe202e02b742f9b1d47ef852b087"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/engine/eino/role_failures.go",
+        "sha256": "68717254c99506e7e14a3509527586cb16e67de2df732ba7f3be36eb35e2fc1d",
+        "final_sha256": "68717254c99506e7e14a3509527586cb16e67de2df732ba7f3be36eb35e2fc1d"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/engine/eino/roles.go",
+        "sha256": "1250d4c0cfab4f5d0882fecf8245a46f63de7fcf7cab8159c02b62415e39234e",
+        "final_sha256": "1250d4c0cfab4f5d0882fecf8245a46f63de7fcf7cab8159c02b62415e39234e"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/engine/eino/turn_loop.go",
+        "sha256": "edde83111e830e6b6b6d3758ab1ed8561304834e949b94d2ad097f91791b7823",
+        "final_sha256": "edde83111e830e6b6b6d3758ab1ed8561304834e949b94d2ad097f91791b7823"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/learning/external_influence_test.go",
+        "sha256": "23f88e8e9cf5f4ca827245c7c95edd6c1da750a558d7c13a6d46bb065e93c480",
+        "final_sha256": "23f88e8e9cf5f4ca827245c7c95edd6c1da750a558d7c13a6d46bb065e93c480"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/extract.go",
+        "sha256": "ae716c31f6877510f54390e773c3dd4ba39592ab67592486f9c361583a5dbbbb",
+        "final_sha256": "ae716c31f6877510f54390e773c3dd4ba39592ab67592486f9c361583a5dbbbb"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/global.go",
+        "sha256": "00c0ac6222a44ddb225b0c7be69120571dde6f230e954b084876aff98da013de",
+        "final_sha256": "00c0ac6222a44ddb225b0c7be69120571dde6f230e954b084876aff98da013de"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/legacy.go",
+        "sha256": "ee6fe77a04eceb78a9e81f073adbc0294cc118aa8018d0d447dcbf12ac566112",
+        "final_sha256": "ee6fe77a04eceb78a9e81f073adbc0294cc118aa8018d0d447dcbf12ac566112"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/migration.go",
+        "sha256": "30e856a06ed8f1bc47c8f2e590bcda3556a7597de076e84d965c192f4e5e6a64",
+        "final_sha256": "30e856a06ed8f1bc47c8f2e590bcda3556a7597de076e84d965c192f4e5e6a64"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/personal.go",
+        "sha256": "21fbd0bc3460fedeb5707504ead43d80bdac714a2646d3e231160c482c902e3d",
+        "final_sha256": "21fbd0bc3460fedeb5707504ead43d80bdac714a2646d3e231160c482c902e3d"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/personal_test.go",
+        "sha256": "4f2b4c775abfd7e2d3d466ca40fe4a52ecdd9f7157e024fe586feaa69846055b",
+        "final_sha256": "4f2b4c775abfd7e2d3d466ca40fe4a52ecdd9f7157e024fe586feaa69846055b"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/provenance.go",
+        "sha256": "e49035e045e9f9d0506a7eff1dc38097b9d1e57582a52ff7efded9e8268f893d",
+        "final_sha256": "e49035e045e9f9d0506a7eff1dc38097b9d1e57582a52ff7efded9e8268f893d"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/provenance_test.go",
+        "sha256": "60333253bf8c9984730c00d7f5497573278f85022b6e5ab778c77e769c5f0aac",
+        "final_sha256": "60333253bf8c9984730c00d7f5497573278f85022b6e5ab778c77e769c5f0aac"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/search_test.go",
+        "sha256": "b525346b0c16b6e22f83523fa2415b6908fae9a33dd6f30675ee694df0fde216",
+        "final_sha256": "b525346b0c16b6e22f83523fa2415b6908fae9a33dd6f30675ee694df0fde216"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/staging.go",
+        "sha256": "28cf191cd73be69aa028b5fb82ffae7bead19cf861919e6335235b1da26a1a93",
+        "final_sha256": "28cf191cd73be69aa028b5fb82ffae7bead19cf861919e6335235b1da26a1a93"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/memory/staging_batch_test.go",
+        "sha256": "c0ad54e1002885535dc5edfed5b61a59cb4caa31183aef6102872f8354a3b829",
+        "final_sha256": "c0ad54e1002885535dc5edfed5b61a59cb4caa31183aef6102872f8354a3b829"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/runtime/store.go",
+        "sha256": "43165210229663dad0670d297cff9d449f1c62eb6ec06ac9a9b22a3542fa0deb",
+        "final_sha256": "43165210229663dad0670d297cff9d449f1c62eb6ec06ac9a9b22a3542fa0deb"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/tools/infer.go",
+        "sha256": "457bfe525fb3140cd6f291df58e697797f341a9ade5bcbb185bdde550ebf74af",
+        "final_sha256": "457bfe525fb3140cd6f291df58e697797f341a9ade5bcbb185bdde550ebf74af"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/tools/memory.go",
+        "sha256": "e669bc9e088d7b0d036601d204ffd71a898aec3743fc49ec913b4ff9ae6290c6",
+        "final_sha256": "e669bc9e088d7b0d036601d204ffd71a898aec3743fc49ec913b4ff9ae6290c6"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/internal/tools/workspace.go",
+        "sha256": "034cfd2290c1082d66af79daf3ddf478d67c463b7ecc90d7c8f6b395fa80b7dd",
+        "final_sha256": "034cfd2290c1082d66af79daf3ddf478d67c463b7ecc90d7c8f6b395fa80b7dd"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/management_personal_memory.go",
+        "sha256": "7d15231cd78e91fca35eee88995209fdb4e8f71927e430193aa4ba841afb7c65",
+        "final_sha256": "7d15231cd78e91fca35eee88995209fdb4e8f71927e430193aa4ba841afb7c65"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/memory_extraction.go",
+        "sha256": "cb4882798acc13ad9ba3684a5d37be4f6bfda71c45d9cea564b9fdec0b35e829",
+        "final_sha256": "cb4882798acc13ad9ba3684a5d37be4f6bfda71c45d9cea564b9fdec0b35e829"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/memory_extraction_test.go",
+        "sha256": "0bf631eabf51e79781887ec3859c365489a97a781ead2d5ba202a0ca3ed06880",
+        "final_sha256": "0bf631eabf51e79781887ec3859c365489a97a781ead2d5ba202a0ca3ed06880"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/personal_memory.go",
+        "sha256": "2fa7c17231024f5175df3f608a07d28775054d32b4d75b6b14ecaeaffa53c7f6",
+        "final_sha256": "2fa7c17231024f5175df3f608a07d28775054d32b4d75b6b14ecaeaffa53c7f6"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/personal_memory_provenance_test.go",
+        "sha256": "3fcc71345cc359b079722531338fb2421ade777a856a486780bfacff6aa8547e",
+        "final_sha256": "3fcc71345cc359b079722531338fb2421ade777a856a486780bfacff6aa8547e"
+      },
+      {
+        "status": " M",
+        "path": "go-harness/personal_memory_test.go",
+        "sha256": "bf184aa54b72d8f6694f465db61e8de28cc7bb7f3d1812c1eb74097c2afc94a4",
+        "final_sha256": "bf184aa54b72d8f6694f465db61e8de28cc7bb7f3d1812c1eb74097c2afc94a4"
+      },
+      {
+        "status": "??",
+        "path": "docs/memory-stage0-report.md",
+        "sha256": "820bfa851425e7129ed9a07037dda2488f3dce461b225b11821a55db8ba268dc",
+        "final_sha256": "820bfa851425e7129ed9a07037dda2488f3dce461b225b11821a55db8ba268dc"
+      },
+      {
+        "status": "??",
+        "path": "docs/memory-stage1-report.md",
+        "sha256": "e0bf822cb13e53ced6b114bc9c6afd8f88ad2dccda3004eeb3a513f3aad87aed",
+        "final_sha256": "e0bf822cb13e53ced6b114bc9c6afd8f88ad2dccda3004eeb3a513f3aad87aed"
+      },
+      {
+        "status": "??",
+        "path": "docs/memory-stage2-report.md",
+        "sha256": "b51403ba3b81e973de522e41266aa698c44062b01cad8b0f704ebd34168eab8b",
+        "final_sha256": "b51403ba3b81e973de522e41266aa698c44062b01cad8b0f704ebd34168eab8b"
+      },
+      {
+        "status": "??",
+        "path": "docs/memory-stage3-report.md",
+        "sha256": "8891c0364a85fa2570f04f0652f3f594b4f1f4be502a5dbe6a966fb372b0568e",
+        "final_sha256": "8891c0364a85fa2570f04f0652f3f594b4f1f4be502a5dbe6a966fb372b0568e"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/harness/model_transport.go",
+        "sha256": "a9af0887497a993b414ce85a8ab86bd7a5bd5abfca5c9b65057ed655cb1a9a88",
+        "final_sha256": "a9af0887497a993b414ce85a8ab86bd7a5bd5abfca5c9b65057ed655cb1a9a88"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/acp/agent/model_transport_wire_test.go",
+        "sha256": "a963910a56fea35e551ca34ddbb11413199ae540f8345fc27d81a9c8bfed3cf5",
+        "final_sha256": "a963910a56fea35e551ca34ddbb11413199ae540f8345fc27d81a9c8bfed3cf5"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/budget/memory_job.go",
+        "sha256": "dece953685cef50281003ce5c87e640f70f776f3b03546d9042d088a90ee34fe",
+        "final_sha256": "dece953685cef50281003ce5c87e640f70f776f3b03546d9042d088a90ee34fe"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/engine/eino/memory_extractor_test.go",
+        "sha256": "6cf5595547ad64b2f21b1a2b61f4b3fb82893b5253c9a2c9c162f03292c42b87",
+        "final_sha256": "6cf5595547ad64b2f21b1a2b61f4b3fb82893b5253c9a2c9c162f03292c42b87"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/engine/eino/model_transport_test.go",
+        "sha256": "87e79d4f43344efb0b5a53e82926ec83caab535cd657fe580b663a790ad0ffab",
+        "final_sha256": "87e79d4f43344efb0b5a53e82926ec83caab535cd657fe580b663a790ad0ffab"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/launch/memory_daily_test.go",
+        "sha256": "254f0d943a109617e3871aba942a03630731299be7852d04370b4981c461ddf5",
+        "final_sha256": "254f0d943a109617e3871aba942a03630731299be7852d04370b4981c461ddf5"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/extraction_v2.go",
+        "sha256": "a34fd7659a0ac0b5446c32279ad2fbafa4370aea0bd9f61f5836757f10292d1a",
+        "final_sha256": "a34fd7659a0ac0b5446c32279ad2fbafa4370aea0bd9f61f5836757f10292d1a"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/stage1_test.go",
+        "sha256": "3c37bed3d4e51006cc516c057786b5437ede2102fb39ed6ce693673c4bdd190e",
+        "final_sha256": "3c37bed3d4e51006cc516c057786b5437ede2102fb39ed6ce693673c4bdd190e"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/stage2_repro_test.go",
+        "sha256": "35a99ae6b27448d0a7fb4c7553144e79c1246fdf3849ba386f5f65bdf7d754d9",
+        "final_sha256": "35a99ae6b27448d0a7fb4c7553144e79c1246fdf3849ba386f5f65bdf7d754d9"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/stage2_test.go",
+        "sha256": "e53ec5b002aa4dda1bc51762def1bd8136badda1fd21f41989e0b358f658936c",
+        "final_sha256": "e53ec5b002aa4dda1bc51762def1bd8136badda1fd21f41989e0b358f658936c"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/stage3_fixture_test.go",
+        "sha256": "ae49cc16fff17294203a1b1e88b3e7879a6449f47cd52733943a9e240abba824",
+        "final_sha256": "ae49cc16fff17294203a1b1e88b3e7879a6449f47cd52733943a9e240abba824"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/write_protocol.go",
+        "sha256": "6bb33fb1f1c6d900574dfaf116718895926d73d0f2840a6ad1578ad59d1478b5",
+        "final_sha256": "6bb33fb1f1c6d900574dfaf116718895926d73d0f2840a6ad1578ad59d1478b5"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/write_validation.go",
+        "sha256": "28ef30e81b96a71455822a6253e4a892b80221ee5819760562fa49ddfd8552fa",
+        "final_sha256": "28ef30e81b96a71455822a6253e4a892b80221ee5819760562fa49ddfd8552fa"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/memory/write_validation_test.go",
+        "sha256": "784234fa77515b9762107a042527760508b6f67ddfb6066197d36c4ce60e2545",
+        "final_sha256": "784234fa77515b9762107a042527760508b6f67ddfb6066197d36c4ce60e2545"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/runtime/memory_source_test.go",
+        "sha256": "de4d35ea2d572dca5f429c9bcf3590870fee1a8ffe2293f1dea112933912db8c",
+        "final_sha256": "de4d35ea2d572dca5f429c9bcf3590870fee1a8ffe2293f1dea112933912db8c"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/internal/tools/workspace_compat.go",
+        "sha256": "1fa188f828106cf6783e66acd66cecad4bb2b5b5d18f28e6d2d30fceffeea7ba",
+        "final_sha256": "1fa188f828106cf6783e66acd66cecad4bb2b5b5d18f28e6d2d30fceffeea7ba"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/memory_optional.go",
+        "sha256": "e0aaa5bc5faab45c8471f5d7a45212dc540e50eea4a9b3fcf1e7eb9b16ab7651",
+        "final_sha256": "e0aaa5bc5faab45c8471f5d7a45212dc540e50eea4a9b3fcf1e7eb9b16ab7651"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/memory_source.go",
+        "sha256": "bf0a5c3320d31f59e6edc9844918c955a017fcbf98fb927d27469a142b4d2d5a",
+        "final_sha256": "bf0a5c3320d31f59e6edc9844918c955a017fcbf98fb927d27469a142b4d2d5a"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/memory_stage0_test.go",
+        "sha256": "0240562cd55b28594f6ddcdea75dae958eb45d07838c9b8b3ba94d444f8b66d6",
+        "final_sha256": "0240562cd55b28594f6ddcdea75dae958eb45d07838c9b8b3ba94d444f8b66d6"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/memory_stage1_test.go",
+        "sha256": "e17382608f6235668156404a06186ba2457d6cee3ec3d829f5665904e16ad414",
+        "final_sha256": "e17382608f6235668156404a06186ba2457d6cee3ec3d829f5665904e16ad414"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/memory_stage2_repro_test.go",
+        "sha256": "72ec2f31b701ba79685bbabcb6e9744a5d7e176a38ba63e2eadd035891a01989",
+        "final_sha256": "72ec2f31b701ba79685bbabcb6e9744a5d7e176a38ba63e2eadd035891a01989"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/memory_stage2_test.go",
+        "sha256": "90ae6535403a9f311aa153aa3709ed2feca84b32044bd28ee67dc2906866f372",
+        "final_sha256": "90ae6535403a9f311aa153aa3709ed2feca84b32044bd28ee67dc2906866f372"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/memory_stage3_test.go",
+        "sha256": "d90e6fd3c6e765a265c8d739b30cb5ea4e6caa03df4bbd8d3b0783a4b4d8b4e3",
+        "final_sha256": "d90e6fd3c6e765a265c8d739b30cb5ea4e6caa03df4bbd8d3b0783a4b4d8b4e3"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/personal_memory_projection.go",
+        "sha256": "f4951ca7fe957e5c88a203cdce8aff7e274491a8f2a1b18bfafac58b4a4e91bc",
+        "final_sha256": "f4951ca7fe957e5c88a203cdce8aff7e274491a8f2a1b18bfafac58b4a4e91bc"
+      },
+      {
+        "status": "??",
+        "path": "go-harness/personal_memory_resume_test.go",
+        "sha256": "0c6f25cdff14b82a2425f3bc6730be850c5efd69927a5056ecd6921ca28956bd",
+        "final_sha256": "0c6f25cdff14b82a2425f3bc6730be850c5efd69927a5056ecd6921ca28956bd"
+      }
+    ],
+    "boundary": "Initial porcelain snapshot records files, not contents of collapsed untracked directories; prior docs/reports were not edited. It excludes .deerflow generated data and is not the whole repository diff."
+  },
+  "final_go_file_sha256": {
+    "harness/memory_flush.go": "8547895e8a6a955df7813027c52ce76984335f57905e45abf983132f5efc8095",
+    "internal/memory/flush.go": "4eab62048372e1fefdc380ff8098520d5c4603561618d7ec4d0ce220ab9b25aa",
+    "internal/memory/index.go": "4dd646bdea5c46a3983fa99d110e172b9ea5ac27836774cdc345e525171c7a37",
+    "internal/memory/embedding.go": "50b84860f4e141786e93410b5f1100eb46669e43018ce8576689fb2a0963dd1f",
+    "internal/memory/store.go": "32777df5da9f4584276a83ade94aa1391318da5a4cbe3c2efe5f96aa952384ed",
+    "internal/memory/source.go": "f98530a9864dbf2c7fa41078fea6ad4c3d92cf55d166d64bab682f53ad74d75d",
+    "internal/memory/source_test.go": "5c6e9ba6d8f749c384ca48233bb07cfed8d8b7a91b5060239a169afea39375bb",
+    "internal/memory/stage3_test.go": "1c6e87cff5e95e963633c2b0f22573d11daea0b8e81130724f7a70fc0d3acb68",
+    "internal/memory/job_budget.go": "b578e9ad7b0b3469ce3be1b6b8871db1bb0c45a335a0b4b2604737b3a88d87d2",
+    "internal/memory/jobs.go": "edbf020e7f57c4de8da60f473797bc0483d367aaa4ea9f619b2e1bbc3108685f",
+    "internal/memory/stage4_flush_test.go": "a46d992f12e2b911aca01ed1f2716aaf264929ec4bc79b04c2f34e302c659bbf",
+    "internal/memory/stage4_index_test.go": "4bc94441a0592995eebb3e35ed32cd5197f005852b24e2049843a866ded4a799",
+    "internal/memory/fix_plan_repro_test.go": "46e81127cc9c5088296feff8ee0c7ecf07f929fc51410b1f855d4d522c175da3",
+    "internal/runtime/service.go": "1d4e7fbb01323a2e515e36d0f9f2a52643b2ac64c4b3a0233506c64b541a6e8b",
+    "internal/runtime/memory.go": "66f3e1c9e8a260c134d1fdedf5f8a18c5375200cccad9bc95cbe4c72138edf66",
+    "internal/runtime/memory_stage4_test.go": "13f8407a351cbc158cb8738b36a6c535e23e32bed309f286393194ef6fa0c56b",
+    "internal/runtime/session_delete.go": "083d1f994fcc1d844bed7fec8ccef38130353258a6f96e0e37e54fc9dc197710",
+    "internal/acp/agent/memory.go": "57110b95a172db7263a2ab36a613b572093a1ea4e2011c5523fa539d4c6f1cf3",
+    "internal/acp/agent/memory_test.go": "f3458185f7422110414c2deeb5cbac7e3e47fe8ffe631511d7dcff6ebc5e37c3",
+    "internal/launch/config.go": "32c4293e5fb01934f6fc10e61ca16d347f9b43d438a4821703dd9281e9a14d07",
+    "internal/launch/memory_index_test.go": "478768dd78f7934a0d6104e1464711e466400d514bae59721d31ad01191aeac7",
+    "internal/configschema/schema.go": "1c94f1b2c9bff26bc2d109356b8e15b62b8d8247a9a8919ea35902d91c1d8aa7",
+    "deerflow.go": "50f6f2f376734d0a50133f8387079b88ec809523383a6ae9dc307f92ced10c62",
+    "memory.go": "a9f315c73b5b8217221e1c4a9f60f982beaf7d75c50161036aeb5a029281143d",
+    "memory_worker.go": "ea610f6d0a914133c8563d5452052c55e54c1831116a06bec0b9cc5894499d79",
+    "memory_index.go": "38ec8df49f7bd1a5317617bc0d355c810734221b95d279a190cbee9610f6777c",
+    "memory_stage4_test.go": "acd7ca30844abed1c13e5a2069bf6c5767a5455848204de5cb8e6700014aa3fb",
+    "memory_fix_repro_test.go": "0a5e4a6135cbbfaf6b9bfd0ddcf032015468b47ce690cc97fb15e608709137a1"
+  }
+}

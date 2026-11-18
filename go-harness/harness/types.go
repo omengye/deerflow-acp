@@ -155,6 +155,9 @@ type EventHandler func(context.Context, RunEvent) error
 type RunResult struct {
 	StopReason string
 	Limit      string
+	// OptionalPostRunSkipped is host engine evidence that the optional hook
+	// was never invoked for this terminal turn. It is not a success override.
+	OptionalPostRunSkipped bool
 	// Execution describes a durable waiting/terminal state when execution
 	// recovery is enabled. It does not extend ACP's standard stopReason enum.
 	Execution *ExecutionState

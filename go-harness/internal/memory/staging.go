@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
 type StagedCandidate struct {
+	Ordinal               int
 	Scope                 Scope
 	ExpectedScopeRevision int64
 	Fact                  Candidate
@@ -27,8 +29,12 @@ func (s *Store) AuditExtraction(ctx context.Context, runID, inputID, attemptID, 
 	if err != nil || len(encoded) > 4096 {
 		return harness.ErrInvalidInput
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO memory_extraction_audit(run_id,attempt_id,input_id,status,response_sha,notes,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id,attempt_id) DO UPDATE SET status=excluded.status,response_sha=excluded.response_sha,notes=excluded.notes,updated_at=excluded.updated_at WHERE input_id=excluded.input_id`, runID, attemptID, inputID, status, responseSHA, encoded, time.Now().UTC().Format(time.RFC3339Nano))
-	return err
+	return optionalTransact(ctx, s.db, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_extraction_audit(run_id,attempt_id,input_id,status,response_sha,notes,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id,attempt_id) DO UPDATE SET status=excluded.status,response_sha=excluded.response_sha,notes=excluded.notes,updated_at=excluded.updated_at WHERE input_id=excluded.input_id`, runID, attemptID, inputID, status, responseSHA, encoded, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+		return setInputDecisionTx(ctx, tx, runID, inputID, status)
+	})
 }
 
 // Stage records model proposals without changing visible facts. The source
@@ -43,7 +49,7 @@ func (s *Store) Stage(ctx context.Context, runID, inputID, attemptID string, pro
 			return harness.ErrInvalidInput
 		}
 	}
-	return transact(ctx, s.db, func(tx *sql.Tx) error {
+	return optionalTransact(ctx, s.db, func(tx *sql.Tx) error {
 		var actualInput, workspace, sessionID, state string
 		if err := tx.QueryRowContext(ctx, `SELECT r.input_id,s.cwd,r.session_id FROM harness_runs r JOIN harness_sessions s ON s.id=r.session_id WHERE r.id=?`, runID).Scan(&actualInput, &workspace, &sessionID); err != nil {
 			return err
@@ -59,25 +65,65 @@ func (s *Store) Stage(ctx context.Context, runID, inputID, attemptID string, pro
 			return harness.ErrInvalidInput
 		}
 		if err := tx.QueryRowContext(ctx, `SELECT state FROM budget_attempts WHERE id=? AND member_id=?`, attemptID, runID).Scan(&state); err != nil {
-			return err
+			if errors.Is(err, sql.ErrNoRows) {
+				return harness.ErrExecutionConflict
+			}
+			return &budget.PersistenceError{Operation: "memory stage attempt check", Err: err}
 		}
 		if state != "active" {
 			return harness.ErrExecutionConflict
+		}
+		source, err := inputSnapshot(ctx, tx, runID, inputID)
+		if err != nil {
+			return err
+		}
+		if source.WritePolicy != WritePolicy {
+			return ErrSourcePolicyMissing
+		}
+		var raw, provenance string
+		if err = tx.QueryRowContext(ctx, "SELECT raw,provenance FROM memory_extraction_results WHERE id=? AND policy=?", "input/"+inputID, WritePolicy).Scan(&raw, &provenance); err != nil {
+			return err
+		}
+		allowed := make([]ScopeKind, 0, len(source.Scopes))
+		for kind := range source.Scopes {
+			allowed = append(allowed, kind)
+		}
+		valid, rejected, err := ParseExtraction([]byte(raw), source.Text, allowed, false)
+		if err != nil {
+			return err
+		}
+		if err = recordItemsTx(ctx, tx, "input/"+inputID, rejected); err != nil {
+			return err
+		}
+		byOrdinal := map[int]ExtractedAttribute{}
+		for _, f := range valid {
+			byOrdinal[f.Ordinal] = f
 		}
 		var sequence int64
 		if err := tx.QueryRowContext(ctx, `SELECT sequence FROM harness_events WHERE run_id=? AND json_extract(event,'$.kind')='user_message' ORDER BY sequence LIMIT 1`, runID).Scan(&sequence); err != nil {
 			return err
 		}
-		for i, item := range proposed {
+		for _, item := range proposed {
+			valid, ok := byOrdinal[item.Ordinal]
+			if !ok || valid.Scope != item.Scope.kind || valid.Content != item.Fact.Content || valid.Category != item.Fact.Category || *valid.Confidence != item.Fact.Confidence || item.Fact.Source.PolicyVersion != ExtractionPolicyV2 || item.Fact.Source.Provenance != provenance {
+				return harness.ErrInvalidInput
+			}
+			pinned, ok := source.Scopes[item.Scope.kind]
+			if !source.AutomaticEligible || !ok || pinned.Key != item.Scope.key || pinned.Revision != item.ExpectedScopeRevision {
+				return harness.ErrPermissionDenied
+			}
 			if !session.SameWorkspace(item.Scope.workspace, workspace) || item.Scope.kind == SessionScope && item.Scope.subject != sessionID || item.Scope.kind != SessionScope && item.Scope.kind != WorkspaceScope && item.Scope.kind != UserScope {
 				return harness.ErrInvalidInput
 			}
 			if item.Fact.Source.EventSequence != sequence {
 				return harness.ErrInvalidInput
 			}
-			_, err := tx.ExecContext(ctx, `INSERT INTO memory_staged_facts(run_id,input_id,attempt_id,ordinal,scope_key,scope_kind,workspace,subject,agent,scope_revision,content,category,confidence,source_id,source_event_sequence,policy_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-				runID, inputID, attemptID, i, item.Scope.key, item.Scope.kind, item.Scope.workspace, item.Scope.subject, item.Scope.agent, item.ExpectedScopeRevision, item.Fact.Content, item.Fact.Category, item.Fact.Confidence, item.Fact.Source.ID, sequence, item.Fact.Source.PolicyVersion)
+			_, err := tx.ExecContext(ctx, `INSERT INTO memory_staged_facts(run_id,input_id,attempt_id,ordinal,scope_key,scope_kind,workspace,subject,agent,scope_revision,content,category,confidence,source_id,source_event_sequence,policy_version,provenance) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id,attempt_id,ordinal) DO NOTHING`,
+				runID, inputID, attemptID, item.Ordinal, item.Scope.key, item.Scope.kind, item.Scope.workspace, item.Scope.subject, item.Scope.agent, item.ExpectedScopeRevision, item.Fact.Content, item.Fact.Category, item.Fact.Confidence, item.Fact.Source.ID, sequence, item.Fact.Source.PolicyVersion, item.Fact.Source.Provenance)
 			if err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, "INSERT INTO memory_extraction_items(result_id,ordinal,status,reason,operation_id) VALUES(?,?,'staged','',?) ON CONFLICT(result_id,ordinal) DO NOTHING", "input/"+inputID, item.Ordinal, item.Fact.Source.ID); err != nil {
 				return err
 			}
 		}
@@ -115,7 +161,7 @@ func (s *Store) SettleStagingTx(ctx context.Context, tx *sql.Tx, runID, attemptI
 	if runID == "" || attemptID == "" {
 		return 0, harness.ErrInvalidInput
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT ordinal,input_id,scope_key,scope_kind,workspace,subject,agent,scope_revision,content,category,confidence,source_id,source_event_sequence,policy_version FROM memory_staged_facts WHERE run_id=? AND attempt_id=? AND status='staged' ORDER BY ordinal`, runID, attemptID)
+	rows, err := tx.QueryContext(ctx, `SELECT ordinal,input_id,scope_key,scope_kind,workspace,subject,agent,scope_revision,content,category,confidence,source_id,source_event_sequence,policy_version,provenance FROM memory_staged_facts WHERE run_id=? AND attempt_id=? AND status='staged' ORDER BY ordinal`, runID, attemptID)
 	if err != nil {
 		return 0, err
 	}
@@ -129,7 +175,7 @@ func (s *Store) SettleStagingTx(ctx context.Context, tx *sql.Tx, runID, attemptI
 	var items []staged
 	for rows.Next() {
 		var item staged
-		if err = rows.Scan(&item.ordinal, &item.inputID, &item.scope.key, &item.scope.kind, &item.scope.workspace, &item.scope.subject, &item.scope.agent, &item.expectedScopeRevision, &item.fact.Content, &item.fact.Category, &item.fact.Confidence, &item.fact.Source.ID, &item.fact.Source.EventSequence, &item.fact.Source.PolicyVersion); err != nil {
+		if err = rows.Scan(&item.ordinal, &item.inputID, &item.scope.key, &item.scope.kind, &item.scope.workspace, &item.scope.subject, &item.scope.agent, &item.expectedScopeRevision, &item.fact.Content, &item.fact.Category, &item.fact.Confidence, &item.fact.Source.ID, &item.fact.Source.EventSequence, &item.fact.Source.PolicyVersion, &item.fact.Source.Provenance); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -145,12 +191,41 @@ func (s *Store) SettleStagingTx(ctx context.Context, tx *sql.Tx, runID, attemptI
 	}
 	promoted := 0
 	scopeChanged := false
+	legacySourceMissing := false
+	legacyPolicyMissing := false
 	// Compare every proposal with the batch's initial scope revision. Earlier
 	// inserts in this transaction must not invalidate later independent facts.
 	initialVersions := make(map[string]int64)
 	for _, item := range items {
 		status := "discarded"
-		if promote {
+		sourceAllowed := true
+		if promote && item.fact.Source.PolicyVersion != ExtractionPolicyV2 {
+			sourceAllowed = false
+			legacyPolicyMissing = true
+			status = "legacy_memory_policy_unverifiable"
+		}
+		if promote && item.fact.Source.PolicyVersion == ExtractionPolicyV2 {
+			source, sourceErr := inputSnapshot(ctx, tx, runID, item.inputID)
+			if errors.Is(sourceErr, ErrSourceSnapshotMissing) {
+				sourceAllowed = false
+				legacySourceMissing = true
+				status = "legacy_source_snapshot_missing"
+			} else if sourceErr != nil {
+				return 0, sourceErr
+			} else {
+				pinned, ok := source.Scopes[item.scope.kind]
+				epoch, err := deletionEpochTx(ctx, tx, item.scope.key)
+				if err != nil {
+					return 0, err
+				}
+				sourceAllowed = source.WritePolicy == WritePolicy && source.AutomaticEligible && ok && pinned.Key == item.scope.key && pinned.Revision == item.expectedScopeRevision && pinned.DeleteEpoch == epoch
+				if !sourceAllowed {
+					status = "scope_changed"
+					scopeChanged = true
+				}
+			}
+		}
+		if promote && sourceAllowed {
 			item.fact.Source.Kind, item.fact.Source.RunID, item.fact.Source.InputID = "model", runID, item.inputID
 			if !validCandidate(item.fact) {
 				return 0, harness.ErrInvalidInput
@@ -200,10 +275,19 @@ func (s *Store) SettleStagingTx(ctx context.Context, tx *sql.Tx, runID, attemptI
 		if err != nil || changed != 1 {
 			return 0, errors.Join(ErrVersionConflict, fmt.Errorf("staging row changed"))
 		}
+		if _, err = tx.ExecContext(ctx, "UPDATE memory_extraction_items SET status=? WHERE result_id=? AND ordinal=?", status, "input/"+item.inputID, item.ordinal); err != nil {
+			return 0, err
+		}
 	}
 	auditStatus := "discarded"
 	if promote {
 		auditStatus = "deduplicated"
+		if legacySourceMissing {
+			auditStatus = "legacy_source_snapshot_missing"
+		}
+		if legacyPolicyMissing {
+			auditStatus = "legacy_memory_policy_unverifiable"
+		}
 		if scopeChanged {
 			auditStatus = "scope_changed"
 		}
@@ -216,6 +300,11 @@ func (s *Store) SettleStagingTx(ctx context.Context, tx *sql.Tx, runID, attemptI
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE memory_extraction_audit SET status=?,updated_at=? WHERE run_id=? AND attempt_id=? AND status='staged'`, auditStatus, time.Now().UTC().Format(time.RFC3339Nano), runID, attemptID); err != nil {
 		return 0, err
+	}
+	if len(items) > 0 {
+		if err := setInputDecisionTx(ctx, tx, runID, items[0].inputID, auditStatus); err != nil {
+			return 0, err
+		}
 	}
 	return promoted, nil
 }

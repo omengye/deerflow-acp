@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 
@@ -82,7 +83,7 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
-func (e *Engine) turnLoop(ctx context.Context, req harness.RunRequest, resumeID, contract string, extension json.RawMessage, budget *runBudget, saved *checkpointEnvelope, agent adk.Agent, consume func(*adk.AsyncIterator[*adk.AgentEvent]) error) (*adk.TurnLoop[turnItem, *schema.Message], *checkedCheckpoints, error) {
+func (e *Engine) turnLoop(ctx context.Context, req harness.RunRequest, resumeID, contract string, resumeContracts []string, extension json.RawMessage, budget *runBudget, saved *checkpointEnvelope, agent adk.Agent, consume func(*adk.AsyncIterator[*adk.AgentEvent]) error) (*adk.TurnLoop[turnItem, *schema.Message], *checkedCheckpoints, error) {
 	hooks := executionHooks(ctx)
 	params, err := resumeParams(hooks, saved)
 	if err != nil {
@@ -147,11 +148,17 @@ func (e *Engine) turnLoop(ctx context.Context, req harness.RunRequest, resumeID,
 			if saved.Version == 1 && hooks == nil {
 				previous.InputID = item.InputID
 			}
+			// Every alias was re-hashed from the current complete policy with
+			// one explicitly compatible builtin schema. All other settings and
+			// the durable input/session identity must still match exactly.
+			if slices.Contains(resumeContracts, previous.Contract) {
+				previous.Contract = item.Contract
+			}
 			if previous != item {
 				return nil, fmt.Errorf("%w: checkpoint session or policy changed", harness.ErrInvalidInput)
 			}
 			checkpoints.allowWrites()
-			return &adk.GenResumeResult[turnItem, *schema.Message]{Consumed: interrupted, Decision: adk.TurnLoopResumeDecisionResume, ResumeParams: params}, nil
+			return &adk.GenResumeResult[turnItem, *schema.Message]{Consumed: []turnItem{item}, Decision: adk.TurnLoopResumeDecisionResume, ResumeParams: params}, nil
 		},
 		PrepareAgent: func(context.Context, *adk.TurnLoop[turnItem, *schema.Message], []turnItem) (adk.Agent, error) {
 			return agent, nil

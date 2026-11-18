@@ -51,6 +51,7 @@ type Service struct {
 	Assets         *assets.Store
 	Media          harness.MediaConfig
 	Memory         *memory.Store
+	MemoryAsync    bool
 	MemoryUserID   string
 	MemoryGlobalID string
 	runQueue       *runQueue

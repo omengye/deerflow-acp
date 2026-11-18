@@ -18,8 +18,8 @@ func (c *Client) ImportDeerMem(ctx context.Context, sessionID string, kind harne
 	return c.service.ImportDeerMem(ctx, c.owner, sessionID, kind, raw)
 }
 
-// FlushMemory waits until the session's earlier synchronous memory writes are
-// visible. It uses ctx as the wait bound and does not rerun skipped extraction.
+// FlushMemory retains the error-only API. An incomplete asynchronous barrier
+// returns *harness.MemoryFlushError, inspectable with errors.Is/errors.As.
 func (c *Client) FlushMemory(ctx context.Context, sessionID string) error {
 	done, err := c.operation()
 	if err != nil {
@@ -27,6 +27,15 @@ func (c *Client) FlushMemory(ctx context.Context, sessionID string) error {
 	}
 	defer done()
 	return c.service.FlushMemory(ctx, c.owner, sessionID)
+}
+
+func (c *Client) FlushMemoryWithStatus(ctx context.Context, sessionID string) (harness.MemoryFlushStatus, error) {
+	done, err := c.operation()
+	if err != nil {
+		return harness.MemoryFlushStatus{}, err
+	}
+	defer done()
+	return c.service.FlushMemoryWithStatus(ctx, c.owner, sessionID)
 }
 
 // MemoryFacts lists descriptive facts in one attached scope. Memory operations

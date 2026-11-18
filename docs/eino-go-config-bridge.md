@@ -17,6 +17,9 @@ Rust Bridge 和 Waku 使用 Go 配置工具与 daemon。文件格式为 `config_
 | `local_acp.session_cleanup_enabled` 及 retention 字段 | 已脱离连接的会话清理；活动任务和未核对回执受保护 |
 | `subagents.enabled/max_concurrent/agents/custom_agents` | 角色配置、共享并发及工具/技能限制 |
 | `memory.enabled/mode/injection_enabled/retrieval_enabled` | Go 记忆、注入与检索行为；作用域由 `local_acp.memory_scope` 指定 |
+| `memory.daily_attempts` | single_user worker 附加 UTC 日调用认领上限；默认 200，0 暂停新调用，范围 0–1000000。持久化跨重启，已保存结果重放不计；宿主 YAML、重启生效，不代替来源预算 |
+| `memory.embedding_url/embedding_model` | 配置 embedding 服务与固定模型身份；记忆开启时独立建立索引，不依赖自动提取或 single_user。关闭 memory.enabled 停止索引及查询 embedding，保留事实 |
+| `memory.index_max_attempts/index_retry_seconds/index_max_retry_seconds` | 每个事实 revision/model 失败上限、指数退避初始秒数和最大秒数；默认 3/60/3600，次数 1–20，退避上限不超过 86400 秒且不小于初始值。省略或 0 采用默认；宿主 YAML、重启生效 |
 | `tools[].name` 及该工具原生参数 | 网页、文件、命令与 OpenCLI；详见 [Go 工具](go-native-tools.md) |
 | `skills.path/extensions_file/managed_sources/export_root` | 显式技能源、导入启停状态和可重建导出视图 |
 | `skill_evolution` | 候选审查、显式生成模型与维护预算；自动发现和发布待实施 |
@@ -40,3 +43,5 @@ Rust Bridge 和 Waku 使用 Go 配置工具与 daemon。文件格式为 `config_
 旧配置兼容读取仍识别有限的模型类名和历史字段，并仅映射到 Go 实现；不动态加载类或启动解释器。未知旧字段在无关保存时保留，转换需显式审阅。新模板不生成 `use`、旧 HTTP 服务参数、Python memory storage、goal continuation 或无消费者的模型能力字段。旧 `local_acp.goal_auto_continue=true` 会被拒绝。
 
 旧数据导入功能已于 2026-10-12 移除，包括桌面入口、旧 Agent 角色预览和只读历史归档接口；已有配置、技能源与归档文件不删除。历史实施记录见[实施记录](eino-subagents-skill-evolution-status.md)，格式依据见[固定迁移基线](eino-legacy-migration-baseline.md)。现有历史技能源标识为保证检查点兼容保持稳定，不能仅为移除关键词而重命名。
+
+记忆修复阶段 5 的 schema v5 与安全重新学习不增加配置项。输入来源策略与结构化值身份来自新版程序，不能靠设置文件给旧输入补授权。daily_attempts:0 只暂停新模型认领，不能冻结已保存结果的发布；升级时必须停止准入和所有持库进程，完成调用结算或保留 unknown 后备份。当前本机安装的有效路径以阶段 0 核查为准，不能用上面的默认路径替代。具体副本验收、启动顺序与不覆盖新事实的回退策略见[记忆升级运行手册](memory-upgrade-runbook.md)。

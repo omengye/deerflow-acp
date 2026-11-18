@@ -1,0 +1,226 @@
+{
+  "name": "memory-default",
+  "started_utc": "2026-11-16T09:18:05.810471+00:00",
+  "command": [
+    "go",
+    "test",
+    "./internal/memory",
+    "-json",
+    "-count=1",
+    "-timeout=180s"
+  ],
+  "exit_code": 0,
+  "leaf_case_count": 18,
+  "outcome_counts": {
+    "pass": 17,
+    "skip": 1
+  },
+  "packages": [
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "outcome": "pass",
+      "elapsed_seconds": 9.412
+    }
+  ],
+  "tests": [
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestExternalContextWritesRejectInjectedPayloads",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestFilterExtractionRequiresDurableDescriptiveScopedFacts",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestLegacyImportExplicitScopeIdempotenceAndRollback",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.11
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestLegacyPreviewRejectsUnknownVersionAndAmbiguousIDs",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestMemoryLegacyBatchDoesNotConflictWithItsOwnInserts",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.43
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestPersonalExtractionRequiresUserEvidenceAndStableKeys",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestPersonalHybridSearchNeverReturnsDeletedOrStaleVectors",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.3
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestPersonalMemoryChineseEmbeddingAcceptance",
+      "outcomes": [
+        "skip"
+      ],
+      "elapsed_seconds": [
+        0
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestPersonalMemoryCommitReceiptCorrectionAndForget",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.29
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestPersonalMemoryIndependentConcurrentAttributesAndCAS",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.49
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestPersonalMigrationAtomicRepeatablePreservesProvenance",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.23
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestPersonalProfileAvailableForChineseParaphrases",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.33
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestPersonalReceiptAndTombstoneSurviveReopen",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.17
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestRevisionedFactsAreScopedAndSurviveReopen",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.45
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestScopeAndFactInputValidation",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.21
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestSearchChineseQuestionAndLargeSnapshot",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        3.03
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestSearchLexicalFallbackForCJKAndUnavailableIndex",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.3
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestSearchRebuildsIndexAndExcludesChangedHeads",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.32
+      ],
+      "diagnostics": []
+    }
+  ],
+  "diagnostics": []
+}

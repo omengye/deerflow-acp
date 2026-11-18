@@ -177,11 +177,15 @@ type Config struct {
 	// MemoryExtraction enables a bounded post-turn model call that proposes
 	// descriptive facts for terminal promotion. Disabled by default.
 	MemoryExtraction bool
+	// Nil defaults to 200 UTC daily worker dispatch permits; zero disables new
+	// automatic calls. This extra cap is not a substitute for root budgeting.
+	MemoryDailyAttempts *int
 	// MemorySingleUser enables synchronous personal memory tools and durable
 	// background extraction for the installation's one persistent profile.
 	MemorySingleUser     bool
 	MemoryEmbeddingURL   string
 	MemoryEmbeddingModel string
+	MemoryIndex          harness.MemoryIndexConfig
 	// Compaction enables budgeted native Eino session summarization.
 	Compaction harness.CompactionConfig
 	// Retention controls optional automatic cleanup of detached sessions.
@@ -192,33 +196,36 @@ type Config struct {
 }
 
 type Client struct {
-	search           *websearch.Manager
-	scheduler        *automation.Scheduler
-	channels         *channels.Manager
-	service          *hr.Service
-	store            *sqlite.Store
-	mcp              *mcp.Manager
-	skills           *skills.Registry
-	evolution        *evolution.Service
-	learning         *learning.Store
-	assets           *assets.Store
-	budgets          *budgetledger.Ledger
-	background       *backgroundHost
-	retention        harness.RetentionPolicy
-	lock             *flock.Flock
-	owner            string
-	dataDir          string
-	skillSelection   harness.SkillSelection
-	skillReadAllowed bool
-	mu               sync.Mutex
-	manageMu         sync.Mutex
-	closed           bool
-	agents           map[*agent.Agent]struct{}
-	operations       sync.WaitGroup
-	closeDone        chan struct{}
-	closeErr         error
-	memoryCancel     context.CancelFunc
-	memoryDone       chan struct{}
+	search            *websearch.Manager
+	scheduler         *automation.Scheduler
+	channels          *channels.Manager
+	service           *hr.Service
+	store             *sqlite.Store
+	mcp               *mcp.Manager
+	skills            *skills.Registry
+	evolution         *evolution.Service
+	learning          *learning.Store
+	assets            *assets.Store
+	budgets           *budgetledger.Ledger
+	background        *backgroundHost
+	retention         harness.RetentionPolicy
+	lock              *flock.Flock
+	owner             string
+	dataDir           string
+	skillSelection    harness.SkillSelection
+	skillReadAllowed  bool
+	mu                sync.Mutex
+	manageMu          sync.Mutex
+	closed            bool
+	agents            map[*agent.Agent]struct{}
+	operations        sync.WaitGroup
+	closeDone         chan struct{}
+	closeErr          error
+	memoryCancel      context.CancelFunc
+	memoryDone        chan struct{}
+	memoryWorkerMu    sync.Mutex
+	memoryIndexCancel context.CancelFunc
+	memoryIndexDone   chan struct{}
 }
 
 func Open(ctx context.Context, cfg Config) (client *Client, err error) {
@@ -465,6 +472,10 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if cfg.Budget != nil {
 		limits = *cfg.Budget
 	}
+	memoryStore, err := memory.New(ctx, store.DB())
+	if err != nil {
+		return nil, err
+	}
 	var background *backgroundHost
 	ledger, err := budgetledger.New(store.DB(), budgetledger.Config{UsageOwnerTx: einoengine.BudgetUsageOwnerTx, CheckEffectTx: func(ctx context.Context, tx *sql.Tx, scope budgetledger.Scope) error {
 		if err := einoengine.CheckTaskTreeEffectTx(ctx, tx, scope.RootBudgetID); err != nil {
@@ -473,6 +484,9 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		var kind string
 		if err := tx.QueryRowContext(ctx, "SELECT kind FROM budget_members WHERE id=?", scope.MemberID).Scan(&kind); err != nil {
 			return err
+		}
+		if kind == "memory_job" {
+			return memoryStore.CheckJobBudgetEffectTx(ctx, tx, scope)
 		}
 		if kind == "task" || kind == "background_continuation" {
 			if background == nil {
@@ -484,8 +498,21 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			return business.CheckExecutionEffectTx(ctx, tx, scope)
 		}
 		return nil
+	}, CheckHeartbeatTx: func(ctx context.Context, tx *sql.Tx, scope budgetledger.Scope) error {
+		var kind string
+		if err := tx.QueryRowContext(ctx, "SELECT kind FROM budget_members WHERE id=?", scope.MemberID).Scan(&kind); err != nil {
+			return err
+		}
+		if kind == "memory_job" {
+			return memoryStore.CheckJobBudgetHeartbeatTx(ctx, tx, scope)
+		}
+		return nil
 	}})
 	if err != nil {
+		return nil, err
+	}
+	memoryStore.SetJobLedger(ledger)
+	if err = memoryStore.RecoverJobs(ctx); err != nil {
 		return nil, err
 	}
 	business.BudgetLedger, business.BudgetLimits = ledger, limits
@@ -653,15 +680,20 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			_ = assetStore.Close()
 		}
 	}()
-	memoryStore, err := memory.New(ctx, store.DB())
-	if err != nil {
-		return nil, err
+	if cfg.MemoryDailyAttempts != nil {
+		if err = memoryStore.SetDailyAttempts(*cfg.MemoryDailyAttempts); err != nil {
+			return nil, err
+		}
 	}
 	cfg.memoryGlobalID, err = memoryStore.ProfileID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if cfg.MemorySingleUser && cfg.MemoryEmbeddingURL != "" {
+	business.CaptureMemoryInput = memoryInputCapture(memoryStore, cfg)
+	if err = memoryStore.SetIndexConfig(cfg.MemoryIndex); err != nil {
+		return nil, err
+	}
+	if cfg.MemoryEmbeddingURL != "" && (cfg.MemoryEnabled == nil || *cfg.MemoryEnabled) {
 		embedder, embedErr := memory.NewHTTPEmbedder(cfg.MemoryEmbeddingURL, cfg.MemoryEmbeddingModel, cfg.Network)
 		if embedErr != nil {
 			return nil, embedErr
@@ -724,6 +756,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		service.SessionCleanup = func(id string) error { return acpclient.CleanupSession(cfg.DataDir, id) }
 	}
 	service.Memory, service.MemoryUserID = memoryStore, cfg.MemoryUserID
+	service.MemoryAsync = cfg.MemorySingleUser
 	service.MemoryGlobalID = cfg.memoryGlobalID
 	service.Resources = manager
 	service.Media, service.Assets = cfg.Media, assetStore
@@ -780,6 +813,9 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			_ = client.Close()
 			return nil, err
 		}
+	}
+	if cfg.MemoryEmbeddingURL != "" && (cfg.MemoryEnabled == nil || *cfg.MemoryEnabled) {
+		client.startMemoryIndexWorker()
 	}
 	return client, nil
 }
@@ -955,10 +991,7 @@ func (c *Client) Close() error {
 	}
 	disconnectErr := c.service.Disconnect(context.Background(), c.owner)
 	c.operations.Wait()
-	if c.memoryCancel != nil {
-		c.memoryCancel()
-		<-c.memoryDone
-	}
+	c.stopMemoryWorkers()
 	// Stop and join local evidence collection before any dependency is closed,
 	// including the error path where background resource draining fails.
 	collectorErr := errors.Join(c.evolution.Close(), c.learning.Close())

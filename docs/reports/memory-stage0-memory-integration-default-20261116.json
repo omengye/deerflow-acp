@@ -1,0 +1,405 @@
+{
+  "name": "memory-integration-default",
+  "started_utc": "2026-11-16T09:18:05.810689+00:00",
+  "command": [
+    "go",
+    "test",
+    ".",
+    "./internal/runtime",
+    "./internal/acp/agent",
+    "./internal/engine/eino",
+    "./internal/tools",
+    "-run",
+    "Memory",
+    "-json",
+    "-count=1",
+    "-timeout=240s"
+  ],
+  "exit_code": 0,
+  "leaf_case_count": 32,
+  "outcome_counts": {
+    "pass": 32
+  },
+  "packages": [
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/tools",
+      "outcome": "pass",
+      "elapsed_seconds": 6.54
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "outcome": "pass",
+      "elapsed_seconds": 22.862
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/runtime",
+      "outcome": "pass",
+      "elapsed_seconds": 16.825
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/acp/agent",
+      "outcome": "pass",
+      "elapsed_seconds": 17.072
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino",
+      "outcome": "pass",
+      "elapsed_seconds": 18.501
+    }
+  ],
+  "tests": [
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestDesktopMemoryPolicyScopesInjectionAndTool/injection_disabled",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.01
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestDesktopMemoryPolicyScopesInjectionAndTool/retrieval_disabled",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.01
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestDesktopMemoryPolicyScopesInjectionAndTool/session_middleware",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.01
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestDesktopMemoryPolicyScopesInjectionAndTool/session_tool",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.01
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestDesktopMemoryPolicyScopesInjectionAndTool/workspace_middleware",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.01
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestDesktopSessionMemoryExtractionStaysInSession",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.78
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestDisabledModelMemoryPreservesFactsForReenable",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        1.39
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestEinoMemoryExtractionDoesNotOverrideConcurrentScopeChange",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.64
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestEinoMemoryExtractionDoesNotPublishFailedOrCancelledStream/cancelled",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.51
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestEinoMemoryExtractionDoesNotPublishFailedOrCancelledStream/partial-error",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.5
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestEinoMemoryExtractionPromotesOnlyCompletedTurn",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.77
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestEinoMemoryInjectionUsesAttachedScopeAndCurrentHead",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.63
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestEinoMemoryStagingDoesNotPublishWhenTerminalCommitFails",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.66
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestEinoOptionalMemoryExtractionSkipsWhenModelQuotaUsed",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.73
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestGlobalMemorySharingPromotionAndReopen",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        1.54
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestLocalManagementMemoryAcrossDetachedSession",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.7
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestLocalManagementMemoryDeleteWaitsForActiveRun",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.74
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestMemoryExtensionResumePinsSelectedFactsAndIdentity",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.13
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestMemoryStage0TerminalMemoryFailureRemainsAtomic",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.44
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestPersonalMemoryAfterExternalContentKeepsProvenance",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.7
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestPersonalMemoryBackgroundQueueSurvivesClientRestart",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        1.49
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestPersonalMemoryManagementDurableReceiptAndProfileGuard",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.35
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestPersonalMemoryMutationPreservesExecutionResume/forget",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        1.08
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestPersonalMemoryMutationPreservesExecutionResume/forget_reopen",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.81
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestPersonalMemoryMutationPreservesExecutionResume/remember",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.87
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestPersonalMemoryMutationPreservesExecutionResume/remember_reopen",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.81
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestPersonalMemoryToolCommitsBeforeAnswerAndNewSessionReadsIt",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.52
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestReadOnlyMemorySearchToolKeepsSessionScope",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.82
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestSDKMemoryScopesOwnerBusyAndReopen",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.46
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/acp/agent",
+      "test": "TestACPGlobalMemoryPromotionAuthorityAndSharing",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.33
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/acp/agent",
+      "test": "TestACPMemoryManagementScopeOwnerAndVersions",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.2
+      ],
+      "diagnostics": []
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/runtime",
+      "test": "TestMemorySearchIsTrustedOnlyByItsBuiltInName",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.27
+      ],
+      "diagnostics": []
+    }
+  ],
+  "diagnostics": []
+}

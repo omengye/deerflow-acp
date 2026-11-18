@@ -5,11 +5,68 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/acp/protocol"
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
 )
+
+func TestMemoryStage4ACPFlushOldAndNewClients(t *testing.T) {
+	f := newFixture(t, nil)
+	store, err := memory.New(t.Context(), f.db.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.Memory = store
+	f.service.MemoryAsync = true
+	c := connect(t, f.service)
+	init := c.success(t, c.request(t, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}}))
+	if !bytes.Contains(init, []byte(`"flushStatusVersion":1`)) {
+		t.Fatalf("capability: %s", init)
+	}
+	sid := c.newSession(t, f.cwd)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = f.db.DB().Exec("INSERT INTO harness_runs(id,session_id,input_id,status,created_at,updated_at) VALUES('flush-run',?,'flush-input','completed',?,?)", sid, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.db.DB().Exec("INSERT INTO memory_inputs(input_id,run_id,session_id,manifest,decision,job_id) VALUES('flush-input','flush-run',?,'{}','queued','flush-job')", sid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.db.DB().Exec("INSERT INTO memory_jobs(id,run_id,input_id,attempt_id,payload,status,available_at,updated_at) VALUES('flush-job','flush-run','flush-input','fixture','{}','queued',?,?)", now, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"queued", "failed", "blocked", "completed"} {
+		if _, err = f.db.DB().Exec("UPDATE memory_jobs SET status=?", state); err != nil {
+			t.Fatal(err)
+		}
+		raw := c.success(t, c.request(t, "_deerflow/memory/flush", map[string]any{"sessionId": sid}))
+		var old struct {
+			Flushed bool `json:"flushed"`
+		}
+		var current harness.MemoryFlushStatus
+		if err = json.Unmarshal(raw, &old); err != nil {
+			t.Fatal(err)
+		}
+		if err = json.Unmarshal(raw, &current); err != nil {
+			t.Fatal(err)
+		}
+		if old.Flushed != (state == "completed") || current.Flushed != old.Flushed || current.Total != 1 || current.Barrier == "" {
+			t.Fatalf("%s %s", state, raw)
+		}
+		if state == "queued" && (current.Pending != 1 || current.Reason != "worker_not_running") {
+			t.Fatalf("%s", raw)
+		}
+		if state == "failed" && current.Failed != 1 || state == "blocked" && current.Blocked != 1 {
+			t.Fatalf("%s", raw)
+		}
+	}
+	stranger := connect(t, f.service)
+	stranger.initialize(t)
+	if msg := stranger.response(t, stranger.request(t, "_deerflow/memory/flush", map[string]any{"sessionId": sid})); msg.Error == nil {
+		t.Fatal("foreign owner accepted")
+	}
+}
 
 func TestACPGlobalMemoryPromotionAuthorityAndSharing(t *testing.T) {
 	f := newFixture(t, nil)

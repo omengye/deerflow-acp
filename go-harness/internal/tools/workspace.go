@@ -89,7 +89,7 @@ func ConfiguredWorkspaceFactory(ctx context.Context, req harness.RunRequest, con
 }
 
 func workspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root) ([]tool.BaseTool, error) {
-	read, err := inferTool("read_file", "Read a UTF-8 text file inside the workspace. Without offset/limit the whole file is returned (at most 512 KiB). With offset (1-based line) and/or limit (lines) a line range is returned from files up to 8 MiB, with startLine, endLine and totalLines. Returns version; pass it as expected_version when writing or editing.", func(ctx context.Context, in readInput) (string, error) {
+	read, err := inferTool("read_file", workspaceReadDescription, func(ctx context.Context, in readInput) (string, error) {
 		if in.Offset == 0 && in.Limit == 0 {
 			return readVersionedFile(ctx, root, in.Path)
 		}

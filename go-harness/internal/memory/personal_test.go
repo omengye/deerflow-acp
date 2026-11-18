@@ -203,12 +203,12 @@ func TestPersonalHybridSearchNeverReturnsDeletedOrStaleVectors(t *testing.T) {
 }
 
 func TestPersonalExtractionRequiresUserEvidenceAndStableKeys(t *testing.T) {
-	valid := `{"facts":[{"scope":"global","key":"city","category":"profile","content":"用户最近告知所在地是北京。","evidence":"我在北京"}]}`
+	valid := `{"schema_version":2,"facts":[{"scope":"global","key":"city","category":"profile","value":"北京","evidence":"我在北京","evidence_start":4,"evidence_end":8,"durability":"durable","authority":"descriptive","confidence":0.9}]}`
 	facts, err := ParseAttributes(valid, "请记住，我在北京")
-	if err != nil || facts[0].Key != "profile.last_reported_location" {
+	if err != nil || len(facts) != 1 || facts[0].Key != "profile.last_reported_location" {
 		t.Fatalf("facts=%+v %v", facts, err)
 	}
-	if _, err = ParseAttributes(valid, "你猜我在哪"); err == nil {
+	if unsupported, parseErr := ParseAttributes(valid, "你猜我在哪"); parseErr != nil || len(unsupported) != 0 {
 		t.Fatal("unsupported model claim accepted")
 	}
 	if _, err = ParseAttributes(valid+` {}`, "我在北京"); err == nil {

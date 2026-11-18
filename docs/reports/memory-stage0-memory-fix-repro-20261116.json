@@ -1,0 +1,279 @@
+{
+  "name": "memory-fix-repro",
+  "started_utc": "2026-11-16T09:18:20.694167+00:00",
+  "command": [
+    "go",
+    "test",
+    "-tags",
+    "memory_fix_repro",
+    "./internal/memory",
+    ".",
+    "-run",
+    "^TestMemoryFixRepro",
+    "-json",
+    "-count=2",
+    "-timeout=180s"
+  ],
+  "exit_code": 1,
+  "leaf_case_count": 15,
+  "outcome_counts": {
+    "fail": 30
+  },
+  "packages": [
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "outcome": "fail",
+      "elapsed_seconds": 9.739
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "outcome": "fail",
+      "elapsed_seconds": 17.57
+    }
+  ],
+  "tests": [
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestMemoryFixReproFlushDoesNotSucceedWithPendingJob",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.32,
+        0.45
+      ],
+      "diagnostics": [
+        "memory_fix_repro_test.go:144: P1-3: FlushMemory reported success while its session still had a pending job",
+        "memory_fix_repro_test.go:144: P1-3: FlushMemory reported success while its session still had a pending job"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestMemoryFixReproForgetByIDProducesDurableReceipt",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.41,
+        0.53
+      ],
+      "diagnostics": [
+        "memory_fix_repro_test.go:181: P1-2: forget_memory cannot delete an unslotted fact by ID; get err=<nil>",
+        "memory_fix_repro_test.go:181: P1-2: forget_memory cannot delete an unslotted fact by ID; get err=<nil>"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestMemoryFixReproOptionalAuditFailureDoesNotFailAnswer",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.35,
+        0.59
+      ],
+      "diagnostics": [
+        "memory_fix_repro_test.go:206: P2-9: an optional extraction audit insert failed an otherwise healthy answer: constraint failed: stage0_optional_audit_failure (1811)",
+        "memory_fix_repro_test.go:206: P2-9: an optional extraction audit insert failed an otherwise healthy answer: constraint failed: stage0_optional_audit_failure (1811)"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestMemoryFixReproQuotaSkipDoesNotEnqueue",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.45,
+        0.44
+      ],
+      "diagnostics": [
+        "memory_fix_repro_test.go:124: P1-4: exhausted foreground model allowance still enqueued extraction; jobs=1",
+        "memory_fix_repro_test.go:124: P1-4: exhausted foreground model allowance still enqueued extraction; jobs=1"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestMemoryFixReproResumeKeepsOriginalSourceVersions/correct",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.58,
+        0.59
+      ],
+      "diagnostics": [
+        "memory_fix_repro_test.go:90: P1-13: resumed old input overwrote a newer correction; revision=3 content=\"用户最近告知所在地是北京。\" err=<nil>",
+        "memory_fix_repro_test.go:98: P1-13: resume rebased an old input onto a newer slot version; got=2 want=1",
+        "memory_fix_repro_test.go:90: P1-13: resumed old input overwrote a newer correction; revision=3 content=\"用户最近告知所在地是北京。\" err=<nil>",
+        "memory_fix_repro_test.go:98: P1-13: resume rebased an old input onto a newer slot version; got=2 want=1"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness",
+      "test": "TestMemoryFixReproResumeKeepsOriginalSourceVersions/forget",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.48,
+        0.59
+      ],
+      "diagnostics": [
+        "memory_fix_repro_test.go:98: P1-13: resume rebased an old input onto a newer slot version; got=2 want=1",
+        "memory_fix_repro_test.go:98: P1-13: resume rebased an old input onto a newer slot version; got=2 want=1"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestMemoryFixReproAutomaticFilterRejectsPermissionClaim",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0,
+        0
+      ],
+      "diagnostics": [
+        "fix_plan_repro_test.go:110: P1-5: permission instruction passed automatic extraction filtering; facts=1",
+        "fix_plan_repro_test.go:110: P1-5: permission instruction passed automatic extraction filtering; facts=1"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestMemoryFixReproExplicitActionsSuppressAutomaticReinterpretation/external_policy",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.11,
+        0.06
+      ],
+      "diagnostics": [
+        "fix_plan_repro_test.go:152: P2-6: explicit external_policy was reinterpreted into an extra fact; facts=2",
+        "fix_plan_repro_test.go:152: P2-6: explicit external_policy was reinterpreted into an extra fact; facts=2"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestMemoryFixReproExplicitActionsSuppressAutomaticReinterpretation/unchanged",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.07,
+        0.07
+      ],
+      "diagnostics": [
+        "fix_plan_repro_test.go:152: P2-6: explicit unchanged was reinterpreted into an extra fact; facts=2",
+        "fix_plan_repro_test.go:152: P2-6: explicit unchanged was reinterpreted into an extra fact; facts=2"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestMemoryFixReproIndexPendingDoesNotStarveHealthyFacts",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.24,
+        0.09
+      ],
+      "diagnostics": [
+        "fix_plan_repro_test.go:197: P2-10: one rejected input starved healthy facts across repeated batches; indexed=0 want=16",
+        "fix_plan_repro_test.go:197: P2-10: one rejected input starved healthy facts across repeated batches; indexed=0 want=16"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestMemoryFixReproParseAttributesKeepsValidSibling",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0,
+        0
+      ],
+      "diagnostics": [
+        "fix_plan_repro_test.go:99: P2-12: one invalid candidate discarded its valid sibling; facts=0 err=invalid input",
+        "fix_plan_repro_test.go:99: P2-12: one invalid candidate discarded its valid sibling; facts=0 err=invalid input"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestMemoryFixReproRejectsUngroundedExternalText",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.07,
+        0.06
+      ],
+      "diagnostics": [
+        "fix_plan_repro_test.go:30: P1-1: unrelated user evidence admitted an instruction into global memory; status=saved",
+        "fix_plan_repro_test.go:30: P1-1: unrelated user evidence admitted an instruction into global memory; status=saved"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestMemoryFixReproUnknownKeyForgetDoesNotClaimDeletion/create",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.08,
+        0.08
+      ],
+      "diagnostics": [
+        "fix_plan_repro_test.go:86: P1-2: missing key must report not_found while the unslotted fact remains; got forgotten",
+        "fix_plan_repro_test.go:86: P1-2: missing key must report not_found while the unslotted fact remains; got forgotten"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestMemoryFixReproUnknownKeyForgetDoesNotClaimDeletion/import",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.06,
+        0.07
+      ],
+      "diagnostics": [
+        "fix_plan_repro_test.go:86: P1-2: missing key must report not_found while the unslotted fact remains; got forgotten",
+        "fix_plan_repro_test.go:86: P1-2: missing key must report not_found while the unslotted fact remains; got forgotten"
+      ]
+    },
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+      "test": "TestMemoryFixReproUnknownKeyForgetDoesNotClaimDeletion/promote",
+      "outcomes": [
+        "fail",
+        "fail"
+      ],
+      "elapsed_seconds": [
+        0.08,
+        0.07
+      ],
+      "diagnostics": [
+        "fix_plan_repro_test.go:86: P1-2: missing key must report not_found while the unslotted fact remains; got forgotten",
+        "fix_plan_repro_test.go:86: P1-2: missing key must report not_found while the unslotted fact remains; got forgotten"
+      ]
+    }
+  ],
+  "diagnostics": []
+}

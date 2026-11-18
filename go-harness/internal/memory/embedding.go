@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/network"
@@ -54,9 +55,15 @@ func (e *HTTPEmbedder) Embed(ctx context.Context, texts []string, query bool) ([
 	req.Header.Set("Content-Type", "application/json")
 	response, err := e.Client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("embedding unavailable")
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, errors.New("embedding unavailable")
 	}
 	defer response.Body.Close()
+	if response.StatusCode == 400 || response.StatusCode == 413 || response.StatusCode == 422 {
+		return nil, ErrEmbeddingInput
+	}
 	if response.StatusCode != 200 {
 		return nil, fmt.Errorf("embedding status %d", response.StatusCode)
 	}
@@ -70,11 +77,8 @@ func (e *HTTPEmbedder) Embed(ctx context.Context, texts []string, query bool) ([
 	if body.Model != e.Model || len(body.Vectors) != len(texts) {
 		return nil, fmt.Errorf("embedding identity or count mismatch")
 	}
-	for _, vector := range body.Vectors {
-		if !validVector(vector) {
-			return nil, fmt.Errorf("invalid embedding vector")
-		}
-	}
+	// Indexing validates vectors individually so one malformed vector cannot
+	// discard healthy results. Search validates dimensions/norm before ranking.
 	return body.Vectors, nil
 }
 
@@ -105,59 +109,6 @@ func cosine(a, b []float64) float64 {
 	return dot / math.Sqrt(aa*bb)
 }
 
-// IndexPending batches current heads only. A concurrent correction/deletion
-// invalidates the write through the SELECT precondition in the same transaction.
-func (s *Store) IndexPending(ctx context.Context) error {
-	if s.embedder == nil {
-		return nil
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT f.id,f.head_revision,r.content FROM memory_facts f JOIN memory_fact_revisions r ON r.fact_id=f.id AND r.revision=f.head_revision LEFT JOIN memory_vectors v ON v.fact_id=f.id AND v.revision=f.head_revision AND v.model=? WHERE f.deleted=0 AND v.fact_id IS NULL ORDER BY f.id LIMIT 16`, s.embedder.Identity())
-	if err != nil {
-		return err
-	}
-	type item struct {
-		id       string
-		revision int64
-		text     string
-	}
-	var items []item
-	var texts []string
-	for rows.Next() {
-		var x item
-		if err = rows.Scan(&x.id, &x.revision, &x.text); err != nil {
-			rows.Close()
-			return err
-		}
-		items = append(items, x)
-		texts = append(texts, x.text)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil || len(items) == 0 {
-		return err
-	}
-	vectors, err := s.embedder.Embed(ctx, texts, false)
-	if err != nil {
-		return err
-	}
-	if len(vectors) != len(items) {
-		return fmt.Errorf("embedding count mismatch")
-	}
-	for i, x := range items {
-		if !validVector(vectors[i]) {
-			return fmt.Errorf("invalid vector")
-		}
-		raw, _ := json.Marshal(vectors[i])
-		if _, err = s.db.ExecContext(ctx, `INSERT INTO memory_vectors(fact_id,revision,model,vector) SELECT id,head_revision,?,? FROM memory_facts WHERE id=? AND head_revision=? AND deleted=0 ON CONFLICT DO NOTHING`, s.embedder.Identity(), raw, x.id, x.revision); err != nil {
-			return err
-		}
-	}
-	_, err = s.db.ExecContext(ctx, `DELETE FROM memory_vectors WHERE NOT EXISTS(SELECT 1 FROM memory_facts f WHERE f.id=memory_vectors.fact_id AND f.head_revision=memory_vectors.revision AND f.deleted=0)`)
-	return err
-}
-
-func (s *Store) SetEmbedder(e Embedder) { s.embedder = e } // configured before serving requests
-
 // Cosine values are model-specific, not probabilities. This floor is calibrated
 // against the pinned Chinese model's synthetic release corpus. Hits remain
 // descriptive candidates, not proof that a question has a relevant answer.
@@ -175,13 +126,14 @@ func (s *Store) HybridSearch(ctx context.Context, scope Scope, query string, lim
 	if !utf8.ValidString(query) || len(query) > 1024 || limit < 1 || limit > 100 {
 		return nil, 0, harness.ErrInvalidInput
 	}
+	embedder, _, _ := s.embeddingSnapshot()
 	lexical, revision, err := s.searchLexical(ctx, scope, searchTerms(query), max(limit, 24), scope.kind == GlobalScope)
-	if err != nil || s.embedder == nil {
+	if err != nil || embedder == nil {
 		return lexical[:min(len(lexical), limit)], revision, err
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
-	queryVectors, embedErr := s.embedder.Embed(callCtx, []string{query}, true)
+	queryVectors, embedErr := embedder.Embed(callCtx, []string{query}, true)
 	if embedErr != nil || len(queryVectors) != 1 {
 		return lexical[:min(len(lexical), limit)], revision, nil
 	}
@@ -206,7 +158,7 @@ func (s *Store) HybridSearch(ctx context.Context, scope Scope, query string, lim
 		}
 	}
 	// Read vector identity first, then fetch the small number of ranked heads.
-	rows, err := tx.QueryContext(ctx, `SELECT f.id,v.vector FROM memory_facts f JOIN memory_vectors v ON v.fact_id=f.id AND v.revision=f.head_revision WHERE f.scope_key=? AND f.deleted=0 AND v.model=? ORDER BY f.id LIMIT 10000`, scope.key, s.embedder.Identity())
+	rows, err := tx.QueryContext(ctx, `SELECT f.id,v.vector FROM memory_facts f JOIN memory_vectors v ON v.fact_id=f.id AND v.revision=f.head_revision WHERE f.scope_key=? AND f.deleted=0 AND v.model=? ORDER BY f.id LIMIT 10000`, scope.key, embedder.Identity())
 	if err != nil {
 		return nil, 0, err
 	}
@@ -223,7 +175,7 @@ func (s *Store) HybridSearch(ctx context.Context, scope Scope, query string, lim
 			continue
 		}
 		score := cosine(queryVectors[0], v)
-		if score >= semanticFloor(s.embedder.Identity()) {
+		if score >= semanticFloor(embedder.Identity()) {
 			semantic = append(semantic, hit{fact: Fact{ID: id}, similarity: score})
 		}
 	}

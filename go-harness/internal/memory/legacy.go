@@ -76,8 +76,8 @@ func parseLegacyDocument(raw []byte) ([]legacyFact, LegacyImportReport, error) {
 		case fact.Content == "":
 			reason = "empty_content"
 		default:
-			// Reuse the same conservative content gate as live extraction while
-			// retaining the legacy category and confidence in the final fact.
+			// Import retains its conservative content filter. It cannot establish
+			// current-user support; imported facts keep unknown provenance.
 			probe, _ := json.Marshal(map[string]any{"facts": []map[string]any{{"scope": "workspace", "durability": "durable", "authority": "descriptive", "category": "project", "content": fact.Content, "confidence": 0.75}}})
 			filtered, rejected, err := FilterExtraction(probe, false)
 			if err != nil || len(filtered) != 1 {

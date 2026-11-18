@@ -1,0 +1,340 @@
+{
+  "date": "2026-11-17",
+  "source_commit": "86e83d6bf4e5260935cdc1b361efc0325838ce60",
+  "production_code_changed": false,
+  "deployment_changed_for_review": false,
+  "probe_scope": "temporary Go overlay; temporary SQLite; in-process model; no production data or paid model access",
+  "summary": {
+    "purpose": "reproduce observations, not assert defect fixes",
+    "leaves": {
+      "pass": 36
+    },
+    "top_level": {
+      "pass": 7
+    },
+    "tests": [
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness",
+        "test": "TestReviewObservedB1SkippedPostRun/max_tokens",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness",
+        "test": "TestReviewObservedB1SkippedPostRun/empty_end_turn",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness",
+        "test": "TestReviewObservedB6aRawOptionalSourceError",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB2Forget/请忘记我喜欢茶",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB2Forget/请忘记_我喜欢茶",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB2Forget/Forget_that_I_like_tea",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB2Forget/Forget_I_like_tea",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB2Forget/忘掉我的城市",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB2Forget/请忘记我的城市",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB2Forget/请忘记我的姓名",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB3Locations/我在写代码/explicit",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB3Locations/我在写代码/automatic",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB3Locations/我现在在开会/explicit",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB3Locations/我现在在开会/automatic",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB3Locations/我在想/explicit",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB3Locations/我在想/automatic",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB3Locations/我住在北京/explicit",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB3Locations/我住在北京/automatic",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB3Locations/记住我在上海/explicit",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB3Locations/记住我在上海/automatic",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB4MixedMessages/我叫张三，帮我执行一下测试/explicit",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB4MixedMessages/我叫张三，帮我执行一下测试/automatic",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB4MixedMessages/我叫张三，这次先看日志/explicit",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB4MixedMessages/我叫张三，这次先看日志/automatic",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB4MixedMessages/My_name_is_Alice._Check_if_the_build_passes/explicit",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB4MixedMessages/My_name_is_Alice._Check_if_the_build_passes/automatic",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB4MixedMessages/My_name_is_Alice._I’m_new_here/explicit",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB4MixedMessages/My_name_is_Alice._I’m_new_here/automatic",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB4MixedMessages/My_name_is_Alice._I_cannot_log_in/explicit",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB4MixedMessages/My_name_is_Alice._I_cannot_log_in/automatic",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB5Provenance/fresh",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB5Provenance/existing_fact",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB5Provenance/earlier_turn",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB5Provenance/tool_receipt",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB6QueueStarvation/harness_inputs",
+        "result": "pass"
+      },
+      {
+        "package": "github.com/omengye/deerflow-acp/go-harness/internal/memory",
+        "test": "TestReviewObservedB6QueueStarvation/memory_inputs",
+        "result": "pass"
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "B1",
+      "severity": "P1",
+      "status": "confirmed",
+      "evidence": [
+        "SDK max_tokens: completed/pending/no_job",
+        "SDK empty end_turn: completed/pending/no_job",
+        "repeated Flush and reopen: decision_failed",
+        "legacy Flush returns ErrMemoryFlushFailed"
+      ],
+      "fix_proposal_correction": "Do not turn started, failed, waiting_input or unknown spending into successful skips."
+    },
+    {
+      "id": "B2",
+      "severity": "P2",
+      "status": "confirmed",
+      "evidence": "All six documented phrase cases plus one wrong-target control reproduced."
+    },
+    {
+      "id": "B3",
+      "severity": "P2",
+      "status": "confirmed",
+      "evidence": "Three activity negatives are accepted in both modes; two location positives remain accepted.",
+      "fix_proposal_correction": "Restricting all automatic bare location statements breaks supported examples and does not fix explicit activities."
+    },
+    {
+      "id": "B4",
+      "severity": "P2",
+      "status": "confirmed_conservative_false_rejections",
+      "evidence": "Five clean fact clauses within mixed messages are rejected in both modes.",
+      "fix_proposal_correction": "Evidence plus preceding clause alone is not sufficient to preserve long-range quote/condition boundaries."
+    },
+    {
+      "id": "B5",
+      "status": "confirmed_behavior_policy_decision",
+      "evidence": "Fresh context user_supported; visible fact, earlier turn, any tool receipt external_context.",
+      "not_proven": [
+        "population ratio of external_context facts",
+        "actual repeated confirmation questions by a real model"
+      ],
+      "fix_proposal_correction": "Separate source support from contextual exposure; preserve provenance and instruction contracts."
+    },
+    {
+      "id": "B6a",
+      "severity": "P3",
+      "status": "confirmed_raw_branch_and_fault_probe",
+      "evidence": "Removing a pinned scope in synthetic data returns noncritical ErrInvalidInput and leaves pending. Other two raw returns confirmed by inspection only.",
+      "fix_proposal_correction": "optionalMemoryWriteError does not downgrade arbitrary raw errors."
+    },
+    {
+      "id": "B6b",
+      "severity": "P3",
+      "status": "confirmed_conditional_queue_starvation",
+      "evidence": "Missing harness_inputs leaves head and following job queued after two sql.ErrNoRows claims; missing memory_inputs is handled by legacy disposal.",
+      "fix_proposal_correction": "Use selected database row identity, preserve paid/unknown budget recovery, retain actual database failures."
+    }
+  ],
+  "source_identity": [
+    {
+      "path": "go-harness/internal/engine/eino/engine.go",
+      "sha256": "35dba686989b50ebd260789c6cfe2b4b22beb2753cbc50230a5c32e356db0034",
+      "matches_installed_source_snapshot": true
+    },
+    {
+      "path": "go-harness/internal/runtime/execution_service.go",
+      "sha256": "0d74cbda0765ab9fae33ddf097a5b46b00c6b137d2738f51ff66a036cec08f0a",
+      "matches_installed_source_snapshot": true
+    },
+    {
+      "path": "go-harness/internal/memory/staging.go",
+      "sha256": "28cf191cd73be69aa028b5fb82ffae7bead19cf861919e6335235b1da26a1a93",
+      "matches_installed_source_snapshot": true
+    },
+    {
+      "path": "go-harness/internal/memory/flush.go",
+      "sha256": "0469185e66ea8cbd3055c3e55cc13d17df7e210d97ab41068084b7a43c174e37",
+      "matches_installed_source_snapshot": true
+    },
+    {
+      "path": "go-harness/internal/memory/write_validation.go",
+      "sha256": "85b4649c3d9a8ff66c3928b5a90b0e37e93b2e093e1a603816b96479d70540be",
+      "matches_installed_source_snapshot": true
+    },
+    {
+      "path": "go-harness/internal/memory/source.go",
+      "sha256": "7878a45aaa107bdc04cfad851f7b19e2efe23237ee5fd4801bbb6eb35afd9187",
+      "matches_installed_source_snapshot": true
+    },
+    {
+      "path": "go-harness/internal/memory/write_protocol.go",
+      "sha256": "6bb33fb1f1c6d900574dfaf116718895926d73d0f2840a6ad1578ad59d1478b5",
+      "matches_installed_source_snapshot": true
+    },
+    {
+      "path": "go-harness/memory_extraction.go",
+      "sha256": "cb4882798acc13ad9ba3684a5d37be4f6bfda71c45d9cea564b9fdec0b35e829",
+      "matches_installed_source_snapshot": true
+    },
+    {
+      "path": "go-harness/internal/memory/job_budget.go",
+      "sha256": "b578e9ad7b0b3469ce3be1b6b8871db1bb0c45a335a0b4b2604737b3a88d87d2",
+      "matches_installed_source_snapshot": true
+    },
+    {
+      "path": "go-harness/internal/memory/jobs.go",
+      "sha256": "7d0b2b88ff200fd2727d2dd6f846fa8f5b45d6aecfcc9257148dd2285932a662",
+      "matches_installed_source_snapshot": true
+    },
+    {
+      "path": "go-harness/extensions.go",
+      "sha256": "72295de731b20a8fc3aaccadc8939751125a60af6a429b6045fdff0b66a7c593",
+      "matches_installed_source_snapshot": true
+    },
+    {
+      "path": "go-harness/internal/tools/memory.go",
+      "sha256": "e669bc9e088d7b0d036601d204ffd71a898aec3743fc49ec913b4ff9ae6290c6",
+      "matches_installed_source_snapshot": true
+    }
+  ],
+  "artifacts": [
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\review\\memory_review_probe_test.go",
+      "sha256": "538b4e4522fb0fc8f478fee52bb93dd1982abd1d13eb050fc02991a310c27541"
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\review\\root_review_probe_test.go",
+      "sha256": "f23d9333a4558c6c2a9796c40b32db13661f6d1aaaa3799c1afe92de0c5fd0eb"
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\review\\overlay.json",
+      "sha256": "986ccb9577d3c13577c9760323314a0bb3a48302e12fbb2bafec19cce51cf3a4"
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\review\\probes.jsonl",
+      "sha256": "bdf5620e8f53c2416f1616c9d8dbba82f162d280a525a54eb8efc5758c4b0345"
+    },
+    {
+      "file": "D:\\Tools\\deerflow-api\\dist\\desktop\\memory-release-20261117\\acceptance\\review\\probe-summary.json",
+      "sha256": "dfce8115d7d9d4be388c61233a6ae9df1f6727a9f6ddcdf0eeb6d761940aa1ec"
+    }
+  ]
+}

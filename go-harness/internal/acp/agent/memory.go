@@ -31,6 +31,7 @@ func memoryCapabilities(user, global bool) map[string]any {
 		scopes = append(scopes, "global")
 	}
 	result := map[string]any{"version": 1, "scopes": scopes, "listMethod": listMemoryMethod, "searchMethod": searchMemoryMethod, "getMethod": getMemoryMethod, "createMethod": createMemoryMethod, "replaceMethod": replaceMemoryMethod, "deleteMethod": deleteMemoryMethod, "clearMethod": clearMemoryMethod, "flushMethod": flushMemoryMethod}
+	result["flushStatusVersion"] = 1
 	if global {
 		result["promoteMethod"] = promoteMemoryMethod
 	}
@@ -164,8 +165,7 @@ func (a *Agent) memoryRequest(ctx context.Context, method string, raw json.RawMe
 		count, err = a.service.ClearMemory(ctx, a.owner, req.SessionID, req.Scope, req.ExpectedScopeRevision)
 		result = map[string]any{"cleared": count}
 	case flushMemoryMethod:
-		err = a.service.FlushMemory(ctx, a.owner, req.SessionID)
-		result = map[string]any{"flushed": err == nil}
+		result, err = a.service.FlushMemoryWithStatus(ctx, a.owner, req.SessionID)
 	}
 	if errors.Is(err, harness.ErrExecutionConflict) {
 		return nil, &protocol.Error{Code: memoryConflictCode, Message: "Memory revision changed; list the scope and retry with its current version", Data: map[string]any{"listMethod": listMemoryMethod}}

@@ -23,6 +23,7 @@ type Store struct {
 	BudgetLimits       harness.BudgetLimits
 	Learning           *learning.Store
 	CaptureSkillOracle func(context.Context, *sql.Tx, string) error
+	CaptureMemoryInput func(context.Context, *sql.Tx, harness.RunRequest, int64, []byte) error
 }
 
 func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
@@ -253,6 +254,15 @@ func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest, prepared .
 	event, err := tx.ExecContext(ctx, `INSERT INTO harness_events(session_id,run_id,event) VALUES(?,?,?)`, req.Session.ID, req.RunID, user)
 	if err != nil {
 		return err
+	}
+	if s.CaptureMemoryInput != nil {
+		sequence, err := event.LastInsertId()
+		if err != nil {
+			return err
+		}
+		if err = s.CaptureMemoryInput(ctx, tx, req, sequence, input); err != nil {
+			return err
+		}
 	}
 	if s.Learning != nil {
 		sequence, err := event.LastInsertId()

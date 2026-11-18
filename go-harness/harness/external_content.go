@@ -2,15 +2,21 @@ package harness
 
 import "strings"
 
-// ExternalContentTool reports whether a tool returns third-party content: web
-// pages, search results, browser sessions, MCP servers or attached documents.
-// Such output is untrusted data that may carry prompt injection. Durable state
-// derived from a session that consumed it (memory, learned skills) records
-// that provenance instead of being treated as purely user-authored.
+// ExternalContentTool retains the existing network-content classification used
+// by skill-learning admission. It is not a general trust boundary and must not
+// authorize memory writes. Changing that admission policy is a separate change.
 func ExternalContentTool(name string) bool {
 	switch name {
 	case "web_fetch", "web_search", "host_opencli", "read_attachment":
 		return true
 	}
 	return strings.HasPrefix(name, "mcp_")
+}
+
+// UntrustedMemoryContentTool is the memory provenance boundary. Unknown tools
+// and local outputs are untrusted by default, independent of the legacy helper.
+func UntrustedMemoryContentTool(name string) bool {
+	// There is no host-certified free-text-free exception today. Local files,
+	// memory, notes, failures, and unknown tools may all carry external data.
+	return true
 }

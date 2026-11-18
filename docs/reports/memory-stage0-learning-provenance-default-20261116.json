@@ -1,0 +1,40 @@
+{
+  "name": "learning-provenance-default",
+  "started_utc": "2026-11-16T09:18:05.811126+00:00",
+  "command": [
+    "go",
+    "test",
+    "./internal/learning",
+    "-run",
+    "^TestExternalInfluenceMarksEpisodesThatConsumedThirdPartyContent$",
+    "-json",
+    "-count=1",
+    "-timeout=180s"
+  ],
+  "exit_code": 0,
+  "leaf_case_count": 1,
+  "outcome_counts": {
+    "pass": 1
+  },
+  "packages": [
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/learning",
+      "outcome": "pass",
+      "elapsed_seconds": 9.259
+    }
+  ],
+  "tests": [
+    {
+      "package": "github.com/omengye/deerflow-acp/go-harness/internal/learning",
+      "test": "TestExternalInfluenceMarksEpisodesThatConsumedThirdPartyContent",
+      "outcomes": [
+        "pass"
+      ],
+      "elapsed_seconds": [
+        0.18
+      ],
+      "diagnostics": []
+    }
+  ],
+  "diagnostics": []
+}

@@ -9,6 +9,32 @@ import (
 	"time"
 )
 
+type liveMemoryEmbeddingProbe struct {
+	Embedder
+	indexCalls, queryCalls, failures int
+}
+
+func (e *liveMemoryEmbeddingProbe) Embed(ctx context.Context, texts []string, query bool) ([][]float64, error) {
+	if query {
+		e.queryCalls++
+	} else {
+		e.indexCalls++
+	}
+	vectors, err := e.Embedder.Embed(ctx, texts, query)
+	if err == nil {
+		for _, vector := range vectors {
+			if len(vector) != 512 || !validVector(vector) {
+				err = fmt.Errorf("pinned live embedding returned an invalid vector")
+				break
+			}
+		}
+	}
+	if err != nil {
+		e.failures++
+	}
+	return vectors, err
+}
+
 // Opt-in release acceptance uses the pinned on-premise model, never an external
 // embedding API. Only synthetic project facts enter this temporary database.
 func TestPersonalMemoryChineseEmbeddingAcceptance(t *testing.T) {
@@ -48,7 +74,8 @@ func TestPersonalMemoryChineseEmbeddingAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.SetEmbedder(embedder)
+	probe := &liveMemoryEmbeddingProbe{Embedder: embedder}
+	s.SetEmbedder(probe)
 	ids := make([]string, len(corpus))
 	for i, c := range corpus {
 		m := change(fmt.Sprintf("eval-%d", i), fmt.Sprintf("project.fact_%d", i), c[0], 0)
@@ -63,6 +90,10 @@ func TestPersonalMemoryChineseEmbeddingAcceptance(t *testing.T) {
 		if err = s.IndexPending(ctx); err != nil {
 			t.Fatal(err)
 		}
+	}
+	var indexed int
+	if err = s.db.QueryRow("SELECT count(*) FROM memory_vectors WHERE model=?", embedder.Identity()).Scan(&indexed); err != nil || indexed != len(corpus) {
+		t.Fatalf("live indexing incomplete: indexed=%d expected=%d error=%v", indexed, len(corpus), err)
 	}
 	hits, total := 0, 0
 	var times []int64
@@ -89,7 +120,10 @@ func TestPersonalMemoryChineseEmbeddingAcceptance(t *testing.T) {
 		}
 	}
 	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
-	t.Logf("synthetic_chinese_queries=%d recall_at_5=%.3f p95_ms=%d", total, float64(hits)/float64(total), times[len(times)*95/100])
+	t.Logf("synthetic_chinese_queries=%d recall_at_5=%.3f p95_ms=%d indexed=%d index_calls=%d query_calls=%d embedding_failures=%d", total, float64(hits)/float64(total), times[len(times)*95/100], indexed, probe.indexCalls, probe.queryCalls, probe.failures)
+	if probe.indexCalls == 0 || probe.queryCalls != total || probe.failures != 0 {
+		t.Fatal("lexical fallback cannot stand in for successful live embedding acceptance")
+	}
 	if float64(hits)/float64(total) < 0.95 {
 		t.Fatalf("recall acceptance failed: %d/%d", hits, total)
 	}

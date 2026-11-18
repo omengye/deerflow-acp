@@ -95,6 +95,7 @@ func (s *Store) MigrateSingleUser(ctx context.Context, name string, items []Migr
 				copy.ScopeKey = global.key
 				copy.Revision = 1
 				copy.Source.ID = OperationID("migration", name, f.ID)
+				copy.Source.Provenance = Provenance(f)
 				copy.Source.PolicyVersion = "single-user-migration-v1"
 				if _, err = tx.ExecContext(ctx, `INSERT INTO memory_facts(id,scope_key,head_revision,created_at) VALUES(?,?,1,?)`, copy.ID, copy.ScopeKey, copy.CreatedAt.Format(time.RFC3339Nano)); err != nil {
 					return err
@@ -130,7 +131,7 @@ func (s *Store) MigrateSingleUser(ctx context.Context, name string, items []Migr
 				return err
 			}
 			f.Revision++
-			f.Source = Source{ID: OperationID("migration-delete", name, f.ID), Kind: "operator", ActorID: "single-user-migration", PolicyVersion: "single-user-migration-v1"}
+			f.Source = Source{ID: OperationID("migration-delete", name, f.ID), Kind: "operator", ActorID: "single-user-migration", PolicyVersion: "single-user-migration-v1", Provenance: Provenance(f)}
 			f.UpdatedAt = time.Now().UTC()
 			if _, err = tx.ExecContext(ctx, `UPDATE memory_facts SET head_revision=?,deleted=1 WHERE id=?`, f.Revision, f.ID); err != nil {
 				return err

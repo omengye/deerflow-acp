@@ -1,0 +1,22 @@
+{
+  "name": "race-environment-check",
+  "started_utc": "2026-11-16T09:18:20.778360+00:00",
+  "command": [
+    "go",
+    "test",
+    "-race",
+    "./internal/memory",
+    "-run",
+    "^TestPersonalReceiptAndTombstoneSurviveReopen$",
+    "-count=1"
+  ],
+  "exit_code": 2,
+  "leaf_case_count": 0,
+  "outcome_counts": {},
+  "packages": [],
+  "tests": [],
+  "diagnostics": [
+    "go: -race requires cgo; enable cgo by setting CGO_ENABLED=1"
+  ],
+  "failure_output": []
+}

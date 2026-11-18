@@ -32,11 +32,13 @@ CREATE TABLE df_learning_pattern_members(pattern_id TEXT NOT NULL,revision INTEG
 		return data
 	}
 	for id, payload := range map[string][]byte{
-		"local":    view("bash", "read_file", "search_memory"),
-		"web":      view("bash", "web_fetch"),
-		"mcp":      view("mcp_github_issues_0123456789abcdef"),
-		"corrupt":  []byte("{"),
-		"attached": view("read_attachment"),
+		"local":     view("bash", "read_file", "search_memory"),
+		"user_only": view(),
+		"unknown":   view("new_unregistered_tool"),
+		"web":       view("bash", "web_fetch"),
+		"mcp":       view("mcp_github_issues_0123456789abcdef"),
+		"corrupt":   []byte("{"),
+		"attached":  view("read_attachment"),
 	} {
 		if _, err = db.Exec(`INSERT INTO df_learning_extractions VALUES(?,?)`, "x-"+id, payload); err != nil {
 			t.Fatal(err)
@@ -61,7 +63,9 @@ CREATE TABLE df_learning_pattern_members(pattern_id TEXT NOT NULL,revision INTEG
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"e-local": false, "e-web": true, "e-mcp": true, "e-corrupt": true}
+	// Memory has a separate default-untrusted gate. Preserve this existing
+	// skill admission contract instead of silently disabling observed learning.
+	want := map[string]bool{"e-local": false, "e-web": true, "e-mcp": true, "e-corrupt": true, "e-user_only": false, "e-unknown": false}
 	if len(got) != len(want) {
 		t.Fatalf("members=%v", got)
 	}

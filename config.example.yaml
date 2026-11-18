@@ -111,6 +111,13 @@ memory:
   mode: middleware
   injection_enabled: true
   retrieval_enabled: true
+  # Additional single_user worker cap; does not replace root-budget accounting.
+  # 0 pauses new automatic calls; already saved extraction results can replay.
+  daily_attempts: 200
+  # Independent embedding indexing (when embedding_url/model are configured).
+  index_max_attempts: 3
+  index_retry_seconds: 60
+  index_max_retry_seconds: 3600
 
 search:
   default_provider: auto

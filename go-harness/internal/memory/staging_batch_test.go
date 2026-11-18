@@ -14,8 +14,13 @@ func TestMemoryLegacyBatchDoesNotConflictWithItsOwnInserts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j := stage1AcceptedJob(t, s, scope, "run", "input", "The project database is SQLite")
+	source, err := s.InputSnapshot(ctx, j.RunID, j.InputID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := range 2 {
-		_, err = s.db.ExecContext(ctx, `INSERT INTO memory_staged_facts(run_id,input_id,attempt_id,ordinal,scope_key,scope_kind,workspace,subject,agent,scope_revision,content,category,confidence,source_id,source_event_sequence,policy_version) VALUES('run','input','attempt',?,?,?,?,?,?,0,?,'project',1,?,1,'test')`, i, scope.key, scope.kind, scope.workspace, "", "", fmt.Sprintf("Independent project fact %d", i), fmt.Sprintf("source-%d", i))
+		_, err = s.db.ExecContext(ctx, `INSERT INTO memory_staged_facts(run_id,input_id,attempt_id,ordinal,scope_key,scope_kind,workspace,subject,agent,scope_revision,content,category,confidence,source_id,source_event_sequence,policy_version) VALUES('run','input','attempt',?,?,?,?,?,?,0,?,'project',1,?,?,?)`, i, scope.key, scope.kind, scope.workspace, "", "", fmt.Sprintf("Independent project fact %d", i), fmt.Sprintf("source-%d", i), source.Sequence, ExtractionPolicyV2)
 		if err != nil {
 			t.Fatal(err)
 		}
