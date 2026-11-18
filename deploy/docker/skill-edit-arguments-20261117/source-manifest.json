@@ -1,0 +1,101 @@
+{
+  "base_commit": "68753f15e51ef285260bca52388c44c786ff0f41",
+  "binaries": {
+    "deerflow-acp-go": "c94d5907bd25d2c5374e998ec95204e53e5c27852bc6d599bcf398c8eedae609",
+    "deerflow-acpd.real": "e10de62c48776c88e0741a984dc1388dae9ce3b2e5359165a0263f3ef2a5d4eb",
+    "deerflow-channel-wechat": "f95274fbe2d4736c8224c681ae0c7db48f65e066c9e119fcec1f06a64eeece78",
+    "deerflow-config-go": "f8af68b3d4adc95cad2b85fa80c6cd3e183f6fc11cded805fcb3176f6333e9fa",
+    "deerflow-control-go": "420f1fdf4e4b409e8ee7bbdb505a9579582b414e4936cc0e91a8f7bc7b08d28e",
+    "deerflow-skill-go": "28b81c06aac77deb39c217bbac22afb86318ce6e94c8f2a3f21d5740610a5498"
+  },
+  "build_id": "skill-edit-arguments-20261117-68753f15",
+  "candidate_wrapper_sha256": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0",
+  "cgo_enabled": false,
+  "changed_files": [
+    {
+      "path": "go-harness/skill_edit_tool.go",
+      "reviewed_lf_sha256": "f349f904f72803b8f32229b2c8324ddae1e65a7b913f61136e38198f1425295a",
+      "sha256": "23849e674dcb9ad0467f5c5bb27dea3e5a2d4a83ce5b01889257ac60d066fe81"
+    },
+    {
+      "path": "go-harness/harness/skill_edit_arguments.go",
+      "reviewed_lf_sha256": "244eed967676f1b069dc0196c92f69146f83cf749d768d9cf3e8bd565a941f9c",
+      "sha256": "dca9531e5ae08c8954b372c5cfe12ae10ddd2e57cf81600d813e3e71c8d2b92a"
+    },
+    {
+      "path": "go-harness/internal/engine/eino/confirmed_tool.go",
+      "reviewed_lf_sha256": "74db4f0c89e77a9e869ea88977e4f102c15c57cecf626d1dc6d2a0c4ef403bba",
+      "sha256": "e435cbae7186e688aaf6b3ca8d3ecb893eb4cec762c7d37e7e5b86d349173eeb"
+    },
+    {
+      "path": "go-harness/internal/engine/eino/tools.go",
+      "reviewed_lf_sha256": "9cb7730df797570fc039a906ae5dd1fa4af4a5e5e813b9d2eaffc45f561a64fa",
+      "sha256": "c2b7fba7c16a14cef3e1fbfb2255d18991c8765746670c24793c6eb0d9ec243f"
+    },
+    {
+      "path": "go-harness/internal/engine/eino/failure_classification.go",
+      "reviewed_lf_sha256": "934b1fbe8e9a86344400b56325856196eb3341ce03937edc279282abf54b46c3",
+      "sha256": "28416e3ad12130f0ff5eea7b6ad6ad76a95568d65f4460f48381ce6eb1fe5420"
+    },
+    {
+      "path": "go-harness/internal/runtime/receipts.go",
+      "reviewed_lf_sha256": "6c1af4658dde78a83d32fc5a2045022ac87682d42b657e12317092f1dfc296b2",
+      "sha256": "bf0473c39b7465ffae0f0921a9265c4792d825c105eab1c0ae65d6ab26cb1b60"
+    },
+    {
+      "path": "go-harness/skill_edit_arguments_test.go",
+      "reviewed_lf_sha256": "5f526a84273a189681fcdf636e0a7f53d5b164842472dd41ad5d257507e65399",
+      "sha256": "df51d19ddb213e1f258380e69de10b35cc21aca45c095db5a95009ddd19e4461"
+    },
+    {
+      "path": "go-harness/internal/engine/eino/confirmed_tool_test.go",
+      "reviewed_lf_sha256": "f6014870ce561476d42815afc88831bf166619754dd1b29d1c648e2654880c28",
+      "sha256": "f65d5ef35f8fbff7d3612ea183d73e14c1cad3bd37e1cc0d65efa9551f3a8cea"
+    }
+  ],
+  "commit": "68753f15e51ef285260bca52388c44c786ff0f41",
+  "go_archive_sha256": "36061185280e39da198030cb5d0b2397e220cbfba31532793fee34a6ada5683e",
+  "go_tests": {
+    "daemon.test": "a80ec6141167702a534f7102f513d7d28f3a138bc7854179eac4e16072952069",
+    "eino.test": "1f6ccde670186dec93c2a6e860e0089c08177980a140d05d92c7cc3c967efecc",
+    "management.test": "e04cf043268b2146bbe1b3b7679365cfb21ff6de3ce2ade5873203f6e41f0ef0",
+    "runtime.test": "04b4c6445ee0e2943c738045ad9938257f8f6a3045ed75a75d5857e6658d82c2",
+    "skills.test": "da594efdc0c4a34a10a922ea7e95323f1898a0a7eba49c0d40e3d01dc157bea0"
+  },
+  "go_toolchain": "go1.26.8",
+  "linux_test_plan": {
+    "daemon": {
+      "package": "./cmd/deerflow-acpd-go",
+      "run": "^Test"
+    },
+    "eino": {
+      "package": "./internal/engine/eino",
+      "run": "^(TestInstalledSkillEdit|TestSafePreparationErrorSkillEditArguments|TestInstalledEdit|TestFileAuthority|TestExplicitSkillEdit|TestSkillEdit|TestFilesystemFailureClassification|Test.*Receipt)"
+    },
+    "management": {
+      "package": ".",
+      "run": "^(TestInstalledSkillEdit|TestSafePreparationErrorSkillEditArguments|TestInstalledEdit|TestFileAuthority|TestExplicitSkillEdit|TestSkillEdit|TestFilesystemFailureClassification|Test.*Receipt)"
+    },
+    "runtime": {
+      "package": "./internal/runtime",
+      "run": "^(TestInstalledSkillEdit|TestSafePreparationErrorSkillEditArguments|TestInstalledEdit|TestFileAuthority|TestExplicitSkillEdit|TestSkillEdit|TestFilesystemFailureClassification|Test.*Receipt)"
+    },
+    "skills": {
+      "package": "./internal/skills",
+      "run": "^(TestInstalledSkillEdit|TestSafePreparationErrorSkillEditArguments|TestInstalledEdit|TestFileAuthority|TestExplicitSkillEdit|TestSkillEdit|TestFilesystemFailureClassification|Test.*Receipt)"
+    }
+  },
+  "patch_sha256": "9ed971d80016b3d767549c03b91a89d89610f5cee85ee0b6789ad289b73b003c",
+  "source_archive_sha256": "32b19c20d82dc897fc6c9d29714d811f4f818a0c147a73efa5feb7c8281ff3bc",
+  "source_paths": [
+    "go-harness",
+    "bridge",
+    "start.sh",
+    "stop.sh",
+    "daemon.sh",
+    "resources",
+    "config.example.yaml"
+  ],
+  "source_state": "base-commit-plus-reviewed-patch",
+  "target": "linux/amd64"
+}

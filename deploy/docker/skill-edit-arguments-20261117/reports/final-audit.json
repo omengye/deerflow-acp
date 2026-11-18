@@ -1,0 +1,104 @@
+{
+  "activity": {
+    "active_operations": 0,
+    "active_runs": 0,
+    "queued_runs": 0
+  },
+  "backup_files": {
+    "compose": {
+      "bytes": 963,
+      "sha256": "0b0505144a5b2d0b561c60f1bd8adacc2474f0c3f07536909b4e9bf0770b4827"
+    },
+    "config": {
+      "bytes": 4713,
+      "sha256": "d068513becef1e250a0656c472dd03484e3aa881757adb2256918d30a39abf3f"
+    },
+    "desktop.db": {
+      "bytes": 806912,
+      "sha256": "7b255cf9aa83be0f102ba5df3e7a324768e5e6b2910f6e7e3b1d8229baabf5c8"
+    },
+    "desktop.db-shm": {
+      "bytes": 32768,
+      "sha256": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb"
+    },
+    "desktop.db-wal": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "env": {
+      "bytes": 335,
+      "sha256": "002f8945a89ccdcb8a9513c9dbce2015657c635439b86acc506c7a285221745c"
+    },
+    "harness.db": {
+      "bytes": 23584768,
+      "sha256": "5d0f8573bab86e759cfcdd6333aefac05f8e652b68d3791b58837f44cbc9d538"
+    },
+    "harness.db-shm": {
+      "bytes": 32768,
+      "sha256": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb"
+    },
+    "harness.db-wal": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runtime-data.json": {
+      "bytes": 39,
+      "sha256": "63c078f049da281e8d61f297c7f34a9336787fb9429336dbb305ce057320044e"
+    },
+    "search-providers.json": {
+      "bytes": 750,
+      "sha256": "aa5ff13407002911edc315b61d9377cfe4ec91f9d08b2ed056931858819feabd"
+    },
+    "skills.tar.gz": {
+      "bytes": 179154,
+      "sha256": "6034571f5a6a07149b4d90f6828d374fad86bb5f2bfdb1c024115e98256695d2"
+    },
+    "user-data.tar.gz": {
+      "bytes": 8454187,
+      "sha256": "54f9c8074cd7ba0f704a3ec607abc780ece5ec9f02cee38ff114a0296762db7b"
+    },
+    "wrapper": {
+      "bytes": 1830,
+      "sha256": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0"
+    }
+  },
+  "build_id": "skill-edit-arguments-20261117-68753f15",
+  "bundled_channel_enabled": false,
+  "candidate_lifecycle": {
+    "operations": {
+      "proposal.history": {
+        "detail_checked": true,
+        "rows_checked": 10,
+        "states": {
+          "historical": 7,
+          "rejected": 3
+        }
+      },
+      "proposal.list": {
+        "detail_checked": true,
+        "rows_checked": 10,
+        "states": {
+          "historical": 7,
+          "rejected": 3
+        }
+      }
+    },
+    "passed": true,
+    "prompts_submitted": 0
+  },
+  "checked_at": "2026-11-17T10:25:52.819448+00:00",
+  "commit": "68753f15e51ef285260bca52388c44c786ff0f41",
+  "database_integrity": "ok",
+  "draining": false,
+  "health": "healthy",
+  "image_id": "sha256:e639a3b8ca245fa69061b097cc27d1aca66c30abae82b435ac33e41ed0cd7eda",
+  "inactive_archive_preserved": true,
+  "other_container_count": 18,
+  "other_containers_preserved": true,
+  "passed": true,
+  "restart_count": 0,
+  "run_states": {
+    "completed": 151,
+    "needs_reconciliation": 7
+  }
+}

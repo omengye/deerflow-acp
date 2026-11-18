@@ -1,0 +1,128 @@
+[
+  {
+    "id": "faeaf82b9685205cb7d771d637de17402a655889fda3691a7525ccdcd3d1ea38",
+    "name": "buzz-prod-minio-1",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.089236672Z",
+    "status": "running"
+  },
+  {
+    "id": "b15da817fa7f9b161c44a8cbc26d95fa0bb6b9ffabf6b9f3c7103675ca68a33e",
+    "name": "buzz-prod-minio-init-1",
+    "running": false,
+    "started_at": "2026-11-04T07:19:48.424895786Z",
+    "status": "exited"
+  },
+  {
+    "id": "4d564cbb3c255bd201b98635399c254ffda90f1445b7c15fe0b43b556041af8c",
+    "name": "buzz-prod-pairing-relay-1",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.079921703Z",
+    "status": "running"
+  },
+  {
+    "id": "1d241dd5ce6c360c6214d9178fe4cd5458ecf61b318c13b8921e786c1a590869",
+    "name": "buzz-prod-postgres-1",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.114334006Z",
+    "status": "running"
+  },
+  {
+    "id": "56346f8a09a5c09704062e90a9c4f900e68e67e4271a0980ca9b0748da706234",
+    "name": "buzz-prod-redis-1",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.118071308Z",
+    "status": "running"
+  },
+  {
+    "id": "37b362d1089830373ea7e72bda54c2a25e71c5ed0b184a8ae401a9d1fa7bf7c0",
+    "name": "buzz-prod-relay-1",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.065605762Z",
+    "status": "running"
+  },
+  {
+    "id": "552da9ef07cd7faab250cf617fc981907dedae3e44f71f5fc2ae35dc0e2e68c9",
+    "name": "extra-class-postgres",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.122045867Z",
+    "status": "running"
+  },
+  {
+    "id": "ceb2c903811eeb341724d7b253613a998bafa0774a83ca1a40712179ce3a1357",
+    "name": "folotoy-server-emqx-1",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.029049208Z",
+    "status": "running"
+  },
+  {
+    "id": "b95366c33b1f83210ae5a17351fd1c4b0cbf4f14d7cb23077d00b0c4029c656d",
+    "name": "folotoy-server-nginx-1",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.003444604Z",
+    "status": "running"
+  },
+  {
+    "id": "dbb26891a55bb44626ecd32e809156f6df2eb33a843d8a566764879ddb58a5f6",
+    "name": "folotoy-ws-folotoy-1",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.143453113Z",
+    "status": "running"
+  },
+  {
+    "id": "6d958e73fcb9db5ccacee03c39bed2b544b9093251dc4c1a051fd50d1913f432",
+    "name": "immich_machine_learning",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.13875477Z",
+    "status": "running"
+  },
+  {
+    "id": "d7424fe11b926091eb4df66a45901ad9d46d9ec3ab404c46287b0c1c90f7ffc0",
+    "name": "immich_postgres",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.409302955Z",
+    "status": "running"
+  },
+  {
+    "id": "68a59308c20c0b926ccca3261cbc361b4c8a5fab5bcfc856ebf02ba5e52de77e",
+    "name": "immich_redis",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.043247533Z",
+    "status": "running"
+  },
+  {
+    "id": "b39d5bb471826762edf4e336dc8bb9b998165d0364bc6e202b3a3b5c9e93c87b",
+    "name": "immich_server",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.467704532Z",
+    "status": "running"
+  },
+  {
+    "id": "ea190a8e7e9b52539d33cd98cf86012ef3d635b350aff4c8a9d45f3a8b45e877",
+    "name": "openlist",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.125999542Z",
+    "status": "running"
+  },
+  {
+    "id": "930a7d780f1ddb1e8b792f2d84129c9160a817994d836573d930caf8d4529096",
+    "name": "redis",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.098517976Z",
+    "status": "running"
+  },
+  {
+    "id": "106f1d91e39ba837cd0ae3a00abe7e1a0a2efc7a087b1c3f398c0c2097dcec26",
+    "name": "rustfs-server",
+    "running": true,
+    "started_at": "2026-11-13T05:17:44.999968726Z",
+    "status": "running"
+  },
+  {
+    "id": "847ba3bbbfcdce8b8c24f8e4b144c22d30593ad516b72ab9489f0fbb7dace4f5",
+    "name": "uptime-kuma-uptime-kuma-1",
+    "running": true,
+    "started_at": "2026-11-13T05:17:45.130146753Z",
+    "status": "running"
+  }
+]

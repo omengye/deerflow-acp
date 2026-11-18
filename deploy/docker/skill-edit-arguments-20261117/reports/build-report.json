@@ -1,0 +1,68 @@
+{
+  "base_image_id": "sha256:af350024db23860a1323a96db477b71d25f6ef0c2cd4ea6371e18e3e6151d11a",
+  "binaries": {
+    "deerflow-acp": "86dda16d16b1316a31fb77ff879264bc9533d2ed9254c22b71593561fb79da0b",
+    "deerflow-acp-go": "c94d5907bd25d2c5374e998ec95204e53e5c27852bc6d599bcf398c8eedae609",
+    "deerflow-acpd": "b39071d20bbb2af923ed6a9cc20b9974f309b2f38469003ee32554799edd82d0",
+    "deerflow-acpd.real": "e10de62c48776c88e0741a984dc1388dae9ce3b2e5359165a0263f3ef2a5d4eb",
+    "deerflow-channel-wechat": "f95274fbe2d4736c8224c681ae0c7db48f65e066c9e119fcec1f06a64eeece78",
+    "deerflow-config-go": "f8af68b3d4adc95cad2b85fa80c6cd3e183f6fc11cded805fcb3176f6333e9fa",
+    "deerflow-control-go": "420f1fdf4e4b409e8ee7bbdb505a9579582b414e4936cc0e91a8f7bc7b08d28e",
+    "deerflow-personal-migrate": "1b0f23781c6119f2442c2734d9a238293b4dec629e73c8894098f357c219569d",
+    "deerflow-server-entrypoint": "808bb57ab2bfa6a9007b2dd98e0c119c94fe504cb882bd077da6a14bf836e428",
+    "deerflow-server-healthcheck": "8f3d33e0f85f12072b4877736d92854bc3e42d8afccc5944a69eb6982ae3cbaa",
+    "deerflow-skill-go": "28b81c06aac77deb39c217bbac22afb86318ce6e94c8f2a3f21d5740610a5498",
+    "waku-daemon": "217de424113f2416be04b588fc685f672074b55a7068ec0e0916a8e22b6ce5d5"
+  },
+  "changed_binaries": [
+    "deerflow-acpd.real",
+    "deerflow-acp-go",
+    "deerflow-config-go",
+    "deerflow-control-go",
+    "deerflow-skill-go",
+    "deerflow-channel-wechat"
+  ],
+  "commit": "68753f15e51ef285260bca52388c44c786ff0f41",
+  "default_config_sha256": "bde8d844d1160fbbee75842342b4f5f5b88b27913f949220e4e8e13e437d7aab",
+  "image_id": "sha256:e639a3b8ca245fa69061b097cc27d1aca66c30abae82b435ac33e41ed0cd7eda",
+  "image_tag": "deerflow-server:skill-edit-arguments-20261117-68753f15",
+  "labels": {
+    "cc.sprwhisp.deerflow.rollout": "skill-edit-arguments-20261117-68753f15",
+    "cc.sprwhisp.deerflow.source-manifest-sha256": "79372bad242accf74d76700140279c7e53465fbc63f0a2a2f68bac4f62011a88",
+    "cc.sprwhisp.deerflow.source-patch-sha256": "9ed971d80016b3d767549c03b91a89d89610f5cee85ee0b6789ad289b73b003c",
+    "cc.sprwhisp.deerflow.source-revision": "68753f15e51ef285260bca52388c44c786ff0f41",
+    "cc.sprwhisp.deerflow.source-state": "base-commit-plus-reviewed-patch",
+    "org.opencontainers.image.revision": "68753f15e51ef285260bca52388c44c786ff0f41"
+  },
+  "linux_tests": {
+    "daemon": {
+      "inventory": 12,
+      "passed": 15,
+      "skipped": 0
+    },
+    "eino": {
+      "inventory": 11,
+      "passed": 28,
+      "skipped": 0
+    },
+    "management": {
+      "inventory": 10,
+      "passed": 29,
+      "skipped": 0
+    },
+    "runtime": {
+      "inventory": 26,
+      "passed": 74,
+      "skipped": 0
+    },
+    "skills": {
+      "inventory": 12,
+      "passed": 19,
+      "skipped": 0
+    }
+  },
+  "passed": true,
+  "patch_sha256": "9ed971d80016b3d767549c03b91a89d89610f5cee85ee0b6789ad289b73b003c",
+  "rust_binaries_reused": true,
+  "source_archive_sha256": "32b19c20d82dc897fc6c9d29714d811f4f818a0c147a73efa5feb7c8281ff3bc"
+}

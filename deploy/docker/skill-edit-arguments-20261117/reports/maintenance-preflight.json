@@ -1,0 +1,6 @@
+{
+  "active_worker_leases": 0,
+  "inactive_historical_reserved_calls_preserved": 1,
+  "passed": true,
+  "waiting_jobs": 1
+}

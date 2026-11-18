@@ -1,0 +1,7 @@
+{
+  "commit": "68753f15e51ef285260bca52388c44c786ff0f41",
+  "base_image_id": "sha256:af350024db23860a1323a96db477b71d25f6ef0c2cd4ea6371e18e3e6151d11a",
+  "builder_image_id": "sha256:af350024db23860a1323a96db477b71d25f6ef0c2cd4ea6371e18e3e6151d11a",
+  "release_support_sha256": "5c24315d0cb5f135d27ab198b5fa76c4cbec238eab26b2f819246da2ba301960",
+  "storage_support_sha256": "416142a8bcf4edea7c664a68760857f044015fed90be4d63400775d71c28516c"
+}

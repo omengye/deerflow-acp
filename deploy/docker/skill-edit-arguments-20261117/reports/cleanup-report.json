@@ -1,0 +1,44 @@
+{
+  "backup": "/home/gen/deerflow-deploy/skill-edit-arguments-20261117-68753f15/backup",
+  "backup_and_inactive_archive_preserved": true,
+  "builder": "76b40c9206e976a774139f502597adeade67dda1fb764f2b36e7b94b95644511",
+  "checked_at": "2026-11-17T10:25:42.951893+00:00",
+  "configuration_preserved": true,
+  "container_unchanged": true,
+  "daemon_unchanged": true,
+  "free_bytes_after": 79835451392,
+  "free_bytes_before": 78351077376,
+  "health": "healthy",
+  "image_id": "sha256:e639a3b8ca245fa69061b097cc27d1aca66c30abae82b435ac33e41ed0cd7eda",
+  "logical_bytes_removed": 1478291446,
+  "logical_bytes_to_remove": 1478291446,
+  "other_containers_preserved": true,
+  "passed": true,
+  "rollback_image_preserved": true,
+  "shared_builder_image_preserved": true,
+  "source_archive": "/home/gen/deerflow-deploy/skill-edit-arguments-20261117-68753f15/source.tar.gz",
+  "source_archive_and_reports_preserved": true,
+  "temporary_alias": "deerflow-server:before-skill-edit-20261117",
+  "temporary_paths": [
+    {
+      "bytes": 638721363,
+      "name": "build"
+    },
+    {
+      "bytes": 137168168,
+      "name": "stage"
+    },
+    {
+      "bytes": 242027896,
+      "name": "go-artifacts.tar.gz"
+    },
+    {
+      "bytes": 214562819,
+      "name": "image-context"
+    },
+    {
+      "bytes": 245811200,
+      "name": "upload.tar"
+    }
+  ]
+}
