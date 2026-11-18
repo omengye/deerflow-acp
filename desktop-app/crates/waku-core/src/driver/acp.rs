@@ -2249,7 +2249,7 @@ fn send_prompt(
                 deerflow_tasks::flush_early_updates(&mut stream, false, &callback_events)?;
                 success
             } else {
-                finish_prompt(result, native_failure, &callback_events)
+                finish_prompt(provider, result, native_failure, &callback_events)
             };
             if provider == ProviderKind::Grok && success {
                 start_grok_title_refresh(
@@ -2567,7 +2567,13 @@ fn finish_xai_prompt_complete(
         Some("refusal") => StopReason::Refusal,
         _ => StopReason::EndTurn,
     };
-    finish_prompt(Ok(PromptResponse::new(stop_reason)), None, events).then(|| session_id.to_owned())
+    finish_prompt(
+        ProviderKind::Grok,
+        Ok(PromptResponse::new(stop_reason)),
+        None,
+        events,
+    )
+    .then(|| session_id.to_owned())
 }
 
 fn start_grok_title_refresh(
@@ -2607,6 +2613,7 @@ fn token_limit_summary(limit: Option<&str>) -> String {
 }
 
 fn finish_prompt(
+    provider: ProviderKind,
     result: agent_client_protocol::Result<PromptResponse>,
     native_failure: Option<String>,
     events: &impl DriverEventSink,
@@ -2619,36 +2626,48 @@ fn finish_prompt(
                 .as_ref()
                 .and_then(|data| data.get("kind"))
                 .and_then(Value::as_str);
-            let known_failure_message = match (i32::from(error.code), error_kind) {
-                (-32026, _) | (_, Some("model_response_invalid")) => Some(
-                    "模型流式响应解析失败，本轮已停止。已完成的工具结果已保留，请发送新消息继续。",
-                ),
-                (-32028, _) | (_, Some("checkpoint_too_large")) => Some(
-                    "执行状态过大，无法保存本轮进度。请减少并行子任务后发送新消息继续；已保存的工具结果会保留。",
-                ),
-                (-32029, _) | (_, Some("checkpoint_invalid")) => Some(
-                    "执行状态校验失败，暂时无法恢复。本轮已停止，已保存的记录会保留；请发送新消息继续。",
-                ),
-                (-32030, _) | (_, Some("checkpoint_persist_failed")) => {
-                    Some("执行进度保存失败，本轮已停止。请检查本机存储后重试；已保存的记录会保留。")
+            let known_failure_message = if provider == ProviderKind::DeerFlow {
+                match (i32::from(error.code), error_kind) {
+                    (-32012, _) | (_, Some("execution_waiting_input")) => Some(
+                        "上一轮执行仍在等待继续。请打开“运行状态 → 任务详情与管理”，恢复执行或取消该任务后再发送消息。",
+                    ),
+                    (-32026, _) | (_, Some("model_response_invalid")) => Some(
+                        "模型流式响应解析失败，本轮已停止。已完成的工具结果已保留，请发送新消息继续。",
+                    ),
+                    (-32033, _) | (_, Some("model_transport_failed")) => Some(
+                        "模型服务或本地代理连接中断，本轮已停止。已完成的工具结果已保留；请检查网络或代理后在原会话发送新消息继续，系统不会自动重放已完成的操作。",
+                    ),
+                    (-32028, _) | (_, Some("checkpoint_too_large")) => Some(
+                        "执行状态过大，无法保存本轮进度。请减少并行子任务后发送新消息继续；已保存的工具结果会保留。",
+                    ),
+                    (-32029, _) | (_, Some("checkpoint_invalid")) => Some(
+                        "执行状态校验失败，暂时无法恢复。本轮已停止，已保存的记录会保留；请发送新消息继续。",
+                    ),
+                    (-32030, _) | (_, Some("checkpoint_persist_failed")) => Some(
+                        "执行进度保存失败，本轮已停止。请检查本机存储后重试；已保存的记录会保留。",
+                    ),
+                    _ => None,
                 }
-                _ => None,
+            } else {
+                None
             };
-            let rate_limited = i32::from(error.code) == -32027
-                || error
-                    .data
-                    .as_ref()
-                    .and_then(|data| data.get("kind"))
-                    .and_then(Value::as_str)
-                    == Some("model_rate_limited");
+            let rate_limited = provider == ProviderKind::DeerFlow
+                && (i32::from(error.code) == -32027
+                    || error
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("kind"))
+                        .and_then(Value::as_str)
+                        == Some("model_rate_limited"));
             let message = error.to_string();
             let message = if let Some(known_failure_message) = known_failure_message {
                 known_failure_message.to_owned()
             } else if rate_limited {
                 "模型服务请求受到限流，本轮已停止。请稍后重试或切换模型；已完成的工具结果已保留，请检查结果后再继续。".to_owned()
-            } else if message.contains("reconciliation_required")
-                || message.contains("Uncertain tool effects require review")
-                || message.contains("previous execution could not finish safely")
+            } else if provider == ProviderKind::DeerFlow
+                && (message.contains("reconciliation_required")
+                    || message.contains("Uncertain tool effects require review")
+                    || message.contains("previous execution could not finish safely"))
             {
                 "上一次执行未能正常结束，已保留执行记录。系统不会自动重放旧操作。".to_owned()
             } else {
@@ -5093,6 +5112,7 @@ mod tests {
         let (events, event_rx) = crossbeam_channel::unbounded();
 
         assert!(!finish_prompt(
+            ProviderKind::DeerFlow,
             Ok(PromptResponse::new(StopReason::EndTurn)),
             Some("402 membership inactive".to_owned()),
             &events
@@ -5121,7 +5141,12 @@ mod tests {
                     "automaticReplay": false,
                     "listMethod": "_deerflow/tool_receipts/list"
                 }));
-        assert!(!finish_prompt(Err(error), None, &events));
+        assert!(!finish_prompt(
+            ProviderKind::DeerFlow,
+            Err(error),
+            None,
+            &events
+        ));
         let DriverEvent::Error(message) = event_rx.try_recv().unwrap() else {
             panic!("expected recovery message");
         };
@@ -5135,6 +5160,73 @@ mod tests {
             DriverEvent::TurnFinished { success: false, .. }
         ));
         assert!(event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn other_providers_keep_their_own_error_codes_and_kinds() {
+        for provider in [
+            ProviderKind::Kimi,
+            ProviderKind::Grok,
+            ProviderKind::OpenCode,
+        ] {
+            for (code, kind) in [
+                (-32012, "execution_waiting_input"),
+                (-32026, "model_response_invalid"),
+                (-32033, "model_transport_failed"),
+                (-32028, "checkpoint_too_large"),
+                (-32029, "checkpoint_invalid"),
+                (-32030, "checkpoint_persist_failed"),
+                (-32027, "model_rate_limited"),
+            ] {
+                for error in [
+                    agent_client_protocol::Error::new(code, "provider-specific failure"),
+                    agent_client_protocol::Error::internal_error().data(json!({"kind": kind})),
+                ] {
+                    let expected = error.to_string();
+                    let (events, event_rx) = crossbeam_channel::unbounded();
+                    assert!(!finish_prompt(provider, Err(error), None, &events));
+                    assert!(
+                        matches!(event_rx.try_recv().unwrap(), DriverEvent::Error(message) if message == expected)
+                    );
+                    assert!(matches!(
+                        event_rx.try_recv().unwrap(),
+                        DriverEvent::TurnFinished { success: false, .. }
+                    ));
+                    assert!(event_rx.try_recv().is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn waiting_execution_errors_explain_recovery_without_raw_metadata() {
+        for error in [
+            agent_client_protocol::Error::new(-32012, "The session has a waiting execution"),
+            agent_client_protocol::Error::internal_error().data(json!({
+                "kind": "execution_waiting_input",
+                "automaticReplay": false,
+                "getMethod": "_deerflow/executions/get",
+                "resumeMethod": "_deerflow/executions/resume",
+                "cancelMethod": "_deerflow/executions/cancel"
+            })),
+        ] {
+            let (events, event_rx) = crossbeam_channel::unbounded();
+            assert!(!finish_prompt(
+                ProviderKind::DeerFlow,
+                Err(error),
+                None,
+                &events
+            ));
+            assert!(matches!(
+                event_rx.try_recv().unwrap(),
+                DriverEvent::Error(message) if message == "上一轮执行仍在等待继续。请打开“运行状态 → 任务详情与管理”，恢复执行或取消该任务后再发送消息。"
+            ));
+            assert!(matches!(
+                event_rx.try_recv().unwrap(),
+                DriverEvent::TurnFinished { success: false, .. }
+            ));
+            assert!(event_rx.try_recv().is_err());
+        }
     }
 
     #[test]
@@ -5166,7 +5258,12 @@ mod tests {
                 })),
             ] {
                 let (events, event_rx) = crossbeam_channel::unbounded();
-                assert!(!finish_prompt(Err(error), None, &events));
+                assert!(!finish_prompt(
+                    ProviderKind::DeerFlow,
+                    Err(error),
+                    None,
+                    &events
+                ));
                 let DriverEvent::Error(message) = event_rx.try_recv().unwrap() else {
                     panic!("expected checkpoint message");
                 };
@@ -5192,7 +5289,12 @@ mod tests {
             })),
         ] {
             let (events, event_rx) = crossbeam_channel::unbounded();
-            assert!(!finish_prompt(Err(error), None, &events));
+            assert!(!finish_prompt(
+                ProviderKind::DeerFlow,
+                Err(error),
+                None,
+                &events
+            ));
             let DriverEvent::Error(message) = event_rx.try_recv().unwrap() else {
                 panic!("expected stream failure message");
             };
@@ -5220,7 +5322,12 @@ mod tests {
             })),
         ] {
             let (events, event_rx) = crossbeam_channel::unbounded();
-            assert!(!finish_prompt(Err(error), None, &events));
+            assert!(!finish_prompt(
+                ProviderKind::DeerFlow,
+                Err(error),
+                None,
+                &events
+            ));
             let DriverEvent::Error(message) = event_rx.try_recv().unwrap() else {
                 panic!("expected rate limit message");
             };
@@ -5237,6 +5344,39 @@ mod tests {
     }
 
     #[test]
+    fn transport_errors_show_safe_continuation_without_execution_metadata() {
+        for error in [
+            agent_client_protocol::Error::new(-32033, "private proxy detail"),
+            agent_client_protocol::Error::internal_error().data(json!({
+                "kind": "model_transport_failed",
+                "automaticReplay": false,
+                "execution": {"runId": "run", "resumable": false},
+                "detail": "private proxy credential"
+            })),
+        ] {
+            let (events, event_rx) = crossbeam_channel::unbounded();
+            assert!(!finish_prompt(
+                ProviderKind::DeerFlow,
+                Err(error),
+                None,
+                &events
+            ));
+            let DriverEvent::Error(message) = event_rx.try_recv().unwrap() else {
+                panic!("expected transport failure");
+            };
+            assert!(message.contains("本地代理连接中断"));
+            assert!(message.contains("原会话"));
+            assert!(!message.contains("private"));
+            assert!(!message.contains("resumable"));
+            assert!(matches!(
+                event_rx.try_recv().unwrap(),
+                DriverEvent::TurnFinished { success: false, .. }
+            ));
+            assert!(event_rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
     fn rate_limit_text_alone_does_not_reclassify_other_prompt_errors() {
         let (events, event_rx) = crossbeam_channel::unbounded();
         let error = agent_client_protocol::Error::internal_error().data(json!({
@@ -5244,7 +5384,12 @@ mod tests {
             "detail": "model_rate_limited"
         }));
         let expected = error.to_string();
-        assert!(!finish_prompt(Err(error), None, &events));
+        assert!(!finish_prompt(
+            ProviderKind::DeerFlow,
+            Err(error),
+            None,
+            &events
+        ));
         assert!(matches!(
             event_rx.try_recv().unwrap(),
             DriverEvent::Error(message) if message == expected
@@ -5268,7 +5413,12 @@ mod tests {
                 "stopReason":"max_tokens", "_meta":{"deerflow":{"limit":limit}}
             }))
             .unwrap();
-            assert!(!finish_prompt(Ok(response), None, &events));
+            assert!(!finish_prompt(
+                ProviderKind::DeerFlow,
+                Ok(response),
+                None,
+                &events
+            ));
             assert!(matches!(event_rx.try_recv().unwrap(),
                 DriverEvent::TurnFinished {success: false, summary: Some(summary)} if summary == expected
             ));
@@ -5280,6 +5430,7 @@ mod tests {
     fn typed_prompt_response_settles_the_turn() {
         let (events, event_rx) = crossbeam_channel::unbounded();
         assert!(finish_prompt(
+            ProviderKind::DeerFlow,
             Ok(PromptResponse::new(StopReason::EndTurn)),
             None,
             &events

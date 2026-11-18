@@ -13,6 +13,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	openaiapi "github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/schema"
 	openaisdk "github.com/meguminnnnnnnnn/go-openai"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
@@ -75,6 +76,49 @@ func classifyModelRateLimitError(err error) error {
 	return fmt.Errorf("%w: %w", harness.ErrModelRateLimited, err)
 }
 
+func classifyModelTransportError(err error) error {
+	if errors.Is(err, harness.ErrModelUnavailable) {
+		return err
+	}
+	if _, found := removeErrorLeaves(err, modelTransientResponse); found {
+		return fmt.Errorf("%w: %w", harness.ErrModelUnavailable, err)
+	}
+	return err
+}
+
+// Opening HTTP/SSE is not the first model output. SDKs can return a reader
+// after response headers and report a reset on its first Recv. Peek one value
+// at the provider boundary so that this empty attempt can use the same bounded,
+// metered retry as an initial connection failure. Once any value is delivered,
+// including reasoning, usage or a tool-call delta, never replay the stream.
+func primeModelStream(source *schema.StreamReader[*schema.Message]) (*schema.StreamReader[*schema.Message], error) {
+	readers := source.Copy(2)
+	probe, output := readers[0], readers[1]
+	defer probe.Close()
+	_, err := probe.Recv()
+	if err == nil || errors.Is(err, io.EOF) {
+		return output, nil
+	}
+	defer output.Close()
+	// Join terminal provider cleanup before the next reservation. A malformed
+	// producer that sends output after an error cannot certify an empty stream.
+	empty := true
+	for {
+		message, next := probe.Recv()
+		if errors.Is(next, io.EOF) {
+			break
+		}
+		if message != nil {
+			empty = false
+		}
+		err = errors.Join(err, next)
+	}
+	if empty {
+		return nil, rejectedRateLimitRequest(err)
+	}
+	return nil, classifyModelTransportError(classifyModelRateLimitError(err))
+}
+
 // Only the provider boundary can certify that a request was rejected before
 // opening a stream. A 429 discovered after streaming starts is classified for
 // display, but must never replay partial output or tool calls.
@@ -88,7 +132,7 @@ func (e *rejectedModelRequest) Unwrap() error { return e.cause }
 
 func rejectedRateLimitRequest(err error) error {
 	if remaining, found := removeErrorLeaves(err, modelTransientResponse); found && remaining == nil {
-		return &rejectedModelRequest{cause: err, transient: true}
+		return &rejectedModelRequest{cause: classifyModelTransportError(err), transient: true}
 	}
 	remaining, found := removeErrorLeaves(err, modelRateLimitResponse)
 	if !found || remaining != nil {

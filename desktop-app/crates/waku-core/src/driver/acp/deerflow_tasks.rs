@@ -174,7 +174,7 @@ pub(super) fn finish_prompt(
             return true;
         }
     }
-    super::finish_prompt(result, None, events)
+    super::finish_prompt(super::ProviderKind::DeerFlow, result, None, events)
 }
 
 impl NotificationState {

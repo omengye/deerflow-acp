@@ -58,6 +58,8 @@ func (m *outputTokenModel) Stream(ctx context.Context, input []*schema.Message, 
 	stream, err := m.inner.Stream(ctx, input, m.options(opts)...)
 	if stream == nil {
 		err = rejectedRateLimitRequest(err)
+	} else if err == nil {
+		stream, err = primeModelStream(stream)
 	}
 	return stream, classifyModelToolsCompatibilityError(classifyModelContextError(err))
 }

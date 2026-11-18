@@ -175,6 +175,12 @@ func mapError(err error) (mapped error) {
 			return err
 		}
 		return &protocol.Error{Code: -32027, Message: "模型服务请求受到限流，本轮已停止。请稍后重试或切换模型；已完成的工具结果已保留，请检查结果后再继续。", Data: map[string]any{"kind": "model_rate_limited", "automaticReplay": false}}
+	case errors.Is(err, harness.ErrModelUnavailable):
+		var persistence interface{ PersistenceFailure() bool }
+		if errors.As(err, &persistence) && persistence.PersistenceFailure() {
+			return err
+		}
+		return &protocol.Error{Code: -32033, Message: "模型服务或本地代理连接中断，本轮已停止。已完成的工具结果已保留；请检查网络或代理后在原会话发送新消息继续，系统不会自动重放已完成的操作。", Data: map[string]any{"kind": "model_transport_failed", "automaticReplay": false}}
 	case errors.Is(err, harness.ErrModelToolsRequireResponses):
 		var persistence interface{ PersistenceFailure() bool }
 		if errors.As(err, &persistence) && persistence.PersistenceFailure() {

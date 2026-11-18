@@ -75,6 +75,7 @@ func recoverableRoleTimeout(err error) bool {
 }
 
 func (m *trackedModel) modelError(err error) error {
+	err = classifyModelTransportError(err)
 	err = classifyModelRateLimitError(err)
 	err = classifyModelContextError(err)
 	err = classifyModelResponseError(err)
