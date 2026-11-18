@@ -22,10 +22,10 @@ type skillInspectInput struct {
 	Name string `json:"name" jsonschema:"required"`
 }
 type skillEditInput struct {
-	Action string                  `json:"action" jsonschema:"required,enum=prepare,enum=apply,enum=status"`
-	Name   string                  `json:"name,omitempty" jsonschema:"description=Visible installed skill name for prepare; source is resolved by the host"`
-	Edits  []harness.SkillFileEdit `json:"edits,omitempty" jsonschema:"description=Existing files only; prepare all related file changes together. Never include credentials. Use json_set to change a non-secret JSON field while preserving tokens."`
-	ID     string                  `json:"edit_id,omitempty" jsonschema:"description=Prepared edit ID for apply or status"`
+	Action string                  `json:"action" jsonschema:"required,enum=prepare,enum=apply,enum=status,description=prepare requires name and edits. apply/status accepts only action and edit_id; omit name and edits."`
+	Name   string                  `json:"name,omitempty" jsonschema:"description=Required for prepare: visible installed skill name. Omit for apply/status; edit_id already identifies the skill."`
+	Edits  []harness.SkillFileEdit `json:"edits,omitempty" jsonschema:"description=Required for prepare. Omit for apply/status. Existing files only; prepare all related file changes together. Never include credentials. Use json_set to change a non-secret JSON field while preserving tokens."`
+	ID     string                  `json:"edit_id,omitempty" jsonschema:"description=Required for apply/status: the edit_id returned by prepare. Omit for prepare. Do not include name or edits alongside edit_id."`
 }
 type preparedSkillEdit struct {
 	skillEditInput
@@ -47,7 +47,7 @@ func newInstalledSkillTools(registry *skills.Registry, req harness.RunRequest, r
 	}
 	tools := []tool.BaseTool{&installedSkillTool{toolidentity.Builtin(inspect.Name), inspect, registry, req, refs, selection}}
 	if editable {
-		info, err := utils.GoStruct2ToolInfo[skillEditInput]("skill_edit", "Edit the authoritative installed directory, never a workspace copy or database-only overlay. First inspect, then prepare a bounded multi-file edit, then apply its edit_id. Apply ALWAYS requires explicit host confirmation of the exact redacted diff and target; general session permission is insufficient. Existing Python/scripts are structurally validated, never executed. Prepared is NOT applied. Only status=applied AND live_matches=true AND source_matches=true confirms success. Each new ordinary turn re-reads the source directory; this execution/resume stays pinned. This direct directory edit is separate from automatic evolution. Use skill_manage for learned improvements: the host validates and adopts them automatically without this confirmation. A submitted candidate alone does not change files.")
+		info, err := utils.GoStruct2ToolInfo[skillEditInput]("skill_edit", `Edit the authoritative installed directory, never a workspace copy or database-only overlay. First inspect, then prepare a bounded multi-file edit, then apply its edit_id. Arguments: prepare requires {"action":"prepare","name":"<skill>","edits":[...]}; apply requires {"action":"apply","edit_id":"<edit_id>"}; status requires {"action":"status","edit_id":"<edit_id>"}. Omit name and edits for apply/status; omit edit_id for prepare. An argument error does not invalidate a prepared edit: correct the arguments and retry the same edit_id. Apply ALWAYS requires explicit host confirmation of the exact redacted diff and target; general session permission is insufficient. Existing Python/scripts are structurally validated, never executed. Prepared is NOT applied. Only status=applied AND live_matches=true AND source_matches=true confirms success. Each new ordinary turn re-reads the source directory; this execution/resume stays pinned. This direct directory edit is separate from automatic evolution. Use skill_manage for learned improvements: the host validates and adopts them automatically without this confirmation. A submitted candidate alone does not change files.`)
 		if err != nil {
 			return nil, err
 		}
@@ -113,13 +113,13 @@ func (t *installedSkillTool) PrepareToolArguments(ctx context.Context, args stri
 	}
 	var in skillEditInput
 	if err := decodeBackgroundArguments(args, &in); err != nil {
-		return "", harness.ErrInvalidInput
+		return "", &harness.SkillEditArgumentError{Reason: "json"}
 	}
 	out := preparedSkillEdit{skillEditInput: in}
 	switch in.Action {
 	case "prepare":
 		if in.ID != "" {
-			return "", harness.ErrInvalidInput
+			return "", &harness.SkillEditArgumentError{Reason: "prepare_edit_id"}
 		}
 		ref, err := t.ref(ctx, in.Name)
 		if err != nil {
@@ -131,8 +131,14 @@ func (t *installedSkillTool) PrepareToolArguments(ctx context.Context, args stri
 			return "", err
 		}
 	case "apply", "status":
-		if in.Name != "" || len(in.Edits) != 0 || in.ID == "" {
-			return "", harness.ErrInvalidInput
+		if in.Name != "" {
+			return "", &harness.SkillEditArgumentError{Reason: "reference_name"}
+		}
+		if len(in.Edits) != 0 {
+			return "", &harness.SkillEditArgumentError{Reason: "reference_edits"}
+		}
+		if in.ID == "" {
+			return "", &harness.SkillEditArgumentError{Reason: "reference_edit_id"}
 		}
 		review, err := t.review(ctx, in.ID, owner)
 		if err != nil {
@@ -142,7 +148,7 @@ func (t *installedSkillTool) PrepareToolArguments(ctx context.Context, args stri
 			out.Review = &review
 		}
 	default:
-		return "", harness.ErrInvalidInput
+		return "", &harness.SkillEditArgumentError{Reason: "action"}
 	}
 	data, err := json.Marshal(out)
 	return string(data), err

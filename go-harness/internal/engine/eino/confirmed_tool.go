@@ -3,6 +3,7 @@ package eino
 import (
 	"context"
 	"errors"
+
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
@@ -17,6 +18,10 @@ func ConfirmedToolArguments(ctx context.Context, name, arguments string) bool {
 }
 
 func safePreparationError(err error) string {
+	var arguments *harness.SkillEditArgumentError
+	if errors.As(err, &arguments) {
+		return arguments.Error()
+	}
 	var availability *harness.SkillAvailabilityError
 	if errors.As(err, &availability) {
 		return availability.Error()

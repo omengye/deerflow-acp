@@ -31,7 +31,7 @@ func toolFailureCode(err error) string {
 	var classified *harness.ToolFailureError
 	if errors.As(err, &classified) {
 		switch classified.Code {
-		case "network", "permission", "quota", "rate_limit", "remote":
+		case "network", "permission", "quota", "rate_limit", "remote", "invalid_skill_edit_arguments":
 			return classified.Code
 		}
 	}

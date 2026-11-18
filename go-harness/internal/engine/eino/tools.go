@@ -405,8 +405,12 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 			if err != nil {
 				// Invalid native arguments may contain secrets. Never persist or
 				// request approval for the rejected raw payload.
-				message := "Installed skill request rejected before execution; inspect the visible skill and submit bounded non-secret edits. " + safePreparationError(err)
+				message := "Installed skill request rejected before execution. " + safePreparationError(err)
 				failure := harness.MarkToolNotExecuted(errors.New(message))
+				var arguments *harness.SkillEditArgumentError
+				if errors.As(err, &arguments) {
+					failure = harness.MarkToolNotExecuted(harness.ClassifiedToolFailure("invalid_skill_edit_arguments", message))
+				}
 				var unavailable *harness.SkillAvailabilityError
 				if errors.As(err, &unavailable) {
 					failure = harness.MarkToolNotExecuted(harness.ClassifiedToolFailure(unavailable.Reason, message))
