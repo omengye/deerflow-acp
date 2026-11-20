@@ -187,20 +187,17 @@ func (s *Service) considerExperience(ctx context.Context, id string) error {
 			_, err = tx.ExecContext(ctx, `ROLLBACK TO draft_successor; RELEASE draft_successor`)
 			return err
 		}
-		d := discoverySnapshot{Fork: fork, Kind: "experience_pattern", ID: "sd_" + rand.Text(), Target: target, Base: head, OverlayBase: overlay, Options: o, CreatedAt: now, Evidence: refs, EpisodeDedup: true, HostAdjudicated: p.Manual, ReviewDraft: len(refs) < o.RepeatThreshold}
+		d := discoverySnapshot{Fork: fork, Kind: "experience_pattern", ID: "sd_" + rand.Text(), Target: target, Base: head, OverlayBase: overlay, Options: o, CreatedAt: now, Evidence: refs, EpisodeDedup: true, HostAdjudicated: p.Manual}
 		payload, err := json.Marshal(d)
 		if err != nil || len(payload) > 32<<10 {
 			return invalid("experience discovery exceeds bounds")
 		}
-		reason := "Propose a complete skill package correction from the independently observed procedure. Preserve permissions and unrelated behavior. Include supporting Python scripts or text dependencies only when justified by the evidence; scripts require actual isolated execution and host assertions. Historical execution is unassessed, not operator-confirmed quality. Publication requires independent host validation and automatic adoption."
+		reason := "Propose a complete skill package correction from the independently observed procedure. Preserve permissions and unrelated behavior. Include necessary support files. The host reviews the complete package for safety."
 		if p.Relation == "new_capability" || fork != nil {
-			reason = "Propose a new complete skill package from the independently observed reusable procedure with the host-pinned readable name. Include SKILL.md with a concrete applicability description. Supporting Python scripts and text dependencies require evidence and actual isolated execution; do not add permissions or task-specific data. Historical execution is unassessed, not operator-confirmed quality. The host validates this candidate against the existing skill catalog before automatic adoption."
-		}
-		if d.ReviewDraft {
-			reason = "Automatically draft only SKILL.md from the source-verified procedure. Evidence is below the independent-episode threshold and does not prove generalization, efficacy or quality. Preserve support files, permissions and unrelated behavior; exclude task-specific data. This draft waits for independent evidence and host validation before automatic adoption."
+			reason = "Propose a new complete skill package from the independently observed reusable procedure with the host-pinned readable name. Include SKILL.md with a concrete applicability description. Include necessary support files and exclude task-specific data. Preserve permissions. The host reviews the complete package for safety."
 		}
 		request := harness.SkillGenerationRequest{SourceID: target.SourceID, Name: target.Name, RequestKey: "discovery:" + d.ID, Reason: reason, Author: "discovery", Base: head}
-		r := generationRecord{id: "sgi_" + rand.Text(), created: now, input: generationSnapshot{Request: request, Target: target, OverlayBase: overlay, GeneratorIdentity: s.generation.identity, ValidatorIdentity: s.generation.reviewIdentity, DiscoveryID: d.ID, DiscoveryDigest: hash(payload), BehaviorIdentity: s.behavior.bindingIdentity(target)}}
+		r := generationRecord{id: "sgi_" + rand.Text(), created: now, input: generationSnapshot{Request: request, Target: target, OverlayBase: overlay, PublicationPolicy: s.generation.publicationPolicy, GeneratorIdentity: s.generation.identity, ValidatorIdentity: s.generation.reviewIdentity, DiscoveryID: d.ID, DiscoveryDigest: hash(payload), BehaviorIdentity: s.behavior.bindingIdentity(target)}}
 		input, err := json.Marshal(r.input)
 		if err != nil {
 			return err

@@ -14,10 +14,6 @@ func (f skillToolMaintenance) Generate(context.Context, harness.SkillGenerationI
 	f.t.Error("submitted bytes must not be regenerated")
 	return harness.SkillGeneratedCandidate{}, harness.ErrPermissionDenied
 }
-func (f skillToolMaintenance) Evaluate(context.Context, harness.SkillBehaviorInput) (harness.SkillBehaviorResult, error) {
-	f.t.Error("submission must not run behavioral evaluation synchronously")
-	return harness.SkillBehaviorResult{}, harness.ErrPermissionDenied
-}
 
 func configureSkillManageQueue(t *testing.T, c *Client) {
 	t.Helper()
@@ -25,10 +21,7 @@ func configureSkillManageQueue(t *testing.T, c *Client) {
 	if err := c.evolution.ConfigureGeneration(context.Background(), fixture, harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}, []string{"project"}, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.evolution.ConfigureBehavior(fixture, harness.SkillBehaviorOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.evolution.ConfigureAutoPatch(harness.SkillAutoPatchOptions{MaxChangedLines: 100, ObservationHours: 72, MinObservations: 5, RollbackFailureThreshold: 2}); err != nil {
+	if err := c.evolution.ConfigureSecurityPublication(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }

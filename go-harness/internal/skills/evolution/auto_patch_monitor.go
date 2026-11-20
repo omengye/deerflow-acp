@@ -164,3 +164,61 @@ CREATE TABLE IF NOT EXISTS df_skill_regression_checks(check_key TEXT PRIMARY KEY
 CREATE TABLE IF NOT EXISTS df_skill_regression_results(job_id TEXT NOT NULL,result_key TEXT NOT NULL,payload BLOB NOT NULL,payload_sha TEXT NOT NULL,PRIMARY KEY(job_id,result_key));`)
 	return err
 }
+
+// Stop sampling already published versions when switching policies. Only the
+// exact, previously approved head may become stable within its original scope.
+func (s *Service) finishLegacyObservations(ctx context.Context) error {
+	ids, err := s.securityUpgradeIDs(ctx, `SELECT proposal_id FROM df_skill_auto_patch_observations WHERE status='observing'`)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		err = s.withProposal(ctx, id, func(tx *skills.PublicationTx, p *Proposal) error {
+			o, err := readAutoPatchObservation(ctx, tx.SQL(), id)
+			if err != nil || o.Status != "observing" {
+				return err
+			}
+			head, err := tx.Current()
+			if err != nil {
+				return err
+			}
+			sourceWithdrawn := o.VerificationState == "source_withdrawn"
+			o.UpdatedAt, o.VerificationState = time.Now().UTC(), "historical"
+			if head != o.Head {
+				o.Status, o.Reason = "superseded", "A newer publication replaced the observed version."
+				return writeAutoPatchObservation(ctx, tx.SQL(), o, false)
+			}
+			if err = refreshAutoPatchLearningSource(ctx, tx.SQL(), &o); err != nil {
+				return err
+			}
+			var route string
+			var retired bool
+			err = tx.SQL().QueryRowContext(ctx, `SELECT state, EXISTS(SELECT 1 FROM df_evolution_retired_proposals WHERE proposal_id=?)
+ FROM df_skill_routes WHERE source_key=? AND name=? AND candidate_version=? AND workspace<>''`, id, p.Target.SourceIdentity, p.SkillName, head.Version).Scan(&route, &retired)
+			if err != nil && err != sql.ErrNoRows {
+				return err
+			}
+			grant, ok := s.generation.allowed[p.Target.SourceID]
+			grant.Name = p.SkillName
+			hasDecision := p.Status == "published" && p.Approval != nil && p.Approval.Review.Actor == "auto_patch" &&
+				o.Target == p.Target && p.PublishedRevision == o.PublicationRevision && head.Version == p.CandidateVersion
+			sourceActive := ok && grant == p.Target && !retired && !sourceWithdrawn &&
+				(o.LearningSource == nil || o.LearningSource.SourceState == "valid_at_publication")
+			if hasDecision && sourceActive && route == "observing" && passedSecurityReview(p.Evaluation, ValidationInput{Proposal: *p}) {
+				o.Status, o.Reason = "stable", "The previously security-reviewed publication is active in its original workspace."
+			} else {
+				o.Status, o.Reason = "withdrawn", "The original scoped publication is no longer eligible for routing."
+			}
+			// Preserve an existing quarantine or withdrawal, including its baseline.
+			if _, err = tx.SQL().ExecContext(ctx, `UPDATE df_skill_routes SET state=?,stable_version=CASE WHEN ?='stable' THEN candidate_version ELSE stable_version END
+ WHERE source_key=? AND name=? AND candidate_version=? AND state='observing'`, o.Status, o.Status, p.Target.SourceIdentity, p.SkillName, head.Version); err != nil {
+				return err
+			}
+			return writeAutoPatchObservation(ctx, tx.SQL(), o, false)
+		})
+		if err != nil && !unavailableEvidence(err) {
+			return err
+		}
+	}
+	return nil
+}

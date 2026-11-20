@@ -52,6 +52,9 @@ func validationFailure(report Report, input ValidationInput, reviewErr error, co
 	if report.Security == "unavailable" || report.Behavior == "unavailable" {
 		return &harness.SkillValidationFailure{Code: "validation_unavailable", Stage: "validation"}
 	}
+	if input.Proposal.PublicationPolicy == harness.SkillPublicationSecurityOnly {
+		return &harness.SkillValidationFailure{Code: "invalid_validation_report", Stage: "security"}
+	}
 	if containsScripts(input.CandidateFiles) && (!report.IsolatedScripts || report.Behavior != "passed") {
 		return &harness.SkillValidationFailure{Code: "script_validation_required", Stage: "behavior"}
 	}
@@ -78,7 +81,7 @@ type ValidationFeedback struct {
 // or saved receipts. Model-authored explanations remain untrusted evidence.
 func ProposalFeedback(p Proposal) ValidationFeedback {
 	f := ValidationFeedback{Quality: "unknown", Checks: []ModelCheckFeedback{}}
-	if p.Status == "validating" || p.Evaluation.Security == "failed" {
+	if p.PublicationPolicy == harness.SkillPublicationSecurityOnly || p.Status == "validating" || p.Evaluation.Security == "failed" {
 		f.Quality = "not_run"
 	}
 	for i, check := range p.Evaluation.ModelChecks {

@@ -150,85 +150,75 @@ func (f *submittedNativeFixture) submit(t *testing.T) (Proposal, harness.RunRequ
 	return p, origin
 }
 
-func TestSubmittedNativeEvidenceResumesOriginalCandidateWithoutDiscovery(t *testing.T) {
+// Reconstruct the preceding release's persisted native generation and behavior
+// bindings, including their digests, for upgrade and historical-evidence tests.
+func legacyNativeCandidate(t *testing.T, f *submittedNativeFixture) (Proposal, harness.RunRequest) {
+	t.Helper()
 	ctx := context.Background()
-	f := newSubmittedNativeFixture(t)
-	p, _ := f.submit(t)
-	generationRun(t, f.service)
-	// Persist the previous release's shape: a native trigger without a
-	// submission record. This is the shape of the user's existing V2.
-	legacySubmittedSnapshots(t, f.fixture, p.ID)
-	workspace := f.cfg.Sources[0].Workspace
-	for i := range 2 {
-		r := f.start(t, workspace, fmt.Sprintf("Verify research task %d.\nExpected output:\n```text\nverified\n```", i))
-		f.finish(t, r, true)
-	}
-	// Neither a different workspace nor an oracle with no actual skill use
-	// can fill the missing independent holdout.
-	for _, other := range []bool{true, false} {
-		cwd := workspace
-		if other {
-			cwd = t.TempDir()
+	p, origin := f.submit(t)
+	err := f.service.withProposal(ctx, p.ID, func(tx *skills.PublicationTx, saved *Proposal) error {
+		r, err := readGeneration(ctx, tx.SQL(), saved.GenerationJobID)
+		if err != nil {
+			return err
 		}
-		r := f.start(t, cwd, "Verify unrelated research task.\nExpected output:\n```text\nverified\n```")
-		f.finish(t, r, other)
-	}
-	// Non-shared conversations cannot contribute evidence to this proposal.
-	ownerSession := f.session
-	f.session = nil
-	private := f.start(t, workspace, "Verify private research task.\nExpected output:\n```text\nverified\n```")
-	f.finish(t, private, true)
-	f.session = ownerSession
-	f.service.generation.dependencyProbe = time.Time{}
-	if worked, err := f.service.RunGeneration(ctx); err != nil || worked {
-		t.Fatal("insufficient evidence woke candidate", worked, err)
-	}
-	progress, err := f.service.CandidateProgress(ctx, p.ID)
-	if err != nil || progress.Evidence == nil || !progress.Evidence.SourceTaskBound || progress.Evidence.SupportingCases != 2 || progress.Evidence.HoldoutCases != 0 || !slices.Contains(progress.Evidence.Missing, "independent_holdout_oracle") {
-		t.Fatal("wrong evidence diagnostics", progress.Evidence, err)
-	}
-	if f.e.calls.Load() != 0 || f.v.calls.Load() != 1 {
-		t.Fatal("probes consumed model calls")
-	}
-	holdout := f.start(t, workspace, "Verify a separate research task.\nExpected output:\n```text\nverified\n```")
-	f.finish(t, holdout, true)
-	// Restart, rather than forcing a retry or rebuilding the candidate.
-	next, err := New(ctx, f.registry, f.v)
+		saved.PublicationPolicy, r.input.PublicationPolicy = "", ""
+		saved.BehaviorJobID, saved.GenerationJobID = saved.GenerationJobID, ""
+		r.input.BehaviorIdentity = f.service.behavior.bindingIdentity(saved.Target)
+		raw, _ := json.Marshal(r.input)
+		if _, err = tx.SQL().ExecContext(ctx, `UPDATE df_skill_generation_inputs SET payload=? WHERE job_id=?`, raw, r.job.ID); err != nil {
+			return err
+		}
+		if _, err = tx.SQL().ExecContext(ctx, `UPDATE df_skill_maintenance_jobs SET input_digest=? WHERE id=?`, hash(raw), r.job.ID); err != nil {
+			return err
+		}
+		if err = f.service.attachBehaviorGeneration(ctx, tx, *saved, r); err != nil {
+			return err
+		}
+		p = *saved
+		return updateProposal(ctx, tx.SQL(), p, p.StateVersion)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = next.Close() })
-	configureGeneration(t, next, f.g)
-	if err = next.ConfigureBehavior(submittedNativeEvaluator{f.e}, harness.SkillBehaviorOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if err = next.ConfigureAutoPatch(harness.SkillAutoPatchOptions{MaxChangedLines: 40, ObservationHours: 72, MinObservations: 5, RollbackFailureThreshold: 2}); err != nil {
-		t.Fatal(err)
-	}
-	f.service = next
-	for range 8 {
-		worked, err := f.service.RunGeneration(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !worked {
-			break
-		}
-	}
-	if err = f.service.RunAutoPatch(ctx); err != nil {
-		t.Fatal(err)
-	}
-	done, err := f.service.Get(ctx, p.ID)
-	if err != nil || done.Status != "published" || done.CandidateVersion != p.CandidateVersion || f.g.calls.Load() != 0 || f.v.calls.Load() != 1 {
-		t.Fatal("native evidence did not resume exact candidate", done.Status, done.Error, err, f.g.calls.Load(), f.v.calls.Load())
-	}
-	var discoveries int
-	if err = f.db.DB().QueryRow(`SELECT count(*) FROM df_skill_discoveries`).Scan(&discoveries); err != nil || discoveries != 0 {
-		t.Fatal("required discovery pipeline", discoveries, err)
-	}
-	view, err := f.service.BehaviorEvaluation(ctx, p.ID)
-	if err != nil || view.Report == nil || view.Report.HoldoutCases != 1 || view.Report.TargetedCases != 2 {
-		t.Fatal("missing real task bindings", view.Report, err)
+	return p, origin
+}
+
+func TestWaitingNativeCandidateUpgradesWithoutUsageEvidence(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprint("legacy_origin_", legacy), func(t *testing.T) {
+			ctx := context.Background()
+			f := newSubmittedNativeFixture(t)
+			p, _ := legacyNativeCandidate(t, f)
+			generationRun(t, f.service)
+			progress, err := f.service.CandidateProgress(ctx, p.ID)
+			if err != nil || progress.Status != "blocked_evidence" {
+				t.Fatal(progress, err)
+			}
+			if legacy {
+				legacySubmittedSnapshots(t, f.fixture, p.ID)
+			}
+			next, err := New(ctx, f.registry, f.v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = next.Close() })
+			configureGeneration(t, next, f.g)
+			generationRun(t, next)
+			done, err := next.Get(ctx, p.ID)
+			if err != nil || done.Status != "published" || done.CandidateVersion != p.CandidateVersion || done.Approval == nil || done.Approval.SecurityReview == nil || f.g.calls.Load() != 0 || f.e.calls.Load() != 0 || f.v.calls.Load() != 2 {
+				t.Fatal("upgrade did not review and publish the original candidate", done.Status, done.Error, err)
+			}
+			var archived int
+			if err := f.db.DB().QueryRow(`SELECT count(*) FROM df_skill_behavior_history WHERE proposal_id=? AND content_report IS NOT NULL`, p.ID).Scan(&archived); err != nil || archived != 1 {
+				t.Fatal("lost the previous review", archived, err)
+			}
+			if err := next.upgradeSecurityReviews(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if worked, err := next.RunGeneration(ctx); worked || err != nil {
+				t.Fatal("upgrade replayed a decision", worked, err)
+			}
+		})
 	}
 }
 
@@ -271,7 +261,7 @@ func legacySubmittedSnapshots(t *testing.T, f *fixture, id string) {
 func TestSubmittedNativeEvidenceRechecksConsentAndOrigin(t *testing.T) {
 	ctx := context.Background()
 	f := newSubmittedNativeFixture(t)
-	p, origin := f.submit(t)
+	p, origin := legacyNativeCandidate(t, f)
 	var tasks []harness.RunRequest
 	for i := range 3 {
 		r := f.start(t, f.cfg.Sources[0].Workspace, fmt.Sprintf("Verify distinct research case %d.\nExpected output:\n```text\nverified\n```", i))
@@ -324,7 +314,7 @@ func TestSubmittedNativeEvidenceRechecksConsentAndOrigin(t *testing.T) {
 func TestSubmittedLegacySourceBindingCannotBeRewrittenWhileWaiting(t *testing.T) {
 	ctx := context.Background()
 	f := newSubmittedNativeFixture(t)
-	p, source := f.submit(t)
+	p, source := legacyNativeCandidate(t, f)
 	generationRun(t, f.service)
 	legacySubmittedSnapshots(t, f.fixture, p.ID)
 	f.service.generation.dependencyProbe = time.Time{}

@@ -28,6 +28,9 @@ func (s *Service) automaticWorkspace(ctx context.Context, tx *sql.Tx, p Proposal
 		if p.Target.Scope == harness.SkillScopeWorkspace && filepath.IsAbs(p.Target.Workspace) {
 			return p.Target.Workspace, nil
 		}
+		if p.PublicationPolicy == harness.SkillPublicationSecurityOnly && (p.Trigger.Type == "operator_generation" || p.Trigger.Type == "operator_submission") && p.Target.Scope == harness.SkillScopeGlobal {
+			return "", nil
+		}
 		return "", harness.ErrPermissionDenied
 	}
 	d, _, _, err := readDiscovery(ctx, tx, r.input.DiscoveryID)

@@ -2,6 +2,7 @@ package evolution
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -18,7 +19,7 @@ func (s *Service) recheckEnvironment(ctx context.Context, id string) (queued boo
 		return false, nil
 	}
 	err = s.withProposal(ctx, id, func(tx *skills.PublicationTx, p *Proposal) error {
-		if (p.Status != "pending_review" && p.Status != "validating" && p.Status != "failed") || p.Origin != "automatic" {
+		if p.PublicationPolicy == harness.SkillPublicationSecurityOnly || (p.Status != "pending_review" && p.Status != "validating" && p.Status != "failed") || p.Origin != "automatic" {
 			return nil
 		}
 		var retired bool
@@ -89,16 +90,7 @@ func (s *Service) recheckEnvironment(ctx context.Context, id string) (queued boo
 			}
 		}
 		// Archive the old immutable binding before replacing the active evaluation.
-		if _, err = tx.SQL().ExecContext(ctx, `INSERT OR IGNORE INTO df_skill_behavior_history SELECT * FROM df_skill_behavior_evaluations WHERE proposal_id=?`, id); err != nil {
-			return err
-		}
-		if _, err = tx.SQL().ExecContext(ctx, `INSERT OR IGNORE INTO df_skill_behavior_result_history SELECT * FROM df_skill_behavior_results WHERE evaluation_id=?`, old.input.ID); err != nil {
-			return err
-		}
-		if _, err = tx.SQL().ExecContext(ctx, `DELETE FROM df_skill_behavior_results WHERE evaluation_id=?`, old.input.ID); err != nil {
-			return err
-		}
-		if _, err = tx.SQL().ExecContext(ctx, `DELETE FROM df_skill_behavior_evaluations WHERE proposal_id=?`, id); err != nil {
+		if err = archiveBehavior(ctx, tx.SQL(), old); err != nil {
 			return err
 		}
 		raw, _ := json.Marshal(in)
@@ -140,4 +132,18 @@ func (s *Service) recheckEnvironment(ctx context.Context, id string) (queued boo
 		return updateProposal(ctx, tx.SQL(), *p, before)
 	})
 	return
+}
+
+func archiveBehavior(ctx context.Context, tx *sql.Tx, old behaviorRecord) error {
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO df_skill_behavior_history SELECT * FROM df_skill_behavior_evaluations WHERE id=?`, old.input.ID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO df_skill_behavior_result_history SELECT * FROM df_skill_behavior_results WHERE evaluation_id=?`, old.input.ID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM df_skill_behavior_results WHERE evaluation_id=?`, old.input.ID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM df_skill_behavior_evaluations WHERE id=?`, old.input.ID)
+	return err
 }

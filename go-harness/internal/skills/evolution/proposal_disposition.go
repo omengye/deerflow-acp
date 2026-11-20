@@ -48,7 +48,7 @@ func (s *Service) proposalReasonSQL() (string, []any) {
 	if s.autoPatch != nil {
 		fallback = "automatic_checks"
 	}
-	return `CASE WHEN EXISTS(SELECT 1 FROM df_skill_generation_inputs g JOIN df_skill_discoveries d
+	return `CASE WHEN json_extract(p.payload,'$.publication_policy')='security_only' THEN 'awaiting_publication' WHEN EXISTS(SELECT 1 FROM df_skill_generation_inputs g JOIN df_skill_discoveries d
  ON d.job_id=g.job_id WHERE g.proposal_id=p.id AND json_extract(CAST(d.payload AS TEXT),'$.review_draft')=1)
  THEN 'waiting_evidence' WHEN json_extract(CAST(p.payload AS TEXT),'$.origin')<>'automatic'
  THEN 'manual_review' WHEN NOT EXISTS(SELECT 1 FROM df_skill_generation_inputs g JOIN df_skill_maintenance_jobs j
@@ -60,7 +60,7 @@ func (s *Service) proposalReasonSQL() (string, []any) {
 
 func proposalNeedsAttention(reason string) bool {
 	switch reason {
-	case "waiting_evidence", "automatic_checks", "waiting_observation", "blocked_evidence":
+	case "awaiting_publication", "waiting_evidence", "automatic_checks", "waiting_observation", "blocked_evidence":
 		return false
 	default:
 		return true

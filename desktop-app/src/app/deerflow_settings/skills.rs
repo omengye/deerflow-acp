@@ -639,6 +639,14 @@ pub(super) fn proposal_disposition_label(proposal: &Value) -> &str {
         Some("rejected") => return "已拒绝",
         _ => {}
     }
+    if proposal["publication_policy"] == "security_only" {
+        return match proposal["status"].as_str() {
+            Some("validating") => "安全审查中",
+            Some("pending_review" | "publishing") => "安全审查已通过，正在发布",
+            Some("published") => "已发布",
+            _ => "等待宿主状态",
+        };
+    }
     match proposal["disposition"]["reason"].as_str() {
         Some("waiting_evidence") => "等待独立证据 · 可自愿提前审核",
         Some("automatic_checks") => "后台检查中",
@@ -795,6 +803,7 @@ impl Waku {
         theme: Theme,
     ) -> AnyElement {
         let evaluation = &proposal["evaluation"];
+        let security_only = proposal["publication_policy"] == "security_only";
         let check = |value: &Value| match value.as_str().unwrap_or("") {
             "passed" => "通过",
             "failed" => "未通过",
@@ -817,13 +826,25 @@ impl Waku {
                 theme,
             ))
             .child(df_label(
-                "评测报告",
-                format!(
-                    "内容检查：{} · 行为评测：{} · 规则版本：{}",
-                    check(&evaluation["security"]),
-                    check(&evaluation["behavior"]),
-                    text(&evaluation["validator_version"])
-                ),
+                if security_only {
+                    "安全审查"
+                } else {
+                    "历史评测报告"
+                },
+                if security_only {
+                    format!(
+                        "{} · {}",
+                        check(&evaluation["security"]),
+                        text(&evaluation["validator_version"])
+                    )
+                } else {
+                    format!(
+                        "内容检查 {} · 行为评测 {} · 规则版本 {}",
+                        check(&evaluation["security"]),
+                        check(&evaluation["behavior"]),
+                        text(&evaluation["validator_version"])
+                    )
+                },
                 theme,
             ));
         if let Some(reviewer) = proposal["reviewed_by"].as_str().filter(|s| !s.is_empty()) {
@@ -834,17 +855,6 @@ impl Waku {
                     text(&proposal["reviewed_at"]),
                     text(&proposal["review_note"])
                 ),
-                theme,
-            ));
-        }
-        if evaluation["behavior"] == "not_run" {
-            group = group.child(df_label(
-                "行为评测尚未执行",
-                if proposal["origin"] == "automatic" {
-                    "等待行为评测；通过验证后由系统自动采用，内容审查不能代替真实任务验证。"
-                } else {
-                    "内容审查不能证明真实任务效果；请查看候选的验证结果和处理状态。"
-                },
                 theme,
             ));
         }

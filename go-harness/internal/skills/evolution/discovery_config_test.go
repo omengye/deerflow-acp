@@ -9,7 +9,7 @@ const discoveryConfigBase = "enabled: true\nmoderation_model_name: primary\neval
 
 func TestDiscoveryConfigurationRemovedAndDefaultsAutomatic(t *testing.T) {
 	settings := AutomaticSettings("primary")
-	if settings.DiscoveryOptions() == nil || settings.AutoPatchOptions() == nil {
+	if settings.DiscoveryOptions() == nil {
 		t.Fatal("zero-config pipeline disabled")
 	}
 	for _, old := range []string{discoveryConfigBase, "enabled: false\n"} {

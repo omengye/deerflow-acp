@@ -3,12 +3,13 @@ package deerflow
 import (
 	"context"
 	"encoding/json"
-	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
 func TestSkillManageAutomaticSubmissionSurvivesRestartWithoutApproval(t *testing.T) {
@@ -106,7 +107,7 @@ func TestSkillManageAutomaticSubmissionSurvivesRestartWithoutApproval(t *testing
 				}
 			}
 			page, err := c.ListSkillProposals(ctx, harness.SkillQuery{Limit: 10})
-			if err != nil || len(page.Proposals) != 1 || page.Proposals[0].Origin != "automatic" || page.Proposals[0].BehaviorJobID == "" {
+			if err != nil || len(page.Proposals) != 1 || page.Proposals[0].Origin != "automatic" || page.Proposals[0].GenerationJobID == "" || page.Proposals[0].BehaviorJobID != "" {
 				t.Fatal(page, err)
 			}
 			saved := page.Proposals[0]
@@ -114,17 +115,30 @@ func TestSkillManageAutomaticSubmissionSurvivesRestartWithoutApproval(t *testing
 				t.Fatal(err)
 			}
 			c = nil
+			reviews := 0
+			cfg.SkillValidator = skillValidatorFunc(func(_ context.Context, in harness.SkillValidationInput) (harness.SkillValidationReport, error) {
+				reviews++
+				return harness.SkillValidationReport{ValidatorVersion: "fixture", BaseVersion: in.Proposal.Base.Version, CandidateVersion: in.Proposal.CandidateVersion, Security: "passed"}, nil
+			})
 			c, err = Open(ctx, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
 			got, err := c.GetSkillProposal(ctx, saved.ID)
-			if err != nil || got.BehaviorJobID != saved.BehaviorJobID || got.CandidateVersion != saved.CandidateVersion || got.Status != "validating" {
+			if err != nil || got.GenerationJobID != saved.GenerationJobID || got.BehaviorJobID != "" || got.CandidateVersion != saved.CandidateVersion || got.Status != "validating" {
 				t.Fatal(got, err)
 			}
 			after, err := c.GetSkillHead(ctx, "project", "research")
 			if err != nil || after != before {
 				t.Fatal("queued candidate changed live skill", after, err)
+			}
+			configureSkillManageQueue(t, c)
+			if worked, err := c.evolution.RunGeneration(ctx); !worked || err != nil {
+				t.Fatal(worked, err)
+			}
+			got, err = c.GetSkillProposal(ctx, saved.ID)
+			if err != nil || got.Status != "published" || got.Approval == nil || got.Approval.SecurityReview == nil || got.CandidateVersion != saved.CandidateVersion || reviews != 1 {
+				t.Fatal("worker did not publish the saved package after restart", got, reviews, err)
 			}
 		})
 	}

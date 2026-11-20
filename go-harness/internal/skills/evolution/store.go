@@ -113,6 +113,8 @@ type rowReader interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+const confirmationRule = "native-user-publication-v1" // Persisted historical receipts.
+
 func readProposal(ctx context.Context, db rowReader, id string) (Proposal, error) {
 	var p Proposal
 	var source, name, status, requestKey, requestSHA string
@@ -156,6 +158,12 @@ func readProposal(ctx context.Context, db rowReader, id string) (Proposal, error
 		if confirmation := approval.UserConfirmation; confirmation != nil {
 			if confirmation.RuleVersion != confirmationRule || confirmation.SessionID != p.Trigger.ThreadID || confirmation.RunID == "" || confirmation.InputID == "" || !hexDigest(confirmation.InputSHA) || confirmation.Workspace == "" || approval.Review.Actor != "user/"+confirmation.SessionID {
 				return Proposal{}, errors.New("skill user confirmation is inconsistent")
+			}
+		}
+		if security := approval.SecurityReview; security != nil {
+			globalOperator := p.Target.Scope == harness.SkillScopeGlobal && (p.Trigger.Type == "operator_generation" || p.Trigger.Type == "operator_submission")
+			if approval.UserConfirmation != nil || p.PublicationPolicy != harness.SkillPublicationSecurityOnly || approval.Review.Actor != "security_review" || security.Workspace == "" && (security.WorkspaceOnly || !globalOperator) || security.ValidatorVersion != p.Evaluation.ValidatorVersion || !passedSecurityReview(p.Evaluation, ValidationInput{Proposal: p}) {
+				return Proposal{}, errors.New("skill security publication decision is inconsistent")
 			}
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {

@@ -10,6 +10,18 @@ import (
 func (s *Service) AutoPatchStatus(ctx context.Context) (harness.SkillAutoPatchStatus, error) {
 	now := time.Now().UTC()
 	r := harness.SkillAutoPatchStatus{Today: now.Format("2006-01-02")}
+	if s.securityPublicationEnabled() {
+		g := s.generation
+		g.lifecycle.mu.Lock()
+		r.Enabled, r.Running, r.PublicationPolicy = true, g.lifecycle.done != nil && !g.lifecycle.closed, g.publicationPolicy
+		g.lifecycle.mu.Unlock()
+		_, where, args, _, err := s.querySources(harness.SkillQuery{Limit: 1}, "security-publications")
+		if err == nil {
+			err = s.db.QueryRowContext(ctx, `SELECT count(*) FROM df_skill_proposals WHERE `+where+` AND status='published'
+ AND json_extract(payload,'$.publication_policy')=? AND date(json_extract(payload,'$.reviewed_at'))=?`, append(args, r.PublicationPolicy, r.Today)...).Scan(&r.PublishedToday)
+		}
+		return r, err
+	}
 	if a := s.autoPatch; a != nil {
 		r.Enabled = true
 		options := a.options

@@ -46,12 +46,12 @@ Model-generated delete proposals continue to use their normal review workflow.
 
 Pending and all-proposal lists use `proposal.list`; publication history uses the
 independent `revision_cursor` from `proposal.history`. Each displays one bounded
-page. Detail includes the diff, base/candidate digests, content review, behavioral
-status, reviewer identity, model checks and reported usage. `not_run` is displayed
-as unexecuted behavior evaluation, never as a passing test.
+page. Current candidates display the exact base, diff, security verdict, model usage
+and publication receipt. The host publishes successful creations and updates automatically.
+Historical records retain their behavior results and reviewer identity. A pending
+candidate may be cancelled using its state version.
 
-Approve/reject carry `expected_state_version`; approve also keeps the legacy
-base digest. Rollback first reads `skill.get` for the historical entry's complete
+Rollback first reads `skill.get` for the historical entry's complete
 target, then asks the user to confirm the observed current state and chosen
 revision. The command includes target, source ID, full expected head and a stable
 request key. A duplicate result does not publish another revision.
@@ -71,82 +71,18 @@ from a superseded applied generation is not accepted as current state. Config
 drafts remain intact. Unsupported backends do not fall back to old per-file
 enablement writes.
 
-## Remaining integration work
+## Native generation and publication
 
-The shared v2 settings contract covers manual review, generation, repeated-correction
-discovery, behavior evaluation, maintenance budgets and source editing. The
-generation operation and behavior inspection panels are implemented in source.
-Other discovery triggers, automatic publication and old history import remain
-separate work. Source code tests and compilation do not prove a real
-desktop interaction: end-to-end pointer/keyboard flows, actual service restart,
-packaged daemon compatibility and release smoke remain P7 acceptance gates.
+Native launch uses the primary model for generation and security review. The worker
+inherits authorized destinations and rechecks the source, current head and exact
+package before installation. Discovery uses eligible tasks to decide what to draft.
+A candidate enters security review as soon as its package is available. Behavior
+suites, quality review, trial runs and task observations are absent from native publication.
 
-## Generation configuration
-
-The native form adds a separate opt-in (off by default), configured generation
-model selector, timeout/input/output limits and positive daily call/token,
-job-duration and worker limits. A model name alone does not enable work.
-Renaming a model updates all three evolution references. Parent and child field
-contracts must match the config service and applied daemon; incompatible fields
-cannot be edited/saved, and drafts are retained. Rendering reads cached values.
-
-Settings take effect through save/apply; unsaved changes cannot modify the live
-worker. Generation uses independent UTC daily maintenance accounting and the
-same authorized skill destinations as candidate submission. Disabling it stops
-new model work when applied and retains history. Successful generation/content
-review still requires operator approval to publish. Applying generation alone
-does not enable discovery; its separate opt-in is described below.
-
-## Repeated-correction discovery configuration
-
-The native form exposes `discovery.operator_corrections_enabled` (default false),
-repeat threshold/window, cooldown, daily selections and pending-work limit.
-Enabling it requires evolution and generation enabled, authorized destinations,
-valid model routes and the existing positive maintenance budget. The shared
-parent/child field contract gates edits and save. Applied settings control the
-worker; unsaved drafts do not start work. The old Python `discovery.enabled`
-field is migration-only and cannot activate this worker.
-
-Only current explicit corrections with actual reads from distinct settled root
-tasks qualify. Revisions on one root do not count as extra votes. Selection fixes
-the skill head, source identity, evidence revisions and generation settings.
-Withdrawing/changing feedback or deleting its task stops subsequent stages and
-blocks publication from stale evidence. Completed reviews may still be explicitly
-approved after automatic generation is disabled, provided the evidence and skill
-head remain valid. Already published operations retain idempotent replay.
-
-Automatic jobs appear in the existing job/receipt panel with their discovery ID;
-their successful proposals use the existing manual review panel. The pending cap
-counts all queued/running generation and unfinished proposals, without counting
-the same active job and its proposal twice. Daily selection reservations and
-consumed roots are not refunded after failure or cancellation. Source changes
-and service changes follow the same cache invalidation rules as explicit jobs.
-Detailed selector status and evidence references are available through
-`skill.discovery.status/list`; a dedicated desktop decision browser is not yet
-implemented. Attribution remains unassessed. Separately configured host behavior
-suites apply to these jobs; without an applicable suite behavior remains
-`not_run`. This stage does not authorize automatic publication.
-
-## Behavior evaluation settings and inspection
-
-The native form adds an explicit opt-in, host suite path, timeout, step cap,
-input-byte cap and output-token cap. Both evolution and generation must be
-enabled; the existing evaluation model uses independent contexts and the
-maintenance budget. Saving and applying remain separate. Candidate files cannot
-provide their own host suite. See the [Go behavior contract](../../go-harness/internal/skills/evolution/behavior.md).
-
-Proposal detail includes the host-verified comparison report. Background MANAGE
-queries load `proposal.behavior` and `proposal.behavior.receipts`; rendering reads
-cached projections. Detailed variant outcomes use local pagination and receipts
-use sequence pagination. Selection or service changes invalidate old responses.
-Missing records are presented as unavailable history, without implying success.
-
-Manual candidates return `validating` with a dedicated behavior job. The reject
-action is available while validating and cancels unfinished work; approval is
-available only after successful review. Failed or partial results and charged
-usage remain inspectable. Create/delete reports identify the empty no-skill
-control with an empty version. Evaluation never runs scripts or real external
-tools and does not certify executable skill support files.
+The desktop shows security review progress and publication status for current
+candidates. Prior comparisons, observations and maintenance receipts remain
+available with their original proposals.
+[Candidate lifecycle](../../go-harness/internal/acp/skill-evolution.md)
 
 ## Generation requests, jobs and receipts
 
@@ -172,10 +108,10 @@ use the existing background MANAGE executor and cached projections.
    a rebound source must be explicitly selected again.
 5. Cancel an active job using its observed state version and confirmation, or
    open the associated proposal in the existing review panel. Completed jobs
-   have no cancel action; successful generation still requires publication review.
+   show the final security decision and publication receipt.
 
 Receipts use sequence pagination with at most 20 rows per page. They identify
-the job/attempt, generation/security/quality stage and UTC accounting day,
+the job/attempt, generation or security stage and UTC accounting day,
 reserved/charged/input/output tokens and whether usage is estimated. Response
 validation rejects foreign jobs, malformed identities and inconsistent cursors.
 No prompts, endpoint URLs or credentials are displayed. Refresh is explicit;
@@ -204,9 +140,9 @@ Kinds distinguish helpful use/corrections from reports about network, quota,
 permissions, cancellation and other issues. All remain operator reports with
 unassessed causality. The UI's evidence-version match does not mean all work in
 the root is complete; pending collection is displayed separately. The feedback
-submission records the judgment; an explicitly enabled background discovery
-worker may later use repeated corrections to generate a candidate. Publication
-continues to require explicit review.
+submission records the judgment. Background discovery may use repeated
+corrections to generate a candidate. The worker publishes the resulting
+package as soon as its security review passes.
 
 Current feedback and immutable revision history have separate refresh controls.
 History, signal and read pages hold at most 20 entries. Withdrawal requires the
@@ -258,19 +194,11 @@ separate acceptance gates.
 
 ## Learning source inspection
 
-The native setting `discovery.experience_review_drafts_enabled` separately permits
-automatic review-only proposals from one source-verified observed task. It defaults
-off, requires the complete automatic learning/generation chain, and is not a manual
-authoring workflow. Users do not select a target, start a new learning episode or
-enqueue generation to make these proposals. The system performs that work; the
-user only approves or rejects the resulting candidate when human review applies.
-
-Discovery rows label immutable `review_draft=true` candidates as system-generated
-and human-review-only, without adding an evidence vote. Auto-patch cannot adopt
-them even after a passing evaluation. Full-threshold existing managed candidates
-still follow the independently enabled guarded auto-patch path; new skills always
-require approval. Settings save/launch/effective projections consume the new gate,
-and render continues to read cached, bounded data only.
+Discovery uses eligible learning sources to decide when to generate a skill.
+The worker submits each new package for security review and automatically
+publishes passing creations and updates in the originating workspace.
+Historical records marked `review_draft=true` retain their original
+draft-only authorization.
 
 The native learning-source view has an explicit read action on an experience or
 one selected member of a current pattern. The authenticated local MANAGE request

@@ -6,29 +6,27 @@ license: Complete terms in LICENSE.txt
 
 # Skill Creator
 
-Write focused instructions and test them against the actual task. A skill contains UTF-8 `SKILL.md` with `name` and `description` frontmatter, plus only its necessary support files. Use UTF-8 without BOM and lowercase letters, digits and single hyphens for names, at most 64 characters; the directory name must match.
+Write focused instructions for the requested task. A skill contains UTF-8 `SKILL.md` with `name` and `description` frontmatter, plus only its necessary support files. Use UTF-8 without BOM and lowercase letters, digits and single hyphens for names, at most 64 characters; the directory name must match.
 
 Python source and text dependency declarations are supported skill resources. Python is an optional execution dependency, not a dependency of the Go host. Content review, publication, availability, runtime readiness and script execution are separate facts.
 
 ## Create or improve
 
-1. Identify the requested workflow and a representative failing or missing case. Preserve the user's scope, implementation choice and permissions. Inspect the current host tool schema before using host-specific features.
+1. Identify the requested workflow and its intended result. Preserve the user's scope, implementation choice and permissions. Inspect the current host tool schema before using host-specific features.
 2. For an existing skill, read the session-selected version. Keep its source and base version attached to the change; retain unrelated support files.
 3. State when the skill applies, its inputs, decisions, outputs and verification steps. Keep references package-relative. For Python resources, read [Python runtime guidance](references/python-runtime.md).
-4. Exercise representative cases using [the evaluation workflow](references/workflows.md). Include a negative trigger and incomplete input when relevant. Record observed outcomes, not invented test success.
-5. Before submission, retry or publication, read [the managed lifecycle](references/managed-lifecycle.md). Submit the complete package and report the host's actual state.
+4. Submit the complete package and follow [the managed lifecycle](references/managed-lifecycle.md) to report its status.
+5. If the user requests functional testing, exercise the requested cases and record the actual outcomes. See [the testing workflow](references/workflows.md).
 
 ## Managed DeerFlow skills
 
-`skill_manage` submits immutable candidates to automatic validation and adoption by default. When the user explicitly confirms publication in the current conversation message, the lead agent can use `get`, then `publish` with the returned `proposal_id`, `candidate_sha256` and `state_version`. For example, “确认发布这个技能，跳过证据门槛” or “Please publish this skill now.” Do not ask again when the user has already confirmed. Use the latest candidate for the named skill; if several skills exist in the session, the instruction must name the skill or proposal ID. The host verifies the native user message; ordinary editing requests, quoted examples and model-authored text do not authorize publication.
+Submit creations and updates through `skill_manage`. The host performs a security review of the exact package, including scripts, and publishes it automatically on success. Use `get` with the returned `proposal_id` to check progress.
 
-Use host-provided destinations and the returned proposal ID. For multi-file creation, submit the complete `files` map, including `SKILL.md`, scripts and dependencies. Keep drafts outside configured skill roots. Never substitute a live directory write, database edit or source switch for publication.
-
-Automatic adoption requires host-owned safety, behavior, trigger and script-execution evidence. User-confirmed publication can skip those automatic evidence and observation gates, including `blocked_evidence` and `blocked_runtime`. The host records `mode=user_confirmed` and `evidence_gate_bypassed=true`; it preserves actual checks and failures. Keep unexecuted scripts `not_run`. Publication grants no additional execution permission. Source permissions, structural validity, candidate identity and current-base checks always apply.
+For multi-file creation, include `SKILL.md`, scripts and dependency declarations in the `files` map. Use the authorized destination and keep drafts outside installed skill roots. The worker checks source permissions, package structure and the current base before installing the reviewed bytes.
 
 | Claim | Required evidence |
 | --- | --- |
-| Published | Host `published=true` for the exact automatic or user-confirmed package |
+| Published | Host `published=true` for the exact reviewed package |
 | Available next turn | `availability_verified=true` or `skill.verify` with `available=true` for the intended session/version |
 | Runtime ready | Host runtime check for that snapshot/environment |
 | Script succeeded | Actual authorized execution result, including exit status |

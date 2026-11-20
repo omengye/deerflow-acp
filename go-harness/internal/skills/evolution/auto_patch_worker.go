@@ -94,6 +94,9 @@ func (s *Service) RunAutoPatch(ctx context.Context) error {
 }
 
 func (s *Service) StartAutoPatch() error {
+	if s.securityPublicationEnabled() {
+		return nil
+	}
 	lifecycle := &s.observationMonitor
 	if s.autoPatch != nil {
 		lifecycle = &s.autoPatch.lifecycle

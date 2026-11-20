@@ -91,30 +91,15 @@ func TestNativeTemplatesInitializeSaveAndLaunch(t *testing.T) {
 					if cfg.SkillGeneration == nil || cfg.SkillGeneration.Model.Route.Model != cfg.Model {
 						t.Fatal("desktop generation does not inherit the configured model")
 					}
-					if cfg.SkillAutoPatch == nil || cfg.SkillBehaviorEvaluator == nil || cfg.SkillBehavior == nil || cfg.SkillBehavior.Load == nil {
-						t.Fatal("desktop automatic maintenance requires extra non-model configuration")
-					}
-					var loaded []harness.SkillBehaviorSuite
-					if err := cfg.SkillBehavior.Load(func(suite harness.SkillBehaviorSuite) error { loaded = append(loaded, suite); return nil }); err != nil {
-						t.Fatal(err)
-					}
-					if len(loaded) != 1 {
-						t.Fatal("bundled assessment missing", len(loaded))
-					}
-					suite := loaded[0]
-					if suite.SourceID != "managed-evolution" || suite.Name != "searxng-web-search" || len(suite.Cases) != 2 {
-						t.Fatal("desktop bundled assessment expanded its verified scope")
+					if !cfg.SkillGeneration.PublishAfterSecurityReview || cfg.SkillBehavior != nil || cfg.SkillBehaviorEvaluator != nil || cfg.SkillAutoPatch != nil {
+						t.Fatal("native publication must use only the security reviewer")
 					}
 					wantBudget := harness.SkillMaintenancePolicy{MaxJobSeconds: 900, Workers: 2}
 					if cfg.SkillGeneration.Policy != wantBudget || cfg.SkillLearning.Policy != wantBudget {
 						t.Fatal("desktop maintenance budgets differ from the selected defaults")
 					}
-					if !cfg.SkillLearning.CrossSession || cfg.SkillDiscovery.CooldownHours != 24 || cfg.SkillAutoPatch.MaxChangedLines != 200 {
+					if !cfg.SkillLearning.CrossSession || cfg.SkillDiscovery.CooldownHours != 24 {
 						t.Fatal("desktop defaults changed source-sharing authority or publication bounds")
-					}
-					body, err := os.ReadFile(filepath.Join(filepath.Dir(options.Config), filepath.FromSlash(defaultBehaviorSuitePath)))
-					if err != nil || !bytes.Equal(body, defaultBehaviorSuite) {
-						t.Fatal("bundled host assessment was not provisioned", err)
 					}
 					for _, part := range []string{"skills/evolved", "skills-exports"} {
 						if info, err := os.Stat(filepath.Join(options.UserData, part)); err != nil || !info.IsDir() {
@@ -135,35 +120,25 @@ func TestNativeTemplatesInitializeSaveAndLaunch(t *testing.T) {
 				}
 			}
 			if desktop {
-				// A host-owned assessment is never silently restored over edits.
-				path := filepath.Join(filepath.Dir(options.Config), filepath.FromSlash(defaultBehaviorSuitePath))
-				if err := os.WriteFile(path, []byte("host assessment under maintenance"), 0600); err != nil {
+				// A retired suite must not be required, parsed or overwritten.
+				path := filepath.Join(filepath.Dir(options.Config), "skill-behavior", "old.json")
+				if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+					t.Fatal("unexpected behavior registry", err)
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("invalid historical suite"), 0600); err != nil {
 					t.Fatal(err)
 				}
 				run(t, options, "init", nil)
-				if content, err := os.ReadFile(path); err != nil || string(content) != "host assessment under maintenance" {
-					t.Fatal("existing host assessment was replaced", err)
-				}
 				var cfg deerflow.Config
 				connections := 0
-				if _, err := launch.ApplyConfig(options.Config, &cfg, &connections, nil); err == nil {
-					t.Fatal("invalid existing assessment was treated as usable")
+				if _, err := launch.ApplyConfig(options.Config, &cfg, &connections, nil); err != nil {
+					t.Fatal("historical suite blocked native startup", err)
 				}
-				if err := os.Remove(path); err != nil {
-					t.Fatal(err)
-				}
-				run(t, options, "init", nil)
-				if content, err := os.ReadFile(path); err != nil || !bytes.Equal(content, defaultBehaviorSuite) {
-					t.Fatal("copied profile's missing default assessment was not provisioned", err)
-				}
-				if err := os.Remove(path); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Mkdir(path, 0700); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := Run(options, "init", nil); err == nil {
-					t.Fatal("assessment obstruction was overwritten or accepted")
+				if content, err := os.ReadFile(path); err != nil || string(content) != "invalid historical suite" {
+					t.Fatal("historical suite was modified", err)
 				}
 			}
 		})
@@ -192,8 +167,8 @@ func TestNewDesktopDefaultsDoNotOverwriteExistingConfig(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatal("new desktop defaults overwrote the existing user configuration")
 	}
-	if info, err := os.Stat(filepath.Join(filepath.Dir(options.Config), "skill-behavior")); err != nil || !info.IsDir() {
-		t.Fatal("trusted host assessment directory missing")
+	if _, err := os.Stat(filepath.Join(filepath.Dir(options.Config), "skill-behavior")); !os.IsNotExist(err) {
+		t.Fatal("native initialization created a behavior registry", err)
 	}
 }
 

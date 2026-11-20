@@ -33,7 +33,7 @@ func TestAutomaticEvolutionZeroConfigurationAndPrimaryInheritance(t *testing.T) 
 		if _, err = launch.ApplyConfig(options.Config, &cfg, &connections, nil); err != nil {
 			t.Fatal(err)
 		}
-		if cfg.SkillGeneration == nil || cfg.SkillBehaviorEvaluator == nil || cfg.SkillAutoPatch == nil || cfg.SkillLearning == nil || cfg.SkillDiscovery == nil {
+		if cfg.SkillGeneration == nil || cfg.SkillBehaviorEvaluator != nil || !cfg.SkillGeneration.PublishAfterSecurityReview || cfg.SkillLearning == nil || cfg.SkillDiscovery == nil {
 			t.Fatal("automatic pipeline is incomplete")
 		}
 		want := "gpt-a"

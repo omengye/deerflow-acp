@@ -82,6 +82,6 @@ func (s *Service) evidenceReadinessTx(ctx context.Context, tx *sql.Tx, p Proposa
 	if counts.Holdout < 1 {
 		view.Missing = append(view.Missing, "independent_holdout_oracle")
 	}
-	view.NextAction = "Keep this candidate. Complete independent real tasks in its originating session and workspace using the installed baseline with learning contribution enabled and user-provided exact output or artifact acceptance criteria. The host needs two supporting task roots and a separate task started after submission. It will bind and resume automatically. Alternatively a maintainer can supply a trusted suite. Model self-reviews and repeated submissions are not evidence."
+	view.NextAction = "Keep this candidate. Complete independent real tasks in its originating session and workspace using the installed skill and user-provided exact output or artifact acceptance criteria. DeerFlow Desktop collects eligible task evidence automatically. The host needs two supporting task roots and a separate task started after submission. It will bind and resume automatically. Alternatively a maintainer can supply a trusted suite. Model self-reviews and repeated submissions are not evidence."
 	return view, nil
 }

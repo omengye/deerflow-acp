@@ -151,3 +151,20 @@ fn automatic_verification_environment_is_visible() {
         assert!(browser.rows[0].1.contains(phrase));
     }
 }
+
+#[test]
+fn security_publication_status_needs_no_observation_options() {
+    let mut browser = AutoPatchBrowser::default();
+    browser
+        .accept(
+            &json!({"operation":"skill.auto_patch.status"}),
+            json!({"publication_policy":"security_only","enabled":true,"running":true,
+            "today":"2026-11-20","published_today":2,"observing":0}),
+        )
+        .unwrap();
+    assert_eq!(
+        browser.readiness_label.as_deref(),
+        Some("安全审查后自动发布")
+    );
+    assert!(browser.status.as_ref().unwrap().1.contains("已发布 2 次"));
+}

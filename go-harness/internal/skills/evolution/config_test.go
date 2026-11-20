@@ -12,7 +12,7 @@ func TestAutomaticEvolutionInheritsOnlyPrimaryModel(t *testing.T) {
 		if err != nil || s.PrimaryModel != model {
 			t.Fatal(s, err)
 		}
-		if s.GenerationOptions(harness.ModelRoute{}, []string{"managed-evolution"}) == nil || s.LearningOptions(harness.ModelRoute{}) == nil || s.DiscoveryOptions() == nil || s.AutoPatchOptions() == nil {
+		if !s.GenerationOptions(harness.ModelRoute{}, []string{"managed-evolution"}).PublishAfterSecurityReview || s.LearningOptions(harness.ModelRoute{}) == nil || s.DiscoveryOptions() == nil {
 			t.Fatal("automatic stage missing")
 		}
 		if !reflect.DeepEqual(s.Policy, AutomaticSettings(model).Policy) {

@@ -264,7 +264,7 @@ func (s *Service) discoveryConsider(ctx context.Context, item discoveryScanItem)
 			return invalid("discovery snapshot exceeds bounds")
 		}
 		request := harness.SkillGenerationRequest{SourceID: target.SourceID, Name: target.Name, RequestKey: "discovery:" + d.ID, Reason: "Review repeated explicit operator corrections. Their skill-quality causality remains unassessed.", Author: "discovery", Base: head}
-		r := generationRecord{id: "sgi_" + rand.Text(), created: now, input: generationSnapshot{Request: request, Target: target, OverlayBase: overlay, GeneratorIdentity: s.generation.identity, ValidatorIdentity: s.generation.reviewIdentity, DiscoveryID: d.ID, DiscoveryDigest: hash(payload), BehaviorIdentity: s.behavior.bindingIdentity(target)}}
+		r := generationRecord{id: "sgi_" + rand.Text(), created: now, input: generationSnapshot{Request: request, Target: target, OverlayBase: overlay, PublicationPolicy: s.generation.publicationPolicy, GeneratorIdentity: s.generation.identity, ValidatorIdentity: s.generation.reviewIdentity, DiscoveryID: d.ID, DiscoveryDigest: hash(payload), BehaviorIdentity: s.behavior.bindingIdentity(target)}}
 		input, err := json.Marshal(r.input)
 		if err != nil {
 			return err

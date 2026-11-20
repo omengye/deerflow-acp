@@ -57,7 +57,7 @@ pub(super) fn review_actions(proposal: &Value) -> (bool, bool) {
     if proposal["content_expired"] == true {
         return (false, false);
     }
-    if proposal["origin"] == "automatic" {
+    if proposal["origin"] == "automatic" || proposal["publication_policy"] == "security_only" {
         return (
             false,
             matches!(
@@ -110,6 +110,9 @@ pub(super) fn approval_action(proposal: &Value) -> Option<ApprovalAction> {
 pub(super) fn review_hint(proposal: &Value) -> &'static str {
     if proposal["content_expired"] == true {
         return "候选内容已按保留策略清理，审计记录仍保留；此版本不能恢复或发布。";
+    }
+    if proposal["publication_policy"] == "security_only" {
+        return "创建和更新的技能通过安全审查后自动发布。";
     }
     if proposal["origin"] == "automatic" {
         return "此候选由宿主自动验证与采用。可查看证据、等待原因或撤回具体候选。";
@@ -173,6 +176,10 @@ mod tests {
         proposal["base_sha256"] = json!("a".repeat(64));
         assert!(approval_action(&proposal).is_none());
         proposal["script_review_required"] = json!(false);
+        proposal["publication_policy"] = json!("security_only");
+        assert!(approval_action(&proposal).is_none());
+        assert_eq!(review_actions(&proposal), (false, true));
+        proposal["publication_policy"] = Value::Null;
         proposal["origin"] = json!("automatic");
         assert!(approval_action(&proposal).is_none());
         proposal["origin"] = json!("manual_agent");

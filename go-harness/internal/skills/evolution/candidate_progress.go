@@ -25,6 +25,20 @@ type CandidateProgress struct {
 }
 
 func CandidateStatus(p Proposal) string {
+	if p.PublicationPolicy == harness.SkillPublicationSecurityOnly {
+		switch p.Status {
+		case "validating":
+			return "evaluating"
+		case "pending_review":
+			return "awaiting_publication"
+		case "failed":
+			return "rejected"
+		case "stale":
+			return "superseded"
+		default:
+			return p.Status
+		}
+	}
 	if p.Approval != nil && p.Approval.UserConfirmation != nil {
 		return p.Status
 	}
@@ -59,7 +73,7 @@ func (s *Service) CandidateSnapshot(ctx context.Context, id string) (proposal Pr
 		proposal = *p
 		out.StateVersion = p.StateVersion
 		out.Status = CandidateStatus(*p)
-		if p.Status == "pending_review" {
+		if p.Status == "pending_review" && p.PublicationPolicy == "" {
 			disposition, err := s.proposalDispositionTx(ctx, tx.SQL(), id)
 			if err != nil {
 				return err
@@ -76,6 +90,23 @@ func (s *Service) CandidateSnapshot(ctx context.Context, id string) (proposal Pr
 		}
 		if retired || p.Origin != "automatic" {
 			out.Status, out.Reason = "historical", "retired_pipeline"
+			return nil
+		}
+		if p.PublicationPolicy == harness.SkillPublicationSecurityOnly {
+			out.Reason = "security_review"
+			out.CanCancel = p.Approval == nil && (p.Status == "validating" || p.Status == "pending_review")
+			if p.Approval != nil {
+				out.Reason = "security_review_passed"
+				return nil
+			}
+			job, err := skillmaintenance.ReadJob(ctx, tx.SQL(), p.GenerationJobID)
+			if err != nil {
+				return err
+			}
+			out.JobID, out.JobState, out.AutomaticRetry = job.ID, job.State, job.State == "retry"
+			if job.ErrorCode != "" {
+				out.Reason = job.ErrorCode
+			}
 			return nil
 		}
 		if observation, err := readAutoPatchObservation(ctx, tx.SQL(), id); err == nil {

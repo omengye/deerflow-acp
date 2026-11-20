@@ -18,12 +18,13 @@ type SkillGenerationModelConfig struct {
 }
 
 // SkillGenerationOptions explicitly enables operator-requested, durable
-// generation. It does not enable discovery or automatic publication.
+// generation. Publishing generated packages requires an explicit host grant.
 type SkillGenerationOptions struct {
-	Model                SkillGenerationModelConfig
-	Policy               SkillMaintenancePolicy
-	Sources              []string
-	AllowBuiltinOverlays bool
+	Model                      SkillGenerationModelConfig
+	Policy                     SkillMaintenancePolicy
+	Sources                    []string
+	AllowBuiltinOverlays       bool
+	PublishAfterSecurityReview bool
 }
 
 type SkillGenerationRequest struct {

@@ -22,7 +22,6 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
 	"github.com/omengye/deerflow-acp/go-harness/internal/runtimepaths"
-	"github.com/omengye/deerflow-acp/go-harness/internal/skillbehavior"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills/evolution"
 	"github.com/omengye/deerflow-acp/go-harness/internal/websearch"
@@ -737,9 +736,9 @@ func applySkillEvolution(configPath string, source runtimeDocument, cfg *deerflo
 		}
 		return harness.ModelRoute{Provider: cfg.Provider, API: cfg.API, Model: choice, BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, OutputTokenParameter: cfg.OutputTokenParameter, Network: cfg.Network}
 	}
-	validator, err := deerflow.NewSkillModelValidator(context.Background(), settings.ModelConfig(resolve(settings.PrimaryModel), resolve(settings.PrimaryModel)))
+	validator, err := deerflow.NewSkillModelValidator(context.Background(), settings.ModelConfig(resolve(settings.PrimaryModel)))
 	if err != nil {
-		return fmt.Errorf("skill_evolution: cannot initialize configured review models")
+		return fmt.Errorf("skill_evolution: cannot initialize security review model")
 	}
 	cfg.SkillValidator, cfg.SkillProposalSources = validator, destinations
 	cfg.SkillGeneration = settings.GenerationOptions(resolve(settings.PrimaryModel), destinations)
@@ -750,19 +749,7 @@ func applySkillEvolution(configPath string, source runtimeDocument, cfg *deerflo
 	}
 	settings.Discovery.DestinationSourceID = destinations[0]
 	cfg.SkillDiscovery = settings.DiscoveryOptions()
-	cfg.SkillAutoPatch = settings.AutoPatchOptions()
-	cfg.SkillBehavior, cfg.SkillBehaviorEvaluator = nil, nil
-	evaluator, err := deerflow.NewSkillBehaviorEvaluator(context.Background(), settings.BehaviorModelConfig(resolve(settings.PrimaryModel)))
-	if err != nil {
-		return fmt.Errorf("automatic skill behavior evaluator: %w", err)
-	}
-	loader := func(visit func(harness.SkillBehaviorSuite) error) error {
-		return walkHostBehaviorSuites(filepath.Join(filepath.Dir(configPath), "skill-behavior"), destinations, visit)
-	}
-	if err := loader(func(harness.SkillBehaviorSuite) error { return nil }); err != nil {
-		return err
-	}
-	cfg.SkillBehavior, cfg.SkillBehaviorEvaluator = &harness.SkillBehaviorOptions{Load: loader}, evaluator
+	cfg.SkillAutoPatch, cfg.SkillBehavior, cfg.SkillBehaviorEvaluator = nil, nil, nil
 	*applied = settings
 	return nil
 }
@@ -787,50 +774,6 @@ func provisionEvolutionSource(configPath string, config *harness.SkillsConfig) e
 	config.Sources = append(config.Sources, harness.SkillSource{ID: "managed-evolution", Root: root, Scope: harness.SkillScopeGlobal})
 	config.ManagedSources = append(config.ManagedSources, "managed-evolution")
 	config.ExportRoot = export
-	return nil
-}
-
-func walkHostBehaviorSuites(directory string, sources []string, visit func(harness.SkillBehaviorSuite) error) error {
-	file, err := os.Open(directory)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	for {
-		entries, readErr := file.ReadDir(32)
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			return readErr
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || !entry.Type().IsRegular() || filepath.Ext(entry.Name()) != ".json" {
-				continue
-			}
-			body, e := os.Open(filepath.Join(directory, entry.Name()))
-			if e != nil {
-				return e
-			}
-			data, e := io.ReadAll(io.LimitReader(body, skillbehavior.MaxSuiteBytes+1))
-			e = errors.Join(e, body.Close())
-			if e != nil {
-				return e
-			}
-			suite, e := skillbehavior.Parse(data)
-			if e != nil {
-				return fmt.Errorf("host behavior suite %s: %w", entry.Name(), e)
-			}
-			if slices.Contains(sources, suite.SourceID) {
-				if e = visit(suite); e != nil {
-					return e
-				}
-			}
-		}
-		if errors.Is(readErr, io.EOF) {
-			break
-		}
-	}
 	return nil
 }
 

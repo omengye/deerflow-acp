@@ -172,12 +172,11 @@ The desktop profile enables local commands, subagents, global memory and skill
 learning/generation using the selected model. Local commands are not isolated.
 Skill evolution inherits the primary model and runs automatically, with no
 separate settings, daily call limit, cumulative token budget or publication quota.
-New and existing skills require trusted behavioral comparison before scoped
-adoption. Script candidates require actual OCI isolation; a missing runtime
-waits for availability. Observation lasts 72 hours and needs five independent
-verified successes plus behavior coverage. Confirmed regression or insufficient
-observation withdraws the candidate. Usage remains visible. Old unfinished
-learning work is retired during the one-time migration and is never replayed.
+Creating or updating a skill submits its complete package, including scripts,
+for static security review. The host automatically publishes the exact version
+that passes. Eligible candidates waiting for evidence under an older release
+are queued for security review when the updated host starts. Skills generated
+from workspace learning are available within their originating workspace.
 No startup model calls are made for this setup. Inactive/closed backend sessions are
 archived after five days, preserving history and evicting regenerable caches.
 This maintenance runs in the background and is configured by the host, not Settings.

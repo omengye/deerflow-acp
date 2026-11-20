@@ -63,7 +63,11 @@ type SkillTrigger struct {
 	Summary  string `json:"summary"`
 }
 
+// SkillPublicationSecurityOnly binds an authorized candidate to publication after security review.
+const SkillPublicationSecurityOnly = "security_only"
+
 type SkillProposal struct {
+	PublicationPolicy      string                  `json:"publication_policy,omitempty"`
 	Approval               *SkillApproval          `json:"approval,omitempty"`
 	PublicationError       string                  `json:"publication_error,omitempty"`
 	FilePublicationPending bool                    `json:"file_publication_pending,omitempty"`
@@ -91,6 +95,7 @@ type SkillProposal struct {
 	ReviewNote             string                  `json:"review_note,omitempty"`
 	ReviewedBy             string                  `json:"reviewed_by,omitempty"`
 	PublishedRevision      int64                   `json:"published_revision,omitempty"`
+	GenerationJobID        string                  `json:"generation_job_id,omitempty"`
 	BehaviorJobID          string                  `json:"behavior_job_id,omitempty"`
 	ScriptReviewRequired   bool                    `json:"script_review_required,omitempty"`
 	ReviewRetryOf          string                  `json:"review_retry_of,omitempty"`
@@ -103,8 +108,9 @@ type SkillProposal struct {
 // Approval is immutable evidence for one reviewed candidate, not proof that
 // publication completed or permission to adopt different source contents.
 type SkillApproval struct {
-	// UserConfirmation records explicit native user authority to bypass the
-	// automatic evidence gates. It never turns an unrun check into a pass.
+	// SecurityReview binds a host publication decision to its review and scope.
+	SecurityReview *SkillPublicationSecurityReview `json:"security_review,omitempty"`
+	// UserConfirmation is retained for receipts written by earlier hosts.
 	UserConfirmation *SkillUserConfirmation `json:"user_confirmation,omitempty"`
 	ProposalID       string                 `json:"proposal_id"`
 	Target           SkillTarget            `json:"target"`
@@ -113,6 +119,24 @@ type SkillApproval struct {
 	EvaluationDigest string                 `json:"evaluation_digest"`
 	Review           SkillReview            `json:"review"`
 	CreatedAt        time.Time              `json:"created_at"`
+}
+
+type SkillPublicationSecurityReview struct {
+	WorkspaceOnly    bool   `json:"workspace_only,omitempty"`
+	Workspace        string `json:"workspace"`
+	ValidatorVersion string `json:"validator_version"`
+}
+
+// FilePublicationKey identifies a durable decision that installs automatic bytes.
+func (a SkillApproval) FilePublicationKey() string {
+	switch {
+	case a.SecurityReview != nil && a.UserConfirmation == nil:
+		return "security/" + a.ProposalID
+	case a.UserConfirmation != nil && a.SecurityReview == nil:
+		return "confirm/" + a.ProposalID
+	default:
+		return ""
+	}
 }
 
 type SkillUserConfirmation struct {
@@ -158,9 +182,8 @@ type SkillModelCheck struct {
 	UsageEstimated bool   `json:"usage_estimated"`
 }
 
-// SkillModelReviewConfig creates two independent, tool-free model calls for
-// content validation. Native automatic maintenance inherits both routes from
-// the primary model. Content decisions alone never authorize adoption.
+// SkillModelReviewConfig selects the tool-free security reviewer. SDK hosts can
+// additionally supply an Evaluation route for content review of their drafts.
 type SkillModelReviewConfig struct {
 	Moderation, Evaluation         ModelRoute
 	Timeout                        time.Duration

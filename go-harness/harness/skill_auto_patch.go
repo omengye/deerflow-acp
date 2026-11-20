@@ -16,14 +16,15 @@ type SkillAutoPatchOptions struct {
 }
 
 type SkillAutoPatchStatus struct {
-	Enabled        bool                     `json:"enabled"`
-	Running        bool                     `json:"running"`
-	Options        *SkillAutoPatchOptions   `json:"options,omitempty"`
-	Today          string                   `json:"today"`
-	PublishedToday int64                    `json:"published_today"`
-	Observing      int64                    `json:"observing"`
-	LastErrorCode  string                   `json:"last_error_code,omitempty"`
-	Readiness      *SkillAutoPatchReadiness `json:"readiness,omitempty"`
+	PublicationPolicy string                   `json:"publication_policy,omitempty"`
+	Enabled           bool                     `json:"enabled"`
+	Running           bool                     `json:"running"`
+	Options           *SkillAutoPatchOptions   `json:"options,omitempty"`
+	Today             string                   `json:"today"`
+	PublishedToday    int64                    `json:"published_today"`
+	Observing         int64                    `json:"observing"`
+	LastErrorCode     string                   `json:"last_error_code,omitempty"`
+	Readiness         *SkillAutoPatchReadiness `json:"readiness,omitempty"`
 }
 
 // Readiness is a host observation, never a grant to publish a candidate.

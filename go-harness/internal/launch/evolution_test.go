@@ -67,7 +67,7 @@ func TestApplyConfigSkillReviewInheritsPrimaryAndKeepsSourceAuthority(t *testing
 		t.Fatalf("missing builtin source policy: %+v", cfg.Skills)
 	}
 	report, err := cfg.SkillValidator.Validate(context.Background(), harness.SkillValidationInput{Proposal: harness.SkillProposal{Action: "create", SkillName: "research", CandidateVersion: "candidate"}, CandidateFiles: map[string][]byte{"SKILL.md": []byte("Fixture content")}})
-	if err != nil || report.Security != "passed" || calls[0].Load() != 2 || calls[1].Load() != 0 {
+	if err != nil || report.Security != "passed" || calls[0].Load() != 1 || calls[1].Load() != 0 || len(report.ModelChecks) != 1 || report.ModelChecks[0].Stage != "security" {
 		t.Fatalf("resolved review calls: %+v %v %d/%d", report, err, calls[0].Load(), calls[1].Load())
 	}
 	// A completed migration is not a runtime compatibility path.

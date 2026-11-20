@@ -260,7 +260,7 @@ func (s *Service) RetryNewSkill(ctx context.Context, actor string, request harne
 		binding := learning.NewSkillRetryBinding{DiscoveryID: d.ID, DiscoveryDigest: hash(payload), AutomaticGenerationID: automatic, Reference: prepared.Retry, CreatedAt: now}
 		binding.AuthorizationDigest = learning.NewSkillRetryAuthorization(actor, request, review, binding)
 		r := generationRecord{id: "sgi_" + rand.Text(), created: now, input: generationSnapshot{Request: generationRequest, Target: d.Target,
-			GeneratorIdentity: s.generation.identity, ValidatorIdentity: s.generation.reviewIdentity, DiscoveryID: d.ID, DiscoveryDigest: hash(payload), BehaviorIdentity: s.behavior.bindingIdentity(d.Target), CreationRetryAuthorization: binding.AuthorizationDigest}}
+			PublicationPolicy: s.generation.publicationPolicy, GeneratorIdentity: s.generation.identity, ValidatorIdentity: s.generation.reviewIdentity, DiscoveryID: d.ID, DiscoveryDigest: hash(payload), BehaviorIdentity: s.behavior.bindingIdentity(d.Target), CreationRetryAuthorization: binding.AuthorizationDigest}}
 		input, err := json.Marshal(r.input)
 		if err != nil {
 			return err

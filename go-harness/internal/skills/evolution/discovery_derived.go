@@ -499,7 +499,7 @@ func (s *Service) considerDerivedRoot(ctx context.Context, root string, target h
 			reason = "Create a reusable skill describing the repeated completed tool procedure; preserve verification steps and do not invent task-specific parameters."
 		}
 		request := harness.SkillGenerationRequest{SourceID: target.SourceID, Name: target.Name, RequestKey: "discovery:" + d.ID, Reason: reason, Author: "discovery", Base: head}
-		record := generationRecord{id: "sgi_" + rand.Text(), created: now, input: generationSnapshot{Request: request, Target: target, GeneratorIdentity: s.generation.identity, ValidatorIdentity: s.generation.reviewIdentity, DiscoveryID: d.ID, DiscoveryDigest: hash(payload), BehaviorIdentity: s.behavior.bindingIdentity(target)}}
+		record := generationRecord{id: "sgi_" + rand.Text(), created: now, input: generationSnapshot{Request: request, Target: target, PublicationPolicy: s.generation.publicationPolicy, GeneratorIdentity: s.generation.identity, ValidatorIdentity: s.generation.reviewIdentity, DiscoveryID: d.ID, DiscoveryDigest: hash(payload), BehaviorIdentity: s.behavior.bindingIdentity(target)}}
 		input, err := json.Marshal(record.input)
 		if err != nil {
 			return err

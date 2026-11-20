@@ -39,7 +39,7 @@ func TestSkillManageRetiredActionsCannotMutateCandidates(t *testing.T) {
 				if calls.Add(1) == 1 {
 					for _, tool := range req.Tools {
 						if tool.Function.Name == "skill_manage" {
-							if strings.Contains(string(tool.Function.Parameters), `"review_retry"`) || !strings.Contains(string(tool.Function.Parameters), `"publish"`) || !strings.Contains(tool.Function.Description, "native user input") {
+							if strings.Contains(string(tool.Function.Parameters), `"review_retry"`) || !strings.Contains(string(tool.Function.Parameters), `"publish"`) || !strings.Contains(tool.Function.Description, "after safety passes") {
 								t.Error("stale tool contract", tool.Function)
 							}
 						}

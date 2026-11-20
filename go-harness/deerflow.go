@@ -580,6 +580,10 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	}
 	if cfg.SkillLearning != nil {
 		extractor := cfg.SkillExperienceExtractor
+	cfg.SkillProposalSources = slices.Clone(cfg.SkillProposalSources)
+	if err = validateSkillProposalSources(cfg, registry); err != nil {
+		return nil, err
+	}
 		if extractor == nil {
 			extractor, err = einoengine.NewSkillExperienceExtractor(ctx, cfg.SkillLearning.Model)
 			if err != nil {
@@ -662,15 +666,18 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			return nil, err
 		}
 	}
-	cfg.SkillProposalSources = slices.Clone(cfg.SkillProposalSources)
-	if err = validateSkillProposalSources(cfg, registry); err != nil {
-		return nil, err
+	if cfg.SkillGeneration != nil && cfg.SkillGeneration.PublishAfterSecurityReview {
+		if err = skillEvolution.ConfigureSecurityPublication(ctx); err != nil {
+			return nil, err
+		}
 	}
 	if err = skillEvolution.RecoverApprovals(ctx); err != nil {
 		return nil, fmt.Errorf("recover approved skill publications: %w", err)
 	}
 	cfg.skillEvolution = skillEvolution
-	business.CaptureSkillOracle = skillEvolution.CaptureTaskOracleTx
+	if cfg.SkillGeneration == nil || !cfg.SkillGeneration.PublishAfterSecurityReview {
+		business.CaptureSkillOracle = skillEvolution.CaptureTaskOracleTx
+	}
 	assetStore, err := assets.NewStoreWithArtifactLimit(ctx, filepath.Join(cfg.DataDir, "assets"), store.DB(), cfg.MaxArtifactBytes)
 	if err != nil {
 		return nil, err

@@ -37,6 +37,8 @@ impl Options {
 
 #[derive(Deserialize)]
 struct Status {
+    #[serde(default)]
+    publication_policy: String,
     enabled: bool,
     running: bool,
     options: Option<Options>,
@@ -227,9 +229,25 @@ impl AutoPatchBrowser {
                         && status.published_today <= i64::MAX as u64
                         && status.observing <= i64::MAX as u64
                         && status.last_error_code.len() <= 128
-                        && (!status.enabled || status.options.is_some()),
+                        && (!status.enabled
+                            || status.publication_policy == "security_only"
+                            || status.options.is_some()),
                     "自动补丁状态无效"
                 );
+                if status.publication_policy == "security_only" {
+                    self.needs_attention = None;
+                    self.readiness_label = Some("安全审查后自动发布".into());
+                    self.status = Some((
+                        if status.running {
+                            "自动发布执行器在线"
+                        } else {
+                            "自动发布执行器未运行"
+                        }
+                        .into(),
+                        format!("UTC {} 已发布 {} 次", status.today, status.published_today),
+                    ));
+                    return Ok(());
+                }
                 if let Some(options) = &status.options {
                     options.validate()?;
                 }
@@ -408,7 +426,11 @@ impl Waku {
         let supported = true;
         let unavailable =
             !supported || state.busy() || state.applying() || state.status["running"] != true;
-        let mut group = df_group(theme).child(df_label("自动采用与撤回记录", "新技能和更新通过验证后自动采用并持续观察。发生回归或观察到期证据不足时自动撤回；外部故障和取消单独记录。", theme));
+        let mut group = df_group(theme).child(df_label(
+            "自动发布",
+            "创建和更新的技能通过安全审查后自动发布。可在提案详情中查看审查和发布结果。",
+            theme,
+        ));
         if !supported {
             return group
                 .child(df_label(
@@ -421,7 +443,7 @@ impl Waku {
         let mut actions = div().flex().flex_wrap().gap(px(6.0));
         for (suffix, label, operation) in [
             ("status", "刷新采用状态", "skill.auto_patch.status"),
-            ("list", "刷新采用与撤回记录", "skill.auto_patch.list"),
+            ("list", "刷新历史观察记录", "skill.auto_patch.list"),
         ] {
             actions = actions.child(df_button(
                 SharedString::from(format!("df-auto-patch-{suffix}")),
@@ -445,8 +467,8 @@ impl Waku {
         }
         if browser.loaded && browser.rows.is_empty() {
             group = group.child(df_label(
-                "暂无自动采用记录",
-                "新任务积累足够证据并通过验证后，会在此显示采用、观察和撤回记录。",
+                "暂无历史观察记录",
+                "此列表保留旧版发布流程的观察和撤回记录。",
                 theme,
             ));
         }

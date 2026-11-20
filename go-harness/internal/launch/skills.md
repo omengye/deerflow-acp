@@ -71,8 +71,8 @@ Builtin sources do not accept in-place model candidates.
 
 There is no `skill_evolution` YAML block, manual approval setting, independent
 review route or daily maintenance quota. The host owns worker concurrency,
-timeouts and finite retries. Candidate validation, automatic admission,
-observation and withdrawal use independent evidence and scoped source authority.
+timeouts and finite retries. The worker publishes valid creations and updates after a single security review
+of the complete package, within the authorized source and workspace.
 The `skill_manage` submission call queues the exact package without performing
 foreground model review. Command execution permissions remain independent.
 See the [candidate contract](../acp/skill-evolution.md).

@@ -3941,14 +3941,16 @@ impl Waku {
                             .child(state.proposal_diff.clone()),
                     );
                 group = group.child(self.render_deerflow_skill_evaluation(proposal, theme));
-                group = group.child(self.render_deerflow_behavior_inspector(proposal, theme, cx));
+                if proposal["publication_policy"] != "security_only" {
+                    group =
+                        group.child(self.render_deerflow_behavior_inspector(proposal, theme, cx));
+                }
                 let disabled = unavailable
                     || state.dirty
                     || state.skill_browser.review_stale
                     || state.skill_browser.mutations_pending()
                     || observed_state.as_u64().is_none_or(|v| v == 0);
                 let (_, can_reject) = publication_state::review_actions(proposal);
-                let approve_disabled = disabled || approval.is_none();
                 let reject_disabled = disabled || !can_reject;
                 group = group.child(df_label(
                     "当前提案状态",
@@ -4020,28 +4022,64 @@ impl Waku {
                     })
                 {
                     let request = request.clone();
-                    group = group.child(df_group(theme)
-                        .child(df_label("创建新的审核候选？", description.clone(), theme))
-                        .child(df_label("此处确认的是送审，不是发布", "点击下方“确认读取并送审”才会提交请求。检查通过后需在新候选上确认发布；旧提案保持不可发布。", theme))
-                        .child(div().flex().flex_wrap().gap(px(6.0))
-                            .child(df_button("df-source-review-confirm", "确认读取并送审", disabled, false, theme, cx,
-                                move |this, _, cx| { this.deerflow_request("manage", request.clone(), cx); }))
-                            .child(df_button("df-source-review-cancel", "取消本次送审", unavailable, false, theme, cx,
-                                |this, _, cx| { this.deerflow_settings.confirm_manage = None; cx.notify(); }))));
+                    group = group.child(
+                        df_group(theme)
+                            .child(df_label("创建新的审核候选？", description.clone(), theme))
+                            .child(df_label(
+                                "送审当前目录",
+                                "提交后可在新提案中查看安全审查和发布结果。",
+                                theme,
+                            ))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap(px(6.0))
+                                    .child(df_button(
+                                        "df-source-review-confirm",
+                                        "确认读取并送审",
+                                        disabled,
+                                        false,
+                                        theme,
+                                        cx,
+                                        move |this, _, cx| {
+                                            this.deerflow_request("manage", request.clone(), cx);
+                                        },
+                                    ))
+                                    .child(df_button(
+                                        "df-source-review-cancel",
+                                        "取消本次送审",
+                                        unavailable,
+                                        false,
+                                        theme,
+                                        cx,
+                                        |this, _, cx| {
+                                            this.deerflow_settings.confirm_manage = None;
+                                            cx.notify();
+                                        },
+                                    )),
+                            ),
+                    );
                 }
                 if let Some(warning) = approval.as_ref().and_then(|action| action.warning) {
                     group = group.child(df_label("发布前请确认脚本风险", warning, theme));
                 }
-                let approve_label = approval.as_ref().map_or("确认发布", |action| action.label);
-                group = group.child(div().flex().flex_none().flex_wrap().gap(px(6.0))
-                .child(df_button("df-proposal-approve", approve_label, approve_disabled, false, theme, cx,
-                    move |this, _, cx| {
-                        if let Some(action) = &approval {
+                let mut actions = div().flex().flex_none().flex_wrap().gap(px(6.0));
+                if let Some(action) = approval {
+                    actions = actions.child(df_button(
+                        "df-proposal-approve",
+                        action.label,
+                        disabled,
+                        false,
+                        theme,
+                        cx,
+                        move |this, _, cx| {
                             this.deerflow_settings.confirm_manage = None;
                             this.deerflow_request("manage", action.request.clone(), cx);
-                        }
-                    }))
-                .child(df_button("df-proposal-reject", "拒绝提案…", reject_disabled, false, theme, cx,
+                        },
+                    ));
+                }
+                group = group.child(actions.child(df_button("df-proposal-reject", "拒绝提案…", reject_disabled, false, theme, cx,
                     move |this, _, cx| {
                         this.deerflow_settings.confirm_manage = Some((format!("拒绝提案 {id}。"), json!({"operation":"proposal.reject","proposal_id":id,"expected_state_version":reject_state})));
                         this.settings_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
@@ -4050,7 +4088,7 @@ impl Waku {
                 if state.dirty {
                     group = group.child(df_label(
                         "草稿尚未保存",
-                        "先保存或放弃草稿，再审查发布技能。",
+                        "先保存或放弃草稿，再操作此提案。",
                         theme,
                     ));
                 }

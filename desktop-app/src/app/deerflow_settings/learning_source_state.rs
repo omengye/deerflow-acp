@@ -1,5 +1,5 @@
 //! Read-only, cited source inspection. No model work or publication authority.
-use super::{SkillRef, identity, named_digest, text, version};
+use super::{SkillRef, identity, named_digest, text, validate_experience_policy, version};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -196,6 +196,7 @@ pub(super) struct SourceDetail {
 
 impl SourceDetail {
     pub(super) fn detail(&self, request: &Value) -> anyhow::Result<String> {
+        validate_experience_policy(&self.policy_version)?;
         anyhow::ensure!(
             request["session_id"] == self.session_id
                 && request["source"] == self.source
@@ -208,7 +209,6 @@ impl SourceDetail {
                 && named_digest(&self.extraction_id, "lex_")
                 && super::digest(&self.input_sha256)
                 && super::digest(&self.result_sha256)
-                && self.policy_version == "procedural-experience-v1"
                 && self.external_context_policy == "hints_only"
                 && self.source_state == "checked_at_read"
                 && self.quality == "unassessed"

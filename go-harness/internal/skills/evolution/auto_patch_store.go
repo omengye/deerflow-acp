@@ -58,7 +58,7 @@ INSERT OR IGNORE INTO df_skill_auto_patch_scan VALUES(1,'','','');`)
 }
 
 func (s *Service) ConfigureAutoPatch(options harness.SkillAutoPatchOptions) error {
-	if s.autoPatch != nil || s.generation == nil || s.behavior == nil || !validAutoPatchOptions(options) {
+	if s.autoPatch != nil || s.securityPublicationEnabled() || s.generation == nil || s.behavior == nil || !validAutoPatchOptions(options) {
 		return invalid("auto_patch requires generation, behavior evaluation and bounded options")
 	}
 	builtin, err := s.registry.BuiltinSources()
@@ -115,6 +115,9 @@ func changedTextLines(a, b []byte, limit int) int {
 func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, p Proposal, input ValidationInput) error {
 	if enabled, _ := ctx.Value(autoPatchContextKey{}).(bool); !enabled {
 		return nil
+	}
+	if p.Trigger.Type == "explicit_agent_proposal" {
+		return harness.ErrPermissionDenied // Native submissions are installed by their safety review job.
 	}
 	learningCandidate := p.Trigger.Type == "experience_pattern"
 	if containsScripts(input.CandidateFiles) && !p.Evaluation.IsolatedScripts {
@@ -193,8 +196,7 @@ func (s *Service) guardAutoPatch(ctx context.Context, tx *skills.PublicationTx, 
 			}
 			if derived {
 				// Behavior evaluation cannot detect a dormant injected instruction.
-				// The proposal stays pending until the user publishes it once with
-				// skill_manage.publish (PublishConfirmed).
+				// Only a separately authorized session submission can install it.
 				return autoPatchDecision("external_provenance_confirmation")
 			}
 		}

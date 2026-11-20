@@ -89,7 +89,7 @@ func (r *Registry) refreshSource(p *PublicationTx, dir string, initial *bool) er
 	}
 	if err = guardAutomaticContent(p.ctx, p.tx, version); err != nil {
 		if errors.Is(err, harness.ErrPermissionDenied) {
-			confirmed, e := p.isConfirmedHead(head, version)
+			confirmed, e := p.isReviewedHead(head, version)
 			if e != nil {
 				return e
 			}

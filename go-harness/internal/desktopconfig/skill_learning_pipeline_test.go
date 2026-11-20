@@ -23,7 +23,7 @@ import (
 )
 
 // Real native adapters, task capture, scheduler, authenticated management,
-// evaluator and publication are exercised against a deterministic provider.
+// security review and publication are exercised against a deterministic provider.
 func TestSkillLearningSettingsNativeAutomaticPipeline(t *testing.T) {
 	for _, create := range []bool{false, true} {
 		t.Run(fmt.Sprintf("create=%t", create), func(t *testing.T) {
@@ -59,29 +59,6 @@ func TestSkillLearningSettingsNativeAutomaticPipeline(t *testing.T) {
 			if create {
 				target = skilllearningtest.CapabilityName
 			}
-			suite := harness.SkillBehaviorSuite{Version: "skill-behavior-v2", ID: "native-automatic-json", SourceID: "python-custom", Name: target, Cases: []harness.SkillBehaviorCase{
-				{ID: "targeted", Kind: "targeted", Prompt: "Inspect the complete JSON document and report completion.", Repetitions: 2, Assertions: []harness.SkillBehaviorAssertion{{ID: "oracle-native-complete", Kind: "output_equals", Expected: "verified"}}},
-				{ID: "regression", Kind: "regression", Holdout: true, Prompt: "Retain the existing source research behavior.", Repetitions: 2, Assertions: []harness.SkillBehaviorAssertion{{ID: "oracle-native-retained", Kind: "output_equals", Expected: "retained"}}},
-				{ID: "positive", Kind: "trigger_positive", Prompt: "Inspect the complete JSON document and report completion.", Repetitions: 2, Assertions: []harness.SkillBehaviorAssertion{{ID: "select", Kind: "skill_selected", Count: 1}}},
-				{ID: "negative", Kind: "trigger_negative", Prompt: "Say hello without any workflow.", Repetitions: 2, Assertions: []harness.SkillBehaviorAssertion{{ID: "no-select", Kind: "skill_selected", Count: 0}}},
-			}}
-			if create {
-				for i := 2; i < len(suite.Cases); i++ {
-					suite.Cases[i].TriggerSkills = []harness.SkillBehaviorTriggerSkill{{Name: "research", Description: "Research bibliographic sources"}}
-				}
-			}
-			for i := range suite.Cases {
-				suite.Cases[i].Files = map[string]string{}
-				suite.Cases[i].Fixtures = []harness.SkillBehaviorFixture{}
-			}
-			data, _ := json.Marshal(suite)
-			dir := filepath.Join(filepath.Dir(options.Config), "skill-behavior")
-			if err := os.MkdirAll(dir, 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(dir, "native.json"), data, 0600); err != nil {
-				t.Fatal(err)
-			}
 			saved := run(t, options, "save", doc)
 			if _, ok := saved["skill_evolution"]; ok || len(provider.Counts()) != 0 {
 				t.Fatal("settings introduced legacy fields or model calls")
@@ -92,7 +69,7 @@ func TestSkillLearningSettingsNativeAutomaticPipeline(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.SkillLearning == nil || cfg.SkillGeneration == nil || cfg.SkillAutoPatch == nil || cfg.SkillBehaviorEvaluator == nil {
+			if cfg.SkillLearning == nil || cfg.SkillGeneration == nil || !cfg.SkillGeneration.PublishAfterSecurityReview || cfg.SkillBehaviorEvaluator != nil {
 				t.Fatal("native automatic chain incomplete")
 			}
 			// Reduce only the internal idle delay for this test; no client field exists.
@@ -193,15 +170,15 @@ func TestSkillLearningSettingsNativeAutomaticPipeline(t *testing.T) {
 				}
 				return proposal.Status == "published"
 			})
-			if proposal.Base != base || proposal.ReviewedBy != "auto_patch" || proposal.Evaluation.Behavior != "passed" || proposal.Evaluation.BehaviorReport == nil || proposal.Evaluation.BehaviorReport.TargetedImprovements < 1 {
-				t.Fatal("adoption lacks bound comparative evaluation")
+			if proposal.Base != base || proposal.ReviewedBy != "security_review" || proposal.Evaluation.Security != "passed" || proposal.Evaluation.Behavior != "not_run" || proposal.Evaluation.BehaviorReport != nil || proposal.Approval == nil || proposal.Approval.SecurityReview == nil || !proposal.Approval.SecurityReview.WorkspaceOnly {
+				t.Fatal("missing scoped safety publication", proposal)
 			}
 			if _, err = c.ApproveSkillProposal(ctx, proposal.ID, harness.SkillReview{ExpectedStateVersion: proposal.StateVersion, Actor: "desktop"}); err == nil {
 				t.Fatal("manual approval accepted for automatic candidate")
 			}
 			var observation harness.SkillAutoPatchPage
 			learningSettingsManagement(t, endpoint, map[string]any{"operation": "skill.auto_patch.list", "limit": 10}, &observation)
-			if len(observation.Observations) != 1 || observation.Observations[0].Status != "observing" || observation.Observations[0].Successes != 0 {
+			if len(observation.Observations) != 0 {
 				t.Fatal("offline tests fabricated online success")
 			}
 			published, err := c.GetSkillHead(ctx, "python-custom", target)
@@ -211,19 +188,42 @@ func TestSkillLearningSettingsNativeAutomaticPipeline(t *testing.T) {
 			if content, err := os.ReadFile(filepath.Join(imported, "SKILL.md")); err != nil || string(content) != string(original) {
 				t.Fatal("scoped adoption overwrote shared physical source", err)
 			}
+			other, err := c.NewSession(ctx, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, probe := range []struct {
+				id      string
+				visible bool
+			}{{session.ID, true}, {other.ID, false}} {
+				var receipt struct {
+					Available        bool
+					Version          string
+					ExecutionChecked bool `json:"execution_checked"`
+				}
+				learningSettingsManagement(t, endpoint, map[string]any{"operation": "skill.verify", "target": proposal.Target, "session_id": probe.id, "expected_version": proposal.CandidateVersion}, &receipt)
+				if receipt.Available != probe.visible || receipt.ExecutionChecked || probe.visible && receipt.Version != proposal.CandidateVersion {
+					t.Fatal("incorrect next-turn visibility", receipt, probe)
+				}
+			}
+			var statusAfter harness.SkillAutoPatchStatus
+			learningSettingsManagement(t, endpoint, map[string]any{"operation": "skill.auto_patch.status"}, &statusAfter)
+			if statusAfter.PublicationPolicy != harness.SkillPublicationSecurityOnly || !statusAfter.Enabled || !statusAfter.Running || statusAfter.PublishedToday != 1 || statusAfter.Observing != 0 {
+				t.Fatal("incorrect safety publication status", statusAfter)
+			}
 			counts := provider.Counts()
 			for _, stage := range []string{"extract", "consolidate", "match"} {
 				if counts[stage] != 2 {
 					t.Fatal("root not independently learned", stage, counts)
 				}
 			}
-			for _, stage := range []string{"generate", "security", "quality"} {
+			for _, stage := range []string{"generate", "security"} {
 				if counts[stage] != 1 {
 					t.Fatal("stage duplicated", stage, counts)
 				}
 			}
-			if counts["behavior"] != 8 || counts["trigger"] != 8 {
-				t.Fatal("incomplete repeated comparison", counts)
+			if counts["behavior"] != 0 || counts["trigger"] != 0 || counts["quality"] != 0 {
+				t.Fatal("unexpected evaluation calls", counts)
 			}
 			_ = host.Close()
 			if err = c.Close(); err != nil {
@@ -236,7 +236,7 @@ func TestSkillLearningSettingsNativeAutomaticPipeline(t *testing.T) {
 			}
 			var calls, tokens, unsettled, feedback int
 			err = db.DB().QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(actual_tokens),0),COALESCE(sum(state<>'settled'),0) FROM df_skill_maintenance_calls`).Scan(&calls, &tokens, &unsettled)
-			if err != nil || calls != 25 || tokens != calls*125 || unsettled != 0 {
+			if err != nil || calls != 8 || tokens != calls*125 || unsettled != 0 {
 				t.Fatal("usage not recorded independently of quota", calls, tokens, unsettled, err)
 			}
 			if err = db.DB().QueryRowContext(ctx, `SELECT count(*) FROM df_skill_feedback`).Scan(&feedback); err != nil || feedback != 0 {

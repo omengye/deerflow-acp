@@ -123,9 +123,6 @@ func (s *service) init() error {
 		skills := object(data, "skills")
 		skills["path"] = "../skills"
 		skills["extensions_file"] = "./extensions_config.json"
-		if err := s.initializeDefaultBehaviorSuite(data); err != nil {
-			return err
-		}
 		if err := writeYAMLAtomic(s.config, data); err != nil {
 			return err
 		}
@@ -137,9 +134,6 @@ func (s *service) init() error {
 	}
 	data, err := readYAML(s.config)
 	if err != nil {
-		return err
-	}
-	if err := s.initializeDefaultBehaviorSuite(data); err != nil {
 		return err
 	}
 	if err := s.initializeSearchPlugins(); err != nil {

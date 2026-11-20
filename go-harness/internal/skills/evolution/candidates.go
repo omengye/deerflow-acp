@@ -159,6 +159,11 @@ func packageDiff(before, after map[string][]byte) ([]string, string, error) {
 }
 
 func (s *Service) Submit(ctx context.Context, request Request) (Proposal, error) {
+	if s.securityPublicationEnabled() && request.Action != "delete" {
+		request.Origin = "automatic"
+		request.Trigger = Trigger{Type: "operator_submission", Summary: request.Reason}
+		return s.submit(context.WithValue(ctx, automaticSubmissionKey{}, ""), request, false)
+	}
 	return s.submit(ctx, request, true)
 }
 
@@ -220,7 +225,7 @@ func (s *Service) submit(ctx context.Context, request Request, validate bool) (P
 			if err != nil {
 				return err
 			}
-			return s.attachGenerationProposal(ctx, tx, p)
+			return s.attachGenerationProposal(ctx, tx, &p)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -310,7 +315,7 @@ func (s *Service) submit(ctx context.Context, request Request, validate bool) (P
 				return err
 			}
 		}
-		if err = s.attachGenerationProposal(ctx, tx, p); err != nil {
+		if err = s.attachGenerationProposal(ctx, tx, &p); err != nil {
 			return err
 		}
 		if preflightErr != nil {
@@ -376,28 +381,33 @@ func (s *Service) Validate(ctx context.Context, id string, expected int64) (Prop
 	}
 	report := Report{BaseVersion: input.Proposal.Base.Version, CandidateVersion: input.Proposal.CandidateVersion, Security: "unavailable", Behavior: "not_run"}
 	var reviewErr error
-	cached, managed, err := s.behaviorContent(ctx, input)
-	if err != nil {
-		return Proposal{}, err
+	securityOnly := input.Proposal.PublicationPolicy == harness.SkillPublicationSecurityOnly
+	var cached *Report
+	var managed bool
+	if !securityOnly {
+		cached, managed, err = s.behaviorContent(ctx, input)
+		if err != nil {
+			return Proposal{}, err
+		}
 	}
 	if cached != nil {
 		report = *cached
 	} else if s.validator != nil {
 		report, reviewErr = s.validator.Validate(ctx, input)
 	}
-	if managed {
+	if managed || securityOnly {
 		// A content reviewer cannot mint native behavior evidence. Legacy SDK
 		// validators keep their prior contract only outside native evaluation.
 		report.Behavior = "not_run"
 		report.BehaviorReport = nil
 		report.BehaviorDigest = ""
 		report.IsolatedScripts = false
-		if reviewErr == nil && cached == nil {
+		if managed && reviewErr == nil && cached == nil {
 			if err = s.saveBehaviorContent(ctx, input, report); err != nil {
 				return Proposal{}, err
 			}
 		}
-		if reviewErr == nil && validReportFor(report, input) {
+		if managed && reviewErr == nil && validReportFor(report, input) {
 			report, reviewErr = s.runBehavior(ctx, input, report)
 		}
 	} else {
@@ -406,10 +416,18 @@ func (s *Service) Validate(ctx context.Context, id string, expected int64) (Prop
 		report.BehaviorReport = nil
 		report.BehaviorDigest = ""
 	}
+	// A security validator cannot place a creation or update in a fixture or
+	// sandbox waiting state. Fail closed if an SDK validator requests one.
+	if securityOnly && (errors.Is(reviewErr, skillmaintenance.ErrBlockedEvidence) || errors.Is(reviewErr, skillmaintenance.ErrBlockedRuntime)) {
+		reviewErr = &harness.SkillValidationFailure{Code: "review_configuration_error", Stage: "security"}
+	}
 	if errors.Is(reviewErr, skillmaintenance.ErrYieldProgress) || errors.Is(reviewErr, skillmaintenance.ErrBlockedEvidence) || errors.Is(reviewErr, skillmaintenance.ErrBlockedRuntime) {
 		return input.Proposal, reviewErr
 	}
 	valid := reviewErr == nil && validReportFor(report, input)
+	if securityOnly {
+		valid = reviewErr == nil && passedSecurityReview(report, input)
+	}
 	generationID, _ := ctx.Value(generationContextKey{}).(string)
 	if generationID != "" && (s.generation == nil || report.ValidatorVersion != s.generation.reviewIdentity) {
 		valid = false
@@ -441,7 +459,7 @@ func (s *Service) Validate(ctx context.Context, id string, expected int64) (Prop
 		p.StateVersion++
 		p.UpdatedAt = time.Now().UTC()
 		p.Evaluation = report
-		p.ScriptReviewRequired = requiresScriptAcknowledgment(report, input)
+		p.ScriptReviewRequired = !securityOnly && requiresScriptAcknowledgment(report, input)
 		p.EvaluationDigest = encodedHash(report)
 		p.ValidationFailure = nil
 		if head != p.Base {
@@ -471,6 +489,24 @@ func (s *Service) Validate(ctx context.Context, id string, expected int64) (Prop
 		return result, reviewErr
 	}
 	return result, err
+}
+
+func passedSecurityReview(report Report, input ValidationInput) bool {
+	if !reportBoundTo(report, input) || report.Security != "passed" {
+		return false
+	}
+	// SDK validators may return a single aggregate verdict. When per-stage
+	// decisions are supplied, require an affirmative security check as well.
+	securityChecked := len(report.ModelChecks) == 0
+	for _, check := range report.ModelChecks {
+		if check.Stage == "security" {
+			if !check.Passed {
+				return false
+			}
+			securityChecked = true
+		}
+	}
+	return securityChecked
 }
 
 func validReportFor(report Report, input ValidationInput) bool {

@@ -20,6 +20,16 @@ func (s *Service) refreshWaiting(ctx context.Context) error {
 		return nil
 	}
 	g.dependencyProbe = time.Now()
+	if !s.securityPublicationEnabled() {
+		if err := s.refreshBehaviorDependencies(ctx); err != nil {
+			return err
+		}
+	}
+	return s.refreshCandidateCapacity(ctx)
+}
+
+func (s *Service) refreshBehaviorDependencies(ctx context.Context) error {
+	g := s.generation
 	var runtimeWait bool
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM df_skill_maintenance_jobs WHERE state='waiting' AND error_code='blocked_runtime')`).Scan(&runtimeWait); err != nil {
 		return err
@@ -134,6 +144,10 @@ func (s *Service) refreshWaiting(ctx context.Context) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (s *Service) refreshCandidateCapacity(ctx context.Context) error {
 	// First compute the reclaimable set, then recheck references on deletion.
 	dry, err := s.registry.MaintainCandidates(ctx, 32, false)
 	if err != nil {
@@ -149,7 +163,7 @@ func (s *Service) refreshWaiting(ctx context.Context) error {
 	if err = s.db.QueryRowContext(ctx, `SELECT COALESCE(sum(total_bytes),0) FROM df_skill_versions v WHERE NOT EXISTS(SELECT 1 FROM df_skill_content_gc g WHERE g.source_key=v.source_key AND g.name=v.name AND g.version=v.version AND g.state='expired')`).Scan(&total); err != nil {
 		return err
 	}
-	return g.store.WakeChanged(ctx, "deferred_capacity", fmt.Sprintf("%d", total))
+	return s.generation.store.WakeChanged(ctx, "deferred_capacity", fmt.Sprintf("%d", total))
 }
 
 // Revoked or deleted sources cannot resume, but must not stop dependency work

@@ -218,8 +218,8 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 					t.Fatalf("candidate count=%d result=%s", len(page.Proposals), resultText)
 				}
 				p := page.Proposals[0]
-				if reviewCalls != 0 || p.BehaviorJobID == "" {
-					t.Fatal("submission must queue independent validation", p, reviewCalls)
+				if reviewCalls != 0 || p.PublicationPolicy != harness.SkillPublicationSecurityOnly || p.GenerationJobID == "" || p.BehaviorJobID != "" {
+					t.Fatal("submission must queue only security review", p, reviewCalls)
 				}
 				if p.Origin != "automatic" || p.Status != "validating" || p.Base != before || !strings.HasPrefix(p.Author, "model/") || p.Trigger.ThreadID != proposalSession {
 					t.Fatalf("proposal: %+v", p)

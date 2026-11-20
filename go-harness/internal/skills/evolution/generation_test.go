@@ -45,7 +45,11 @@ func (v *fixtureGenerationValidator) Validate(ctx context.Context, in Validation
 	if v.before != nil {
 		v.before(ctx)
 	}
-	for _, stage := range []string{"security", "quality"} {
+	stages := []string{"security", "quality"}
+	if in.Proposal.PublicationPolicy == harness.SkillPublicationSecurityOnly {
+		stages = stages[:1]
+	}
+	for _, stage := range stages {
 		if err := generationCharge(ctx, stage); err != nil {
 			return Report{}, err
 		}
@@ -56,6 +60,10 @@ func (v *fixtureGenerationValidator) Validate(ctx context.Context, in Validation
 	}
 	report := validReport(in)
 	report.ValidatorVersion = v.id
+	if in.Proposal.PublicationPolicy == harness.SkillPublicationSecurityOnly {
+		report.Behavior, report.Evidence = "not_run", nil
+		report.ModelChecks = []harness.SkillModelCheck{{Stage: "security", Passed: true}}
+	}
 	return report, nil
 }
 

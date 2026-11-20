@@ -367,7 +367,7 @@ impl DiscoveryBrowser {
                         details: format!("发现 {} · {}\n生成作业 {} · {}\n提案 {} · 基础状态版本 {} · {} 个独立任务来源\n{}",
                             record.id, record.created_at, record.generation_id, record.state,
                             if record.proposal_id.is_empty() { "尚未生成" } else { &record.proposal_id }, record.base.state_version, independent_count,
-                            if record.review_draft { "系统自动起草；独立任务证据不足，仅可人工审核发布，不因后来证据增加而升级自动发布授权" } else { "系统自动生成；是否自动发布由独立授权和可信评测决定，新技能仍人工审核" }),
+                            if record.review_draft { "旧版草稿，仅保留原起草授权" } else { "系统自动生成，候选包通过安全审查后自动发布" }),
                         id: record.id, generation_id: record.generation_id, evidence });
                 }
                 self.nav.accept(request, &page.next_cursor, "cursor")?;
@@ -395,7 +395,7 @@ impl Waku {
             !supported || state.busy() || state.applying() || state.status["running"] != true;
         let mut group = df_group(theme).child(df_label(
             "自动发现记录",
-            "查看触发任务和经验来源。系统使用主模型自动生成候选；新技能和更新均须通过验证后自动采用，证据不足时等待新的任务结果。",
+            "查看触发任务和经验来源。系统使用主模型生成候选包。创建和更新的技能通过安全审查后自动发布。",
             theme,
         ));
         if !supported {
@@ -545,8 +545,7 @@ mod tests {
             .accept(&query, json!({"discoveries":[record.clone()]}))
             .unwrap();
         assert!(browser.rows[0].details.contains("1 个独立任务来源"));
-        assert!(browser.rows[0].details.contains("系统自动起草"));
-        assert!(browser.rows[0].details.contains("仅可人工审核发布"));
+        assert!(browser.rows[0].details.contains("仅保留原起草授权"));
         assert_eq!(browser.rows[0].evidence.len(), 1);
         record["creation_retry"] = retry_record()["creation_retry"].clone();
         assert!(

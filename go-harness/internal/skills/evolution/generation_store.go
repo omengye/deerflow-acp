@@ -24,7 +24,9 @@ type generationHost struct {
 	generator                skillmaintenance.Generator
 	identity, reviewIdentity string
 	allowed                  map[string]harness.SkillTarget
+	builtin                  []string
 	workers                  int
+	publicationPolicy        string
 	policy                   harness.SkillMaintenancePolicy
 	lifecycle                collectorLifecycle
 	discovery                *discoveryHost
@@ -36,7 +38,22 @@ var errGenerationConfiguration = errors.New("skill generation configuration chan
 
 func (s *Service) GenerationEnabled() bool { return s.generation != nil }
 
+func (s *Service) securityPublicationEnabled() bool {
+	return s.generation != nil && s.generation.publicationPolicy == harness.SkillPublicationSecurityOnly
+}
+
+// ConfigureSecurityPublication grants the worker authority to install packages
+// from the configured generation sources. Generation-only SDK hosts retain drafts.
+func (s *Service) ConfigureSecurityPublication(ctx context.Context) error {
+	if s.generation == nil || s.generation.lifecycle.done != nil || s.behavior != nil || s.autoPatch != nil {
+		return invalid("security publication requires a generation host with a security validator")
+	}
+	s.generation.publicationPolicy = harness.SkillPublicationSecurityOnly
+	return s.upgradeSecurityReviews(ctx)
+}
+
 type generationSnapshot struct {
+	PublicationPolicy string `json:"publication_policy,omitempty"`
 	// Agent-authored candidates enter the same durable evaluation pipeline, with
 	// their originating workspace pinned even for a global managed destination.
 	Workspace                  string                         `json:"workspace,omitempty"`
@@ -98,7 +115,7 @@ func (s *Service) ConfigureGeneration(ctx context.Context, generator skillmainte
 	if err != nil {
 		return err
 	}
-	g := &generationHost{generator: generator, identity: generator.Identity(), reviewIdentity: validator.Identity(), allowed: map[string]harness.SkillTarget{}, workers: policy.Workers, policy: policy}
+	g := &generationHost{generator: generator, identity: generator.Identity(), reviewIdentity: validator.Identity(), allowed: map[string]harness.SkillTarget{}, builtin: builtin, workers: policy.Workers, policy: policy}
 	for _, id := range sources {
 		if _, duplicate := g.allowed[id]; duplicate {
 			return invalid("duplicate generation source")
@@ -120,7 +137,7 @@ func (s *Service) ConfigureGeneration(ctx context.Context, generator skillmainte
 		return err
 	}
 	s.generation = g
-	return nil
+	return s.upgradeSecurityReviews(ctx)
 }
 
 func generationRequestHash(r harness.SkillGenerationRequest, t harness.SkillTarget) string {
@@ -172,10 +189,25 @@ func (g *generationHost) checkConfiguration(r generationRecord) error {
 	if err := g.checkSource(r); err != nil {
 		return err
 	}
-	if r.input.GeneratorIdentity != g.identity || r.input.ValidatorIdentity != g.reviewIdentity {
+	if r.input.ValidatorIdentity != g.reviewIdentity {
 		return errGenerationConfiguration
 	}
-	if r.input.BehaviorIdentity != g.behavior.bindingIdentity(r.input.Target) {
+	if r.input.PublicationPolicy == harness.SkillPublicationSecurityOnly {
+		if slices.Contains(g.builtin, r.input.Target.SourceID) || r.input.OverlayBase != nil || r.input.BehaviorIdentity != "" {
+			return harness.ErrPermissionDenied
+		}
+		if r.input.Submission != nil {
+			if r.input.DiscoveryID != "" || r.input.Workspace == "" {
+				return harness.ErrPermissionDenied
+			}
+			return nil
+		}
+		if g.publicationPolicy != r.input.PublicationPolicy || r.input.GeneratorIdentity == "" {
+			return harness.ErrPermissionDenied
+		}
+		return nil
+	}
+	if r.input.PublicationPolicy != "" || g.publicationPolicy != "" || r.input.GeneratorIdentity != g.identity || r.input.BehaviorIdentity != g.behavior.bindingIdentity(r.input.Target) {
 		return errGenerationConfiguration
 	}
 	return nil
@@ -234,7 +266,7 @@ func (s *Service) EnqueueGeneration(ctx context.Context, request harness.SkillGe
 	}
 	var result harness.SkillGenerationJob
 	err := s.registry.WithPublication(ctx, request.SourceID, request.Name, func(tx *skills.PublicationTx) error {
-		snapshot := generationSnapshot{Request: request, Target: tx.Target(), GeneratorIdentity: s.generation.identity, ValidatorIdentity: s.generation.reviewIdentity, BehaviorIdentity: s.behavior.bindingIdentity(tx.Target())}
+		snapshot := generationSnapshot{Request: request, Target: tx.Target(), PublicationPolicy: s.generation.publicationPolicy, GeneratorIdentity: s.generation.identity, ValidatorIdentity: s.generation.reviewIdentity, BehaviorIdentity: s.behavior.bindingIdentity(tx.Target())}
 		if err := s.generation.checkConfiguration(generationRecord{input: snapshot}); err != nil {
 			return err
 		}

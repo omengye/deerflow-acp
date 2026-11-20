@@ -154,7 +154,7 @@ fn extraction_retry_receipt_must_match_original_job_and_version() {
 }
 
 fn status() -> Value {
-    json!({"version":"procedural-experience-v1", "enabled":true, "mode":"automatic", "idle_seconds":300,
+    json!({"version":"procedural-experience-v2", "enabled":true, "mode":"automatic", "idle_seconds":300,
         "pending_inputs":0, "experiences":1, "consolidation_enabled":true, "patterns":1,
         "matching_enabled":true, "cross_session_enabled":true, "matches":1, "proposal_discovery_enabled":false})
 }
@@ -228,10 +228,10 @@ fn learning_status_is_runtime_truth_not_an_automatic_publication_claim() {
             .status_summary
             .as_ref()
             .unwrap()
-            .contains("自动验证、采用、观察与撤回")
+            .contains("安全审查后自动发布")
     );
     let mut candidate = status();
-    candidate["mode"] = json!("automatic");
+    candidate["version"] = json!("procedural-experience-v1");
     candidate["proposal_discovery_enabled"] = json!(true);
     read(&mut browser, request.clone(), candidate);
     assert!(
@@ -239,7 +239,7 @@ fn learning_status_is_runtime_truth_not_an_automatic_publication_claim() {
             .status_summary
             .as_ref()
             .unwrap()
-            .contains("自动验证、采用、观察与撤回")
+            .contains("安全审查后自动发布")
     );
     for field in ["version", "mode", "idle_seconds", "cross_session_enabled"] {
         let mut bad = status();
@@ -247,10 +247,15 @@ fn learning_status_is_runtime_truth_not_an_automatic_publication_claim() {
         browser.begin(&request);
         assert!(browser.accept(&request, bad).is_err(), "{field}");
     }
-    let mut bad = status();
-    bad["consolidation_enabled"] = json!(false);
-    browser.begin(&request);
-    assert!(browser.accept(&request, bad).is_err());
+    for (field, value) in [
+        ("version", json!("procedural-experience-v99")),
+        ("consolidation_enabled", json!(false)),
+    ] {
+        let mut bad = status();
+        bad[field] = value;
+        browser.begin(&request);
+        assert!(browser.accept(&request, bad).is_err(), "{field}");
+    }
 }
 
 #[test]
@@ -691,7 +696,7 @@ fn learning_status_uses_one_automatic_policy_and_reports_worker_readiness() {
     observed["auto_patch_enabled"] = json!(true);
     let parsed: Status = serde_json::from_value(observed.clone()).unwrap();
     parsed.validate().unwrap();
-    assert!(parsed.summary().contains("自动验证、采用、观察与撤回"));
+    assert!(parsed.summary().contains("安全审查后自动发布"));
     for (key, value) in [
         ("mode", json!("shadow")),
         ("proposal_discovery_enabled", json!(false)),
@@ -1016,7 +1021,7 @@ fn source_response(request: &Value) -> Value {
     json!({"session_id":request["session_id"], "source":request["source"], "source_session_id":"session-a",
         "episode_id":"lep_a", "consent_epoch":2, "extraction_id":format!("lex_{}", "a".repeat(64)),
         "input_sha256":"b".repeat(64), "result_sha256":"c".repeat(64),
-        "policy_version":"procedural-experience-v1", "external_context_policy":"hints_only",
+        "policy_version":"procedural-experience-v2", "external_context_policy":"hints_only",
         "source_state":"checked_at_read", "quality":"unassessed",
         "references":[{"id":"input/accepted","run_id":"run-a","input_id":"accepted","sequence":1,"kind":"user","text":"Read structured JSON"},
             {"id":"receipt/run-a/local","run_id":"run-a","tool_call_id":"local","version":3,"kind":"tool_observation","state":"completed",
@@ -1065,6 +1070,7 @@ fn learning_source_response_rejects_wrong_binding_external_body_and_corruption()
         Box::new(|v| v["source"]["expected_revision"] = json!(2)),
         Box::new(|v| v["quality"] = json!("passed")),
         Box::new(|v| v["source_state"] = json!("not_revalidated")),
+        Box::new(|v| v["policy_version"] = json!("procedural-experience-v99")),
         Box::new(|v| v["external_context_policy"] = json!("full")),
         Box::new(|v| v["input_sha256"] = json!("invalid")),
         Box::new(|v| v["references"][1]["version"] = json!(0)),

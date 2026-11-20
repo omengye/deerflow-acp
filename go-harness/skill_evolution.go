@@ -8,8 +8,8 @@ import (
 )
 
 // NewSkillModelValidator constructs the explicit content-review dependency
-// for Config.SkillValidator. It performs two isolated, bounded calls per
-// evaluation, with no tools or conversation history. It does not run behavioral
+// for Config.SkillValidator. It runs an isolated security review and an optional
+// quality review when an evaluation route is supplied. It does not run behavioral
 // tests, authorize scripts or enable discovery/automatic publication.
 func NewSkillModelValidator(ctx context.Context, config harness.SkillModelReviewConfig) (harness.SkillValidator, error) {
 	return einoengine.NewSkillModelValidator(ctx, config)

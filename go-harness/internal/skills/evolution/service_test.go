@@ -38,6 +38,11 @@ type fixture struct {
 
 func newFixture(t *testing.T, validator Validator) *fixture {
 	t.Helper()
+	return newFixtureWithScope(t, validator, harness.SkillScopeWorkspace)
+}
+
+func newFixtureWithScope(t *testing.T, validator Validator, scope harness.SkillScope) *fixture {
+	t.Helper()
 	ws := testutil.CanonicalTempDir(t)
 	root := filepath.Join(ws, "skills")
 	if err := os.MkdirAll(filepath.Join(root, "research"), 0700); err != nil {
@@ -46,7 +51,11 @@ func newFixture(t *testing.T, validator Validator) *fixture {
 	if err := os.WriteFile(filepath.Join(root, "research", "SKILL.md"), skillFiles("Original instructions")["SKILL.md"], 0600); err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{cfg: harness.SkillsConfig{Sources: []harness.SkillSource{{ID: "project", Root: root, Scope: harness.SkillScopeWorkspace, Workspace: ws}}}}
+	source := harness.SkillSource{ID: "project", Root: root, Scope: scope}
+	if scope == harness.SkillScopeWorkspace {
+		source.Workspace = ws
+	}
+	f := &fixture{cfg: harness.SkillsConfig{Sources: []harness.SkillSource{source}}}
 	var err error
 	f.db, err = sqlite.Open(filepath.Join(t.TempDir(), "store.db"))
 	if err != nil {

@@ -39,18 +39,6 @@ type ReviewSettings struct {
 		CooldownHours       int
 		MaxPendingProposals int
 	}
-	Behavior struct {
-		TimeoutSeconds  int
-		MaxSteps        int
-		MaxInputBytes   int
-		MaxOutputTokens int
-	}
-	AutoPatch struct {
-		MaxChangedLines          int
-		ObservationHours         int
-		MinObservations          int
-		RollbackFailureThreshold int
-	}
 	Policy struct {
 		MaxJobSeconds int64
 		Workers       int
@@ -85,10 +73,6 @@ func AutomaticSettings(model string) ReviewSettings {
 	s.Learning.MaxInputBytes, s.Learning.MaxOutputTokens = 256<<10, 4096
 	s.Discovery.RepeatThreshold, s.Discovery.RepeatWindowDays = 2, 30
 	s.Discovery.CooldownHours, s.Discovery.MaxPendingProposals = 24, 20
-	s.Behavior.TimeoutSeconds, s.Behavior.MaxSteps = 120, 12
-	s.Behavior.MaxInputBytes, s.Behavior.MaxOutputTokens = 256<<10, 2048
-	s.AutoPatch.MaxChangedLines, s.AutoPatch.ObservationHours = 200, 72
-	s.AutoPatch.MinObservations, s.AutoPatch.RollbackFailureThreshold = 5, 2
 	s.Policy.MaxJobSeconds, s.Policy.Workers = 900, 2
 	return s
 }
@@ -109,15 +93,15 @@ func (s ReviewSettings) LearningMatchingModel(route harness.ModelRoute) *harness
 	return &harness.SkillGenerationModelConfig{Route: route, Timeout: time.Duration(s.Learning.TimeoutSeconds) * time.Second, MaxInputBytes: s.Learning.MaxInputBytes, MaxOutputTokens: s.Learning.MaxOutputTokens}
 }
 
-func (s ReviewSettings) ModelConfig(moderation, evaluation harness.ModelRoute) harness.SkillModelReviewConfig {
-	return harness.SkillModelReviewConfig{Moderation: moderation, Evaluation: evaluation, Timeout: time.Duration(s.Validation.TimeoutSeconds) * time.Second, MaxInputBytes: s.Validation.MaxInputBytes, MaxOutputTokens: s.Validation.MaxOutputTokens, ResponseFormat: s.Validation.ResponseFormat}
+func (s ReviewSettings) ModelConfig(moderation harness.ModelRoute) harness.SkillModelReviewConfig {
+	return harness.SkillModelReviewConfig{Moderation: moderation, Timeout: time.Duration(s.Validation.TimeoutSeconds) * time.Second, MaxInputBytes: s.Validation.MaxInputBytes, MaxOutputTokens: s.Validation.MaxOutputTokens, ResponseFormat: s.Validation.ResponseFormat}
 }
 
 func (s ReviewSettings) GenerationOptions(route harness.ModelRoute, sources []string) *harness.SkillGenerationOptions {
 	return &harness.SkillGenerationOptions{
 		Model:   harness.SkillGenerationModelConfig{Route: route, Timeout: time.Duration(s.Generation.TimeoutSeconds) * time.Second, MaxInputBytes: s.Generation.MaxInputBytes, MaxOutputTokens: s.Generation.MaxOutputTokens},
 		Policy:  harness.SkillMaintenancePolicy{MaxJobSeconds: s.Policy.MaxJobSeconds, Workers: s.Policy.Workers},
-		Sources: slices.Clone(sources), AllowBuiltinOverlays: s.AllowBuiltinOverlays,
+		Sources: slices.Clone(sources), AllowBuiltinOverlays: s.AllowBuiltinOverlays, PublishAfterSecurityReview: true,
 	}
 }
 
@@ -126,17 +110,5 @@ func (s ReviewSettings) DiscoveryOptions() *harness.SkillDiscoveryOptions {
 		DestinationSourceID: s.Discovery.DestinationSourceID,
 		RepeatThreshold:     s.Discovery.RepeatThreshold, RepeatWindowDays: s.Discovery.RepeatWindowDays,
 		CooldownHours: s.Discovery.CooldownHours, MaxPendingProposals: s.Discovery.MaxPendingProposals,
-	}
-}
-
-func (s ReviewSettings) AutoPatchOptions() *harness.SkillAutoPatchOptions {
-	return &harness.SkillAutoPatchOptions{MaxChangedLines: s.AutoPatch.MaxChangedLines, ObservationHours: s.AutoPatch.ObservationHours, MinObservations: s.AutoPatch.MinObservations, RollbackFailureThreshold: s.AutoPatch.RollbackFailureThreshold}
-}
-
-func (s ReviewSettings) BehaviorModelConfig(route harness.ModelRoute) harness.SkillBehaviorModelConfig {
-	return harness.SkillBehaviorModelConfig{
-		Route: route, Timeout: time.Duration(s.Behavior.TimeoutSeconds) * time.Second,
-		MaxInputBytes: s.Behavior.MaxInputBytes, MaxOutputTokens: s.Behavior.MaxOutputTokens,
-		MaxModelCalls: s.Behavior.MaxSteps, MaxToolCalls: 24,
 	}
 }

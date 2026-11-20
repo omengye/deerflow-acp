@@ -72,6 +72,12 @@ func TestSkillModelValidatorIsolatedProviderCallsAndEvidence(t *testing.T) {
 	if strings.Contains(string(data), "fixture-secret") || strings.Contains(string(data), server.URL) {
 		t.Fatal("report exposed provider credentials or endpoint")
 	}
+	input := reviewInput()
+	input.Proposal.PublicationPolicy = harness.SkillPublicationSecurityOnly
+	report, err = validator.Validate(context.Background(), input)
+	if err != nil || calls.Load() != 3 || report.Security != "passed" || report.Behavior != "not_run" || report.IsolatedScripts || len(report.ModelChecks) != 1 || report.ModelChecks[0].Stage != "security" {
+		t.Fatalf("native submission did not use only the safety reviewer: %+v %v", report, err)
+	}
 }
 
 func TestSkillModelValidatorFailureAndBounds(t *testing.T) {

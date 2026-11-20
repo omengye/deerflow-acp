@@ -150,7 +150,7 @@ func (c *Client) skillLearningStatus(ctx context.Context) (harness.SkillLearning
 		status.Mode = "automatic"
 	}
 	patch, err := c.evolution.AutoPatchStatus(ctx)
-	status.AutoPatchEnabled = status.ProposalDiscoveryEnabled && patch.Enabled && patch.Options != nil
+	status.AutoPatchEnabled = status.ProposalDiscoveryEnabled && patch.Enabled
 	if status.AutoPatchEnabled {
 		status.Mode = "automatic"
 	}

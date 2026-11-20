@@ -23,7 +23,7 @@ func TestSkillLearningLaunchAutomaticPrimaryInheritance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.SkillLearning == nil || cfg.SkillLearning.Consolidation == nil || cfg.SkillLearning.Matching == nil || cfg.SkillGeneration == nil || cfg.SkillDiscovery == nil || cfg.SkillAutoPatch == nil {
+	if cfg.SkillLearning == nil || cfg.SkillLearning.Consolidation == nil || cfg.SkillLearning.Matching == nil || cfg.SkillGeneration == nil || cfg.SkillDiscovery == nil || !cfg.SkillGeneration.PublishAfterSecurityReview || cfg.SkillBehaviorEvaluator != nil {
 		t.Fatal("automatic chain incomplete")
 	}
 	for _, route := range []string{cfg.SkillLearning.Model.Route.BaseURL, cfg.SkillLearning.Consolidation.Route.BaseURL, cfg.SkillLearning.Matching.Route.BaseURL, cfg.SkillGeneration.Model.Route.BaseURL} {
@@ -48,7 +48,7 @@ func TestSkillLearningLaunchMigratesRemovedGatesWithoutRestoringThem(t *testing.
 	if _, err := ApplyConfig(path, &cfg, &connections, nil); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.SkillLearning == nil || cfg.SkillLearning.Matching == nil || cfg.SkillLearning.Consolidation == nil || cfg.SkillAutoPatch == nil {
+	if cfg.SkillLearning == nil || cfg.SkillLearning.Matching == nil || cfg.SkillLearning.Consolidation == nil || cfg.SkillGeneration == nil || !cfg.SkillGeneration.PublishAfterSecurityReview || cfg.SkillBehaviorEvaluator != nil {
 		t.Fatal("old settings disabled automatic pipeline")
 	}
 	raw, err := os.ReadFile(path)

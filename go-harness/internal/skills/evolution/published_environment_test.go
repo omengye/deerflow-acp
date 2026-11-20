@@ -29,7 +29,8 @@ func TestPublishedEnvironmentChangeReevaluatesWithoutRepublishing(t *testing.T) 
 		return in.Variant != "base" || in.Case.Kind != "targeted", nil
 	}
 	configureBehavior(t, next, evaluator, suite)
-	if err = next.ConfigureAutoPatch(*AutomaticSettings("primary").AutoPatchOptions()); err != nil {
+	legacyPolicy := harness.SkillAutoPatchOptions{MaxChangedLines: 200, ObservationHours: 72, MinObservations: 5, RollbackFailureThreshold: 2}
+	if err = next.ConfigureAutoPatch(legacyPolicy); err != nil {
 		t.Fatal(err)
 	}
 	f.service = next
@@ -61,7 +62,7 @@ func TestPublishedEnvironmentChangeReevaluatesWithoutRepublishing(t *testing.T) 
 	configureGeneration(t, restarted, g)
 	changed := &fixtureBehaviorEvaluator{id: "environment-B", result: evaluator.result}
 	configureBehavior(t, restarted, changed, suite)
-	if err = restarted.ConfigureAutoPatch(*AutomaticSettings("primary").AutoPatchOptions()); err != nil {
+	if err = restarted.ConfigureAutoPatch(legacyPolicy); err != nil {
 		t.Fatal(err)
 	}
 	if err = restarted.RunAutoPatch(ctx); err != nil {

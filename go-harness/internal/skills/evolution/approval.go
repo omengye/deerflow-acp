@@ -98,8 +98,8 @@ func (s *Service) RetryPublication(ctx context.Context, id string, approvalVersi
 	if p.Approval == nil || p.Approval.Review.ExpectedStateVersion != approvalVersion {
 		return Proposal{}, ErrConflict
 	}
-	if p.Approval.UserConfirmation != nil {
-		return s.retryConfirmedPublication(ctx, id, approvalVersion)
+	if p.Approval.FilePublicationKey() != "" {
+		return s.retryFilePublication(ctx, id, approvalVersion)
 	}
 	if p.Approval.Review.Actor == "auto_patch" {
 		ctx = context.WithValue(ctx, autoPatchContextKey{}, true)

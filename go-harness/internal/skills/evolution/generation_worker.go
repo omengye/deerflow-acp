@@ -18,7 +18,7 @@ import (
 
 type generationContextKey struct{}
 
-func (s *Service) attachGenerationProposal(ctx context.Context, tx *skills.PublicationTx, p Proposal) error {
+func (s *Service) attachGenerationProposal(ctx context.Context, tx *skills.PublicationTx, p *Proposal) error {
 	id, _ := ctx.Value(generationContextKey{}).(string)
 	if id == "" {
 		return nil
@@ -41,16 +41,25 @@ func (s *Service) attachGenerationProposal(ctx context.Context, tx *skills.Publi
 	if err != nil {
 		return err
 	}
-	return s.attachBehaviorGeneration(ctx, tx, p, r)
+	if r.input.PublicationPolicy == harness.SkillPublicationSecurityOnly {
+		p.PublicationPolicy, p.GenerationJobID = r.input.PublicationPolicy, id
+		return updateProposal(ctx, tx.SQL(), *p, p.StateVersion)
+	}
+	return s.attachBehaviorGeneration(ctx, tx, *p, r)
 }
 
 func (s *Service) guardGenerationValidation(ctx context.Context, tx *skills.PublicationTx, p Proposal) error {
-	if behavior, err := readBehavior(ctx, tx.SQL(), p.ID); err == nil && behavior.manual && p.BehaviorJobID == behavior.jobID {
-		return s.guardBehaviorManual(ctx, tx, p)
+	if p.PublicationPolicy == "" {
+		if behavior, err := readBehavior(ctx, tx.SQL(), p.ID); err == nil && behavior.manual && p.BehaviorJobID == behavior.jobID {
+			return s.guardBehaviorManual(ctx, tx, p)
+		}
 	}
 	var id string
 	err := tx.SQL().QueryRowContext(ctx, `SELECT job_id FROM df_skill_generation_inputs WHERE proposal_id=?`, p.ID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
+		if p.PublicationPolicy != "" {
+			return harness.ErrPermissionDenied
+		}
 		return s.guardBehaviorManual(ctx, tx, p)
 	}
 	if err != nil {
@@ -67,8 +76,46 @@ func (s *Service) guardGenerationValidation(ctx context.Context, tx *skills.Publ
 	if err != nil {
 		return err
 	}
-	if r.input.Target != p.Target || r.input.Request.Base != p.Base || r.candidate != p.CandidateVersion || !skills.SameOverlayBase(r.input.OverlayBase, p.OverlayBase) {
+	if r.proposal != p.ID || r.input.PublicationPolicy != p.PublicationPolicy || r.input.Target != p.Target || r.input.Request.Base != p.Base || r.candidate != p.CandidateVersion || !skills.SameOverlayBase(r.input.OverlayBase, p.OverlayBase) {
 		return harness.ErrSkillConflict
+	}
+	if p.PublicationPolicy == harness.SkillPublicationSecurityOnly {
+		if err := s.generation.checkConfiguration(r); err != nil {
+			return err
+		}
+		if p.GenerationJobID != id || p.Origin != "automatic" || p.OverlayBase != nil || p.Action != "edit" && p.Action != "create" {
+			return harness.ErrPermissionDenied
+		}
+		if r.input.Submission != nil {
+			_, err := s.submittedOriginTx(ctx, tx.SQL(), p, r)
+			return err
+		}
+		if r.input.DiscoveryID == "" {
+			if p.Trigger.Type != "operator_generation" && p.Trigger.Type != "operator_submission" {
+				return harness.ErrPermissionDenied
+			}
+			return nil
+		}
+		d, _, _, err := readDiscovery(ctx, tx.SQL(), r.input.DiscoveryID)
+		if err != nil {
+			return err
+		}
+		if d.kind() != p.Trigger.Type || d.ReviewDraft || s.discovery == nil || d.Options != s.discovery.options {
+			return harness.ErrPermissionDenied
+		}
+		if err := s.guardDiscoveryApproval(ctx, tx, p); err != nil {
+			return err
+		}
+		if d.kind() == "experience_pattern" {
+			external, err := s.externallyDerived(ctx, tx, d.Evidence)
+			if err != nil {
+				return err
+			}
+			if external {
+				return harness.ErrPermissionDenied
+			}
+		}
+		return nil
 	}
 	if err = s.guardExperienceCandidate(ctx, tx, r); err != nil {
 		return err
@@ -292,16 +339,9 @@ func (s *Service) generateOne(ctx context.Context, job skillmaintenance.Job) (st
 		if err != nil {
 			return generationFailure(err)
 		}
-		if p.Status != "validating" {
-			return generationProposalOutcome(p)
-		}
 		// A submitted or resumed package is already bound to this durable job.
 		// Reuse its proposal and exact bytes; do not generate or submit it again.
-		p, err = s.Validate(ctx, p.ID, p.StateVersion)
-		if err != nil {
-			return generationFailure(err)
-		}
-		return generationProposalOutcome(p)
+		return s.finishGeneration(ctx, p)
 	}
 	if r.candidate == "" {
 		candidate, saved, err := s.generatedOutput(ctx, job.ID)
@@ -309,6 +349,9 @@ func (s *Service) generateOne(ctx context.Context, job skillmaintenance.Job) (st
 			return generationFailure(err)
 		}
 		if !saved {
+			if r.input.GeneratorIdentity != s.generation.identity {
+				return generationFailure(errGenerationConfiguration)
+			}
 			candidate, err = s.generation.generator.Generate(ctx, input)
 			if err != nil {
 				return generationFailure(err)
@@ -352,8 +395,23 @@ func (s *Service) generateOne(ctx context.Context, job skillmaintenance.Job) (st
 	if err != nil {
 		return generationFailure(err)
 	}
+	return s.finishGeneration(ctx, p)
+}
+
+func (s *Service) finishGeneration(ctx context.Context, p Proposal) (string, bool) {
+	var err error
 	if p.Status == "validating" {
 		p, err = s.Validate(ctx, p.ID, p.StateVersion)
+		if err != nil {
+			var failure *harness.SkillValidationFailure
+			if p.PublicationPolicy == harness.SkillPublicationSecurityOnly && errors.As(err, &failure) && failure.Code == "review_runtime_unavailable" {
+				return "model_failed", true
+			}
+			return generationFailure(err)
+		}
+	}
+	if p.PublicationPolicy == harness.SkillPublicationSecurityOnly && (p.Status == "pending_review" || p.Status == "publishing") {
+		p, err = s.publishSecurityReviewed(ctx, p.ID, p.StateVersion)
 		if err != nil {
 			return generationFailure(err)
 		}
@@ -376,7 +434,7 @@ func generationProposalOutcome(p Proposal) (string, bool) {
 // it reviewable. Bounded, replayable metadata cleanup closes that record on
 // failure/cancellation, including after a process crash during finalization.
 func (s *Service) reconcileGeneration(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT i.job_id FROM df_skill_generation_inputs i JOIN df_skill_maintenance_jobs j ON j.id=i.job_id JOIN df_skill_proposals p ON p.id=i.proposal_id WHERE j.state IN ('failed','cancelled') AND p.status='validating' AND NOT (j.error_code='configuration_changed' AND EXISTS(SELECT 1 FROM df_skill_behavior_evaluations e WHERE e.proposal_id=p.id AND e.manual=1 AND e.job_id<>i.job_id)) ORDER BY i.job_id LIMIT 32`)
+	rows, err := s.db.QueryContext(ctx, `SELECT i.job_id FROM df_skill_generation_inputs i JOIN df_skill_maintenance_jobs j ON j.id=i.job_id JOIN df_skill_proposals p ON p.id=i.proposal_id WHERE j.state IN ('failed','cancelled') AND (p.status='validating' OR (p.status='pending_review' AND json_extract(p.payload,'$.publication_policy')='security_only' AND NOT EXISTS(SELECT 1 FROM df_skill_approvals a WHERE a.proposal_id=p.id))) AND NOT (j.error_code='configuration_changed' AND EXISTS(SELECT 1 FROM df_skill_behavior_evaluations e WHERE e.proposal_id=p.id AND e.manual=1 AND e.job_id<>i.job_id)) ORDER BY i.job_id LIMIT 32`)
 	if err != nil {
 		return err
 	}
@@ -412,7 +470,7 @@ func (s *Service) reconcileGeneration(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if p.Status != "validating" {
+			if !generationCanFail(p) {
 				return nil
 			}
 			return closeGenerationProposal(ctx, tx, r, p)
@@ -427,6 +485,10 @@ func (s *Service) reconcileGeneration(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func generationCanFail(p Proposal) bool {
+	return p.Status == "validating" || p.Status == "pending_review" && p.PublicationPolicy == harness.SkillPublicationSecurityOnly && p.Approval == nil
 }
 
 func closeGenerationProposal(ctx context.Context, tx *sql.Tx, r generationRecord, p Proposal) error {
@@ -455,7 +517,7 @@ func closeGenerationProposal(ctx context.Context, tx *sql.Tx, r generationRecord
 		p.Status = "rejected"
 		p.Error = "Skill generation was cancelled by the operator."
 	}
-	if r.job.ErrorCode == "base_changed" {
+	if r.job.ErrorCode == "base_changed" || p.PublicationPolicy == harness.SkillPublicationSecurityOnly && r.job.ErrorCode == "evidence_changed" {
 		p.Status = "stale"
 	}
 	if p.EvaluationDigest == "" {
@@ -495,7 +557,7 @@ func finalizeGenerationTx(ctx context.Context, tx *sql.Tx, job skillmaintenance.
 	if err != nil {
 		return err
 	}
-	if p.Status != "validating" {
+	if !generationCanFail(p) {
 		return nil
 	}
 	return closeGenerationProposal(ctx, tx, r, p)
@@ -510,10 +572,15 @@ func (s *Service) RunGeneration(ctx context.Context) (bool, error) {
 	}
 	cleanup, cancel := context.WithTimeout(ctx, 2*time.Second)
 	before := s.reconcileGeneration(cleanup)
-	before = errors.Join(before, s.reconcileBehavior(cleanup))
+	if !s.securityPublicationEnabled() {
+		before = errors.Join(before, s.reconcileBehavior(cleanup))
+	}
 	cancel()
 	var activeID string
-	kinds := []skillmaintenance.JobKind{skillmaintenance.SkillGeneration, skillmaintenance.SkillBehavior}
+	kinds := []skillmaintenance.JobKind{skillmaintenance.SkillGeneration}
+	if !s.securityPublicationEnabled() {
+		kinds = append(kinds, skillmaintenance.SkillBehavior)
+	}
 	for kind := range s.maintenanceProducers {
 		kinds = append(kinds, kind)
 	}
@@ -547,7 +614,10 @@ func (s *Service) RunGeneration(ctx context.Context) (bool, error) {
 			err = nil
 		}
 	}
-	return worked, errors.Join(before, err, s.reconcileGeneration(cleanup), s.reconcileBehavior(cleanup))
+	if !s.securityPublicationEnabled() {
+		err = errors.Join(err, s.reconcileBehavior(cleanup))
+	}
+	return worked, errors.Join(before, err, s.reconcileGeneration(cleanup))
 }
 
 func (s *Service) boundReviewRetry(ctx context.Context, id string, attempts int, retry bool) bool {

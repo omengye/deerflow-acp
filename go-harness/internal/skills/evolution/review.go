@@ -34,7 +34,7 @@ func (s *Service) Approve(ctx context.Context, id string, review Review) (Propos
 	if retired {
 		return proposal, invalid("historical candidates cannot be resumed")
 	}
-	if proposal.Origin == "automatic" || s.autoPatch != nil {
+	if proposal.Origin == "automatic" || s.autoPatch != nil || s.securityPublicationEnabled() {
 		if automatic, _ := ctx.Value(autoPatchContextKey{}).(bool); !automatic {
 			return proposal, invalid("automatic candidates are adopted by the host after validation; manual approval is retired")
 		}

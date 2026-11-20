@@ -82,7 +82,7 @@ func (s *Service) BehaviorEnabled() bool { return s.behavior != nil }
 // ConfigureBehavior fixes trusted fixture/oracle content before workers start.
 // A behavioral evaluator has no role in authorizing publication.
 func (s *Service) ConfigureBehavior(evaluator harness.SkillBehaviorEvaluator, options harness.SkillBehaviorOptions) error {
-	if s.behavior != nil || s.generation == nil || evaluator == nil || evaluator.Identity() == "" || !bounded(evaluator.Identity(), 128) {
+	if s.behavior != nil || s.securityPublicationEnabled() || s.generation == nil || evaluator == nil || evaluator.Identity() == "" || !bounded(evaluator.Identity(), 128) {
 		return invalid("behavior requires configured generation, evaluator and bounded host suites")
 	}
 	h := &behaviorHost{evaluator: evaluator, identity: evaluator.Identity(), suites: map[string]behaviorBinding{}}

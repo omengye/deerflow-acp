@@ -71,6 +71,17 @@ fn version(value: u64) -> bool {
     value > 0 && value < i64::MAX as u64
 }
 
+fn validate_experience_policy(version: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        matches!(
+            version,
+            "procedural-experience-v1" | "procedural-experience-v2"
+        ),
+        "不支持的学习策略版本"
+    );
+    Ok(())
+}
+
 fn row_title(value: &str) -> String {
     let mut chars = value
         .chars()
@@ -157,12 +168,12 @@ pub(super) struct Status {
 
 impl Status {
     fn validate(&self) -> anyhow::Result<()> {
+        validate_experience_policy(&self.version)?;
         if let Some(queue) = &self.queue {
             queue.validate()?;
         }
         anyhow::ensure!(
-            self.version == "procedural-experience-v1"
-                && self.mode == "automatic"
+            self.mode == "automatic"
                 && (!self.auto_patch_enabled || self.proposal_discovery_enabled)
                 && (!self.proposal_discovery_enabled || self.matching_enabled)
                 && (!self.enabled || self.idle_seconds > 0)
@@ -178,7 +189,7 @@ impl Status {
                 ]
                 .iter()
                 .all(|n| *n <= i64::MAX as u64),
-            "学习状态版本或阶段关系无效"
+            "学习模式、阶段关系或计数无效"
         );
         Ok(())
     }
@@ -186,12 +197,12 @@ impl Status {
     fn summary(&self) -> String {
         let on = |enabled| if enabled { "已启用" } else { "关闭" };
         format!(
-            "提取 {} · 归并 {} · 匹配 {} · 跨会话 {}\n模式 {} · 空闲等待 {} 秒\n此数据目录合计：待处理 {} · 经验 {} · 归并 {} · 匹配 {}\n后台执行器{}；在线不代表已有学习产出。数量是全目录累计值，不代表当前聊天已完成。排查顺序：聊天贡献 → 原任务结算与空闲等待 → 提取 → 归并匹配 → 生成 → 验证 → 自动采用与观察。",
+            "提取 {} · 归并 {} · 匹配 {} · 跨会话 {}\n模式 {} · 空闲等待 {} 秒\n此数据目录合计：待处理 {} · 经验 {} · 归并 {} · 匹配 {}\n后台执行器{}；在线不代表已有学习产出。数量是全目录累计值，不代表当前聊天已完成。排查顺序：聊天贡献 → 原任务结算与空闲等待 → 提取 → 归并匹配 → 生成 → 安全审查 → 自动发布。",
             on(self.enabled),
             on(self.consolidation_enabled),
             on(self.matching_enabled),
             on(self.cross_session_enabled),
-            "自动验证、采用、观察与撤回",
+            "安全审查后自动发布",
             self.idle_seconds,
             self.pending_inputs,
             self.experiences,
@@ -1696,7 +1707,7 @@ impl LearningBrowser {
                 (
                     None,
                     format!(
-                        "原人工重试已入队 {}。这是原请求结果，不代表当前作业或授权状态。原创建预留、费用和 episode 消费保留；此次复用原证据不新增票，新技能必须人工发布。",
+                        "原人工重试已入队 {}。这是原请求结果，不代表当前作业或授权状态。原创建预留、费用和 episode 消费保留；此次复用原证据不新增票，新候选通过安全审查后自动发布。",
                         data["generation_id"]
                     ),
                 )

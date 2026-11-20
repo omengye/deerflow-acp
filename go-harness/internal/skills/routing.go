@@ -64,13 +64,21 @@ func RouteVersionTx(ctx context.Context, tx *sql.Tx, source, name, current, work
 // AdmitObservationTx records immutable baseline and workspace authority in the
 // same publication transaction. It never authorizes another workspace.
 func AdmitObservationTx(ctx context.Context, tx *sql.Tx, target harness.SkillTarget, workspace, base, candidate string) error {
+	return admitRouteTx(ctx, tx, target, workspace, base, candidate, "observing")
+}
+
+func admitRouteTx(ctx context.Context, tx *sql.Tx, target harness.SkillTarget, workspace, base, candidate, state string) error {
 	if workspace == "" {
 		workspace = target.Workspace
 	}
 	if workspace == "" {
 		return fmt.Errorf("%w: automatic adoption requires a workspace", harness.ErrPermissionDenied)
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO df_skill_routes(source_key,name,workspace,state,stable_version,public_version,candidate_version) VALUES(?,?,?,'observing',?,?,?)
- ON CONFLICT(source_key,name) DO UPDATE SET workspace=excluded.workspace,state='observing',public_version=CASE WHEN df_skill_routes.candidate_version=excluded.stable_version THEN df_skill_routes.public_version ELSE excluded.public_version END,stable_version=excluded.stable_version,candidate_version=excluded.candidate_version`, target.SourceIdentity, target.Name, workspace, base, base, candidate)
+	stable := base
+	if state == "stable" {
+		stable = candidate
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO df_skill_routes(source_key,name,workspace,state,stable_version,public_version,candidate_version) VALUES(?,?,?,?,?,?,?)
+ ON CONFLICT(source_key,name) DO UPDATE SET workspace=excluded.workspace,state=excluded.state,public_version=CASE WHEN df_skill_routes.candidate_version=excluded.public_version THEN df_skill_routes.public_version ELSE excluded.public_version END,stable_version=excluded.stable_version,candidate_version=excluded.candidate_version`, target.SourceIdentity, target.Name, workspace, state, stable, base, candidate)
 	return err
 }

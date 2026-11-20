@@ -14,6 +14,10 @@ import (
 // source files stay authoritative: any explicit file edit supersedes the route.
 // This also prevents external file readers from receiving an observing version.
 func (p *PublicationTx) PublishAutomatic(version string, expected SkillHead, enabled bool, workspace string) (SkillHead, error) {
+	return p.publishScoped(version, expected, enabled, workspace, "observing")
+}
+
+func (p *PublicationTx) publishScoped(version string, expected SkillHead, enabled bool, workspace, state string) (SkillHead, error) {
 	head, err := p.Current()
 	if err != nil {
 		return head, err
@@ -64,7 +68,7 @@ func (p *PublicationTx) PublishAutomatic(version string, expected SkillHead, ena
 			return head, ErrPublicationConflict
 		}
 	}
-	if err = AdmitObservationTx(p.ctx, p.tx, p.Target(), workspace, head.Version, version); err != nil {
+	if err = admitRouteTx(p.ctx, p.tx, p.Target(), workspace, head.Version, version, state); err != nil {
 		return head, err
 	}
 	if version != "" && version != physical {
