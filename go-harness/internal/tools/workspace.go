@@ -14,6 +14,7 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
@@ -176,6 +177,9 @@ func workspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root) 
 			if strings.ContainsRune(text, 0) {
 				return nil
 			}
+			// Mask before matching and truncating so search cannot probe secrets
+			// byte-by-byte or split a secret across the 400-byte line cap.
+			text = secrets.Mask(text)
 			for n, line := range strings.Split(text, "\n") {
 				if strings.Contains(line, in.Text) {
 					if len(line) > 400 {
@@ -199,7 +203,9 @@ func workspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root) 
 		return result, nil
 	}
 	write, err := inferTool("write_file", "Write UTF-8 text inside the workspace; maximum 512 KiB. Existing files require expected_version from read_file. Omitted version or absent means create-only. Conflicts require a fresh read.", func(ctx context.Context, in writeInput) (string, error) {
-		return mutateVersionedFile(ctx, root, in.Path, in.ExpectedVersion, func(string, bool) (string, error) { return in.Content, nil })
+		return mutateVersionedFile(ctx, root, in.Path, in.ExpectedVersion, func(original string, _ bool) (string, error) {
+			return restoreSecretMarkersInFile(ctx, in.Content, original)
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -209,10 +215,18 @@ func workspaceTools(ctx context.Context, req harness.RunRequest, root *os.Root) 
 			return "", harness.MarkToolNotExecuted(fmt.Errorf("old_text must not be empty"))
 		}
 		return mutateVersionedFile(ctx, root, in.Path, in.ExpectedVersion, func(original string, exists bool) (string, error) {
-			if !exists || strings.Count(original, in.OldText) != 1 {
+			oldText, err := restoreSecretMarkersInFile(ctx, in.OldText, original)
+			if err != nil {
+				return "", err
+			}
+			newText, err := restoreSecretMarkersInFile(ctx, in.NewText, original)
+			if err != nil {
+				return "", err
+			}
+			if !exists || strings.Count(original, oldText) != 1 {
 				return "", fmt.Errorf("old_text must match exactly once in an existing file")
 			}
-			return strings.Replace(original, in.OldText, in.NewText, 1), nil
+			return strings.Replace(original, oldText, newText, 1), nil
 		})
 	})
 	if err != nil {

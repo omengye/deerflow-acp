@@ -11,6 +11,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/documents"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
@@ -130,7 +131,7 @@ func (s *Store) ReadAttachment(ctx context.Context, x harness.Session, id string
 	for end > offset && end < int64(len(data)) && !utf8.RuneStart(data[end]) {
 		end--
 	}
-	return harness.ToolOutputChunk{Text: string(data[offset:end]), Offset: offset, NextOffset: end, TotalBytes: int64(len(data)), EOF: end == int64(len(data))}, nil
+	return harness.ToolOutputChunk{Text: secrets.MaskRange(string(data), int(offset), int(end)), Offset: offset, NextOffset: end, TotalBytes: int64(len(data)), EOF: end == int64(len(data))}, nil
 }
 
 func (s *Store) AnalyzeAttachment(ctx context.Context, x harness.Session, id string, header bool) (any, error) {

@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 var sensitiveJSONKey = regexp.MustCompile(`(?i)^(?:api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key|password|passwd|secret|proxy[-_]?authorization|authorization|set[-_]?cookie|cookie|token)$`)
@@ -43,11 +46,38 @@ func redact(text string, limit int) string {
 func redactPlain(text string) string {
 	// Normalize before matching: a hidden character inside token, Bearer or
 	// a key delimiter must not make a secret survive the filtering pass.
-	text = normalizeLearningText(text)
+	// Values stored in the secret vault are masked both before and after.
+	// Sentinel characters go first so removing them cannot rejoin a value.
+	text = secrets.Mask(normalizeLearningText(secrets.Mask(strings.Map(dropMarkerSentinel, text))))
+	// Keep each marker as one token: the "secret: value" pattern would
+	// otherwise match inside it. A marker that is the value of a credential
+	// assignment is still redacted with the assignment.
+	var markers []string
+	text = secrets.ReplaceMarkers(text, func(marker string) string {
+		markers = append(markers, marker)
+		return markerSentinel(len(markers) - 1)
+	})
 	for _, pattern := range sensitiveText {
 		text = pattern.ReplaceAllString(text, "[redacted]")
 	}
+	for i, marker := range markers {
+		text = strings.Replace(text, markerSentinel(i), marker, 1)
+	}
 	return text
+}
+
+// Private-use characters delimit protected markers while patterns run.
+const markerOpen, markerClose = '\uE000', '\uE001'
+
+func markerSentinel(i int) string {
+	return string(markerOpen) + strconv.Itoa(i) + string(markerClose)
+}
+
+func dropMarkerSentinel(r rune) rune {
+	if r == markerOpen || r == markerClose {
+		return -1
+	}
+	return r
 }
 
 func normalizeLearningText(text string) string {

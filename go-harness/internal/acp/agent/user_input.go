@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/acp/protocol"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 const askUserQuestionMethod = "_deerflow/ask_user_question"
@@ -33,11 +35,38 @@ func (a *Agent) supportsUserInput() bool {
 	return json.Unmarshal(data, &capability) == nil && capability.Version == 1 && capability.RequestMethod == askUserQuestionMethod
 }
 
-func (a *Agent) userInputContext(ctx context.Context) context.Context {
-	if !a.supportsUserInput() {
-		return ctx
+func (a *Agent) remoteCredentialVersion() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	df, _ := a.capabilities.Meta["deerflow"].(map[string]any)
+	version, _ := df["mobileCredentials"].(float64)
+	if a.initialized && (version == 1 || version == 2) {
+		return int(version)
 	}
-	return interaction.WithUserInput(ctx, a.askUserQuestion)
+	return 0
+}
+
+func (a *Agent) localCredentialForm() bool {
+	if runtime.GOOS != "windows" || a.remoteCredentialVersion() != 0 || !a.supportsUserInput() {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	df, _ := a.capabilities.Meta["deerflow"].(map[string]any)
+	local, _ := df["desktopCredentials"].(bool)
+	return local
+}
+
+func (a *Agent) userInputContext(ctx context.Context) context.Context {
+	if a.localCredentialForm() {
+		ctx = secrets.WithCredentialPrompt(ctx, secrets.DesktopCredentialPrompt)
+	} else {
+		ctx = secrets.WithRemoteCredentialClient(ctx)
+	}
+	if a.supportsUserInput() {
+		return interaction.WithUserInput(ctx, a.askUserQuestion)
+	}
+	return ctx
 }
 
 // Questions are connection-owned interactions, independent of tool approvals.

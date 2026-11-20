@@ -71,12 +71,12 @@ func validatedNetwork(incoming any, previous map[string]any) (map[string]any, er
 	return merged, nil
 }
 
-func probeNetworkConfig(request, saved map[string]any) (harness.NetworkConfig, error) {
+func (s service) probeNetworkConfig(request, saved map[string]any) (harness.NetworkConfig, error) {
 	merged, err := validatedNetwork(request["network"], readObject(saved, "network"))
 	if err != nil {
 		return harness.NetworkConfig{}, err
 	}
-	return launch.ResolveNetworkConfig(merged)
+	return launch.ResolveNetworkConfig(merged, s.configValues(merged))
 }
 
 func (s service) testNetwork(request map[string]any) (map[string]any, error) {
@@ -84,7 +84,7 @@ func (s service) testNetwork(request map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	config, err := probeNetworkConfig(request, saved)
+	config, err := s.probeNetworkConfig(request, saved)
 	if err != nil {
 		return nil, err
 	}

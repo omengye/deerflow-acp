@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/omengye/deerflow-acp/go-harness/internal/launch"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/websearch"
 	"go.yaml.in/yaml/v3"
 )
@@ -20,7 +22,24 @@ func (s service) searchManager() (*websearch.Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return websearch.New(filepath.Join(filepath.Dir(s.config), "search-providers.json"), config)
+	manager, err := websearch.New(filepath.Join(filepath.Dir(s.config), "search-providers.json"), config)
+	if err != nil {
+		return nil, err
+	}
+	attachSearchSecretCheck(s.config, manager)
+	return manager, nil
+}
+
+func attachSearchSecretCheck(configPath string, manager *websearch.Manager) {
+	if manager == nil {
+		return
+	}
+	manager.UseSecretCheck(func(_ context.Context, name string) bool {
+		ref := secrets.ReferenceTo(name)
+		values := launch.ReadConfigValues(configPath, "", ref)
+		resolved, err := values.Resolve(ref)
+		return err == nil && resolved != "" && len(resolved) <= 16384
+	})
 }
 
 // Called under the configuration lock. Persist the search store first, then

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/omengye/deerflow-acp/go-harness/internal/launch"
 )
 
 func TestReadinessChecksSavedConfigWithoutSecretsOrMutations(t *testing.T) {
@@ -40,14 +42,14 @@ func TestReadinessReportsMissingCredentialsAndAuthorization(t *testing.T) {
 	t.Setenv("MVP_TEST_BRAVE", "")
 	data := map[string]any{"models": []any{map[string]any{"name": "first", "model": "fixture", "provider": "openai", "api_key": "${MVP_TEST_BRAVE:-not-configured}"}}, "tools": []any{map[string]any{"name": "web_search", "api_key": "${MVP_TEST_BRAVE:-}"}}}
 	states := map[string]string{}
-	for _, item := range capabilityReadiness(data, t.TempDir()) {
+	for _, item := range capabilityReadiness(data, t.TempDir(), launch.ConfigValues{}) {
 		states[item["id"]] = item["state"]
 	}
 	if states["model"] != "missing_credential" || states["web_search"] != "missing_credential" || states["commands"] != "not_authorized" || states["host_opencli"] != "not_authorized" {
 		t.Fatal(states)
 	}
 	t.Setenv("MVP_TEST_BRAVE", "fixture-secret")
-	for _, item := range capabilityReadiness(data, t.TempDir()) {
+	for _, item := range capabilityReadiness(data, t.TempDir(), launch.ConfigValues{}) {
 		if (item["id"] == "model" || item["id"] == "web_search") && item["state"] != "unverified" {
 			t.Fatal("local config cannot prove connectivity", item)
 		}
@@ -66,15 +68,15 @@ func TestReadinessDoesNotInitializeDataAndFollowsModelSelection(t *testing.T) {
 		map[string]any{"name": "first", "provider": "openai", "model": "fixture", "api_key": ""},
 		map[string]any{"name": "second", "provider": "openai", "model": "fixture", "api_key": "test-only"},
 	}, "tools": []any{map[string]any{"name": "web_search", "api_key": "test-only"}}}
-	if capabilityReadiness(data, t.TempDir())[0]["state"] != "unverified" {
+	if capabilityReadiness(data, t.TempDir(), launch.ConfigValues{})[0]["state"] != "unverified" {
 		t.Fatal("empty local model failed to fall back")
 	}
 	data["api"] = map[string]any{"model_name": "first"}
-	if capabilityReadiness(data, t.TempDir())[0]["state"] != "missing_credential" {
+	if capabilityReadiness(data, t.TempDir(), launch.ConfigValues{})[0]["state"] != "missing_credential" {
 		t.Fatal("legacy selected model ignored")
 	}
 	readObject(data, "local_acp")["tool_allowlist"] = []any{}
-	for _, item := range capabilityReadiness(data, t.TempDir()) {
+	for _, item := range capabilityReadiness(data, t.TempDir(), launch.ConfigValues{}) {
 		if item["id"] != "model" && item["state"] != "not_authorized" {
 			t.Fatal("empty allowlist widened", item)
 		}
@@ -88,7 +90,7 @@ func TestReadinessResolvesOpenCLIRelativeToConfigWithoutExecuting(t *testing.T) 
 		t.Fatal(err)
 	}
 	data := map[string]any{"sandbox": map[string]any{"allow_host_tools": true}, "tools": []any{map[string]any{"name": "host_opencli", "executable": "./fixture-cli.exe"}}}
-	for _, item := range capabilityReadiness(data, dir) {
+	for _, item := range capabilityReadiness(data, dir, launch.ConfigValues{}) {
 		if item["id"] == "host_opencli" && item["state"] != "unverified" {
 			t.Fatal("relative configured launcher not resolved", item)
 		}

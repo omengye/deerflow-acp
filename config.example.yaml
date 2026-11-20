@@ -64,6 +64,7 @@ models:
     display_name: Qwen 3.6 Plus
     provider: openai
     model: qwen3.6-plus
+    # Or keep the key in DeerFlow's secret vault: api_key: ${secret:DASHSCOPE_API_KEY}
     api_key: ${DASHSCOPE_API_KEY:-not-configured}
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     # auto: Tencent Copilot and Claude use max_tokens; other chat routes use

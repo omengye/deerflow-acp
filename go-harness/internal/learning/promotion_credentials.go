@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 var instructionCredentialAssignment = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])(?:["'])?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key|password|passwd|secret|proxy[-_]?authorization|authorization|set[-_]?cookie|cookie|token)(?:["'])?[ \t]*[:=][ \t]*("[^"\r\n]*"|'[^'\r\n]*'|Bearer[ \t]+[^\s,;]+|[^\s,;]+)`)
@@ -23,8 +25,16 @@ func ValidatePromotionInstructions(text string) error {
 	if len(text) == 0 || len(text) > 128<<10 || !utf8.ValidString(text) || strings.ContainsRune(text, 0) {
 		return invalid("generated instructions exceed text bounds")
 	}
+	if secrets.ContainsKnown(text) {
+		return invalid("generated instructions contain a value stored in the secret vault")
+	}
 	text = normalizeLearningText(text)
 	for range 16 {
+		// Hidden characters and escapes are removed by now, so check again.
+		if secrets.ContainsKnown(text) {
+			return invalid("generated instructions contain a value stored in the secret vault")
+		}
+		text = neutralizeSecretMarkers(text)
 		if instructionsContainCredential(text) {
 			return invalid("generated instructions contain a credential-like literal")
 		}
@@ -44,6 +54,12 @@ func ValidatePromotionInstructions(text string) error {
 		text = decoded
 	}
 	return invalid("generated instruction escapes exceed inspection bounds")
+}
+
+// A [secret:NAME] marker refers to a vault secret by name, so instructions
+// may use it wherever they would use a placeholder.
+func neutralizeSecretMarkers(text string) string {
+	return secrets.ReplaceMarkers(text, func(string) string { return "<secret>" })
 }
 
 func instructionsContainCredential(text string) bool {

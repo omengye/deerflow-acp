@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
@@ -98,6 +99,6 @@ func (s *Store) ReadToolOutput(ctx context.Context, x harness.Session, id string
 	for end > offset && end < int64(len(data)) && !utf8.RuneStart(data[end]) {
 		end--
 	}
-	chunk = harness.ToolOutputChunk{Text: string(data[offset:end]), Offset: offset, NextOffset: end, TotalBytes: int64(len(data)), EOF: end == int64(len(data))}
+	chunk = harness.ToolOutputChunk{Text: secrets.MaskRange(string(data), int(offset), int(end)), Offset: offset, NextOffset: end, TotalBytes: int64(len(data)), EOF: end == int64(len(data))}
 	return chunk, nil
 }

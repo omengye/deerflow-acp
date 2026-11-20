@@ -30,6 +30,7 @@ enum Outgoing {
 }
 
 struct ClientInner {
+    secure_credential_transport: bool,
     outgoing: Sender<Outgoing>,
     pending: Mutex<HashMap<Uuid, Sender<Result<ResponsePayload, RpcError>>>>,
     delivery: Mutex<replay::Delivery>,
@@ -73,6 +74,8 @@ impl DaemonClient {
             }
         }
         let stream = stream.context("could not reach Waku daemon within 5 seconds")?;
+        let secure_credential_transport =
+            url.scheme() == "wss" || stream.peer_addr()?.ip().is_loopback();
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
         let (mut socket, _) =
@@ -111,6 +114,7 @@ impl DaemonClient {
 
         let (outgoing, outgoing_rx) = unbounded();
         let inner = Arc::new(ClientInner {
+            secure_credential_transport,
             outgoing,
             pending: Mutex::new(HashMap::new()),
             delivery: Mutex::new(delivery),
@@ -148,6 +152,10 @@ impl DaemonClient {
     /// subscription's initial snapshot and wait for an actual replacement.
     pub fn same_connection(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    pub fn allows_credential_enrollment(&self) -> bool {
+        self.inner.secure_credential_transport && !self.is_disconnected()
     }
 
     pub fn is_disconnected(&self) -> bool {
@@ -473,6 +481,7 @@ mod tests {
             closed.send(()).unwrap();
         });
         let client = DaemonClient::connect(&address.to_string(), "test-token".into()).unwrap();
+        assert!(client.allows_credential_enrollment());
         let started = Instant::now();
         assert!(
             client

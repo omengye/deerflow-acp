@@ -13,6 +13,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
 type artifactInput struct {
@@ -20,6 +21,7 @@ type artifactInput struct {
 }
 
 type artifactTool struct {
+	toolidentity.Native
 	info  *schema.ToolInfo
 	stage func(context.Context, string, []string) ([]harness.Content, error)
 }
@@ -35,7 +37,7 @@ func PresentFilesTool(stage func(context.Context, string, []string) ([]harness.C
 	if err != nil {
 		return nil, err
 	}
-	return &artifactTool{info: info, stage: stage}, nil
+	return &artifactTool{Native: toolidentity.Builtin("present_files"), info: info, stage: stage}, nil
 }
 
 func (t *artifactTool) Info(context.Context) (*schema.ToolInfo, error) { return t.info, nil }

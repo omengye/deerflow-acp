@@ -3903,6 +3903,7 @@ impl Waku {
                         | DriverEvent::AgentPresetSelected(_)
                         | DriverEvent::AutoTitleUpdated(_)
                         | DriverEvent::Permission { .. }
+                        | DriverEvent::PermissionResolved { .. }
                         | DriverEvent::PromptSubmitted { .. }
                         | DriverEvent::SteerAccepted { .. }
                         | DriverEvent::SteerRejected { .. }

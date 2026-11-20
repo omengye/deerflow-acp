@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 // Coordinate all native mutations, including overlapping roots and path aliases.
@@ -63,16 +64,20 @@ func readVersionedFileRange(ctx context.Context, root *os.Root, path string, off
 		Truncated  bool   `json:"truncated,omitempty"`
 		Content    string `json:"content"`
 	}{Version: fileVersion(content), StartLine: offset, EndLine: offset - 1, TotalLines: len(lines)}
-	var b strings.Builder
+	rangeStart, rangeEnd := 0, 0
+	for i := 0; i < offset-1 && i < len(lines); i++ {
+		rangeStart += len(lines[i])
+	}
+	rangeEnd = rangeStart
 	for i := offset - 1; i >= 0 && i < len(lines) && i < offset-1+limit; i++ {
-		if b.Len()+len(lines[i]) > maxReadRangeBytes {
+		if (rangeEnd-rangeStart)+len(lines[i]) > maxReadRangeBytes {
 			result.Truncated = true
 			break
 		}
-		b.WriteString(lines[i])
+		rangeEnd += len(lines[i])
 		result.EndLine = i + 1
 	}
-	result.Content = b.String()
+	result.Content = secrets.MaskRange(content, rangeStart, rangeEnd)
 	return marshalString(result)
 }
 

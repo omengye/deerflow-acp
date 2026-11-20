@@ -15,6 +15,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 const (
@@ -152,6 +153,12 @@ func keepRecent(compaction adk.ChatModelAgentMiddleware) int {
 }
 
 func finalizeCompaction(original []*schema.Message, summary *schema.Message, keep int) ([]*schema.Message, error) {
+	if summary != nil && secrets.ContainsKnown(summary.Content) {
+		// A summary may quote a credential the user pasted before storing it.
+		masked := *summary
+		masked.Content = secrets.Mask(summary.Content)
+		summary = &masked
+	}
 	if err := validateCompactionSummary(summary, 1); err != nil {
 		return nil, err
 	}

@@ -127,6 +127,13 @@ type ModelTiming struct {
 	AttemptID    string    `json:"attempt_id,omitempty"`
 }
 
+// ServiceCredentialScope is assigned by the host to the exact approved consumer.
+type ServiceCredentialScope struct {
+	Consumer string `json:"consumer"`
+	Service  string `json:"service"`
+	Account  string `json:"account"`
+}
+
 type PermissionRequest struct {
 	ID            string `json:"id"`
 	SessionID     string `json:"sessionId"`
@@ -135,8 +142,10 @@ type PermissionRequest struct {
 	ToolCallID    string `json:"toolCallId"`
 	ToolName      string `json:"toolName"`
 	// TrustedBuiltin is assigned by engine constructors, never tool metadata.
-	TrustedBuiltin bool            `json:"trustedBuiltin,omitempty"`
-	Arguments      json.RawMessage `json:"arguments"`
+	TrustedBuiltin   bool                    `json:"trustedBuiltin,omitempty"`
+	CredentialTarget string                  `json:"credentialTarget,omitempty"`
+	CredentialScope  *ServiceCredentialScope `json:"credentialScope,omitempty"`
+	Arguments        json.RawMessage         `json:"arguments"`
 }
 
 type PermissionDecision string

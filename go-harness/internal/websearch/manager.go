@@ -15,17 +15,42 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/network"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 // Manager keeps mutable preferences separate from immutable execution versions.
 // Selection changes do not modify YAML or invalidate existing run checkpoints.
 type Manager struct {
-	network harness.NetworkConfig
-	path    string
-	seed    harness.SearchConfig
-	mu      sync.Mutex
-	memory  *settings
-	waiters map[string]int
+	network     harness.NetworkConfig
+	path        string
+	seed        harness.SearchConfig
+	mu          sync.Mutex
+	memory      *settings
+	waiters     map[string]int
+	secrets     SecretLookup
+	secretCheck SecretCheck
+}
+
+// SecretLookup returns the current value of a vault secret.
+type SecretLookup func(ctx context.Context, name string) (string, error)
+
+// SecretCheck reports whether a referenced vault secret currently exists and
+// holds a usable value, without recording a use.
+type SecretCheck func(ctx context.Context, name string) bool
+
+// UseSecrets lets searches resolve api_key references written ${secret:NAME}.
+func (m *Manager) UseSecrets(lookup SecretLookup) {
+	m.mu.Lock()
+	m.secrets = lookup
+	m.mu.Unlock()
+}
+
+// UseSecretCheck lets status, readiness and auto-selection verify whether
+// ${secret:NAME} references exist in the vault.
+func (m *Manager) UseSecretCheck(check SecretCheck) {
+	m.mu.Lock()
+	m.secretCheck = check
+	m.mu.Unlock()
 }
 
 type settings struct {
@@ -150,23 +175,53 @@ func (m *Manager) Initialize(ctx context.Context) error {
 	return err
 }
 
-func defaultProvider(config harness.SearchConfig) string {
+func (m *Manager) apiKeyPresent(p harness.SearchProviderConfig) bool {
+	if p.APIKey == "" {
+		return false
+	}
+	name, ok, err := secrets.Reference(p.APIKey)
+	if err != nil {
+		return false
+	}
+	if !ok {
+		return true
+	}
+	if m.secretCheck != nil {
+		return m.secretCheck(context.Background(), name)
+	}
+	if m.secrets != nil {
+		val, err := m.secrets(context.Background(), name)
+		return err == nil && val != "" && !strings.ContainsAny(val, "\r\n\x00") && len(val) <= 16384
+	}
+	return true
+}
+
+func (m *Manager) providerConfigured(name string, p harness.SearchProviderConfig) bool {
+	if name == "searxng" {
+		return p.BaseURL != ""
+	}
+	return m.apiKeyPresent(p)
+}
+
+func (m *Manager) defaultProvider(config harness.SearchConfig) string {
 	if ValidProvider(config.DefaultProvider) {
 		return config.DefaultProvider
 	}
 	for _, name := range Names {
-		if configured(name, resolved(name, config.Providers[name])) {
+		if m.providerConfigured(name, resolved(name, config.Providers[name])) {
 			return name
 		}
 	}
 	return "brave"
 }
 
-func status(value settings) Status {
-	out := Status{DefaultProvider: defaultProvider(value.Config), FetchProvider: value.Config.FetchProvider, Revision: digest(value.Config), Providers: []ProviderStatus{}}
+func (m *Manager) status(value settings) Status {
+	out := Status{DefaultProvider: m.defaultProvider(value.Config), FetchProvider: value.Config.FetchProvider, Revision: digest(value.Config), Providers: []ProviderStatus{}}
 	for _, name := range Names {
 		p := resolved(name, value.Config.Providers[name])
-		entry := ProviderStatus{HTTPSProxyConfigured: p.HTTPSProxy != "", Name: name, Label: Label(name), BaseURL: p.BaseURL, APIKeyConfigured: p.APIKey != "", Configured: configured(name, p), State: "not_configured", Missing: []string{}, AuthHeader: p.AuthHeader, Timeout: p.Timeout}
+		hasKey := m.apiKeyPresent(p)
+		isConfigured := m.providerConfigured(name, p)
+		entry := ProviderStatus{HTTPSProxyConfigured: p.HTTPSProxy != "", Name: name, Label: Label(name), BaseURL: p.BaseURL, APIKeyConfigured: hasKey, Configured: isConfigured, State: "not_configured", Missing: []string{}, AuthHeader: p.AuthHeader, Timeout: p.Timeout}
 		if entry.Configured {
 			entry.State = "configured"
 			if value.Verified[name] == digest(p) {
@@ -189,7 +244,7 @@ func (m *Manager) Status() (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	out := status(value)
+	out := m.status(value)
 	for _, name := range Names {
 		if m.waiters[name] > 0 {
 			out.AwaitingConfiguration = append(out.AwaitingConfiguration, name)
@@ -220,7 +275,7 @@ func (m *Manager) AwaitConfiguration(ctx context.Context, name string) (harness.
 			return harness.SearchProviderConfig{}, err
 		}
 		p := resolved(name, value.Config.Providers[name])
-		if configured(name, p) {
+		if m.providerConfigured(name, p) {
 			return p, nil
 		}
 		select {
@@ -231,34 +286,42 @@ func (m *Manager) AwaitConfiguration(ctx context.Context, name string) (harness.
 	}
 }
 
-func (m *Manager) mutate(ctx context.Context, change func(*settings) error) (Status, error) {
+func (m *Manager) withSettingsLock(ctx context.Context, work func() error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.path != "" {
 		if err := os.MkdirAll(filepath.Dir(m.path), 0700); err != nil {
-			return Status{}, errors.New("cannot create search settings directory")
+			return errors.New("cannot create search settings directory")
 		}
 		lock := flock.New(m.path + ".lock")
 		locked, err := lock.TryLockContext(ctx, 25*time.Millisecond)
 		if err != nil || !locked {
-			return Status{}, errors.New("search settings are busy; retry")
+			return errors.New("search settings are busy; retry")
 		}
 		defer lock.Unlock()
 	}
-	value, err := m.load()
-	if err != nil {
-		return Status{}, err
-	}
-	if err := change(&value); err != nil {
-		return Status{}, err
-	}
-	if err := Validate(value.Config); err != nil {
-		return Status{}, err
-	}
-	if err := m.save(value); err != nil {
-		return Status{}, errors.New("cannot save search settings")
-	}
-	return status(value), nil
+	return work()
+}
+
+func (m *Manager) mutate(ctx context.Context, change func(*settings) error) (status Status, err error) {
+	err = m.withSettingsLock(ctx, func() error {
+		value, err := m.load()
+		if err != nil {
+			return err
+		}
+		if err := change(&value); err != nil {
+			return err
+		}
+		if err := Validate(value.Config); err != nil {
+			return err
+		}
+		if err := m.save(value); err != nil {
+			return errors.New("cannot save search settings")
+		}
+		status = m.status(value)
+		return nil
+	})
+	return status, err
 }
 
 func (m *Manager) Select(ctx context.Context, name string) (Status, error) {
@@ -266,7 +329,7 @@ func (m *Manager) Select(ctx context.Context, name string) (Status, error) {
 		return Status{}, errors.New("unknown search provider")
 	}
 	return m.mutate(ctx, func(value *settings) error {
-		if !configured(name, resolved(name, value.Config.Providers[name])) {
+		if !m.providerConfigured(name, resolved(name, value.Config.Providers[name])) {
 			return &ConfigurationError{Provider: name}
 		}
 		value.Config.DefaultProvider = name
@@ -307,7 +370,7 @@ func (m *Manager) Update(ctx context.Context, request Update) (Status, error) {
 			value.Config.FetchProvider = request.FetchProvider
 		}
 		if request.MakeDefault {
-			if !configured(request.Provider, resolved(request.Provider, p)) {
+			if !m.providerConfigured(request.Provider, resolved(request.Provider, p)) {
 				return errors.New("complete the required search configuration")
 			}
 			value.Config.DefaultProvider = request.Provider
@@ -369,7 +432,7 @@ func (m *Manager) Snapshot(pinned *harness.SearchResourceRef) (*Snapshot, error)
 	if err != nil {
 		return nil, err
 	}
-	result.Ref = harness.SearchResourceRef{DefaultProvider: defaultProvider(value.Config), FetchProvider: value.Config.FetchProvider, Providers: map[string]string{}}
+	result.Ref = harness.SearchResourceRef{DefaultProvider: m.defaultProvider(value.Config), FetchProvider: value.Config.FetchProvider, Providers: map[string]string{}}
 	for _, name := range Names {
 		p := resolved(name, value.Config.Providers[name])
 		hash := digest(p)
@@ -394,6 +457,9 @@ func (s *Snapshot) verified(ctx context.Context, name string) {
 		return
 	}
 	_, _ = s.manager.mutate(ctx, func(value *settings) error {
+		if digest(resolved(name, value.Config.Providers[name])) != digest(s.providers[name]) {
+			return errUnchanged
+		}
 		if value.Verified == nil {
 			value.Verified = map[string]string{}
 		}

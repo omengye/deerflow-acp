@@ -951,11 +951,13 @@ fn handle_approval_request(
         detail: reason.to_owned(),
         options: vec![
             PermissionOption {
+                credential_form: None,
                 id: "allow".into(),
                 label: tr!("permission.allow_once"),
                 allow: true,
             },
             PermissionOption {
+                credential_form: None,
                 id: "reject".into(),
                 label: tr!("common.deny"),
                 allow: false,

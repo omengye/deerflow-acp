@@ -12,29 +12,34 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	einoengine "github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillrun"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
 type skillRunTool struct {
+	toolidentity.Native
 	info     *schema.ToolInfo
 	snapshot *skills.Snapshot
 	backend  harness.CommandBackend
 	policy   harness.SandboxConfig
 	req      harness.RunRequest
+	vault    *secrets.Vault
 }
 
 type preparedSkillRun struct {
 	skillrun.Input
-	PinnedVersion string `json:"pinned_version"`
+	PinnedVersion string               `json:"pinned_version"`
+	SecretPlan    *skillrun.SecretPlan `json:"secret_plan"`
 }
 
-func newSkillRunTool(snapshot *skills.Snapshot, backend harness.CommandBackend, policy harness.SandboxConfig, req harness.RunRequest) (*skillRunTool, error) {
+func newSkillRunTool(snapshot *skills.Snapshot, backend harness.CommandBackend, policy harness.SandboxConfig, req harness.RunRequest, vault *secrets.Vault) (*skillRunTool, error) {
 	info, err := utils.GoStruct2ToolInfo[skillrun.Input]("skill_run", "Check Python readiness or execute a packaged .py entrypoint from this session's immutable skill version. check runs only a host-owned standard-library metadata probe, never skill code or installs. run checks dependencies then executes pinned files through the configured command backend and existing permission policy. Missing dependencies do not unpublish a skill. No automatic pip installs. Local/PowerShell/WSL are not security isolation. Results distinguish readiness, command exit and termination. Use skill-runtime.json for min_version, distribution packages and entrypoints. Arguments and file outputs are relative to the session workspace; never execute skill:// or a mutable installation path.")
 	if err != nil {
 		return nil, err
 	}
-	return &skillRunTool{info, snapshot, backend, policy, req}, nil
+	return &skillRunTool{toolidentity.Builtin("skill_run"), info, snapshot, backend, policy, req, vault}, nil
 }
 
 func (t *skillRunTool) Info(context.Context) (*schema.ToolInfo, error) { return t.info, nil }
@@ -72,7 +77,14 @@ func (t *skillRunTool) PrepareToolArguments(ctx context.Context, args string) (s
 	if err != nil {
 		return "", err
 	}
-	data, err := json.Marshal(preparedSkillRun{in, v})
+	plan, err := skillrun.PrepareSecrets(ctx, t.snapshot, in, t.vault)
+	if err != nil {
+		return "", err
+	}
+	if (len(plan.Read) > 0 || len(plan.Write) > 0) && (einoengine.IsDelegatedToolContext(ctx) || secrets.Disallowed(ctx)) {
+		return "", harness.ErrPermissionDenied
+	}
+	data, err := json.Marshal(preparedSkillRun{in, v, plan})
 	return string(data), err
 }
 
@@ -82,10 +94,10 @@ func (t *skillRunTool) InvokableRun(ctx context.Context, args string, _ ...tool.
 		return "", harness.MarkToolNotExecuted(harness.ErrInvalidInput)
 	}
 	v, err := t.authorized(ctx, in.Name)
-	if err != nil || v != in.PinnedVersion {
+	if err != nil || v != in.PinnedVersion || in.SecretPlan == nil {
 		return "", harness.MarkToolNotExecuted(harness.ErrPermissionDenied)
 	}
-	r, err := skillrun.Run(ctx, t.snapshot, t.backend, t.policy, t.req.Session.CWD, in.Input)
+	r, err := skillrun.RunPrepared(ctx, t.snapshot, t.backend, t.policy, t.req.Session.CWD, in.Input, t.vault, in.SecretPlan)
 	b, _ := json.Marshal(r)
 	if err != nil {
 		return string(b), &skillRunError{err, string(b)}

@@ -157,6 +157,7 @@ func channelToolDescription(name string) string {
 		"ask_clarification": "请求补充信息", "task": "执行子任务",
 		"skill_edit":    "修改已安装的 Skill",
 		"schedule_read": "查询定时任务", "schedule_manage": "管理定时任务",
+		"secret_read": "查询密钥", "secret_manage": "管理密钥",
 	}
 	if label, ok := labels[name]; ok {
 		return name + "（" + label + "）"

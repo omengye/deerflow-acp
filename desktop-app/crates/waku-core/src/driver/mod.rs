@@ -134,8 +134,12 @@ impl DriverHandle {
         self.inner.stop_background_work(key, control_id);
     }
 
-    pub fn respond(&self, request_id: String, option_id: String) {
-        self.inner.respond(request_id, option_id);
+    pub fn respond(&self, request_id: String, option_id: String) -> Result<(), String> {
+        self.inner.respond_checked(request_id, option_id)
+    }
+
+    pub fn respond_credential(&self, id: String, sealed: crate::model::SealedCredential) -> Result<(), String> {
+        self.inner.respond_credential(id, sealed)
     }
 
     pub fn respond_user_input(&self, request_id: String, answers: Vec<UserInputAnswer>) {
@@ -217,6 +221,11 @@ pub trait DriverControl: Send + Sync {
     fn deerflow_tasks(&self, _command: waku_protocol::deerflow_tasks::Command) {}
     fn stop_background_work(&self, _key: BackgroundWorkKey, _control_id: String) {}
     fn respond(&self, request_id: String, option_id: String);
+    fn respond_checked(&self, request_id: String, option_id: String) -> Result<(), String> {
+        self.respond(request_id, option_id);
+        Ok(())
+    }
+    fn respond_credential(&self, _id: String, _sealed: crate::model::SealedCredential) -> Result<(), String> { Err("Provider does not support credential enrollment".into()) }
     fn respond_user_input(&self, _request_id: String, _answers: Vec<UserInputAnswer>) {}
     /// Providers without persisted goals ignore the request; the UI only
     /// offers goal controls where the provider reports one.

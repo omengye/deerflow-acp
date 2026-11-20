@@ -257,6 +257,32 @@ impl RemoteDriverControl {
 }
 
 impl DriverControl for RemoteDriverControl {
+    fn respond_credential(
+        &self,
+        client: waku_client::DaemonClient,
+        request_id: String,
+        sealed: waku_protocol::model::SealedCredential,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.client.lock().same_connection(&client),
+            "连接已变更，请重新打开凭据表单"
+        );
+        anyhow::ensure!(
+            client.allows_credential_enrollment(),
+            "请通过 WSS 或本机回环连接录入凭据"
+        );
+        let response = client.request(
+            self.session_id,
+            self.runtime_id,
+            waku_client::Command::RespondCredential { request_id, sealed },
+        )?;
+        anyhow::ensure!(
+            matches!(response, waku_client::ResponsePayload::Ack),
+            "凭据提交状态待核对"
+        );
+        Ok(())
+    }
+
     fn prompt_with_attachments(
         &self,
         prompt: String,

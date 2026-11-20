@@ -166,7 +166,7 @@ func TestWSLTransportExitRequiresTerminationReceipt(t *testing.T) {
 	if !result.confirmed || result.state != harness.CommandCompleted {
 		t.Fatalf("framed receipt lost across byte boundaries: %+v", result)
 	}
-	if visible := output.snapshot(); visible.Text != "abcd" || visible.TotalBytes != 8 || !visible.Truncated {
+	if visible := output.snapshot(false); visible.Text != "abcd" || visible.TotalBytes != 8 || !visible.Truncated {
 		t.Fatalf("protocol receipt leaked into output metadata: %+v", visible)
 	}
 }

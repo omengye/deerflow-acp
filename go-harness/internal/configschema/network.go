@@ -7,6 +7,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/network"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 func networkFields() []Field {
@@ -67,6 +68,9 @@ func NetworkConfig(raw any) (harness.NetworkConfig, error) {
 		return result, fmt.Errorf("network.proxy.url: an enabled proxy requires an address")
 	}
 	if strings.HasPrefix(address, "$") {
+		if _, ok, err := secrets.Reference(address); ok && err != nil {
+			return result, fmt.Errorf("network.proxy.url: %w", err)
+		}
 		if !networkEnvironmentReference.MatchString(address) {
 			return result, fmt.Errorf("network.proxy.url: invalid environment reference")
 		}
@@ -81,7 +85,8 @@ func NetworkConfig(raw any) (harness.NetworkConfig, error) {
 	return result, nil
 }
 
-var networkEnvironmentReference = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*(:-[^\r\n\x00}]*)?\})$`)
+// An environment reference, or a ${secret:NAME} reference to the secret vault.
+var networkEnvironmentReference = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*(:-[^\r\n\x00}]*)?\}|\{secret:[A-Z_][A-Z0-9_]*\})$`)
 
 func validateNetworkBypass(values []string) error {
 	return network.Validate(harness.NetworkConfig{Proxy: harness.ProxyConfig{NoProxy: values}})

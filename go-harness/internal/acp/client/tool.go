@@ -20,6 +20,7 @@ import (
 	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
 var agentName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,63}$`)
@@ -44,6 +45,7 @@ type invokeInput struct {
 }
 
 type invokeTool struct {
+	toolidentity.Native
 	info   *schema.ToolInfo
 	root   string
 	parent harness.Session
@@ -99,7 +101,7 @@ func Tool(root string, parent harness.Session, agents map[string]harness.ACPAgen
 	if err != nil {
 		return nil, err
 	}
-	return &invokeTool{info: info, root: root, parent: parent, agents: copyAgents}, nil
+	return &invokeTool{Native: toolidentity.Builtin("invoke_acp_agent"), info: info, root: root, parent: parent, agents: copyAgents}, nil
 }
 
 func cloneEnv(src map[string]string) map[string]string {

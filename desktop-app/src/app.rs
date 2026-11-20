@@ -1098,6 +1098,8 @@ pub struct Waku {
     composer_draft_save_generation: u64,
     command_palette: command_palette::CommandPaletteUi,
     task_switcher: task_switcher::TaskSwitcherUi,
+    credential_editor: Option<credential_enrollment::EnrollmentEditor>,
+    credential_submissions: HashMap<Uuid, (String, String)>,
     model_search: Entity<TextInput>,
     settings_search: Entity<TextInput>,
     daemon_port_input: Entity<TextInput>,
@@ -1661,6 +1663,7 @@ mod deerflow_tasks;
 mod drafts;
 mod file_search;
 mod goal_dialog;
+mod credential_enrollment;
 mod image_preview;
 mod render;
 mod right_panel;
@@ -2413,6 +2416,8 @@ impl Waku {
                     if this.settings_page == Some(SettingsPage::Skills) {
                         this.ensure_skills_catalog(true, cx);
                     }
+                } else if this.credential_editor.take().is_some() {
+                    cx.notify();
                 }
             })
             .detach();
@@ -2845,6 +2850,8 @@ impl Waku {
                 composer_draft_save_generation: 0,
                 command_palette: command_palette::CommandPaletteUi::new(command_palette_search),
                 task_switcher,
+                credential_editor: None,
+                credential_submissions: HashMap::new(),
                 model_search,
                 branch_search,
                 branch_create_input,

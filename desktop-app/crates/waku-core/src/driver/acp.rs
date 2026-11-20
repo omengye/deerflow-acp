@@ -48,6 +48,12 @@ use waku_protocol::model_catalog::{
 };
 
 enum CommandMessage {
+    RespondCredential {
+        id: String,
+        sealed: crate::model::SealedCredential,
+        deadline: Instant,
+        reply: crossbeam_channel::Sender<Result<(), String>>,
+    },
     DeerFlowTasks(waku_protocol::deerflow_tasks::Command),
     Prompt(String, Vec<crate::model::MessageAttachment>),
     Steer(String),
@@ -62,6 +68,8 @@ enum CommandMessage {
     Respond {
         request_id: String,
         option_id: String,
+        deadline: Instant,
+        reply: crossbeam_channel::Sender<Result<(), String>>,
     },
     RespondUserInput {
         request_id: String,
@@ -389,7 +397,65 @@ pub(crate) fn catalog_agent(
 }
 
 type PermissionResponder = Responder<RequestPermissionResponse>;
-type PendingPermissions = Arc<Mutex<HashMap<String, PermissionResponder>>>;
+struct PendingAcpPermission {
+    responder: PermissionResponder,
+    public_key: Option<String>,
+}
+impl PendingAcpPermission {
+    fn respond(self, response: RequestPermissionResponse) -> agent_client_protocol::Result<()> {
+        self.responder.respond(response)
+    }
+}
+type PendingPermissions = Arc<Mutex<HashMap<String, PendingAcpPermission>>>;
+
+/// An unsealed allow must leave an enrollment pending for another capable client.
+fn complete_permission(pending: &PendingPermissions, id: &str, option: &str) -> Result<(), String> {
+    let responder = {
+        let mut entries = pending.lock();
+        let entry = entries.get(id).ok_or("Permission is no longer pending")?;
+        if entry.public_key.is_some() && option != "reject_once" {
+            return Err("This permission requires the encrypted credential form".into());
+        }
+        entries.remove(id).expect("entry checked under the same lock")
+    };
+    let response = RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
+        SelectedPermissionOutcome::new(option.to_owned()),
+    ));
+    responder.respond(response).map_err(|_| "Permission is no longer active".into())
+}
+
+// DER SubjectPublicKeyInfo header for an uncompressed P-256 public key, including
+// the SEC1 uncompressed-point byte. The Go vault validates the point and the GCM tag.
+const P256_PUBLIC_HEADER: &[u8] = &[
+    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06,
+    0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04,
+];
+
+fn credential_public_key(encoded: &str) -> bool {
+    encoded.len() == 124 && base64::engine::general_purpose::STANDARD.decode(encoded)
+        .is_ok_and(|der| der.len() == 91 && der.starts_with(P256_PUBLIC_HEADER))
+}
+
+fn complete_credential(pending: &PendingPermissions, id: &str, sealed: crate::model::SealedCredential) -> Result<(), String> {
+    let base64 = base64::engine::general_purpose::STANDARD;
+    if !credential_public_key(&sealed.public_key) || !credential_public_key(&sealed.client_key)
+        || sealed.nonce.len() != 16 || !base64.decode(&sealed.nonce).is_ok_and(|n| n.len() == 12)
+        || !(28..=174792).contains(&sealed.ciphertext.len())
+        || !base64.decode(&sealed.ciphertext).is_ok_and(|c| (21..=131092).contains(&c.len()))
+    {
+        return Err("Invalid credential envelope".into());
+    }
+    let responder = {
+        let mut entries = pending.lock();
+        if entries.get(id).and_then(|entry| entry.public_key.as_deref()) != Some(sealed.public_key.as_str()) {
+            return Err("Credential approval has expired".into());
+        }
+        entries.remove(id).expect("entry checked under the same lock")
+    };
+    let response = RequestPermissionResponse::new(RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("allow_once")))
+        .meta(serde_json::Map::from_iter([("sealedCredential".into(), json!(sealed))]));
+    responder.respond(response).map_err(|_| "Credential approval is no longer active".into())
+}
 
 #[derive(Clone, Copy)]
 enum AcpUserInputKind {
@@ -899,21 +965,28 @@ async fn run_sdk_connection(
                         prompt_requests.lock().user_input_stopped = true;
                         let _ = connection
                             .send_notification(CancelNotification::new(session_id.clone()));
-                        cancel_pending_permissions(&pending_permissions);
+                        cancel_pending_permissions(&pending_permissions, &events);
                         stream_state.lock().deerflow_early.items.retain(|update| !matches!(update, deerflow_tasks::EarlyUpdate::Driver(DriverEvent::Permission { .. })));
                         cancel_pending_user_inputs(&pending_user_inputs);
                     }
-                    CommandMessage::Respond {
-                        request_id,
-                        option_id,
-                    } => {
-                        if let Some(responder) = pending_permissions.lock().remove(&request_id) {
-                            let _ = responder.respond(RequestPermissionResponse::new(
-                                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                                    option_id,
-                                )),
-                            ));
+                    CommandMessage::RespondCredential { id, sealed, deadline, reply } => {
+                        let result = if Instant::now() < deadline { complete_credential(&pending_permissions, &id, sealed) }
+                            else { Err("Credential approval timed out".into()) };
+                        if result.is_ok() {
+                            let _ = events.send(DriverEvent::PermissionResolved { request_id: id });
                         }
+                        let _ = reply.send(result);
+                    }
+                    CommandMessage::Respond { request_id, option_id, deadline, reply } => {
+                        let result = if Instant::now() < deadline {
+                            complete_permission(&pending_permissions, &request_id, &option_id)
+                        } else {
+                            Err("Permission reply timed out".into())
+                        };
+                        if result.is_ok() {
+                            let _ = events.send(DriverEvent::PermissionResolved { request_id });
+                        }
+                        let _ = reply.send(result);
                     }
                     CommandMessage::RespondUserInput {
                         request_id,
@@ -1040,7 +1113,7 @@ async fn run_sdk_connection(
                     CommandMessage::Shutdown => break,
                 }
             }
-            cancel_pending_permissions(&pending_permissions);
+            cancel_pending_permissions(&pending_permissions, &events);
             cancel_pending_user_inputs(&pending_user_inputs);
             Ok(())
         })
@@ -2723,11 +2796,11 @@ fn finish_prompt(
     success
 }
 
-fn cancel_pending_permissions(pending: &PendingPermissions) {
-    for (_, responder) in pending.lock().drain() {
-        let _ = responder.respond(RequestPermissionResponse::new(
-            RequestPermissionOutcome::Cancelled,
-        ));
+fn cancel_pending_permissions(pending: &PendingPermissions, events: &impl DriverEventSink) {
+    let entries = std::mem::take(&mut *pending.lock());
+    for (request_id, responder) in entries {
+        let _ = responder.respond(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled));
+        let _ = events.send(DriverEvent::PermissionResolved { request_id });
     }
 }
 
@@ -2999,6 +3072,16 @@ fn xai_user_input_response(params: &Value, submitted: &[UserInputAnswer]) -> Val
     response
 }
 
+fn valid_credential_form(form: &crate::model::CredentialForm) -> bool {
+    let required = match form.required_fields.as_slice() {
+        [one] => one == "username" || one == "key",
+        [first, second] => first == "username" && second == "key",
+        _ => false,
+    };
+    form.version == 2 && required && credential_public_key(&form.public_key)
+        && !form.consumer.is_empty() && !form.service.is_empty() && !form.account.is_empty()
+}
+
 fn handle_permission_request(
     request: RequestPermissionRequest,
     responder: PermissionResponder,
@@ -3007,12 +3090,33 @@ fn handle_permission_request(
     pending: &PendingPermissions,
     events: &impl DriverEventSink,
 ) -> agent_client_protocol::Result<()> {
-    let request_id = responder.id().to_string();
+    // A delayed response from a disconnected UI must never match a later ACP request.
+    let request_id = uuid::Uuid::new_v4().to_string();
     let params = serde_json::to_value(&request)?;
+    let credential_form = if provider == ProviderKind::DeerFlow {
+        match params.pointer("/_meta/deerflow/credentialForm") {
+            Some(raw) => {
+                let form = serde_json::from_value::<crate::model::CredentialForm>(raw.clone())
+                    .map_err(|_| approval_error("Invalid DeerFlow credential form"))?;
+                if params.pointer("/_meta/deerflow/credentialApproval") != Some(&Value::Bool(true))
+                    || !valid_credential_form(&form)
+                    || !request.options.iter().any(|option| option.kind == PermissionOptionKind::AllowOnce
+                        && option.option_id.to_string() == "allow_once")
+                {
+                    return Err(approval_error("Unsupported DeerFlow credential form"));
+                }
+                Some(form)
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
     let options = request
         .options
         .iter()
         .map(|option| PermissionOption {
+            credential_form: if option.kind == PermissionOptionKind::AllowOnce && option.option_id.to_string() == "allow_once" { credential_form.clone() } else { None },
             id: option.option_id.to_string(),
             label: option.name.clone(),
             allow: matches!(
@@ -3057,7 +3161,7 @@ fn handle_permission_request(
             .map(|kind| tr!("permission.agent_wants_to", action = kind))
             .unwrap_or_else(|| tr!("permission.agent_asks_for_permission"))
     });
-    pending.lock().insert(request_id.clone(), responder);
+    pending.lock().insert(request_id.clone(), PendingAcpPermission { responder, public_key: credential_form.map(|form| form.public_key) });
     if events
         .send(DriverEvent::Permission {
             request_id: request_id.clone(),
@@ -3269,7 +3373,12 @@ fn permission_reason(params: &Value) -> Option<String> {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    (!reason.is_empty()).then(|| truncate(&reason, 400))
+    let limit = if params.pointer("/_meta/deerflow/credentialApproval") == Some(&Value::Bool(true)) {
+        131_072
+    } else {
+        400
+    };
+    (!reason.is_empty()).then(|| truncate(&reason, limit))
 }
 
 fn truncate(text: &str, max_chars: usize) -> String {
@@ -3417,11 +3526,24 @@ impl DriverControl for AcpDriver {
         }
     }
 
+    fn respond_credential(&self, id: String, sealed: crate::model::SealedCredential) -> Result<(), String> {
+        let (reply, result) = crossbeam_channel::bounded(1);
+        let deadline = Instant::now() + TOOL_APPROVAL_TIMEOUT;
+        self.commands.try_send(CommandMessage::RespondCredential { id, sealed, deadline, reply })
+            .map_err(|_| "Credential request could not be queued".to_owned())?;
+        result.recv_deadline(deadline).map_err(|_| "Credential delivery status unknown".to_owned())?
+    }
+
     fn respond(&self, request_id: String, option_id: String) {
-        let _ = self.commands.try_send(CommandMessage::Respond {
-            request_id,
-            option_id,
-        });
+        let _ = self.respond_checked(request_id, option_id);
+    }
+
+    fn respond_checked(&self, request_id: String, option_id: String) -> Result<(), String> {
+        let (reply, result) = crossbeam_channel::bounded(1);
+        let deadline = Instant::now() + TOOL_APPROVAL_TIMEOUT;
+        self.commands.try_send(CommandMessage::Respond { request_id, option_id, deadline, reply })
+            .map_err(|_| "Permission reply could not be queued".to_owned())?;
+        result.recv_deadline(deadline).map_err(|_| "Permission delivery status unknown".to_owned())?
     }
 
     fn respond_user_input(&self, request_id: String, answers: Vec<UserInputAnswer>) {
@@ -3742,6 +3864,114 @@ mod tests {
 
     fn approval_options(mode: &str) -> Vec<SessionConfigOption> {
         approval_options_with_id("tool_approval", mode)
+    }
+
+    fn fixture_credential_public_key(point: u8) -> String {
+        base64::engine::general_purpose::STANDARD.encode([P256_PUBLIC_HEADER, &[point; 64]].concat())
+    }
+
+    #[test]
+    fn credential_form_accepts_only_supported_field_sets() {
+        let mut form = crate::model::CredentialForm {
+            version: 2,
+            public_key: fixture_credential_public_key(1),
+            consumer: "tool:execute".into(),
+            service: "https://service.example".into(),
+            account: "default".into(),
+            required_fields: Vec::new(),
+        };
+        for (names, valid) in [
+            (vec!["key"], true),
+            (vec!["username"], true),
+            (vec!["username", "key"], true),
+            (vec![], false),
+            (vec!["key", "username"], false),
+            (vec!["key", "key"], false),
+            (vec!["password"], false),
+        ] {
+            form.required_fields = names.iter().map(|s| s.to_string()).collect();
+            assert_eq!(valid_credential_form(&form), valid, "{names:?}");
+        }
+        form.required_fields = vec!["key".into()];
+        form.version = 1;
+        assert!(!valid_credential_form(&form));
+    }
+
+    #[test]
+    fn mobile_enrollment_roundtrip_is_bound_to_one_live_deerflow_permission() {
+        let agent = Agent.builder().on_receive_request(
+            async move |_prompt: PromptRequest, responder: Responder<PromptResponse>, connection: ConnectionTo<Client>| {
+                let request: RequestPermissionRequest = serde_json::from_value(json!({
+                    "sessionId":"s", "toolCall":{"toolCallId":"call","title":"execute"},
+                    "options":[{"optionId":"allow_once","name":"Allow once","kind":"allow_once"}],
+                    "_meta":{"deerflow":{"credentialApproval":true,"credentialForm":{
+                        "version":2,"requiredFields":["key"],"publicKey":fixture_credential_public_key(1),"consumer":"tool:execute","service":"https://example.com","account":"default"
+                    }}}
+                }))?;
+                connection.send_request(request).on_receiving_result(async move |result| {
+                    let response = serde_json::to_value(result?)?;
+                    assert_eq!(response["outcome"]["optionId"], "allow_once");
+                    assert_eq!(response["_meta"]["sealedCredential"]["ciphertext"], "B".repeat(28));
+                    responder.respond(PromptResponse::new(StopReason::EndTurn))
+                })
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        let (events, received) = crate::driver::test_event_channel();
+        let pending: PendingPermissions = Arc::new(Mutex::new(HashMap::new()));
+        let client = Client.builder().on_receive_request(
+            async move |request: RequestPermissionRequest, responder, _connection| {
+                handle_permission_request(request, responder, ProviderKind::DeerFlow, RuntimeMode::FullAccess, &pending, &events)?;
+                let DriverEvent::Permission { request_id, options, .. } = received.try_recv().unwrap() else {
+                    panic!("missing permission");
+                };
+                let form = options[0].credential_form.as_ref().unwrap();
+                assert!(complete_permission(&pending, &request_id, "allow_once").is_err());
+                assert!(pending.lock().contains_key(&request_id));
+                let mut sealed = crate::model::SealedCredential {
+                    public_key: fixture_credential_public_key(2), client_key: fixture_credential_public_key(3),
+                    nonce: "N".repeat(16), ciphertext: "B".repeat(28),
+                };
+                assert!(complete_credential(&pending, &request_id, sealed.clone()).is_err());
+                sealed.public_key.clone_from(&form.public_key);
+                for field in ["nonce", "ciphertext", "clientKey"] {
+                    let mut invalid = sealed.clone();
+                    match field {
+                        "nonce" => invalid.nonce = "!".repeat(16),
+                        "clientKey" => invalid.client_key = "A".repeat(124),
+                        _ => invalid.ciphertext = "!".repeat(28),
+                    }
+                    assert!(complete_credential(&pending, &request_id, invalid).is_err());
+                    assert!(pending.lock().contains_key(&request_id));
+                }
+                let mut short = sealed.clone();
+                short.ciphertext = base64::engine::general_purpose::STANDARD.encode([1; 20]);
+                assert!(complete_credential(&pending, &request_id, short).is_err());
+                // Two attached clients seal against the same pending public form.
+                let start = std::sync::Barrier::new(2);
+                let outcomes = std::thread::scope(|race| {
+                    let submit = || {
+                        start.wait();
+                        complete_credential(&pending, &request_id, sealed.clone()).is_ok()
+                    };
+                    let phone = race.spawn(submit);
+                    let desktop = race.spawn(submit);
+                    [phone.join().unwrap(), desktop.join().unwrap()]
+                });
+                assert_eq!(outcomes.iter().filter(|accepted| **accepted).count(), 1);
+                assert!(complete_credential(&pending, &request_id, sealed).is_err());
+                assert!(complete_permission(&pending, &request_id, "reject_once").is_err());
+                Ok(())
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        smol::block_on(smol::future::or(
+            client.connect_with(agent, async move |connection| {
+                connection.send_request(PromptRequest::new("s", vec![ContentBlock::Text(TextContent::new("use service"))])).block_task().await?;
+                Ok(())
+            }),
+            async { smol::Timer::after(Duration::from_secs(10)).await; Err(approval_error("mobile credential response timed out")) },
+        )).expect("encrypted response must reach the agent");
     }
 
     #[test]

@@ -11,15 +11,15 @@ import (
 
 // ResolveNetworkConfig resolves host-owned proxy references without publishing
 // their values through settings snapshots, errors or execution metadata.
-func ResolveNetworkConfig(raw any) (harness.NetworkConfig, error) {
+func ResolveNetworkConfig(raw any, values ConfigValues) (harness.NetworkConfig, error) {
 	config, err := configschema.NetworkConfig(raw)
 	if err != nil {
 		return config, err
 	}
 	if strings.HasPrefix(config.Proxy.URL, "$") {
-		config.Proxy.URL, err = resolveConfigValue(config.Proxy.URL)
+		config.Proxy.URL, err = values.Resolve(config.Proxy.URL)
 		if err != nil && config.Proxy.Enabled {
-			return config, fmt.Errorf("network.proxy.url: proxy environment reference could not be resolved")
+			return config, fmt.Errorf("network.proxy.url: proxy reference could not be resolved: %w", err)
 		}
 	}
 	if err := network.Validate(config); err != nil {

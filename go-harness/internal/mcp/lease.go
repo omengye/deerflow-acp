@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"slices"
 	"sort"
 	"sync"
@@ -192,6 +193,9 @@ type leasedTool struct {
 	raw   *enhancedGuardTool
 }
 
+func (t *leasedTool) CredentialScope(args string) (secrets.CredentialScope, error) {
+	return t.raw.CredentialScope(args)
+}
 func (t *leasedTool) Info(ctx context.Context) (*schema.ToolInfo, error) { return t.raw.Info(ctx) }
 
 func (t *leasedTool) InvokableRun(ctx context.Context, args *schema.ToolArgument, opts ...tool.Option) (*schema.ToolResult, error) {

@@ -19,20 +19,24 @@ import (
 
 func sourceFixture(t *testing.T, script string, packages ...string) (*skills.Snapshot, string, string) {
 	t.Helper()
+	manifest := `{"version":1,"python":{"min_version":"3.8","packages":[],"entrypoints":["scripts/run.py"]}}`
+	if len(packages) > 0 {
+		data, _ := json.Marshal(skills.RuntimeManifest{Version: 1, Python: skills.PythonRequirements{MinVersion: "3.8", Packages: packages, Entrypoints: []string{"scripts/run.py"}}})
+		manifest = string(data)
+	}
+	return sourceFixtureWithManifest(t, script, manifest)
+}
+
+func sourceFixtureWithManifest(t *testing.T, script, manifest string) (*skills.Snapshot, string, string) {
+	t.Helper()
 	ctx := context.Background()
 	ws := t.TempDir()
 	source := filepath.Join(t.TempDir(), "sample")
 	if err := os.MkdirAll(filepath.Join(source, "scripts"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	for p, v := range map[string]string{"SKILL.md": "---\nname: sample\ndescription: Run a source fixture\n---\nUse skill_run.\n", "scripts/run.py": script, "skill-runtime.json": `{"version":1,"python":{"min_version":"3.8","packages":[],"entrypoints":["scripts/run.py"]}}`} {
+	for p, v := range map[string]string{"SKILL.md": "---\nname: sample\ndescription: Run a source fixture\n---\nUse skill_run.\n", "scripts/run.py": script, "skill-runtime.json": manifest} {
 		if err := os.WriteFile(filepath.Join(source, p), []byte(v), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if len(packages) > 0 {
-		manifest, _ := json.Marshal(skills.RuntimeManifest{Version: 1, Python: skills.PythonRequirements{MinVersion: "3.8", Packages: packages, Entrypoints: []string{"scripts/run.py"}}})
-		if err := os.WriteFile(filepath.Join(source, "skill-runtime.json"), manifest, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -113,7 +117,7 @@ func TestRealPythonCheckNeverExecutesSiteStartupOrImportsDependencies(t *testing
 		t.Fatal(err)
 	}
 	defer backend.Close()
-	result, err := Run(context.Background(), snap, backend, cfg, ws, Input{Action: "check", Name: "sample"})
+	result, err := Run(context.Background(), snap, backend, cfg, ws, Input{Action: "check", Name: "sample"}, nil)
 	if err != nil || !result.Readiness.Ready || result.Readiness.Packages["fixture-no-import"] != "1.0" {
 		t.Fatal(result, err)
 	}
@@ -135,7 +139,7 @@ func TestRealPythonRunUsesVenvDependencies(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer backend.Close()
-	r, err := Run(context.Background(), snap, backend, cfg, ws, Input{Action: "run", Name: "sample", Path: "scripts/run.py"})
+	r, err := Run(context.Background(), snap, backend, cfg, ws, Input{Action: "run", Name: "sample", Path: "scripts/run.py"}, nil)
 	if err != nil || !r.Readiness.Ready || !r.ExecutionChecked || r.Command == nil || strings.TrimSpace(r.Command.Stdout.Text) != "venv-dependency" {
 		t.Fatalf("virtual environment lost: %+v %v", r, err)
 	}
@@ -225,7 +229,7 @@ func TestRealPythonCancellationJoinsAndCleansStaging(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
-	result, err := Run(ctx, snap, backend, cfg, ws, Input{Action: "run", Name: "sample", Path: "scripts/run.py"})
+	result, err := Run(ctx, snap, backend, cfg, ws, Input{Action: "run", Name: "sample", Path: "scripts/run.py"}, nil)
 	<-done
 	if !errors.Is(err, context.Canceled) || result.Command == nil || !result.Command.TerminationConfirmed || result.RetainedDirectory != "" {
 		t.Fatal(result, err)
@@ -300,7 +304,7 @@ func TestPinnedExecutionReadinessAndTermination(t *testing.T) {
 			if mode == "entry_denied" {
 				in.Path = "scripts/missing.py"
 			}
-			result, err := Run(context.Background(), snap, b, cfg, ws, in)
+			result, err := Run(context.Background(), snap, b, cfg, ws, in, nil)
 			wantError := mode == "missing" || mode == "exit" || mode == "uncertain" || mode == "entry_denied"
 			if (err != nil) != wantError {
 				t.Fatalf("%+v %v", result, err)
@@ -378,14 +382,14 @@ func TestRealPythonPinnedSourceAndExit(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer backend.Close()
-			if r, err := Run(context.Background(), snap, backend, cfg, ws, Input{Action: "check", Name: "sample"}); err != nil || !r.Readiness.Ready {
+			if r, err := Run(context.Background(), snap, backend, cfg, ws, Input{Action: "check", Name: "sample"}, nil); err != nil || !r.Readiness.Ready {
 				t.Fatal(r, err)
 			}
 			if _, err = os.Stat(filepath.Join(ws, "ran.json")); !os.IsNotExist(err) {
 				t.Fatal("check ran script", err)
 			}
 			args := []string{"a'b", `$(whoami)`, "a b", `"`, ""}
-			r, err := Run(context.Background(), snap, backend, cfg, ws, Input{Action: "run", Name: "sample", Path: "scripts/run.py", Args: args})
+			r, err := Run(context.Background(), snap, backend, cfg, ws, Input{Action: "run", Name: "sample", Path: "scripts/run.py", Args: args}, nil)
 			if err != nil || !r.ExecutionChecked || !strings.Contains(r.Command.Stdout.Text, "pinned-v1") {
 				t.Fatal(r, err)
 			}

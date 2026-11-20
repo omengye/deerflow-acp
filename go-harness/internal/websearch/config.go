@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -160,8 +161,13 @@ func Seed(config harness.SearchConfig, tools []harness.BuiltinToolConfig, deepse
 
 // resolve supports the existing $VAR / ${VAR:-fallback} convention, including
 // the SearXNG API_KEY -> TOKEN compatibility fallback. Unset values stay empty.
+// A ${secret:NAME} reference stays as written: a snapshot resolves it for each
+// request, so settings and pinned versions never hold the secret's value.
 func resolve(value string) string {
 	for i := 0; i < 8 && strings.HasPrefix(value, "$"); i++ {
+		if secretReference(value) {
+			return value
+		}
 		if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
 			inner := value[2 : len(value)-1]
 			name, fallback, _ := strings.Cut(inner, ":-")
@@ -215,6 +221,12 @@ func Validate(config harness.SearchConfig) error {
 		if strings.ContainsAny(p.APIKey, "\r\n\x00") || len(p.APIKey) > 16384 {
 			return errors.New("invalid search credential")
 		}
+		if _, ok, err := secrets.Reference(p.APIKey); ok && err != nil {
+			return err
+		}
+		if secretReference(p.BaseURL) || secretReference(p.HTTPSProxy) {
+			return errors.New("search base_url and https_proxy cannot refer to secrets; only api_key can")
+		}
 		if p.BaseURL != "" {
 			u, err := url.Parse(p.BaseURL)
 			if err != nil || !validURL(u) || u.RawQuery != "" || u.Fragment != "" {
@@ -232,6 +244,11 @@ func Validate(config harness.SearchConfig) error {
 		}
 	}
 	return nil
+}
+
+func secretReference(value string) bool {
+	_, ok, _ := secrets.Reference(value)
+	return ok
 }
 
 func configured(name string, p harness.SearchProviderConfig) bool {

@@ -508,6 +508,15 @@ impl Waku {
                 self.handle_background_work_event(session_id, event);
             }
             DriverEvent::DeerFlowTasks(event) => self.handle_deerflow_task_event(session_id, event),
+            DriverEvent::PermissionResolved { request_id } => {
+                if runtime.pending_permission.as_ref().is_some_and(|p| p.request_id == request_id) {
+                    runtime.pending_permission = None;
+                    self.credential_submissions.remove(&session_id);
+                    if let Some(session) = self.state.session_mut(session_id) {
+                        session.status = SessionStatus::Working;
+                    }
+                }
+            }
             DriverEvent::Permission {
                 request_id,
                 title,
@@ -706,6 +715,7 @@ impl Waku {
                 }
             }
             DriverEvent::TurnFinished { success, summary } => {
+                self.credential_submissions.remove(&session_id);
                 if runtime.cancel_drain.finish() && allow_queue_drain {
                     self.pending_queue_drains.push(session_id);
                 }
@@ -851,6 +861,7 @@ impl Waku {
                 }
             }
             DriverEvent::ProcessExited => {
+                self.credential_submissions.remove(&session_id);
                 if let Some(session) = self.state.session_mut(session_id) {
                     session.conversation_capability = None;
                 }

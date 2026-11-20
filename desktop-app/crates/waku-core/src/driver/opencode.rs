@@ -1204,16 +1204,19 @@ fn request_permission(
         },
         options: vec![
             PermissionOption {
+                credential_form: None,
                 id: "once".into(),
                 label: tr!("permission.allow_once"),
                 allow: true,
             },
             PermissionOption {
+                credential_form: None,
                 id: "always".into(),
                 label: tr!("permission.always_allow"),
                 allow: true,
             },
             PermissionOption {
+                credential_form: None,
                 id: "reject".into(),
                 label: tr!("common.deny"),
                 allow: false,

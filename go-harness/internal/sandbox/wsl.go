@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -128,6 +129,22 @@ func (b *Backend) runWSL(ctx context.Context, t *task, request harness.CommandRe
 	env := map[string]string{"PATH": "/usr/bin:/bin"}
 	for key, value := range b.cfg.Environment {
 		env[key] = value
+	}
+	if s := request.Secrets; s != nil {
+		// File material stays on the host; the guest reads it through the
+		// Windows drive mount, so the helper protocol carries only paths.
+		var filesDir, outDir string
+		var err error
+		if len(s.Files) > 0 {
+			filesDir, err = b.translateWSLPath(ctx, s.FilesDir)
+		}
+		if err == nil && s.OutDir != "" {
+			outDir, err = b.translateWSLPath(ctx, s.OutDir)
+		}
+		if err != nil {
+			return execution{confirmed: true, notExecuted: true, state: harness.CommandFailed, err: err}
+		}
+		env = withSecrets(env, s.Environment(filesDir, outDir, path.Join))
 	}
 	data, err := json.Marshal(wslhelper.Request{Version: wslhelper.Version, ID: t.snapshot.ID, SHA256: b.cfg.WSL.HelperSHA256, CWD: b.guestCWD, TimeoutNanos: int64(request.Timeout), Argv: remoteCommand(b.cfg, request), Environment: env})
 	if err != nil || len(data)+1 > wslhelper.MaxRequest {

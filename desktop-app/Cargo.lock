@@ -8685,11 +8685,13 @@ name = "waku-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "crossbeam-channel",
  "dirs",
  "libc",
  "nucleo-matcher",
  "parking_lot",
+ "ring",
  "serde",
  "serde_json",
  "smol",
@@ -8697,6 +8699,7 @@ dependencies = [
  "url",
  "uuid",
  "waku-protocol",
+ "zeroize",
 ]
 
 [[package]]

@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -232,6 +233,10 @@ func ValidateWrite(source string, in WriteRequest, automatic bool) (ValidatedWri
 	}
 	if in.Value != value || in.Content != "" && in.Content != content {
 		return ValidatedWrite{}, rejectWrite("unsupported_value_or_content")
+	}
+	// Credentials belong in the secret vault, never in long-term memory.
+	if secrets.ContainsKnown(value) || secrets.ContainsKnown(content) {
+		return ValidatedWrite{}, rejectWrite("secret_value")
 	}
 	if automatic && (strings.ContainsAny(value, "/\\<>") || strings.Contains(value, "://") || len(UngroundedActionableTokens(value, "")) > 0) {
 		return ValidatedWrite{}, rejectWrite("automatic_path_or_markup")

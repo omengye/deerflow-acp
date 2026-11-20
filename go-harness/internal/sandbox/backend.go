@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
@@ -69,6 +71,7 @@ func (b *Backend) Start(ctx context.Context, request harness.CommandRequest) (ha
 	}
 	runCtx, cancel := context.WithTimeout(ctx, request.Timeout)
 	t := &task{snapshot: harness.CommandSnapshot{ID: id, Provider: b.cfg.Provider, State: harness.CommandStarting, StartedAt: time.Now().UTC(), ProcessLocal: true}, argv0: argv0, cancel: cancel, done: make(chan struct{}), stdout: newCapture(b.cfg.Limits.OutputBytes), stderr: newCapture(b.cfg.Limits.OutputBytes)}
+	t.stdout.credential, t.stderr.credential = secrets.CallCredentialOutput(ctx), secrets.CallCredentialOutput(ctx)
 	b.tasks[id] = t
 	b.active++
 	initial := t.snapshot
@@ -102,6 +105,9 @@ func (b *Backend) validateRequest(r *harness.CommandRequest) error {
 	}
 	if len(r.Script) > 1<<20 || len(r.Args) > 1024 {
 		return fmt.Errorf("command is too large")
+	}
+	if err := validateSecrets(r.Secrets); err != nil {
+		return err
 	}
 	if strings.ContainsRune(r.Script, 0) {
 		return fmt.Errorf("script contains NUL")
@@ -165,8 +171,10 @@ func (t *task) view() harness.CommandSnapshot {
 		s.ExitCode = &n
 	}
 	t.mu.Unlock()
-	s.Stdout = t.stdout.snapshot()
-	s.Stderr = t.stderr.snapshot()
+	running := s.FinishedAt.IsZero()
+	s.Stdout = t.stdout.snapshot(running)
+	s.Stderr = t.stderr.snapshot(running)
+	s.Error = secrets.Mask(s.Error)
 	return s
 }
 func (b *Backend) Poll(ctx context.Context, id string) (harness.CommandSnapshot, error) {
@@ -263,6 +271,47 @@ func (b *Backend) execute(ctx context.Context, t *task, request harness.CommandR
 	if result.err != nil {
 		t.snapshot.Error = result.err.Error()
 	}
+}
+
+func validateSecrets(s *harness.CommandSecrets) error {
+	if s == nil {
+		return nil
+	}
+	for key, value := range s.Env {
+		if secrets.ValidEnvName(key) != nil || strings.ContainsRune(value, 0) {
+			return fmt.Errorf("invalid secret environment binding")
+		}
+	}
+	for key, rel := range s.Files {
+		if secrets.ValidEnvName(key) != nil || s.Env[key] != "" || rel == "" || strings.HasPrefix(rel, "/") || strings.ContainsAny(rel, "\\:\x00") || strings.Contains("/"+rel+"/", "/../") {
+			return fmt.Errorf("invalid secret file binding")
+		}
+	}
+	if len(s.Files) > 0 && !filepath.IsAbs(s.FilesDir) || s.OutDir != "" && !filepath.IsAbs(s.OutDir) {
+		return fmt.Errorf("secret material must use absolute host directories")
+	}
+	return nil
+}
+
+// withSecrets overlays injected variables. A configured variable that differs
+// only in case is dropped, because Windows environments ignore case.
+func withSecrets(base, injected map[string]string) map[string]string {
+	if len(injected) == 0 {
+		return base
+	}
+	out := make(map[string]string, len(base)+len(injected))
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range injected {
+		for existing := range out {
+			if strings.EqualFold(existing, key) {
+				delete(out, existing)
+			}
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func stateFor(err error, exit *int, confirmed bool) harness.CommandState {

@@ -15,7 +15,8 @@ pub(super) fn capability() -> Map<String, Value> {
     Map::from_iter([(
         "deerflow".into(),
         json!({
-            "userInput": {"version": 1, "requestMethod": METHOD}
+            "userInput": {"version": 1, "requestMethod": METHOD},
+            "mobileCredentials": 2
         }),
     )])
 }

@@ -526,7 +526,7 @@ func (s *Service) executionPermission(ctx context.Context, owner string, config 
 	}
 	key := owner + "/" + config.ID + "/" + fmt.Sprintf("%x", sha256.Sum256(data))
 	decision, cached := s.configuredPermission(config, p)
-	if !cached && !harness.ExplicitSkillEditApproval(p) {
+	if !cached && !harness.ExplicitApproval(p) {
 		s.mu.Lock()
 		decision, cached = s.decisions[key]
 		s.mu.Unlock()
@@ -548,7 +548,7 @@ func (s *Service) executionPermission(ctx context.Context, owner string, config 
 	default:
 		return "", executionInvalid("invalid execution permission decision")
 	}
-	if !harness.ExplicitSkillEditApproval(p) && (decision == harness.AllowAlways || decision == harness.RejectAlways) {
+	if !harness.ExplicitApproval(p) && (decision == harness.AllowAlways || decision == harness.RejectAlways) {
 		s.mu.Lock()
 		s.decisions[key] = decision
 		s.mu.Unlock()

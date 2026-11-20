@@ -5,13 +5,15 @@ import (
 	"sync"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 type capture struct {
-	mu    sync.Mutex
-	limit int
-	kept  []byte
-	total int64
+	mu         sync.Mutex
+	credential *secrets.CredentialOutput
+	limit      int
+	kept       []byte
+	total      int64
 }
 
 func newCapture(limit int) *capture { return &capture{limit: limit} }
@@ -29,8 +31,15 @@ func (c *capture) Write(p []byte) (int, error) {
 	}
 	return n, nil
 }
-func (c *capture) snapshot() harness.CommandOutput {
+
+// snapshot masks known secret values. An open tail (a running command) may
+// end inside a value that is still being written, so it is masked like a
+// truncated capture.
+func (c *capture) snapshot(openTail bool) harness.CommandOutput {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return harness.CommandOutput{Text: strings.ToValidUTF8(string(c.kept), "\uFFFD"), TotalBytes: c.total, Truncated: c.total > int64(len(c.kept))}
+	truncated := c.total > int64(len(c.kept))
+	text := secrets.MaskTruncated(string(c.kept), truncated || openTail)
+	text = strings.ToValidUTF8(c.credential.Mask(text), "\uFFFD")
+	return harness.CommandOutput{Text: text, TotalBytes: c.total, Truncated: truncated}
 }

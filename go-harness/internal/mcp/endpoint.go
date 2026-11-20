@@ -22,22 +22,24 @@ import (
 	"github.com/cloudwego/eino/schema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 type endpoint struct {
-	binding          *binding
-	policy           harness.MCPPolicy
-	name             string
-	client           *sdk.ClientSession
-	transport        *trackedTransport
-	http             *http.Transport
-	ctx              context.Context
-	cancel           context.CancelFunc
-	secrets          []string
-	closeOnce        sync.Once
-	closed           chan struct{}
-	closeErr         error
-	initialToolCount int
+	binding                                *binding
+	policy                                 harness.MCPPolicy
+	credentialEndpoint, credentialIdentity string
+	name                                   string
+	client                                 *sdk.ClientSession
+	transport                              *trackedTransport
+	http                                   *http.Transport
+	ctx                                    context.Context
+	cancel                                 context.CancelFunc
+	secrets                                []string
+	closeOnce                              sync.Once
+	closed                                 chan struct{}
+	closeErr                               error
+	initialToolCount                       int
 }
 
 // Track the raw connection too: SDK initialization errors must not leak a
@@ -58,6 +60,18 @@ func (t *trackedTransport) Connect(ctx context.Context) (sdk.Connection, error) 
 func (m *Manager) connect(ctx context.Context, b *binding, cwd string, cfg harness.MCPServer) (*endpoint, error) {
 	lifetime, cancel := context.WithCancel(b.ctx)
 	e := &endpoint{binding: b, policy: m.policy, name: cfg.Name, ctx: lifetime, cancel: cancel, closed: make(chan struct{}), secrets: credentialValues(cfg)}
+	var infoBytes []byte
+	if cfg.Transport == "stdio" {
+		infoBytes, _ = json.Marshal(cfg)
+		infoBytes = append(infoBytes, []byte("\x00"+cwd)...)
+		e.credentialEndpoint = "stdio:" + cfg.Name
+	} else {
+		e.credentialEndpoint, _ = secrets.ServiceOrigin(cfg.URL)
+		u, _ := url.Parse(cfg.URL)
+		infoBytes = []byte(cfg.Transport + "\x00" + e.credentialEndpoint + "\x00" + u.EscapedPath())
+	}
+	e.credentialIdentity = fmt.Sprintf("%x", sha256.Sum256(infoBytes))[:24]
+	clear(infoBytes)
 	// The initialization context stays alive for SSE/JSON-RPC after the setup
 	// deadline is stopped. Cancelling a temporary WithTimeout after Connect would
 	// tear down a successfully established SSE stream.
@@ -260,6 +274,13 @@ func (c *scopedClient) CallTool(ctx context.Context, params *sdk.CallToolParams)
 	}
 	// Inspect the original result before formatting/truncation can expose only
 	// a prefix of a credential echoed by the server.
+	if mask := secrets.CallCredentialOutput(ctx); mask != nil {
+		for _, item := range result.Content {
+			if text, ok := item.(*sdk.TextContent); ok {
+				text.Text = mask.Mask(text.Text)
+			}
+		}
+	}
 	data, err := json.Marshal(result)
 	if err != nil || containsCredentials(data, c.endpoint.secrets) {
 		return nil, errors.New("MCP result is invalid or contains connection credentials")
@@ -457,6 +478,18 @@ func (t *guardTool) InvokableRun(ctx context.Context, args string, opts ...tool.
 		capture = &toolImageCapture{}
 		ctx = context.WithValue(ctx, toolImageCaptureKey{}, capture)
 	}
+	var output *secrets.CredentialOutput
+	if harness.HasCredentialMarker(json.RawMessage(args)) {
+		scope, err := t.CredentialScope(args)
+		if err != nil {
+			return "", harness.MarkToolNotExecuted(err)
+		}
+		args, output, err = secrets.CredentialArguments(ctx, scope, args)
+		ctx = secrets.WithCredentialOutput(ctx, output)
+		if err != nil {
+			return "", harness.MarkToolNotExecuted(err)
+		}
+	}
 	op, done, err := t.endpoint.operation(ctx)
 	if err != nil {
 		return "", err
@@ -469,6 +502,7 @@ func (t *guardTool) InvokableRun(ctx context.Context, args string, opts ...tool.
 	if containsCredentials([]byte(result), t.endpoint.secrets) {
 		return "", errors.New("MCP result contains connection credentials")
 	}
+	result = output.Mask(result)
 	if capture.failed {
 		return result, &toolResultError{cause: harness.MarkToolExecutionFailed(errors.New("MCP tool reported an application failure")), result: result}
 	}

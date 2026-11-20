@@ -4,9 +4,11 @@ package skillrun
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path"
@@ -16,16 +18,19 @@ import (
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/tools"
 )
 
 type Input struct {
-	Action         string   `json:"action" jsonschema:"required,enum=check,enum=run"`
-	Name           string   `json:"name" jsonschema:"required,description=Enabled skill in this execution snapshot"`
-	Path           string   `json:"path,omitempty" jsonschema:"description=Packaged relative .py entrypoint for run"`
-	Args           []string `json:"args,omitempty"`
-	TimeoutSeconds int64    `json:"timeout_seconds,omitempty"`
+	Action         string                     `json:"action" jsonschema:"required,enum=check,enum=run"`
+	Name           string                     `json:"name" jsonschema:"required,description=Enabled skill in this execution snapshot"`
+	Path           string                     `json:"path,omitempty" jsonschema:"description=Packaged relative .py entrypoint for run"`
+	Args           []string                   `json:"args,omitempty"`
+	TimeoutSeconds int64                      `json:"timeout_seconds,omitempty"`
+	Credential     *secrets.CredentialBinding `json:"credential,omitempty" jsonschema_description:"Vault username/key for this skill and service. Specify service origin and username_env and/or key_env. Enter the values in the dedicated credential form."`
+	Secrets        map[string]string          `json:"secrets,omitempty" jsonschema_description:"Optional extra map from environment variable to vault secret name for run. Secrets declared in skill-runtime.json are injected automatically. Values never appear in output; known values are shown as [secret:NAME]."`
 }
 
 type Readiness struct {
@@ -35,6 +40,9 @@ type Readiness struct {
 	Packages             map[string]string `json:"packages,omitempty"`
 	Missing              []string          `json:"missing,omitempty"`
 	DependenciesDeclared bool              `json:"dependencies_declared"`
+	// MissingSecrets are required vault secrets that do not exist yet.
+	MissingSecrets []string `json:"missing_secrets,omitempty"`
+	SecretsHint    string   `json:"secrets_hint,omitempty"`
 }
 
 type Result struct {
@@ -46,13 +54,20 @@ type Result struct {
 	ExecutionChecked  bool                     `json:"execution_checked"`
 	Command           *harness.CommandSnapshot `json:"command,omitempty"`
 	RetainedDirectory string                   `json:"retained_directory,omitempty"`
+	Secrets           *tools.SecretReport      `json:"secrets,omitempty"`
 }
 
 func ValidateInput(in Input) error {
 	if in.Name == "" || len(in.Name) > 64 || in.Action != "check" && in.Action != "run" || in.TimeoutSeconds < 0 || in.TimeoutSeconds > 3600 || len(in.Args) > 128 {
 		return harness.ErrInvalidInput
 	}
-	if in.Action == "check" && (in.Path != "" || len(in.Args) != 0) {
+	if in.Action == "check" && (in.Path != "" || len(in.Args) != 0 || len(in.Secrets) != 0 || in.Credential != nil) {
+		return harness.ErrInvalidInput
+	}
+	if _, _, err := in.Credential.Bind("skill:"+in.Name, in.Secrets); err != nil {
+		return err
+	}
+	if secrets.ValidateBindings(in.Secrets) != nil {
 		return harness.ErrInvalidInput
 	}
 	if in.Action == "run" && (in.Path == "" || path.Clean(in.Path) != in.Path || strings.ContainsAny(in.Path, "\\:\x00") || strings.HasPrefix(in.Path, "/") || strings.HasPrefix(in.Path, "../") || strings.ToLower(path.Ext(in.Path)) != ".py") {
@@ -154,7 +169,98 @@ print(json.dumps({'ready':ok and not missing,'code':'ready' if ok and not missin
 const bootstrap = `import sys,runpy,pathlib
 p=pathlib.Path(sys.argv[1]).resolve(); sys.argv=sys.argv[1:]; sys.path.insert(0,str(p.parent)); runpy.run_path(str(p),run_name='__main__')`
 
-func Run(ctx context.Context, snapshot *skills.Snapshot, backend harness.CommandBackend, cfg harness.SandboxConfig, workspace string, in Input) (Result, error) {
+// SecretPlan is host-prepared from the immutable skill version before approval.
+type SecretPlan struct {
+	Read       map[string]string        `json:"read,omitempty"`
+	Write      []string                 `json:"write,omitempty"`
+	Missing    []string                 `json:"missing,omitempty"`
+	Credential *secrets.CredentialScope `json:"credential_scope,omitempty"`
+}
+
+func credentialConsumer(snapshot *skills.Snapshot, name string) string {
+	for _, ref := range snapshot.Refs() {
+		if ref.Name == name {
+			// Installation identity survives version updates and session changes.
+			digest := sha256.Sum256([]byte(ref.SourceID + "\x00" + ref.SourceIdentity))
+			return fmt.Sprintf("skill:%s [%s@%x]", name, ref.SourceID, digest[:8])
+		}
+	}
+	return ""
+}
+func planSecrets(ctx context.Context, snapshot *skills.Snapshot, in Input, declared []skills.SecretRequirement, vault *secrets.Vault) (*SecretPlan, error) {
+	scope, extra, err := in.Credential.Bind(credentialConsumer(snapshot, in.Name), in.Secrets)
+	if err != nil {
+		return nil, err
+	}
+	plan := &SecretPlan{Read: map[string]string{}}
+	if in.Credential != nil {
+		plan.Credential = &scope
+	}
+	for _, r := range declared {
+		if r.Write {
+			plan.Write = append(plan.Write, r.Name)
+		}
+		overridden := false
+		for env := range extra {
+			if strings.EqualFold(env, r.EnvName()) {
+				overridden = true
+				break
+			}
+		}
+		if overridden {
+			continue
+		}
+		exists := false
+		if vault != nil {
+			m, err := vault.Missing(ctx, []string{r.Name})
+			if err != nil {
+				return nil, err
+			}
+			exists = len(m) == 0
+		}
+		if exists {
+			plan.Read[r.EnvName()] = r.Name
+		} else if r.IsRequired() {
+			plan.Missing = append(plan.Missing, r.Name)
+		}
+	}
+	for env, name := range extra {
+		plan.Read[env] = name
+	}
+	slices.Sort(plan.Write)
+	return plan, secrets.ValidateBindings(plan.Read)
+}
+
+func PrepareSecrets(ctx context.Context, snapshot *skills.Snapshot, in Input, vault *secrets.Vault) (*SecretPlan, error) {
+	if in.Action != "run" {
+		return &SecretPlan{}, nil
+	}
+	files, err := snapshot.Files(ctx, in.Name)
+	if err != nil {
+		return nil, err
+	}
+	entries := map[string][]byte{}
+	for _, f := range files {
+		entries[f.Path] = nil
+		if f.Path == skills.RuntimeManifestFile {
+			entries[f.Path], err = snapshot.ReadFile(ctx, in.Name, f.Path)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	manifest, _, err := skills.ParseRuntimeManifest(entries)
+	if err != nil {
+		return nil, err
+	}
+	return planSecrets(ctx, snapshot, in, manifest.Secrets, vault)
+}
+
+func Run(ctx context.Context, snapshot *skills.Snapshot, backend harness.CommandBackend, cfg harness.SandboxConfig, workspace string, in Input, vault *secrets.Vault) (Result, error) {
+	return RunPrepared(ctx, snapshot, backend, cfg, workspace, in, vault, nil)
+}
+
+func RunPrepared(ctx context.Context, snapshot *skills.Snapshot, backend harness.CommandBackend, cfg harness.SandboxConfig, workspace string, in Input, vault *secrets.Vault, approved *SecretPlan) (Result, error) {
 	r := Result{Name: in.Name, Provider: cfg.Provider}
 	if err := ValidateInput(in); err != nil {
 		return r, harness.MarkToolNotExecuted(err)
@@ -227,12 +333,43 @@ func Run(ctx context.Context, snapshot *skills.Snapshot, backend harness.Command
 		return r, harness.MarkToolExecutionFailed(errors.New("invalid Python readiness response"))
 	}
 	r.Readiness.DependenciesDeclared = declared
+	if approved == nil || in.Action == "check" {
+		approved, err = planSecrets(ctx, snapshot, in, m.Secrets, vault)
+	}
+	if err != nil {
+		return r, harness.MarkToolNotExecuted(err)
+	}
+	requiredMissing := approved.Missing
+	if len(requiredMissing) > 0 {
+		r.Readiness.MissingSecrets = requiredMissing
+		r.Readiness.SecretsHint = "Supply a credential binding for this service and map username_env/key_env to the declared variables."
+		if r.Readiness.Ready {
+			r.Readiness.Ready, r.Readiness.Code = false, "secrets_missing"
+		}
+	}
 	if !r.Readiness.Ready || in.Action == "check" {
 		if in.Action == "run" {
+			if r.Readiness.Code == "secrets_missing" {
+				return r, harness.MarkToolNotExecuted(errors.New("required secrets are missing: " + strings.Join(requiredMissing, ", ") + "; specify the service and credential environment bindings to open the credential form"))
+			}
 			return r, harness.MarkToolNotExecuted(errors.New("Python runtime requirements are not ready"))
 		}
 		return r, nil
 	}
+	if in.Credential != nil {
+		scope, _, err := in.Credential.Bind(credentialConsumer(snapshot, in.Name), in.Secrets)
+		if err != nil {
+			return r, harness.MarkToolNotExecuted(err)
+		}
+		if approved.Credential == nil || *approved.Credential != scope {
+			return r, harness.MarkToolNotExecuted(harness.ErrPermissionDenied)
+		}
+		ctx, err = vault.CredentialContext(ctx, scope, in.Credential.Fields())
+		if err != nil {
+			return r, harness.MarkToolNotExecuted(err)
+		}
+	}
+
 	root, err := os.OpenRoot(workspace)
 	if err != nil {
 		return r, err
@@ -273,8 +410,15 @@ func Run(ctx context.Context, snapshot *skills.Snapshot, backend harness.Command
 		return r, err
 	}
 	args := append([]string{"-I", "-B", "-c", bootstrap, path.Join(rel, in.Path)}, in.Args...)
-	result, err := tools.ExecuteCommand(ctx, backend, command(cfg, r.Interpreter, args, limit))
-	cleanup = result.TerminationConfirmed
+	result, report, err := tools.ExecuteWithSecrets(ctx, backend, command(cfg, r.Interpreter, args, limit), tools.SecretRequest{
+		Vault: vault, Bindings: approved.Read, WriteBack: len(approved.Write) > 0, Actor: "skill_run:" + in.Name,
+		Writable: func(name string) bool { return slices.Contains(approved.Write, name) },
+	})
+	r.Secrets = report
+	// Clean up staged files whenever termination is confirmed OR nothing ran
+	// (e.g. secret preparation / missing secret failure before process launch).
+	var notExecuted *harness.ToolNotExecutedError
+	cleanup = result.TerminationConfirmed || errors.As(err, &notExecuted)
 	if !cleanup {
 		r.RetainedDirectory = rel
 	}

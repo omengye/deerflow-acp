@@ -35,6 +35,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/network"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
 	"github.com/omengye/deerflow-acp/go-harness/internal/runtimepaths"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skillmaintenance"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills"
 	"github.com/omengye/deerflow-acp/go-harness/internal/skills/evolution"
@@ -46,7 +47,10 @@ type Config struct {
 	RuntimeProfile         string // Host-selected portable user-data; empty for standalone SDK clients.
 	EvolutionMigrationID   string // Internal startup journal identity.
 	EvolutionMigrationPath string // Host launch path; not a customer setting.
-	Network                harness.NetworkConfig
+	// ConfigPath is the host launch config.yaml; secret_manage import_config
+	// moves its plaintext credentials into the secret vault.
+	ConfigPath string
+	Network    harness.NetworkConfig
 	// MaxArtifactBytes limits each output artifact. Zero uses 500 MiB.
 	MaxArtifactBytes int64
 	DataDir          string
@@ -193,6 +197,9 @@ type Config struct {
 	// Engine allows embedding a custom execution backend without importing Eino.
 	// When nil, the real Eino DeepAgent and durable SQLite stores are used.
 	Engine harness.Engine
+
+	// secretVault is opened by Open; it is never a caller setting.
+	secretVault *secrets.Vault
 }
 
 type Client struct {
@@ -206,6 +213,7 @@ type Client struct {
 	evolution         *evolution.Service
 	learning          *learning.Store
 	assets            *assets.Store
+	secrets           *secrets.Vault
 	budgets           *budgetledger.Ledger
 	background        *backgroundHost
 	retention         harness.RetentionPolicy
@@ -412,7 +420,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			return nil, err
 		}
 	}
-	store, err := sqlite.Open(filepath.Join(cfg.DataDir, "harness.db"))
+	store, err := sqlite.Open(runtimepaths.Database(cfg.DataDir))
 	if err != nil {
 		return nil, err
 	}
@@ -428,6 +436,18 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if err != nil {
 		return nil, err
 	}
+	vault, err := secrets.Open(ctx, store.DB(), runtimepaths.SecretVault(cfg.DataDir))
+	if err != nil {
+		return nil, fmt.Errorf("open secret vault: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = vault.Close()
+		}
+	}()
+	cfg.secretVault = vault
+	cfg.search.UseSecrets(searchSecrets(vault))
+	cfg.search.UseSecretCheck(searchSecretExists(vault))
 	if cfg.SkillLearning == nil && cfg.SkillExperienceExtractor != nil {
 		return nil, fmt.Errorf("%w: extractor requires skill learning opt-in", harness.ErrInvalidInput)
 	}
@@ -560,6 +580,10 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if err = registry.ReconcileExports(ctx, false); err != nil {
 		return nil, fmt.Errorf("restore managed skill exports: %w", err)
 	}
+	cfg.SkillProposalSources = slices.Clone(cfg.SkillProposalSources)
+	if err = validateSkillProposalSources(cfg, registry); err != nil {
+		return nil, err
+	}
 	skillEvolution, err := evolution.New(ctx, registry, cfg.SkillValidator)
 	if err != nil {
 		return nil, err
@@ -580,10 +604,6 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	}
 	if cfg.SkillLearning != nil {
 		extractor := cfg.SkillExperienceExtractor
-	cfg.SkillProposalSources = slices.Clone(cfg.SkillProposalSources)
-	if err = validateSkillProposalSources(cfg, registry); err != nil {
-		return nil, err
-	}
 		if extractor == nil {
 			extractor, err = einoengine.NewSkillExperienceExtractor(ctx, cfg.SkillLearning.Model)
 			if err != nil {
@@ -731,6 +751,12 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 			}
 			out.Tools = append(out.Tools, schedules...)
 			out.InstructionAppend += instruction
+			vaultTools, vaultInstruction, err := secretTools(cfg.secretVault, req, secretSources{config: cfg.ConfigPath, search: cfg.search})
+			if err != nil {
+				return out, err
+			}
+			out.Tools = append(out.Tools, vaultTools...)
+			out.ForegroundInstructionAppend += vaultInstruction
 			state := append(json.RawMessage(nil), out.State...)
 			out.RoleToolFactory = func(ctx context.Context) ([]tool.BaseTool, error) {
 				return background.RoleToolsForRun(ctx, req, state)
@@ -741,7 +767,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		if admissionErr != nil {
 			return nil, admissionErr
 		}
-		engine, err = einoengine.New(ctx, einoengine.Config{API: cfg.API, Network: cfg.Network, Delegations: delegations, Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, OutputTokenParameter: cfg.OutputTokenParameter, ModelRoutes: cfg.ModelRoutes, ModelReasoningEfforts: cfg.ModelReasoningEfforts, ModelThinking: cfg.ModelThinking, ModelOutputLimits: cfg.ModelOutputLimits, Models: cfg.Models, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, Subagents: cfg.Subagents, ToolPolicy: cfg.ToolPolicy, PermissionMode: cfg.PermissionMode, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, ModelImageImporter: assetStore, ToolOutputStore: assetStore, TaskContextStore: business, GoalStore: business, GoalAutoContinue: cfg.GoalAutoContinue, Compaction: cfg.Compaction, ContextWindows: contextWindows})
+		engine, err = einoengine.New(ctx, einoengine.Config{API: cfg.API, Network: cfg.Network, Delegations: delegations, Provider: cfg.Provider, APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model, OutputTokenParameter: cfg.OutputTokenParameter, ModelRoutes: cfg.ModelRoutes, ModelReasoningEfforts: cfg.ModelReasoningEfforts, ModelThinking: cfg.ModelThinking, ModelOutputLimits: cfg.ModelOutputLimits, Models: cfg.Models, Instruction: cfg.Instruction, MaxIterations: cfg.MaxIterations, Budget: limits, BudgetLedger: ledger, DisableSubAgent: cfg.DisableSubagents, Subagents: cfg.Subagents, ToolPolicy: cfg.ToolPolicy, PermissionMode: cfg.PermissionMode, CheckpointStore: store, SessionStore: store, ExtensionFactory: extensions, Media: cfg.Media, AssetResolver: assetStore, ToolImageImporter: assetStore, ModelImageImporter: assetStore, ToolOutputStore: assetStore, Secrets: vault, TaskContextStore: business, GoalStore: business, GoalAutoContinue: cfg.GoalAutoContinue, Compaction: cfg.Compaction, ContextWindows: contextWindows})
 		if err != nil {
 			return nil, err
 		}
@@ -751,6 +777,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		return nil, err
 	}
 	service.PermissionMode = cfg.PermissionMode
+	service.CredentialVault = cfg.secretVault
 	if len(cfg.ACPAgents) > 0 {
 		service.ExternalPromptPending = func(ctx context.Context, owner, sessionID, agent string) (harness.ExternalPromptState, error) {
 			return pendingExternalPrompt(ctx, service, cfg.DataDir, cfg.ACPAgents, owner, sessionID, agent)
@@ -806,7 +833,7 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if err = learningStore.Start(); err != nil {
 		return nil, err
 	}
-	client = &Client{search: cfg.search, service: service, store: store, mcp: manager, skills: registry, evolution: skillEvolution, learning: learningStore, assets: assetStore, budgets: ledger, background: background, retention: cfg.Retention, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}
+	client = &Client{search: cfg.search, service: service, store: store, mcp: manager, skills: registry, evolution: skillEvolution, learning: learningStore, assets: assetStore, secrets: vault, budgets: ledger, background: background, retention: cfg.Retention, lock: lock, owner: hr.NewID(), agents: make(map[*agent.Agent]struct{}), closeDone: make(chan struct{})}
 	client.dataDir, client.skillSelection = cfg.DataDir, cfg.SkillSelection
 	if cfg.SkillSelection.Names != nil {
 		client.skillSelection.Names = append([]string{}, cfg.SkillSelection.Names...)
@@ -1021,7 +1048,7 @@ func (c *Client) Close() error {
 			break
 		}
 	}
-	c.closeErr = errors.Join(disconnectErr, collectorErr, c.mcp.Close(), c.skills.Close(), c.assets.Close(), c.store.Close(), c.lock.Close())
+	c.closeErr = errors.Join(disconnectErr, collectorErr, c.mcp.Close(), c.skills.Close(), c.assets.Close(), c.secrets.Close(), c.store.Close(), c.lock.Close())
 	close(c.closeDone)
 	return c.closeErr
 }

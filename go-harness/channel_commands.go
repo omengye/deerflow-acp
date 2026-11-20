@@ -107,7 +107,7 @@ func (c *Client) channelExecutionCommand(ctx context.Context, id, workspace stri
 				return d, nil
 			}
 		}
-		if approval == harness.ApprovalAllowAlways && !harness.ExplicitSkillEditApproval(p) {
+		if approval == harness.ApprovalAllowAlways && !harness.ExplicitApproval(p) {
 			return harness.AllowOnce, nil
 		}
 		return harness.PermissionCancelled, nil
@@ -207,7 +207,7 @@ func (c *Client) channelWaitingNotice(ctx context.Context, owner string, x harne
 func channelExplicitPermission(p harness.ExecutionInteraction, requests []harness.PermissionRequest) bool {
 	for _, request := range requests {
 		if request.ID == p.ID {
-			return harness.ExplicitSkillEditApproval(request)
+			return harness.ExplicitApproval(request)
 		}
 	}
 	return true
@@ -218,8 +218,8 @@ func channelConfirmationReview(p harness.PermissionRequest) (string, bool) {
 		return "", false
 	}
 	if p.ToolName != "skill_edit" {
-		// Generic shell/extension arguments cannot safely be summarized as authority.
-		if p.ToolName != "web_fetch" && p.ToolName != "web_search" {
+		// Generic shell/extension arguments and secret-bearing calls cannot safely be summarized as authority.
+		if (p.ToolName != "web_fetch" && p.ToolName != "web_search") || harness.ExplicitSecretApproval(p) {
 			return "", false
 		}
 		return "待确认：" + channelToolDescription(p.ToolName) + "\n参数不在微信展示；批准仅针对当前这一条已记录调用。", true

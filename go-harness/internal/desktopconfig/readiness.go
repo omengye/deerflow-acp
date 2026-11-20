@@ -12,6 +12,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
+	"github.com/omengye/deerflow-acp/go-harness/internal/launch"
 	"github.com/omengye/deerflow-acp/go-harness/internal/opencli"
 	"github.com/omengye/deerflow-acp/go-harness/internal/websearch"
 	"go.yaml.in/yaml/v3"
@@ -37,15 +38,23 @@ func (s service) readiness() (map[string]any, error) {
 		return nil, fmt.Errorf("invalid configuration YAML")
 	}
 	// Hash the same bytes we inspected, not a second possibly newer file read.
-	return map[string]any{"config_revision": fmt.Sprintf("%x", sha256.Sum256(body)), "network_checked": false, "items": capabilityReadiness(data, filepath.Dir(s.config))}, nil
+	return map[string]any{"config_revision": fmt.Sprintf("%x", sha256.Sum256(body)), "network_checked": false, "items": capabilityReadinessForConfig(data, s.config, s.configValues(data))}, nil
 }
 
-func hasCredential(value string) bool {
-	resolved, err := resolveSecret(value)
+func hasCredential(values launch.ConfigValues, value string) bool {
+	resolved, err := values.Resolve(value)
 	return err == nil && strings.TrimSpace(resolved) != "" && resolved != "not-configured" && resolved != redacted
 }
 
-func capabilityReadiness(data map[string]any, configDir string) []map[string]string {
+func capabilityReadiness(data map[string]any, configDir string, values launch.ConfigValues) []map[string]string {
+	return capabilityReadinessWithSearch(data, configDir, filepath.Join(configDir, "config.yaml"), values)
+}
+
+func capabilityReadinessForConfig(data map[string]any, configPath string, values launch.ConfigValues) []map[string]string {
+	return capabilityReadinessWithSearch(data, filepath.Dir(configPath), configPath, values)
+}
+
+func capabilityReadinessWithSearch(data map[string]any, configDir, configPath string, values launch.ConfigValues) []map[string]string {
 	items := []map[string]string{}
 	add := func(id, state, reason, section string) {
 		items = append(items, map[string]string{"id": id, "state": state, "reason": reason, "section": section})
@@ -73,7 +82,7 @@ func capabilityReadiness(data map[string]any, configDir string) []map[string]str
 		add("model", "not_configured", "请选择默认模型并填写模型 ID。", "models")
 	} else if _, err := harness.NativeModelProvider(nativeProvider(model)); err != nil {
 		add("model", "not_configured", "模型 Provider 不受支持。", "models")
-	} else if !hasCredential(str(model, "api_key", "")) {
+	} else if !hasCredential(values, str(model, "api_key", "")) {
 		add("model", "missing_credential", "已保存模型的密钥为空、占位值或环境变量未设置；无鉴权端点可主动测试确认。", "models")
 	} else {
 		add("model", "unverified", "本地配置具备凭据；请主动运行模型连接或 Agent 能力测试，可能产生费用。", "models")
@@ -119,6 +128,7 @@ func capabilityReadiness(data map[string]any, configDir string) []map[string]str
 				add(name, "not_configured", "搜索服务配置无效，请在设置 → 工具 → web_search 中重新配置。", "tools")
 				continue
 			}
+			attachSearchSecretCheck(configPath, manager)
 			status, statusErr := manager.Status()
 			if statusErr != nil {
 				add(name, "not_configured", "无法读取搜索服务配置，请在设置 → 工具 → web_search 中检查。", "tools")
@@ -141,7 +151,7 @@ func capabilityReadiness(data map[string]any, configDir string) []map[string]str
 				}
 			}
 		} else {
-			executable, err := resolveSecret(str(tool, "executable", ""))
+			executable, err := values.Resolve(str(tool, "executable", ""))
 			if err == nil {
 				if strings.ContainsAny(executable, "/\\") && !filepath.IsAbs(executable) {
 					executable = filepath.Join(configDir, executable)

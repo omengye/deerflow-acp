@@ -74,7 +74,9 @@ type permissionInterrupt struct {
 	Intent PermissionIntent
 	CallID string
 }
+type skillSourceDigestKey struct{}
 type permissionState struct {
+	PreparedSkill, SkillSourceDigest             string
 	Intent                                       PermissionIntent
 	RequestHash, RootBudgetID, BudgetOperationID string
 }
@@ -90,12 +92,34 @@ func permissionHash(req harness.PermissionRequest) string {
 	data, _ := json.Marshal(req)
 	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
+func matchesPermissionCheckpoint(hash string, req harness.PermissionRequest) bool {
+	if hash == permissionHash(req) {
+		return true
+	}
+	// Old checkpoints predate the optional mobile enrollment metadata. Their
+	// stored approval cannot offer a form and still binds the original arguments.
+	if req.CredentialScope == nil {
+		return false
+	}
+	req.CredentialScope = nil
+	return hash == permissionHash(req)
+}
 func toolBudgetDigest(name, args string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(name+"\x00"+args)))
 }
 
 func (m *toolMiddleware) requestFor(tc *adk.ToolContext, arguments json.RawMessage) harness.PermissionRequest {
-	return harness.PermissionRequest{ID: m.sink.request.RunID + "/" + tc.CallID, SessionID: m.sink.request.Session.ID, RunID: m.sink.request.RunID, ConfigVersion: m.sink.request.Session.ConfigVersion, ToolCallID: tc.CallID, ToolName: tc.Name, TrustedBuiltin: m.trusted[tc.Name], Arguments: append(json.RawMessage(nil), arguments...)}
+	var destination string
+	scope := m.credentialScopeForApproval(tc.Name, arguments)
+	if lookup := m.credentialScopes[tc.Name]; lookup != nil && harness.HasCredentialMarker(arguments) {
+		if scope != nil {
+			destination = scope.Service
+		} else {
+			target, _ := lookup(string(arguments))
+			destination = target.Service
+		}
+	}
+	return harness.PermissionRequest{CredentialScope: scope, CredentialTarget: destination, ID: m.sink.request.RunID + "/" + tc.CallID, SessionID: m.sink.request.Session.ID, RunID: m.sink.request.RunID, ConfigVersion: m.sink.request.Session.ConfigVersion, ToolCallID: tc.CallID, ToolName: tc.Name, TrustedBuiltin: m.trusted[tc.Name], Arguments: append(json.RawMessage(nil), arguments...)}
 }
 
 // admitTool handles the one-time logical tool admission. A native permission
@@ -144,7 +168,7 @@ func (m *toolMiddleware) governedPermission(ctx context.Context, tc *adk.ToolCon
 	req := m.requestFor(tc, json.RawMessage(args))
 	was, has, saved := tool.GetInterruptState[permissionState](ctx)
 	if was {
-		if !has || saved.Intent.ID == "" || saved.Intent.Version < 1 || saved.RequestHash != permissionHash(req) || saved.RootBudgetID != m.sink.request.RootBudgetID {
+		if !has || saved.Intent.ID == "" || saved.Intent.Version < 1 || !matchesPermissionCheckpoint(saved.RequestHash, req) || saved.RootBudgetID != m.sink.request.RootBudgetID {
 			return "", fmt.Errorf("%w: permission checkpoint identity changed", harness.ErrInvalidInput)
 		}
 		target, hasData, data := tool.GetResumeContext[any](ctx)
@@ -201,6 +225,9 @@ func (m *toolMiddleware) governedPermission(ctx context.Context, tc *adk.ToolCon
 		}
 	}
 	state := permissionState{Intent: intent, RequestHash: permissionHash(req), RootBudgetID: m.sink.request.RootBudgetID}
+	if digest, ok := ctx.Value(skillSourceDigestKey{}).(string); ok && tc.Name == "skill_run" {
+		state.PreparedSkill, state.SkillSourceDigest = args, digest
+	}
 	return "", m.interruptPermission(ctx, tc, state)
 }
 

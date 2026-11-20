@@ -82,6 +82,10 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 "options": options,
             }),
         ),
+        DriverEvent::PermissionResolved { request_id } => (
+            "permissionResolved",
+            json!({ "requestId": request_id }),
+        ),
         DriverEvent::UserInputRequested {
             request_id,
             questions,
@@ -185,6 +189,9 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 options: permission.options,
             }
         }
+        "permissionResolved" => DriverEvent::PermissionResolved {
+            request_id: serde_json::from_value(payload["requestId"].clone())?,
+        },
         "userInputRequested" => {
             let request: UserInputWire = serde_json::from_value(payload)?;
             DriverEvent::UserInputRequested {
@@ -321,6 +328,16 @@ struct TurnFinishedWire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolved_permission_round_trips_with_only_its_request_identity() {
+        let event = DriverEvent::PermissionResolved { request_id: "enrollment-id".into() };
+        let wire = event_to_wire(event).unwrap();
+        assert_eq!(wire.kind, "permissionResolved");
+        assert_eq!(wire.payload, json!({"requestId":"enrollment-id"}));
+        assert!(matches!(event_from_wire(wire).unwrap(),
+            DriverEvent::PermissionResolved { request_id } if request_id == "enrollment-id"));
+    }
 
     #[test]
     fn session_reasoning_authority_survives_wire_round_trip() {

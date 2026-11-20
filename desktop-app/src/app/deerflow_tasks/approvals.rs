@@ -10,6 +10,9 @@ pub(super) fn needs_approval(node: &Node) -> bool {
 }
 
 fn permission_label(option: &PermissionOption) -> &str {
+    if option.credential_form.is_some() {
+        return "录入凭据";
+    }
     match (option.id.as_str(), option.allow) {
         ("allow_once", true) => "确认执行",
         ("reject_once", false) => "取消本次操作",
@@ -184,9 +187,14 @@ impl Waku {
             let request = permission.request_id.clone();
             let option_id = option.id.clone();
             let id = format!("df-{location}-permission-{request}-{option_id}");
-            let respond = move |this: &mut Waku, _: &mut Window, cx: &mut Context<Waku>| {
+            let enroll = option.credential_form.is_some();
+            let respond = move |this: &mut Waku, window: &mut Window, cx: &mut Context<Waku>| {
                 if this.state.selected_session == session {
-                    this.respond_permission(request.clone(), option_id.clone(), cx);
+                    if enroll {
+                        this.open_enrollment(request.clone(), window, cx);
+                    } else {
+                        this.respond_permission(request.clone(), option_id.clone(), cx);
+                    }
                 }
             };
             actions = actions.child(decision_button(
@@ -563,6 +571,7 @@ mod tests {
         ] {
             assert_eq!(
                 permission_label(&PermissionOption {
+                    credential_form: None,
                     id: id.into(),
                     label: "Provider label".into(),
                     allow

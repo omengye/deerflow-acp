@@ -63,7 +63,7 @@ func TestMemoryLiveReleaseAcceptance(t *testing.T) {
 	if cfg.Model == "" {
 		t.Fatal("selected model is missing")
 	}
-	cfg.Network, err = ResolveNetworkConfig(native["network"])
+	cfg.Network, err = ResolveNetworkConfig(native["network"], ConfigValues{})
 	if err != nil {
 		t.Fatal("selected network configuration unavailable")
 	}

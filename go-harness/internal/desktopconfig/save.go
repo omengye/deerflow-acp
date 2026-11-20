@@ -102,7 +102,7 @@ func (s service) save(document map[string]any, validateOnly bool) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := launch.ResolveNetworkConfig(network); err != nil {
+	if _, err := launch.ResolveNetworkConfig(network, s.configValues(network)); err != nil {
 		return nil, err
 	}
 

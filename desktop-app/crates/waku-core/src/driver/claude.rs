@@ -1738,11 +1738,13 @@ fn request_permission(
         detail,
         options: vec![
             PermissionOption {
+                credential_form: None,
                 id: "allow".into(),
                 label: tr!("permission.allow_once"),
                 allow: true,
             },
             PermissionOption {
+                credential_form: None,
                 id: "deny".into(),
                 label: tr!("common.deny"),
                 allow: false,

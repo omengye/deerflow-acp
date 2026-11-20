@@ -190,13 +190,13 @@ func configuredPermission(x harness.Session, p harness.PermissionRequest) (harne
 			return harness.RejectOnce, true
 		}
 		switch p.ToolName {
-		case "read_file", "read_tool_output", "read_attachment", "analyze_attachment", "list_attachments", "list_directory", "search_files", "skill", "skill_inspect", "read_skill_file", "view_image", "search_memory", "task_status", "task_wait", "schedule_read":
+		case "read_file", "read_tool_output", "read_attachment", "analyze_attachment", "list_attachments", "list_directory", "search_files", "skill", "skill_inspect", "read_skill_file", "view_image", "search_memory", "task_status", "task_wait", "schedule_read", "secret_read":
 			return harness.AllowOnce, true
 		default:
 			return harness.RejectOnce, true
 		}
 	}
-	if harness.ExplicitSkillEditApproval(p) && x.ApprovalMode != harness.ApprovalRejectAlways {
+	if harness.ExplicitApproval(p) && x.ApprovalMode != harness.ApprovalRejectAlways {
 		return "", false
 	}
 	switch x.ApprovalMode {
@@ -216,7 +216,7 @@ func (s *Service) configuredPermission(x harness.Session, p harness.PermissionRe
 	if x.Mode == "plan" || x.ApprovalMode == harness.ApprovalReadOnly {
 		return configuredPermission(x, p)
 	}
-	if harness.ExplicitSkillEditApproval(p) {
+	if harness.ExplicitApproval(p) {
 		return configuredPermission(x, p)
 	}
 	if !s.PermissionMode.RequiresToolPermission(p.ToolName, p.TrustedBuiltin) {

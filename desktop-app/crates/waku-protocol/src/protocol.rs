@@ -138,6 +138,10 @@ pub enum Command {
         request_id: String,
         option_id: String,
     },
+    RespondCredential {
+        request_id: String,
+        sealed: crate::model::SealedCredential,
+    },
     RespondUserInput {
         request_id: String,
         answers: Vec<UserInputAnswer>,

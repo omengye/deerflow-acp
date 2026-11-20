@@ -7,7 +7,7 @@ Rust Bridge 和 Waku 使用 Go 配置工具与 daemon。文件格式为 `config_
 | 配置 | Go 行为 |
 | --- | --- |
 | `models[].provider` | `openai`、`claude` 的 Eino 模型适配器 |
-| `models[].api_key/base_url/model` | 各模型独立的服务端路由；支持完整标量 `$NAME`、`${NAME}`、`${NAME:-fallback}` 环境引用 |
+| `models[].api_key/base_url/model` | 各模型独立的服务端路由；支持完整标量 `$NAME`、`${NAME}`、`${NAME:-fallback}` 环境引用，凭据也可写成 `${secret:NAME}` 密钥库引用（见下文） |
 | `models[].supports_vision/context_window` | 图片输入准入及已知上下文窗口展示 |
 | `local_acp.model_name`、`default_model` | 初始模型选择，未指定时使用首个模型 |
 | `local_acp.max_active_connections/max_active_runs` | 独立的连接与前台运行数量限制 |
@@ -29,6 +29,23 @@ Rust Bridge 和 Waku 使用 Go 配置工具与 daemon。文件格式为 `config_
 `local_acp.enable_bash` 与 `sandbox.allow_host_bash` 同时启用时，Windows 桌面选择 Go PowerShell 提供方。其他命令提供方通过明确 CLI 参数配置，参见 [sandbox flags](../go-harness/internal/launch/sandbox.md)。OpenCLI 还需要 `sandbox.allow_host_tools` 与已安装的可执行程序。`tool_groups` 是旧元数据，不是授权入口。
 
 客户端 stdio MCP 由 `local_acp.accept_client_mcp_servers` 和 `client_mcp_allowed_commands` 决定宿主授权，Bridge 将 Go 配置工具校验的策略传给 daemon。客户端会话的实际 MCP 定义单独保存，参见 [ACP 客户端 MCP](go-acp-portable.md#desktop-acp-client-mcp)。
+
+## 密钥库引用
+
+运行时读取的凭据字段可以把整个值写成 `${secret:NAME}`，从内置密钥库取值，config.yaml 里不再保留明文：
+
+| 字段 | 解析时机 |
+| --- | --- |
+| `models[].api_key/base_url`、`tools[].api_key/https_proxy/executable`、`network.proxy.url`、`mcp.host_recipes[].servers[].env/headers/url` | 启动时 |
+| `search.providers.<name>.api_key` | 每次搜索请求时；搜索设置和固定的执行版本只保存引用 |
+
+- NAME 只能用大写字母、数字和下划线；写错的引用直接报错，不会被当作明文，也没有 fallback 写法。`search.providers.*` 的 `base_url`、`https_proxy` 不支持引用。
+- 启动时以只读方式打开运行数据目录中的密钥库：不加运行锁、不创建或迁移任何文件，已在运行的 daemon 不受影响。数据目录或密钥库不存在时，引用按缺失处理。
+- 选中的模型，以及已配置的工具、网络代理和宿主 MCP 引用的密钥缺失时，启动失败；其他模型路由会被跳过。二进制（文件类）密钥不能作为配置值。
+- 桌面配置工具的就绪检查、模型连接测试和网络校验用同样的只读方式读取。
+- 改写后的 config.yaml 只适用于支持 `${secret:NAME}` 的 Go 运行时；仍由其他程序读取的字段不要改成引用。
+
+已有的明文凭据可由 agent 调用 `secret_manage` 的 `import_config` 迁移，建议先用 `dry_run` 查看。它只处理本运行时读取的上述字段，同时迁移 `search-providers.json` 中保存的搜索 key：相同的值共用一个密钥，库中已有的相同值直接复用，已被其他值（包括已删除的密钥）占用的名称改用 `_2`、`_3` 等后缀。整个过程持有 `.config-tool.lock`：先在内存中改写并校验，再把密钥写入密钥库，最后原子替换 config.yaml。只替换凭据值本身，注释、BOM、换行风格和其他设置保持不变；文件在迁移期间被其他程序改动时放弃替换。本运行时不读取的疑似凭据（例如 `channels.*`）不会改动，结果会说明原因；早期运行固定的搜索执行版本也不改写，以便这些运行按原配置恢复。正在运行的 daemon 继续使用启动时读到的值，下次启动改从密钥库读取。
 
 ## 保存与应用
 

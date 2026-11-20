@@ -320,8 +320,12 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 			durableWait = true
 		}
 	}
-	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, trusted: trusted, permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, preparers: preparers, durableTaskWait: durableWait, io: ioLifecycle, budget: b, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore}
-	handlers := append(append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...), extensions.Handlers...)
+	mw := &toolMiddleware{sink: sink, permissions: permissions, protected: protected, trusted: trusted, permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, preparers: preparers, durableTaskWait: durableWait, io: ioLifecycle, budget: b, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore, vault: e.config.Secrets}
+	var handlers []adk.ChatModelAgentMiddleware
+	if sealer := newSecretArgumentSealer(e.config.Secrets); sealer != nil {
+		handlers = append(handlers, sealer)
+	}
+	handlers = append(append(handlers, e.config.Handlers...), extensions.Handlers...)
 	if extensions.ModelHandlerFactory != nil || extensions.PostRunFactory != nil {
 		privateMedia := *media
 		privateMedia.importer, privateMedia.publish = nil, nil
@@ -373,7 +377,7 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		retryPolicy = goalRetryPolicy(retryPolicy, e.config.GoalStore, req, goal, metered, e.config.GoalAutoContinue, sink)
 	}
 	p.Agent, err = deep.New(ctx, &deep.Config{
-		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend + toolFailureInstruction + stoppedToolInstruction(ctx) + media.imageGenerationInstruction(),
+		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend + extensions.ForegroundInstructionAppend + toolFailureInstruction + stoppedToolInstruction(ctx) + media.imageGenerationInstruction(),
 		ChatModel: chatModel, MaxIteration: nativeMaxIterations(e.config.MaxIterations),
 		ModelRetryConfig: retryPolicy,
 		ToolsConfig:      adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools, UnknownToolsHandler: unavailableToolHandler}},

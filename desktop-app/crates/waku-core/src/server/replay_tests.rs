@@ -30,6 +30,39 @@ fn page(
 }
 
 #[test]
+fn credential_resolution_reaches_both_clients_and_survives_reconnect() {
+    let hub = Arc::new(Hub::default());
+    let session = Uuid::new_v4();
+    let runtime = Uuid::new_v4();
+    hub.begin_runtime(session, runtime);
+    let subscribe = || {
+        let (outgoing, events) = bounded(4);
+        let (subscriber, _kicked) = Subscriber::new(outgoing);
+        hub.subscribe(&[], subscriber);
+        events
+    };
+    let desktop = subscribe();
+    let phone = subscribe();
+    let sink = hub.event_sink(session, runtime);
+    sink.send(WireDriverEvent::new("permission", json!({"requestId": "request-a"}))).unwrap();
+    let resolved = crate::model::DriverEvent::PermissionResolved { request_id: "request-a".into() };
+    sink.send(waku_protocol::event_to_wire(resolved).unwrap()).unwrap();
+    for events in [desktop, phone] {
+        for (seq, kind) in [(1, "permission"), (2, "permissionResolved")] {
+            let ServerMessage::Event(event) = events.try_recv().unwrap() else {
+                panic!("expected broadcast permission event");
+            };
+            assert_eq!((event.sequence, event.event.kind.as_str()), (seq, kind));
+            assert_eq!(event.event.payload["requestId"], "request-a");
+        }
+    }
+    let (_, replay, _, _, _) = page(&hub, session, runtime, Some(hub.epoch), 1, None, 8);
+    assert_eq!(replay.len(), 1);
+    assert_eq!(replay[0].event.kind, "permissionResolved");
+    assert_eq!(replay[0].event.payload, json!({"requestId": "request-a"}));
+}
+
+#[test]
 fn replay_pages_cover_every_event_beyond_the_old_tail_and_isolate_new_live_events() {
     let hub = Arc::new(Hub::default());
     let session = Uuid::new_v4();

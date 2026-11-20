@@ -88,6 +88,7 @@ export type { ReviewDiffSource } from "./ReviewDiffSource";
 export type { RpcError } from "./RpcError";
 export type { RuntimeEventCursor } from "./RuntimeEventCursor";
 export type { RuntimeMode } from "./RuntimeMode";
+export type { SealedCredential } from "./SealedCredential";
 export type { SequencedEvent } from "./SequencedEvent";
 export type { ServerMessage } from "./ServerMessage";
 export type { SessionBudget } from "./SessionBudget";

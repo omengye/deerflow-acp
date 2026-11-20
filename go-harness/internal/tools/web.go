@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 	"github.com/omengye/deerflow-acp/go-harness/internal/network"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/websearch"
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/charset"
@@ -23,8 +25,10 @@ import (
 
 type webSearchInput = websearch.Request
 type webFetchInput struct {
-	URL      string `json:"url"`
-	Provider string `json:"provider,omitempty" jsonschema:"description=Optional local/deepseek; omitted uses the independent saved fetch preference"`
+	Credential string `json:"credential,omitempty" jsonschema:"enum=basic,enum=bearer" jsonschema_description:"Use a vault credential for the URL origin. Choose basic for username/password or bearer for a key."`
+	Account    string `json:"account,omitempty" jsonschema_description:"Optional public account label for this service credential."`
+	URL        string `json:"url"`
+	Provider   string `json:"provider,omitempty" jsonschema:"description=Optional local/deepseek; omitted uses the independent saved fetch preference"`
 }
 type imageSearchInput struct {
 	Query      string `json:"query"`
@@ -69,6 +73,8 @@ func WebToolsWithSearch(config harness.BuiltinToolConfig, snapshot *websearch.Sn
 	return result, func() error { s.transport.CloseIdleConnections(); return nil }, err
 }
 
+var errSecretRedirectBlocked = errors.New("web_fetch will not follow cross-origin redirects for URLs containing secrets")
+
 func newWebService(c harness.BuiltinToolConfig, policies ...harness.NetworkConfig) (*webService, error) {
 	var policy harness.NetworkConfig
 	if len(policies) > 0 {
@@ -97,8 +103,11 @@ func newWebService(c harness.BuiltinToolConfig, policies ...harness.NetworkConfi
 		if !validWebURL(r.URL) {
 			return errors.New("unsupported web redirect")
 		}
-		// Search credentials are only sent to the original API origin.
+		// Search credentials and secret-substituted URLs stay on the original origin.
 		if len(via) > 0 && (r.URL.Scheme != via[0].URL.Scheme || r.URL.Host != via[0].URL.Host) {
+			if secrets.HasPlaceholderUsed(r.Context()) {
+				return errSecretRedirectBlocked
+			}
 			r.Header.Del("X-Subscription-Token")
 		}
 		return nil
@@ -127,6 +136,9 @@ func (s *webService) get(ctx context.Context, target string, headers map[string]
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, "", "", ctx.Err()
+		}
+		if errors.Is(err, errSecretRedirectBlocked) {
+			return nil, "", "", errSecretRedirectBlocked
 		}
 		return nil, "", "", harness.ClassifiedToolFailure("network", "web request failed; check the configured proxy, network or timeout")
 	}
@@ -187,7 +199,56 @@ func (s *webService) fetch(ctx context.Context, in webFetchInput) (string, error
 	if in.Provider != "" && in.Provider != "local" && in.Provider != "deepseek" {
 		return "", errors.New("fetch provider must be local or deepseek")
 	}
+	var output *secrets.CredentialOutput
+	var headers map[string]string
+	if in.Credential != "" {
+		if in.Provider == "deepseek" || in.Credential != "basic" && in.Credential != "bearer" {
+			return "", harness.MarkToolNotExecuted(errors.New("service credentials require local fetch with basic or bearer authentication"))
+		}
+		origin, err := secrets.ServiceOrigin(in.URL)
+		if err != nil {
+			return "", harness.MarkToolNotExecuted(err)
+		}
+		scope, err := secrets.NewCredentialScope("tool:web_fetch", origin, in.Account)
+		if err != nil {
+			return "", harness.MarkToolNotExecuted(err)
+		}
+		vault := secrets.FromContext(ctx)
+		required := secrets.KeyField
+		if in.Credential == "basic" {
+			required = secrets.BothFields
+		}
+		ctx, err = vault.CredentialContext(ctx, scope, required)
+		if err != nil {
+			return "", harness.MarkToolNotExecuted(err)
+		}
+		user, key := scope.Names()
+		values, err := vault.Resolve(ctx, required.Names(scope))
+		if err != nil {
+			return "", harness.MarkToolNotExecuted(err)
+		}
+		defer clear(values[user].Value)
+		defer clear(values[key].Value)
+		auth := "Bearer " + string(values[key].Value)
+		if in.Credential == "basic" {
+			pair := append(append([]byte(nil), values[user].Value...), ':')
+			pair = append(pair, values[key].Value...)
+			auth = "Basic " + base64.StdEncoding.EncodeToString(pair)
+			clear(pair)
+		}
+		fields := map[string]string{user: string(values[user].Value), key: string(values[key].Value)}
+		if in.Credential == "basic" {
+			fields["HTTP_BASIC_AUTH"] = strings.TrimPrefix(auth, "Basic ")
+		}
+		output = secrets.NewCredentialOutput(fields)
+		headers = map[string]string{"Authorization": auth}
+		in.Provider = "local"
+		ctx = secrets.WithPlaceholderUsed(ctx)
+	}
 	if in.Provider == "deepseek" || in.Provider == "" && s.searchSnapshot != nil && s.searchSnapshot.Ref.FetchProvider == "deepseek" {
+		if secrets.HasPlaceholderUsed(ctx) {
+			return "", harness.MarkToolNotExecuted(errors.New("web_fetch cannot send URLs containing secret placeholders through DeepSeek Fetch; specify provider=\"local\" or use execute with secrets"))
+		}
 		if s.searchSnapshot == nil {
 			return "", errors.New("DeepSeek Fetch is not configured")
 		}
@@ -205,9 +266,10 @@ func (s *webService) fetch(ctx context.Context, in webFetchInput) (string, error
 		if limit == 0 {
 			limit = 4096
 		}
+		content = secrets.MaskOutput(content)
 		return "Source: " + in.URL + "\nProvider: deepseek\n\n" + truncateRunes(content, limit), nil
 	}
-	body, contentType, finalURL, err := s.get(ctx, in.URL, nil)
+	body, contentType, finalURL, err := s.get(ctx, in.URL, headers)
 	if err != nil {
 		return "", err
 	}
@@ -235,6 +297,10 @@ func (s *webService) fetch(ctx context.Context, in webFetchInput) (string, error
 	if text == "" {
 		return "", errors.New("page contains no readable text; try a browser via host_opencli")
 	}
+	// Mask before truncating so a reflected secret near MaxOutputChars cannot
+	// be sliced into an unrecognized plaintext prefix.
+	text = secrets.MaskOutput(output.Mask(text))
+	finalURL = output.Mask(finalURL)
 	runes := []rune(text)
 	if len(runes) > limit {
 		text = string(runes[:limit]) + "\n\n[truncated]"

@@ -12,6 +12,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 func migrateSteering(ctx context.Context, db *sql.DB) error {
@@ -61,6 +62,7 @@ func (s *Service) SubmitSteering(ctx context.Context, owner, sessionID string, r
 	if err := s.Coordinator.Authorize(sessionID, owner); err != nil {
 		return item, err
 	}
+	req.Text = secrets.Mask(req.Text)
 	if req.RunID == "" || len(req.RunID) > 256 || req.RequestID == "" || len(req.RequestID) > 128 || req.ExpectedVersion < 1 || len(req.Text) > 8192 || !utf8.ValidString(req.Text) || strings.TrimSpace(req.Text) == "" || strings.ContainsRune(req.Text, 0) {
 		return item, harness.ErrInvalidInput
 	}

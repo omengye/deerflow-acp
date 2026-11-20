@@ -9,6 +9,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 const RuntimeManifestFile = "skill-runtime.json"
@@ -20,8 +23,62 @@ type PythonRequirements struct {
 }
 
 type RuntimeManifest struct {
-	Version int                `json:"version"`
-	Python  PythonRequirements `json:"python"`
+	Version int                 `json:"version"`
+	Python  PythonRequirements  `json:"python"`
+	Secrets []SecretRequirement `json:"secrets,omitempty"`
+}
+
+// SecretRequirement declares a vault secret that skill_run injects by
+// reference. The manifest names secrets; it never contains values.
+type SecretRequirement struct {
+	Name        string `json:"name"`
+	Env         string `json:"env,omitempty"`
+	Required    *bool  `json:"required,omitempty"`
+	Write       bool   `json:"write,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// EnvName is the injected variable, defaulting to the secret name.
+func (r SecretRequirement) EnvName() string {
+	if r.Env != "" {
+		return r.Env
+	}
+	return r.Name
+}
+
+// IsRequired defaults to true: a declared secret normally gates execution.
+func (r SecretRequirement) IsRequired() bool { return r.Required == nil || *r.Required }
+
+const maxSkillSecrets = 16
+
+func validateSecretRequirements(raw any, declared []SecretRequirement) error {
+	entries, ok := raw.([]any)
+	if !ok || len(entries) > maxSkillSecrets {
+		return invalid("runtime manifest secrets must be a list of at most 16 declarations")
+	}
+	for _, entry := range entries {
+		object, ok := entry.(map[string]any)
+		if !ok || object["name"] == nil {
+			return invalid("each runtime manifest secret requires a name")
+		}
+		for key, value := range object {
+			if key != "name" && key != "env" && key != "required" && key != "write" && key != "description" || value == nil {
+				return invalid("invalid runtime manifest secret field")
+			}
+		}
+	}
+	names, envs := map[string]bool{}, map[string]bool{}
+	for _, r := range declared {
+		env := strings.ToUpper(r.EnvName())
+		if !secrets.ValidName(r.Name) || secrets.ValidEnvName(r.EnvName()) != nil || names[r.Name] || envs[env] {
+			return invalid("runtime manifest secrets need unique uppercase names and unique, non-reserved environment variables")
+		}
+		if len(r.Description) > 200 || !utf8.ValidString(r.Description) || strings.ContainsAny(r.Description, "\r\n\x00") {
+			return invalid("runtime manifest secret descriptions must be one short line")
+		}
+		names[r.Name], envs[env] = true, true
+	}
+	return nil
 }
 
 var distributionName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -47,7 +104,7 @@ func ParseRuntimeManifest(files map[string][]byte) (RuntimeManifest, bool, error
 		return m, true, invalid("runtime manifest requires version and Python requirements")
 	}
 	for key, value := range object {
-		if (key != "version" && key != "python") || value == nil {
+		if (key != "version" && key != "python" && key != "secrets") || value == nil {
 			return m, true, invalid("invalid runtime manifest field")
 		}
 	}
@@ -81,6 +138,11 @@ func ParseRuntimeManifest(files map[string][]byte) (RuntimeManifest, bool, error
 			return m, true, invalid("Python entrypoint must name a unique packaged .py source")
 		}
 		seen[p] = true
+	}
+	if raw, ok := object["secrets"]; ok {
+		if err := validateSecretRequirements(raw, m.Secrets); err != nil {
+			return m, true, err
+		}
 	}
 	return m, true, nil
 }

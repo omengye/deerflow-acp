@@ -19,6 +19,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 type migratedPath struct {
@@ -183,10 +184,14 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 					return "", err
 				}
 				return mutateVersionedFile(ctx, root, p, in.ExpectedVersion, func(old string, _ bool) (string, error) {
-					if in.Append {
-						return old + in.Content, nil
+					content, err := restoreSecretMarkersInFile(ctx, in.Content, old)
+					if err != nil {
+						return "", err
 					}
-					return in.Content, nil
+					if in.Append {
+						return old + content, nil
+					}
+					return content, nil
 				})
 			}))
 		case "str_replace":
@@ -202,7 +207,15 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 					return "", harness.MarkToolNotExecuted(errors.New("old_str must not be empty"))
 				}
 				return mutateVersionedFile(ctx, root, p, in.ExpectedVersion, func(content string, exists bool) (string, error) {
-					count := strings.Count(content, in.OldStr)
+					oldStr, err := restoreSecretMarkersInFile(ctx, in.OldStr, content)
+					if err != nil {
+						return "", err
+					}
+					newStr, err := restoreSecretMarkersInFile(ctx, in.NewStr, content)
+					if err != nil {
+						return "", err
+					}
+					count := strings.Count(content, oldStr)
 					if !exists || count == 0 || (!in.ReplaceAll && count != 1) {
 						return "", harness.MarkToolNotExecuted(errors.New("old_str must match; without replace_all it must match exactly once"))
 					}
@@ -210,7 +223,7 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 					if in.ReplaceAll {
 						n = -1
 					}
-					return strings.Replace(content, in.OldStr, in.NewStr, n), nil
+					return strings.Replace(content, oldStr, newStr, n), nil
 				})
 			}))
 		case "glob":
@@ -322,6 +335,7 @@ func migratedWorkspaceTools(ctx context.Context, req harness.RunRequest, root *o
 						skipped++
 						return nil
 					}
+					text = secrets.Mask(text)
 					for n, line := range strings.Split(text, "\n") {
 						if re.MatchString(line) {
 							if len(matches) >= limit {
@@ -553,5 +567,5 @@ func migratedReadFile(ctx context.Context, root *os.Root, path string, in migrat
 		NextOffset int    `json:"next_offset"`
 		Truncated  bool   `json:"truncated"`
 		Content    string `json:"content"`
-	}{version, start, next, next > 0, string(body[start:end])})
+	}{version, start, next, next > 0, secrets.MaskRange(string(body), start, end)})
 }

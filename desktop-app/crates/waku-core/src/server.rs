@@ -940,6 +940,7 @@ fn command_targets_runtime(command: &Command) -> bool {
             | Command::DeerFlowTasks { .. }
             | Command::StopBackgroundWork { .. }
             | Command::Respond { .. }
+            | Command::RespondCredential { .. }
             | Command::RespondUserInput { .. }
             | Command::RunComputerTool { .. }
             | Command::RejectComputerTool { .. }

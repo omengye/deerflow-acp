@@ -77,6 +77,12 @@ func profile(config string) (string, error) {
 // does not inspect or open databases, and is empty for standalone SDK configs.
 func Profile(config string) (string, error) { return profile(config) }
 
+// Database is the runtime database inside a data directory.
+func Database(dataDir string) string { return filepath.Join(dataDir, "harness.db") }
+
+// SecretVault is the private secret vault directory inside a data directory.
+func SecretVault(dataDir string) string { return filepath.Join(dataDir, "secrets") }
+
 // BindCreated records the first successful database creation. Resolvers remain
 // read-only; an existing binding or unbound historical database is never chosen
 // or rewritten here. The caller holds the runtime lock across creation/binding.

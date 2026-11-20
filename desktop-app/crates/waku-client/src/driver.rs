@@ -92,6 +92,15 @@ impl DriverHandle {
         self.inner.respond(request_id, option_id);
     }
 
+    pub fn respond_credential(
+        &self,
+        connection: crate::DaemonClient,
+        request_id: String,
+        sealed: waku_protocol::model::SealedCredential,
+    ) -> anyhow::Result<()> {
+        self.inner.respond_credential(connection, request_id, sealed)
+    }
+
     pub fn respond_user_input(&self, request_id: String, answers: Vec<UserInputAnswer>) {
         self.inner.respond_user_input(request_id, answers);
     }
@@ -134,6 +143,14 @@ impl DriverHandle {
 }
 
 pub trait DriverControl: Send + Sync {
+    fn respond_credential(
+        &self,
+        _connection: crate::DaemonClient,
+        _request_id: String,
+        _sealed: waku_protocol::model::SealedCredential,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("当前运行时无法提交凭据")
+    }
     fn prompt(&self, prompt: String, turn_id: Option<Uuid>, message_id: Option<Uuid>);
     fn prompt_with_attachments(
         &self,

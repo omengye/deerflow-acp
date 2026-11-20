@@ -250,7 +250,7 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 		if err != nil {
 			return nil, err
 		}
-		if info.Name == "read_skill_file" || info.Name == "schedule_read" || info.Name == "schedule_manage" {
+		if info.Name == "read_skill_file" || info.Name == "schedule_read" || info.Name == "schedule_manage" || info.Name == "secret_read" || info.Name == SecretManageToolName {
 			continue
 		}
 		if info.Name == "view_image" && extensions.ModelToolFactory != nil {
@@ -290,7 +290,11 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 			}
 		}
 	}
-	handlers := append([]adk.ChatModelAgentMiddleware(nil), e.config.Handlers...)
+	var handlers []adk.ChatModelAgentMiddleware
+	if sealer := newSecretArgumentSealer(e.config.Secrets); sealer != nil {
+		handlers = append(handlers, sealer)
+	}
+	handlers = append(handlers, e.config.Handlers...)
 	if extensions.SkillFactory != nil && spec.Tools.Allows("skill") {
 		skillHandlers, skillTools, err := extensions.SkillFactory(ctx, spec.Skills)
 		if err != nil {
@@ -347,7 +351,7 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 	handlers = append(handlers,
 		&outputContinuationHistory{},
 		&modelLifecycle{io: lifecycle, budget: budget, sink: sink, media: &media, settings: spec.ModelSettings, tuning: tuning, role: true, contextWindow: e.config.ContextWindows[spec.Model], outputLimits: e.config.ModelOutputLimits[spec.Model]},
-		&toolMiddleware{sink: sink, permissions: permissions, protected: protected, trusted: trusted, preparers: preparers, policy: roleToolPolicy(spec, len(children) > 0, ownedBackground), permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, durableTaskWait: ownedBackground["task_wait"], io: lifecycle, budget: budget, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore})
+		&toolMiddleware{sink: sink, permissions: permissions, protected: protected, trusted: trusted, preparers: preparers, policy: roleToolPolicy(spec, len(children) > 0, ownedBackground), permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, durableTaskWait: ownedBackground["task_wait"], io: lifecycle, budget: budget, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore, disallowSecrets: true})
 	child, err := deep.New(ctx, &deep.Config{
 		Name: name, Description: spec.Description, Instruction: e.config.Instruction + "\n\n" + spec.Instruction + extensions.InstructionAppend + toolFailureInstruction + stoppedToolInstruction(ctx) + media.imageGenerationInstruction(),
 		ChatModel: chat, MaxIteration: nativeMaxIterations(spec.MaxTurns),

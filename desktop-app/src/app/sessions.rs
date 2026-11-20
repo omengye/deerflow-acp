@@ -6,11 +6,15 @@ fn permission_response_allowed(
     option_id: &str,
 ) -> Option<bool> {
     let permission = permission.filter(|permission| permission.request_id == request_id)?;
-    permission
+    let option = permission
         .options
         .iter()
-        .find(|option| option.id == option_id)
-        .map(|option| option.allow)
+        .find(|option| option.id == option_id)?;
+    // Credential approvals must be submitted by the editor with their ciphertext.
+    if option.allow && permission.options.iter().any(|entry| entry.credential_form.is_some()) {
+        return None;
+    }
+    Some(option.allow)
 }
 
 fn retain_runtime_after_cancel(provider: ProviderKind) -> bool {
@@ -182,6 +186,7 @@ impl Waku {
     fn activate_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
         let session_changed = self.state.selected_session != Some(session_id);
         if session_changed {
+            self.credential_editor = None;
             self.capture_and_save_current_composer_draft(cx);
             self.store_selected_right_panel_state();
         }
@@ -1799,17 +1804,19 @@ mod tests {
 
     #[test]
     fn permission_response_requires_current_request_and_offered_option() {
-        let permission = PendingPermission {
+        let mut permission = PendingPermission {
             request_id: "current-request".into(),
             title: "write_file".into(),
             detail: "report.md".into(),
             options: vec![
                 waku_protocol::model::PermissionOption {
+                    credential_form: None,
                     id: "allow_once".into(),
                     label: "Allow once".into(),
                     allow: true,
                 },
                 waku_protocol::model::PermissionOption {
+                    credential_form: None,
                     id: "reject_once".into(),
                     label: "Reject once".into(),
                     allow: false,
@@ -1836,6 +1843,16 @@ mod tests {
             permission_response_allowed(None, "current-request", "allow_once"),
             None
         );
+        permission.options[0].credential_form = Some(waku_protocol::model::CredentialForm {
+            version: 2,
+            required_fields: vec!["key".into()],
+            public_key: "test".into(),
+            consumer: "tool".into(),
+            service: "service".into(),
+            account: "default".into(),
+        });
+        assert_eq!(permission_response_allowed(Some(&permission), "current-request", "allow_once"), None);
+        assert_eq!(permission_response_allowed(Some(&permission), "current-request", "reject_once"), Some(false));
     }
 
     #[test]

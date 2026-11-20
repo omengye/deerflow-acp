@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -80,6 +81,43 @@ type CommandRequest struct {
 	Args       []string      `json:"args,omitempty"`
 	Script     string        `json:"script,omitempty"`
 	Timeout    time.Duration `json:"timeout,omitempty"`
+	// Secrets is host-side material for this command only. It is never
+	// serialized; the caller owns it and removes it after termination.
+	Secrets *CommandSecrets `json:"-"`
+}
+
+// SecretOutEnv names the directory where a command may write refreshed
+// secrets, one file per secret name. It is set only when write-back is on.
+const SecretOutEnv = "DEERFLOW_SECRET_OUT"
+
+// CommandSecrets carries vault values into one command. String values reach
+// the process environment directly; file secrets and the write-back directory
+// are private host directories that each provider maps into its own view.
+type CommandSecrets struct {
+	Env      map[string]string // variable -> plaintext value
+	Files    map[string]string // variable -> slash path relative to FilesDir
+	FilesDir string
+	OutDir   string // empty disables write-back
+}
+
+// Environment returns the injected variables for one filesystem view of the
+// command, where filesDir and outDir are the directories as the process sees
+// them and join builds paths in that view.
+func (s *CommandSecrets) Environment(filesDir, outDir string, join func(...string) string) map[string]string {
+	if s == nil {
+		return nil
+	}
+	env := make(map[string]string, len(s.Env)+len(s.Files)+1)
+	for key, value := range s.Env {
+		env[key] = value
+	}
+	for key, rel := range s.Files {
+		env[key] = join(append([]string{filesDir}, strings.Split(rel, "/")...)...)
+	}
+	if s.OutDir != "" && outDir != "" {
+		env[SecretOutEnv] = outDir
+	}
+	return env
 }
 
 type CommandState string

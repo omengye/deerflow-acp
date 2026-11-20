@@ -16,6 +16,7 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/network"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 type Request struct {
@@ -90,6 +91,10 @@ func (s *Snapshot) Search(ctx context.Context, request Request) (Response, error
 	p.Network = s.network
 	if !configured(name, p) {
 		return Response{}, &ConfigurationError{Provider: name}
+	}
+	p, err := s.credential(ctx, p)
+	if err != nil {
+		return Response{}, err
 	}
 	results, err := adapter.Search(ctx, p, request)
 	if err != nil {
@@ -279,6 +284,9 @@ func (s *Snapshot) Fetch(ctx context.Context, target string) (string, error) {
 	if !configured("deepseek", p) {
 		return "", &ConfigurationError{Provider: "deepseek"}
 	}
+	if p, err = s.credential(ctx, p); err != nil {
+		return "", err
+	}
 	body, err := requestJSON(ctx, p, http.MethodPost, p.BaseURL+"/v1/tools/fetch", map[string]string{"url": target}, map[string]string{"Authorization": "Bearer " + p.APIKey})
 	if err != nil {
 		return "", err
@@ -309,6 +317,33 @@ func (s *Snapshot) FetchInteractive(ctx context.Context, target string) (string,
 	}
 	copy.providers["deepseek"] = p
 	return copy.Fetch(ctx, target)
+}
+
+// credential replaces an api_key written ${secret:NAME} with the secret's
+// current value for one request.
+func (s *Snapshot) credential(ctx context.Context, p harness.SearchProviderConfig) (harness.SearchProviderConfig, error) {
+	name, ok, err := secrets.Reference(p.APIKey)
+	if err != nil || !ok {
+		return p, err
+	}
+	var lookup SecretLookup
+	if s.manager != nil {
+		s.manager.mu.Lock()
+		lookup = s.manager.secrets
+		s.manager.mu.Unlock()
+	}
+	if lookup == nil {
+		return p, fmt.Errorf("the search api_key refers to secret %s, but no secret vault is open", name)
+	}
+	value, err := lookup(ctx, name)
+	if err != nil {
+		return p, err
+	}
+	if value == "" || strings.ContainsAny(value, "\r\n\x00") || len(value) > 16384 {
+		return p, fmt.Errorf("secret %s is not a usable search credential", name)
+	}
+	p.APIKey = value
+	return p, nil
 }
 
 func requestJSON(ctx context.Context, p harness.SearchProviderConfig, method, target string, payload any, headers map[string]string) ([]byte, error) {

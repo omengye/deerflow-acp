@@ -1974,16 +1974,19 @@ fn handle_codex_message(
                 detail,
                 options: vec![
                     PermissionOption {
+                        credential_form: None,
                         id: "accept".into(),
                         label: tr!("permission.allow_once"),
                         allow: true,
                     },
                     PermissionOption {
+                        credential_form: None,
                         id: "acceptForSession".into(),
                         label: tr!("permission.allow_for_session"),
                         allow: true,
                     },
                     PermissionOption {
+                        credential_form: None,
                         id: "decline".into(),
                         label: tr!("common.deny"),
                         allow: false,

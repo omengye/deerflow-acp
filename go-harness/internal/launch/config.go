@@ -145,31 +145,6 @@ func (m modelDocument) provider() string {
 	return m.Use
 }
 
-func resolveConfigValue(value string) (string, error) {
-	if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
-		name := value[2 : len(value)-1]
-		if key, fallback, ok := strings.Cut(name, ":-"); ok {
-			if current := os.Getenv(key); current != "" {
-				return current, nil
-			}
-			return fallback, nil
-		}
-		value = "$" + name
-	}
-	if strings.HasPrefix(value, "$") {
-		name := strings.TrimPrefix(value, "$")
-		if name == "" || strings.ContainsAny(name, "${} ") {
-			return "", fmt.Errorf("invalid environment reference")
-		}
-		current, ok := os.LookupEnv(name)
-		if !ok {
-			return "", fmt.Errorf("environment variable %s required by config is missing", name)
-		}
-		return current, nil
-	}
-	return value, nil
-}
-
 func configToolNames(values []string) []string {
 	return configschema.NormalizeToolNames(values)
 }
@@ -228,7 +203,9 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	if err = configschema.ValidateNative(native); err != nil {
 		return result, err
 	}
-	if cfg.Network, err = ResolveNetworkConfig(native["network"]); err != nil {
+	cfg.ConfigPath = abs
+	values := ReadConfigValues(abs, cfg.DataDir, native)
+	if cfg.Network, err = ResolveNetworkConfig(native["network"], values); err != nil {
 		return result, err
 	}
 	artifactMiB, err := configschema.ArtifactSizeLimitMiB(native)
@@ -236,7 +213,7 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 		return result, err
 	}
 	cfg.MaxArtifactBytes = artifactMiB * 1024 * 1024
-	if cfg.HostMCPRecipes, err = hostMCPRecipes(native); err != nil {
+	if cfg.HostMCPRecipes, err = hostMCPRecipes(native, values); err != nil {
 		return result, err
 	}
 	controls, err := configschema.ProjectSubagentControls(native)
@@ -304,7 +281,7 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 		return result, fmt.Errorf("local_acp tool policy: %w", err)
 	}
 	cfg.ToolPolicy = policy
-	if err := applyBuiltinTools(abs, source, cfg); err != nil {
+	if err := applyBuiltinTools(abs, source, cfg, values); err != nil {
 		return result, err
 	}
 	cfg.GoalAutoContinue = source.LocalACP.GoalAutoContinue
@@ -356,11 +333,11 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 	if err != nil {
 		return result, err
 	}
-	apiKey, err := resolveConfigValue(model.APIKey)
+	apiKey, err := values.Resolve(model.APIKey)
 	if err != nil {
 		return result, err
 	}
-	baseURL, err := resolveConfigValue(model.BaseURL)
+	baseURL, err := values.Resolve(model.BaseURL)
 	if err != nil {
 		return result, err
 	}
@@ -619,8 +596,8 @@ func ApplyConfig(path string, cfg *deerflow.Config, maxConnections *int, explici
 		if err != nil {
 			return result, fmt.Errorf("model %q: %w", option.Name, err)
 		}
-		key, keyErr := resolveConfigValue(option.APIKey)
-		url, urlErr := resolveConfigValue(option.BaseURL)
+		key, keyErr := values.Resolve(option.APIKey)
+		url, urlErr := values.Resolve(option.BaseURL)
 		if keyErr != nil || urlErr != nil {
 			continue
 		}
@@ -867,7 +844,7 @@ func applySubagents(source runtimeDocument, cfg *deerflow.Config, explicit map[s
 	return nil
 }
 
-func applyBuiltinTools(configPath string, source runtimeDocument, cfg *deerflow.Config) error {
+func applyBuiltinTools(configPath string, source runtimeDocument, cfg *deerflow.Config, values ConfigValues) error {
 	configured := make([]harness.BuiltinToolConfig, 0, len(source.Tools))
 	seen := map[string]bool{}
 	for _, setting := range source.Tools {
@@ -879,16 +856,16 @@ func applyBuiltinTools(configPath string, source runtimeDocument, cfg *deerflow.
 		}
 		seen[setting.Name] = true
 		var err error
-		setting.APIKey, err = resolveConfigValue(setting.APIKey)
+		setting.APIKey, err = values.Resolve(setting.APIKey)
 		if err != nil {
 			return fmt.Errorf("%s.api_key: %w", setting.Name, err)
 		}
-		setting.HTTPSProxy, err = resolveConfigValue(setting.HTTPSProxy)
+		setting.HTTPSProxy, err = values.Resolve(setting.HTTPSProxy)
 		if err != nil {
 			return fmt.Errorf("%s.https_proxy: %w", setting.Name, err)
 		}
 		if setting.Executable != "" {
-			setting.Executable, err = resolveConfigValue(setting.Executable)
+			setting.Executable, err = values.Resolve(setting.Executable)
 			if err != nil {
 				return fmt.Errorf("%s.executable: %w", setting.Name, err)
 			}

@@ -67,7 +67,7 @@ func TestLivePrimaryModelAndOCIAcceptance(t *testing.T) {
 	if route.Model == "" {
 		t.Fatal("primary model missing")
 	}
-	route.Network, err = ResolveNetworkConfig(native["network"])
+	route.Network, err = ResolveNetworkConfig(native["network"], ConfigValues{})
 	if err != nil {
 		t.Fatal("primary network unavailable")
 	}

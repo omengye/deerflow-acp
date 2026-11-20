@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,14 +17,16 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/background"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	"github.com/omengye/deerflow-acp/go-harness/internal/memory"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
 type Service struct {
-	Store       *Store
-	Coordinator *session.Coordinator
-	Engine      harness.Engine
-	Background  harness.BackgroundController
+	CredentialVault *secrets.Vault
+	Store           *Store
+	Coordinator     *session.Coordinator
+	Engine          harness.Engine
+	Background      harness.BackgroundController
 	// Installed by the durable native host. Called with a live root-session
 	// admission fence to create a private, background-owned continuation.
 	BackgroundContinuation func(context.Context, string, string, string) (harness.BackgroundTask, error)
@@ -199,6 +202,19 @@ func (s *Service) Admit(ctx context.Context, owner, id string) (context.Context,
 	return context.WithValue(ctx, reservationKey{}, &reservation{sessionID: id, owner: owner}), release, nil
 }
 
+func maskPromptInput(input []harness.Content) []harness.Content {
+	if !secrets.Active() {
+		return input
+	}
+	input = slices.Clone(input)
+	for i, c := range input {
+		input[i].Text = secrets.Mask(c.Text)
+		input[i].Description = secrets.Mask(c.Description)
+		input[i].Name = secrets.Mask(c.Name)
+	}
+	return input
+}
+
 func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Content, emit harness.EventHandler, approve harness.PermissionHandler) (result harness.RunResult, runErr error) {
 	// A cancel can arrive immediately after admission, before input reaches SQL
 	// or the engine. It still completes the original ACP prompt normally.
@@ -241,6 +257,7 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 	if err = ctx.Err(); err != nil {
 		return harness.RunResult{}, err
 	}
+	input = maskPromptInput(input)
 	if handled, err := s.goalCommand(ctx, id, input, emit); handled {
 		return harness.RunResult{StopReason: "end_turn"}, err
 	}
@@ -375,7 +392,7 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 			return harness.RejectOnce, err
 		}
 		decision, cached := s.configuredPermission(x, p)
-		if !cached && !harness.ExplicitSkillEditApproval(p) {
+		if !cached && !harness.ExplicitApproval(p) {
 			s.mu.Lock()
 			decision, cached = s.decisions[key]
 			s.mu.Unlock()
@@ -400,7 +417,7 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 		if saveErr := s.Store.Decide(persistCtx, p.ID, decision); saveErr != nil {
 			return harness.RejectOnce, saveErr
 		}
-		if !harness.ExplicitSkillEditApproval(p) && (decision == harness.AllowAlways || decision == harness.RejectAlways) {
+		if !harness.ExplicitApproval(p) && (decision == harness.AllowAlways || decision == harness.RejectAlways) {
 			s.mu.Lock()
 			s.decisions[key] = decision
 			s.mu.Unlock()

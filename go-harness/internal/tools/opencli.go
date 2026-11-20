@@ -14,6 +14,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/opencli"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
 type opencliInput struct {
@@ -31,7 +32,7 @@ func OpenCLITool(backend harness.CommandBackend, plan opencli.Launcher, sites []
 	if err != nil {
 		return nil, err
 	}
-	return &opencliTool{info: info, backend: backend, plan: plan, sites: slices.Clone(sites)}, nil
+	return &opencliTool{Native: toolidentity.Builtin("host_opencli"), info: info, backend: backend, plan: plan, sites: slices.Clone(sites)}, nil
 }
 
 func openCLIToolInfo(sites []string) (*schema.ToolInfo, error) {
@@ -48,10 +49,11 @@ func UnavailableOpenCLITool(cause error, sites []string) (tool.InvokableTool, er
 	if err != nil {
 		return nil, err
 	}
-	return &unavailableOpenCLITool{info: info, cause: cause}, nil
+	return &unavailableOpenCLITool{Native: toolidentity.Builtin("host_opencli"), info: info, cause: cause}, nil
 }
 
 type unavailableOpenCLITool struct {
+	toolidentity.Native
 	info  *schema.ToolInfo
 	cause error
 }
@@ -68,6 +70,7 @@ func (t *unavailableOpenCLITool) InvokableRun(ctx context.Context, _ string, _ .
 }
 
 type opencliTool struct {
+	toolidentity.Native
 	info    *schema.ToolInfo
 	backend harness.CommandBackend
 	plan    opencli.Launcher

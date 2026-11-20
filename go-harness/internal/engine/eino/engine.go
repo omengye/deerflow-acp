@@ -22,6 +22,7 @@ import (
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 	"github.com/omengye/deerflow-acp/go-harness/internal/network"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 // Config is internal to the Eino adapter. Business and transport packages use
@@ -55,10 +56,13 @@ type Config struct {
 	ToolImageImporter  harness.ToolImageImporter
 	ModelImageImporter harness.ModelImageImporter
 	ToolOutputStore    harness.ToolOutputStore
-	TaskContextStore   harness.TaskContextStore
-	GoalStore          harness.GoalStore
-	GoalAutoContinue   bool
-	Compaction         harness.CompactionConfig
+	// Secrets seals secret_manage values in model output and restores
+	// secret markers in workspace writes. Masking uses every open vault.
+	Secrets          *secrets.Vault
+	TaskContextStore harness.TaskContextStore
+	GoalStore        harness.GoalStore
+	GoalAutoContinue bool
+	Compaction       harness.CompactionConfig
 	// ContextWindows contains configured model context sizes. A missing size
 	// suppresses ACP context occupancy rather than guessing from run budgets.
 	ContextWindows map[string]int
@@ -86,6 +90,9 @@ type RunExtensions struct {
 	// InstructionAppend is pinned by State and added to this run's native
 	// DeepAgent instruction. It contains only host-selected descriptive data.
 	InstructionAppend string
+	// ForegroundInstructionAppend is added only to the lead (foreground) agent,
+	// never to delegated subagents.
+	ForegroundInstructionAppend string
 	// SkillNames and SkillFactory narrow an immutable parent skill snapshot for
 	// a role. Returned handlers replace, rather than append to, parent handlers.
 	SkillNames   []string
@@ -862,6 +869,7 @@ type eventSink struct {
 }
 
 func (s *eventSink) emit(ctx context.Context, event harness.RunEvent) error {
+	event = maskToolEvent(event)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.err != nil {

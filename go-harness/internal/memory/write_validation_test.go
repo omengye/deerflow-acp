@@ -1,8 +1,14 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"path/filepath"
 	"testing"
+
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
+	"github.com/omengye/deerflow-acp/go-harness/internal/storage/sqlite"
 )
 
 func stage2Write(key, category, source, value string) WriteRequest {
@@ -85,5 +91,31 @@ func TestMemoryStage2ExtractionIsPerItemAndKeepsOrdinals(t *testing.T) {
 	facts, rejected, err = ParseExtraction(raw, source, []ScopeKind{GlobalScope}, true)
 	if err != nil || len(facts) != 0 || len(rejected) != 1 {
 		t.Fatalf("missing confidence is not a per-item rejection: %+v %+v %v", facts, rejected, err)
+	}
+}
+
+func TestMemoryWriteRejectsVaultValues(t *testing.T) {
+	source := "My name is Bartholomew"
+	write := stage2Write("profile.name", "profile", source, "Bartholomew")
+	if _, err := ValidateWrite(source, write, false); err != nil {
+		t.Fatalf("baseline write rejected: %v", err)
+	}
+	dir := t.TempDir()
+	store, err := sqlite.Open(filepath.Join(dir, "harness.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	v, err := secrets.Open(context.Background(), store.DB(), filepath.Join(dir, "secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if _, err = v.Set(context.Background(), secrets.SetRequest{Name: "LOGIN", Kind: secrets.KindString, Value: []byte("Bartholomew"), Actor: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	var rejected *ValidationError
+	if _, err = ValidateWrite(source, write, false); !errors.As(err, &rejected) || rejected.Reason != "secret_value" {
+		t.Fatalf("vault value was remembered: %v", err)
 	}
 }

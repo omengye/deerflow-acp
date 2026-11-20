@@ -2093,7 +2093,9 @@ fn handle_driver_command(
         Command::Respond {
             request_id,
             option_id,
-        } => driver.respond(request_id, option_id),
+        } => driver.respond(request_id, option_id).map_err(anyhow::Error::msg)?,
+
+        Command::RespondCredential { request_id, sealed } => driver.respond_credential(request_id, sealed).map_err(anyhow::Error::msg)?,
         Command::RespondUserInput {
             request_id,
             answers,
@@ -2269,6 +2271,10 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 "options": options,
             }),
         ),
+        DriverEvent::PermissionResolved { request_id } => (
+            "permissionResolved",
+            json!({ "requestId": request_id }),
+        ),
         DriverEvent::UserInputRequested {
             request_id,
             questions,
@@ -2372,6 +2378,9 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 options: permission.options,
             }
         }
+        "permissionResolved" => DriverEvent::PermissionResolved {
+            request_id: serde_json::from_value(payload["requestId"].clone())?,
+        },
         "userInputRequested" => {
             let request: UserInputWire = serde_json::from_value(payload)?;
             DriverEvent::UserInputRequested {

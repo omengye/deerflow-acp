@@ -15,6 +15,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/acp/protocol"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	hr "github.com/omengye/deerflow-acp/go-harness/internal/runtime"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
@@ -748,8 +749,42 @@ func (a *Agent) clearSubagents(sessionID string) {
 
 func (a *Agent) permission(ctx context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
 	options := []map[string]string{{"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"}, {"optionId": "allow_always", "name": "Allow identical calls in this session", "kind": "allow_always"}, {"optionId": "reject_once", "name": "Reject once", "kind": "reject_once"}, {"optionId": "reject_always", "name": "Reject identical calls in this session", "kind": "reject_always"}}
-	request := map[string]any{"sessionId": p.SessionID, "toolCall": map[string]any{"toolCallId": p.ToolCallID, "title": p.ToolName, "status": "pending", "rawInput": p.Arguments}, "options": options, "_meta": map[string]any{"deerflow": map[string]any{"approvalId": p.ID, "configVersion": p.ConfigVersion}}}
+	call := map[string]any{"toolCallId": p.ToolCallID, "title": p.ToolName, "status": "pending", "rawInput": p.Arguments}
+	meta := map[string]any{"approvalId": p.ID, "configVersion": p.ConfigVersion}
+	explicit := harness.ExplicitSecretApproval(p)
+	var enrollment *secrets.Enrollment
+	if explicit {
+		options = []map[string]string{options[0], options[2]}
+		detail := "本次凭据授权 · " + p.ToolName + "\n"
+		if scope := p.CredentialScope; scope != nil {
+			options[0]["name"] = "允许本次"
+			options[1]["name"] = "拒绝本次"
+			detail += "调用方  " + scope.Consumer + "\n服务  " + scope.Service + "\n账号别名  " + scope.Account + "\n"
+		} else if p.CredentialTarget != "" {
+			detail += "服务  " + p.CredentialTarget + "\n"
+		}
+		detail += secrets.MaskOutput(string(p.Arguments))
+		call["content"] = []any{map[string]any{"type": "content", "content": map[string]string{"type": "text", "text": detail}}}
+		meta["credentialApproval"] = true
+		if p.CredentialScope != nil && a.service.CredentialVault != nil && !a.localCredentialForm() {
+			fields, err := secrets.ApprovalFields(p)
+			if err != nil {
+				return harness.RejectOnce, err
+			}
+			enrollment, err = a.service.CredentialVault.NewEnrollment(ctx, secrets.CredentialScope(*p.CredentialScope), fields, a.remoteCredentialVersion())
+			if err != nil {
+				return harness.RejectOnce, err
+			}
+			if enrollment != nil {
+				meta["credentialForm"] = enrollment.Form
+			}
+		}
+	}
+	request := map[string]any{"sessionId": p.SessionID, "toolCall": call, "options": options, "_meta": map[string]any{"deerflow": meta}}
 	var response struct {
+		Meta struct {
+			Credential *secrets.SealedCredential `json:"sealedCredential"`
+		} `json:"_meta"`
 		Outcome struct {
 			Outcome  string `json:"outcome"`
 			OptionID string `json:"optionId"`
@@ -774,6 +809,23 @@ func (a *Agent) permission(ctx context.Context, p harness.PermissionRequest) (ha
 		return harness.RejectOnce, fmt.Errorf("invalid permission outcome")
 	}
 	decision := harness.PermissionDecision(response.Outcome.OptionID)
+	if decision == harness.AllowOnce && enrollment != nil && response.Meta.Credential == nil {
+		return harness.RejectOnce, errors.New("secure enrollment was required but the connected client returned only approval; no credential was saved or used")
+	}
+	if sealed := response.Meta.Credential; sealed != nil {
+		if enrollment == nil || decision != harness.AllowOnce {
+			return harness.RejectOnce, harness.ErrPermissionDenied
+		}
+		if err := a.service.Coordinator.Authorize(p.SessionID, a.owner); err != nil {
+			return harness.RejectOnce, err
+		}
+		if err := enrollment.Save(ctx, a.service.CredentialVault, sealed); err != nil {
+			return harness.RejectOnce, err
+		}
+	}
+	if explicit && (decision == harness.AllowAlways || decision == harness.RejectAlways) {
+		return harness.RejectOnce, harness.ErrPermissionDenied
+	}
 	switch decision {
 	case harness.AllowOnce, harness.AllowAlways, harness.RejectOnce, harness.RejectAlways:
 		return decision, nil

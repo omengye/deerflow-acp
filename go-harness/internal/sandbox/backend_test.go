@@ -38,6 +38,13 @@ func TestCommandHelper(t *testing.T) {
 		cwd, _ := os.Getwd()
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"cwd": cwd, "argv0": os.Args[0], "args": args[1:], "secret": os.Getenv("DEERFLOW_SANDBOX_HOST_SECRET"), "explicit": os.Getenv("EXPLICIT_VALUE")})
 		os.Exit(7)
+	case "secretenv":
+		key, _ := os.ReadFile(os.Getenv("KEY_FILE"))
+		fmt.Printf("token=%s\nkey=%s\nfile=%s\n", os.Getenv("API_TOKEN"), key, filepath.Base(os.Getenv("KEY_FILE")))
+		if out := os.Getenv("DEERFLOW_SECRET_OUT"); out != "" {
+			_ = os.WriteFile(filepath.Join(out, "TOKEN"), []byte("rotated-token-value-456\n"), 0o600)
+		}
+		os.Exit(0)
 	case "output":
 		_, _ = os.Stdout.Write(bytes.Repeat([]byte("o"), 1<<20))
 		_, _ = os.Stderr.Write(bytes.Repeat([]byte("e"), 1<<20))

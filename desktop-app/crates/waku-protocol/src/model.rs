@@ -1992,6 +1992,8 @@ pub enum DriverEvent {
         detail: String,
         options: Vec<PermissionOption>,
     },
+    /// A previously broadcast permission is no longer actionable on any attached client.
+    PermissionResolved { request_id: String },
     /// Structured questions the provider needs answered before it can
     /// continue the active turn. Unlike a permission, this is never
     /// auto-approved: the content itself has to come from the user.
@@ -2224,6 +2226,30 @@ pub struct PermissionOption {
     pub id: String,
     pub label: String,
     pub allow: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_form: Option<CredentialForm>,
+}
+
+/// Public, ephemeral enrollment information. Safe to replay with the permission card.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialForm {
+    pub version: u8,
+    pub required_fields: Vec<String>,
+    pub public_key: String,
+    pub consumer: String,
+    pub service: String,
+    pub account: String,
+}
+
+/// Only authenticated ciphertext may travel on this command.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SealedCredential {
+    pub public_key: String,
+    pub client_key: String,
+    pub nonce: String,
+    pub ciphertext: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]

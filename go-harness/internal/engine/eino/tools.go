@@ -17,29 +17,33 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	acpclient "github.com/omengye/deerflow-acp/go-harness/internal/acp/client"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
 type toolMiddleware struct {
 	adk.BaseChatModelAgentMiddleware
-	sink            *eventSink
-	permissions     harness.PermissionHandler
-	protected       map[string]bool
-	trusted         map[string]bool
-	preparers       map[string]harness.ToolArgumentPreparer
-	policy          *harness.ToolPolicy
-	permissionMode  harness.PermissionMode
-	readOnly        bool
-	durableTaskWait bool
-	io              *runIO
-	budget          *runBudget
-	images          harness.ToolImageImporter
-	outputs         harness.ToolOutputStore
-	grants          sync.Map // *adk.ToolContext -> durablebudget.Reservation
-	executing       sync.Map // *adk.ToolContext -> started effect, until terminal receipt
-	permits         sync.Map // *adk.ToolContext -> release after terminal receipt and cleanup
-	outputMu        sync.Mutex
-	outputBytes     int
+	sink             *eventSink
+	permissions      harness.PermissionHandler
+	protected        map[string]bool
+	trusted          map[string]bool
+	credentialScopes map[string]func(string) (secrets.CredentialScope, error)
+	preparers        map[string]harness.ToolArgumentPreparer
+	policy           *harness.ToolPolicy
+	permissionMode   harness.PermissionMode
+	readOnly         bool
+	durableTaskWait  bool
+	io               *runIO
+	budget           *runBudget
+	images           harness.ToolImageImporter
+	outputs          harness.ToolOutputStore
+	grants           sync.Map // *adk.ToolContext -> durablebudget.Reservation
+	executing        sync.Map // *adk.ToolContext -> started effect, until terminal receipt
+	permits          sync.Map // *adk.ToolContext -> release after terminal receipt and cleanup
+	outputMu         sync.Mutex
+	outputBytes      int
+	vault            *secrets.Vault
+	disallowSecrets  bool
 }
 
 // Run after tool-providing middleware so a role's allowlist also governs
@@ -82,6 +86,14 @@ func (m *toolMiddleware) BeforeAgent(ctx context.Context, input *adk.ChatModelAg
 		default:
 			m.trusted[info.Name] = toolidentity.IsBuiltin(t, info.Name)
 			m.protected[info.Name] = m.readOnly || m.permissionMode.RequiresToolPermission(info.Name, m.trusted[info.Name])
+		}
+		if scoped, ok := t.(interface {
+			CredentialScope(string) (secrets.CredentialScope, error)
+		}); ok {
+			if m.credentialScopes == nil {
+				m.credentialScopes = make(map[string]func(string) (secrets.CredentialScope, error))
+			}
+			m.credentialScopes[info.Name] = scoped.CredentialScope
 		}
 		copy.Tools = append(copy.Tools, t)
 		available[info.Name] = true
@@ -153,8 +165,12 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 		return m.sink.emit(ctx, harness.RunEvent{Kind: kind, ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress"})
 	}
 	hooks := executionHooks(ctx)
-	governed := m.requiresPermission(tc.Name) && hooks != nil && hooks.Broker != nil
+	needPermission := m.requiresPermissionFor(tc.Name, arguments)
 	wasInterrupted, _, _ := tool.GetInterruptState[permissionState](ctx)
+	if wasInterrupted {
+		needPermission = true
+	}
+	governed := needPermission && hooks != nil && hooks.Broker != nil
 	if governed && wasInterrupted {
 		// The first attempt already persisted this pending logical call. Resume
 		// changes its state; it does not create another pending receipt/event.
@@ -169,7 +185,7 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 			return err
 		}
 	}
-	if m.requiresPermission(tc.Name) {
+	if needPermission {
 		var decision harness.PermissionDecision
 		var err error
 		if governed {
@@ -310,6 +326,33 @@ func (m *toolMiddleware) requiresPermission(name string) bool {
 	return (m.policy != nil || m.permissionMode != "") && m.permissionMode.RequiresToolPermission(name, m.trusted[name])
 }
 
+func (m *toolMiddleware) requiresPermissionFor(name string, arguments json.RawMessage) bool {
+	if m.requiresPermission(name) {
+		return true
+	}
+	if m.vault != nil {
+		p := harness.PermissionRequest{ToolName: name, TrustedBuiltin: m.trusted[name], Arguments: arguments}
+		if harness.ExplicitSecretApproval(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *toolMiddleware) credentialDispatchContext(ctx context.Context, tc *adk.ToolContext, args string) context.Context {
+	if !m.trusted[tc.Name] && !harness.HasCredentialMarker(json.RawMessage(args)) {
+		return ctx
+	}
+	if m.vault != nil && !m.readOnly && !secrets.Disallowed(ctx) && harness.ExplicitSecretApproval(harness.PermissionRequest{ToolName: tc.Name, TrustedBuiltin: m.trusted[tc.Name], Arguments: json.RawMessage(args)}) {
+		target, err := m.desktopCredentialTarget(tc.Name, args)
+		if err != nil {
+			return ctx
+		}
+		return secrets.WithCredentialGrant(ctx, target)
+	}
+	return ctx
+}
+
 func (m *toolMiddleware) userQuestion(name string) bool {
 	return name == "ask_user_question" && m.trusted[name]
 }
@@ -321,6 +364,11 @@ func (m *toolMiddleware) askPermission(ctx context.Context, request harness.Perm
 }
 
 func (m *toolMiddleware) begin(ctx context.Context, tc *adk.ToolContext) (context.Context, func(), error) {
+	if m.disallowSecrets || IsDelegatedToolContext(ctx) {
+		ctx = secrets.Disallow(ctx)
+	} else {
+		ctx = secrets.WithVault(ctx, m.vault)
+	}
 	if m.nativeDelegation(ctx, tc) {
 		parent, _ := ctx.Value(roleWorkKey{}).(roleWork)
 		identity, err := json.Marshal([]string{m.sink.request.RunID, parent.id, tc.CallID})
@@ -367,6 +415,10 @@ func recoverableToolFailure(ctx context.Context, err error) bool {
 }
 
 func failedToolModelText(output string, err error) string {
+	return secrets.Mask(failureModelText(output, err))
+}
+
+func failureModelText(output string, err error) string {
 	var executedFailure *harness.ToolExecutionFailedError
 	if errors.As(err, &executedFailure) && certifiedToolOutcome(err) {
 		return "Tool failed: " + err.Error() + "\nThe tool execution has ended. Partial effects may have occurred; inspect the output and any affected state before retrying. Do not assume a rollback.\nTool output: " + output
@@ -401,7 +453,20 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 			return m.rejectUnavailableTool(ctx, tc, args)
 		}
 		if prepare := m.preparers[tc.Name]; prepare != nil {
-			args, err = prepare.PrepareToolArguments(ctx, args)
+			if tc.Name == "skill_run" && m.trusted[tc.Name] {
+				digest := toolBudgetDigest(tc.Name, args)
+				ctx = context.WithValue(ctx, skillSourceDigestKey{}, digest)
+				if was, has, saved := tool.GetInterruptState[permissionState](ctx); was && has && saved.PreparedSkill != "" {
+					if saved.SkillSourceDigest != digest {
+						return "", harness.ErrPermissionDenied
+					}
+					args = saved.PreparedSkill
+				} else {
+					args, err = prepare.PrepareToolArguments(ctx, args)
+				}
+			} else {
+				args, err = prepare.PrepareToolArguments(ctx, args)
+			}
 			if err != nil {
 				// Invalid native arguments may contain secrets. Never persist or
 				// request approval for the rejected raw payload.
@@ -410,6 +475,11 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 				var arguments *harness.SkillEditArgumentError
 				if errors.As(err, &arguments) {
 					failure = harness.MarkToolNotExecuted(harness.ClassifiedToolFailure("invalid_skill_edit_arguments", message))
+				}
+				var toolArguments *harness.ToolArgumentError
+				if errors.As(err, &toolArguments) {
+					message = "Request rejected before execution: " + toolArguments.Message
+					failure = harness.MarkToolNotExecuted(harness.ClassifiedToolFailure(toolArguments.Code, message))
 				}
 				var unavailable *harness.SkillAvailabilityError
 				if errors.As(err, &unavailable) {
@@ -423,6 +493,13 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 				}
 				return failedToolModelText("", failure), nil
 			}
+		}
+		placeholders, failure := m.secretPlaceholders(ctx, tc, args)
+		if failure != nil {
+			if recoverable, err := m.rejectPlaceholders(ctx, tc, args, failure); !recoverable {
+				return "", err
+			}
+			return failedToolModelText("", failure), nil
 		}
 		if err := m.start(ctx, tc, args); err != nil {
 			if isPermissionInterrupt(err) {
@@ -532,7 +609,15 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 		if tc.Name == "skill_edit" {
 			ctx = context.WithValue(ctx, confirmedToolKey{}, confirmedTool{tc.Name, args})
 		}
-		output, toolErr := next(ctx, args, opts...)
+		if len(placeholders) > 0 {
+			ctx = secrets.WithPlaceholderUsed(ctx)
+		}
+		ctx = m.credentialDispatchContext(ctx, tc, args)
+		callArgs, toolErr := m.dispatchArguments(ctx, args, placeholders)
+		var output string
+		if toolErr == nil {
+			output, toolErr = next(ctx, callArgs, opts...)
+		}
 		var settleErr error
 		if externalReservation != nil {
 			settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -551,6 +636,7 @@ func (m *toolMiddleware) WrapInvokableToolCall(_ context.Context, next adk.Invok
 		if output == "" && errors.As(err, &evidence) {
 			output = evidence.ToolResult()
 		}
+		output = secrets.MaskOutput(output)
 		recoverable := settleErr == nil && m.recoverableFailure(ctx, tc, toolErr)
 		modelOutput := output
 		if recoverable {
@@ -605,6 +691,13 @@ func (m *toolMiddleware) WrapStreamableToolCall(_ context.Context, next adk.Stre
 				finish()
 			}
 		}()
+		placeholders, failure := m.secretPlaceholders(ctx, tc, args)
+		if failure != nil {
+			if recoverable, err := m.rejectPlaceholders(ctx, tc, args, failure); !recoverable {
+				return nil, err
+			}
+			return schema.StreamReaderFromArray([]string{failedToolModelText("", failure)}), nil
+		}
 		if err := m.start(ctx, tc, args); err != nil {
 			if isPermissionInterrupt(err) {
 				return nil, err
@@ -617,12 +710,20 @@ func (m *toolMiddleware) WrapStreamableToolCall(_ context.Context, next adk.Stre
 			}
 			return nil, err
 		}
-		stream, err := next(ctx, args, opts...)
+		if len(placeholders) > 0 {
+			ctx = secrets.WithPlaceholderUsed(ctx)
+		}
+		ctx = m.credentialDispatchContext(ctx, tc, args)
+		callArgs, err := m.dispatchArguments(ctx, args, placeholders)
+		var stream *schema.StreamReader[string]
+		if err == nil {
+			stream, err = next(ctx, callArgs, opts...)
+		}
 		if err != nil {
 			var output string
 			var evidence interface{ ToolResult() string }
 			if errors.As(err, &evidence) {
-				output = evidence.ToolResult()
+				output = secrets.MaskOutput(evidence.ToolResult())
 			}
 			recoverable := m.recoverableFailure(ctx, tc, err)
 			modelOutput := ""
@@ -641,7 +742,7 @@ func (m *toolMiddleware) WrapStreamableToolCall(_ context.Context, next adk.Stre
 			return nil, err
 		}
 		handedOff = true
-		return relayToolStream(ctx, m, tc, stream, finish, func(chunk string) []harness.Content { return []harness.Content{{Type: "text", Text: chunk}} }, func(err error) (string, error) {
+		return relayToolStream(ctx, m, tc, maskStringStream(stream), finish, func(chunk string) []harness.Content { return []harness.Content{{Type: "text", Text: chunk}} }, func(err error) (string, error) {
 			return m.modelToolOutput(ctx, "\n"+failedToolModelText("", err))
 		}), nil
 	}, nil
@@ -687,13 +788,28 @@ func (m *toolMiddleware) WrapEnhancedInvokableToolCall(_ context.Context, next a
 		if args == nil {
 			return nil, errors.New("nil tool arguments")
 		}
+		placeholders, failure := m.secretPlaceholders(ctx, tc, args.Text)
+		if failure != nil {
+			if recoverable, err := m.rejectPlaceholders(ctx, tc, args.Text, failure); !recoverable {
+				return nil, err
+			}
+			return failedEnhancedToolResult(nil, failure), nil
+		}
 		if err := m.start(ctx, tc, args.Text); err != nil {
 			if isPermissionInterrupt(err) {
 				return nil, err
 			}
 			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
 		}
-		output, toolErr := next(ctx, args, opts...)
+		if len(placeholders) > 0 {
+			ctx = secrets.WithPlaceholderUsed(ctx)
+		}
+		ctx = m.credentialDispatchContext(ctx, tc, args.Text)
+		callArgs, toolErr := m.dispatchArguments(ctx, args.Text, placeholders)
+		var output *schema.ToolResult
+		if toolErr == nil {
+			output, toolErr = next(ctx, withArgumentText(args, callArgs), opts...)
+		}
 		if output == nil && toolErr != nil {
 			var carrier interface{ EnhancedToolResult() *schema.ToolResult }
 			if errors.As(toolErr, &carrier) {
@@ -702,6 +818,7 @@ func (m *toolMiddleware) WrapEnhancedInvokableToolCall(_ context.Context, next a
 		}
 		var mediaErr error
 		output, mediaErr = normalizeToolImages(ctx, output, m.sink.request, tc.CallID, m.images)
+		output = maskToolResult(output)
 		err = errors.Join(toolErr, mediaErr)
 		fullContent := enhancedContent(output)
 		modelOutput := output
@@ -740,13 +857,28 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 		if args == nil {
 			return nil, errors.New("nil tool arguments")
 		}
+		placeholders, failure := m.secretPlaceholders(ctx, tc, args.Text)
+		if failure != nil {
+			if recoverable, err := m.rejectPlaceholders(ctx, tc, args.Text, failure); !recoverable {
+				return nil, err
+			}
+			return schema.StreamReaderFromArray([]*schema.ToolResult{failedEnhancedToolResult(nil, failure)}), nil
+		}
 		if err := m.start(ctx, tc, args.Text); err != nil {
 			if isPermissionInterrupt(err) {
 				return nil, err
 			}
 			return nil, errors.Join(err, m.finish(ctx, tc, nil, err))
 		}
-		stream, err := next(ctx, args, opts...)
+		if len(placeholders) > 0 {
+			ctx = secrets.WithPlaceholderUsed(ctx)
+		}
+		ctx = m.credentialDispatchContext(ctx, tc, args.Text)
+		callArgs, err := m.dispatchArguments(ctx, args.Text, placeholders)
+		var stream *schema.StreamReader[*schema.ToolResult]
+		if err == nil {
+			stream, err = next(ctx, withArgumentText(args, callArgs), opts...)
+		}
 		if err != nil {
 			var output *schema.ToolResult
 			var evidence interface{ EnhancedToolResult() *schema.ToolResult }
@@ -755,6 +887,7 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 			}
 			var mediaErr error
 			output, mediaErr = normalizeToolImages(ctx, output, m.sink.request, tc.CallID, m.images)
+			output = maskToolResult(output)
 			recoverable := mediaErr == nil && m.recoverableFailure(ctx, tc, err)
 			err = errors.Join(err, mediaErr)
 			var modelOutput *schema.ToolResult
@@ -773,7 +906,7 @@ func (m *toolMiddleware) WrapEnhancedStreamableToolCall(_ context.Context, next 
 			return nil, err
 		}
 		handedOff = true
-		return relayToolStream(ctx, m, tc, stream, finish, enhancedContent, func(err error) (*schema.ToolResult, error) {
+		return relayToolStream(ctx, m, tc, maskEnhancedStream(stream), finish, enhancedContent, func(err error) (*schema.ToolResult, error) {
 			return m.modelEnhancedToolOutput(ctx, failedEnhancedToolResult(nil, err))
 		}, func(result *schema.ToolResult) (*schema.ToolResult, error) {
 			return normalizeToolImages(ctx, result, m.sink.request, tc.CallID, m.images)

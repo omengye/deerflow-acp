@@ -754,13 +754,13 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		}
 		workspaceCleanup := out.Cleanup
 		out.Cleanup = func() error { return errors.Join(commands.Close(), workspaceCleanup()) }
-		command, err := tools.CommandTool(commands, commandPolicy.Provider)
+		command, err := tools.CommandTool(commands, commandPolicy.Provider, tools.WithSecretVault(cfg.secretVault))
 		if err != nil {
 			return out, err
 		}
 		out.Tools = append(out.Tools, command)
 		if len(state.Skills) > 0 && cfg.ToolPolicy.Allows("execute") && cfg.ToolPolicy.Allows("skill_run") {
-			runner, runErr := newSkillRunTool(snapshot, commands, commandPolicy, req)
+			runner, runErr := newSkillRunTool(snapshot, commands, commandPolicy, req, cfg.secretVault)
 			if runErr != nil {
 				return out, runErr
 			}
@@ -769,7 +769,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		if commandPolicy.AllowShell && cfg.ToolPolicy.Allows("bash") {
 			for _, setting := range cfg.BuiltinTools {
 				if setting.Name == "bash" {
-					bash, bashErr := tools.BashTool(commands, commandPolicy.Provider)
+					bash, bashErr := tools.BashTool(commands, commandPolicy.Provider, tools.WithSecretVault(cfg.secretVault))
 					if bashErr != nil {
 						return out, bashErr
 					}

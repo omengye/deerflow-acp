@@ -41,7 +41,8 @@ func (m PermissionMode) RequiresPermission(name string) bool {
 		case "skill", "skill_inspect", "read_skill_file", "schedule_read",
 			"ls", "list_directory", "read_file", "read_tool_output", "view_image",
 			"search_files", "glob", "grep", "list_attachments", "read_attachment", "analyze_attachment",
-			"search_memory", "get_memory_state", "history_search", "history_read", "task_note", "task", "task_status", "task_wait", "set_search_provider":
+			"search_memory", "get_memory_state", "history_search", "history_read", "task_note", "task", "task_status", "task_wait", "set_search_provider",
+			"secret_read":
 			return false
 		}
 		return true

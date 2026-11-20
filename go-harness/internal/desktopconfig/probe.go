@@ -3,12 +3,11 @@ package desktopconfig
 import (
 	"context"
 	"errors"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/engine/eino"
+	"github.com/omengye/deerflow-acp/go-harness/internal/launch"
 )
 
 func (s service) testModel(request map[string]any) (map[string]any, error) {
@@ -20,7 +19,7 @@ func (s service) testModel(request map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	network, err := probeNetworkConfig(request, data)
+	network, err := s.probeNetworkConfig(request, data)
 	if err != nil {
 		return nil, err
 	}
@@ -31,11 +30,12 @@ func (s service) testModel(request map[string]any) (map[string]any, error) {
 	model := models[0].(map[string]any)
 	provider := nativeProvider(model)
 	parameter := harness.OutputTokenParameter(str(model, "output_token_parameter", "auto"))
-	apiKey, err := resolveSecret(str(model, "api_key", ""))
+	values := s.configValues(model)
+	apiKey, err := values.Resolve(str(model, "api_key", ""))
 	if err != nil {
 		return map[string]any{"ok": false, "error_type": "MissingCredential", "note": "请求失败，请检查凭据、地址、模型 ID 和网络；测试最长 30 秒"}, nil
 	}
-	baseURL, err := resolveSecret(str(model, "base_url", ""))
+	baseURL, err := values.Resolve(str(model, "base_url", ""))
 	if err != nil {
 		return map[string]any{"ok": false, "error_type": "InvalidEndpoint", "note": "请求失败，请检查凭据、地址、模型 ID 和网络；测试最长 30 秒"}, nil
 	}
@@ -65,27 +65,8 @@ func (s service) testModel(request map[string]any) (map[string]any, error) {
 	return map[string]any{"ok": true, "latency_ms": time.Since(started).Milliseconds(), "note": "模型文本请求成功；能力声明仍需按服务商说明设置"}, nil
 }
 
-func resolveSecret(value string) (string, error) {
-	if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
-		body := value[2 : len(value)-1]
-		if key, fallback, ok := strings.Cut(body, ":-"); ok {
-			if current := os.Getenv(key); current != "" {
-				return current, nil
-			}
-			return fallback, nil
-		}
-		value = "$" + body
-	}
-	if strings.HasPrefix(value, "$") {
-		key := strings.TrimPrefix(value, "$")
-		if key == "" || strings.ContainsAny(key, "${} ") {
-			return "", errors.New("invalid environment reference")
-		}
-		current, ok := os.LookupEnv(key)
-		if !ok {
-			return "", errors.New("missing environment variable")
-		}
-		return current, nil
-	}
-	return value, nil
+// configValues reads the vault values document refers to as ${secret:NAME},
+// from the data directory of the runtime this configuration starts.
+func (s service) configValues(document any) launch.ConfigValues {
+	return launch.ReadConfigValues(s.config, "", document)
 }
