@@ -54,8 +54,8 @@ func (s *Store) purgeSession(ctx context.Context, id string, automatic bool) (bo
 	var paths []string
 	targets := append(children, id)
 	// A disconnected process can leave durable attempts or budget holds even
-	// when the coordinator is idle. Explicit deletion additionally accepts an
-	// inactive, matching legacy fault; automatic archival remains stricter.
+	// when the coordinator is idle. Explicit deletion also checks whether a
+	// saved wait or legacy fault can be discarded.
 	for _, target := range targets {
 		if automatic {
 			err = checkArchiveExecutionTx(ctx, tx, target, tables)
@@ -249,7 +249,7 @@ func (s *Service) DeleteAttachedSession(ctx context.Context, owner, id string) (
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	finish, err := s.Coordinator.ReserveOwnerCleanup(id, owner)
+	finish, err := s.Coordinator.ReserveOwnerCleanup(ctx, id, owner)
 	if errors.Is(err, harness.ErrNotAttached) {
 		return s.DeleteSession(ctx, id)
 	}

@@ -111,11 +111,17 @@ func (c *Coordinator) ReserveCleanup(id string) (func(), error) {
 }
 
 // ReserveOwnerCleanup atomically replaces an idle owner's attachment with a
-// deletion fence. finish(true) restores a closing attachment when resource
-// cleanup fails, so no prompt can enter before the owner retries close.
+// deletion fence after periodic housekeeping releases it. finish(true) restores
+// a closing attachment if resource cleanup fails, fencing prompts until retry.
 // finish(false) leaves it detached after resource release or purge.
-func (c *Coordinator) ReserveOwnerCleanup(id, owner string) (func(bool), error) {
+func (c *Coordinator) ReserveOwnerCleanup(ctx context.Context, id, owner string) (func(bool), error) {
 	c.mu.Lock()
+	if b := c.bindings[id]; b != nil && b.owner == owner && b.maintenance {
+		if err := c.awaitMaintenanceLocked(ctx, id); err != nil {
+			c.mu.Unlock()
+			return nil, err
+		}
+	}
 	if c.cleanups[id] {
 		c.mu.Unlock()
 		return nil, harness.ErrBusy

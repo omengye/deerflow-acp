@@ -109,24 +109,35 @@ func TestCleanupReservationFencesReconnect(t *testing.T) {
 
 func TestOwnerCleanupAtomicallyDetachesIdleSession(t *testing.T) {
 	c := NewCoordinator()
-	if _, err := c.ReserveOwnerCleanup("missing", "owner"); !errors.Is(err, harness.ErrNotAttached) {
+	ctx := context.Background()
+	if _, err := c.ReserveOwnerCleanup(ctx, "missing", "owner"); !errors.Is(err, harness.ErrNotAttached) {
 		t.Fatalf("unknown session: %v", err)
 	}
 	if _, err := c.Attach("session", "owner"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.ReserveOwnerCleanup("session", "other"); !errors.Is(err, harness.ErrAttachedElsewhere) {
+	if _, err := c.ReserveOwnerCleanup(ctx, "session", "other"); !errors.Is(err, harness.ErrAttachedElsewhere) {
 		t.Fatalf("foreign delete: %v", err)
 	}
 	_, releaseRun, err := c.Begin(context.Background(), "session", "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = c.ReserveOwnerCleanup("session", "owner"); !errors.Is(err, harness.ErrBusy) {
+	if _, err = c.ReserveOwnerCleanup(ctx, "session", "owner"); !errors.Is(err, harness.ErrBusy) {
 		t.Fatalf("running delete: %v", err)
 	}
 	releaseRun()
-	finish, err := c.ReserveOwnerCleanup("session", "owner")
+	_, releaseMaintenance, err := c.BeginMaintenance(ctx, "session", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err = c.ReserveOwnerCleanup(cancelled, "session", "owner"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled delete waiting for maintenance: %v", err)
+	}
+	time.AfterFunc(20*time.Millisecond, releaseMaintenance)
+	finish, err := c.ReserveOwnerCleanup(ctx, "session", "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +154,7 @@ func TestOwnerCleanupAtomicallyDetachesIdleSession(t *testing.T) {
 	if _, err = c.Attach("session", "owner"); err != nil {
 		t.Fatal(err)
 	}
-	finish, err = c.ReserveOwnerCleanup("session", "owner")
+	finish, err = c.ReserveOwnerCleanup(ctx, "session", "owner")
 	if err != nil {
 		t.Fatal(err)
 	}

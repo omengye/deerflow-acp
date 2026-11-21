@@ -7,15 +7,13 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
-// Explicit deletion may remove an old fault that required the retired manual
-// reconciliation flow. It does not migrate that fault or assert an outcome.
-// Both durable records must agree, and every existing activity/accounting
-// guard still applies under the coordinator fence and SQLite writer lock.
-// Automatic archival deliberately keeps checkArchiveExecutionTx's allowlist.
+// Explicit deletion can discard a quiescent legacy fault or a saved wait
+// whose automatic recovery is exhausted. Both durable records must agree.
+// Archival uses its own terminal allowlist.
 func checkDeleteExecutionTx(ctx context.Context, tx *sql.Tx, id string, tables map[string]bool) error {
 	for _, check := range []struct{ table, query string }{
-		{"harness_runs", `SELECT EXISTS(SELECT 1 FROM harness_runs WHERE session_id=? AND status NOT IN ('completed','failed','cancelled','needs_reconciliation'))`},
-		{"harness_executions", `SELECT EXISTS(SELECT 1 FROM harness_executions WHERE session_id=? AND status NOT IN ('completed','failed','cancelled','needs_reconciliation'))`},
+		{"harness_runs", `SELECT EXISTS(SELECT 1 FROM harness_runs WHERE session_id=? AND status NOT IN ('completed','failed','cancelled','needs_reconciliation','waiting_input'))`},
+		{"harness_executions", `SELECT EXISTS(SELECT 1 FROM harness_executions WHERE session_id=? AND status NOT IN ('completed','failed','cancelled','needs_reconciliation','waiting_input'))`},
 		{"harness_execution_attempts", `SELECT EXISTS(SELECT 1 FROM harness_execution_attempts a JOIN harness_runs r ON r.id=a.run_id WHERE r.session_id=? AND a.status='running')`},
 		{"budget_attempts", `SELECT EXISTS(SELECT 1 FROM budget_attempts a JOIN budget_roots r ON r.id=a.root_id WHERE r.session_id=? AND a.state='active')`},
 		{"budget_reservations", `SELECT EXISTS(SELECT 1 FROM budget_reservations v JOIN budget_roots r ON r.id=v.root_id WHERE r.session_id=? AND v.state IN ('reserved','dispatched','unknown'))`},
@@ -36,23 +34,48 @@ func checkDeleteExecutionTx(ctx context.Context, tx *sql.Tx, id string, tables m
 		return err
 	}
 	if !tables["harness_executions"] {
-		// A missing execution record cannot prove an old fault is quiescent.
-		var legacy bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_runs WHERE session_id=? AND status='needs_reconciliation')`, id).Scan(&legacy); err != nil {
+		var needsExecution bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM harness_runs WHERE session_id=? AND status IN ('needs_reconciliation','waiting_input'))`, id).Scan(&needsExecution); err != nil {
 			return err
 		}
-		if legacy {
+		if needsExecution {
 			return harness.ErrBusy
 		}
 		return nil
 	}
 	var mismatched bool
 	if err := tx.QueryRowContext(ctx, `SELECT
- EXISTS(SELECT 1 FROM harness_runs r WHERE r.session_id=? AND r.status='needs_reconciliation' AND NOT EXISTS(SELECT 1 FROM harness_executions e WHERE e.run_id=r.id AND e.session_id=r.session_id AND e.input_id=r.input_id AND e.status=r.status)) OR
- EXISTS(SELECT 1 FROM harness_executions e WHERE e.session_id=? AND e.status='needs_reconciliation' AND NOT EXISTS(SELECT 1 FROM harness_runs r WHERE r.id=e.run_id AND r.session_id=e.session_id AND r.input_id=e.input_id AND r.status=e.status))`, id, id).Scan(&mismatched); err != nil {
+ EXISTS(SELECT 1 FROM harness_runs r WHERE r.session_id=? AND r.status IN ('needs_reconciliation','waiting_input') AND NOT EXISTS(SELECT 1 FROM harness_executions e WHERE e.run_id=r.id AND e.session_id=r.session_id AND e.input_id=r.input_id AND e.status=r.status)) OR
+ EXISTS(SELECT 1 FROM harness_executions e WHERE e.session_id=? AND e.status IN ('needs_reconciliation','waiting_input') AND NOT EXISTS(SELECT 1 FROM harness_runs r WHERE r.id=e.run_id AND r.session_id=e.session_id AND r.input_id=e.input_id AND r.status=e.status))`, id, id).Scan(&mismatched); err != nil {
 		return err
 	}
 	if mismatched {
+		return harness.ErrBusy
+	}
+	return checkDeleteWaitingExecutionTx(ctx, tx, id, tables)
+}
+
+func checkDeleteWaitingExecutionTx(ctx context.Context, tx *sql.Tx, id string, tables map[string]bool) error {
+	// A retry counter belongs to one checkpoint. The last claim may still be
+	// running, so require its matching execution and ledger attempts to have
+	// ended as well. Missing evidence leaves a waiting session protected.
+	query := `SELECT EXISTS(SELECT 1 FROM harness_executions e WHERE e.session_id=? AND e.status='waiting_input'`
+	args := []any{id}
+	if tables["harness_execution_wakeups"] && tables["harness_execution_attempts"] && tables["budget_attempts"] {
+		query += ` AND NOT EXISTS (
+ SELECT 1 FROM harness_execution_wakeups w
+ JOIN harness_execution_attempts x ON x.run_id=w.run_id AND x.id=e.attempt_id AND x.ordinal=e.attempt
+ JOIN budget_attempts b ON b.id=x.id AND b.member_id=e.run_id AND b.session_id=e.session_id AND b.root_id=e.root_budget_id AND b.fence=x.ordinal
+ WHERE w.run_id=e.run_id AND w.attempts>=? AND w.checkpoint_sha<>''
+ AND w.checkpoint_sha=CASE WHEN json_valid(CAST(e.manifest AS TEXT)) THEN json_extract(CAST(e.manifest AS TEXT),'$.CheckpointSHA') END
+ AND x.finished_at<>'' AND x.status IN ('waiting_input','failed','disconnected','interrupted') AND b.state='ended')`
+		args = append(args, automaticExecutionAttemptLimit)
+	}
+	var busy bool
+	if err := tx.QueryRowContext(ctx, query+`)`, args...).Scan(&busy); err != nil {
+		return err
+	}
+	if busy {
 		return harness.ErrBusy
 	}
 	return nil
