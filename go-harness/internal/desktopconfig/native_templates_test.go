@@ -36,6 +36,19 @@ func TestNativeTemplatesInitializeSaveAndLaunch(t *testing.T) {
 					t.Fatalf("fresh native template requires migration: %s", key)
 				}
 			}
+			applyConfig := func() (deerflow.Config, int, error) {
+				var cfg deerflow.Config
+				var explicit map[string]bool
+				if desktop && runtime.GOOS != "windows" {
+					// Non-Windows hosts need an explicit provider for desktop templates.
+					// This test loads the configuration without executing a shell.
+					cfg.Sandbox = harness.SandboxConfig{Enabled: true, Provider: harness.SandboxPowerShell, AllowShell: true}
+					explicit = map[string]bool{"sandbox-provider": true}
+				}
+				connections := 0
+				_, err := launch.ApplyConfig(options.Config, &cfg, &connections, explicit)
+				return cfg, connections, err
+			}
 			for round := 0; round < 2; round++ {
 				for _, key := range []string{"tool_diagnostics", "skill_source_diagnostics"} {
 					if diagnostics := doc[key].([]string); len(diagnostics) != 0 {
@@ -70,16 +83,8 @@ func TestNativeTemplatesInitializeSaveAndLaunch(t *testing.T) {
 						}
 					}
 				}
-				var cfg deerflow.Config
-				connections := 0
-				explicit := map[string]bool{}
-				if desktop && runtime.GOOS != "windows" {
-					// Automatic desktop shell mapping is Windows-only. No shell is
-					// executed; use the supported explicit provider path on other hosts.
-					cfg.Sandbox = harness.SandboxConfig{Enabled: true, Provider: harness.SandboxPowerShell, AllowShell: true}
-					explicit["sandbox-provider"] = true
-				}
-				if _, err := launch.ApplyConfig(options.Config, &cfg, &connections, explicit); err != nil {
+				cfg, connections, err := applyConfig()
+				if err != nil {
 					t.Fatal(err)
 				}
 				wantConnections := 16
@@ -132,9 +137,7 @@ func TestNativeTemplatesInitializeSaveAndLaunch(t *testing.T) {
 					t.Fatal(err)
 				}
 				run(t, options, "init", nil)
-				var cfg deerflow.Config
-				connections := 0
-				if _, err := launch.ApplyConfig(options.Config, &cfg, &connections, nil); err != nil {
+				if _, _, err := applyConfig(); err != nil {
 					t.Fatal("historical suite blocked native startup", err)
 				}
 				if content, err := os.ReadFile(path); err != nil || string(content) != "invalid historical suite" {
