@@ -34,6 +34,9 @@ func (c *Client) managementChannel(ctx context.Context, r localhost.ManagementRe
 		Login     string            `json:"login_id"`
 		Verify    string            `json:"verify_code"`
 		Message   string            `json:"message_id"`
+		Session   string            `json:"session_id"`
+		Account   string            `json:"account"`
+		Before    int64             `json:"before"`
 		Manifest  channels.Manifest `json:"manifest"`
 		Approval  string            `json:"approval"`
 	}
@@ -56,7 +59,9 @@ func (c *Client) managementChannel(ctx context.Context, r localhost.ManagementRe
 	case "channel.login.start":
 		keys = append(keys, "fields")
 	case "channel.review":
-		keys = append(keys, "message_id")
+		keys = append(keys, "message_id", "account")
+	case "channel.history":
+		keys = append(keys, "session_id", "account", "before")
 	}
 	if err := decodeManagement(r, &in, keys...); err != nil {
 		return nil, err
@@ -78,8 +83,22 @@ func (c *Client) managementChannel(ctx context.Context, r localhost.ManagementRe
 		v, err := c.channels.SetPermissions(ctx, in.ID, in.Revision, in.Approval)
 		return v, channelManagementError(err)
 	case "channel.history":
+		_, scoped := r.Fields["session_id"]
+		_, account := r.Fields["account"]
+		_, paged := r.Fields["before"]
+		if scoped != account || paged && !scoped || in.Before < 0 {
+			return nil, managementInvalid("invalid channel history scope")
+		}
+		if scoped {
+			return c.channels.SessionMessages(ctx, in.ID, in.Account, in.Session, in.Before)
+		}
 		return c.channels.History(ctx, in.ID)
+	case "channel.sessions":
+		return c.channels.Sessions(ctx, in.ID)
 	case "channel.review":
+		if _, scoped := r.Fields["account"]; scoped {
+			return map[string]bool{"reviewed_without_replay": true}, c.channels.ReviewMessage(ctx, in.ID, in.Account, in.Message)
+		}
 		return map[string]bool{"reviewed_without_replay": true}, c.channels.Review(ctx, in.ID, in.Message)
 	case "channel.login.start", "channel.login.poll", "channel.login.cancel", "channel.logout":
 		value, err := c.channels.LoginWithFields(ctx, in.ID, strings.TrimPrefix(r.Operation, "channel."), in.Login, in.Verify, in.Fields)

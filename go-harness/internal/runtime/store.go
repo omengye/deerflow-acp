@@ -202,6 +202,21 @@ func (s *Store) SetMode(ctx context.Context, id, mode string) error {
 	return err
 }
 
+type runAdmissionKey struct{}
+
+// WithRunAdmission records the host-owned source of an accepted run or resume
+// in the same transaction that admits the attempt.
+func WithRunAdmission(ctx context.Context, record func(context.Context, *sql.Tx, string, string) error) context.Context {
+	return context.WithValue(ctx, runAdmissionKey{}, record)
+}
+
+func recordRunAdmission(ctx context.Context, tx *sql.Tx, sessionID, runID string) error {
+	if record, ok := ctx.Value(runAdmissionKey{}).(func(context.Context, *sql.Tx, string, string) error); ok {
+		return record(ctx, tx, sessionID, runID)
+	}
+	return nil
+}
+
 // BeginRun atomically records accepted input and its replay event before the
 // model sees it. Recovery can distinguish accepted input from a finished turn.
 func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest, prepared ...*assets.Prepared) error {
@@ -241,6 +256,9 @@ func (s *Store) BeginRun(ctx context.Context, req harness.RunRequest, prepared .
 			return executionInvalid("durable execution requires budget ledger")
 		}
 		if _, err = s.BeginExecutionTx(ctx, tx, req, lease.OwnerID, lease.Scope); err != nil {
+			return err
+		}
+		if err = recordRunAdmission(ctx, tx, req.Session.ID, req.RunID); err != nil {
 			return err
 		}
 	}

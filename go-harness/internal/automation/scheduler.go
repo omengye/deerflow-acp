@@ -52,10 +52,13 @@ type Schedule struct {
 	Last        *Occurrence `json:"last,omitempty"`
 }
 type Outcome struct {
-	SessionID string             `json:"session_id"`
-	Status    string             `json:"status"`
-	Text      string             `json:"text"`
-	Images    []harness.AssetRef `json:"images,omitempty"`
+	// Channel-only identity of a run actually started or explicitly resumed.
+	RunID        string             `json:"-"`
+	WaitForTasks bool               `json:"-"`
+	SessionID    string             `json:"session_id"`
+	Status       string             `json:"status"`
+	Text         string             `json:"text"`
+	Images       []harness.AssetRef `json:"images,omitempty"`
 	// Attention is a host-authored, credential-free channel recovery notice.
 	Attention string `json:"attention,omitempty"`
 }

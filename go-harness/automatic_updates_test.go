@@ -24,6 +24,11 @@ func newAutomaticUpdatesFixture(t *testing.T) *continuationFixture {
 
 func newAutomaticUpdatesFixtureWithPolicy(t *testing.T, auto bool) *continuationFixture {
 	t.Helper()
+	return automaticUpdatesFixture(t, auto, nil)
+}
+
+func automaticUpdatesFixture(t *testing.T, auto bool, childGate <-chan struct{}) *continuationFixture {
+	t.Helper()
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Model    string `json:"model"`
@@ -52,7 +57,13 @@ func newAutomaticUpdatesFixtureWithPolicy(t *testing.T, auto bool) *continuation
 		}
 		name, args, callID := "", "", ""
 		if request.Model == "child" {
-			if toolCount == 0 {
+			if childGate != nil {
+				select {
+				case <-childGate:
+				case <-r.Context().Done():
+					return
+				}
+			} else if toolCount == 0 {
 				name, callID, args = "write_file", "auto-child-write", `{"path":"auto-child.txt","content":"child once"}`
 			}
 		} else {
@@ -69,6 +80,9 @@ func newAutomaticUpdatesFixtureWithPolicy(t *testing.T, auto bool) *continuation
 		finish := "stop"
 		if name != "" {
 			message["content"] = nil
+			if childGate != nil {
+				message["content"] = "intermediate progress"
+			}
 			message["tool_calls"] = []any{map[string]any{"index": 0, "id": callID, "type": "function", "function": map[string]string{"name": name, "arguments": args}}}
 			finish = "tool_calls"
 		}

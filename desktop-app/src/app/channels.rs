@@ -69,6 +69,10 @@ pub(super) struct ChannelSettings {
     confirm_full_access: bool,
     login_after_save: bool,
     history: Vec<Value>,
+    expanded: Option<(String, String)>,
+    messages: Vec<Value>,
+    message_pages: Vec<i64>,
+    next_before: i64,
     form: Value,
     opening_session: bool,
 }
@@ -93,6 +97,10 @@ impl ChannelSettings {
             confirm_full_access: false,
             login_after_save: false,
             history: vec![],
+            expanded: None,
+            messages: vec![],
+            message_pages: vec![],
+            next_before: 0,
             form: Value::Null,
             opening_session: false,
         }
@@ -103,6 +111,66 @@ impl ChannelSettings {
             .find(|v| v["id"] == self.selected)
             .cloned()
             .unwrap_or(Value::Null)
+    }
+
+    fn clear_history(&mut self) {
+        self.history.clear();
+        self.close_messages();
+    }
+
+    fn close_messages(&mut self) {
+        self.expanded = None;
+        self.messages.clear();
+        self.message_pages.clear();
+        self.next_before = 0;
+    }
+
+    fn set_message_page(&mut self, before: i64, data: &Value) {
+        if before == 0 {
+            self.message_pages.clear();
+        } else if let Some(index) = self
+            .message_pages
+            .iter()
+            .position(|cursor| *cursor == before)
+        {
+            self.message_pages.truncate(index);
+        }
+        self.message_pages.push(before);
+        self.messages = data["items"].as_array().cloned().unwrap_or_default();
+        self.next_before = data["next_before"].as_i64().unwrap_or(0);
+    }
+}
+
+fn task_status_label(status: &str) -> &str {
+    match status {
+        "completed" => "已完成",
+        "running" | "resuming" | "suspending" => "执行中",
+        "waiting_tasks" => "等待后台任务",
+        "waiting_approval" => "等待确认",
+        "waiting_input" => "等待输入",
+        "blocked" => "恢复受阻",
+        "stopped" => "自动续跑已停止",
+        "needs_reconciliation" => "待核对",
+        "failed" => "执行失败",
+        "cancelled" => "已取消",
+        "idle" => "尚无任务",
+        "history_only" => "仅有历史记录",
+        other => other,
+    }
+}
+
+fn delivery_status_label(status: &str) -> &str {
+    match status {
+        "sent" => "回复已发送",
+        "unknown" => "投递待核对",
+        "reviewed" => "已核对",
+        "ignored" => "已忽略",
+        "queued" => "已排队",
+        "waiting_task" => "等待任务结果",
+        "running" => "处理中",
+        "ready" => "待发送",
+        "sending" => "发送中",
+        other => other,
     }
 }
 
@@ -227,7 +295,7 @@ impl Waku {
         self.channel_settings.qr = None;
         self.channel_settings.confirm_logout = false;
         self.channel_settings.confirm_full_access = false;
-        self.channel_settings.history.clear();
+        self.channel_settings.clear_history();
         self.channel_rebind(cx);
         cx.notify();
     }
@@ -301,7 +369,7 @@ impl Waku {
         }
         let read_only = matches!(
             request["operation"].as_str(),
-            Some("channel.status" | "channel.history")
+            Some("channel.status" | "channel.history" | "channel.sessions")
         );
         if mode == ChannelRequestMode::Action {
             self.channel_freeze_inputs(!read_only, cx);
@@ -401,7 +469,8 @@ impl Waku {
                                         .first()
                                         .and_then(|v| v["id"].as_str())
                                         .unwrap_or("")
-                                        .to_owned()
+                                        .to_owned();
+                                    this.channel_settings.clear_history();
                                 }
                                 if channel_should_rebind(
                                     &this.channel_settings.form,
@@ -499,12 +568,35 @@ impl Waku {
                                 this.channel_settings.confirm_logout = false;
                                 this.channel_request(json!({"operation":"channel.list"}), cx)
                             }
-                            "channel.history" => {
+                            "channel.sessions" => {
                                 this.channel_settings.history =
                                     data.as_array().cloned().unwrap_or_default();
+                                // A purged provider session can still have a local transcript.
+                                for entry in &mut this.channel_settings.history {
+                                    if entry["status"] == "history_only" {
+                                        let local = this.state.sessions.iter().any(|s| matches!(
+                                            s.provider_cursor.as_ref(),
+                                            Some(ProviderResumeCursor::DeerFlow { session_id }) if entry["session_id"] == session_id.as_str()
+                                        ));
+                                        entry["local_history"] = json!(local);
+                                    }
+                                }
+                                if let Some((account, session)) = this.channel_settings.expanded.clone() {
+                                    if this.channel_settings.history.iter().any(|entry| entry["account"] == account.as_str() && entry["session_id"] == session.as_str()) {
+                                        this.channel_session_messages(account, session, 0, cx);
+                                    } else {
+                                        this.channel_settings.close_messages();
+                                    }
+                                }
+                            }
+                            "channel.history" => {
+                                let state = &mut this.channel_settings;
+                                if state.expanded.as_ref().is_some_and(|(a,s)| sent["account"] == a.as_str() && sent["session_id"] == s.as_str()) {
+                                    state.set_message_page(sent["before"].as_i64().unwrap_or(0), &data);
+                                }
                             }
                             "channel.review" => {
-                                this.channel_request(json!({"operation":"channel.history","id":this.channel_settings.selected}), cx);
+                                this.channel_request(json!({"operation":"channel.sessions","id":this.channel_settings.selected}), cx);
                             }
                             _ => this.channel_request(json!({"operation":"channel.list"}), cx),
                         }
@@ -562,6 +654,16 @@ impl Waku {
             input.update(cx, |input, _| input.set_read_only(busy));
         }
     }
+    fn channel_session_messages(
+        &mut self,
+        account: String,
+        session: String,
+        before: i64,
+        cx: &mut Context<Self>,
+    ) {
+        self.channel_request(json!({"operation":"channel.history", "id":self.channel_settings.selected, "account":account, "session_id":session, "before":before}), cx);
+    }
+
     fn channel_open_session(&mut self, entry: Value, window: &mut Window, cx: &mut Context<Self>) {
         if self.channel_settings.opening_session {
             return;
@@ -573,10 +675,10 @@ impl Waku {
             cursor: ProviderResumeCursor::DeerFlow {
                 session_id: id.to_owned(),
             },
-            title: format!("渠道任务 {}", id.chars().take(8).collect::<String>()),
+            title: entry["title"].as_str().unwrap_or("渠道会话").to_owned(),
             cwd: std::path::PathBuf::from(entry["workspace"].as_str().unwrap_or("")),
             created_at: entry["created_ms"].as_u64().unwrap_or(0) / 1000,
-            updated_at: entry["created_ms"].as_u64().unwrap_or(0) / 1000,
+            updated_at: entry["updated_ms"].as_u64().unwrap_or(0) / 1000,
         };
         if let Some(id) = self
             .state
@@ -928,27 +1030,48 @@ impl Waku {
             body = body.child(card);
             body = body.child(df_button(
                 "channel-history",
-                "查看最近任务",
+                "查看最近会话",
                 busy,
                 false,
                 theme,
                 cx,
                 |this, _, cx| {
                     this.channel_request(
-                        json!({"operation":"channel.history","id":this.channel_settings.selected}),
+                        json!({"operation":"channel.sessions","id":this.channel_settings.selected}),
                         cx,
                     )
                 },
             ));
             for (index, entry) in s.history.iter().enumerate() {
-                let label = format!(
-                    "{} · {}",
-                    entry["status"].as_str().unwrap_or(""),
-                    entry["session_id"].as_str().unwrap_or("无任务")
-                );
+                let session = entry["session_id"].as_str().unwrap_or("");
+                let account = entry["account"].as_str().unwrap_or("");
+                let expanded = s
+                    .expanded
+                    .as_ref()
+                    .is_some_and(|(a, id)| a == account && id == session);
+                let count = entry["message_count"].as_u64().unwrap_or(0);
+                let mut subtitle = format!("{count} 条消息");
+                if !account.is_empty() && entry["account"] != item["account"] {
+                    subtitle.push_str(&format!(" · 账号 {account}"));
+                }
+                if !session.is_empty() {
+                    subtitle = format!(
+                        "{} · {subtitle} · {}",
+                        task_status_label(entry["status"].as_str().unwrap_or("")),
+                        session.chars().take(8).collect::<String>()
+                    );
+                }
+                let key = (account.to_owned(), session.to_owned());
                 let open = entry.clone();
-                let mut row = div().flex().gap(px(8.0)).items_center().child(label);
-                if entry["session_id"].as_str().is_some_and(|v| !v.is_empty()) {
+                let mut row = div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(8.0))
+                    .items_center()
+                    .child(subtitle);
+                if !session.is_empty()
+                    && (entry["status"] != "history_only" || entry["local_history"] == true)
+                {
                     row = row.child(df_button(
                         SharedString::from(format!("channel-task-{index}")),
                         "打开任务",
@@ -959,13 +1082,87 @@ impl Waku {
                         move |this, window, cx| this.channel_open_session(open.clone(), window, cx),
                     ));
                 }
-                if entry["status"] == "unknown" && entry["account"] == item["account"] {
-                    let message = entry["id"].clone();
-                    row = row.child(df_button(SharedString::from(format!("channel-review-{index}")), "已核对，不重试", busy, false, theme, cx, move |this, _, cx| {
-                        this.channel_request(json!({"operation": "channel.review", "id": this.channel_settings.selected, "message_id": message}), cx);
-                    }));
+                row = row.child(df_button(
+                    SharedString::from(format!("channel-messages-{index}")),
+                    if expanded {
+                        "收起消息"
+                    } else {
+                        "查看消息"
+                    },
+                    busy,
+                    expanded,
+                    theme,
+                    cx,
+                    move |this, _, cx| {
+                        this.channel_settings.close_messages();
+                        if !expanded {
+                            this.channel_settings.expanded = Some(key.clone());
+                            this.channel_session_messages(key.0.clone(), key.1.clone(), 0, cx);
+                        }
+                        cx.notify();
+                    },
+                ));
+                body = body.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(entry["title"].as_str().unwrap_or("渠道会话").to_owned())
+                        .child(row),
+                );
+                if expanded {
+                    for message in &s.messages {
+                        let status = message["status"].as_str().unwrap_or("");
+                        let mut detail = div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(8.0))
+                            .items_center()
+                            .pl(px(12.0))
+                            .child(format!(
+                                "{} · {}",
+                                delivery_status_label(status),
+                                message["preview"]
+                                    .as_str()
+                                    .filter(|v| !v.is_empty())
+                                    .unwrap_or("渠道消息")
+                            ));
+                        if status == "unknown" {
+                            let id = message["id"].clone();
+                            let account = account.to_owned();
+                            detail = detail.child(df_button(SharedString::from(format!("channel-review-{id}")), "已核对，不重试", busy, false, theme, cx, move |this, _, cx| {
+                                this.channel_request(json!({"operation": "channel.review", "id": this.channel_settings.selected, "account": account, "message_id": id}), cx);
+                            }));
+                        }
+                        body = body.child(detail);
+                    }
+                    let newer = s.message_pages.iter().rev().nth(1).copied();
+                    let older = (s.next_before > 0).then_some(s.next_before);
+                    for (cursor, id, label) in [
+                        (newer, "channel-newer-messages", "较新的消息"),
+                        (older, "channel-older-messages", "更早的消息"),
+                    ] {
+                        let Some(before) = cursor else { continue };
+                        let account = account.to_owned();
+                        let session = session.to_owned();
+                        body = body.child(df_button(
+                            id,
+                            label,
+                            busy,
+                            false,
+                            theme,
+                            cx,
+                            move |this, _, cx| {
+                                this.channel_session_messages(
+                                    account.clone(),
+                                    session.clone(),
+                                    before,
+                                    cx,
+                                );
+                            },
+                        ));
+                    }
                 }
-                body = body.child(row);
             }
         }
         if let Some(error) = s.error.as_ref().or(s.poll_error.as_ref()) {
@@ -1000,6 +1197,17 @@ mod tests {
     fn status_labels_distinguish_binding_and_transport() {
         assert_ne!(phase_label("confirmed"), phase_label("connected"));
         assert_ne!(phase_label("disabled"), phase_label("login_required"));
+    }
+
+    #[test]
+    fn task_wait_and_message_delivery_have_independent_labels() {
+        assert_eq!(task_status_label("blocked"), "恢复受阻");
+        assert_ne!(
+            task_status_label("waiting_tasks"),
+            task_status_label("waiting_approval")
+        );
+        assert_eq!(delivery_status_label("sent"), "回复已发送");
+        assert_eq!(delivery_status_label("unknown"), "投递待核对");
     }
 
     #[test]

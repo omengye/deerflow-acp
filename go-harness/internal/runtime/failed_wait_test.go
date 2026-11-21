@@ -86,7 +86,7 @@ func TestLegacyFailedWaitOnlyClosesOnExplicitNewMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if state, err := s.closeFailedTaskWait(ctx, "owner", f.req.Session.ID); err != nil || state != nil {
+	if state, err := s.closeFailedTaskWait(ctx, "owner", f.req.Session.ID, ""); err != nil || state != nil {
 		t.Fatal("automatic scan migrated legacy history", state, err)
 	}
 	if _, err := s.Run(ctx, "owner", f.req.Session.ID, []harness.Content{{Type: "text", Text: "Continue after that failure"}}, nil, nil); err != nil || calls != 1 {
@@ -122,7 +122,7 @@ func TestFailedWaitCleanupDoesNotEndLiveIO(t *testing.T) {
 				}
 			}
 			s := automaticService(t, f, &automaticWaitEngine{})
-			if state, err := s.closeFailedTaskWait(context.Background(), "owner", f.req.Session.ID); err != nil || state != nil {
+			if state, err := s.closeFailedTaskWait(context.Background(), "owner", f.req.Session.ID, ""); err != nil || state != nil {
 				t.Fatal("active child was treated as ended", state, err)
 			}
 		})

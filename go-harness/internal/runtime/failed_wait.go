@@ -48,9 +48,9 @@ func terminalTaskWaitFailure(ctx context.Context, tx *sql.Tx, taskID string) (bo
 	return blocked != "" || unsafe, nil
 }
 
-func (s *Store) closeFailedTaskWaitTx(ctx context.Context, tx *sql.Tx, owner, sessionID string, explicitPrompt bool) (*harness.ExecutionState, error) {
+func (s *Store) closeFailedTaskWaitTx(ctx context.Context, tx *sql.Tx, owner, sessionID, expectedRunID string, explicitPrompt bool) (*harness.ExecutionState, error) {
 	var runID string
-	err := tx.QueryRowContext(ctx, `SELECT run_id FROM harness_executions WHERE session_id=? AND status='waiting_input'`, sessionID).Scan(&runID)
+	err := tx.QueryRowContext(ctx, `SELECT run_id FROM harness_executions WHERE session_id=? AND status='waiting_input' AND (?='' OR run_id=?)`, sessionID, expectedRunID, expectedRunID).Scan(&runID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -122,7 +122,7 @@ func (s *Store) closeFailedTaskWaitTx(ctx context.Context, tx *sql.Tx, owner, se
 	return &row.State, err
 }
 
-func (s *Service) closeFailedTaskWait(ctx context.Context, owner, sessionID string) (*harness.ExecutionState, error) {
+func (s *Service) closeFailedTaskWait(ctx context.Context, owner, sessionID, expectedRunID string) (*harness.ExecutionState, error) {
 	ctx, release, err := s.Coordinator.BeginMaintenance(ctx, sessionID, owner)
 	if err != nil {
 		return nil, err
@@ -131,7 +131,7 @@ func (s *Service) closeFailedTaskWait(ctx context.Context, owner, sessionID stri
 	var state *harness.ExecutionState
 	err = withExecutionTransaction(ctx, s.Store, func(tx *sql.Tx) error {
 		var err error
-		state, err = s.Store.closeFailedTaskWaitTx(ctx, tx, owner, sessionID, false)
+		state, err = s.Store.closeFailedTaskWaitTx(ctx, tx, owner, sessionID, expectedRunID, false)
 		return err
 	})
 	return state, err

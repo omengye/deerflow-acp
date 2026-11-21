@@ -72,7 +72,12 @@ func (m *Manager) sendReceipts(ctx context.Context, i *instance, p transport, au
 		}
 		var msg channelproto.Message
 		var key string
-		err = m.db.QueryRowContext(ctx, `SELECT m.id,m.conversation,m.sender,m.context,r.client_id FROM harness_channel_receipts r JOIN harness_channel_messages m ON m.instance=r.instance AND m.account=r.account AND m.id=r.id WHERE r.instance=? AND r.account=? AND r.status='pending' AND m.status='queued' AND m.workspace=? ORDER BY m.rowid LIMIT 1`, i.id, auth.Account, cfg.Workspace).Scan(&msg.ID, &msg.Conversation, &msg.Sender, &msg.Context, &key)
+		var waiting bool
+		err = m.db.QueryRowContext(ctx, `SELECT id,conversation,sender,context,client_id,waiting FROM (
+SELECT m.id,m.conversation,m.sender,m.context,r.client_id,0 AS waiting,m.rowid AS position FROM harness_channel_receipts r JOIN harness_channel_messages m USING(instance,account,id)
+WHERE r.instance=?1 AND r.account=?2 AND r.status='pending' AND m.status='queued' AND m.workspace=?3
+UNION ALL SELECT m.id,m.conversation,m.sender,m.context,m.client_id||'-wait',1,m.rowid FROM harness_channel_runs r JOIN harness_channel_messages m USING(instance,account,id)
+WHERE r.instance=?1 AND r.account=?2 AND r.notice='pending' AND m.status='waiting_task' AND m.workspace=?3) ORDER BY position LIMIT 1`, i.id, auth.Account, cfg.Workspace).Scan(&msg.ID, &msg.Conversation, &msg.Sender, &msg.Context, &key, &waiting)
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
@@ -85,7 +90,13 @@ func (m *Manager) sendReceipts(ctx context.Context, i *instance, p transport, au
 		}
 		// Claim before I/O. If the process dies or delivery is ambiguous, never
 		// retry this optional receipt and never fence the actual user request.
-		claim, err := m.db.ExecContext(ctx, `UPDATE harness_channel_receipts SET status=? WHERE instance=? AND account=? AND id=? AND status='pending'`, state, i.id, auth.Account, msg.ID)
+		update := `UPDATE harness_channel_receipts SET status=? WHERE instance=? AND account=? AND id=? AND status=?`
+		text := receiptText
+		if waiting {
+			update = `UPDATE harness_channel_runs SET notice=? WHERE instance=? AND account=? AND id=? AND notice=?`
+			text = "正在等待后台任务，完成后会继续。"
+		}
+		claim, err := m.db.ExecContext(ctx, update, state, i.id, auth.Account, msg.ID, "pending")
 		if err != nil {
 			return false, err
 		}
@@ -99,7 +110,7 @@ func (m *Manager) sendReceipts(ctx context.Context, i *instance, p transport, au
 		var ack struct {
 			Sent bool `json:"sent"`
 		}
-		err = p.Call(receiptCtx, "send", channelproto.Send{Auth: auth, Message: msg, Key: key, Text: receiptText, Options: cfg.Options}, &ack)
+		err = p.Call(receiptCtx, "send", channelproto.Send{Auth: auth, Message: msg, Key: key, Text: text, Options: cfg.Options}, &ack)
 		if err != nil || !ack.Sent {
 			i.mu.Lock()
 			if i.proc == p {
@@ -115,7 +126,7 @@ func (m *Manager) sendReceipts(ctx context.Context, i *instance, p transport, au
 			return true, ctx.Err()
 		}
 		persist, stop := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		_, err = m.db.ExecContext(persist, `UPDATE harness_channel_receipts SET status='sent' WHERE instance=? AND account=? AND id=? AND status='unknown'`, i.id, auth.Account, msg.ID)
+		_, err = m.db.ExecContext(persist, update, "sent", i.id, auth.Account, msg.ID, "unknown")
 		stop()
 		if err != nil {
 			return false, err

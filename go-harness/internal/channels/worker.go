@@ -8,13 +8,22 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/channelproto"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
 type asyncDispatchKey struct{}
 type activeDispatch struct {
 	account, conversation, sender, workspace string
+	messageID, waitSession                   string
 	cancel                                   context.CancelFunc
+	stop                                     context.CancelFunc
 	done                                     chan struct{}
+}
+
+func newActiveDispatch(parent context.Context, auth channelproto.Auth, cfg Config, msg channelproto.Message) (context.Context, *activeDispatch) {
+	ctx, cancel := context.WithCancelCause(parent)
+	return ctx, &activeDispatch{account: auth.Account, conversation: msg.Conversation, sender: msg.Sender, workspace: cfg.Workspace, messageID: msg.ID,
+		cancel: func() { cancel(context.Canceled) }, stop: func() { cancel(session.ErrExplicitCancel) }, done: make(chan struct{})}
 }
 
 func (a *activeDispatch) matches(auth channelproto.Auth, cfg Config, msg channelproto.Message) bool {
@@ -106,10 +115,25 @@ func (m *Manager) control(ctx context.Context, i *instance, auth channelproto.Au
 			i.mu.Unlock()
 			return nil
 		}
-	case active != nil && active.matches(auth, cfg, msg) && command == "/stop":
-		active.cancel()
+	case active != nil && active.matches(auth, cfg, msg) && (active.waitSession == "" || active.waitSession == session) && command == "/stop":
+		if i.manifest.ID == "wechat" && active.messageID != "" {
+			// A stop can land while the worker is only inspecting dependencies.
+			// Fence the idle wait as well as cancelling any in-flight attempt.
+			_, err := m.db.ExecContext(ctx, `UPDATE harness_channel_runs SET stop_requested=1,next_check_ms=0 WHERE instance=? AND account=? AND id=?`, i.id, auth.Account, active.messageID)
+			if err != nil {
+				i.mu.Unlock()
+				return err
+			}
+		}
+		if active.stop != nil {
+			active.stop()
+		} else {
+			active.cancel()
+		}
 		reply = "已请求停止当前任务，正在等待工具清理完成。已取消排队的问题；已产生的效果不会自动撤销。"
-	case active != nil && active.matches(auth, cfg, msg) && command == "/status":
+	case active != nil && active.waitSession != "" && active.waitSession == session && active.matches(auth, cfg, msg) && command == "/status":
+		reply = "当前权限：" + approvalLabel(policy) + "\n正在处理后台任务的结果。\n会话：" + session
+	case active != nil && active.waitSession == "" && active.matches(auth, cfg, msg) && command == "/status":
 		reply = "当前权限：" + approvalLabel(policy) + "\n任务正在运行。发送 /stop 可请求停止。\n会话：" + session
 	}
 	i.mu.Unlock()

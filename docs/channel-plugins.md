@@ -15,6 +15,11 @@ separate states. Connected means a successful provider poll, not merely a stored
 token. Desktop status polling stops when the page is closed; the host worker stays
 running. The host must remain running to receive messages.
 
+Recent conversations shows one row per channel account and session, with its
+title, latest task state and total message count. Expand a row to see the
+individual delivery receipts. A sent reply can contain a permission request
+or a task failure. Messages without a session have a separate history entry.
+
 Disable preserves credentials and history, but cancels owned work and quarantines
 pending work rather than replaying it. Logout also clears credentials and disables
 the instance, including clearing any retained legacy WeChat credential row. This
@@ -208,6 +213,8 @@ Do not expose arbitrary management requests to chat users or model tools.
 {"operation":"channel.login.poll","id":"wechat","login_id":"LOGIN_ID","verify_code":"123456"}
 {"operation":"channel.login.cancel","id":"wechat"}
 {"operation":"channel.logout","id":"wechat"}
+{"operation":"channel.sessions","id":"wechat"}
+{"operation":"channel.history","id":"wechat","account":"BOUND_BOT_ID","session_id":"SESSION_ID","before":0}
 {"operation":"channel.history","id":"wechat"}
 {"operation":"channel.review","id":"wechat","message_id":"UNKNOWN_ID"}
 ```
@@ -331,10 +338,16 @@ messages and the next cursor together before processing. Limits: 32 instances,
 The default worker is serial within each channel; the host run queue controls
 cross-channel model concurrency.
 
-Before a model call, the record becomes `running`. Before a platform send, it becomes
-`sending`. Crashes, ambiguous sends and cancellation become `unknown` and block that
-conversation until explicit review. Exactly-once remote delivery cannot be guaranteed
-across providers. Scheduled notifications commit in the scheduler transaction:
+WeChat records the run and source message together at admission. A foreground
+`task_wait` keeps the reply pending in `waiting_task`. The host checks the
+original run after restart and can deliver a result completed by a desktop
+owner. The saved checkpoint, current authorization and automatic retry limit
+govern continuation. Permission waits still require the corresponding approval.
+
+Before a platform send the message enters `sending`. An interrupted or ambiguous
+send becomes `unknown` and fences the conversation until explicit review.
+An interrupted dispatch without a durable run binding also requires review.
+Scheduled notifications commit in the scheduler transaction:
 
 ```json
 "notify": {

@@ -115,12 +115,12 @@ func TestChannelExplicitSkillReviewIsBounded(t *testing.T) {
 	}
 }
 
-type commandFixturePlugin struct{}
+type commandFixturePlugin struct{ id string }
 
-func (commandFixturePlugin) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
+func (p commandFixturePlugin) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
 	switch method {
 	case "initialize":
-		return channelproto.Descriptor{ID: "fixture", Name: "Fixture", Protocol: 1}, nil
+		return channelproto.Descriptor{ID: p.id, Name: "Fixture", Protocol: 1}, nil
 	case "login.start":
 		return channelproto.Login{State: "confirmed", Auth: &channelproto.Auth{Account: "bot", Owner: "alice", Secret: json.RawMessage(`{"token":"fixture"}`)}}, nil
 	case "poll":
@@ -130,10 +130,10 @@ func (commandFixturePlugin) Handle(_ context.Context, method string, _ json.RawM
 	}
 }
 func TestChannelCommandFixtureChild(t *testing.T) {
-	if len(os.Args) < 2 || os.Args[len(os.Args)-1] != "channel-command-fixture" {
+	if len(os.Args) < 3 || os.Args[len(os.Args)-2] != "channel-command-fixture" {
 		return
 	}
-	_ = channelproto.Serve(context.Background(), os.Stdin, os.Stdout, commandFixturePlugin{})
+	_ = channelproto.Serve(context.Background(), os.Stdin, os.Stdout, commandFixturePlugin{id: os.Args[len(os.Args)-1]})
 	os.Exit(0)
 }
 
@@ -237,6 +237,11 @@ func TestChannelSkillEditExplicitConfirmationAllowDenyAndRestart(t *testing.T) {
 }
 func setupChannelCommandFixture(t *testing.T, c *Client, workspace string) channels.Dispatch {
 	t.Helper()
+	return setupChannelPluginFixture(t, c, workspace, "fixture")
+}
+
+func setupChannelPluginFixture(t *testing.T, c *Client, workspace, plugin string) channels.Dispatch {
+	t.Helper()
 	ctx := context.Background()
 	exe, err := os.Executable()
 	if err != nil {
@@ -247,7 +252,7 @@ func setupChannelCommandFixture(t *testing.T, c *Client, workspace string) chann
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(raw)
-	manifest := channels.Manifest{ID: "fixture", Command: exe, Args: []string{"-test.run=^TestChannelCommandFixtureChild$", "channel-command-fixture"}, SHA256: hex.EncodeToString(sum[:])}
+	manifest := channels.Manifest{ID: plugin, Command: exe, Args: []string{"-test.run=^TestChannelCommandFixtureChild$", "channel-command-fixture", plugin}, SHA256: hex.EncodeToString(sum[:])}
 	if _, err = c.channels.Install(ctx, "fixture", manifest); err != nil {
 		t.Fatal(err)
 	}

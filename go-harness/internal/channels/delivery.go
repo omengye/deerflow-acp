@@ -156,7 +156,7 @@ func (m *Manager) accept(ctx context.Context, i *instance, auth channelproto.Aut
 			continue
 		}
 		var count int
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM harness_channel_messages WHERE instance=? AND status IN ('queued','ready','running','sending')`, i.id).Scan(&count); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM harness_channel_messages WHERE instance=? AND status IN ('queued','ready','running','sending','waiting_task')`, i.id).Scan(&count); err != nil {
 			return err
 		}
 		if count >= 1000 {
@@ -208,7 +208,13 @@ func (m *Manager) process(ctx context.Context, i *instance, p transport, auth ch
 	}
 	query += ` ORDER BY CASE WHEN (` + controlSQL + `) THEN 0 ELSE 1 END,rowid LIMIT 1`
 	err := m.db.QueryRowContext(ctx, query, i.id, auth.Account).Scan(&msg.ID, &msg.Conversation, &msg.Sender, &msg.Context, &msg.Text, &state, &reply, &session, &key, &workspace)
-	if errors.Is(err, sql.ErrNoRows) {
+	empty := errors.Is(err, sql.ErrNoRows)
+	if !busy && m.Continue != nil && i.manifest.ID == "wechat" && (empty || err == nil && state == "queued" && !hostCommand(msg.Text)) {
+		if handled, waitErr := m.continueWaiting(ctx, i, auth, cfg, revision); handled || waitErr != nil {
+			return handled, waitErr
+		}
+	}
+	if empty {
 		return false, nil
 	}
 	if err != nil {
@@ -248,12 +254,11 @@ func (m *Manager) process(ctx context.Context, i *instance, p transport, auth ch
 				return true, err
 			}
 		} else if async, _ := ctx.Value(asyncDispatchKey{}).(bool); async {
-			runCtx, cancel := context.WithCancel(ctx)
-			active := &activeDispatch{account: auth.Account, conversation: msg.Conversation, sender: msg.Sender, workspace: cfg.Workspace, cancel: cancel, done: make(chan struct{})}
+			runCtx, active := newActiveDispatch(ctx, auth, cfg, msg)
 			i.mu.Lock()
 			if i.revision != dispatch.Revision || i.auth.Account != auth.Account || i.auth.Owner != auth.Owner {
 				i.mu.Unlock()
-				cancel()
+				active.cancel()
 				return true, userError("channel policy changed before dispatch")
 			}
 			i.active = active
@@ -262,7 +267,7 @@ func (m *Manager) process(ctx context.Context, i *instance, p transport, auth ch
 			go func() {
 				defer m.wakeWorker(i)
 				defer close(active.done)
-				defer cancel()
+				defer active.cancel()
 				_ = m.execute(ctx, runCtx, i, auth, cfg, msg, session)
 			}()
 			return true, nil
@@ -335,6 +340,9 @@ func (m *Manager) Review(ctx context.Context, id, msg string) error {
 	i.mu.Lock()
 	account := i.auth.Account
 	i.mu.Unlock()
+	return m.ReviewMessage(ctx, id, account, msg)
+}
+func (m *Manager) ReviewMessage(ctx context.Context, id, account, msg string) error {
 	r, err := m.db.ExecContext(ctx, `UPDATE harness_channel_messages SET status='reviewed' WHERE instance=? AND account=? AND id=? AND status='unknown'`, id, account, msg)
 	if err != nil {
 		return err
@@ -435,7 +443,7 @@ func (m *Manager) execute(parent, ctx context.Context, i *instance, auth channel
 	defer func() {
 		persist, cancel := context.WithTimeout(context.WithoutCancel(parent), 10*time.Second)
 		defer cancel()
-		_, _ = m.db.ExecContext(persist, `UPDATE harness_channel_messages SET status='unknown' WHERE instance=? AND account=? AND id=? AND status='running'`, i.id, auth.Account, msg.ID)
+		_, _ = m.db.ExecContext(persist, `UPDATE harness_channel_messages AS m SET status=CASE WHEN EXISTS(SELECT 1 FROM harness_channel_runs r WHERE r.instance=m.instance AND r.account=m.account AND r.id=m.id) THEN 'waiting_task' ELSE 'unknown' END WHERE instance=? AND account=? AND id=? AND status='running'`, i.id, auth.Account, msg.ID)
 	}()
 	approval := effectiveApproval(cfg, auth)
 	admitted := harness.ApprovalGlobal
@@ -468,7 +476,7 @@ func (m *Manager) execute(parent, ctx context.Context, i *instance, auth channel
 	if runErr != nil || out.Status != "completed" {
 		notice := out.Attention
 		if notice == "" {
-			notice = "任务需要在桌面端检查权限或恢复状态。会话：" + session + "\n请打开设置 > 渠道 > 微信 > 查看最近任务。本条消息不会自动重试；也可发送 /new 开始新会话。"
+			notice = "任务需要在桌面端检查权限或恢复状态。会话：" + session + "\n请打开设置 > 渠道 > 微信 > 查看最近会话。本条消息不会自动重试；也可发送 /new 开始新会话。"
 		}
 		reply = attentionReply(notice, reply)
 	}
@@ -487,6 +495,37 @@ func (m *Manager) execute(parent, ctx context.Context, i *instance, auth channel
 		return err
 	}
 	defer tx.Rollback()
+	if i.manifest.ID == "wechat" && m.Continue != nil && out.RunID != "" {
+		var otherWaiting bool
+		err = tx.QueryRowContext(persist, `SELECT EXISTS(SELECT 1 FROM harness_channel_runs r JOIN harness_channel_messages m USING(instance,account,id) WHERE r.run_id=? AND m.status='waiting_task')`, out.RunID).Scan(&otherWaiting)
+		if err != nil {
+			return err
+		}
+		if otherWaiting {
+			reply = "原任务的结果将回复到原微信消息。"
+			out.Images = nil
+		} else if out.WaitForTasks {
+			change, err := tx.ExecContext(persist, `UPDATE harness_channel_runs SET notice='pending' WHERE instance=? AND account=? AND id=? AND session_id=? AND run_id=?`, i.id, auth.Account, msg.ID, session, out.RunID)
+			if err != nil {
+				return err
+			}
+			if n, err := change.RowsAffected(); err != nil || n != 1 {
+				return errors.Join(harness.ErrExecutionConflict, err)
+			}
+			terminal, out.Images = "waiting_task", nil
+		}
+	}
+	if parent.Err() != nil && terminal == "unknown" {
+		// No outbound answer was attempted. A durable admission can recover its
+		// committed result even when the shutdown interrupted this callback.
+		var bound bool
+		if err = tx.QueryRowContext(persist, `SELECT EXISTS(SELECT 1 FROM harness_channel_runs WHERE instance=? AND account=? AND id=?)`, i.id, auth.Account, msg.ID).Scan(&bound); err != nil {
+			return err
+		}
+		if bound {
+			terminal = "waiting_task"
+		}
+	}
 	updated, err := tx.ExecContext(persist, `UPDATE harness_channel_messages SET status=?,reply=?,session_id=? WHERE instance=? AND account=? AND id=? AND status='running'`, terminal, reply, session, i.id, auth.Account, msg.ID)
 	if err != nil {
 		return err

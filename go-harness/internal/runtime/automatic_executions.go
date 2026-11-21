@@ -11,6 +11,8 @@ import (
 
 var errAutomaticDeferred = errors.New("automatic execution is deferred or stopped")
 
+const automaticExecutionAttemptLimit = 3
+
 type automaticExecutionKey struct{}
 
 // Waiting execution manifests are the durable queue. This table only records
@@ -36,7 +38,7 @@ func executionAutomaticState(ctx context.Context, tx *sql.Tx, row executionRow) 
 		return nil, err
 	}
 	state := &harness.ExecutionAutomatic{Attempts: attempts, Status: "retrying"}
-	if attempts >= 3 {
+	if attempts >= automaticExecutionAttemptLimit {
 		state.Status, state.Detail = "blocked", "Automatic recovery limit reached. Inspect this execution before explicitly resuming."
 	} else {
 		when := time.Unix(0, next).UTC()
@@ -210,7 +212,7 @@ func (s *Service) ServeSessionUpdates(parent context.Context, owner, sessionID s
 			}
 			return err
 		}
-		closed, err := s.closeFailedTaskWait(ctx, owner, sessionID)
+		closed, err := s.closeFailedTaskWait(ctx, owner, sessionID, "")
 		if errors.Is(err, harness.ErrBusy) {
 			continue
 		}
@@ -244,10 +246,7 @@ func (s *Service) ServeSessionUpdates(parent context.Context, owner, sessionID s
 		newRun := false
 		started = false
 		if state.Status == harness.ExecutionWaitingInput {
-			if !state.Resumable || len(state.WaitingInputs) > 0 || len(state.WaitingTasks) == 0 {
-				continue
-			}
-			if a := state.Automatic; a != nil && (a.Status == "blocked" || a.Status == "stopped" || a.RetryAfter != nil && time.Now().Before(*a.RetryAfter)) {
+			if !automaticWaitReady(state) {
 				continue
 			}
 			result, runErr = s.resumeAutomaticExecution(ctx, owner, sessionID, state, handlers)
@@ -289,6 +288,29 @@ func (s *Service) ServeSessionUpdates(parent context.Context, owner, sessionID s
 			return runErr
 		}
 	}
+}
+
+func automaticWaitReady(state harness.ExecutionState) bool {
+	if state.Status != harness.ExecutionWaitingInput || !state.Resumable || len(state.WaitingInputs) != 0 || len(state.WaitingTasks) == 0 {
+		return false
+	}
+	a := state.Automatic
+	return a == nil || (a.Status != "blocked" && a.Status != "stopped" && (a.RetryAfter == nil || !time.Now().Before(*a.RetryAfter)))
+}
+
+// ContinueTaskWait services only the named foreground wait. Unlike a desktop
+// subscription it never admits unrelated notification runs for the session.
+func (s *Service) ContinueTaskWait(ctx context.Context, owner string, state harness.ExecutionState, handlers harness.SessionUpdates) (harness.RunResult, error) {
+	if state.Status != harness.ExecutionWaitingInput || len(state.WaitingTasks) == 0 {
+		return harness.RunResult{Execution: &state}, nil
+	}
+	if closed, err := s.closeFailedTaskWait(ctx, owner, state.SessionID, state.RunID); err != nil || closed != nil {
+		return harness.RunResult{Execution: closed}, err
+	}
+	if !automaticWaitReady(state) {
+		return harness.RunResult{Execution: &state}, nil
+	}
+	return s.resumeAutomaticExecution(ctx, owner, state.SessionID, state, handlers)
 }
 
 func (s *Service) resumeAutomaticExecution(ctx context.Context, owner, sessionID string, state harness.ExecutionState, handlers harness.SessionUpdates) (harness.RunResult, error) {

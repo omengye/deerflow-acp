@@ -3,6 +3,7 @@ package deerflow
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -96,7 +97,12 @@ func (c *Client) unattendedWithEvents(ctx context.Context, existing, workspace, 
 		}
 	}
 	channels.StartFeedback(ctx)
+	ctx = c.withChannelRunAdmission(ctx)
 	result, err := c.service.Run(ctx, owner, x.ID, []harness.Content{{Type: "text", Text: prompt}}, emit, approve)
+	if result.Execution != nil {
+		out.RunID = result.Execution.RunID
+		out.WaitForTasks = channelTaskWait(result.Execution)
+	}
 	out.Text = strings.ToValidUTF8(answer.String(), "")
 	images.finish(&out)
 	out.Status = "needs_attention"
@@ -104,6 +110,16 @@ func (c *Client) unattendedWithEvents(ctx context.Context, existing, workspace, 
 		out.Status = "completed"
 	}
 	return out, result.Execution, err
+}
+
+func (c *Client) withChannelRunAdmission(ctx context.Context) context.Context {
+	d, ok := channels.DispatchFromContext(ctx)
+	if !ok || d.MessageID == "" || !c.channels.TracksTaskWaits(d.Instance) {
+		return ctx
+	}
+	return hr.WithRunAdmission(hr.WithTransportCancellation(ctx), func(ctx context.Context, tx *sql.Tx, sessionID, runID string) error {
+		return channels.BindRunTx(ctx, tx, d, sessionID, runID)
+	})
 }
 
 func (c *Client) startAutomation(ctx context.Context, cfg Config) error {
@@ -125,6 +141,7 @@ func (c *Client) startAutomation(ctx context.Context, cfg Config) error {
 		return err
 	}
 	c.channels.ResolveImage = c.channelImage
+	c.channels.Continue = c.continueChannelRun
 	if err = c.channels.EnsureBundled(ctx); err != nil {
 		return err
 	}

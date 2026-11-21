@@ -56,6 +56,9 @@ func (c *Client) channelRun(ctx context.Context, existing, workspace, prompt, ap
 				status, statusErr := c.channelExecutionCommand(ctx, out.SessionID, workspace, []string{"/status"}, approval)
 				if statusErr == nil {
 					out.Attention = status.Text
+					if out.RunID == "" {
+						out.Attention += "\n这条新问题尚未执行。原任务结束后可以重新发送。"
+					}
 				}
 			}
 		}
@@ -185,6 +188,6 @@ func channelAttention(session string, state *harness.ExecutionState, err error) 
 	} else if errors.Is(err, harness.ErrAttachedElsewhere) || errors.Is(err, harness.ErrBusy) {
 		lines[0] = "当前会话正被桌面端或其他执行占用，本条消息未开始执行。"
 	}
-	lines = append(lines, "会话："+session, "请打开设置 > 渠道 > 微信 > 查看最近任务 > 打开任务。", "处理后请在微信重新发送未执行的问题。也可发送 /new 切换到新会话；旧任务和记录会保留。本条消息不会自动重试。")
+	lines = append(lines, "会话："+session, "请打开设置 > 渠道 > 微信 > 查看最近会话 > 打开任务。", "处理后请在微信重新发送未执行的问题。也可发送 /new 切换到新会话；旧任务和记录会保留。本条消息不会自动重试。")
 	return strings.Join(lines, "\n")
 }

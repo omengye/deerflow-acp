@@ -67,6 +67,8 @@ type Manager struct {
 	// ResolveImage authorizes a durable asset for this session/workspace and
 	// returns its verified local snapshot. Set before starting workers.
 	ResolveImage func(context.Context, string, string, harness.AssetRef) (channelproto.Image, error)
+	// Continue inspects an already accepted run. A nil outcome is still pending.
+	Continue func(context.Context, Dispatch, TaskWait) (*automation.Outcome, error)
 }
 
 func New(ctx context.Context, db *sql.DB, run Runner) (*Manager, error) {
@@ -74,6 +76,9 @@ func New(ctx context.Context, db *sql.DB, run Runner) (*Manager, error) {
 CREATE TABLE IF NOT EXISTS harness_channel_messages(instance TEXT NOT NULL,account TEXT NOT NULL,id TEXT NOT NULL,conversation TEXT NOT NULL,sender TEXT NOT NULL,context TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,reply TEXT NOT NULL DEFAULT '',session_id TEXT NOT NULL DEFAULT '',client_id TEXT NOT NULL,workspace TEXT NOT NULL,created_ms INTEGER NOT NULL,PRIMARY KEY(instance,account,id));
 CREATE INDEX IF NOT EXISTS harness_channel_pending ON harness_channel_messages(instance,status,created_ms);
 CREATE INDEX IF NOT EXISTS harness_channel_message_id ON harness_channel_messages(id);
+CREATE INDEX IF NOT EXISTS harness_channel_session_messages ON harness_channel_messages(instance,account,session_id,created_ms);
+CREATE TABLE IF NOT EXISTS harness_channel_runs(instance TEXT NOT NULL,account TEXT NOT NULL,id TEXT NOT NULL,session_id TEXT NOT NULL,run_id TEXT NOT NULL,next_check_ms INTEGER NOT NULL DEFAULT 0,notice TEXT NOT NULL DEFAULT '',stop_requested INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(instance,account,id));
+CREATE INDEX IF NOT EXISTS harness_channel_run_id ON harness_channel_runs(run_id);
 CREATE TABLE IF NOT EXISTS harness_channel_images(instance TEXT NOT NULL,account TEXT NOT NULL,id TEXT NOT NULL,position INTEGER NOT NULL,asset BLOB NOT NULL,status TEXT NOT NULL DEFAULT 'pending',PRIMARY KEY(instance,account,id,position));
 CREATE TABLE IF NOT EXISTS harness_channel_threads(instance TEXT NOT NULL,account TEXT NOT NULL,conversation TEXT NOT NULL,sender TEXT NOT NULL,workspace TEXT NOT NULL,session_id TEXT NOT NULL,PRIMARY KEY(instance,account,conversation,sender,workspace));
 CREATE TABLE IF NOT EXISTS harness_channel_admissions(instance TEXT NOT NULL,account TEXT NOT NULL,id TEXT NOT NULL,approval TEXT NOT NULL,PRIMARY KEY(instance,account,id));
@@ -81,6 +86,7 @@ CREATE TABLE IF NOT EXISTS harness_channel_receipts(instance TEXT NOT NULL,accou
 CREATE INDEX IF NOT EXISTS harness_channel_receipts_pending ON harness_channel_receipts(instance,account,status);
 CREATE TABLE IF NOT EXISTS harness_channel_confirmations(code TEXT PRIMARY KEY,scope TEXT NOT NULL,session_id TEXT NOT NULL,run_id TEXT NOT NULL,execution_version INTEGER NOT NULL,intent_id TEXT NOT NULL,intent_version INTEGER NOT NULL,digest TEXT NOT NULL,config_version INTEGER NOT NULL,policy_revision INTEGER NOT NULL,expires_ms INTEGER NOT NULL,decision TEXT NOT NULL DEFAULT '',used INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS harness_channel_policy_audit(id INTEGER PRIMARY KEY,instance TEXT NOT NULL,account TEXT NOT NULL,owner TEXT NOT NULL,workspace TEXT NOT NULL,approval TEXT NOT NULL,source TEXT NOT NULL,revision INTEGER NOT NULL,created_ms INTEGER NOT NULL);
+UPDATE harness_channel_messages AS m SET status='waiting_task' WHERE status='running' AND EXISTS(SELECT 1 FROM harness_channel_runs r WHERE r.instance=m.instance AND r.account=m.account AND r.id=m.id AND r.session_id=m.session_id);
 UPDATE harness_channel_messages SET status='unknown' WHERE status IN ('running','sending');
 UPDATE harness_channel_images SET status='unknown' WHERE status='sending';`)
 	if err != nil {
@@ -293,7 +299,7 @@ func (m *Manager) status(ctx context.Context, i *instance) (any, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	var queued, unknown int
-	if err := m.db.QueryRowContext(ctx, `SELECT COUNT(CASE WHEN status IN ('queued','ready') THEN 1 END),COUNT(CASE WHEN status='unknown' THEN 1 END) FROM harness_channel_messages WHERE instance=? AND account=?`, i.id, i.auth.Account).Scan(&queued, &unknown); err != nil {
+	if err := m.db.QueryRowContext(ctx, `SELECT COUNT(CASE WHEN status IN ('queued','ready','waiting_task') THEN 1 END),COUNT(CASE WHEN status='unknown' THEN 1 END) FROM harness_channel_messages WHERE instance=? AND account=?`, i.id, i.auth.Account).Scan(&queued, &unknown); err != nil {
 		return nil, err
 	}
 	phase := "disabled"
@@ -416,7 +422,7 @@ func (m *Manager) Configure(ctx context.Context, id string, revision int64, work
 	if err == nil {
 		err = m.persistWith(ctx, tx, i)
 		if err == nil && (!enabled || oldWorkspace != workspace) {
-			_, err = tx.ExecContext(ctx, `UPDATE harness_channel_messages SET status='unknown' WHERE instance=? AND status IN ('queued','ready','running','sending')`, id)
+			_, err = tx.ExecContext(ctx, `UPDATE harness_channel_messages SET status='unknown' WHERE instance=? AND status IN ('queued','ready','running','sending','waiting_task')`, id)
 		}
 		if err == nil {
 			err = tx.Commit()
@@ -576,7 +582,7 @@ func (m *Manager) LoginWithFields(ctx context.Context, id, operation, loginID, v
 		}
 		err = m.persistWith(ctx, tx, i)
 		if err == nil {
-			_, err = tx.ExecContext(ctx, `UPDATE harness_channel_messages SET status='unknown' WHERE instance=? AND status IN ('queued','ready','running','sending')`, id)
+			_, err = tx.ExecContext(ctx, `UPDATE harness_channel_messages SET status='unknown' WHERE instance=? AND status IN ('queued','ready','running','sending','waiting_task')`, id)
 		}
 		if err == nil && id == "wechat" {
 			var legacy bool
@@ -606,7 +612,7 @@ func (m *Manager) LoginWithFields(ctx context.Context, id, operation, loginID, v
 	if operation == "login.start" {
 		i.login = ""
 		i.pairCode = ""
-		_, err = m.db.ExecContext(ctx, `UPDATE harness_channel_messages SET status='unknown' WHERE instance=? AND status IN ('queued','ready','running','sending')`, id)
+		_, err = m.db.ExecContext(ctx, `UPDATE harness_channel_messages SET status='unknown' WHERE instance=? AND status IN ('queued','ready','running','sending','waiting_task')`, id)
 		if err != nil {
 			return nil, err
 		}
@@ -677,7 +683,7 @@ func (m *Manager) LoginWithFields(ctx context.Context, id, operation, loginID, v
 		}
 		err = m.persistWith(ctx, tx, i)
 		if err == nil {
-			_, err = tx.ExecContext(ctx, `UPDATE harness_channel_messages SET status='unknown' WHERE instance=? AND status IN ('queued','ready','running','sending')`, id)
+			_, err = tx.ExecContext(ctx, `UPDATE harness_channel_messages SET status='unknown' WHERE instance=? AND status IN ('queued','ready','running','sending','waiting_task')`, id)
 		}
 		if err == nil {
 			err = tx.Commit()

@@ -128,7 +128,12 @@ func (c *Client) channelExecutionCommand(ctx context.Context, id, workspace stri
 		return tools.observe(ctx, e)
 	}
 	channels.StartFeedback(ctx)
+	ctx = c.withChannelRunAdmission(ctx)
 	result, err := c.service.ResumeExecution(ctx, owner, id, harness.ResumeExecutionRequest{RunID: state.RunID, ExpectedVersion: state.Version}, emit, approve)
+	if result.Execution != nil {
+		out.RunID = result.Execution.RunID
+		out.WaitForTasks = channelTaskWait(result.Execution)
+	}
 	out.Text = strings.ToValidUTF8(answer.String(), "")
 	images.finish(&out)
 	if s := tools.finish(ctx, result.Execution); s != "" {
@@ -163,7 +168,32 @@ func (c *Client) channelWaitingNotice(ctx context.Context, owner string, x harne
 	if state.Status != harness.ExecutionWaitingInput {
 		return text, nil
 	}
+	if state.BlockedReason != "" || state.Automatic != nil && state.Automatic.Status == "blocked" {
+		return text + "\n" + channelBlockedNotice(state), nil
+	}
+	if state.Automatic != nil && state.Automatic.Status == "stopped" {
+		return text + "\n自动续跑已停止。请在桌面查看原任务。", nil
+	}
+	if channelTaskWait(&state) {
+		if d, ok := channels.DispatchFromContext(ctx); ok && c.channels.TracksTaskWaits(d.Instance) {
+			pending, err := c.channels.HasPendingRun(ctx, d, state.RunID)
+			if err != nil {
+				return "", err
+			}
+			if pending {
+				return text + "\n正在等待后台任务，完成后会继续。", nil
+			}
+			return text + "\n原任务正在等待后台结果。结果就绪后可发送 /resume 或在桌面恢复。", nil
+		}
+		return text + "\n正在等待后台任务。", nil
+	}
+	if len(state.WaitingInputs) > 0 {
+		text += "\n等待工具权限确认。"
+	}
 	if !state.Resumable {
+		if len(state.WaitingTasks) > 0 {
+			return text + "\n后台任务仍在运行，结果就绪后可发送 /status 查看待确认操作。", nil
+		}
 		return text + "\n当前检查点无法安全恢复，请在桌面检查，或 /new 开始新会话。", nil
 	}
 	dispatch, ok := channels.DispatchFromContext(ctx)

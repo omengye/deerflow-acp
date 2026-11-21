@@ -340,6 +340,9 @@ func (s *Store) ClaimExecutionResumeTx(ctx context.Context, tx *sql.Tx, sessionI
 	if err = claimAutomaticExecutionTx(ctx, tx, row); err != nil {
 		return lease, err
 	}
+	if err = recordRunAdmission(ctx, tx, sessionID, request.RunID); err != nil {
+		return lease, err
+	}
 	lease = ExecutionLease{OwnerID: owner, InputID: row.State.InputID, Scope: budget.Scope{RootBudgetID: row.RootBudgetID, MemberID: row.State.RunID, SessionID: sessionID, AttemptID: attemptID, Fence: row.State.Attempt + 1}}
 	now := timestamp()
 	if err = executionCAS(ctx, tx, `UPDATE harness_executions SET status='resuming',version=version+1,attempt_id=?,attempt=attempt+1,blocked_reason='',updated_at=? WHERE run_id=? AND version=? AND status='waiting_input'`, attemptID, now, row.State.RunID, request.ExpectedVersion); err != nil {
