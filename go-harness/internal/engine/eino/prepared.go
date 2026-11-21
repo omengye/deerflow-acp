@@ -29,6 +29,7 @@ type PreparedAttempt struct {
 	Agent           adk.ResumableAgent
 	Contract        string
 	resumeContracts []string
+	userInput       bool
 	State           json.RawMessage
 	ctx             context.Context
 	budget          *runBudget
@@ -166,12 +167,13 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 	}
 	// User questions belong to the attached root agent. Child cancellation must
 	// not leave a desktop form open while its parent continues the same turn.
-	if userInput, ok := interaction.UserInput(ctx); ok && len(role) == 0 && !IsDelegatedToolContext(ctx) {
+	if userInput, ok := interaction.UserInput(ctx); ok && len(role) == 0 && !IsDelegatedToolContext(ctx) && e.config.ToolPolicy.Allows("ask_user_question") {
 		question, err := harnesstools.AskUserQuestionTool(req, userInput)
 		if err != nil {
 			return p, fmt.Errorf("user question tool: %w", err)
 		}
 		tools = append(tools, question)
+		p.userInput = true
 	}
 	protected := make(map[string]bool, len(tools))
 	trusted := make(map[string]bool, len(tools))

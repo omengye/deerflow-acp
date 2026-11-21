@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -496,7 +497,32 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		prepareCtx = context.WithValue(prepareCtx, resumedRoleIdentityKey{}, role.ID)
 		selectedRoles = []*agents.Spec{&role.Spec}
 	}
-	prepared, err := e.prepareAgent(prepareCtx, prepareReq, "deerflow", pinned, budget, sink, ioLifecycle, permissions, selectedRoles...)
+	liveCtx := prepareCtx
+	_, liveQuestions := interaction.UserInput(liveCtx)
+	legacyQuestions := false
+	if savedCheckpoint != nil {
+		switch enabled := savedCheckpoint.UserInputEnabled; {
+		case enabled == nil:
+			legacyQuestions = liveQuestions && len(selectedRoles) == 0
+			prepareCtx = interaction.WithUserInput(liveCtx, nil)
+		case !*enabled:
+			prepareCtx = interaction.WithUserInput(liveCtx, nil)
+		case !liveQuestions:
+			return harness.RunResult{}, fmt.Errorf("%w: this checkpoint requires a client with question forms", harness.ErrInvalidInput)
+		}
+	}
+	prepare := func(ctx context.Context) (*PreparedAttempt, error) {
+		return e.prepareAgent(ctx, prepareReq, "deerflow", pinned, budget, sink, ioLifecycle, permissions, selectedRoles...)
+	}
+	prepared, err := prepare(prepareCtx)
+	if err == nil && legacyQuestions {
+		original := savedCheckpoint.interruptedContract()
+		if original != "" && original != prepared.Contract && !slices.Contains(prepared.resumeContracts, original) {
+			if err = prepared.closeResources(); err == nil {
+				prepared, err = prepare(liveCtx)
+			}
+		}
+	}
 	if prepared != nil {
 		defer func() { returnErr = errors.Join(returnErr, prepared.closeResources()) }()
 	}
@@ -606,6 +632,7 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	if err != nil {
 		return harness.RunResult{}, err
 	}
+	checkpoints.userInput = prepared.userInput
 	pendingCheckpoints = checkpoints
 	stopLoop = func() { loop.Stop(adk.WithImmediate()) }
 	done := make(chan struct{})

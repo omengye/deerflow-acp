@@ -1,8 +1,10 @@
 package eino
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -189,8 +191,19 @@ type checkpointEnvelope struct {
 	Interrupts       []ExecutionInterruptBinding   `json:"interrupts,omitempty"`
 	TaskWaits        []interaction.TaskWaitBinding `json:"taskWaits,omitempty"`
 	TaskWaitsEnabled bool                          `json:"taskWaitsEnabled,omitempty"`
+	UserInputEnabled *bool                         `json:"userInputEnabled,omitempty"`
 	InputSource      *executionSourceIdentity      `json:"inputSource,omitempty"`
 	Roles            *agents.Catalog               `json:"roles,omitempty"`
+}
+
+// Old TurnLoop checkpoints keep the accepted contract in the interrupted item.
+// Project only that field from the outer gob. The runner payload stays opaque.
+func (s *checkpointEnvelope) interruptedContract() string {
+	var outer struct{ CanceledItems []struct{ Contract string } }
+	if gob.NewDecoder(bytes.NewReader(s.Native)).Decode(&outer) != nil || len(outer.CanceledItems) != 1 {
+		return ""
+	}
+	return outer.CanceledItems[0].Contract
 }
 
 func decodeCheckpointEnvelope(data []byte) (*checkpointEnvelope, error) {
@@ -264,6 +277,7 @@ type checkedCheckpoints struct {
 	taskWaits    []interaction.TaskWaitBinding
 	inputSource  *executionSourceIdentity
 	roles        *agents.Catalog
+	userInput    bool
 }
 
 func (s *checkedCheckpoints) setInterrupts(bindings []ExecutionInterruptBinding, waits []interaction.TaskWaitBinding) {
@@ -345,6 +359,7 @@ func (s *checkedCheckpoints) commit(ctx context.Context, deleteAllowed bool) err
 		envelope := checkpointEnvelope{Native: s.data, Extension: s.extension, Interrupts: append([]ExecutionInterruptBinding(nil), s.interrupts...), InputSource: s.inputSource, Roles: s.roles}
 		envelope.TaskWaits = append([]interaction.TaskWaitBinding(nil), s.taskWaits...)
 		envelope.TaskWaitsEnabled = s.hooks != nil && s.hooks.TaskWaitsEnabled
+		envelope.UserInputEnabled = &s.userInput
 		if s.budget.ledger != nil {
 			envelope.Version = 2
 			envelope.Ledger, err = s.budget.durableIdentity(ctx)

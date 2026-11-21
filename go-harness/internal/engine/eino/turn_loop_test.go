@@ -6,6 +6,7 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 )
 
 func TestTurnLoopResumeRejectsPolicyChangeWithoutLosingCheckpoint(t *testing.T) {
@@ -94,7 +96,12 @@ func TestTurnLoopDoesNotHideCheckpointCleanupFailure(t *testing.T) {
 
 func canceledCheckpoint(t *testing.T, e *Engine, started <-chan struct{}, runID string) []byte {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
+	return cancelWithClient(t, context.Background(), e, started, runID)
+}
+
+func cancelWithClient(t *testing.T, client context.Context, e *Engine, started <-chan struct{}, runID string) []byte {
+	t.Helper()
+	ctx, cancel := context.WithCancel(client)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
@@ -138,6 +145,70 @@ func waitingModel(started chan struct{}, next func(context.Context) (*schema.Str
 		}()
 		return r, nil
 	}}
+}
+
+func TestResumePreservesOriginalQuestionCapability(t *testing.T) {
+	ctx := context.Background()
+	desktop := interaction.WithUserInput(ctx, func(context.Context, harness.UserInputRequest) (harness.UserInputResponse, error) {
+		t.Error("unexpected question")
+		return harness.UserInputResponse{}, nil
+	})
+	for _, tc := range []struct {
+		name              string
+		legacy, questions bool
+	}{
+		{"wechat_to_desktop", false, false}, {"legacy_wechat_to_desktop", true, false},
+		{"desktop_only", false, true}, {"legacy_desktop_only", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			started := make(chan struct{})
+			fake := waitingModel(started, func(context.Context) (*schema.StreamReader[*schema.Message], error) {
+				return textStream("resumed"), nil
+			})
+			e := newTestEngine(t, Config{ChatModel: fake})
+			req := request(tc.name)
+			original := ctx
+			if tc.questions {
+				original = desktop
+			}
+			raw := cancelWithClient(t, original, e, started, req.RunID)
+			cp, err := decodeCheckpointEnvelope(raw)
+			if err != nil || cp.UserInputEnabled == nil || *cp.UserInputEnabled != tc.questions || cp.interruptedContract() == "" {
+				t.Fatalf("missing original tool contract: %v", err)
+			}
+			key := CheckpointID(req.RunID)
+			if tc.legacy {
+				cp.UserInputEnabled = nil
+				raw, err = json.Marshal(cp)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := e.config.CheckpointStore.Set(ctx, key, raw); err != nil {
+					t.Fatal(err)
+				}
+			}
+			changed := req
+			changed.Session.ConfigVersion++
+			if _, err := e.Resume(desktop, changed, key, nil, allowTool); !errors.Is(err, harness.ErrInvalidInput) {
+				t.Fatalf("changed policy: %v", err)
+			}
+			if tc.questions {
+				if _, err := e.Resume(ctx, req, key, nil, allowTool); !errors.Is(err, harness.ErrInvalidInput) {
+					t.Fatalf("missing question client: %v", err)
+				}
+			}
+			if data, found, err := e.config.CheckpointStore.Get(ctx, key); err != nil || !found || !bytes.Equal(raw, data) || fake.calls != 1 {
+				t.Fatalf("rejected resume changed checkpoint or called model: %v", err)
+			}
+			result, err := e.Resume(desktop, req, key, nil, allowTool)
+			if err != nil || result.StopReason != "end_turn" || fake.calls != 2 {
+				t.Fatalf("desktop resume: %+v %v", result, err)
+			}
+			if len(fake.tools) > 0 && slices.Contains(fake.tools[len(fake.tools)-1], "ask_user_question") != tc.questions {
+				t.Fatalf("resumed tools: %v", fake.tools)
+			}
+		})
+	}
 }
 
 // This mirrors only the native outer gob schema for corruption injection. The
