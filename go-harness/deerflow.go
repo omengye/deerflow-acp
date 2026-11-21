@@ -236,7 +236,12 @@ type Client struct {
 	memoryIndexDone   chan struct{}
 }
 
-func Open(ctx context.Context, cfg Config) (client *Client, err error) {
+func Open(ctx context.Context, cfg Config) (*Client, error) {
+	return open(ctx, cfg, nil)
+}
+
+// A caller supplying a generator drives its queue explicitly with RunGeneration.
+func open(ctx context.Context, cfg Config, manualGenerator skillmaintenance.Generator) (client *Client, err error) {
 	if cfg.MaxActiveRuns == 0 {
 		cfg.MaxActiveRuns = 2
 	}
@@ -594,9 +599,12 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 		}
 	}()
 	if cfg.SkillGeneration != nil {
-		generator, buildErr := einoengine.NewSkillCandidateGenerator(ctx, cfg.SkillGeneration.Model)
-		if buildErr != nil {
-			return nil, buildErr
+		generator := manualGenerator
+		if generator == nil {
+			generator, err = einoengine.NewSkillCandidateGenerator(ctx, cfg.SkillGeneration.Model)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if err = skillEvolution.ConfigureGeneration(ctx, generator, cfg.SkillGeneration.Policy, cfg.SkillGeneration.Sources, cfg.SkillGeneration.AllowBuiltinOverlays); err != nil {
 			return nil, err
@@ -821,8 +829,10 @@ func Open(ctx context.Context, cfg Config) (client *Client, err error) {
 	if err = skillEvolution.StartCollector(); err != nil {
 		return nil, err
 	}
-	if err = skillEvolution.StartGeneration(); err != nil {
-		return nil, err
+	if manualGenerator == nil {
+		if err = skillEvolution.StartGeneration(); err != nil {
+			return nil, err
+		}
 	}
 	if err = skillEvolution.StartDiscovery(); err != nil {
 		return nil, err

@@ -15,15 +15,19 @@ func (f skillToolMaintenance) Generate(context.Context, harness.SkillGenerationI
 	return harness.SkillGeneratedCandidate{}, harness.ErrPermissionDenied
 }
 
-func configureSkillManageQueue(t *testing.T, c *Client) {
+func openSkillManageQueue(t *testing.T, ctx context.Context, cfg Config) *Client {
 	t.Helper()
-	fixture := skillToolMaintenance{t}
-	if err := c.evolution.ConfigureGeneration(context.Background(), fixture, harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1}, []string{"project"}, true); err != nil {
+	cfg.SkillGeneration = &harness.SkillGenerationOptions{
+		Policy:                     harness.SkillMaintenancePolicy{MaxJobSeconds: 60, Workers: 1},
+		Sources:                    []string{"project"},
+		AllowBuiltinOverlays:       true,
+		PublishAfterSecurityReview: true,
+	}
+	c, err := open(ctx, cfg, skillToolMaintenance{t})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.evolution.ConfigureSecurityPublication(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	return c
 }
 
 // The other SDK fixtures use this validator too. Stable identity allows the

@@ -62,16 +62,12 @@ func TestSkillManageAutomaticSubmissionSurvivesRestartWithoutApproval(t *testing
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			c, err := Open(ctx, cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
+			c := openSkillManageQueue(t, ctx, cfg)
 			defer func() {
 				if c != nil {
 					_ = c.Close()
 				}
 			}()
-			configureSkillManageQueue(t, c)
 			s, err := c.NewSession(ctx, workspace)
 			if err != nil {
 				t.Fatal(err)
@@ -120,10 +116,7 @@ func TestSkillManageAutomaticSubmissionSurvivesRestartWithoutApproval(t *testing
 				reviews++
 				return harness.SkillValidationReport{ValidatorVersion: "fixture", BaseVersion: in.Proposal.Base.Version, CandidateVersion: in.Proposal.CandidateVersion, Security: "passed"}, nil
 			})
-			c, err = Open(ctx, cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
+			c = openSkillManageQueue(t, ctx, cfg)
 			got, err := c.GetSkillProposal(ctx, saved.ID)
 			if err != nil || got.GenerationJobID != saved.GenerationJobID || got.BehaviorJobID != "" || got.CandidateVersion != saved.CandidateVersion || got.Status != "validating" {
 				t.Fatal(got, err)
@@ -132,7 +125,6 @@ func TestSkillManageAutomaticSubmissionSurvivesRestartWithoutApproval(t *testing
 			if err != nil || after != before {
 				t.Fatal("queued candidate changed live skill", after, err)
 			}
-			configureSkillManageQueue(t, c)
 			if worked, err := c.evolution.RunGeneration(ctx); !worked || err != nil {
 				t.Fatal(worked, err)
 			}

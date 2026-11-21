@@ -78,12 +78,8 @@ func TestSkillManagePublishesAfterSafetyWithoutConfirmation(t *testing.T) {
 			cfg.Provider, cfg.Model, cfg.BaseURL, cfg.APIKey = "openai", "fixture", server.URL+"/v1", "fixture"
 			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 			defer cancel()
-			c, err := Open(ctx, cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
+			c := openSkillManageQueue(t, ctx, cfg)
 			defer c.Close()
-			configureSkillManageQueue(t, c)
 			session, err := c.NewSession(ctx, workspace)
 			if err != nil {
 				t.Fatal(err)

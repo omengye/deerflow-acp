@@ -155,11 +155,7 @@ func TestSkillManageNativeCandidateScopeAndBudget(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			c, err := Open(ctx, cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			configureSkillManageQueue(t, c)
+			c := openSkillManageQueue(t, ctx, cfg)
 			defer c.Close()
 			s, err := c.NewSession(ctx, workspace)
 			if err != nil {
