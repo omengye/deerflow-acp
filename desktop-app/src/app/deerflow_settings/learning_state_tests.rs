@@ -259,27 +259,27 @@ fn learning_status_is_runtime_truth_not_an_automatic_publication_claim() {
 }
 
 #[test]
-fn learning_control_uses_observed_epoch_and_revocation_works_when_host_off() {
+fn sharing_uses_observed_epoch_and_can_be_revoked_when_host_is_off() {
     let mut browser = ready();
-    let request = browser.control_request(false, false).unwrap();
+    let request = browser.sharing_request(true).unwrap();
     assert_eq!(request["control"]["expected_epoch"], 0);
+    assert_eq!(request["control"]["contribute"], true);
     let mut forged = request.clone();
     forged["control"]["expected_epoch"] = json!(3);
     assert!(!browser.can_begin(&forged));
     forged = request.clone();
-    forged["control"]["workspace_shared"] = json!(true);
+    forged["control"]["contribute"] = json!(false);
     assert!(!browser.can_begin(&forged));
-    read(&mut browser, request, control("session-a", 1, false, false));
-    assert_eq!(browser.control.as_ref().unwrap().consent_epoch, 1);
-    assert!(browser.episode_request().is_none());
-    assert!(browser.last_result.as_ref().unwrap().contains("费用"));
-    browser.status.as_mut().unwrap().enabled = false;
-    assert!(browser.control_request(true, false).is_none());
-    browser.control = Some(serde_json::from_value(control("session-a", 5, true, true)).unwrap());
-    browser.status.as_mut().unwrap().cross_session_enabled = false;
-    assert!(browser.control_request(true, false).is_some());
-    assert!(browser.control_request(false, false).is_some());
-    assert!(browser.control_request(true, true).is_none());
+    read(&mut browser, request, control("session-a", 1, true, true));
+    assert!(browser.workspace_available());
+    let status = browser.status.as_mut().unwrap();
+    status.enabled = false;
+    status.cross_session_enabled = false;
+    let revoke = browser.sharing_request(false).unwrap();
+    read(&mut browser, revoke, control("session-a", 2, true, false));
+    assert!(!browser.workspace_available());
+    assert!(browser.control.as_ref().unwrap().contribute);
+    assert!(browser.sharing_request(true).is_none());
 }
 
 #[test]
@@ -316,7 +316,7 @@ fn learning_read_fencing_rejects_native_local_pane_and_service_changes() {
 fn learning_successful_old_mutation_clears_pending_without_rebinding_current_session() {
     for same_native in [false, true] {
         let mut browser = ready();
-        let request = browser.control_request(false, false).unwrap();
+        let request = browser.sharing_request(true).unwrap();
         browser.begin(&request);
         if same_native {
             browser.invalidate();
@@ -325,7 +325,7 @@ fn learning_successful_old_mutation_clears_pending_without_rebinding_current_ses
         }
         assert_eq!(browser.pending_request(), Some(&request));
         browser
-            .accept(&request, control("session-a", 1, false, false))
+            .accept(&request, control("session-a", 1, true, true))
             .unwrap();
         assert!(browser.pending_request().is_none());
         assert!(browser.control.is_none());
@@ -336,14 +336,14 @@ fn learning_successful_old_mutation_clears_pending_without_rebinding_current_ses
 #[test]
 fn learning_current_state_read_does_not_reauthorize_an_older_mutation_receipt() {
     let mut browser = ready();
-    let original = browser.control_request(false, false).unwrap();
+    let original = browser.sharing_request(true).unwrap();
     browser.begin(&original);
     browser.invalidate();
     let query = browser.reconciliation_request().unwrap();
     read(&mut browser, query, control("session-a", 7, true, false));
     assert_eq!(browser.control.as_ref().unwrap().consent_epoch, 7);
     browser
-        .accept(&original, control("session-a", 1, false, false))
+        .accept(&original, control("session-a", 1, true, true))
         .unwrap();
     assert_eq!(browser.control.as_ref().unwrap().consent_epoch, 7);
     assert!(browser.control.as_ref().unwrap().contribute);
@@ -567,7 +567,7 @@ fn learning_jobs_pin_pattern_not_single_episode_and_cancel_with_observed_version
 #[test]
 fn learning_uncertain_mutations_are_never_replayed_or_cleared_by_current_state_reads() {
     let mut browser = ready();
-    let request = browser.control_request(false, false).unwrap();
+    let request = browser.sharing_request(true).unwrap();
     browser.begin(&request);
     browser.invalidate();
     assert!(!browser.can_begin(&request));
@@ -575,7 +575,7 @@ fn learning_uncertain_mutations_are_never_replayed_or_cleared_by_current_state_r
     let query = browser.reconciliation_request().unwrap();
     assert_eq!(query["session_id"], "session-a");
     assert!(browser.can_begin(&query));
-    read(&mut browser, query, control("session-a", 1, false, false));
+    read(&mut browser, query, control("session-a", 1, true, true));
     assert_eq!(browser.pending_request(), Some(&request));
     assert!(
         browser
@@ -650,7 +650,7 @@ fn learning_cancel_reconciliation_is_bounded_and_absence_is_not_failure() {
 #[test]
 fn learning_control_mutation_validates_success_before_releasing_unknown_outcome() {
     let mut browser = ready();
-    let request = browser.control_request(false, false).unwrap();
+    let request = browser.sharing_request(true).unwrap();
     browser.begin(&request);
     for invalid in [
         control("foreign", 1, false, false),
@@ -661,7 +661,7 @@ fn learning_control_mutation_validates_success_before_releasing_unknown_outcome(
         assert_eq!(browser.pending_request(), Some(&request));
     }
     browser
-        .accept(&request, control("session-a", 1, false, false))
+        .accept(&request, control("session-a", 1, true, true))
         .unwrap();
     assert!(browser.pending_request().is_none());
 }
@@ -1119,7 +1119,7 @@ fn learning_source_selection_and_authority_changes_discard_late_or_cached_body()
                 browser.begin(&query);
             }
             _ => {
-                let control = browser.control_request(false, false).unwrap();
+                let control = browser.sharing_request(true).unwrap();
                 browser.begin(&control);
             }
         }

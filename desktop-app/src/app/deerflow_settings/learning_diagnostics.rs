@@ -80,7 +80,7 @@ impl Queue {
 pub(super) fn reason(code: &str) -> String {
     let label = match code {
         "host_disabled" => "后台学习未运行；请检查服务状态和技能加载状态",
-        "contribution_disabled" => "此聊天未允许贡献；在学习详情检查贡献授权",
+        "contribution_disabled" => "后台未采集这条输入",
         "consent_changed" => "来源授权已变化；旧来源不可复用，仅捕获授权后的输入",
         "tree_unsettled" => "原任务或子任务尚未结算；可查看原任务的运行状态和执行记录",
         "source_active" => "当前任务边界仍有活跃输入；等待任务结束后再查看学习状态",

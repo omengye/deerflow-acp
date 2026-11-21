@@ -212,7 +212,9 @@ and checks current contribution, captured input/frontier, settled tree, tool
 receipts, actual skill reads and saved input/result/job identities. Workspace
 inspection also requires the acting session and all pattern members' current
 shared consent in the same workspace. Private retained sources remain inspectable
-when paid learning is off; contribution withdrawal or deletion removes them.
+when paid learning is off. Desktop chats automatically contribute new tasks whenever
+host learning is enabled. Changing workspace sharing or deleting a session clears
+its unpublished learning sources.
 
 Responses contain only the experience's cited redacted references, at most 32
 entries and 512 KiB. Local observations, real-user input, lead-agent answer and

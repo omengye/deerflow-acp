@@ -197,7 +197,12 @@ impl Status {
     fn summary(&self) -> String {
         let on = |enabled| if enabled { "已启用" } else { "关闭" };
         format!(
-            "提取 {} · 归并 {} · 匹配 {} · 跨会话 {}\n模式 {} · 空闲等待 {} 秒\n此数据目录合计：待处理 {} · 经验 {} · 归并 {} · 匹配 {}\n后台执行器{}；在线不代表已有学习产出。数量是全目录累计值，不代表当前聊天已完成。排查顺序：聊天贡献 → 原任务结算与空闲等待 → 提取 → 归并匹配 → 生成 → 安全审查 → 自动发布。",
+            "{}\n提取 {} · 归并 {} · 匹配 {} · 跨会话 {}\n模式 {} · 空闲等待 {} 秒\n此数据目录合计：待处理 {} · 经验 {} · 归并 {} · 匹配 {}\n后台执行器{}。统计包含此数据目录中的所有聊天。任务结束并经过空闲等待后，后台提取和归并经验、匹配技能、生成候选包。安全审查通过后自动发布。",
+            if self.enabled {
+                "所有 DeerFlow 聊天自动贡献新的任务经验"
+            } else {
+                "全局技能学习已关闭"
+            },
             on(self.enabled),
             on(self.consolidation_enabled),
             on(self.matching_enabled),
@@ -232,7 +237,7 @@ impl Control {
                 && identity(session)
                 && self.consent_epoch < i64::MAX as u64
                 && (!self.workspace_shared || self.contribute),
-            "贡献设置的会话、授权版本或共享状态无效"
+            "学习设置的会话、授权版本或共享状态无效"
         );
         Ok(())
     }
@@ -987,25 +992,24 @@ impl LearningBrowser {
             .is_some_and(|(request, _)| request["source"]["experience_id"] == member)
     }
 
-    pub(super) fn control_request(&self, contribute: bool, shared: bool) -> Option<Value> {
+    pub(super) fn sharing_request(&self, shared: bool) -> Option<Value> {
         let control = self.control.as_ref()?;
         if self.pending.is_some()
             || self.session_id.as_deref() != Some(&control.session_id)
             || control.consent_epoch >= i64::MAX as u64 - 1
-            || shared && !contribute
-            || contribute && !control.contribute && !self.status.as_ref().is_some_and(|s| s.enabled)
+            || shared == control.workspace_shared
             || shared
-                && !self
-                    .status
-                    .as_ref()
-                    .is_some_and(|s| s.cross_session_enabled)
-            || contribute == control.contribute && shared == control.workspace_shared
+                && (!control.contribute
+                    || !self
+                        .status
+                        .as_ref()
+                        .is_some_and(|s| s.cross_session_enabled))
         {
             return None;
         }
         Some(
             json!({"operation":"skill.learning.control.set", "session_id":control.session_id,
-            "control":{"contribute":contribute, "workspace_shared":shared, "expected_epoch":control.consent_epoch}}),
+            "control":{"contribute":true, "workspace_shared":shared, "expected_epoch":control.consent_epoch}}),
         )
     }
 
@@ -1209,15 +1213,9 @@ impl LearningBrowser {
                 return review_mutation(request) && self.pending.as_ref() == Some(request);
             }
             return match request["operation"].as_str() {
-                Some("skill.learning.control.set") => {
-                    let (Some(contribute), Some(shared)) = (
-                        request["control"]["contribute"].as_bool(),
-                        request["control"]["workspace_shared"].as_bool(),
-                    ) else {
-                        return false;
-                    };
-                    self.control_request(contribute, shared).as_ref() == Some(request)
-                }
+                Some("skill.learning.control.set") => request["control"]["workspace_shared"]
+                    .as_bool()
+                    .is_some_and(|shared| self.sharing_request(shared).as_ref() == Some(request)),
                 Some("skill.learning.episode.start") => {
                     self.episode_request().as_ref() == Some(request)
                 }
@@ -1520,9 +1518,8 @@ impl LearningBrowser {
             let control: Control = serde_json::from_value(data.clone())?;
             control.validate(session)?;
             format!(
-                "原会话 {session}\n当前授权版本 {} · 贡献 {} · 工作区共享 {}\n原请求授权版本 {}\n这是当前状态，不是原操作的幂等回执；核对后再结束待确认状态。",
+                "原会话 {session}\n当前授权版本 {} · 工作区共享 {}\n原请求授权版本 {}\n这是当前状态，不是原操作的幂等回执；核对后再结束待确认状态。",
                 control.consent_epoch,
-                control.contribute,
                 control.workspace_shared,
                 pending["control"]["expected_epoch"]
             )
@@ -1569,11 +1566,14 @@ impl LearningBrowser {
                     .ok_or_else(|| anyhow::anyhow!("缺少原授权版本"))?;
                 anyhow::ensure!(
                     expected.checked_add(1) == Some(control.consent_epoch)
-                        && request["control"]["contribute"] == control.contribute
+                        && control.contribute
                         && request["control"]["workspace_shared"] == control.workspace_shared,
-                    "贡献操作响应与原授权条件不一致"
+                    "工作区共享响应与原请求不一致"
                 );
-                (Some(control), "贡献设置已确认。授权变更已清理旧的未发布学习来源及派生内容；费用、消费记录和已采用技能保持不变。".to_owned())
+                (
+                    Some(control),
+                    "工作区共享设置已更新。旧的未发布学习来源及派生内容已清理。".to_owned(),
+                )
             }
             Some("skill.learning.episode.start") => {
                 let episode = data["episode_id"]

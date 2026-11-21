@@ -79,10 +79,11 @@ func AutomaticSettings(model string) ReviewSettings {
 
 func (s ReviewSettings) LearningOptions(route harness.ModelRoute) *harness.SkillLearningOptions {
 	return &harness.SkillLearningOptions{
-		Model:        harness.SkillGenerationModelConfig{Route: route, Timeout: time.Duration(s.Learning.TimeoutSeconds) * time.Second, MaxInputBytes: s.Learning.MaxInputBytes, MaxOutputTokens: s.Learning.MaxOutputTokens},
-		Policy:       harness.SkillMaintenancePolicy{MaxJobSeconds: s.Policy.MaxJobSeconds, Workers: s.Policy.Workers},
-		CrossSession: true,
-		Idle:         time.Duration(s.Learning.IdleSeconds) * time.Second}
+		RequireContribution: true,
+		Model:               harness.SkillGenerationModelConfig{Route: route, Timeout: time.Duration(s.Learning.TimeoutSeconds) * time.Second, MaxInputBytes: s.Learning.MaxInputBytes, MaxOutputTokens: s.Learning.MaxOutputTokens},
+		Policy:              harness.SkillMaintenancePolicy{MaxJobSeconds: s.Policy.MaxJobSeconds, Workers: s.Policy.Workers},
+		CrossSession:        true,
+		Idle:                time.Duration(s.Learning.IdleSeconds) * time.Second}
 }
 
 func (s ReviewSettings) LearningConsolidationModel(route harness.ModelRoute) *harness.SkillGenerationModelConfig {

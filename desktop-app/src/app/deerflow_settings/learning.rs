@@ -58,13 +58,7 @@ impl Waku {
             .as_ref()
             .filter(|session| browser.session_id.as_ref() == Some(*session))
         else {
-            return body
-                .child(df_label(
-                    "此聊天诊断不可用",
-                    "先打开一个已建立 DeerFlow 原生会话的聊天，再进入进化记录。",
-                    theme,
-                ))
-                .into_any_element();
+            return body.into_any_element();
         };
         let query = browser.diagnostics_request();
         body = body
@@ -96,14 +90,9 @@ impl Waku {
                 .into_any_element();
         };
         body = body.child(df_label(
-            "此聊天授权与队列",
+            "此聊天的学习队列",
             format!(
-                "贡献 {} · 授权版本 {} · 后台执行器{}\n{}",
-                if diagnostics.contribute {
-                    "允许"
-                } else {
-                    "未允许"
-                },
+                "授权版本 {} · 后台执行器{}\n{}",
                 diagnostics.consent_epoch,
                 if diagnostics.running {
                     "在线"
@@ -124,7 +113,7 @@ impl Waku {
         if diagnostics.inputs.is_empty() && diagnostics.jobs.is_empty() {
             body = body.child(df_label(
                 "此聊天暂无已捕获的学习输入或作业",
-                "新任务结束并产生有效证据后会自动学习；也可查看此聊天的贡献状态。历史任务不会补跑。",
+                "新任务结束并产生有效证据后，后台会自动提取经验。",
                 theme,
             ));
         }
@@ -306,11 +295,7 @@ impl Waku {
             .as_ref()
             .filter(|s| browser.session_id.as_ref() == Some(*s))
         else {
-            return body.child(df_group(theme).child(df_label(
-                "尚未选定 DeerFlow 原生会话",
-                "先打开一个已建立 DeerFlow 会话的聊天，再回到技能中心。其他提供方聊天和本地 transcript UUID 不作为学习会话授权。",
-                theme,
-            ))).into_any_element();
+            return body.into_any_element();
         };
         let mut controls = df_group(theme)
             .child(df_label(
@@ -320,7 +305,7 @@ impl Waku {
             ))
             .child(df_button(
                 "df-learning-control-refresh",
-                "刷新此聊天贡献设置",
+                "刷新工作区共享设置",
                 unavailable,
                 false,
                 theme,
@@ -337,68 +322,36 @@ impl Waku {
                 },
             ));
         if let Some(control) = &browser.control {
-            controls = controls.child(df_label("当前授权", format!(
-                "贡献 {} · 工作区共享 {} · 授权版本 {}\n只捕获之后被宿主接受的真实输入，不回填旧聊天。全局学习关闭与撤销此会话贡献是不同操作。",
-                if control.contribute { "允许" } else { "不允许" },
-                if control.workspace_shared { "允许" } else { "不允许" }, control.consent_epoch), theme));
-            if control.consent_epoch == 0 {
-                controls = controls.child(df_label(
-                    "尚未保存逐会话设置",
-                    "贡献当前沿用宿主 learning 默认；工作区共享仍需逐会话明确允许。",
-                    theme,
-                ));
-            }
-            let contribute = !control.contribute;
-            let shared = contribute && control.workspace_shared;
-            let contribution = browser.control_request(contribute, shared);
-            let sharing = browser.control_request(control.contribute, !control.workspace_shared);
-            let mut actions = div().flex().flex_wrap().gap(px(6.0));
-            for (id, label, request, explanation) in [
+            let (shared_status, sharing_label, explanation) = if control.workspace_shared {
                 (
-                    "df-learning-contribute",
-                    if contribute {
-                        "允许此聊天贡献"
-                    } else {
-                        "撤销此聊天贡献"
-                    },
-                    contribution,
-                    if contribute {
-                        "允许此会话之后的输入用于脱敏经验提取及后续学习阶段，可能产生主模型调用和用量。不会补跑历史聊天；候选仍须通过验证。"
-                    } else {
-                        "停止此会话贡献并撤销工作区共享；删除未发布学习来源及其全部传递派生内容，取消相关未完成作业。维护费用、已消费票和已采用的正式技能不会撤销。"
-                    },
-                ),
+                    "已开启",
+                    "撤销工作区共享",
+                    "撤销后，此聊天之后的经验仅用于本聊天。系统会清理旧学习来源及其派生内容，并取消相关未完成作业。",
+                )
+            } else {
                 (
-                    "df-learning-sharing",
-                    if control.workspace_shared {
-                        "撤销工作区共享"
-                    } else {
-                        "允许同工作区共享"
-                    },
-                    sharing,
-                    if control.workspace_shared {
-                        "撤销共享并提高授权版本，清理此会话旧学习来源及传递派生内容。仍允许之后的会话私有贡献；不会把已有共享历史降级为私有历史。已采用技能和费用保留。"
-                    } else {
-                        "允许此数据目录内、同一规范化工作区中另外也明确允许共享的会话归并经验。授权版本将提高，旧学习来源及派生内容会被清理；只捕获之后输入，不回填旧聊天。这不是多租户用户授权。"
-                    },
-                ),
-            ] {
-                actions = actions.child(df_button(
-                    id,
-                    label,
-                    mutation_disabled || request.is_none(),
-                    false,
-                    theme,
-                    cx,
-                    move |this, _, cx| {
-                        if let Some(request) = &request {
-                            this.deerflow_settings.confirm_manage =
-                                Some((explanation.to_owned(), request.clone()));
-                            cx.notify();
-                        }
-                    },
-                ));
-            }
+                    "已关闭",
+                    "允许同工作区共享",
+                    "开启后，此聊天可与同工作区内已允许共享的聊天归并经验。系统会清理旧学习来源及其派生内容，并从之后的输入开始共享。",
+                )
+            };
+            controls = controls.child(df_label("此聊天的工作区共享", shared_status, theme));
+            let sharing = browser.sharing_request(!control.workspace_shared);
+            let mut actions = div().flex().flex_wrap().gap(px(6.0)).child(df_button(
+                "df-learning-sharing",
+                sharing_label,
+                mutation_disabled || sharing.is_none(),
+                false,
+                theme,
+                cx,
+                move |this, _, cx| {
+                    if let Some(request) = &sharing {
+                        this.deerflow_settings.confirm_manage =
+                            Some((explanation.to_owned(), request.clone()));
+                        cx.notify();
+                    }
+                },
+            ));
             let episode = browser.episode_request();
             actions = actions.child(df_button("df-learning-episode", "开始一个新目标", mutation_disabled || episode.is_none(), false, theme, cx,
                 move |this, _, cx| {
@@ -414,12 +367,16 @@ impl Waku {
                 .as_ref()
                 .is_some_and(|s| s.cross_session_enabled)
             {
-                controls = controls.child(df_label("共享尚不可用", "需宿主先明确启用 learning、consolidation 和 cross_session。仍可撤销现有共享或贡献，不会在此自动开启配置。", theme));
+                controls = controls.child(df_label(
+                    "工作区共享尚不可用",
+                    "开启共享需要后台启用跨聊天经验归并。",
+                    theme,
+                ));
             }
         } else {
             controls = controls.child(df_label(
-                "贡献设置需要刷新",
-                "会话或服务变化会撤销界面的旧操作条件。刷新后才能修改贡献、共享或建立任务边界。",
+                "工作区共享设置需要刷新",
+                "刷新后可查看此聊天的共享状态。",
                 theme,
             ));
         }
@@ -495,7 +452,7 @@ impl Waku {
         if browser.loaded && browser.rows.is_empty() {
             history = history.child(df_label(
                 "此范围暂无记录",
-                "可先刷新宿主状态和会话贡献。跨会话共享结果不会出现在此聊天私有查询中。",
+                "可刷新学习状态，或查看当前范围内的学习作业。",
                 theme,
             ));
         }

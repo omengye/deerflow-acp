@@ -33,6 +33,9 @@ func ValidSkillCapabilityName(name string) bool {
 // grants neither skill generation nor publication; those remain separate opts.
 type SkillLearningOptions struct {
 	Model SkillGenerationModelConfig
+	// The desktop host enables contribution for every chat. Sharing between
+	// chats still requires separate authorization from each participating chat.
+	RequireContribution bool
 	// Consolidation is a separate paid-work opt-in. Nil keeps extraction-only
 	// shadow mode; semantic grouping cannot grant generation or publication.
 	Consolidation *SkillGenerationModelConfig

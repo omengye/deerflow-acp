@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	deerflow "github.com/omengye/deerflow-acp/go-harness"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -111,6 +112,14 @@ func TestSkillLearningSettingsNativeAutomaticPipeline(t *testing.T) {
 				t.Fatal(err)
 			}
 			var consent harness.SkillLearningControl
+			learningSettingsManagement(t, endpoint, map[string]any{"operation": "skill.learning.control.get", "session_id": session.ID}, &consent)
+			if !consent.Contribute || consent.WorkspaceShared || consent.Epoch != 0 {
+				t.Fatalf("unexpected learning defaults for a new desktop chat: %+v", consent)
+			}
+			shared := false
+			if _, err := c.SetSkillLearningControl(ctx, session.ID, harness.SkillLearningControlRequest{Contribute: false, WorkspaceShared: &shared, ExpectedEpoch: consent.Epoch}); !errors.Is(err, harness.ErrInvalidInput) {
+				t.Fatalf("desktop accepted a per-chat contribution change: %v", err)
+			}
 			learningSettingsManagement(t, endpoint, map[string]any{"operation": "skill.learning.control.set", "session_id": session.ID, "control": map[string]any{"contribute": true, "workspace_shared": true, "expected_epoch": 0}}, &consent)
 			wait := func(label string, ready func() bool) {
 				t.Helper()

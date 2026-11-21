@@ -1011,7 +1011,7 @@ impl Waku {
                     "学习授权或作业版本已变化，请刷新后核对；本次修改未覆盖新状态。"
                 }
                 "permission_denied" if learning => {
-                    "当前会话、工作区共享或学习授权不可用，请刷新贡献设置。"
+                    "当前聊天或学习授权不可用，请刷新学习状态和工作区共享设置。"
                 }
                 "not_found" if learning => "会话或学习来源已不存在，请刷新当前会话。",
                 "conflict" if missing => {
@@ -1211,7 +1211,7 @@ impl Waku {
                     "反馈操作已确认。刷新当前反馈核对修订及归因；已启用的自动发现和发布观察可使用有效证据。"
                 }
                 "skill.missing.submit" => "缺失技能报告操作已确认。刷新当前报告核对修订。",
-                "skill.learning.control.set" => "学习贡献操作已确认；请刷新历史和待审核提案核对当前来源。",
+                "skill.learning.control.set" => "工作区共享设置已更新。",
                 "skill.learning.episode.start" => "新任务边界操作已确认，只影响之后的真实输入。",
                 "skill.learning.cancel" => "学习作业取消已确认；已发生的维护用量保留。",
                 "skill.learning.extraction.retry" => "原经验提取已重新排队；保留原尝试次数、期限和已发生用量。",

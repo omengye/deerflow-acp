@@ -15,6 +15,9 @@ func (s *Store) SetControl(ctx context.Context, sessionID string, request harnes
 	if request.ExpectedEpoch < 0 {
 		return result, harness.ErrInvalidInput
 	}
+	if s.options.RequireContribution && (!request.Contribute || request.WorkspaceShared == nil) {
+		return result, invalid("chat contribution is managed by the host; only workspace sharing can be changed")
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
