@@ -748,14 +748,41 @@ func (a *Agent) clearSubagents(sessionID string) {
 }
 
 func (a *Agent) permission(ctx context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
+	return a.requestToolPermission(ctx, p, false)
+}
+
+func (a *Agent) enrollApprovedTool(ctx context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
+	return a.requestToolPermission(ctx, p, true)
+}
+
+func (a *Agent) requestToolPermission(ctx context.Context, p harness.PermissionRequest, enrollmentOnly bool) (harness.PermissionDecision, error) {
 	options := []map[string]string{{"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"}, {"optionId": "allow_always", "name": "Allow identical calls in this session", "kind": "allow_always"}, {"optionId": "reject_once", "name": "Reject once", "kind": "reject_once"}, {"optionId": "reject_always", "name": "Reject identical calls in this session", "kind": "reject_always"}}
 	call := map[string]any{"toolCallId": p.ToolCallID, "title": p.ToolName, "status": "pending", "rawInput": p.Arguments}
 	meta := map[string]any{"approvalId": p.ID, "configVersion": p.ConfigVersion}
 	explicit := harness.ExplicitSecretApproval(p)
 	var enrollment *secrets.Enrollment
-	if explicit {
+	if p.CredentialScope != nil && a.service.CredentialVault != nil && !a.localCredentialForm() {
+		fields, err := secrets.ApprovalFields(p)
+		if err != nil {
+			return harness.RejectOnce, err
+		}
+		enrollment, err = a.service.CredentialVault.NewEnrollment(ctx, secrets.CredentialScope(*p.CredentialScope), fields, a.remoteCredentialVersion())
+		if err != nil {
+			return harness.RejectOnce, err
+		}
+		if enrollment != nil {
+			meta["credentialForm"] = enrollment.Form
+		}
+	}
+	if enrollmentOnly && enrollment == nil {
+		return harness.AllowOnce, nil
+	}
+	if explicit || enrollment != nil {
 		options = []map[string]string{options[0], options[2]}
 		detail := "本次凭据授权 · " + p.ToolName + "\n"
+		if enrollment != nil {
+			detail = "填写本次调用缺少的服务凭据 · " + p.ToolName + "\n"
+		}
 		if scope := p.CredentialScope; scope != nil {
 			options[0]["name"] = "允许本次"
 			options[1]["name"] = "拒绝本次"
@@ -766,19 +793,6 @@ func (a *Agent) permission(ctx context.Context, p harness.PermissionRequest) (ha
 		detail += secrets.MaskOutput(string(p.Arguments))
 		call["content"] = []any{map[string]any{"type": "content", "content": map[string]string{"type": "text", "text": detail}}}
 		meta["credentialApproval"] = true
-		if p.CredentialScope != nil && a.service.CredentialVault != nil && !a.localCredentialForm() {
-			fields, err := secrets.ApprovalFields(p)
-			if err != nil {
-				return harness.RejectOnce, err
-			}
-			enrollment, err = a.service.CredentialVault.NewEnrollment(ctx, secrets.CredentialScope(*p.CredentialScope), fields, a.remoteCredentialVersion())
-			if err != nil {
-				return harness.RejectOnce, err
-			}
-			if enrollment != nil {
-				meta["credentialForm"] = enrollment.Form
-			}
-		}
 	}
 	request := map[string]any{"sessionId": p.SessionID, "toolCall": call, "options": options, "_meta": map[string]any{"deerflow": meta}}
 	var response struct {
@@ -823,7 +837,7 @@ func (a *Agent) permission(ctx context.Context, p harness.PermissionRequest) (ha
 			return harness.RejectOnce, err
 		}
 	}
-	if explicit && (decision == harness.AllowAlways || decision == harness.RejectAlways) {
+	if (explicit || enrollment != nil) && (decision == harness.AllowAlways || decision == harness.RejectAlways) {
 		return harness.RejectOnce, harness.ErrPermissionDenied
 	}
 	switch decision {

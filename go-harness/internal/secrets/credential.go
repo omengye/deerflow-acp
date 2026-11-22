@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
@@ -20,7 +21,7 @@ import (
 // CredentialBinding contains public routing information only. Consumers select
 // which variables they need; users enter the username and key in a dedicated client form.
 type CredentialBinding struct {
-	Service     string `json:"service" jsonschema:"required,description=HTTP(S) service origin without a path or credentials"`
+	Service     string `json:"service" jsonschema:"required,description=HTTP(S) or SSH service origin without a path or credentials"`
 	Account     string `json:"account,omitempty" jsonschema_description:"Stable nonsecret account label; defaults to default. Never put a username or key here."`
 	UsernameEnv string `json:"username_env,omitempty" jsonschema_description:"Environment variable that receives the username."`
 	KeyEnv      string `json:"key_env,omitempty" jsonschema_description:"Environment variable that receives the key or password."`
@@ -34,7 +35,14 @@ var errCredentialScope = errors.New("invalid credential scope; use a service ori
 
 func ServiceOrigin(raw string) (string, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u.User != nil || u.Hostname() == "" || len(raw) > 8192 || (u.Scheme != "http" && u.Scheme != "https") {
+	if err != nil || len(raw) > 8192 || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", errCredentialScope
+	}
+	return normalizedServiceOrigin(u)
+}
+
+func normalizedServiceOrigin(u *url.URL) (string, error) {
+	if u.User != nil || u.Hostname() == "" {
 		return "", errCredentialScope
 	}
 	host := strings.ToLower(u.Hostname())
@@ -42,13 +50,26 @@ func ServiceOrigin(raw string) (string, error) {
 		return "", errCredentialScope
 	}
 	if net.ParseIP(host) == nil {
-		host, err = idna.Lookup.ToASCII(host)
+		asciiHost, err := idna.Lookup.ToASCII(host)
 		if err != nil {
 			return "", errCredentialScope
 		}
+		host = asciiHost
 	}
 	port := u.Port()
-	if port == "80" && u.Scheme == "http" || port == "443" && u.Scheme == "https" {
+	if u.Scheme == "ssh" {
+		if strings.HasSuffix(u.Host, ":") {
+			return "", errCredentialScope
+		}
+		if port != "" {
+			number, err := strconv.ParseUint(port, 10, 16)
+			if err != nil || number == 0 {
+				return "", errCredentialScope
+			}
+			port = strconv.FormatUint(number, 10)
+		}
+	}
+	if port == "80" && u.Scheme == "http" || port == "443" && u.Scheme == "https" || port == "22" && u.Scheme == "ssh" {
 		port = ""
 	}
 	if port != "" {
@@ -70,10 +91,14 @@ func NewCredentialScope(consumer, service, account string) (CredentialScope, err
 		return CredentialScope{}, errCredentialScope
 	}
 	u, err := url.Parse(service)
-	if err != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.EscapedPath() != "" && u.EscapedPath() != "/") {
+	if err != nil || len(service) > 8192 || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.EscapedPath() != "" && u.EscapedPath() != "/") {
 		return CredentialScope{}, errCredentialScope
 	}
-	origin, err := ServiceOrigin(service)
+	allowSSH := consumer == "tool:execute" || consumer == "tool:bash" || strings.HasPrefix(consumer, "skill:")
+	if u.Scheme != "https" && u.Scheme != "http" && !(allowSSH && u.Scheme == "ssh") {
+		return CredentialScope{}, errCredentialScope
+	}
+	origin, err := normalizedServiceOrigin(u)
 	if err != nil {
 		return CredentialScope{}, err
 	}
@@ -143,7 +168,31 @@ func WithRemoteCredentialClient(ctx context.Context) context.Context {
 	return context.WithValue(ctx, remoteCredentialClient{}, true)
 }
 
-// WithCredentialGrant is set only after confirmation of this exact tool call.
+type remoteEnrollmentKey struct{}
+
+// WithRemoteEnrollmentHandler binds secure enrollment to the owning client.
+// The handler may only enroll fields of an already admitted tool request.
+func WithRemoteEnrollmentHandler(ctx context.Context, enroll harness.PermissionHandler) context.Context {
+	return context.WithValue(WithRemoteCredentialClient(ctx), remoteEnrollmentKey{}, enroll)
+}
+
+func RemoteEnrollmentHandler(ctx context.Context) harness.PermissionHandler {
+	enroll, _ := ctx.Value(remoteEnrollmentKey{}).(harness.PermissionHandler)
+	return enroll
+}
+
+type scopedCredentialGrant struct {
+	scope  CredentialScope
+	fields CredentialFields
+}
+
+// WithScopedCredentialGrant grants the dispatched call its requested fields
+// for exactly one consumer, service and account.
+func WithScopedCredentialGrant(ctx context.Context, scope CredentialScope, fields CredentialFields) context.Context {
+	return context.WithValue(ctx, credentialGrantKey{}, scopedCredentialGrant{scope, fields})
+}
+
+// WithCredentialGrant is a host-provided grant for a directly invoked tool.
 func WithCredentialGrant(ctx context.Context, target ...string) context.Context {
 	if len(target) > 0 && target[0] != "" {
 		ctx = context.WithValue(ctx, credentialTargetKey{}, target[0])
@@ -183,10 +232,14 @@ func (v *Vault) CredentialContext(ctx context.Context, scope CredentialScope, fi
 	}
 	prompt, _ := ctx.Value(promptKey{}).(CredentialPrompt)
 	remote, _ := ctx.Value(remoteCredentialClient{}).(bool)
-	granted, _ := ctx.Value(credentialGrantKey{}).(bool)
+	grant := ctx.Value(credentialGrantKey{})
+	granted, _ := grant.(bool)
+	if scoped, ok := grant.(scopedCredentialGrant); ok {
+		granted = scoped.scope == scope && fields != 0 && fields&^scoped.fields == 0
+	}
 	expected, _ := ctx.Value(credentialTargetKey{}).(string)
 	if !granted || Disallowed(ctx) || (!remote && prompt == nil) || expected != "" && expected != scope.Service {
-		return ctx, fmt.Errorf("%w: confirm this credential use in the connected client", harness.ErrPermissionDenied)
+		return ctx, fmt.Errorf("%w: credential use requires an authorized tool and connected credential client", harness.ErrPermissionDenied)
 	}
 	allowed := context.WithValue(ctx, credentialScopeKey{}, fields.Names(scope))
 	if missing, err := v.missingCredentialFields(ctx, scope, fields); missing == 0 || err != nil {
@@ -219,8 +272,8 @@ func (v *Vault) CredentialContext(ctx context.Context, scope CredentialScope, fi
 	return allowed, err
 }
 
-// A competing mobile enrollment must obtain a fresh approval to use the saved account.
-var errCredentialExists = errors.New("credential already enrolled; confirm use in a fresh request")
+// A concurrent enrollment must preserve the account already saved.
+var errCredentialExists = errors.New("credential already enrolled; retry the tool to use the saved account")
 
 func (v *Vault) saveCredential(ctx context.Context, scope CredentialScope, fields CredentialFields, pair CredentialPair, source string) error {
 	if err := v.usable(); err != nil {

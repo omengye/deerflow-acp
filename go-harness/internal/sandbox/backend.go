@@ -96,6 +96,11 @@ func (b *Backend) checkWorkspace() error {
 	return nil
 }
 
+// ValidateCommand checks the host's launch policy without starting a process.
+func (b *Backend) ValidateCommand(request harness.CommandRequest) error {
+	return b.validateRequest(&request)
+}
+
 func (b *Backend) validateRequest(r *harness.CommandRequest) error {
 	if r.Timeout < 0 || r.Timeout > b.cfg.Limits.Timeout {
 		return fmt.Errorf("requested timeout exceeds command policy")

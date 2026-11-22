@@ -18,7 +18,7 @@ import (
 
 // Exercise real model/tool schemas, session policy, command dispatch, admission
 // masking and disk-backed reopen. The form supplies only synthetic test values.
-func TestDesktopCredentialNewSessionOnlyConfirmsUse(t *testing.T) {
+func TestDesktopCredentialFollowsCommandPolicyAcrossSessions(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -27,16 +27,25 @@ func TestDesktopCredentialNewSessionOnlyConfirmsUse(t *testing.T) {
 	var prompts int
 	ctx := secrets.WithCredentialPrompt(context.Background(), func(_ context.Context, s secrets.CredentialScope, _ secrets.CredentialFields) (secrets.CredentialPair, error) {
 		prompts++
-		if s.Consumer != "tool:execute" || s.Service != "https://service.example" || s.Account != "default" {
+		if s.Consumer != "tool:execute" || s.Service != "ssh://service.example" || s.Account != "default" {
 			t.Fatal("wrong credential destination")
 		}
 		return secrets.CredentialPair{Username: []byte(user), Key: []byte(key)}, nil
 	})
-	provider, seen := secretProvider(t, []secretToolStep{{"execute", map[string]any{"executable": exe, "args": []string{"-test.run=^TestSecretCommandFixtureChild$"}, "credential": map[string]string{"service": "https://SERVICE.example:443/", "username_env": "FIXTURE_OTHER", "key_env": "FIXTURE_TOKEN"}}}})
+	provider, seen := secretProvider(t, []secretToolStep{{"execute", map[string]any{"executable": exe, "args": []string{"-test.run=^TestSecretCommandFixtureChild$"}, "credential": map[string]string{"service": "ssh://SERVICE.example:22/", "username_env": "FIXTURE_OTHER", "key_env": "FIXTURE_TOKEN"}}}})
 	root := t.TempDir()
 	ws := testutil.CanonicalTempDir(t)
-	cfg := Config{DataDir: root, Provider: "openai", Model: "fixture", APIKey: "fixture-only", BaseURL: provider.URL + "/v1", PermissionMode: harness.PermissionModeOff, DisableSubagents: true, Sandbox: harness.SandboxConfig{Enabled: true, Provider: harness.SandboxLocal, AllowedExecutables: []string{exe}, Environment: map[string]string{"DEERFLOW_SECRET_COMMAND_FIXTURE": "1"}, Limits: harness.CommandLimits{Timeout: 30 * time.Second}}}
-	for i := 0; i < 3; i++ {
+	cfg := Config{DataDir: root, Provider: "openai", Model: "fixture", APIKey: "fixture-only", BaseURL: provider.URL + "/v1", PermissionMode: harness.PermissionModeDangerous, DisableSubagents: true, Sandbox: harness.SandboxConfig{Enabled: true, Provider: harness.SandboxLocal, AllowedExecutables: []string{exe}, Environment: map[string]string{"DEERFLOW_SECRET_COMMAND_FIXTURE": "1"}, Limits: harness.CommandLimits{Timeout: 30 * time.Second}}}
+	for i, tc := range []struct {
+		mode                          string
+		decision                      harness.PermissionDecision
+		wantApprovals, wantExecutions int
+	}{
+		{harness.ApprovalAllowAlways, "", 0, 1},
+		{harness.ApprovalAllowAlways, "", 0, 1},
+		{harness.ApprovalAsk, harness.AllowOnce, 1, 1},
+		{harness.ApprovalAsk, harness.RejectOnce, 1, 0},
+	} {
 		c, err := Open(ctx, cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -47,7 +56,7 @@ func TestDesktopCredentialNewSessionOnlyConfirmsUse(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = c.SetConfigOption(ctx, session.ID, "approval", harness.ApprovalAllowAlways); err != nil {
+			if _, err = c.SetConfigOption(ctx, session.ID, "approval", tc.mode); err != nil {
 				t.Fatal(err)
 			}
 			prompt := "Use the service."
@@ -65,16 +74,13 @@ func TestDesktopCredentialNewSessionOnlyConfirmsUse(t *testing.T) {
 				}
 				return nil
 			}, func(_ context.Context, r harness.PermissionRequest) (harness.PermissionDecision, error) {
-				if r.ToolName != "execute" || !harness.ExplicitSecretApproval(r) {
+				if r.ToolName != "execute" || harness.ExplicitSecretApproval(r) {
 					t.Error("unexpected permission request")
 				}
 				approvals++
-				if i == 2 {
-					return harness.RejectOnce, nil
-				}
-				return harness.AllowOnce, nil
+				return tc.decision, nil
 			})
-			if err != nil || approvals != 1 || (executed == 1) != (i != 2) || prompts != 1 {
+			if err != nil || approvals != tc.wantApprovals || executed != tc.wantExecutions || prompts != 1 {
 				t.Fatalf("session %d approvals=%d executions=%d form entries=%d err=%v", i+1, approvals, executed, prompts, err)
 			}
 		}()
@@ -97,6 +103,54 @@ func TestDesktopCredentialNewSessionOnlyConfirmsUse(t *testing.T) {
 		t.Fatal("expected both injected fields in masked command output")
 	}
 	assertNoSecretBytes(t, root, user, key)
+}
+
+func TestInvalidCredentialCommandsReturnErrorsBeforeInteraction(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := map[string]string{"service": "ssh://fixture.example", "key_env": "FIXTURE_TOKEN"}
+	provider, seen := secretProvider(t, []secretToolStep{
+		{"execute", map[string]any{"executable": exe, "credential": binding, "description": "extra field"}},
+		{"execute", map[string]any{"executable": exe, "credential": map[string]string{"service": "invalid origin", "key_env": "FIXTURE_TOKEN"}}},
+		{"execute", map[string]any{"executable": exe, "credential": binding, "timeout_seconds": 60}},
+	})
+	ctx := secrets.WithCredentialPrompt(t.Context(), func(context.Context, secrets.CredentialScope, secrets.CredentialFields) (secrets.CredentialPair, error) {
+		t.Error("invalid command opened a credential form")
+		return secrets.CredentialPair{}, secrets.ErrCredentialCancelled
+	})
+	cfg := Config{
+		DataDir: t.TempDir(), Provider: "openai", Model: "fixture", APIKey: "fixture-only", BaseURL: provider.URL + "/v1",
+		PermissionMode: harness.PermissionModeDangerous, DisableSubagents: true,
+		Sandbox: harness.SandboxConfig{Enabled: true, Provider: harness.SandboxLocal, AllowedExecutables: []string{exe}, Limits: harness.CommandLimits{Timeout: 30 * time.Second}},
+	}
+	c, err := Open(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	session, err := c.NewSession(ctx, testutil.CanonicalTempDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SetConfigOption(ctx, session.ID, "approval", harness.ApprovalAsk); err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Run(ctx, session.ID, []harness.Content{{Type: "text", Text: "Check the credential binding."}}, nil, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+		t.Error("invalid command requested approval")
+		return harness.RejectOnce, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, requests := seen()
+	results := latestToolResults(requests)
+	for id, reason := range map[string]string{"call-0": "field", "call-1": "service", "call-2": "timeout"} {
+		if !strings.Contains(strings.ToLower(results[id]), reason) {
+			t.Errorf("%s missing %q diagnostic: %s", id, reason, results[id])
+		}
+	}
 }
 
 func TestDesktopCredentialSkillApprovalBindsOptionalAcrossResume(t *testing.T) {

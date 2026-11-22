@@ -531,12 +531,7 @@ func (s *Service) executionPermission(ctx context.Context, owner string, config 
 		decision, cached = s.decisions[key]
 		s.mu.Unlock()
 	}
-	if !cached {
-		decision = harness.RejectOnce
-		if approve != nil {
-			decision, err = approve(ctx, p)
-		}
-	}
+	decision, err = resolveToolPermission(ctx, p, decision, cached, approve)
 	if err != nil {
 		return "", err
 	}

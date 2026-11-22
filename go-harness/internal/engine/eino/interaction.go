@@ -16,6 +16,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 type PermissionIntent = interaction.PermissionIntent
@@ -108,9 +109,12 @@ func toolBudgetDigest(name, args string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(name+"\x00"+args)))
 }
 
-func (m *toolMiddleware) requestFor(tc *adk.ToolContext, arguments json.RawMessage) harness.PermissionRequest {
+func (m *toolMiddleware) requestFor(ctx context.Context, tc *adk.ToolContext, arguments json.RawMessage) harness.PermissionRequest {
 	var destination string
-	scope := m.credentialScopeForApproval(tc.Name, arguments)
+	var scope *harness.ServiceCredentialScope
+	if !secrets.Disallowed(ctx) {
+		scope, _ = m.credentialScopeForApproval(tc.Name, arguments)
+	}
 	if lookup := m.credentialScopes[tc.Name]; lookup != nil && harness.HasCredentialMarker(arguments) {
 		if scope != nil {
 			destination = scope.Service
@@ -164,8 +168,7 @@ func (m *toolMiddleware) interruptPermission(ctx context.Context, tc *adk.ToolCo
 	return tool.StatefulInterrupt(ctx, &permissionInterrupt{Intent: state.Intent, CallID: tc.CallID}, state)
 }
 
-func (m *toolMiddleware) governedPermission(ctx context.Context, tc *adk.ToolContext, args string, hooks *ExecutionHooks) (harness.PermissionDecision, error) {
-	req := m.requestFor(tc, json.RawMessage(args))
+func (m *toolMiddleware) governedPermission(ctx context.Context, tc *adk.ToolContext, args string, req harness.PermissionRequest, hooks *ExecutionHooks) (harness.PermissionDecision, error) {
 	was, has, saved := tool.GetInterruptState[permissionState](ctx)
 	if was {
 		if !has || saved.Intent.ID == "" || saved.Intent.Version < 1 || !matchesPermissionCheckpoint(saved.RequestHash, req) || saved.RootBudgetID != m.sink.request.RootBudgetID {

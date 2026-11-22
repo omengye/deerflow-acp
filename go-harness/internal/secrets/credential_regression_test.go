@@ -53,7 +53,7 @@ func TestConcurrentCredentialFormsAcrossVaultConnections(t *testing.T) {
 }
 
 func TestRemoteCredentialFieldUpgradePreservesExistingKey(t *testing.T) {
-	ctx := WithRemoteCredentialClient(WithCredentialGrant(context.Background()))
+	ctx := WithRemoteCredentialClient(context.Background())
 	v, _, _ := openTestVault(t)
 	scope, err := NewCredentialScope("tool:web_fetch", "https://fixture.test", "default")
 	if err != nil {
@@ -65,7 +65,8 @@ func TestRemoteCredentialFieldUpgradePreservesExistingKey(t *testing.T) {
 	if enrollment, err := v.NewEnrollment(ctx, scope, KeyField, 0); err != nil || enrollment != nil {
 		t.Fatal("an already saved token required enrollment", err)
 	}
-	authorized, err := v.CredentialContext(ctx, scope, KeyField)
+	keyGrant := WithScopedCredentialGrant(ctx, scope, KeyField)
+	authorized, err := v.CredentialContext(keyGrant, scope, KeyField)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,13 +84,41 @@ func TestRemoteCredentialFieldUpgradePreservesExistingKey(t *testing.T) {
 	if err := v.saveCredential(ctx, scope, UsernameField, CredentialPair{Username: []byte("competing-user")}, "test"); !errors.Is(err, errCredentialExists) {
 		t.Fatal("stale enrollment was not rejected", err)
 	}
-	authorized, err = v.CredentialContext(ctx, scope, BothFields)
+	authorized, err = v.CredentialContext(WithScopedCredentialGrant(ctx, scope, BothFields), scope, BothFields)
 	if err != nil {
 		t.Fatal(err)
 	}
 	values, err := v.Resolve(authorized, []string{username, key})
 	if err != nil || string(values[key].Value) != "fixture-token" || values[key].Version != 1 || string(values[username].Value) != "fixture-user" || values[username].Version != 1 {
 		t.Fatal("credential field changed during upgrade", err)
+	}
+}
+
+func TestSSHCredentialScopeUsesCanonicalCommandOrigin(t *testing.T) {
+	for _, consumer := range []string{"tool:execute", "tool:bash", "skill:sample"} {
+		first, err := NewCredentialScope(consumer, "ssh://HOST.test:22/", "")
+		if err != nil || first.Service != "ssh://host.test" {
+			t.Fatal(first, err)
+		}
+		same, err := NewCredentialScope(consumer, "ssh://host.test", "default")
+		if err != nil || first != same {
+			t.Fatal(same, err)
+		}
+		other, err := NewCredentialScope(consumer, "ssh://host.test:2222", "default")
+		if err != nil || other == first {
+			t.Fatal(other, err)
+		}
+		for _, invalid := range []string{"user@host.test", "ssh://user@host.test", "ssh://host.test/path", "ssh://host.test:", "ssh://host.test:65536", "ssh://host.test:0", "ssh://host.test?key=ignored"} {
+			if _, err := NewCredentialScope(consumer, invalid, ""); err == nil {
+				t.Fatalf("accepted %s", invalid)
+			}
+		}
+	}
+	if _, err := ServiceOrigin("ssh://host.test"); err == nil {
+		t.Fatal("HTTP origin accepted SSH")
+	}
+	if _, err := NewCredentialScope("tool:web_fetch", "ssh://host.test", ""); err == nil {
+		t.Fatal("HTTP consumer accepted SSH")
 	}
 }
 
@@ -248,5 +277,23 @@ func TestLargeTextCredentialAllEncodingsAndPartialStream(t *testing.T) {
 	s := m.Stream()
 	if got := s.Push(string(value[:12000])) + s.Flush(); got != "[secret:SA:partial]" {
 		t.Fatal("partial stream not redacted")
+	}
+}
+
+func TestScopedCredentialGrantChecksRecipientAndFields(t *testing.T) {
+	v, _, _ := openTestVault(t)
+	scope := CredentialScope{"tool:execute", "https://fixture.test", "default"}
+	ctx := WithScopedCredentialGrant(WithRemoteCredentialClient(t.Context()), scope, KeyField)
+	for _, other := range []CredentialScope{
+		{"tool:bash", scope.Service, scope.Account},
+		{scope.Consumer, "https://other.test", scope.Account},
+		{scope.Consumer, scope.Service, "other"},
+	} {
+		if _, err := v.CredentialContext(ctx, other, KeyField); !errors.Is(err, harness.ErrPermissionDenied) {
+			t.Fatalf("changed recipient: %v", err)
+		}
+	}
+	if _, err := v.CredentialContext(ctx, scope, BothFields); !errors.Is(err, harness.ErrPermissionDenied) {
+		t.Fatalf("field escalation: %v", err)
 	}
 }

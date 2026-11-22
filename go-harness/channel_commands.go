@@ -249,7 +249,7 @@ func channelConfirmationReview(p harness.PermissionRequest) (string, bool) {
 	}
 	if p.ToolName != "skill_edit" {
 		// Generic shell/extension arguments and secret-bearing calls cannot safely be summarized as authority.
-		if (p.ToolName != "web_fetch" && p.ToolName != "web_search") || harness.ExplicitSecretApproval(p) {
+		if (p.ToolName != "web_fetch" && p.ToolName != "web_search") || p.CredentialScope != nil || harness.ExplicitSecretApproval(p) {
 			return "", false
 		}
 		return "待确认：" + channelToolDescription(p.ToolName) + "\n参数不在微信展示；批准仅针对当前这一条已记录调用。", true

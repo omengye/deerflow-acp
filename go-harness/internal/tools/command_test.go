@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/sandbox"
+	"github.com/omengye/deerflow-acp/go-harness/internal/testutil"
 )
 
 type commandBackendFixture struct {
@@ -172,6 +176,54 @@ func TestCommandRejectsMalformedInputBeforeStarting(t *testing.T) {
 	}
 	if backend.starts != 0 {
 		t.Fatalf("started %d malformed calls", backend.starts)
+	}
+}
+
+func TestCommandPreflightRejectsBeforeCredentialUse(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := sandbox.New(t.Context(), harness.SandboxConfig{Enabled: true, Provider: harness.SandboxLocal, AllowedExecutables: []string{exe}, Limits: harness.CommandLimits{Timeout: 5 * time.Second}}, testutil.CanonicalTempDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	vault := toolTestVault(t)
+	for _, tc := range []struct {
+		name    string
+		build   func(harness.CommandBackend, harness.SandboxProvider, ...CommandOption) (tool.InvokableTool, error)
+		args    string
+		message string
+	}{
+		{"unknown execute field", CommandTool, `{"script":"fixture","description":"private-input"}`, "description"},
+		{"unknown bash field", BashTool, `{"command":"fixture","private-input":true}`, "fields and types"},
+		{"malformed origin", CommandTool, `{"script":"fixture","credential":{"key_env":"TEST_AUTH","service":"private-input"}}`, "service origin"},
+		{"execute timeout", CommandTool, `{"script":"fixture","timeout_seconds":6,"credential":{"key_env":"TEST_AUTH","service":"ssh://host.test"}}`, "timeout exceeds"},
+		{"bash timeout", BashTool, `{"command":"fixture","timeout":6,"credential":{"key_env":"TEST_AUTH","service":"ssh://host.test"}}`, "timeout exceeds"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command, err := tc.build(backend, harness.SandboxLocal, WithSecretVault(vault))
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := command.(harness.ToolArgumentPreparer).PrepareToolArguments(t.Context(), tc.args)
+			var invalid *harness.ToolArgumentError
+			if prepared != "" || !errors.As(err, &invalid) || !strings.Contains(invalid.Message, tc.message) || strings.Contains(invalid.Message, "private-input") {
+				t.Fatalf("preflight = %q, %v", prepared, err)
+			}
+		})
+	}
+	command, err := CommandTool(backend, harness.SandboxLocal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := command.InvokableRun(t.Context(), `{"script":"fixture"}`); !errors.Is(err, harness.ErrPermissionDenied) {
+		t.Fatalf("direct invocation lost the host policy denial: %v", err)
 	}
 }
 

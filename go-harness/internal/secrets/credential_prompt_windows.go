@@ -90,7 +90,7 @@ func credentialDialogTemplate(scope CredentialScope, fields CredentialFields) []
 		item(105, 0x82, 8, y+2, 62, 12, 0, "密钥或密码(&K)")
 		item(formKey, 0x81, 72, y, 262, 15, 0x008100A0, "")
 	}
-	item(formStatus, 0x82, 8, 96, 329, 17, 0x80, "凭据保存在本机。下次使用此服务时只需确认。")
+	item(formStatus, 0x82, 8, 96, 329, 17, 0x80, "凭据保存在本机，后续调用按工具的审批设置使用。")
 	item(1, 0x80, 179, 121, 82, 16, 0x10001, "保存并使用")
 	item(2, 0x80, 268, 121, 66, 16, 0x10000, "取消")
 	return b

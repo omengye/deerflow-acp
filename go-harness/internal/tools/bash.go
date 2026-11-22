@@ -1,13 +1,14 @@
 package tools
 
 import (
-	"context"
 	"errors"
-	"time"
 
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/components/tool/utils"
+	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
+	"github.com/omengye/deerflow-acp/go-harness/internal/toolidentity"
 )
 
 type bashInput struct {
@@ -28,22 +29,18 @@ type bashSecretInput struct {
 func BashTool(backend harness.CommandBackend, provider harness.SandboxProvider, options ...CommandOption) (tool.InvokableTool, error) {
 	o := applyCommandOptions(options)
 	desc := "Run a foreground shell command in the workspace using the configured " + string(provider) + " provider. On Windows powershell, use PowerShell syntax. Requires host shell opt-in and session permission. Returns bounded stdout/stderr and exit code; background jobs are not supported."
-	run := func(ctx context.Context, in bashSecretInput) (string, error) {
-		if in.Command == "" || in.Timeout < 0 || in.Timeout > 120 {
-			return "", harness.MarkToolNotExecuted(errors.New("command is required; timeout must be 0..120 seconds"))
-		}
-		request := harness.CommandRequest{Script: in.Command, Timeout: time.Duration(in.Timeout) * time.Second}
-		result, report, err := ExecuteWithSecrets(ctx, backend, request, SecretRequest{Credential: in.Credential, Vault: o.vault, Bindings: in.Secrets, WriteBack: in.SecretOut, Actor: "bash"})
-		out, marshalErr := marshalString(commandOutput{CommandSnapshot: result, Secrets: report})
-		if err = errors.Join(err, marshalErr); err != nil {
-			return out, &commandResultError{cause: err, result: out}
-		}
-		return out, nil
+	if backend == nil {
+		return nil, errors.New("command backend is required")
 	}
+	var info *schema.ToolInfo
+	var err error
 	if o.vault != nil {
-		return inferTool("bash", desc, run)
+		info, err = utils.GoStruct2ToolInfo[bashSecretInput]("bash", desc)
+	} else {
+		info, err = utils.GoStruct2ToolInfo[bashInput]("bash", desc)
 	}
-	return inferTool("bash", desc, func(ctx context.Context, in bashInput) (string, error) {
-		return run(ctx, bashSecretInput{Description: in.Description, Command: in.Command, Timeout: in.Timeout})
-	})
+	if err != nil {
+		return nil, err
+	}
+	return &commandTool{Native: toolidentity.Builtin("bash"), info: info, backend: backend, vault: o.vault}, nil
 }

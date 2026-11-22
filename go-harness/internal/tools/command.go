@@ -108,31 +108,96 @@ func CommandTool(backend harness.CommandBackend, provider harness.SandboxProvide
 	return &commandTool{Native: toolidentity.Builtin("execute"), info: info, backend: backend, vault: o.vault}, nil
 }
 func (t *commandTool) Info(context.Context) (*schema.ToolInfo, error) { return t.info, nil }
-func (t *commandTool) InvokableRun(ctx context.Context, args string, _ ...tool.Option) (string, error) {
+
+// checkedInput validates the same request before permission and at dispatch. Errors
+// returned to the model must never echo argument values or unknown field names.
+func (t *commandTool) checkedInput(args string) (commandInput, error) {
 	var in commandInput
+	var bash bashSecretInput
+	var plainBash bashInput
+	var target any = &in
+	if t.info.Name == "bash" {
+		target = &bash
+		if t.vault == nil {
+			target = &plainBash
+		}
+	}
+	reject := func(message string) (commandInput, error) {
+		return commandInput{}, &harness.ToolArgumentError{Code: "invalid_command_arguments", Message: message}
+	}
 	decoder := json.NewDecoder(strings.NewReader(args))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&in); err != nil {
-		return "", harness.MarkToolNotExecuted(fmt.Errorf("invalid command input: %w", err))
+	if !strings.HasPrefix(strings.TrimSpace(args), "{") {
+		return reject("command input must be a JSON object")
+	}
+	if err := decoder.Decode(target); err != nil {
+		if t.info.Name == "execute" && err.Error() == `json: unknown field "description"` {
+			return reject("execute does not accept the description field")
+		}
+		return reject("invalid command input; use the fields and types advertised by the command tool")
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return "", harness.MarkToolNotExecuted(errors.New("command input must contain exactly one JSON object"))
+		return reject("command input must contain exactly one JSON object")
 	}
-	if !strings.HasPrefix(strings.TrimSpace(args), "{") {
-		return "", harness.MarkToolNotExecuted(errors.New("command input must be a JSON object"))
+	if t.info.Name == "bash" {
+		if t.vault == nil {
+			bash.Command, bash.Timeout = plainBash.Command, plainBash.Timeout
+		}
+		if bash.Command == "" || bash.Timeout < 0 || bash.Timeout > 120 {
+			return reject("bash requires a command and a timeout of 0..120 seconds")
+		}
+		in = commandInput{Script: bash.Command, TimeoutSeconds: int64(bash.Timeout), Secrets: bash.Secrets, SecretOut: bash.SecretOut, Credential: bash.Credential}
 	}
 	if in.TimeoutSeconds < 0 || in.TimeoutSeconds > int64((1<<63-1)/int64(time.Second)) {
-		return "", harness.MarkToolNotExecuted(errors.New("invalid command timeout"))
+		return reject("invalid command timeout")
 	}
+	if t.vault == nil && (len(in.Secrets) > 0 || in.SecretOut || in.Credential != nil) {
+		return reject("secrets are not available for this command tool")
+	}
+	if in.Credential != nil {
+		if _, _, err := in.Credential.Bind("tool:"+t.info.Name, in.Secrets); err != nil {
+			return reject("invalid credential binding; supply an HTTP(S) or SSH service origin, a valid account label, and distinct permitted environment variable names")
+		}
+	} else if err := secrets.ValidateBindings(in.Secrets); err != nil {
+		return reject("invalid secrets mapping; supply permitted environment variable names and valid vault secret names")
+	}
+	if validator, ok := t.backend.(interface {
+		ValidateCommand(harness.CommandRequest) error
+	}); ok {
+		if err := validator.ValidateCommand(in.request()); err != nil {
+			return commandInput{}, err
+		}
+	}
+	return in, nil
+}
+
+func (in commandInput) request() harness.CommandRequest {
+	return harness.CommandRequest{Executable: in.Executable, Args: in.Args, Script: in.Script, Timeout: time.Duration(in.TimeoutSeconds) * time.Second}
+}
+
+func (t *commandTool) PrepareToolArguments(_ context.Context, args string) (string, error) {
+	if _, err := t.checkedInput(args); err != nil {
+		var invalid *harness.ToolArgumentError
+		if errors.As(err, &invalid) {
+			return "", err
+		}
+		// Host launch-policy diagnostics describe constraints without including
+		// argument values. Direct callers retain the backend's typed error.
+		return "", &harness.ToolArgumentError{Code: "invalid_command_request", Message: err.Error()}
+	}
+	return args, nil
+}
+
+func (t *commandTool) InvokableRun(ctx context.Context, args string, _ ...tool.Option) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", harness.MarkToolNotExecuted(err)
 	}
-	if t.vault == nil && (len(in.Secrets) > 0 || in.SecretOut || in.Credential != nil) {
-		return "", harness.MarkToolNotExecuted(errors.New("secrets are not available for this command tool"))
+	in, err := t.checkedInput(args)
+	if err != nil {
+		return "", harness.MarkToolNotExecuted(err)
 	}
-	request := harness.CommandRequest{Executable: in.Executable, Args: in.Args, Script: in.Script, Timeout: time.Duration(in.TimeoutSeconds) * time.Second}
-	result, report, runErr := ExecuteWithSecrets(ctx, t.backend, request, SecretRequest{Credential: in.Credential, Vault: t.vault, Bindings: in.Secrets, WriteBack: in.SecretOut, Actor: "execute"})
+	result, report, runErr := ExecuteWithSecrets(ctx, t.backend, in.request(), SecretRequest{Credential: in.Credential, Vault: t.vault, Bindings: in.Secrets, WriteBack: in.SecretOut, Actor: t.info.Name})
 	data, marshalErr := json.Marshal(commandOutput{CommandSnapshot: result, Secrets: report})
 	output := string(data)
 	if err := errors.Join(runErr, marshalErr); err != nil {

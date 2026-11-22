@@ -397,12 +397,7 @@ func (s *Service) Run(ctx context.Context, owner, id string, input []harness.Con
 			decision, cached = s.decisions[key]
 			s.mu.Unlock()
 		}
-		if !cached {
-			decision = harness.RejectOnce
-			if approve != nil {
-				decision, err = approve(pctx, p)
-			}
-		}
+		decision, err = resolveToolPermission(pctx, p, decision, cached, approve)
 		if err != nil || pctx.Err() != nil {
 			decision = harness.PermissionCancelled
 		}
@@ -510,4 +505,21 @@ func (s *Service) Disconnect(ctx context.Context, owner string) error {
 		}
 	}
 	return err
+}
+
+// A cached tool decision can still require secure enrollment on a remote
+// client. That callback rechecks missing fields and emits only a needed form.
+func resolveToolPermission(ctx context.Context, p harness.PermissionRequest, decision harness.PermissionDecision, cached bool, approve harness.PermissionHandler) (harness.PermissionDecision, error) {
+	if !cached {
+		if approve == nil {
+			return harness.RejectOnce, nil
+		}
+		return approve(ctx, p)
+	}
+	if (decision == harness.AllowOnce || decision == harness.AllowAlways) && p.CredentialScope != nil {
+		if enroll := secrets.RemoteEnrollmentHandler(ctx); enroll != nil {
+			return enroll(ctx, p)
+		}
+	}
+	return decision, nil
 }

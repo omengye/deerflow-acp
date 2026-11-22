@@ -14,12 +14,18 @@ import (
 func TestMCPCredentialTargetAndDecodedArguments(t *testing.T) {
 	g := &guardTool{endpoint: &endpoint{credentialEndpoint: "https://mcp.example", credentialIdentity: "binding-v1"}, info: []byte(`{"Name":"mcp_sample_login"}`)}
 	const args = `{"url":"https://service.example/api","login":"{{credential:username}}","key":"\u007b{credential:key}}"}`
-	if !harness.ExplicitSecretApproval(harness.PermissionRequest{ToolName: "mcp_sample_login", Arguments: json.RawMessage(args)}) {
-		t.Fatal("MCP use lacked confirmation")
-	}
 	scope, err := g.CredentialScope(args)
 	if err != nil || scope.Service != "https://mcp.example → https://service.example" {
 		t.Fatal("wrong target", scope, err)
+	}
+	p := harness.PermissionRequest{ToolName: "mcp_sample_login", Arguments: json.RawMessage(args)}
+	if !harness.ExplicitSecretApproval(p) {
+		t.Fatal("unbound MCP credential was accepted as a scoped read")
+	}
+	scopeForHost := harness.ServiceCredentialScope(scope)
+	p.CredentialScope = &scopeForHost
+	if harness.ExplicitSecretApproval(p) {
+		t.Fatal("scoped MCP credential read requested an extra confirmation")
 	}
 	changed, err := g.CredentialScope(`{"url":"https://different.example","key":"{{credential:key}}"}`)
 	if err != nil || changed == scope {

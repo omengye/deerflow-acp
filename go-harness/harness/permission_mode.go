@@ -23,7 +23,7 @@ func (m PermissionMode) Validate() error {
 
 // PermissionPolicyVersion is bound into every execution contract. Changing
 // classification invalidates checkpoints created under an older policy.
-const PermissionPolicyVersion = "trusted-builtins-v2-automatic-skills"
+const PermissionPolicyVersion = "trusted-builtins-v3-scoped-credential-reads"
 
 // RequiresPermission classifies an exact host-owned built-in identity. Engine
 // callers must use RequiresToolPermission for tools from external sources.

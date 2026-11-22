@@ -222,7 +222,7 @@ impl Waku {
                 for (mode, label) in [
                     (
                         RuntimeMode::FullAccess,
-                        "Full Access · 自动批准已启用的工具",
+                        "Full Access · 常规工具自动执行，已绑定的凭据自动使用",
                     ),
                     (RuntimeMode::Ask, "Ask · 按配置确认受控操作"),
                 ] {

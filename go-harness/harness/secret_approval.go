@@ -13,10 +13,14 @@ func ExplicitApproval(p PermissionRequest) bool {
 	return ExplicitSkillEditApproval(p) || ExplicitSecretApproval(p)
 }
 
-// ExplicitSecretApproval guards high-impact secret operations and tool calls
-// that will materialize or consume vault secrets. Invalid arguments on
-// guarded tools fail closed as requiring explicit confirmation.
+// ExplicitSecretApproval protects vault mutations and disclosure of secrets
+// without a host-bound consumer. Valid scoped reads use the tool's policy.
 func ExplicitSecretApproval(p PermissionRequest) bool {
+	if !p.TrustedBuiltin || p.ToolName == "web_fetch" {
+		if containsJSONMarker(p.Arguments, "{{secret:") || p.CredentialScope == nil && HasCredentialMarker(p.Arguments) {
+			return true
+		}
+	}
 	switch p.ToolName {
 	case "secret_manage":
 		var in struct {
@@ -52,22 +56,13 @@ func ExplicitSecretApproval(p PermissionRequest) bool {
 		if json.Unmarshal(p.Arguments, &in) != nil {
 			return true
 		}
-		if len(in.Secrets) > 0 || in.SecretOut || len(in.SecretPlan.Read) > 0 || len(in.SecretPlan.Write) > 0 || len(in.Credential) > 0 && string(in.Credential) != "null" {
+		if len(in.Secrets) > 0 || in.SecretOut || len(in.SecretPlan.Write) > 0 ||
+			len(in.SecretPlan.Read) > 0 && !(p.TrustedBuiltin && p.ToolName == "skill_run") ||
+			len(in.Credential) > 0 && string(in.Credential) != "null" && p.CredentialScope == nil {
 			return true
 		}
-		return (!p.TrustedBuiltin || p.ToolName == "web_fetch") && hasJSONSecretPlaceholder(p.Arguments)
-	}
-	// External tools (e.g. MCP) and web_fetch substitute {{secret:NAME}}
-	// placeholders; require an explicit per-call decision whenever arguments
-	// contain a placeholder (including JSON-escaped spellings).
-	if !p.TrustedBuiltin || p.ToolName == "web_fetch" {
-		return hasJSONSecretPlaceholder(p.Arguments)
 	}
 	return false
-}
-
-func hasJSONSecretPlaceholder(raw json.RawMessage) bool {
-	return containsJSONMarker(raw, "{{secret:") || HasCredentialMarker(raw)
 }
 
 func HasCredentialMarker(raw json.RawMessage) bool { return containsJSONMarker(raw, "{{credential:") }

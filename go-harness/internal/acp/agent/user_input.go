@@ -61,7 +61,7 @@ func (a *Agent) userInputContext(ctx context.Context) context.Context {
 	if a.localCredentialForm() {
 		ctx = secrets.WithCredentialPrompt(ctx, secrets.DesktopCredentialPrompt)
 	} else {
-		ctx = secrets.WithRemoteCredentialClient(ctx)
+		ctx = secrets.WithRemoteEnrollmentHandler(ctx, a.enrollApprovedTool)
 	}
 	if a.supportsUserInput() {
 		return interaction.WithUserInput(ctx, a.askUserQuestion)

@@ -143,6 +143,9 @@ func mobileCredentialAcrossClients(t *testing.T, version int) {
 	provider, seen := secretProvider(t, []secretToolStep{{"execute", map[string]any{"executable": exe, "args": []string{"-test.run=^TestSecretCommandFixtureChild$"}, "credential": binding}}})
 	root, workspace := t.TempDir(), testutil.CanonicalTempDir(t)
 	cfg := Config{DataDir: root, Provider: "openai", Model: "fixture", APIKey: "fixture", BaseURL: provider.URL + "/v1", DisableSubagents: true, PermissionMode: harness.PermissionModeOff, Sandbox: harness.SandboxConfig{Enabled: true, Provider: harness.SandboxLocal, AllowedExecutables: []string{exe}, Environment: map[string]string{"DEERFLOW_SECRET_COMMAND_FIXTURE": "1"}, Limits: harness.CommandLimits{Timeout: 15 * time.Second}}}
+	if version == 2 {
+		cfg.PermissionMode = harness.PermissionModeDangerous
+	}
 	scope, _ := secrets.NewCredentialScope("tool:execute", "https://mobile.example", "default")
 	u, k := scope.Names()
 	var old *secrets.SealedCredential
@@ -168,7 +171,8 @@ func mobileCredentialAcrossClients(t *testing.T, version int) {
 				var req struct {
 					Meta struct {
 						Deerflow struct {
-							Form *secrets.EnrollmentForm `json:"credentialForm"`
+							Form               *secrets.EnrollmentForm `json:"credentialForm"`
+							CredentialApproval bool                    `json:"credentialApproval"`
 						} `json:"deerflow"`
 					} `json:"_meta"`
 				}
@@ -176,7 +180,11 @@ func mobileCredentialAcrossClients(t *testing.T, version int) {
 					return nil, err
 				}
 				form := req.Meta.Deerflow.Form
-				if (form == nil) != (mode == "replace-phone") || form != nil && (form.CredentialScope != scope || form.Version != version || version == 2 && !slices.Equal(form.RequiredFields, []string{"key"})) {
+				if mode == "replace-phone" {
+					t.Error("using saved credentials requested another decision from the replacement phone")
+					return nil, errors.New("unexpected permission request")
+				}
+				if !req.Meta.Deerflow.CredentialApproval || form == nil || form.CredentialScope != scope || form.Version != version || version == 2 && !slices.Equal(form.RequiredFields, []string{"key"}) {
 					t.Error("unexpected public enrollment form")
 					return nil, errors.New("wrong form")
 				}
@@ -185,14 +193,6 @@ func mobileCredentialAcrossClients(t *testing.T, version int) {
 					return nil, context.Canceled
 				}
 				answer := map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": "allow_once"}}
-				if mode == "replace-phone" {
-					for _, label := range []string{"调用方  " + scope.Consumer, "服务  " + scope.Service, "账号别名  " + scope.Account, "允许本次"} {
-						if !bytes.Contains(raw, []byte(label)) {
-							t.Error("saved-credential approval is missing a public scope label or confirmation")
-						}
-					}
-					return answer, nil
-				}
 				login := user
 				if version == 2 {
 					login = ""
@@ -227,6 +227,14 @@ func mobileCredentialAcrossClients(t *testing.T, version int) {
 			if err = wire.peer.Call(ctx, "session/new", map[string]any{"cwd": workspace, "mcpServers": []any{}}, &sess); err != nil {
 				t.Fatal(err)
 			}
+			approval := harness.ApprovalAllowAlways
+			if version == 2 && mode == "enroll" {
+				// The command decision and missing key share one interaction.
+				approval = harness.ApprovalAsk
+			}
+			if err = wire.peer.Call(ctx, "session/set_config_option", map[string]string{"sessionId": sess.ID, "configId": "approval", "value": approval}, nil); err != nil {
+				t.Fatal(err)
+			}
 			err = wire.peer.Call(ctx, "session/prompt", map[string]any{"sessionId": sess.ID, "prompt": []harness.Content{{Type: "text", Text: "Use the configured service."}}}, nil)
 			if mode != "stale" && mode != "disconnect" && mode != "plain-approval" && err != nil {
 				t.Fatal(err)
@@ -237,7 +245,11 @@ func mobileCredentialAcrossClients(t *testing.T, version int) {
 				t.Fatal(err)
 			}
 			saved := mode == "enroll" || mode == "replace-phone"
-			if approvals.Load() != 1 || slices.Contains(missing, k) == saved || slices.Contains(missing, u) == (saved && version == 1) {
+			wantPrompts := int32(1)
+			if mode == "replace-phone" {
+				wantPrompts = 0
+			}
+			if approvals.Load() != wantPrompts || slices.Contains(missing, k) == saved || slices.Contains(missing, u) == (saved && version == 1) {
 				t.Fatalf("approvals=%d missing=%d", approvals.Load(), len(missing))
 			}
 		})

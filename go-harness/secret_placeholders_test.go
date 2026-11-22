@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,13 +26,64 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/tools"
 )
 
-// A real MCP server receives the value of a {{secret:NAME}} placeholder. The
-// provider, the approval prompt, client events and the data directory only
-// ever see the placeholder or the marker.
+func TestWebFetchUsesScopedCredentialWithoutExtraApproval(t *testing.T) {
+	token := randomTestSecret(t, "web-token-")
+	var calls atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Error("web_fetch did not use the bound credential")
+		}
+		calls.Add(1)
+		_, _ = io.WriteString(w, "verified")
+	}))
+	defer target.Close()
+	step := secretToolStep{"web_fetch", map[string]any{"url": target.URL, "credential": "bearer"}}
+	provider, seen := secretProvider(t, []secretToolStep{step, step})
+	cfg := Config{DataDir: t.TempDir(), Provider: "openai", Model: "fixture", APIKey: "fixture", BaseURL: provider.URL + "/v1", DisableSubagents: true, PermissionMode: harness.PermissionModeDangerous, BuiltinTools: []harness.BuiltinToolConfig{{Name: "web_fetch"}}}
+	var forms atomic.Int32
+	ctx := secrets.WithCredentialPrompt(t.Context(), func(_ context.Context, s secrets.CredentialScope, fields secrets.CredentialFields) (secrets.CredentialPair, error) {
+		if s.Service != target.URL || s.Consumer != "tool:web_fetch" || fields != secrets.KeyField {
+			return secrets.CredentialPair{}, errors.New("unexpected enrollment scope or fields")
+		}
+		forms.Add(1)
+		return secrets.CredentialPair{Key: []byte(token)}, nil
+	})
+	c, err := Open(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	sess, err := c.NewSession(ctx, testutil.CanonicalTempDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SetConfigOption(ctx, sess.ID, "approval", harness.ApprovalAllowAlways); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Run(ctx, sess.ID, []harness.Content{{Type: "text", Text: "Fetch the test service twice."}}, nil, func(context.Context, harness.PermissionRequest) (harness.PermissionDecision, error) {
+		t.Error("web_fetch requested an extra approval")
+		return harness.RejectOnce, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 || forms.Load() != 1 {
+		t.Fatalf("requests=%d enrollment forms=%d", calls.Load(), forms.Load())
+	}
+	bodies, _ := seen()
+	for _, body := range bodies {
+		if bytes.Contains(body, []byte(token)) {
+			t.Fatal("web credential reached the model")
+		}
+	}
+}
+
+// The same configured MCP tool consumes an unbound named secret and a scoped
+// credential. Only the named secret requires per-use disclosure approval.
 func TestSecretPlaceholderReachesOnlyTheMCPServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	token := randomTestSecret(t, "mcp-")
+	scopedToken := randomTestSecret(t, "mcp-bound-")
 
 	var mu sync.Mutex
 	var received []string
@@ -44,7 +96,7 @@ func TestSecretPlaceholderReachesOnlyTheMCPServer(t *testing.T) {
 		received = append(received, in.Token)
 		mu.Unlock()
 		text := "denied"
-		if in.Token == token {
+		if in.Token == token || in.Token == scopedToken {
 			text = "authorized as " + in.Token
 		}
 		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: text}}}, nil, nil
@@ -71,11 +123,20 @@ func TestSecretPlaceholderReachesOnlyTheMCPServer(t *testing.T) {
 				name = item.Function.Name
 			}
 		}
-		if name == "" || len(req.toolResults()) > 0 {
+		step := len(req.toolResults())
+		if name == "" || step >= 3 {
 			skillToolResponse(w, req.Stream, "", "", "Looked it up.")
 			return
 		}
-		skillToolResponse(w, req.Stream, name, `{"token":"{{secret:API_TOKEN}}","note":"lookup"}`, "", "call-lookup")
+		if step == 0 {
+			skillToolResponse(w, req.Stream, name, `{"token":"{{secret:API_TOKEN}}","note":"lookup"}`, "", "call-lookup")
+			return
+		}
+		id := "call-enroll"
+		if step == 2 {
+			id = "call-reuse"
+		}
+		skillToolResponse(w, req.Stream, name, `{"token":"{{credential:key}}","note":"lookup"}`, "", id)
 	}))
 	t.Cleanup(provider.Close)
 
@@ -97,6 +158,17 @@ func TestSecretPlaceholderReachesOnlyTheMCPServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = c.SetConfigOption(ctx, session.ID, "approval", harness.ApprovalAllowAlways); err != nil {
+		t.Fatal(err)
+	}
+	var forms atomic.Int32
+	ctx = secrets.WithCredentialPrompt(ctx, func(_ context.Context, s secrets.CredentialScope, fields secrets.CredentialFields) (secrets.CredentialPair, error) {
+		if s.Service != mcpServer.URL || !strings.HasPrefix(s.Consumer, "tool:mcp_fixture_lookup_") || fields != secrets.KeyField {
+			return secrets.CredentialPair{}, errors.New("unexpected MCP credential scope or fields")
+		}
+		forms.Add(1)
+		return secrets.CredentialPair{Key: []byte(scopedToken)}, nil
+	})
 	var events []harness.RunEvent
 	var approvals []harness.PermissionRequest
 	if result, err := c.Run(ctx, session.ID, []harness.Content{{Type: "text", Text: "Look up my account."}}, func(_ context.Context, event harness.RunEvent) error {
@@ -111,12 +183,12 @@ func TestSecretPlaceholderReachesOnlyTheMCPServer(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(received) != 1 || received[0] != token {
-		t.Fatalf("MCP server received %d calls with the expected token: %v", len(received), len(received) == 1 && received[0] == token)
+	if len(received) != 3 || received[0] != token || received[1] != scopedToken || received[2] != scopedToken || forms.Load() != 1 {
+		t.Fatalf("MCP credential resolution failed: calls=%d forms=%d", len(received), forms.Load())
 	}
 	var instructed bool
 	for i, body := range bodies {
-		if bytes.Contains(body, []byte(token)) {
+		if bytes.Contains(body, []byte(token)) || bytes.Contains(body, []byte(scopedToken)) {
 			t.Fatalf("provider request %d contains the value", i)
 		}
 		instructed = instructed || bytes.Contains(body, []byte("write {{secret:NAME}} where the value belongs"))
@@ -131,7 +203,7 @@ func TestSecretPlaceholderReachesOnlyTheMCPServer(t *testing.T) {
 		t.Fatalf("approvals = %+v", approvals)
 	}
 	for _, event := range events {
-		if data, _ := json.Marshal(event); bytes.Contains(data, []byte(token)) {
+		if data, _ := json.Marshal(event); bytes.Contains(data, []byte(token)) || bytes.Contains(data, []byte(scopedToken)) {
 			t.Fatalf("%s event contains the value", event.Kind)
 		}
 	}
@@ -139,7 +211,7 @@ func TestSecretPlaceholderReachesOnlyTheMCPServer(t *testing.T) {
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertNoSecretBytes(t, dataDir, token)
+	assertNoSecretBytes(t, dataDir, token, scopedToken)
 }
 
 func TestExplicitSecretApprovalGuardsHighRiskSecretOperations(t *testing.T) {
@@ -160,6 +232,9 @@ func TestExplicitSecretApprovalGuardsHighRiskSecretOperations(t *testing.T) {
 		{"write_file_literal_placeholder", harness.PermissionRequest{ToolName: "write_file", TrustedBuiltin: true, Arguments: json.RawMessage(`{"path":"doc.md","content":"{{secret:API_KEY}}"}`)}, false},
 		{"execute_with_secrets", harness.PermissionRequest{ToolName: "execute", TrustedBuiltin: true, Arguments: json.RawMessage(`{"script":"echo hi","secrets":{"A":"B"}}`)}, true},
 		{"execute_with_secret_out", harness.PermissionRequest{ToolName: "execute", TrustedBuiltin: true, Arguments: json.RawMessage(`{"script":"echo hi","secret_out":true}`)}, true},
+		{"pinned_skill_read", harness.PermissionRequest{ToolName: "skill_run", TrustedBuiltin: true, Arguments: json.RawMessage(`{"secret_plan":{"read":{"TOKEN":"API_TOKEN"}}}`)}, false},
+		{"pinned_skill_read_and_write", harness.PermissionRequest{ToolName: "skill_run", TrustedBuiltin: true, Arguments: json.RawMessage(`{"secret_plan":{"read":{"TOKEN":"API_TOKEN"},"write":["REFRESH"]}}`)}, true},
+		{"external_skill_read", harness.PermissionRequest{ToolName: "skill_run", Arguments: json.RawMessage(`{"secret_plan":{"read":{"TOKEN":"API_TOKEN"}}}`)}, true},
 		{"execute_plain", harness.PermissionRequest{ToolName: "execute", TrustedBuiltin: true, Arguments: json.RawMessage(`{"script":"echo hi"}`)}, false},
 		{"bash_empty_args", harness.PermissionRequest{ToolName: "bash", TrustedBuiltin: true}, false},
 	} {

@@ -43,7 +43,7 @@ func (m *toolMiddleware) placeholderUse(name string) placeholderUse {
 	}
 	if !m.trusted[name] {
 		// External tools, such as MCP tools, have no other way to receive a
-		// secret. ExplicitSecretApproval forces a human decision showing the placeholder.
+		// named secret. Such unbound references require explicit approval.
 		return placeholdersSubstituted
 	}
 	if name == "web_fetch" {
@@ -88,16 +88,16 @@ func (m *toolMiddleware) desktopCredentialTarget(name, args string) (string, err
 
 // credentialScopeForApproval derives enrollment metadata solely from the tool selected
 // by the host. skill_run arguments here already contain its host-pinned secret plan.
-func (m *toolMiddleware) credentialScopeForApproval(name string, args json.RawMessage) *harness.ServiceCredentialScope {
+func (m *toolMiddleware) credentialScopeForApproval(name string, args json.RawMessage) (*harness.ServiceCredentialScope, error) {
 	if m.vault == nil || m.disallowSecrets || m.readOnly {
-		return nil
+		return nil, nil
 	}
 	var scope secrets.CredentialScope
 	var err error
 	if !m.trusted[name] {
 		lookup := m.credentialScopes[name]
 		if lookup == nil || !harness.HasCredentialMarker(args) {
-			return nil
+			return nil, nil
 		}
 		scope, err = lookup(string(args))
 	} else {
@@ -108,17 +108,20 @@ func (m *toolMiddleware) credentialScopeForApproval(name string, args json.RawMe
 				Secrets    map[string]string
 			}
 			if json.Unmarshal(args, &in) != nil || in.Credential == nil {
-				return nil
+				return nil, nil
 			}
 			scope, _, err = in.Credential.Bind("tool:"+name, in.Secrets)
 		case "web_fetch":
 			var in struct{ Credential, Account string }
-			if json.Unmarshal(args, &in) != nil || in.Credential == "" {
-				return nil
+			if err := json.Unmarshal(args, &in); err != nil {
+				return nil, errors.New("invalid web_fetch credential arguments")
+			}
+			if in.Credential == "" {
+				return nil, nil
 			}
 			target, targetErr := m.desktopCredentialTarget(name, string(args))
 			if targetErr != nil {
-				return nil
+				return nil, targetErr
 			}
 			scope, err = secrets.NewCredentialScope("tool:web_fetch", target, in.Account)
 		case "skill_run":
@@ -128,18 +131,18 @@ func (m *toolMiddleware) credentialScopeForApproval(name string, args json.RawMe
 				} `json:"secret_plan"`
 			}
 			if json.Unmarshal(args, &in) != nil || in.Plan.Credential == nil {
-				return nil
+				return nil, nil
 			}
 			scope = *in.Plan.Credential
 		default:
-			return nil
+			return nil, nil
 		}
 	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	result := harness.ServiceCredentialScope(scope)
-	return &result
+	return &result, nil
 }
 
 // secretPlaceholders checks the placeholders of a call before it is approved
@@ -155,8 +158,15 @@ func (m *toolMiddleware) secretPlaceholders(ctx context.Context, tc *adk.ToolCon
 	if m.readOnly {
 		return nil, nil
 	}
-	if _, err := m.desktopCredentialTarget(tc.Name, args); err != nil {
+	raw := json.RawMessage(args)
+	scope, err := m.credentialScopeForApproval(tc.Name, raw)
+	if err != nil {
 		return nil, harness.MarkToolNotExecuted(err)
+	}
+	if scope != nil {
+		if _, err := secrets.ApprovalFields(harness.PermissionRequest{ToolName: tc.Name, TrustedBuiltin: m.trusted[tc.Name], Arguments: raw}); err != nil {
+			return nil, harness.MarkToolNotExecuted(err)
+		}
 	}
 	use := m.placeholderUse(tc.Name)
 	// Without a backslash, every decoded string is a substring of args.

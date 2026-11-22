@@ -128,7 +128,7 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 			decision := harness.RejectOnce
 			var err error
 			if m.permissions != nil {
-				decision, err = m.askPermission(ctx, m.requestFor(tc, arguments))
+				decision, err = m.askPermission(ctx, m.requestFor(ctx, tc, arguments))
 			}
 			if err != nil || (decision != harness.AllowOnce && decision != harness.AllowAlways) {
 				failure := harness.ErrPermissionDenied
@@ -165,7 +165,9 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 		return m.sink.emit(ctx, harness.RunEvent{Kind: kind, ToolCallID: tc.CallID, ToolName: tc.Name, Status: "in_progress"})
 	}
 	hooks := executionHooks(ctx)
-	needPermission := m.requiresPermissionFor(tc.Name, arguments)
+	request := m.requestFor(ctx, tc, arguments)
+	needPermission := m.requiresPermission(tc.Name) || m.vault != nil && harness.ExplicitSecretApproval(request) ||
+		request.CredentialScope != nil && secrets.RemoteEnrollmentHandler(ctx) != nil
 	wasInterrupted, _, _ := tool.GetInterruptState[permissionState](ctx)
 	if wasInterrupted {
 		needPermission = true
@@ -193,13 +195,13 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 				return errors.New("durable permission broker requires checkpoint staging")
 			}
 			endApproval := beginRoleActivity(ctx, "approval")
-			decision, err = m.governedPermission(ctx, tc, args, hooks)
+			decision, err = m.governedPermission(ctx, tc, args, request, hooks)
 			endApproval()
 		} else {
 			if m.permissions == nil {
 				return harness.ErrPermissionDenied
 			}
-			decision, err = m.askPermission(ctx, m.requestFor(tc, arguments))
+			decision, err = m.askPermission(ctx, request)
 		}
 		if err != nil {
 			return err
@@ -326,31 +328,20 @@ func (m *toolMiddleware) requiresPermission(name string) bool {
 	return (m.policy != nil || m.permissionMode != "") && m.permissionMode.RequiresToolPermission(name, m.trusted[name])
 }
 
-func (m *toolMiddleware) requiresPermissionFor(name string, arguments json.RawMessage) bool {
-	if m.requiresPermission(name) {
-		return true
-	}
-	if m.vault != nil {
-		p := harness.PermissionRequest{ToolName: name, TrustedBuiltin: m.trusted[name], Arguments: arguments}
-		if harness.ExplicitSecretApproval(p) {
-			return true
-		}
-	}
-	return false
-}
-
 func (m *toolMiddleware) credentialDispatchContext(ctx context.Context, tc *adk.ToolContext, args string) context.Context {
-	if !m.trusted[tc.Name] && !harness.HasCredentialMarker(json.RawMessage(args)) {
+	if secrets.Disallowed(ctx) {
 		return ctx
 	}
-	if m.vault != nil && !m.readOnly && !secrets.Disallowed(ctx) && harness.ExplicitSecretApproval(harness.PermissionRequest{ToolName: tc.Name, TrustedBuiltin: m.trusted[tc.Name], Arguments: json.RawMessage(args)}) {
-		target, err := m.desktopCredentialTarget(tc.Name, args)
-		if err != nil {
-			return ctx
-		}
-		return secrets.WithCredentialGrant(ctx, target)
+	raw := json.RawMessage(args)
+	scope, err := m.credentialScopeForApproval(tc.Name, raw)
+	if err != nil || scope == nil {
+		return ctx
 	}
-	return ctx
+	fields, err := secrets.ApprovalFields(harness.PermissionRequest{ToolName: tc.Name, TrustedBuiltin: m.trusted[tc.Name], Arguments: raw})
+	if err != nil {
+		return ctx
+	}
+	return secrets.WithScopedCredentialGrant(ctx, secrets.CredentialScope(*scope), fields)
 }
 
 func (m *toolMiddleware) userQuestion(name string) bool {
