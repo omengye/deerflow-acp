@@ -2002,9 +2002,10 @@ pub enum DriverEvent {
         questions: Vec<UserInputQuestion>,
     },
     ComputerUseUpdated(crate::computer_use::ComputerUseState),
-    /// The provider accepted a steering message into the running turn.
+    /// Current intervention availability. DeerFlow also supplies the bound root run.
     SteeringCapability {
         supported: bool,
+        run_id: Option<String>,
     },
     ConversationCapability {
         supported: bool,

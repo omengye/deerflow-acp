@@ -130,7 +130,7 @@ fn connect_remote(
                                 )),
                             };
                             let process_exited = matches!(&event, DriverEvent::ProcessExited);
-                            if let DriverEvent::SteeringCapability { supported } = &event {
+                            if let DriverEvent::SteeringCapability { supported, .. } = &event {
                                 forwarding_steer.store(*supported, Ordering::Release);
                             }
                             if forwarding_events.send(event).is_err()
@@ -150,6 +150,11 @@ fn connect_remote(
                 if !disconnected || forwarding_closed.load(Ordering::Acquire) {
                     break;
                 }
+                forwarding_steer.store(false, Ordering::Release);
+                let _ = forwarding_events.send(DriverEvent::SteeringCapability {
+                    supported: false,
+                    run_id: None,
+                });
 
                 // A closed WebSocket says nothing about the provider process.
                 // Wait for the supervisor's next connection, then ask that
@@ -184,11 +189,16 @@ fn connect_remote(
                     Ok(waku_client::ResponsePayload::SessionRuntime {
                         runtime_id: Some(attached_runtime_id),
                         supports_steer,
+                        steering_run_id,
                         conversation_capability,
                         deerflow_ready,
                         ..
                     }) if attached_runtime_id == runtime_id => {
                         forwarding_steer.store(supports_steer, Ordering::Release);
+                        let _ = forwarding_events.send(DriverEvent::SteeringCapability {
+                            supported: supports_steer,
+                            run_id: steering_run_id,
+                        });
                         if let Some(supported) = conversation_capability {
                             let _ = forwarding_events
                                 .send(DriverEvent::ConversationCapability { supported });
@@ -315,7 +325,17 @@ impl DriverControl for RemoteDriverControl {
     }
 
     fn steer(&self, prompt: String) {
-        self.notify(waku_client::Command::Steer { prompt });
+        self.notify(waku_client::Command::Steer {
+            prompt,
+            run_id: None,
+        });
+    }
+
+    fn steer_run(&self, prompt: String, run_id: String) {
+        self.notify(waku_client::Command::Steer {
+            prompt,
+            run_id: Some(run_id),
+        });
     }
 
     fn cancel(&self) {

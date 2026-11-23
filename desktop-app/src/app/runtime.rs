@@ -50,6 +50,7 @@ fn attach_driver(
     let waku_client::ResponsePayload::SessionRuntime {
         runtime_id,
         supports_steer,
+        steering_run_id,
         conversation_capability,
         deerflow_ready,
         pending_history,
@@ -65,6 +66,10 @@ fn attach_driver(
     };
     session.conversation_capability = conversation_capability;
     let (event_tx, events) = driver::event_channel(event_wake);
+    let _ = event_tx.send(DriverEvent::SteeringCapability {
+        supported: supports_steer,
+        run_id: steering_run_id,
+    });
     if let Some(supported) = conversation_capability {
         let _ = event_tx.send(DriverEvent::ConversationCapability { supported });
     }
@@ -3132,6 +3137,7 @@ impl Waku {
             session_id,
             SessionRuntime {
                 driver: prepared.handle,
+                steering_run_id: None,
                 options_generation: 0,
                 deerflow_options_pending: false,
                 cancel_drain: Default::default(),
@@ -3235,7 +3241,11 @@ impl Waku {
         }
         let provider_prompt = self.resolve_skill_submission(session.provider, &submission.prompt);
         if let Some(runtime) = self.runtimes.get_mut(&session.id) {
-            runtime.driver.steer(provider_prompt);
+            if let Some(run) = &runtime.steering_run_id {
+                runtime.driver.steer_run(provider_prompt, run.clone());
+            } else {
+                runtime.driver.steer(provider_prompt);
+            }
             runtime.pending_steers.push_back(submission);
         } else {
             self.enqueue_follow_up_submission(session.id, submission, cx);
@@ -3245,10 +3255,12 @@ impl Waku {
 
     pub(super) fn session_can_steer(&self, session: &AgentSession) -> bool {
         session_has_active_provider_turn(session)
-            && self
-                .runtimes
-                .get(&session.id)
-                .is_some_and(|runtime| runtime.driver.supports_steer())
+            && self.runtimes.get(&session.id).is_some_and(|runtime| {
+                runtime.driver.supports_steer()
+                    && (session.provider != ProviderKind::DeerFlow
+                        || (runtime.steering_run_id.is_some()
+                            && !runtime.cancel_drain.is_pending()))
+            })
     }
 
     /// Resolve presentation-preserving composer syntax immediately before a
@@ -3336,8 +3348,16 @@ impl Waku {
         &mut self,
         session_id: Uuid,
         message_id: Uuid,
+        turn_id: Option<Uuid>,
         cx: &mut Context<Self>,
     ) {
+        if !self.selected_session().is_some_and(|session| {
+            session.id == session_id
+                && (session.provider != ProviderKind::DeerFlow
+                    || (session.active_turn_id() == turn_id && self.session_can_steer(session)))
+        }) {
+            return;
+        }
         let Some(message) = self.state.session_mut(session_id).and_then(|session| {
             let index = session
                 .queued_messages
@@ -3355,15 +3375,19 @@ impl Waku {
     /// When that control is unavailable, leave the queue untouched rather
     /// than removing and re-queueing its first message at the back.
     pub(super) fn steer_oldest_queued_message(&mut self, cx: &mut Context<Self>) {
-        let Some((session_id, message_id)) = self.selected_session().and_then(|session| {
+        let Some((session_id, message_id, turn_id)) = self.selected_session().and_then(|session| {
             if !self.session_can_steer(session) {
                 return None;
             }
-            Some((session.id, session.queued_messages.first()?.id))
+            Some((
+                session.id,
+                session.queued_messages.first()?.id,
+                session.active_turn_id(),
+            ))
         }) else {
             return;
         };
-        self.steer_queued_message(session_id, message_id, cx);
+        self.steer_queued_message(session_id, message_id, turn_id, cx);
     }
 
     /// Start the next queued follow-up as a fresh turn. Only called once a

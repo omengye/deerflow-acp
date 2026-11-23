@@ -458,6 +458,13 @@ func (a *Agent) handle(ctx context.Context, method string, raw json.RawMessage) 
 		if err != nil {
 			return nil, err
 		}
+		if req.PromptID != "" && a.service.SteeringEnabled() {
+			ctx = hr.WithExecutionStarted(ctx, func(ctx context.Context, state harness.ExecutionState) error {
+				return a.connectionError(ctx, a.peer.Notify(ctx, steeringTargetMethod, map[string]string{
+					"sessionId": state.SessionID, "promptId": req.PromptID, "runId": state.RunID,
+				}))
+			})
+		}
 		return a.runResponse(func(emit harness.EventHandler) (harness.RunResult, error) {
 			return a.service.Run(hr.WithTransportCancellation(ctx), a.owner, req.SessionID, req.Prompt, emit, a.permission)
 		})

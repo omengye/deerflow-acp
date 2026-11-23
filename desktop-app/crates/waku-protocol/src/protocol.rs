@@ -123,6 +123,8 @@ pub enum Command {
     },
     Steer {
         prompt: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
     },
     Cancel,
     CancelComputerUse,
@@ -438,6 +440,8 @@ pub enum ResponsePayload {
     SessionRuntime {
         runtime_id: Option<Uuid>,
         supports_steer: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steering_run_id: Option<String>,
         #[serde(default)]
         conversation_capability: Option<bool>,
         #[serde(default)]

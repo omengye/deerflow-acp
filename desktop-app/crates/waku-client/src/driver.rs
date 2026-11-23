@@ -68,6 +68,10 @@ impl DriverHandle {
         self.inner.steer(prompt);
     }
 
+    pub fn steer_run(&self, prompt: String, run_id: String) {
+        self.inner.steer_run(prompt, run_id);
+    }
+
     pub fn cancel(&self) {
         self.inner.cancel();
     }
@@ -165,6 +169,7 @@ pub trait DriverControl: Send + Sync {
         false
     }
     fn steer(&self, _prompt: String) {}
+    fn steer_run(&self, _prompt: String, _run_id: String) {}
     fn cancel(&self);
     fn cancel_computer_use(&self) {}
     fn refresh_background_work(&self) {}

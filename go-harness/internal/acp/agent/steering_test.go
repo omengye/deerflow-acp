@@ -102,3 +102,47 @@ func TestACPSteeringNotAdvertisedForUnsupportedEngine(t *testing.T) {
 		t.Fatalf("unsupported steering did not fail closed: %+v", response)
 	}
 }
+
+func TestPromptPublishesOnlyItsOwnSteeringTarget(t *testing.T) {
+	f := newFixture(t, steeringEngineStub{})
+	ledger, err := budget.New(f.db.DB(), budget.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.Store.BudgetLedger = ledger
+	c := connect(t, f.service)
+	c.initialize(t)
+	session := c.newSession(t, f.cwd)
+	for _, promptID := range []string{"", "first", "second"} {
+		params := promptParams(session, "check foreground binding")
+		if promptID != "" {
+			params["_meta"] = map[string]any{"deerflow": map[string]string{"promptId": promptID}}
+		}
+		request := c.request(t, "session/prompt", params)
+		var run string
+		for {
+			msg := c.read(t)
+			if msg.Method == "_deerflow/steering/target" {
+				var target struct{ SessionID, PromptID, RunID string }
+				if err := json.Unmarshal(msg.Params, &target); err != nil || promptID == "" || run != "" || target.SessionID != session || target.PromptID != promptID || target.RunID == "" {
+					t.Fatalf("unexpected steering target %s for prompt %q: %v", msg.Params, promptID, err)
+				}
+				run = target.RunID
+			}
+			if string(msg.ID) == strconv.Itoa(request) {
+				var response struct {
+					Meta struct {
+						Deerflow struct{ Execution harness.ExecutionState }
+					} `json:"_meta"`
+				}
+				if msg.Error != nil || json.Unmarshal(msg.Result, &response) != nil || response.Meta.Deerflow.Execution.RunID == "" {
+					t.Fatalf("invalid foreground result: %s %v", msg.Result, msg.Error)
+				}
+				if promptID != "" && run != response.Meta.Deerflow.Execution.RunID {
+					t.Fatalf("foreground prompt %s completed run %s but published target %q", promptID, response.Meta.Deerflow.Execution.RunID, run)
+				}
+				break
+			}
+		}
+	}
+}

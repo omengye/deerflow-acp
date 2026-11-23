@@ -11,9 +11,10 @@ import (
 const submitSteeringMethod = "_deerflow/steering/submit"
 const listSteeringMethod = "_deerflow/steering/list"
 const updatedSteeringMethod = "_deerflow/steering/updated"
+const steeringTargetMethod = "_deerflow/steering/target"
 
 func steeringCapabilities() map[string]any {
-	return map[string]any{"version": 1, "submitMethod": submitSteeringMethod, "listMethod": listSteeringMethod, "updatedNotification": updatedSteeringMethod, "safePoint": "next_model_request", "scope": "current_root_run"}
+	return map[string]any{"version": 1, "submitMethod": submitSteeringMethod, "listMethod": listSteeringMethod, "updatedNotification": updatedSteeringMethod, "targetNotification": steeringTargetMethod, "safePoint": "next_model_request", "scope": "current_root_run"}
 }
 
 func (a *Agent) notifySteeringStates(ctx context.Context, sessionID, runID string) {

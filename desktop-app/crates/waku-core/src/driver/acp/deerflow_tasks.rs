@@ -124,6 +124,7 @@ pub(super) fn receive_update(
             if let Some(state) = &mut stream.deerflow_tasks {
                 state.update(&params, has_prompt, events);
             }
+            deerflow_steering::publish_target(stream, events);
         }
         EarlyUpdate::Session(notification) => {
             handle_session_update(ProviderKind::DeerFlow, notification, events, stream)?
@@ -171,9 +172,11 @@ pub(super) fn finish_prompt(
                 .and_then(|meta| meta.get("execution"))
             && state.park_execution(execution, events)
         {
+            deerflow_steering::publish_target(stream, events);
             return true;
         }
     }
+    deerflow_steering::publish_target(stream, events);
     super::finish_prompt(super::ProviderKind::DeerFlow, result, None, events)
 }
 
@@ -229,10 +232,11 @@ impl NotificationState {
         });
     }
 
-    pub(super) fn steering_target(&self) -> Option<(String, u64)> {
+    pub(super) fn steering_target(&self) -> Option<&str> {
         self.active
             .as_ref()
-            .map(|(run, _, version)| (run.clone(), *version))
+            .map(|(run, _, _)| run.as_str())
+            .or_else(|| self.parked.as_ref().map(|(run, _)| run.as_str()))
     }
     fn valid_terminal_notice(&self, params: &Value) -> bool {
         let execution = &params["result"]["execution"];

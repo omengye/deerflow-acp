@@ -301,6 +301,7 @@ impl Backend for WakuBackend {
                     return Ok(ResponsePayload::SessionRuntime {
                         runtime_id: None,
                         supports_steer: false,
+                        steering_run_id: None,
                         conversation_capability: None,
                         deerflow_ready: None,
                         pending_history,
@@ -309,6 +310,7 @@ impl Backend for WakuBackend {
                 Ok(ResponsePayload::SessionRuntime {
                     runtime_id: Some(*runtime_id),
                     supports_steer: driver.supports_steer(),
+                    steering_run_id: driver.steering_run_id(),
                     conversation_capability: self
                         .conversation_capabilities
                         .lock()
@@ -2079,7 +2081,10 @@ fn handle_driver_command(
             attachments,
             ..
         } => driver.prompt_with_attachments(prompt, attachments),
-        Command::Steer { prompt } => driver.steer(prompt),
+        Command::Steer { prompt, run_id } => match run_id {
+            Some(run) => driver.steer_run(prompt, run),
+            None => driver.steer(prompt),
+        },
         Command::Cancel => driver.cancel(),
         Command::CancelComputerUse => driver.cancel_computer_use(),
         Command::RefreshBackgroundWork => driver.refresh_background_work(),
@@ -2302,9 +2307,10 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
             "promptSubmitted",
             json!({ "message": message, "turnId": turn_id, "messageId": message_id }),
         ),
-        DriverEvent::SteeringCapability { supported } => {
-            ("steeringCapability", json!({ "supported": supported }))
-        }
+        DriverEvent::SteeringCapability { supported, run_id } => (
+            "steeringCapability",
+            json!({ "supported": supported, "runId": run_id }),
+        ),
         DriverEvent::ConversationCapability { supported } => {
             ("conversationCapability", json!({ "supported": supported }))
         }
@@ -2407,6 +2413,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
         }
         "steeringCapability" => DriverEvent::SteeringCapability {
             supported: payload["supported"].as_bool().unwrap_or(false),
+            run_id: payload["runId"].as_str().map(str::to_owned),
         },
         "conversationCapability" => DriverEvent::ConversationCapability {
             supported: payload["supported"].as_bool().unwrap_or(false),
@@ -2517,6 +2524,22 @@ struct TurnFinishedWire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steering_target_reaches_desktop_over_the_daemon_wire() {
+        for run in [Some("approved-run"), None] {
+            let wire = event_to_wire(DriverEvent::SteeringCapability {
+                supported: true,
+                run_id: run.map(str::to_owned),
+            })
+            .unwrap();
+            assert!(matches!(
+                waku_protocol::event_from_wire(wire).unwrap(),
+                DriverEvent::SteeringCapability { supported: true, run_id }
+                    if run_id.as_deref() == run
+            ));
+        }
+    }
 
     #[test]
     fn tool_approval_authority_survives_daemon_wire_round_trip() {

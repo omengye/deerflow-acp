@@ -887,6 +887,7 @@ struct SessionRuntime {
     /// Presentation metadata for steering messages awaiting the provider's
     /// accepted/rejected acknowledgement, in transport order.
     pending_steers: VecDeque<ComposerSubmission>,
+    steering_run_id: Option<String>,
     stream_phase: Option<StreamPhase>,
     /// The parked-turn notification has fired for the turn in flight, so a
     /// wake that parks again does not repeat it. Cleared when the turn ends.
@@ -2455,15 +2456,16 @@ impl Waku {
                         }
                     }
                     ComposerEvent::SubmitSteer(prompt) => {
-                        if let Some(session_id) = this.selected_session().and_then(|session| {
-                            (this.response_fork_preparations.contains_key(&session.id)
-                                || this.pending_deerflow_approvals.contains_key(&session.id))
-                            .then_some(session.id)
+                        if this.selected_session().is_none_or(|session| {
+                            this.response_fork_preparations.contains_key(&session.id)
+                                || this.pending_deerflow_approvals.contains_key(&session.id)
+                                || (session.provider == ProviderKind::DeerFlow
+                                    && !this.session_can_steer(session))
                         }) {
-                            this.defer_restore_composer_after_fork(session_id, prompt.clone(), cx);
-                        } else if let Some(submission) =
-                            this.submission_with_attachments(prompt, cx)
-                        {
+                            return;
+                        }
+                        if let Some(submission) = this.submission_with_attachments(prompt, cx) {
+                            this.composer.update(cx, |input, cx| input.clear(cx));
                             this.steer_composer_submission(submission, cx);
                         }
                     }

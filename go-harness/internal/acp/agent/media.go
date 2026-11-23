@@ -15,6 +15,7 @@ const listArtifactsMethod = "_deerflow/artifacts/list"
 
 type promptRequest struct {
 	SessionID string
+	PromptID  string
 	Prompt    []harness.Content
 }
 
@@ -34,6 +35,18 @@ func decodePrompt(raw json.RawMessage) (promptRequest, error) {
 	var req promptRequest
 	if json.Unmarshal(fields["sessionId"], &req.SessionID) != nil || !validID(req.SessionID, 256) {
 		return invalid()
+	}
+	// Metadata belongs to the client. Interpret only DeerFlow's opt-in
+	// correlation key; other clients can continue to send their own metadata.
+	var meta struct {
+		Deerflow struct {
+			PromptID json.RawMessage `json:"promptId"`
+		} `json:"deerflow"`
+	}
+	if json.Unmarshal(fields["_meta"], &meta) == nil && meta.Deerflow.PromptID != nil {
+		if json.Unmarshal(meta.Deerflow.PromptID, &req.PromptID) != nil || !validID(req.PromptID, 128) {
+			return invalid()
+		}
 	}
 	var parts []json.RawMessage
 	prompt := bytes.TrimSpace(fields["prompt"])

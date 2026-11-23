@@ -1380,6 +1380,7 @@ mod tests {
                 Command::AttachSession => Ok(ResponsePayload::SessionRuntime {
                     runtime_id: self.runtimes.lock().get(&session_id).copied(),
                     supports_steer: true,
+                    steering_run_id: None,
                     conversation_capability: None,
                     deerflow_ready: None,
                     pending_history: None,

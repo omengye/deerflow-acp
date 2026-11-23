@@ -555,7 +555,8 @@ impl Waku {
                     Self::upsert_computer_use_preview(session_id, runtime, state, cx);
                 }
             }
-            DriverEvent::SteeringCapability { .. } => {
+            DriverEvent::SteeringCapability { run_id, .. } => {
+                runtime.steering_run_id = run_id;
                 cx.notify();
             }
             DriverEvent::ConversationCapability { supported } => {

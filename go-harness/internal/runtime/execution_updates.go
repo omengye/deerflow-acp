@@ -7,12 +7,16 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 )
 
-type automaticStartedKey struct{}
+type executionStartedKey struct{}
 
-// The optional observer belongs to the live automatic subscription, never to a
-// previously completed prompt. Read under the lease, notify outside the tx.
-func (s *Service) notifyAutomaticExecutionStarted(ctx context.Context, lease ExecutionLease) error {
-	started, _ := ctx.Value(automaticStartedKey{}).(func(context.Context, harness.ExecutionState) error)
+// WithExecutionStarted scopes a committed execution's identity to the request
+// or automatic subscription which owns it.
+func WithExecutionStarted(ctx context.Context, started func(context.Context, harness.ExecutionState) error) context.Context {
+	return context.WithValue(ctx, executionStartedKey{}, started)
+}
+
+func (s *Service) notifyExecutionStarted(ctx context.Context, lease ExecutionLease) error {
+	started, _ := ctx.Value(executionStartedKey{}).(func(context.Context, harness.ExecutionState) error)
 	if started == nil {
 		return nil
 	}

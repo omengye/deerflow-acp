@@ -195,7 +195,7 @@ func (s *Service) runDurableNew(ctx context.Context, owner string, req harness.R
 
 func (s *Service) driveExecution(ctx context.Context, req harness.RunRequest, lease ExecutionLease, bindings []ExecutionResumeBinding, emit harness.EventHandler, approve harness.PermissionHandler) (harness.RunResult, error) {
 	defer s.publishSteeringStates(req.Session.ID, req.RunID, emit)
-	if err := s.notifyAutomaticExecutionStarted(ctx, lease); err != nil {
+	if err := s.notifyExecutionStarted(ctx, lease); err != nil {
 		return s.finishExecutionAttempt(ctx, lease, harness.RunResult{}, err, nil)
 	}
 	for {

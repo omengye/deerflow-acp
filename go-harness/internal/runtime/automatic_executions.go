@@ -165,7 +165,7 @@ func (s *Service) ServeSessionUpdates(parent context.Context, owner, sessionID s
 	defer cancel()
 	started := false
 	if handlers.Started != nil {
-		ctx = context.WithValue(ctx, automaticStartedKey{}, func(ctx context.Context, state harness.ExecutionState) error {
+		ctx = WithExecutionStarted(ctx, func(ctx context.Context, state harness.ExecutionState) error {
 			started = true
 			return handlers.Started(ctx, state)
 		})

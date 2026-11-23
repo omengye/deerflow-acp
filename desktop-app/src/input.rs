@@ -3216,7 +3216,7 @@ impl Render for ComposerInput {
                     cx.emit(ComposerEvent::SteerQueued);
                     return;
                 }
-                composer.input.update(cx, |input, cx| input.clear(cx));
+                // The owner clears the draft once it has a target for this command.
                 cx.emit(ComposerEvent::SubmitSteer(value));
             }))
             .child(self.input.clone())
@@ -3398,7 +3398,7 @@ mod tests {
             )
         );
         cx.read_entity(&composer, |composer, cx| {
-            assert_eq!(composer.content(cx), "")
+            assert_eq!(composer.content(cx), "hold on")
         });
     }
 

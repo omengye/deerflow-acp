@@ -56,7 +56,7 @@ enum CommandMessage {
     },
     DeerFlowTasks(waku_protocol::deerflow_tasks::Command),
     Prompt(String, Vec<crate::model::MessageAttachment>),
-    Steer(String),
+    Steer(String, Option<String>),
     Cancel,
     DeleteSession(String, crossbeam_channel::Sender<Result<(), String>>),
     History {
@@ -121,7 +121,7 @@ fn close_command_loop(commands: &smol::channel::Receiver<CommandMessage>) {
 pub struct AcpDriver {
     commands: smol::channel::Sender<CommandMessage>,
     events: DriverEventSender,
-    supports_steer: Arc<AtomicBool>,
+    steering_availability: Arc<Mutex<deerflow_steering::Availability>>,
     provider: ProviderKind,
     access: Arc<Mutex<AcpAccessState>>,
     computer_use: Option<super::support::HeadlessComputerUseRuntime>,
@@ -257,11 +257,8 @@ impl AcpDriver {
         let (commands, command_rx) = smol::channel::unbounded();
         let access = Arc::new(Mutex::new(AcpAccessState::new(mode)));
         let connection_access = access.clone();
-        let supports_steer = Arc::new(AtomicBool::new(!matches!(
-            provider,
-            ProviderKind::Fx | ProviderKind::DeerFlow
-        )));
-        let connection_steer = supports_steer.clone();
+        let steering_availability = Arc::new(Mutex::new(deerflow_steering::Availability::default()));
+        let connection_steer = steering_availability.clone();
         let provider_name = provider.display_name();
         let thread_events = events.clone();
 
@@ -314,7 +311,7 @@ impl AcpDriver {
         Ok(Self {
             commands,
             events,
-            supports_steer,
+            steering_availability,
             provider,
             access,
             computer_use,
@@ -553,7 +550,7 @@ async fn run_sdk_connection(
     cwd: std::path::PathBuf,
     mode: RuntimeMode,
     access: Arc<Mutex<AcpAccessState>>,
-    supports_steer: Arc<AtomicBool>,
+    steering_availability: Arc<Mutex<deerflow_steering::Availability>>,
     model: Option<String>,
     reasoning_effort: Option<String>,
     thinking_mode: Option<String>,
@@ -568,6 +565,7 @@ async fn run_sdk_connection(
 ) -> agent_client_protocol::Result<()> {
     let suppress_session_updates = Arc::new(AtomicBool::new(false));
     let stream_state = Arc::new(Mutex::new(AcpStreamState {
+        steering_availability,
         image_store: Some(Arc::new(crate::blob_store::BlobStore::new(
             waku_protocol::identity::desktop_data_directory().join("blobs"),
         ))),
@@ -626,8 +624,10 @@ async fn run_sdk_connection(
                 async move |notification: UntypedMessage, _connection| {
                     if provider == ProviderKind::DeerFlow && notification.method() == "_deerflow/executions/updated" {
                         let mut stream = stream_state.lock();
-                        if let Some(state) = &mut stream.deerflow_steering { state.observe_execution(notification.params()); }
                         deerflow_tasks::receive_update(&mut stream,deerflow_tasks::EarlyUpdate::Lifecycle(notification.params().clone()),!prompt_requests.lock().is_empty(),&events)?;
+                    }
+                    if provider == ProviderKind::DeerFlow && notification.method() == "_deerflow/steering/target" {
+                        deerflow_steering::receive_target(&mut stream_state.lock(), notification.params(), &events);
                     }
                     if provider == ProviderKind::DeerFlow && notification.method() == "_deerflow/steering/updated" {
                         if let Some(state) = &mut stream_state.lock().deerflow_steering {
@@ -805,9 +805,12 @@ async fn run_sdk_connection(
             let native_session_id = session_id.to_string();
             if provider == ProviderKind::DeerFlow {
                 let supported = deerflow_steering::supported(&initialize);
-                supports_steer.store(supported, Ordering::Release);
-                stream_state.lock().deerflow_steering = supported.then(|| deerflow_steering::State::new(&native_session_id));
-                let _ = events.send(DriverEvent::SteeringCapability { supported });
+                {
+                    let mut stream = stream_state.lock();
+                    stream.steering_availability.lock().supported = supported;
+                    stream.deerflow_steering = supported.then(|| deerflow_steering::State::new(&native_session_id));
+                }
+                let _ = events.send(DriverEvent::SteeringCapability { supported, run_id: None });
                 if supported { deerflow_steering::restore(&connection, &native_session_id, stream_state.clone(), events.clone()); }
             }
             let history_supported = provider == ProviderKind::DeerFlow
@@ -915,9 +918,9 @@ async fn run_sdk_connection(
                             });
                         }
                     }
-                    CommandMessage::Steer(text) => {
+                    CommandMessage::Steer(text, run_id) => {
                         if provider == ProviderKind::DeerFlow {
-                            deerflow_steering::submit(&connection, &native_session_id, text, stream_state.clone(), &events);
+                            deerflow_steering::submit(&connection, &native_session_id, text, run_id, stream_state.clone(), &events);
                             continue;
                         }
                         if !model_options_ready {
@@ -2289,6 +2292,22 @@ fn send_prompt(
         vec![ContentBlock::Text(TextContent::new(text))]
     };
     let mut request = PromptRequest::new(session_id.clone(), content);
+    let foreground_id = if provider == ProviderKind::DeerFlow {
+        let mut stream = stream_state.lock();
+        let id = stream
+            .deerflow_steering
+            .as_mut()
+            .map(deerflow_steering::State::begin_prompt);
+        deerflow_steering::publish_target(&stream, events);
+        id
+    } else {
+        None
+    };
+    if let Some(id) = &foreground_id {
+        let mut meta = serde_json::Map::new();
+        meta.insert("deerflow".into(), json!({"promptId": id}));
+        request = request.meta(meta);
+    }
     if let Some(extension_id) = extension_id.as_ref() {
         let mut meta = serde_json::Map::new();
         meta.insert("promptId".into(), Value::String(extension_id.clone()));
@@ -2306,8 +2325,21 @@ fn send_prompt(
     let callback_requests = prompt_requests.clone();
     let callback_events = events.clone();
     let native_session_id = native_session_id.to_owned();
+    let callback_stream = stream_state.clone();
+    let callback_foreground = foreground_id.clone();
     let registered = sent.on_receiving_result(async move |result| {
-        if settle_prompt_request(&callback_requests, &callback_request_id) {
+        let stream_state = callback_stream;
+        let settled = settle_prompt_request(&callback_requests, &callback_request_id);
+        if let Some(id) = &callback_foreground {
+            let mut stream = stream_state.lock();
+            if let Some(state) = &mut stream.deerflow_steering {
+                state.finish_prompt(id);
+            }
+            if !settled {
+                deerflow_steering::publish_target(&stream, &callback_events);
+            }
+        }
+        if settled {
             if let Some(tasks) = &stream_state.lock().deerflow_tasks {
                 tasks.invalidate(&callback_events);
             }
@@ -2337,6 +2369,13 @@ fn send_prompt(
     });
     if registered.is_err() {
         prompt_requests.lock().settle_request(&request_id);
+        if let Some(id) = &foreground_id {
+            let mut stream = stream_state.lock();
+            if let Some(state) = &mut stream.deerflow_steering {
+                state.finish_prompt(id);
+            }
+            deerflow_steering::publish_target(&stream, events);
+        }
     }
     registered
 }
@@ -3342,6 +3381,7 @@ fn fx_context_notice(text: &str) -> bool {
 
 #[derive(Default)]
 struct AcpStreamState {
+    steering_availability: Arc<Mutex<deerflow_steering::Availability>>,
     image_store: Option<Arc<crate::blob_store::BlobStore>>,
     deerflow_steering: Option<deerflow_steering::State>,
     deerflow_config_options: Option<Vec<SessionConfigOption>>,
@@ -3509,11 +3549,29 @@ impl DriverControl for AcpDriver {
     }
 
     fn supports_steer(&self) -> bool {
-        self.supports_steer.load(Ordering::Acquire)
+        match self.provider {
+            ProviderKind::DeerFlow => self.steering_availability.lock().supported,
+            ProviderKind::Fx => false,
+            _ => true,
+        }
     }
 
     fn steer(&self, prompt: String) {
-        let _ = self.commands.try_send(CommandMessage::Steer(prompt));
+        let _ = self
+            .commands
+            .try_send(CommandMessage::Steer(prompt, self.steering_run_id()));
+    }
+
+    fn steering_run_id(&self) -> Option<String> {
+        self.steering_availability.lock().run_id.clone()
+    }
+
+    fn steer_run(&self, prompt: String, run_id: String) {
+        if self.provider == ProviderKind::DeerFlow {
+            let _ = self
+                .commands
+                .try_send(CommandMessage::Steer(prompt, Some(run_id)));
+        }
     }
 
     fn cancel(&self) {
@@ -4932,7 +4990,7 @@ mod tests {
         let driver = AcpDriver {
             commands,
             events,
-            supports_steer: Arc::new(AtomicBool::new(false)),
+            steering_availability: Arc::default(),
             provider: ProviderKind::DeerFlow,
             access: Arc::new(Mutex::new(AcpAccessState::new(RuntimeMode::Ask))),
             computer_use: None,

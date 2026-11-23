@@ -2857,6 +2857,7 @@ impl Waku {
         }
         let theme = Theme::current(cx);
         let steerable = self.session_can_steer(session);
+        let turn_id = session.active_turn_id();
         let mut list = div().flex().flex_col().py(px(4.0));
         for message in &session.queued_messages {
             let message_id = message.id;
@@ -2897,11 +2898,11 @@ impl Waku {
                     .tooltip(Tooltip::text(tr!("composer.steer_current")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        this.steer_queued_message(session_id, message_id, cx);
+                        this.steer_queued_message(session_id, message_id, turn_id, cx);
                     }))
                     .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.steer_queued_message(session_id, message_id, cx);
+                            this.steer_queued_message(session_id, message_id, turn_id, cx);
                             cx.stop_propagation();
                         }
                     }))

@@ -113,9 +113,10 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
             "promptSubmitted",
             json!({ "message": message, "turnId": turn_id, "messageId": message_id }),
         ),
-        DriverEvent::SteeringCapability { supported } => {
-            ("steeringCapability", json!({ "supported": supported }))
-        }
+        DriverEvent::SteeringCapability { supported, run_id } => (
+            "steeringCapability",
+            json!({ "supported": supported, "runId": run_id }),
+        ),
         DriverEvent::ConversationCapability { supported } => {
             ("conversationCapability", json!({ "supported": supported }))
         }
@@ -218,6 +219,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
         }
         "steeringCapability" => DriverEvent::SteeringCapability {
             supported: payload["supported"].as_bool().unwrap_or(false),
+            run_id: payload["runId"].as_str().map(str::to_owned),
         },
         "conversationCapability" => DriverEvent::ConversationCapability {
             supported: payload["supported"].as_bool().unwrap_or(false),

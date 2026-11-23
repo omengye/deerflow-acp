@@ -3,10 +3,22 @@ use super::*;
 use waku_protocol::model::SteeringUpdate;
 
 #[derive(Default)]
+pub(super) struct Availability {
+    pub(super) supported: bool,
+    pub(super) run_id: Option<String>,
+}
+
+#[derive(Default)]
 pub(super) struct State {
     session: String,
     seen: HashMap<String, String>,
-    last_run: Option<String>,
+    // A pending foreground prompt masks automatic work until its own target arrives.
+    foreground: Option<ForegroundPrompt>,
+}
+
+struct ForegroundPrompt {
+    id: String,
+    run: Option<String>,
 }
 
 pub(super) fn supported(initialize: &InitializeResponse) -> bool {
@@ -25,14 +37,35 @@ impl State {
             ..Self::default()
         }
     }
-    pub(super) fn observe_execution(&mut self, value: &Value) {
-        if value["sessionId"] == self.session && value["phase"] == "started" {
-            if let Some(run) = value["runId"]
+    pub(super) fn begin_prompt(&mut self) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.foreground = Some(ForegroundPrompt {
+            id: id.clone(),
+            run: None,
+        });
+        id
+    }
+
+    pub(super) fn bind(&mut self, value: &Value) {
+        if let Some(prompt) = &mut self.foreground
+            && value["sessionId"] == self.session
+            && value["promptId"] == prompt.id
+            && prompt.run.is_none()
+            && let Some(run) = value["runId"]
                 .as_str()
                 .filter(|run| !run.is_empty() && run.len() <= 256)
-            {
-                self.last_run = Some(run.into());
-            }
+        {
+            prompt.run = Some(run.to_owned());
+        }
+    }
+
+    pub(super) fn finish_prompt(&mut self, prompt_id: &str) {
+        if self
+            .foreground
+            .as_ref()
+            .is_some_and(|prompt| prompt.id == prompt_id)
+        {
+            self.foreground = None;
         }
     }
     pub(super) fn receive(&mut self, value: &Value, events: &impl DriverEventSink) {
@@ -71,6 +104,38 @@ impl State {
     }
 }
 
+pub(super) fn publish_target(stream: &AcpStreamState, events: &impl DriverEventSink) {
+    let Some(state) = &stream.deerflow_steering else {
+        return;
+    };
+    let run = match &state.foreground {
+        Some(prompt) => prompt.run.as_deref(),
+        None => stream
+            .deerflow_tasks
+            .as_ref()
+            .and_then(|tasks| tasks.steering_target()),
+    };
+    let mut published = stream.steering_availability.lock();
+    if published.run_id.as_deref() != run {
+        published.run_id = run.map(str::to_owned);
+        let _ = events.send(DriverEvent::SteeringCapability {
+            supported: true,
+            run_id: published.run_id.clone(),
+        });
+    }
+}
+
+pub(super) fn receive_target(
+    stream: &mut AcpStreamState,
+    value: &Value,
+    events: &impl DriverEventSink,
+) {
+    if let Some(state) = &mut stream.deerflow_steering {
+        state.bind(value);
+        publish_target(stream, events);
+    }
+}
+
 pub(super) fn restore(
     connection: &ConnectionTo<Agent>,
     session: &str,
@@ -102,30 +167,24 @@ pub(super) fn submit(
     connection: &ConnectionTo<Agent>,
     session: &str,
     text: String,
+    requested_run: Option<String>,
     stream: Arc<Mutex<AcpStreamState>>,
     events: &DriverEventSender,
 ) {
     let id = uuid::Uuid::new_v4().to_string();
-    let identity = {
-        let state = stream.lock();
-        state.deerflow_steering.as_ref().and_then(|steering| {
-            state
-                .deerflow_tasks
-                .as_ref()
-                .and_then(|tasks| tasks.steering_target())
-                .map(|(run, _)| run)
-                .or_else(|| steering.last_run.clone())
-        })
-    };
-    let Some(run) = identity else {
-        let _ = events.send(DriverEvent::SteeringUpdated(SteeringUpdate {
-            request_id: id,
-            run_id: String::new(),
-            status: "rejected".into(),
-            message: text,
-            reason: "The current run is no longer available for intervention.".into(),
-        }));
-        return;
+    let active_run = stream.lock().steering_availability.lock().run_id.clone();
+    let run = match requested_run {
+        Some(run) if active_run.as_ref() == Some(&run) => run,
+        expired => {
+            let _ = events.send(DriverEvent::SteeringUpdated(SteeringUpdate {
+                request_id: id,
+                run_id: expired.unwrap_or_default(),
+                status: "rejected".into(),
+                message: text,
+                reason: "The current run is no longer available for intervention.".into(),
+            }));
+            return;
+        }
     };
     let pending = SteeringUpdate {
         request_id: id.clone(),
@@ -289,14 +348,19 @@ mod tests {
     use super::*;
 
     fn live_stream() -> Arc<Mutex<AcpStreamState>> {
-        let mut steering = State::new("session");
-        steering.observe_execution(
-            &json!({"sessionId":"session","phase":"started","runId":"original"}),
-        );
-        Arc::new(Mutex::new(AcpStreamState {
-            deerflow_steering: Some(steering),
+        let mut stream = AcpStreamState {
+            deerflow_steering: Some(State::new("session")),
             ..Default::default()
-        }))
+        };
+        bind_test_prompt(&mut stream, "original");
+        Arc::new(Mutex::new(stream))
+    }
+
+    fn bind_test_prompt(stream: &mut AcpStreamState, run: &str) {
+        let state = stream.deerflow_steering.as_mut().unwrap();
+        let id = state.begin_prompt();
+        state.bind(&json!({"sessionId":"session","promptId":id,"runId":run}));
+        publish_target(stream, &crossbeam_channel::unbounded().0);
     }
 
     async fn next_update(
@@ -350,6 +414,147 @@ mod tests {
     }
 
     #[test]
+    fn foreground_prompt_carries_a_distinct_steering_identity_on_every_turn() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let prompts = observed.clone();
+        let agent = Agent.builder().on_receive_request(
+            async move |request: UntypedMessage, responder, connection| {
+                match request.method() {
+                    "session/prompt" => {
+                        let id = request.params()["_meta"]["deerflow"]["promptId"].clone();
+                        let text = request.params()["prompt"][0]["text"].as_str().unwrap();
+                        prompts.lock().push(id.clone());
+                        connection.send_notification(UntypedMessage::new(
+                            "_deerflow/steering/target",
+                            json!({"sessionId":"session","promptId":id,"runId":format!("run-{text}")}),
+                        )?)?;
+                        responder.respond(json!({"stopReason":"end_turn"}))?;
+                    }
+                    "_fixture/barrier" => responder.respond(json!({}))?,
+                    other => panic!("unexpected request: {other}"),
+                }
+                Ok(Handled::Yes)
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        let (events, received) = crate::driver::test_event_channel();
+        let stream = Arc::new(Mutex::new(AcpStreamState {
+            deerflow_steering: Some(State::new("session")),
+            ..Default::default()
+        }));
+        let target_stream = stream.clone();
+        let target_events = events.clone();
+        let client = Client.builder().on_receive_notification(
+            async move |notice: UntypedMessage, _| {
+                assert_eq!(notice.method(), "_deerflow/steering/target");
+                receive_target(&mut target_stream.lock(), notice.params(), &target_events);
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        );
+        smol::block_on(client.connect_with(agent, async move |connection| {
+            let pending = Arc::new(Mutex::new(PendingPrompts::default()));
+            for text in ["first", "second"] {
+                send_prompt(
+                    &connection,
+                    &SessionId::new("session"),
+                    text.into(),
+                    &[],
+                    &pending,
+                    &events,
+                    ProviderKind::DeerFlow,
+                    "session",
+                    None,
+                    super::super::super::title_refresh::NativeTitleRefresh::default(),
+                    stream.clone(),
+                )?;
+                response_barrier(&connection).await?;
+            }
+            Ok(())
+        }))
+        .unwrap();
+        let prompts = observed.lock();
+        assert_eq!(prompts.len(), 2);
+        assert!(
+            prompts.iter().all(|id| id
+                .as_str()
+                .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())),
+            "foreground prompts have no steering identity: {prompts:?}"
+        );
+        assert_ne!(prompts[0], prompts[1]);
+        let targets: Vec<_> = received
+            .try_iter()
+            .filter_map(|event| match event {
+                DriverEvent::SteeringCapability { run_id, .. } => Some(run_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            targets,
+            [
+                Some("run-first".into()),
+                None,
+                Some("run-second".into()),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn late_targets_and_steers_cannot_bind_to_the_following_prompt() {
+        let stream = live_stream();
+        let (events, received) = crate::driver::test_event_channel();
+        {
+            let mut stream = stream.lock();
+            let state = stream.deerflow_steering.as_mut().unwrap();
+            let old = state.foreground.as_ref().unwrap().id.clone();
+            let current = state.begin_prompt();
+            state.finish_prompt(&old);
+            for (session, id) in [("session", &old), ("another-session", &current)] {
+                receive_target(
+                    &mut stream,
+                    &json!({"sessionId":session,"promptId":id,"runId":"wrong"}),
+                    &events,
+                );
+                assert!(stream.steering_availability.lock().run_id.is_none());
+            }
+            let target = json!({"sessionId":"session","promptId":current,"runId":"second"});
+            receive_target(&mut stream, &target, &events);
+            receive_target(&mut stream, &target, &events);
+            assert_eq!(
+                stream.steering_availability.lock().run_id.as_deref(),
+                Some("second")
+            );
+        }
+        assert_eq!(received.try_iter().count(), 2);
+        smol::block_on(
+            Client
+                .builder()
+                .connect_with(Agent.builder(), async move |connection| {
+                    submit(
+                        &connection,
+                        "session",
+                        "keep the draft".into(),
+                        Some("original".into()),
+                        stream,
+                        &events,
+                    );
+                    let rejected = next_update(&received).await?;
+                    assert_eq!(
+                        (
+                            rejected.status.as_str(),
+                            rejected.run_id.as_str(),
+                            rejected.message.as_str()
+                        ),
+                        ("rejected", "original", "keep the draft")
+                    );
+                    Ok(())
+                }),
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn steering_live_refreshes_same_run_and_applied_notification_wins_accepted_reply() {
         let captured = Arc::new(Mutex::new(Vec::new()));
         let requests = captured.clone();
@@ -394,6 +599,7 @@ mod tests {
                 &connection,
                 "session",
                 "keep the change small".into(),
+                Some("original".into()),
                 stream.clone(),
                 &events,
             );
@@ -438,7 +644,7 @@ mod tests {
             requests.lock().push((request.method().to_owned(), request.params().clone()));
             match request.method() {
                 "_deerflow/executions/get" => {
-                    connection.send_notification(UntypedMessage::new("_deerflow/executions/updated", json!({"sessionId":"session","phase":"started","runId":"new-run"}))?)?;
+                    connection.send_notification(UntypedMessage::new("_fixture/nextPrompt", json!({"runId":"new-run"}))?)?;
                     responder.respond(json!({"sessionId":"session","runId":"original","version":11,"status":"completed"}))?;
                 }
                 "_deerflow/steering/submit" => {
@@ -456,12 +662,10 @@ mod tests {
             {
                 let stream = stream.clone();
                 async move |notification: UntypedMessage, _| {
-                    stream
-                        .lock()
-                        .deerflow_steering
-                        .as_mut()
-                        .unwrap()
-                        .observe_execution(notification.params());
+                    bind_test_prompt(
+                        &mut stream.lock(),
+                        notification.params()["runId"].as_str().unwrap(),
+                    );
                     Ok(())
                 }
             },
@@ -472,6 +676,7 @@ mod tests {
                 &connection,
                 "session",
                 "preserve this text".into(),
+                Some("original".into()),
                 stream.clone(),
                 &events,
             );
@@ -484,13 +689,7 @@ mod tests {
             assert_eq!(rejected.message, pending.message);
             assert_eq!(rejected.request_id, pending.request_id);
             assert_eq!(
-                stream
-                    .lock()
-                    .deerflow_steering
-                    .as_ref()
-                    .unwrap()
-                    .last_run
-                    .as_deref(),
+                stream.lock().steering_availability.lock().run_id.as_deref(),
                 Some("new-run")
             );
             Ok(())
@@ -541,6 +740,7 @@ mod tests {
                             &connection,
                             "session",
                             "do not discard me".into(),
+                            Some("original".into()),
                             stream.clone(),
                             &events,
                         );
