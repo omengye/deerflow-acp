@@ -37,6 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: eb5ed9d11b1554b16c0548cfd8bd6624b0185c92
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
@@ -111,6 +112,10 @@ jobs:
           }
       - name: Build and verify Windows packages
         id: build
+        env:
+          # The packaged daemon reports canonical paths. Avoid the runner user's 8.3 TEMP alias.
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
         run: |
           New-Item -ItemType Directory -Path .build-cache/windows-release-logs -Force | Out-Null
           Start-Transcript -Path .build-cache/windows-release-logs/build.txt
@@ -124,7 +129,7 @@ jobs:
             Stop-Transcript
           }
           @"
-          Built **$env:PACKAGE_SELECTION** for Windows x64 from $env:GITHUB_SHA.
+          Built **$env:PACKAGE_SELECTION** for Windows x64 from $(git rev-parse HEAD).
           Go regression tests, Rust Bridge tests and packaged protocol checks passed.
           Desktop protocol checks include copied Skills directories, failed startup recovery and configuration saves during startup.
           Artifacts include binary/source ZIPs, SHA-256 checksums and build manifests; Desktop also includes an unsigned Setup.exe.

@@ -1,36 +1,46 @@
-name: Build Windows Desktop
+name: Publish Windows packages for v0.0.4
+run-name: v0.0.4 Windows ${{ inputs.package }}
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
+    inputs:
+      package:
+        description: Windows x64 release package
+        type: choice
+        options: [Desktop, ACP]
+        required: true
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: github.ref == 'refs/heads/codex/release-v0.0.4-windows'
     uses: ./.github/workflows/build-windows.yml
     with:
-      package: Desktop
+      package: ${{ inputs.package }}
   publish:
-    name: Attach verified desktop package to release
+    name: Attach verified Windows package to v0.0.4
     needs: build
-    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: DeerFlow-Windows-Desktop-x64
+          name: DeerFlow-Windows-${{ inputs.package }}-x64
           path: dist/windows
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.release.tag_name }}
-          fail_on_unmatched_files: true
-          files: |
-            dist/windows/*.zip
-            dist/windows/*.zip.sha256
-            dist/windows/*-Setup.exe
-            dist/windows/*-Setup.exe.sha256
+      - name: Verify checksums and publish release assets
+        working-directory: dist/windows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: eb5ed9d11b1554b16c0548cfd8bd6624b0185c92
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_commit=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v0.0.4" --jq '.object.sha')
+          test "$tag_commit" = "$RELEASE_COMMIT"
+          for checksum in *.sha256; do
+            tr -d '\r' < "$checksum" | sha256sum --check --strict -
+          done
+          gh release upload v0.0.4 ./* --repo "$GITHUB_REPOSITORY"
