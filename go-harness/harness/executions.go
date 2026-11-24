@@ -3,13 +3,15 @@ package harness
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
 var (
-	ErrExecutionConflict     = errors.New("execution state or attempt changed")
-	ErrExecutionWaitingInput = errors.New("execution is waiting for input")
-	ErrExecutionUnresumable  = errors.New("execution checkpoint cannot be resumed safely")
+	ErrExecutionConflict               = errors.New("execution state or attempt changed")
+	ErrExecutionWaitingInput           = errors.New("execution is waiting for input")
+	ErrExecutionUnresumable            = errors.New("execution checkpoint cannot be resumed safely")
+	ErrPinnedExecutionResourcesInvalid = fmt.Errorf("%w: pinned execution resources are invalid", ErrExecutionUnresumable)
 )
 
 type ExecutionStatus string

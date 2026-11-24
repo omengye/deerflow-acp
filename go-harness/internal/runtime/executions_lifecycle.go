@@ -9,16 +9,17 @@ import (
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/budget"
+	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
 )
 
 // EndExecutionAttemptTx is called after actual model/tool I/O and cleanup have
 // joined. Ledger EndAttemptTx must be in this transaction as well. Failed retry
 // spending remains in that ledger even when the original checkpoint is kept.
 func (s *Store) EndExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease ExecutionLease, kind harness.ExecutionStopKind, detail string) (harness.ExecutionState, error) {
-	return s.endExecutionAttemptTx(ctx, tx, lease, kind, detail, false)
+	return s.endExecutionAttemptTx(ctx, tx, lease, kind, detail, nil)
 }
 
-func (s *Store) endExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease ExecutionLease, kind harness.ExecutionStopKind, detail string, roleFailure bool) (harness.ExecutionState, error) {
+func (s *Store) endExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease ExecutionLease, kind harness.ExecutionStopKind, detail string, cause error) (harness.ExecutionState, error) {
 	row, err := checkExecutionLease(ctx, tx, lease)
 	if err != nil {
 		return row.State, err
@@ -41,7 +42,15 @@ func (s *Store) endExecutionAttemptTx(ctx context.Context, tx *sql.Tx, lease Exe
 			return row.State, err
 		}
 	case harness.ExecutionStopFailed, harness.ExecutionStopDisconnected:
-		if roleFailure && kind == harness.ExecutionStopFailed {
+		if kind == harness.ExecutionStopFailed && errors.Is(cause, harness.ErrPinnedExecutionResourcesInvalid) {
+			// A valid database manifest cannot make a broken external snapshot replayable.
+			blocked = harness.ErrPinnedExecutionResourcesInvalid.Error()
+			if errors.Is(cause, harness.ErrPinnedSearchConfigInvalid) {
+				blocked = harness.ErrPinnedSearchConfigInvalid.Error()
+			}
+			break
+		}
+		if kind == harness.ExecutionStopFailed && interaction.IsRoleContinuationFailure(cause) {
 			source, err := loadContinuationSource(ctx, tx, row)
 			if err != nil {
 				return row.State, err
@@ -229,12 +238,22 @@ func (s *Store) RecoverExecutionsTx(ctx context.Context, tx *sql.Tx) ([]Executio
 			return nil, err
 		}
 		var owner, attemptStatus string
-		if err = tx.QueryRowContext(ctx, `SELECT owner_id,status FROM harness_execution_attempts WHERE id=?`, row.State.AttemptID).Scan(&owner, &attemptStatus); err != nil {
+		var legacyInvalidSearch bool
+		// Older hosts persisted this exact error only after decoding or verifying
+		// the pinned snapshot failed. A temporary read error used a different message.
+		const legacySearchError = "run extensions: pinned search configuration is invalid"
+		if err = tx.QueryRowContext(ctx, `SELECT a.owner_id,a.status,
+ a.status='failed' AND a.base_checkpoint_sha<>'' AND r.status='waiting_input' AND r.error=?
+ FROM harness_execution_attempts a JOIN harness_runs r ON r.id=a.run_id WHERE a.id=?`, legacySearchError, row.State.AttemptID).Scan(&owner, &attemptStatus, &legacyInvalidSearch); err != nil {
 			return nil, err
 		}
 		lease := ExecutionLease{OwnerID: owner, InputID: row.State.InputID, Scope: budget.Scope{RootBudgetID: row.RootBudgetID, MemberID: id.run, SessionID: id.session, AttemptID: row.State.AttemptID, Fence: row.State.Attempt}}
 		validation := validateExecutionManifest(ctx, tx, row)
+		if validation == nil && row.State.Status == harness.ExecutionWaitingInput && legacyInvalidSearch {
+			validation = harness.ErrPinnedSearchConfigInvalid
+		}
 		status, blocked := harness.ExecutionWaitingInput, ""
+		stopReason := ""
 		if validation != nil {
 			if !errors.Is(validation, harness.ErrExecutionUnresumable) && !errors.Is(validation, harness.ErrExecutionConflict) && !errors.Is(validation, harness.ErrReconciliationRequired) {
 				return nil, validation
@@ -243,7 +262,11 @@ func (s *Store) RecoverExecutionsTx(ctx context.Context, tx *sql.Tx) ([]Executio
 			if err = rejectPendingSteeringTx(ctx, tx, id.run, "execution_unresumable"); err != nil {
 				return nil, err
 			}
-			if err = settleOpenReceipts(ctx, tx, id.run, "process stopped without a matching resumable checkpoint"); err != nil {
+			receiptReason := "process stopped without a matching resumable checkpoint"
+			if errors.Is(validation, harness.ErrPinnedSearchConfigInvalid) {
+				receiptReason, stopReason = blocked, string(harness.ExecutionStopFailed)
+			}
+			if err = settleOpenReceipts(ctx, tx, id.run, receiptReason); err != nil {
 				return nil, err
 			}
 			if _, err = tx.ExecContext(ctx, `UPDATE harness_execution_intents SET state='cancelled',version=version+1,updated_at=? WHERE run_id=? AND state='pending'`, timestamp(), id.run); err != nil {
@@ -269,7 +292,7 @@ func (s *Store) RecoverExecutionsTx(ctx context.Context, tx *sql.Tx) ([]Executio
 			if _, err = tx.ExecContext(ctx, `UPDATE harness_executions SET status=?,version=version+1,blocked_reason=?,updated_at=? WHERE run_id=?`, status, blocked, now, id.run); err != nil {
 				return nil, err
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE harness_runs SET status=?,stop_reason='',error=?,updated_at=? WHERE id=?`, status, blocked, now, id.run); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE harness_runs SET status=?,stop_reason=?,error=?,updated_at=? WHERE id=?`, status, stopReason, blocked, now, id.run); err != nil {
 				return nil, err
 			}
 			if err = executionAudit(ctx, tx, lease, "execution_recovered", map[string]any{"status": status, "attemptWasRunning": attemptStatus == "running"}); err != nil {

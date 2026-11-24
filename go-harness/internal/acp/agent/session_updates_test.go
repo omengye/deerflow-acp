@@ -22,6 +22,26 @@ func TestAutomaticExecutionNotificationErrorsArePublic(t *testing.T) {
 	}
 }
 
+func TestPinnedSearchConfigurationErrorReportsOnlyConfirmedExecutionStatus(t *testing.T) {
+	cause := errors.Join(harness.ErrPinnedSearchConfigInvalid, errors.New("fixture-secret in private/workspace"))
+	for _, status := range []harness.ExecutionStatus{"", harness.ExecutionWaitingInput, harness.ExecutionFailed} {
+		var failure error = cause
+		if status != "" {
+			failure = &executionResultError{cause: cause, state: &harness.ExecutionState{
+				SessionID: "session", RunID: "run", Status: status, Version: 11,
+				BlockedReason: "fixture-secret",
+			}}
+		}
+		rpc := executionUpdateError(failure)
+		encoded, err := json.Marshal(rpc)
+		if err != nil || rpc.Code != executionUnresumableCode || rpc.Data.(map[string]any)["kind"] != "pinned_search_config_invalid" ||
+			!strings.Contains(rpc.Message, "搜索配置") || strings.Contains(rpc.Message, "本轮已停止") != (status == harness.ExecutionFailed) ||
+			strings.Contains(string(encoded), "fixture-secret") || strings.Contains(string(encoded), "private/workspace") {
+			t.Fatalf("incorrect pinned search error for %s: %s, %v", status, encoded, err)
+		}
+	}
+}
+
 func TestContextLimitErrorsArePublicWithoutProviderDetails(t *testing.T) {
 	err := errors.Join(harness.ErrContextLimit, errors.New("provider credential=fixture-secret in private/workspace"))
 	for _, public := range []error{mapError(err), executionUpdateError(err)} {

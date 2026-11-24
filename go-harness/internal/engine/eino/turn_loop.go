@@ -47,6 +47,9 @@ func itemFor(req harness.RunRequest) turnItem {
 }
 
 func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawMessage, trusted ...map[string]bool) (string, error) {
+	// Preserve the base digest for runs whose approval policy is unchanged.
+	// PreparedAttempt binds the direct-search revision after role/goal identity.
+	const basePermissionPolicy = "trusted-builtins-v3-scoped-credential-reads"
 	routes := maps.Clone(e.config.ModelRoutes)
 	for name, route := range routes {
 		route.API = contractModelAPI(route.API)
@@ -78,7 +81,7 @@ func (e *Engine) executionContract(infos []*schema.ToolInfo, extension json.RawM
 		TrustedBuiltins                       []map[string]bool
 		Network                               string           `json:",omitempty"`
 		API                                   harness.ModelAPI `json:",omitempty"`
-	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.OutputTokenParameter, routes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode, e.config.Subagents, e.config.ContextWindows, "adaptive-window-compaction-v3/output-parameter-v1/output-continuation-v2/stopped-tool-followup-v1/unknown-tool-feedback-v1/user-input-v1/progress-v1/continuity-v1/steering-v1", e.config.ModelThinking, e.config.ModelOutputLimits, harness.PermissionPolicyVersion, trusted, network.Fingerprint(e.config.Network), contractModelAPI(e.config.API)})
+	}{e.config.Provider, e.config.BaseURL, e.config.Model, e.config.Instruction, e.config.OutputTokenParameter, routes, e.config.MaxIterations, e.config.Budget, e.config.DisableSubAgent, infos, extension, e.config.Media, e.config.Compaction, policy, e.config.PermissionMode, e.config.Subagents, e.config.ContextWindows, "adaptive-window-compaction-v3/output-parameter-v1/output-continuation-v2/stopped-tool-followup-v1/unknown-tool-feedback-v1/user-input-v1/progress-v1/continuity-v1/steering-v1", e.config.ModelThinking, e.config.ModelOutputLimits, basePermissionPolicy, trusted, network.Fingerprint(e.config.Network), contractModelAPI(e.config.API)})
 	if err != nil {
 		return "", fmt.Errorf("encode execution contract: %w", err)
 	}

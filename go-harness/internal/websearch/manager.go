@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -390,19 +391,35 @@ func (m *Manager) versionPath(hash string) string {
 	return filepath.Join(m.path+".versions", hash+".json")
 }
 
+func (m *Manager) readVersion(name, hash string) (harness.SearchProviderConfig, error) {
+	var p harness.SearchProviderConfig
+	body, err := readBounded(m.versionPath(hash))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return p, fmt.Errorf("%w: saved %s configuration is missing", harness.ErrPinnedSearchConfigInvalid, name)
+	case errors.Is(err, errSettingsTooLarge):
+		return p, fmt.Errorf("%w: saved %s configuration exceeds size limit", harness.ErrPinnedSearchConfigInvalid, name)
+	case err != nil:
+		return p, errors.New("pinned search configuration is unavailable")
+	case json.Unmarshal(body, &p) != nil || digest(p) != hash:
+		return harness.SearchProviderConfig{}, fmt.Errorf("%w: %s snapshot does not match its saved version", harness.ErrPinnedSearchConfigInvalid, name)
+	}
+	return p, nil
+}
+
 func (m *Manager) Snapshot(pinned *harness.SearchResourceRef) (*Snapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := &Snapshot{providers: map[string]harness.SearchProviderConfig{}, manager: m, network: network.Clone(m.network)}
 	if pinned != nil {
 		if !ValidProvider(pinned.DefaultProvider) || pinned.FetchProvider != "local" && pinned.FetchProvider != "deepseek" || len(pinned.Providers) != len(Names) {
-			return nil, errors.New("invalid search execution resources")
+			return nil, fmt.Errorf("%w: invalid search execution resources", harness.ErrPinnedSearchConfigInvalid)
 		}
 		result.Ref = *pinned
 		for _, name := range Names {
 			hash := pinned.Providers[name]
 			if len(hash) != 64 || strings.Trim(hash, "0123456789abcdef") != "" {
-				return nil, errors.New("invalid search resource digest")
+				return nil, fmt.Errorf("%w: invalid resource digest for %s", harness.ErrPinnedSearchConfigInvalid, name)
 			}
 			if m.path == "" {
 				value, err := m.load()
@@ -411,18 +428,14 @@ func (m *Manager) Snapshot(pinned *harness.SearchResourceRef) (*Snapshot, error)
 				}
 				p := resolved(name, value.Config.Providers[name])
 				if digest(p) != hash {
-					return nil, errors.New("search execution configuration changed")
+					return nil, fmt.Errorf("%w: %s configuration changed", harness.ErrPinnedSearchConfigInvalid, name)
 				}
 				result.providers[name] = p
 				continue
 			}
-			body, err := readBounded(m.versionPath(hash))
+			p, err := m.readVersion(name, hash)
 			if err != nil {
-				return nil, errors.New("pinned search configuration is unavailable")
-			}
-			var p harness.SearchProviderConfig
-			if json.Unmarshal(body, &p) != nil || digest(p) != hash {
-				return nil, errors.New("pinned search configuration is invalid")
+				return nil, err
 			}
 			result.providers[name] = p
 		}
@@ -439,13 +452,14 @@ func (m *Manager) Snapshot(pinned *harness.SearchResourceRef) (*Snapshot, error)
 		result.Ref.Providers[name] = hash
 		result.providers[name] = p
 		if m.path != "" {
-			path := m.versionPath(hash)
-			if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-				if err := writeAtomic(path, p); err != nil {
+			// Only a fresh run knows the exact provider configuration addressed by
+			// this digest. A resume must validate its own immutable version.
+			if _, err := m.readVersion(name, hash); errors.Is(err, harness.ErrPinnedSearchConfigInvalid) {
+				if err := writeAtomic(m.versionPath(hash), p); err != nil {
 					return nil, errors.New("cannot pin search configuration")
 				}
 			} else if err != nil {
-				return nil, errors.New("cannot inspect search configuration version")
+				return nil, err
 			}
 		}
 	}
@@ -468,15 +482,19 @@ func (s *Snapshot) verified(ctx context.Context, name string) {
 	})
 }
 
+const maxSettingsBytes = 1 << 20
+
+var errSettingsTooLarge = errors.New("search settings exceed size limit")
+
 func readBounded(path string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	body, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
-	if len(body) > 1<<20 {
-		return nil, errors.New("search settings exceed size limit")
+	body, err := io.ReadAll(io.LimitReader(file, maxSettingsBytes+1))
+	if len(body) > maxSettingsBytes {
+		return nil, errSettingsTooLarge
 	}
 	return body, err
 }
@@ -487,6 +505,9 @@ func writeAtomic(path string, value any) error {
 		return err
 	}
 	body = append(body, '\n')
+	if len(body) > maxSettingsBytes {
+		return errSettingsTooLarge
+	}
 	if current, err := readBounded(path); err == nil && bytes.Equal(current, body) {
 		return nil
 	}

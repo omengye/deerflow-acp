@@ -465,6 +465,60 @@ func TestExecutionStartupPreservesValidWaitAndBlocksAdvancedFailedAttempt(t *tes
 	}
 }
 
+func TestExecutionStartupClosesLegacyInvalidSearchResume(t *testing.T) {
+	for _, tc := range []struct {
+		detail string
+		want   harness.ExecutionStatus
+	}{
+		{"run extensions: pinned search configuration is invalid", harness.ExecutionFailed},
+		{"run extensions: pinned search configuration is unavailable", harness.ExecutionWaitingInput},
+		{"upstream: run extensions: pinned search configuration is invalid", harness.ExecutionWaitingInput},
+	} {
+		t.Run(tc.detail, func(t *testing.T) {
+			f := newExecutionFixture(t)
+			ctx := context.Background()
+			f.pending(t)
+			f.suspend(t)
+			lease := f.resume(t, "reconnected")
+			f.grant(t, lease)
+			// This untyped failure is the persisted representation from older hosts.
+			mustExecutionTx(t, f, func(tx *sql.Tx) error {
+				st, err := f.s.EndExecutionAttemptTx(ctx, tx, lease, harness.ExecutionStopFailed, tc.detail)
+				if err != nil {
+					return err
+				}
+				if st.Status != harness.ExecutionWaitingInput {
+					t.Fatalf("legacy fixture did not park: %+v", st)
+				}
+				return f.ledger.EndAttemptTx(ctx, tx, lease.Scope, budget.OutcomeWaitingInput)
+			})
+			var firstVersion int64
+			for i := 0; i < 2; i++ {
+				if err := f.s.ReconcileInterrupted(ctx); err != nil {
+					t.Fatal(err)
+				}
+				state, err := f.s.Execution(ctx, f.req.Session.ID, f.req.RunID)
+				if err != nil || state.Status != tc.want || (i > 0 && state.Version != firstVersion) {
+					t.Fatalf("startup %d: state=%+v err=%v", i, state, err)
+				}
+				firstVersion = state.Version
+				admission := f.s.requireNoWaitingExecution(ctx, f.req.Session.ID)
+				receipt, err := readReceipt(ctx, f.s.db, f.req.Session.ID, f.req.RunID, "write")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.want == harness.ExecutionFailed {
+					if admission != nil || state.Resumable || len(state.WaitingInputs) != 0 || receipt.State != harness.ReceiptNotExecuted || state.BlockedReason != harness.ErrPinnedSearchConfigInvalid.Error() {
+						t.Fatalf("legacy wait was not released: %+v receipt=%s admission=%v", state, receipt.State, admission)
+					}
+				} else if !errors.Is(admission, harness.ErrExecutionWaitingInput) || !state.Resumable || receipt.State != harness.ReceiptPending {
+					t.Fatalf("ordinary wait changed: %+v receipt=%s admission=%v", state, receipt.State, admission)
+				}
+			}
+		})
+	}
+}
+
 func TestExecutionManifestCapturesNativeHeadAndRequiresAllPendingCalls(t *testing.T) {
 	f := newExecutionFixture(t)
 	ctx := context.Background()

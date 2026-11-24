@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -140,6 +141,49 @@ func TestProviderLimitsErrorsAndCredentialIsolation(t *testing.T) {
 				t.Fatal("remote failure or secret sanitization")
 			}
 		})
+	}
+}
+
+func TestPinnedSearchSnapshotFailureClassification(t *testing.T) {
+	isolatedEnvironment(t)
+	m := mustManager(t, filepath.Join(t.TempDir(), "settings.json"), Defaults())
+	pin, err := m.Snapshot(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := m.versionPath(pin.Ref.Providers["searxng"])
+	if err := os.WriteFile(version, []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Snapshot(&pin.Ref); !errors.Is(err, harness.ErrPinnedSearchConfigInvalid) {
+		t.Fatal("malformed version", err)
+	}
+	if err := os.WriteFile(version, make([]byte, maxSettingsBytes+1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Snapshot(&pin.Ref); !errors.Is(err, harness.ErrPinnedSearchConfigInvalid) {
+		t.Fatal("oversized version", err)
+	}
+	if _, err := m.Snapshot(nil); err != nil {
+		t.Fatal("fresh run could not rebuild oversized version", err)
+	}
+	if _, err := m.Snapshot(&pin.Ref); err != nil {
+		t.Fatal("rebuilt version failed digest validation", err)
+	}
+	if err := os.Remove(version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Snapshot(&pin.Ref); !errors.Is(err, harness.ErrPinnedSearchConfigInvalid) {
+		t.Fatal("missing version", err)
+	}
+	if err := os.Mkdir(version, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Snapshot(&pin.Ref); err == nil || errors.Is(err, harness.ErrExecutionUnresumable) {
+		t.Fatal("I/O error without version data must remain retryable", err)
+	}
+	if _, err := m.Snapshot(nil); err == nil || errors.Is(err, harness.ErrExecutionUnresumable) {
+		t.Fatal("fresh run ignored a version I/O error", err)
 	}
 }
 

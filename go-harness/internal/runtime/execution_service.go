@@ -335,7 +335,7 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 			if runErr != nil {
 				detail = runErr.Error()
 			}
-			state, err = s.Store.endExecutionAttemptTx(persist, tx, lease, kind, detail, roleFailure)
+			state, err = s.Store.endExecutionAttemptTx(persist, tx, lease, kind, detail, runErr)
 			if state.Status == harness.ExecutionWaitingInput {
 				outcome = budget.OutcomeWaitingInput
 			}
@@ -384,10 +384,12 @@ func (s *Service) finishExecutionAttempt(ctx context.Context, lease ExecutionLea
 			}
 		}
 		if state.Status != harness.ExecutionWaitingInput {
-			if roleFailure && state.Status == harness.ExecutionFailed && state.BlockedReason == "" {
+			switch {
+			case roleFailure && state.Status == harness.ExecutionFailed && state.BlockedReason == "":
 				result.StopReason = "role_failed"
-			}
-			if result.StopReason == "" {
+			case state.Status == harness.ExecutionFailed && errors.Is(runErr, harness.ErrPinnedExecutionResourcesInvalid):
+				result.StopReason = string(harness.ExecutionStopFailed)
+			case result.StopReason == "":
 				result.StopReason = "end_turn"
 			}
 			_, err = tx.ExecContext(persist, `UPDATE harness_runs SET stop_reason=? WHERE id=?`, result.StopReason, lease.Scope.MemberID)

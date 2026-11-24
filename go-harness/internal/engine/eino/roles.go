@@ -175,7 +175,7 @@ func (e *Engine) PrepareRoleAttempt(ctx context.Context, req harness.RunRequest,
 		return nil, err
 	}
 	sink := &eventSink{request: req, callback: events, cancel: cancel, active: map[string]string{}, finished: map[string]bool{}}
-	return e.prepareAgent(ctx, req, name, pinned, b, sink, newRunIO(ctx), permissions, &spec)
+	return e.prepareAgent(ctx, req, name, pinned, "", b, sink, newRunIO(ctx), permissions, &spec)
 }
 
 func (e *Engine) PrepareLegacyAttempt(ctx context.Context, req harness.RunRequest, name string, pinned json.RawMessage, events harness.EventHandler, permissions harness.PermissionHandler, cancel func()) (*PreparedAttempt, error) {
@@ -185,8 +185,8 @@ func (e *Engine) PrepareLegacyAttempt(ctx context.Context, req harness.RunReques
 	return legacy.PrepareAttempt(ctx, req, name, pinned, events, permissions, cancel)
 }
 
-func roleContract(host, role string) string {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(host+"/"+role)))
+func extendContract(contract, identity string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(contract+"/"+identity)))
 }
 
 func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent agents.Parent, parentChat model.ToolCallingChatModel, depth int, resources *roleResources, name string) (adk.ResumableAgent, error) {

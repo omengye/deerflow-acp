@@ -21,9 +21,9 @@ func (m PermissionMode) Validate() error {
 	}
 }
 
-// PermissionPolicyVersion is bound into every execution contract. Changing
-// classification invalidates checkpoints created under an older policy.
-const PermissionPolicyVersion = "trusted-builtins-v3-scoped-credential-reads"
+// PermissionPolicyVersion identifies the latest built-in approval rules.
+// Execution contracts bind the revision applicable to their tools and mode.
+const PermissionPolicyVersion = "trusted-builtins-v4-direct-web-search"
 
 // RequiresPermission classifies an exact host-owned built-in identity. Engine
 // callers must use RequiresToolPermission for tools from external sources.
@@ -41,7 +41,7 @@ func (m PermissionMode) RequiresPermission(name string) bool {
 		case "skill", "skill_inspect", "read_skill_file", "schedule_read",
 			"ls", "list_directory", "read_file", "read_tool_output", "view_image",
 			"search_files", "glob", "grep", "list_attachments", "read_attachment", "analyze_attachment",
-			"search_memory", "get_memory_state", "history_search", "history_read", "task_note", "task", "task_status", "task_wait", "set_search_provider",
+			"search_memory", "get_memory_state", "history_search", "history_read", "task_note", "task", "task_status", "task_wait", "web_search", "set_search_provider",
 			"secret_read":
 			return false
 		}

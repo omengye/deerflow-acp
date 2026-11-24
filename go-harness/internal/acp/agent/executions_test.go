@@ -90,6 +90,17 @@ func TestACPExecutionDisconnectResumeAndCancel(t *testing.T) {
 				t.Fatalf("missing execution capability: %s", init)
 			}
 			sid := c.newSession(t, f.cwd)
+			empty := c.response(t, c.request(t, "_deerflow/executions/get", map[string]any{"sessionId": sid}))
+			if empty.Error == nil || empty.Error.Code != protocol.InvalidParams {
+				t.Fatalf("expected empty session discovery, got %+v", empty)
+			}
+			if data, ok := empty.Error.Data.(map[string]any); !ok || data["kind"] != "no_execution" {
+				t.Fatalf("missing empty session classification: %+v", empty.Error)
+			}
+			missing := c.response(t, c.request(t, "_deerflow/executions/get", map[string]any{"sessionId": sid, "runId": "missing"}))
+			if missing.Error == nil || missing.Error.Code != protocol.InvalidParams || missing.Error.Data != nil {
+				t.Fatalf("expected an ordinary lookup error for an explicit run: %+v", missing)
+			}
 			c.request(t, "session/prompt", promptParams(sid, "write"))
 			executionPermissionMessage(t, c)
 			before := executionState(t, c, sid)
@@ -101,8 +112,8 @@ func TestACPExecutionDisconnectResumeAndCancel(t *testing.T) {
 			}
 			stranger := connect(t, f.service)
 			stranger.initialize(t)
-			if msg := stranger.response(t, stranger.request(t, "_deerflow/executions/get", map[string]any{"sessionId": sid})); msg.Error == nil {
-				t.Fatal("foreign execution query accepted")
+			if msg := stranger.response(t, stranger.request(t, "_deerflow/executions/get", map[string]any{"sessionId": sid})); msg.Error == nil || msg.Error.Data != nil {
+				t.Fatalf("expected an attachment error for foreign execution discovery: %+v", msg)
 			}
 			if err := c.agent.Close(); err != nil {
 				t.Fatal(err)

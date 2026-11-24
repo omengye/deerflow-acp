@@ -76,7 +76,11 @@ func (a *Agent) executionRequest(ctx context.Context, method string, raw json.Ra
 	}
 	switch method {
 	case getExecutionMethod:
-		return a.service.Execution(ctx, a.owner, req.SessionID, req.RunID)
+		state, err := a.service.Execution(ctx, a.owner, req.SessionID, req.RunID)
+		if req.RunID == "" && errors.Is(err, harness.ErrNotFound) {
+			return nil, &protocol.Error{Code: protocol.InvalidParams, Message: "No execution in this session", Data: map[string]any{"kind": "no_execution"}}
+		}
+		return state, err
 	case cancelExecutionMethod:
 		result, err := a.service.CancelExecution(ctx, a.owner, req.SessionID, harness.CancelExecutionRequest{RunID: req.RunID, ExpectedVersion: req.ExpectedVersion})
 		if err == nil {
@@ -186,6 +190,9 @@ func executionErrorMetadata(original, mapped error) error {
 	details["getMethod"] = getExecutionMethod
 	details["automaticReplay"] = false
 	copyError := *rpc
+	if details["kind"] == "pinned_search_config_invalid" && state.Status == harness.ExecutionFailed {
+		copyError.Message = "本轮保存的搜索配置未通过完整性校验，本轮已停止。已完成的工具结果已保留，可在此对话发送新消息继续。"
+	}
 	copyError.Data = details
 	return &copyError
 }

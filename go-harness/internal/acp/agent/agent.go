@@ -130,6 +130,8 @@ func mapError(err error) (mapped error) {
 		return executionRecoveryError(executionWaitingCode)
 	case errors.Is(err, harness.ErrExecutionConflict):
 		return executionRecoveryError(executionConflictCode)
+	case errors.Is(err, harness.ErrPinnedSearchConfigInvalid):
+		return &protocol.Error{Code: executionUnresumableCode, Message: "本轮保存的搜索配置未通过完整性校验。已完成的工具结果已保留。", Data: map[string]any{"kind": "pinned_search_config_invalid", "getMethod": getExecutionMethod, "automaticReplay": false}}
 	case errors.Is(err, harness.ErrExecutionUnresumable):
 		return executionRecoveryError(executionUnresumableCode)
 	case errors.Is(err, budget.ErrUnknown):

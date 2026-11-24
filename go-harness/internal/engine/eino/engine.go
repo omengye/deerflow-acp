@@ -483,8 +483,10 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 	// emit invokes this callback under its lock, so it must not inspect sink.
 	sink.cancel = ioLifecycle.stop
 	var pinned json.RawMessage
+	var savedContract string
 	if savedCheckpoint != nil {
 		pinned = savedCheckpoint.Extension
+		savedContract = savedCheckpoint.interruptedContract()
 	} else if source != nil {
 		pinned = executionHooks(ctx).InputSource.PinnedExtension
 	}
@@ -512,12 +514,11 @@ func (e *Engine) execute(ctx context.Context, req harness.RunRequest, resumeID s
 		}
 	}
 	prepare := func(ctx context.Context) (*PreparedAttempt, error) {
-		return e.prepareAgent(ctx, prepareReq, "deerflow", pinned, budget, sink, ioLifecycle, permissions, selectedRoles...)
+		return e.prepareAgent(ctx, prepareReq, "deerflow", pinned, savedContract, budget, sink, ioLifecycle, permissions, selectedRoles...)
 	}
 	prepared, err := prepare(prepareCtx)
 	if err == nil && legacyQuestions {
-		original := savedCheckpoint.interruptedContract()
-		if original != "" && original != prepared.Contract && !slices.Contains(prepared.resumeContracts, original) {
+		if savedContract != "" && savedContract != prepared.Contract && !slices.Contains(prepared.resumeContracts, savedContract) {
 			if err = prepared.closeResources(); err == nil {
 				prepared, err = prepare(liveCtx)
 			}

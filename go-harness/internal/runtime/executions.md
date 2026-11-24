@@ -118,6 +118,11 @@ A failed `tool_start` does not manufacture a new waiting checkpoint. Permission
 callback errors occur after waiting checkpoint commit and preserve that valid
 checkpoint without creating a resume attempt or grant. A failed resumed attempt
 can preserve an earlier checkpoint only if its manifest still validates.
+If the engine cannot decode the pinned extension state, or finds that a pinned
+search configuration is missing or fails its integrity check, the attempt ends
+the execution. Its pending tool receipts are
+recorded as not executed, completed receipts remain available, and the session
+can accept the next prompt.
 
 Pending execution blocks new prompts and configuration/mode changes. Background
 child sessions are hidden from the ordinary session list and rejected by

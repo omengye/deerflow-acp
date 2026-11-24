@@ -3,9 +3,11 @@ package deerflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -15,6 +17,105 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/localhost"
 	"github.com/omengye/deerflow-acp/go-harness/internal/websearch"
 )
+
+func TestApprovedSearchWithChangedSnapshotEndsRun(t *testing.T) {
+	ctx := context.Background()
+	var searches, modelCalls atomic.Int32
+	search := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		searches.Add(1)
+		fmt.Fprint(w, `{"results":[{"title":"Found","url":"https://example.test","content":"Fixture"}]}`)
+	}))
+	defer search.Close()
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Stream bool `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
+		}
+		switch modelCalls.Add(1) {
+		case 1:
+			skillToolResponse(w, request.Stream, "web_search", `{"query":"first"}`, "", "first-search")
+		case 2:
+			skillToolResponse(w, request.Stream, "web_search", `{"query":"second"}`, "", "second-search")
+		case 3:
+			skillToolResponse(w, request.Stream, "web_search", `{"query":"new turn"}`, "", "new-search")
+		default:
+			skillToolResponse(w, request.Stream, "", "", "Follow-up complete")
+		}
+	}))
+	defer model.Close()
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "search-providers.json")
+	client, err := Open(ctx, Config{DataDir: dir, SearchSettingsPath: settings, Provider: "openai", Model: "fixture",
+		APIKey: "fixture", BaseURL: model.URL + "/v1", DisableSubagents: true, PermissionMode: harness.PermissionModeAll,
+		BuiltinTools: []harness.BuiltinToolConfig{{Name: "web_search"}},
+		Search:       harness.SearchConfig{DefaultProvider: "searxng", Providers: map[string]harness.SearchProviderConfig{"searxng": {BaseURL: search.URL}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	session, err := client.NewSession(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin, err := client.search.Snapshot(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvals := 0
+	result, err := client.Run(ctx, session.ID, []harness.Content{{Type: "text", Text: "search twice"}}, nil, func(_ context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
+		approvals++
+		if p.ToolCallID == "second-search" {
+			path := filepath.Join(settings+".versions", pin.Ref.Providers["searxng"]+".json")
+			if err := os.WriteFile(path, []byte(`{"api_key":"private-fixture"}`), 0600); err != nil {
+				return "", err
+			}
+		}
+		return harness.AllowOnce, nil
+	})
+	if !errors.Is(err, harness.ErrPinnedSearchConfigInvalid) || strings.Contains(err.Error(), "private-fixture") {
+		t.Fatal("expected a credential-free snapshot error", err)
+	}
+	state := result.Execution
+	if state == nil || state.Status != harness.ExecutionFailed || state.Resumable || state.BlockedReason != harness.ErrPinnedSearchConfigInvalid.Error() || len(state.WaitingInputs) != 0 {
+		t.Fatalf("failed execution = %+v", state)
+	}
+	var stopReason string
+	if err := client.store.DB().QueryRowContext(ctx, "SELECT stop_reason FROM harness_runs WHERE id=?", state.RunID).Scan(&stopReason); err != nil || stopReason != "failed" || result.StopReason != stopReason {
+		t.Fatalf("stored stop reason=%q returned=%q err=%v", stopReason, result.StopReason, err)
+	}
+	if approvals != 2 || searches.Load() != 1 || modelCalls.Load() != 2 {
+		t.Fatalf("approvals=%d searches=%d model calls=%d", approvals, searches.Load(), modelCalls.Load())
+	}
+	receipts, err := client.ListToolReceipts(ctx, session.ID)
+	if err != nil || len(receipts) != 2 {
+		t.Fatal("search receipts", receipts, err)
+	}
+	want := map[string]harness.ReceiptState{"first-search": harness.ReceiptCompleted, "second-search": harness.ReceiptNotExecuted}
+	for _, receipt := range receipts {
+		if receipt.State != want[receipt.ToolCallID] {
+			t.Errorf("receipt %s = %s", receipt.ToolCallID, receipt.State)
+		}
+	}
+	_, err = client.ResumeExecution(ctx, session.ID, harness.ResumeExecutionRequest{RunID: state.RunID, ExpectedVersion: state.Version}, nil, nil)
+	if !errors.Is(err, harness.ErrExecutionConflict) {
+		t.Fatal("terminal run accepted another resume", err)
+	}
+	followup, err := client.Run(ctx, session.ID, []harness.Content{{Type: "text", Text: "continue with a new search"}}, nil, func(_ context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
+		if p.ToolCallID != "new-search" {
+			t.Errorf("fresh turn requested old approval: %s", p.ToolCallID)
+		}
+		return harness.AllowOnce, nil
+	})
+	if err != nil || followup.Execution == nil || followup.Execution.Status != harness.ExecutionCompleted {
+		t.Fatal("fresh turn blocked after failed approval", followup, err)
+	}
+	if searches.Load() != 2 {
+		t.Fatalf("fresh search did not use the current configuration: searches=%d", searches.Load())
+	}
+}
 
 // Exercise one live SDK/Eino runtime and one session across all three searches.
 // Only configuration changes between turns; the model adapter, runtime and
@@ -78,7 +179,7 @@ func TestSearchPluginsSwitchInLiveRuntimeWithoutRestart(t *testing.T) {
 	}))
 	defer model.Close()
 	profile := t.TempDir()
-	cfg := Config{DataDir: filepath.Join(profile, "data"), Provider: "openai", Model: "fixture", APIKey: "model-fixture", BaseURL: model.URL + "/v1", DisableSubagents: true, PermissionMode: harness.PermissionModeOff,
+	cfg := Config{DataDir: filepath.Join(profile, "data"), Provider: "openai", Model: "fixture", APIKey: "model-fixture", BaseURL: model.URL + "/v1", DisableSubagents: true, PermissionMode: harness.PermissionModeDangerous,
 		BuiltinTools: []harness.BuiltinToolConfig{{Name: "web_search", MaxResults: 5}}, SearchSettingsPath: filepath.Join(profile, "config", "search-providers.json"),
 		Search: harness.SearchConfig{DefaultProvider: "brave", Providers: map[string]harness.SearchProviderConfig{"brave": {BaseURL: searchServer.URL, APIKey: "brave-fixture"}, "deepseek": {BaseURL: searchServer.URL, APIKey: "deepseek-fixture"}, "searxng": {BaseURL: searchServer.URL}}}}
 	client, err := Open(ctx, cfg)
@@ -136,6 +237,10 @@ func TestSearchPluginsSwitchInLiveRuntimeWithoutRestart(t *testing.T) {
 	}
 	if searches.Load() != 5 {
 		t.Fatal("unexpected number of actual provider calls", searches.Load())
+	}
+	var approvalRequests int
+	if err := client.store.DB().QueryRowContext(ctx, "SELECT count(*) FROM harness_execution_intents WHERE run_id IN (SELECT id FROM harness_runs WHERE session_id=?)", session.ID).Scan(&approvalRequests); err != nil || approvalRequests != 0 {
+		t.Fatalf("ordinary searches created %d approval requests: %v", approvalRequests, err)
 	}
 	// A model-issued preference tool, triggered by an explicit user request,
 	// persists the same default that the desktop selector reads.

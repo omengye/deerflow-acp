@@ -2,6 +2,7 @@ package eino
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -28,7 +29,7 @@ type trustedEffectTool struct {
 }
 
 func TestDangerousPolicyRequiresHostIdentityBeforeEffect(t *testing.T) {
-	for _, name := range []string{"mcp_reader_delete_record_1234", "read_then_delete", "mcp_task_search_write_record_1234", "read_file"} {
+	for _, name := range []string{"mcp_reader_delete_record_1234", "read_then_delete", "mcp_task_search_write_record_1234", "read_file", "web_search"} {
 		for _, child := range []bool{false, true} {
 			t.Run(name+map[bool]string{false: "/root", true: "/child"}[child], func(t *testing.T) {
 				fake := &scriptedModel{stream: func(_ context.Context, call int, _ []*schema.Message) (*schema.StreamReader[*schema.Message], error) {
@@ -68,6 +69,37 @@ func TestPermissionContractBindsToolProvenance(t *testing.T) {
 	b, err := e.executionContract(nil, nil, map[string]bool{"read_file": false})
 	if err != nil || a == b {
 		t.Fatalf("contract did not bind provenance: %s %s %v", a, b, err)
+	}
+}
+
+func TestDirectSearchUpgradeChecksOnlyAffectedExecutions(t *testing.T) {
+	newAttempt := func() *PreparedAttempt {
+		p := &PreparedAttempt{Contract: "tools", resumeContracts: []string{"previous-read-schema"}}
+		p.bindContract("role")
+		return p
+	}
+	for _, mode := range []harness.PermissionMode{harness.PermissionModeOff, harness.PermissionModeAll, harness.PermissionModeDangerous} {
+		for _, builtin := range []bool{false, true} {
+			old := newAttempt()
+			for _, saved := range []string{old.Contract, old.resumeContracts[0]} {
+				next := newAttempt()
+				err := next.bindSearchPolicy(mode, builtin, saved)
+				if mode == harness.PermissionModeDangerous && builtin {
+					if !errors.Is(err, harness.ErrPinnedExecutionResourcesInvalid) {
+						t.Fatalf("expected outdated policy to end the run: %v", err)
+					}
+				} else if err != nil || next.Contract != old.Contract {
+					t.Fatalf("compatible checkpoint changed, mode=%s builtin=%t: %v", mode, builtin, err)
+				}
+			}
+			fresh, resumed := newAttempt(), newAttempt()
+			if err := fresh.bindSearchPolicy(mode, builtin, ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := resumed.bindSearchPolicy(mode, builtin, fresh.Contract); err != nil || resumed.Contract != fresh.Contract {
+				t.Fatalf("current checkpoint rejected: %v", err)
+			}
+		}
 	}
 }
 

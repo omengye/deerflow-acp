@@ -334,6 +334,15 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		if cfg.MemorySingleUser && memoryStore != nil {
 			state.MemoryWriteProtocol = personalMemoryWriteProtocol
 		}
+		var previous extensionState
+		if pinned != nil {
+			dec := json.NewDecoder(bytes.NewReader(pinned))
+			dec.DisallowUnknownFields()
+			var extra any
+			if dec.Decode(&previous) != nil || dec.Decode(&extra) != io.EOF || previous.Version != state.Version {
+				return out, fmt.Errorf("%w: invalid extension checkpoint: %w", harness.ErrPinnedExecutionResourcesInvalid, harness.ErrInvalidInput)
+			}
+		}
 		var searchSnapshot *websearch.Snapshot
 		var searchEnabled bool
 		for _, setting := range cfg.BuiltinTools {
@@ -346,12 +355,6 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 			if searchManager == nil {
 				searchManager, err = websearch.New(cfg.SearchSettingsPath, websearch.Seed(cfg.Search, cfg.BuiltinTools, ""), cfg.Network)
 				if err != nil {
-					return out, err
-				}
-			}
-			var previous extensionState
-			if pinned != nil {
-				if err = json.Unmarshal(pinned, &previous); err != nil {
 					return out, err
 				}
 			}
@@ -423,14 +426,7 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		}
 		var snapshot *skills.Snapshot
 		if pinned != nil {
-			var previous extensionState
-			dec := json.NewDecoder(bytes.NewReader(pinned))
-			dec.DisallowUnknownFields()
-			if err = dec.Decode(&previous); err != nil {
-				return out, fmt.Errorf("%w: invalid extension checkpoint", harness.ErrInvalidInput)
-			}
-			var extra any
-			if dec.Decode(&extra) != io.EOF || previous.Version != state.Version || previous.MCPGeneration != state.MCPGeneration || !sameMCPRef(previous.MCPResources, state.MCPResources) || previous.SandboxPolicy != state.SandboxPolicy || previous.ExternalACPPolicy != state.ExternalACPPolicy || previous.BuiltinToolPolicy != state.BuiltinToolPolicy || previous.ToolPolicy != state.ToolPolicy || previous.ExtractionEnabled != state.ExtractionEnabled || previous.SkillEvolutionPolicy != state.SkillEvolutionPolicy {
+			if previous.MCPGeneration != state.MCPGeneration || !sameMCPRef(previous.MCPResources, state.MCPResources) || previous.SandboxPolicy != state.SandboxPolicy || previous.ExternalACPPolicy != state.ExternalACPPolicy || previous.BuiltinToolPolicy != state.BuiltinToolPolicy || previous.ToolPolicy != state.ToolPolicy || previous.ExtractionEnabled != state.ExtractionEnabled || previous.SkillEvolutionPolicy != state.SkillEvolutionPolicy {
 				return out, fmt.Errorf("%w: execution resources changed since checkpoint", harness.ErrInvalidInput)
 			}
 			if previous.MemoryWriteProtocol != "" && previous.MemoryWriteProtocol != "memory-tools-v2" && previous.MemoryWriteProtocol != personalMemoryWriteProtocolV3 && previous.MemoryWriteProtocol != personalMemoryWriteProtocolV4 && previous.MemoryWriteProtocol != personalMemoryWriteProtocol {

@@ -333,6 +333,11 @@ func TestExtensionFactoryRestoresPinnedSkillAndRejectsChangedResources(t *testin
 	defer manager.Close()
 	req := harness.RunRequest{Session: harness.Session{ID: "s", CWD: workspace, Mode: "plan"}}
 	factory := extensionFactory(cfg, manager, registry, nil)
+	for _, invalid := range []string{`{`, `{"version":1,"unexpected":true}`, `{"version":2}`} {
+		if _, err := factory(context.Background(), req, json.RawMessage(invalid)); !errors.Is(err, harness.ErrPinnedExecutionResourcesInvalid) || !errors.Is(err, harness.ErrInvalidInput) {
+			t.Fatalf("invalid pinned extension state: %v", err)
+		}
+	}
 	first, err := factory(context.Background(), req, nil)
 	if err != nil {
 		t.Fatal(err)

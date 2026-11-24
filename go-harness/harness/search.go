@@ -1,5 +1,11 @@
 package harness
 
+import "fmt"
+
+// ErrPinnedSearchConfigInvalid indicates that the search configuration bound
+// to an execution cannot be reconstructed from its saved provider versions.
+var ErrPinnedSearchConfigInvalid = fmt.Errorf("%w: pinned search configuration is invalid", ErrPinnedExecutionResourcesInvalid)
+
 // SearchConfig belongs to the host. Credentials must never be projected into
 // model metadata or durable execution input; SearchResourceRef pins only hashes.
 type SearchConfig struct {

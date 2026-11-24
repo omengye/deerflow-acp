@@ -97,6 +97,9 @@ func (a *Agent) executionUpdatedOperation(ctx context.Context, sessionID, operat
 		params["operationId"], params["runId"] = operationID, runID
 	}
 	if err != nil {
+		if result.Execution != nil {
+			err = &executionResultError{cause: err, state: result.Execution}
+		}
 		params["error"] = executionUpdateError(err)
 	}
 	return a.connectionError(ctx, a.peer.Notify(ctx, updatedExecutionMethod, params))
