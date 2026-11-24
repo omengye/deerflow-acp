@@ -3,7 +3,7 @@
 //! Waku's shared, versioned wire contract.
 //!
 //! This crate contains serializable data only. It performs no provider,
-//! database, workspace, Git, attachment, or transport I/O, so native and web
+//! database, workspace, Git, attachment, or transport I/O, so native
 //! clients can depend on it without pulling in the daemon implementation.
 
 rust_i18n::i18n!("../../locales", fallback = "en");
@@ -37,15 +37,12 @@ pub mod git;
 pub mod i18n;
 pub mod identity;
 pub mod model;
-pub mod model_catalog;
 pub mod persistence;
 pub mod projectless;
-pub mod provider_session;
 pub mod settings;
 pub mod skills;
 pub mod theme;
 pub mod usage;
-pub mod usage_history;
 pub mod workspace;
 
 mod protocol;

@@ -217,7 +217,7 @@ impl Waku {
                     if this.runtimes.contains_key(&session) {
                         this.maybe_refresh_deerflow_tasks(cx);
                     } else {
-                        this.start_goal_runtime(session, cx);
+                        this.start_idle_runtime(session, cx);
                     }
                 },
             ));
@@ -277,7 +277,7 @@ impl Waku {
         let checking = browser.foreground.awaiting_initial_state(has_saved_session)
             || failed
                 && (browser.foreground.refresh_needed
-                    || self.goal_runtime_starts.contains(&id)
+                    || self.idle_runtime_starts.contains(&id)
                     || browser.pending.as_ref().is_some_and(
                         |c| matches!(&c.action, Action::ExecutionGet {run_id} if run_id.is_empty()),
                     ));
@@ -306,7 +306,7 @@ impl Waku {
             });
             if checking {
                 if browser.connection.is_empty()
-                    && !self.goal_runtime_starts.contains(&id)
+                    && !self.idle_runtime_starts.contains(&id)
                     && !self.runtime_attach_pending.contains(&id)
                     && !self.runtimes.contains_key(&id)
                 {

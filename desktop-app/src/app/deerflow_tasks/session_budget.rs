@@ -200,7 +200,7 @@ impl Waku {
         if runtime_present && !browser.connection.is_empty() {
             self.request_deerflow_task(id, Action::BudgetGet, cx);
         } else {
-            self.start_goal_runtime(id, cx);
+            self.start_idle_runtime(id, cx);
             cx.notify();
         }
     }
@@ -235,9 +235,9 @@ impl Waku {
             row = row.child(task_button(
                 "df-history-connect",
                 "连接并确认",
-                self.goal_runtime_starts.contains(&id),
+                self.idle_runtime_starts.contains(&id),
                 cx,
-                move |this, _, cx| this.start_goal_runtime(id, cx),
+                move |this, _, cx| this.start_idle_runtime(id, cx),
             ));
         }
         Some(row.into_any_element())

@@ -67,7 +67,7 @@ impl Waku {
         let session_id = session.id;
         if session.is_busy()
             || self.submission_preparations.contains(&session_id)
-            || self.goal_runtime_starts.contains(&session_id)
+            || self.idle_runtime_starts.contains(&session_id)
             || self.pending_deerflow_approvals.contains_key(&session_id)
             || self
                 .runtimes
@@ -112,8 +112,8 @@ impl Waku {
         } else {
             // Reuse the existing background-only runtime start, without
             // adding a chat turn. Its initial approval event drains this request.
-            self.start_goal_runtime(session_id, cx);
-            if !self.goal_runtime_starts.contains(&session_id)
+            self.start_idle_runtime(session_id, cx);
+            if !self.idle_runtime_starts.contains(&session_id)
                 && !self.runtimes.contains_key(&session_id)
             {
                 self.pending_deerflow_approvals.remove(&session_id);
@@ -178,7 +178,7 @@ impl Waku {
         let pending = self.pending_deerflow_approvals.contains_key(&session_id);
         let busy = session.is_busy()
             || self.submission_preparations.contains(&session_id)
-            || self.goal_runtime_starts.contains(&session_id);
+            || self.idle_runtime_starts.contains(&session_id);
         let disabled = confirmed == Some("off");
         let rejecting = confirmed == Some("reject_always");
         let read_only = confirmed == Some("read_only");

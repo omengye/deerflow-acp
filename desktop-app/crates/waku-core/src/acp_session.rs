@@ -250,18 +250,17 @@ pub fn provider_session_history(
     .with_context(|| format!("{} could not replay the session", provider.display_name()))?;
 
     let updates = std::mem::take(&mut *updates.lock());
-    let mut history = history_from_updates_with_images(provider, &updates, Some(blobs));
+    let mut history = history_from_updates_with_images(&updates, Some(blobs));
     retain_recent_messages(&mut history, visible_turn_limit);
     Ok(history)
 }
 
 #[cfg(test)]
-fn history_from_updates(provider: ProviderKind, updates: &[Value]) -> ProviderSessionHistory {
-    history_from_updates_with_images(provider, updates, None)
+fn history_from_updates(updates: &[Value]) -> ProviderSessionHistory {
+    history_from_updates_with_images(updates, None)
 }
 
 fn history_from_updates_with_images(
-    provider: ProviderKind,
     updates: &[Value],
     blobs: Option<&crate::blob_store::BlobStore>,
 ) -> ProviderSessionHistory {
@@ -323,11 +322,6 @@ fn history_from_updates_with_images(
         else {
             continue;
         };
-        if provider == ProviderKind::Fx
-            && (text.starts_with("[context] ") || text.starts_with("skill discovery warning: "))
-        {
-            continue;
-        }
         let Some(turn_id) = history.turns.last().map(|turn| turn.id) else {
             continue;
         };
@@ -456,7 +450,6 @@ mod tests {
         let blobs = crate::blob_store::BlobStore::new(root.clone());
         let image = json!({"type":"image","mimeType":"image/png","data":PNG});
         let history = history_from_updates_with_images(
-            ProviderKind::DeerFlow,
             &[
                 json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"draw"}}),
                 json!({"sessionUpdate":"agent_message_chunk","content":image}),
@@ -505,7 +498,6 @@ mod tests {
     #[test]
     fn deerflow_artifact_links_survive_history_replay() {
         let history = history_from_updates(
-            ProviderKind::DeerFlow,
             &[
                 json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Make a report"}}),
                 json!({"sessionUpdate":"agent_message_chunk","content":{"type":"resource_link","name":"Report [final].pdf","uri":"file:///C:/reports/report.pdf"}}),
@@ -555,7 +547,6 @@ mod tests {
     #[test]
     fn imports_only_visible_acp_chunks_and_preserves_empty_turn_shells() {
         let history = history_from_updates(
-            ProviderKind::Kimi,
             &[
                 json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"one"}}),
                 json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"private"}}),
@@ -582,7 +573,6 @@ mod tests {
     #[test]
     fn joins_consecutive_content_blocks_without_inventing_turns() {
         let history = history_from_updates(
-            ProviderKind::OpenCode,
             &[
                 json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hello "}}),
                 json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"world"}}),

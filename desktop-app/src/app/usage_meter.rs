@@ -1,134 +1,12 @@
-//! The usage meter under the composer: a circular context-window gauge that
-//! opens a panel with the session's context occupancy and the account's
-//! rate-limit lanes, mirroring Claude Code's `/usage` rows. Context numbers
-//! stream in from every provider transport that reports them; plan lanes come
-//! from the Claude OAuth endpoint (fetched off-thread in [`crate::usage`]),
-//! OpenCode Go's usage endpoint, and Codex's own rate-limit
-//! notifications. Frames read only snapshots stored on the entity.
-
+//! Context-window usage for the current DeerFlow session.
 use gpui::{PathBuilder, relative};
 
 use super::*;
-use crate::usage::{PlanUsage, format_tokens, reset_label};
+use crate::usage::format_tokens;
 
 const USAGE_METER_MENU_ID: &str = "usage-meter";
 
-/// Providers with an account-level plan fetcher. Codex additionally refreshes
-/// live from its own stream notifications.
-pub(super) const PLAN_USAGE_PROVIDERS: [ProviderKind; 3] = [
-    ProviderKind::Claude,
-    ProviderKind::Codex,
-    ProviderKind::OpenCode,
-];
-
-/// Refresh cadences for the plan snapshots. Quota moves only when turns run,
-/// so idle refreshes stay rare; a settled turn or a just-opened panel asks
-/// sooner.
-const PLAN_USAGE_REFRESH: Duration = Duration::from_secs(300);
-const PLAN_USAGE_REFRESH_STALE: Duration = Duration::from_secs(30);
-const PLAN_USAGE_RETRY: Duration = Duration::from_secs(90);
-
 impl Waku {
-    /// Start background fetches of any plan meters whose snapshot is due.
-    /// The slow maintenance clock and explicit panel-open requests call this;
-    /// guards keep it to one in-flight fetch per provider.
-    pub(super) fn maybe_refresh_plan_usage(&mut self, cx: &mut Context<Self>) {
-        // Disabling a provider only stops it backing new sessions; a session
-        // already locked to it keeps running, and while one is selected its
-        // usage panel still owes the account meters. Without this the panel
-        // would show its loading skeleton forever: fetchable provider, no
-        // snapshot, and no fetch ever allowed to start.
-        let selected_provider = self.selected_session().map(|session| session.provider);
-        for provider in PLAN_USAGE_PROVIDERS {
-            if self.plan_usage_pending.contains(&provider)
-                || (!self.provider_enabled(provider) && selected_provider != Some(provider))
-            {
-                continue;
-            }
-            let interval = if self.plan_usage_error.contains_key(&provider) {
-                PLAN_USAGE_RETRY
-            } else if self.plan_usage_stale.contains(&provider) {
-                PLAN_USAGE_REFRESH_STALE
-            } else {
-                PLAN_USAGE_REFRESH
-            };
-            if self
-                .plan_usage_checked_at
-                .get(&provider)
-                .is_some_and(|checked| checked.elapsed() < interval)
-            {
-                continue;
-            }
-            self.plan_usage_pending.insert(provider);
-            let tx = self.plan_usage_tx.clone();
-            let event_wake = self.event_wake_tx.clone();
-            let claude_version = self
-                .provider_versions
-                .get(&ProviderKind::Claude)
-                .cloned()
-                .flatten();
-            let daemon = self.daemon.client();
-            cx.background_executor()
-                .spawn(async move {
-                    let result = match daemon.request(
-                        Uuid::nil(),
-                        Uuid::nil(),
-                        waku_client::Command::FetchPlanUsage {
-                            provider,
-                            cli_version: claude_version,
-                        },
-                    ) {
-                        Ok(waku_client::ResponsePayload::PlanUsage { usage }) => Ok(usage),
-                        Ok(_) => Err(anyhow::anyhow!(
-                            "the daemon returned an invalid plan usage response"
-                        )),
-                        Err(error) => Err(error),
-                    };
-                    if tx
-                        .send((provider, result.map_err(|error| format!("{error:#}"))))
-                        .is_ok()
-                    {
-                        signal_event_pump(&event_wake);
-                    }
-                })
-                .detach();
-        }
-    }
-
-    pub(super) fn drain_plan_usage_events(&mut self) -> bool {
-        let mut changed = false;
-        while let Ok((provider, result)) = self.plan_usage_events.try_recv() {
-            self.plan_usage_pending.remove(&provider);
-            self.plan_usage_stale.remove(&provider);
-            self.plan_usage_checked_at.insert(provider, Instant::now());
-            match result {
-                Ok(Some(usage)) => {
-                    changed |= self.plan_usage.get(&provider) != Some(&usage)
-                        || self.plan_usage_error.contains_key(&provider)
-                        || self.plan_usage_unconfigured.contains(&provider);
-                    self.plan_usage.insert(provider, usage);
-                    self.plan_usage_error.remove(&provider);
-                    self.plan_usage_unconfigured.remove(&provider);
-                }
-                Ok(None) => {
-                    let had_usage = self.plan_usage.remove(&provider).is_some();
-                    let had_error = self.plan_usage_error.remove(&provider).is_some();
-                    let newly_unconfigured = self.plan_usage_unconfigured.insert(provider);
-                    changed |= had_usage || had_error || newly_unconfigured;
-                }
-                Err(error) => {
-                    let was_unconfigured = self.plan_usage_unconfigured.remove(&provider);
-                    changed |=
-                        self.plan_usage_error.get(&provider) != Some(&error) || was_unconfigured;
-                    // Keep any previous snapshot; stale meters with reset
-                    // times still self-correct visually.
-                    self.plan_usage_error.insert(provider, error);
-                }
-            }
-        }
-        changed
-    }
-
     /// Whether the footer shows the gauge. Always true with a session
     /// selected — an empty ring is the honest "nothing measured yet" state,
     /// and hiding it would make the control feel intermittent.
@@ -173,33 +51,14 @@ impl Waku {
             return None;
         }
         let session = self.selected_session()?;
-        let provider = session.provider;
         let context = session.context_usage;
         let theme = Theme::current(cx);
-        let plan = self.plan_usage.get(&provider).cloned();
-        let error = self.plan_usage_error.get(&provider).cloned();
-        // Fetchable but nothing cached yet: the panel shows a skeleton
-        // whether the fetch is already in flight or lands on the next tick.
-        let plan_loading = plan.is_none()
-            && error.is_none()
-            && !self.plan_usage_unconfigured.contains(&provider)
-            && PLAN_USAGE_PROVIDERS.contains(&provider);
 
         let weak = cx.entity().downgrade();
         let handle = self.menu_handle_with(USAGE_METER_MENU_ID, cx, move |open, window, cx| {
             if open {
                 let mut card_focus = None;
                 let _ = weak.update(cx, |this, cx| {
-                    // An opening panel wants fresh numbers; the pump honors
-                    // the stale flag on its next tick once the backoff allows.
-                    if let Some(provider) = this
-                        .selected_session()
-                        .map(|session| session.provider)
-                        .filter(|provider| PLAN_USAGE_PROVIDERS.contains(provider))
-                    {
-                        this.plan_usage_stale.insert(provider);
-                    }
-                    this.maybe_refresh_plan_usage(cx);
                     card_focus = this
                         .menus
                         .borrow()
@@ -234,14 +93,13 @@ impl Waku {
             Some(percent) if percent >= 80.0 => theme.warning,
             _ => theme.gauge,
         };
-        let tooltip = match (&error, percent) {
-            (Some(error), _) => SharedString::from(tr!("usage.refresh_failed", error = error)),
-            (None, Some(percent)) => SharedString::from(tr!(
+        let tooltip = match percent {
+            Some(percent) => SharedString::from(tr!(
                 "usage.context_used",
                 percent = format!("{percent:.0}"),
                 shortcut = crate::platform::primary_shortcut("⌘U", "Ctrl+U")
             )),
-            (None, None) => SharedString::from(tr!(
+            None => SharedString::from(tr!(
                 "usage.shortcut",
                 shortcut = crate::platform::primary_shortcut("⌘U", "Ctrl+U")
             )),
@@ -266,15 +124,7 @@ impl Waku {
             &handle,
             MenuAlign::AboveRight,
             move |handle, _, cx| {
-                usage_panel(
-                    handle,
-                    provider,
-                    context,
-                    plan.clone(),
-                    error.as_deref(),
-                    plan_loading,
-                    cx,
-                )
+                usage_panel(handle, context, cx)
             },
         ))
     }
@@ -367,15 +217,10 @@ fn context_gauge(percent: Option<f64>, track: Hsla, fill: Hsla) -> impl IntoElem
 
 fn usage_panel(
     handle: &ContextMenuHandle,
-    provider: ProviderKind,
     context: Option<ContextUsage>,
-    plan: Option<PlanUsage>,
-    error: Option<&str>,
-    plan_loading: bool,
     cx: &App,
 ) -> AnyElement {
     let theme = Theme::current(cx);
-    let now = unix_time() as i64;
     let mut panel = div()
         // Focused on open so the surrounding menu context sees `escape`.
         .track_focus(handle.focus_handle())
@@ -429,158 +274,9 @@ fn usage_panel(
             )
             .child(meter_bar(&theme, percent.unwrap_or(0.0))),
     );
-    if plan.is_some() || error.is_some() || plan_loading {
-        panel = panel.child(div().h(px(1.0)).flex_none().bg(theme.border));
-    }
-
-    if let Some(plan) = plan {
-        let header = match &plan.plan_label {
-            Some(label) => tr!("usage.plan_limits_named", plan = label),
-            None => tr!("usage.plan_limits"),
-        };
-        let usage_url = match provider {
-            ProviderKind::Claude => Some("https://claude.ai/settings/usage"),
-            ProviderKind::Codex => Some("https://chatgpt.com/codex/settings/usage"),
-            _ => None,
-        };
-        let header_row = div().flex().items_center().gap(px(6.0)).child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .truncate()
-                .text_size(sp(12.5))
-                .text_color(theme.text_tertiary)
-                .child(SharedString::from(header)),
-        );
-        panel = panel.child(match usage_url {
-            Some(url) => header_row
-                .id("plan-usage-link")
-                .cursor_default()
-                .hover(|element| element.opacity(0.8))
-                .tooltip(Tooltip::text(tr!("usage.open_account_settings")))
-                .on_click(move |_, _, cx| cx.open_url(url))
-                .child(icon("icons/arrow-right.svg", 10.0, theme.text_tertiary))
-                .into_any_element(),
-            None => header_row.into_any_element(),
-        });
-        for window in &plan.windows {
-            panel = panel.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(7.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(
-                                // A long lane label gives way — truncated
-                                // with an ellipsis — rather than pushing the
-                                // reset time and percent past the card edge.
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .text_color(theme.text)
-                                    .child(SharedString::from(window.label.clone())),
-                            )
-                            .children(window.resets_at.map(|resets_at| {
-                                div()
-                                    .flex_none()
-                                    .text_size(sp(12.5))
-                                    .text_color(theme.text_tertiary)
-                                    .child(SharedString::from(reset_label(resets_at, now)))
-                            }))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_size(sp(12.5))
-                                    .text_color(theme.text_secondary)
-                                    .child(SharedString::from(format!("{:.0}%", window.percent))),
-                            ),
-                    )
-                    .child(meter_bar(&theme, window.percent)),
-            );
-        }
-    } else if plan_loading {
-        panel = panel.child(plan_skeleton(&theme));
-    } else if let Some(error) = error {
-        panel = panel.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .child(
-                    div()
-                        .text_size(sp(12.5))
-                        .text_color(theme.text_tertiary)
-                        .child(tr!("usage.plan_limits")),
-                )
-                .child(
-                    div()
-                        .text_size(sp(12.5))
-                        .text_color(theme.text_secondary)
-                        .child(SharedString::from(tr!("usage.unavailable", error = error))),
-                ),
-        );
-    }
-
     panel.into_any_element()
 }
 
-/// Placeholder for the plan section while its first fetch is in flight:
-/// a header bar and two quota rows, pulsing gently. `with_animation` honors
-/// the system's reduce-motion setting on its own.
-fn plan_skeleton(theme: &Theme) -> AnyElement {
-    let theme = *theme;
-    let bar = move |width: f32| {
-        div()
-            .h(px(9.0))
-            .w(px(width))
-            .flex_none()
-            .rounded(px(4.5))
-            .bg(theme.overlay_strong)
-    };
-    let row = move |label_width: f32, value_width: f32| {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(9.0))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .child(bar(label_width))
-                    .child(div().flex_1())
-                    .child(bar(value_width)),
-            )
-            .child(
-                div()
-                    .h(px(3.0))
-                    .w_full()
-                    .flex_none()
-                    .rounded_full()
-                    .bg(theme.overlay_strong),
-            )
-    };
-    motion::pulse(Duration::from_millis(1400), move |phase| {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(12.0))
-            .child(bar(132.0))
-            .child(row(96.0, 64.0))
-            .child(row(120.0, 64.0))
-            .opacity(pulsating_between(0.45, 0.9)(phase))
-            .into_any_element()
-    })
-    .every(2)
-    .into_any_element()
-}
-
-/// A quota bar: full-width track, fill proportional to `percent`. A lane in
-/// use keeps a visible sliver even under one percent.
 fn meter_bar(theme: &Theme, percent: f64) -> Div {
     let fraction = (percent / 100.0).clamp(0.0, 1.0) as f32;
     let fraction = if fraction > 0.0 {

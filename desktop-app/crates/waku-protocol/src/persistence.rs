@@ -2,14 +2,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::model::{AgentSession, MessageRole};
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ComposerDraftAttachment {
-    #[ts(type = "string")]
     pub path: PathBuf,
     pub mention: String,
     pub name: String,
@@ -19,7 +17,7 @@ pub struct ComposerDraftAttachment {
     pub blob_reference: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ComposerDraft {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,
@@ -33,7 +31,7 @@ impl ComposerDraft {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ComposerDrafts {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub new_sessions: HashMap<Uuid, ComposerDraft>,
@@ -51,7 +49,7 @@ pub enum ComposerDraftKey {
 ///
 /// Draft updates are keyed so multiple connected clients cannot overwrite
 /// unrelated drafts by sending stale whole-file snapshots.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
@@ -59,11 +57,9 @@ pub enum ComposerDraftKey {
 )]
 pub enum ComposerDraftTarget {
     NewSession {
-        #[ts(type = "string")]
         project_id: Uuid,
     },
     Session {
-        #[ts(type = "string")]
         session_id: Uuid,
     },
 }
@@ -86,7 +82,7 @@ impl From<ComposerDraftTarget> for ComposerDraftKey {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ComposerDraftChange {
     pub target: ComposerDraftTarget,
     /// `None` removes the target. Empty drafts are normalized to removal too.
@@ -155,7 +151,7 @@ impl ComposerDrafts {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SessionMessageMatch {
     pub session_id: Uuid,
     pub source: MessageRole,

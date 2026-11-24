@@ -124,7 +124,6 @@ const IDLE_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const IDLE_SESSION_SWEEP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BACKGROUND_WORK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const BACKGROUND_WORK_TICK_INTERVAL: Duration = Duration::from_secs(1);
-const PLAN_USAGE_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
 const STREAM_SAVE_INTERVAL: Duration = Duration::from_secs(1);
 /// Zed keeps status toasts on screen for ten seconds, pausing the countdown
 /// while the pointer is over the toast so a long message remains readable.
@@ -222,7 +221,6 @@ enum SettingsPage {
     General,
     Providers,
     Skills,
-    Usage,
     Daemon,
     ComputerUse,
     Appearance,
@@ -257,24 +255,6 @@ impl SettingsPage {
                 | Self::DeerFlowSkillCenter
         )
     }
-}
-
-/// Which presentation the Usage page shows: the daily dashboard, the monthly
-/// statement, or the per-project ranking.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum UsageViewMode {
-    Daily,
-    Monthly,
-    Projects,
-}
-
-/// Which unit the Usage page's headline and chart read in.
-
-/// Which table the Usage page's breakdown section shows.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum UsageBreakdown {
-    Model,
-    Day,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1160,68 +1140,6 @@ pub struct Waku {
     computer_permission_tx: Sender<Result<ComputerPermissions, String>>,
     computer_permission_events: Receiver<Result<ComputerPermissions, String>>,
     computer_permission_request_pending: bool,
-    /// Account rate-limit meters per provider, fetched off-thread (Claude,
-    /// Codex, and OpenCode Go over HTTPS; Grok through a stdio probe) and
-    /// refreshed live by Codex's own stream. Frames read only this snapshot.
-    plan_usage: HashMap<ProviderKind, crate::usage::PlanUsage>,
-    /// Why a provider's last fetch failed, kept alongside stale data for the
-    /// meter's tooltip. Cleared by that provider's next success.
-    plan_usage_error: HashMap<ProviderKind, String>,
-    plan_usage_tx: Sender<(
-        ProviderKind,
-        Result<Option<crate::usage::PlanUsage>, String>,
-    )>,
-    plan_usage_events: Receiver<(
-        ProviderKind,
-        Result<Option<crate::usage::PlanUsage>, String>,
-    )>,
-    plan_usage_pending: HashSet<ProviderKind>,
-    /// Fetchable providers with no matching account credential. Unlike a
-    /// request failure, this hides the plan section until a later refresh
-    /// discovers a newly configured account.
-    plan_usage_unconfigured: HashSet<ProviderKind>,
-    /// When each provider's last fetch settled, successful or not — the
-    /// refresh backoff measures from here.
-    plan_usage_checked_at: HashMap<ProviderKind, Instant>,
-    /// Providers whose turn settled since the last fetch, so the meters have
-    /// moved.
-    plan_usage_stale: HashSet<ProviderKind>,
-    /// The settings Usage page's snapshot: historical token usage
-    /// scanned from provider transcripts off-thread. Frames read only this.
-    usage_history: Option<crate::usage_history::UsageHistory>,
-    /// The window a scan is currently in flight for, so a repeat request for
-    /// the same window coalesces while a changed window supersedes it.
-    usage_history_pending_for: Option<crate::usage_history::UsageWindow>,
-    /// Bumped per scan; a result from a superseded scan is discarded.
-    usage_history_generation: u64,
-    /// When the current snapshot landed, for the reopen-staleness check.
-    usage_history_scanned_at: Option<Instant>,
-    usage_view: UsageViewMode,
-    /// The selected window for the daily and project views; the statement
-    /// view fixes its own.
-    usage_window: crate::usage_history::UsageWindow,
-    usage_breakdown: UsageBreakdown,
-    /// Scroll position of the monthly statement card, which scrolls
-    /// internally like the projects card so the two list views feel alike.
-    usage_months_scroll: ScrollHandle,
-    usage_months_scrollbar: Rc<ScrollbarState>,
-    /// Filter query over the Usage page's project rows.
-    usage_project_filter: Entity<TextInput>,
-    /// Virtualized list over the filtered project rows, so only visible rows
-    /// build elements no matter how many working directories have usage.
-    usage_projects_list: ListState,
-    usage_projects_scrollbar: Rc<ScrollbarState>,
-    /// Indices into `usage_history.projects` the filter leaves visible — the
-    /// row builder reads only this.
-    usage_projects_rows: RefCell<Vec<usize>>,
-    /// Peak token count for the visible rows' bars, refreshed
-    /// once per frame rather than per row.
-    usage_projects_scale: Cell<f64>,
-    /// Hovered or keyboard-selected day index on the Usage page's chart.
-    usage_chart_hover: Option<usize>,
-    /// The chart plot's window bounds, written during paint so the mouse-move
-    /// handler can map positions to day indices.
-    usage_chart_bounds: Rc<Cell<Option<gpui::Bounds<Pixels>>>>,
     computer_use_app_icons: RefCell<HashMap<String, Option<std::sync::Arc<gpui::Image>>>>,
     computer_use_app_icon_loads: RefCell<HashSet<String>>,
     /// Installed folder-capable apps for the header's "open project in"
@@ -1258,23 +1176,9 @@ pub struct Waku {
     /// Window-modal Git commit/push UI. Its repository snapshot is filled
     /// off-thread; frames only read this in-memory value.
     commit_dialog: Option<commit_dialog::CommitDialogState>,
-    goal_dialog: Option<goal_dialog::GoalDialogState>,
-    goal_dialog_request: Option<goal_dialog::GoalDialogRequest>,
-    /// Goal operations accepted before the session's runtime exists. Goals
-    /// attach to the provider thread, not to any turn, so `/goal` on a fresh
-    /// task starts the provider and these drain once it installs.
-    pending_goal_operations: HashMap<Uuid, Vec<crate::model::GoalOperation>>,
-    /// Sessions whose runtime is being started by a goal operation rather
-    /// than a submission. Submissions queue behind this instead of racing a
-    /// second provider process into existence.
-    goal_runtime_starts: HashSet<Uuid>,
-    /// When each session's goal accounting was last reported. The chip adds
-    /// the wall clock since then while an active goal's turn runs, so elapsed
-    /// pursuit time ticks live the way the Codex CLI shows it.
-    goal_observed_at: HashMap<Uuid, Instant>,
-    /// Commit-message generation and Git mutation outlive the modal that
-    /// started them. Keeping the operation on the app also lets every
-    /// Environment surface reflect and gate the same in-flight action.
+    /// Sessions connecting for DeerFlow controls before the first prompt.
+    idle_runtime_starts: HashSet<Uuid>,
+
     commit_operation: Option<commit_dialog::CommitOperationState>,
     /// Slash commands discovered per (provider, project root, CLI override).
     /// Filesystem and CLI probes live off the UI thread; frames read this cache.
@@ -1663,7 +1567,6 @@ mod deerflow_settings;
 mod deerflow_tasks;
 mod drafts;
 mod file_search;
-mod goal_dialog;
 mod credential_enrollment;
 mod image_preview;
 mod render;
@@ -1682,7 +1585,6 @@ mod transcript;
 mod transcript_search;
 mod transcript_view;
 mod usage_meter;
-mod usage_page;
 mod window_chrome;
 
 pub use autocomplete::init as init_composer_autocomplete;
@@ -1692,7 +1594,6 @@ use background_work::{
 pub use command_palette::init as init_command_palette;
 pub use commit_dialog::init as init_commit_dialog_keys;
 use components::*;
-pub use goal_dialog::init as init_goal_dialog_keys;
 pub use image_preview::init as init_image_preview_keys;
 pub use settings::init as init_settings_keys;
 pub use sidebar::init as init_sidebar_keys;
@@ -2085,8 +1986,6 @@ impl Waku {
         let search_plugins = search_plugins::SearchPlugins::new(window, cx);
         let channel_settings = channels::ChannelSettings::new(window, cx);
         let schedule_settings = schedules::ScheduleSettings::new(window, cx);
-        let usage_project_filter =
-            cx.new(|cx| TextInput::new(window, cx).placeholder(tr!("input.filter_projects")));
         let right_panel_diff_filter =
             cx.new(|cx| TextInput::new(window, cx).placeholder(tr!("diff.filter_files")));
         let navigation_rail = cx.new(|_| ConversationNavigationRail::new());
@@ -2237,15 +2136,14 @@ impl Waku {
                 provider,
                 installed: false,
                 path: None,
-                models: crate::model_catalog::fallback_models(provider),
-                agent_presets: crate::model_catalog::fallback_agent_presets(provider),
+                models: Vec::new(),
+                agent_presets: Vec::new(),
             })
             .collect::<Vec<_>>();
         let (provider_probe_tx, provider_probe_events) = unbounded();
         let (provider_version_tx, provider_version_events) = unbounded();
         let (provider_detection_tx, provider_detection_events) = unbounded();
         let (computer_permission_tx, computer_permission_events) = unbounded();
-        let (plan_usage_tx, plan_usage_events) = unbounded();
         let (event_wake_tx, event_wake_events) = smol::channel::bounded(1);
         let (task_state_sync_tx, task_state_sync_events) = unbounded();
         #[cfg(target_os = "macos")]
@@ -2296,7 +2194,6 @@ impl Waku {
         let transcript_rows = ListState::new(0, ListAlignment::Bottom, px(2048.0));
         let anchored_transcript_rows = ListState::new(0, ListAlignment::Top, px(2048.0));
         let sidebar_list_state = ListState::new(0, ListAlignment::Top, px(256.0));
-        let usage_projects_list = ListState::new(0, ListAlignment::Top, px(256.0));
         let branch_picker_list_state = ListState::new(0, ListAlignment::Top, px(152.0));
         let transcript_is_scrolled = Rc::new(Cell::new(false));
         let transcript_anchor_following = Rc::new(Cell::new(false));
@@ -2652,15 +2549,6 @@ impl Waku {
             )
             .detach();
             cx.subscribe(
-                &usage_project_filter,
-                |_: &mut Self, _, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Edited) {
-                        cx.notify();
-                    }
-                },
-            )
-            .detach();
-            cx.subscribe(
                 &right_panel_diff_filter,
                 |this: &mut Self, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Edited) {
@@ -2794,20 +2682,6 @@ impl Waku {
             })
             .detach();
 
-            cx.spawn(async move |this, cx| {
-                loop {
-                    if this
-                        .update(cx, |this, cx| this.maybe_refresh_plan_usage(cx))
-                        .is_err()
-                    {
-                        break;
-                    }
-                    cx.background_executor()
-                        .timer(PLAN_USAGE_MAINTENANCE_INTERVAL)
-                        .await;
-                }
-            })
-            .detach();
 
             cx.spawn(async move |this, cx| {
                 loop {
@@ -2904,30 +2778,6 @@ impl Waku {
                 computer_permission_tx,
                 computer_permission_events,
                 computer_permission_request_pending: false,
-                plan_usage: HashMap::new(),
-                plan_usage_error: HashMap::new(),
-                plan_usage_tx,
-                plan_usage_events,
-                plan_usage_pending: HashSet::new(),
-                plan_usage_unconfigured: HashSet::new(),
-                plan_usage_checked_at: HashMap::new(),
-                plan_usage_stale: HashSet::new(),
-                usage_history: None,
-                usage_history_pending_for: None,
-                usage_history_generation: 0,
-                usage_history_scanned_at: None,
-                usage_view: UsageViewMode::Daily,
-                usage_window: crate::usage_history::UsageWindow::TrailingDays(30),
-                usage_breakdown: UsageBreakdown::Model,
-                usage_months_scroll: ScrollHandle::new(),
-                usage_months_scrollbar: ScrollbarState::new(),
-                usage_project_filter,
-                usage_projects_list,
-                usage_projects_scrollbar: ScrollbarState::new(),
-                usage_projects_rows: RefCell::new(Vec::new()),
-                usage_projects_scale: Cell::new(0.0),
-                usage_chart_hover: None,
-                usage_chart_bounds: Rc::default(),
                 computer_use_app_icons: RefCell::new(HashMap::new()),
                 computer_use_app_icon_loads: RefCell::new(HashSet::new()),
                 open_in_apps: Rc::new(Vec::new()),
@@ -2944,11 +2794,7 @@ impl Waku {
                 visible_branch_snapshot: None,
                 branch_operation_pending: false,
                 commit_dialog: None,
-                goal_dialog: None,
-                goal_dialog_request: None,
-                pending_goal_operations: HashMap::new(),
-                goal_runtime_starts: HashSet::new(),
-                goal_observed_at: HashMap::new(),
+                idle_runtime_starts: HashSet::new(),
                 commit_operation: None,
                 // Providers × workspaces; both scans are small, the cache
                 // only exists to keep them off the frame path.

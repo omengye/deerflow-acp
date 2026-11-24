@@ -94,12 +94,11 @@ settings.daemon: サーバー接続
 settings.computer_use: コンピュータ操作
 settings.general_keywords: 一般 ローカル プロジェクト 会話 プライバシー 分析 テレメトリ 匿名 共有 アップデート 自動 バージョン 数学 数式 math latex
 settings.appearance_keywords: 外観 テーマ システム ライト ダーク 言語 英語 中国語 簡体字 日本語 フォント サイズ 文字 エディタ
-settings.providers_keywords: プロバイダー エージェント モデル CLI バージョン インストール 検出 claude codex cursor opencode opencode2 amp grok pi deerflow
+settings.providers_keywords: プロバイダー エージェント モデル CLI バージョン インストール 検出 deerflow
 settings.skills: スキル
-settings.skills_keywords: スキル ライブラリ 自動進化 学習 検出 生成 検証 採用 ロールバック 履歴 状態 エージェント 無効 有効 削除 claude codex cursor opencode pi amp 共有
-settings.usage_keywords: 使用状況 トークン キャッシュ 日別 グラフ モデル 内訳 履歴 claude codex
+settings.skills_keywords: スキル ライブラリ 自動進化 学習 検出 生成 検証 採用 ロールバック 履歴 状態 エージェント 無効 有効 削除 共有
 settings.daemon_keywords: デーモン サーバー リモート ウェブ ネットワーク 公開 オリジン トークン ポート websocket
-settings.computer_use_keywords: コンピュータ 操作 画面収録 アクセシビリティ アプリ 制御 codex
+settings.computer_use_keywords: コンピュータ 操作 画面収録 アクセシビリティ アプリ 制御
 settings.back: 戻る
 settings.search: 設定を検索
 daemon.expose_title: 管理対象デーモンを公開
@@ -229,7 +228,7 @@ providers.checked_minutes_ago: "%{count} 分前に確認済み"
 providers.checked_hours_ago: "%{count} 時間前に確認済み"
 
 computer_use.allow_apps: Waku にアプリの操作を許可
-computer_use.availability: コンピュータ操作は Codex、OpenCode、OpenCode 2、Grok、Pi で利用できます
+computer_use.availability: デスクトップでのコンピュータ操作に必要なシステム権限を設定します。
 computer_use.macos_access: macOS のアクセス権
 computer_use.helper_access: Waku の分離された操作ヘルパー %{helper} にアクセスを許可してください
 computer_use.screen_recording: 画面収録
@@ -460,7 +459,7 @@ agent_preset.no_description: 説明はありません。
 computer_use.allow_for_task: このタスクで許可
 computer_use.always_allow_app: このアプリを常に許可
 computer_use.allow_control: Waku に「%{app}」の操作を許可しますか？
-computer_use.screenshot_shared: このウインドウのスクリーンショットが、使用中の Codex モデルと共有されます
+computer_use.screenshot_shared: このウインドウのスクリーンショットが使用中のモデルと共有されます。
 computer_use.sensitive_action: この操作ではテキストの入力やキー操作が行われる可能性があります
 computer_use.bundle_id: "Bundle ID：%{id}"
 computer_use.no_bundle_id: このアプリには Bundle ID がないため、常に許可することはできません
@@ -566,7 +565,7 @@ skills.deleted_toast: "「%{name}」をゴミ箱に移動しました"
 skills.delete_failed: "スキルを削除できませんでした：%{error}"
 skills.toggle_failed: "スキルを更新できませんでした：%{error}"
 skills.empty_title: スキルはまだありません
-skills.empty_description: スキルは SKILL.md を含むフォルダです。デプロイ手順やレビューチェックリストのように、どのエージェントでも読み込める再利用可能な指示をまとめられます。Claude Code、Codex、その他のエージェント向けにインストールされたスキルがここに表示され、/name で呼び出せます。
+skills.empty_description: スキルは SKILL.md に保存された再利用可能な手順です。インストール済みのスキルはここに表示され、/name で呼び出せます。
 skills.library: スキルライブラリ
 skills.details: スキルの詳細
 skills.section_user_skills: ユーザースキル
@@ -576,32 +575,7 @@ skills.disable_named: "%{name} を無効にする"
 commands.fast_description: 高速モードを切り替え
 commands.fast_enabled: 高速モードを有効にしました
 commands.fast_disabled: 高速モードを無効にしました
-commands.goal_description: このタスクが継続して追求するゴールを設定
 commands.resume_description: ターミナルのエージェントセッションを再開
-goal.title: ゴール
-goal.objective_placeholder: このタスクは何を目指し続けるべきですか？
-goal.set: ゴールを設定
-goal.save: ゴールを保存
-goal.replace: ゴールを置き換え
-goal.replace_notice: 保存すると現在のゴールを置き換え、進捗をやり直します。
-goal.pause: ゴールを一時停止
-goal.resume: ゴールを再開
-goal.clear: ゴールをクリア
-goal.status_active: 進行中
-goal.status_paused: 一時停止中
-goal.status_stalled: 停滞中
-goal.status_usage_limited: 使用量上限
-goal.status_budget_limited: 予算切れ
-goal.status_complete: 完了
-goal.chip_active: ゴールを追求中
-goal.chip_paused: ゴール一時停止中
-goal.chip_stalled: ゴール停滞中
-goal.chip_usage_limited: ゴールが使用量上限に到達
-goal.chip_budget_limited: ゴール未達
-goal.chip_complete: ゴール達成
-goal.set_notice: "ゴールを設定: %{objective}"
-goal.usage_tokens: "%{used} / %{budget} トークン"
-goal.usage_tokens_unbudgeted: "%{used} トークン"
 composer.edit_in_composer: 入力欄で編集
 composer.steer: 指示を追加
 composer.remove_followup: キューから削除
@@ -653,7 +627,6 @@ session.turn_completed: ターンが完了しました
 session.turn_waiting_background: バックグラウンドタスクを待っています
 transcript.waiting_background: バックグラウンドタスクを待っています
 session.stopped_before_response: エージェントは回答を返す前に停止しました
-session.codex_exited_before_response: Codex app-server は回答を返す前に終了しました
 session.failed_after_partial_response: このターンは完了前に失敗しました。途中までの出力は保存されています。
 session.agent_exited_during_turn: このターンが完了する前にエージェントとの接続が終了しました。途中までの出力は保存されています。
 session.steer_rejected: エージェントに追加の指示を送れませんでした（%{error}）。メッセージはフォローアップとしてキューに追加されました
@@ -691,8 +664,6 @@ errors.provider_native_thread_cursor_unavailable: "%{provider} のネイティ�
 errors.provider_waku_task_unavailable: "%{provider} の Waku タスクは利用できません"
 errors.provider_not_installed: "%{provider} はインストールされていません"
 errors.provider_not_found: "%{provider} はインストールされていないか、見つかりませんでした"
-errors.claude_fork_checkpoint_missing: Claude からフォーク用チェックポイントが返されませんでした
-errors.claude_turn_checkpoint_unavailable: "そのターンの Claude ネイティブチェックポイントは利用できません：%{error}"
 errors.provider_session_file_unavailable: "%{provider} のネイティブセッションファイルは利用できません"
 errors.provider_turn_branching_unsupported: "%{provider} は特定のターンでの巻き戻しや分岐ができません"
 errors.fork_task: "タスクをフォークできませんでした：%{error}"
@@ -740,10 +711,7 @@ errors.select_model: "モデルを選択できませんでした：%{error}"
 errors.read_provider_event_stream: "%{provider} のイベントストリームを読み取れませんでした：%{error}"
 errors.answer_provider_permission: "%{provider} の権限リクエストに回答できませんでした：%{error}"
 errors.answer_provider_question: "%{provider} の質問に回答できませんでした：%{error}"
-errors.initialize_codex_app_server: Codex app-server を初期化できませんでした
 errors.register_computer_use_skill: Waku のコンピュータ操作スキルを Codex に登録できませんでした
-errors.codex_thread_open_incomplete: Codex はスレッドを開く処理を完了しませんでした
-errors.codex_goals_unsupported: このバージョンの Codex はスレッドゴールに対応していません
 errors.provider_receive_prompt: "%{provider} はプロンプトを受信できませんでした"
 errors.provider_start_turn: "%{provider} はターンを開始できませんでした"
 errors.provider_rejected_steer: "%{provider} が追加の指示を拒否しました：%{error}"
@@ -754,6 +722,7 @@ errors.provider_complete_turn: "%{provider} はこのターンを完了できま
 errors.provider_reported_error: "%{provider} からエラーが報告されました"
 
 session.response_unavailable: その回答は利用できなくなりました
+session.archived_provider: "過去の %{provider} セッションは読み取り専用です"
 session.response_cannot_fork: その回答からは現在タスクをフォークできません
 session.response_fork_in_progress: フォーク元のタスクを削除する前に、タスクのフォークが完了するまでお待ちください
 session.response_cannot_copy: その回答を新しいタスクにコピーできませんでした
@@ -1003,114 +972,10 @@ duration.minutes_short: "%{count}分"
 duration.hours_short: "%{count}時間"
 duration.two_units: "%{first} %{second}"
 
-usage.scan_summary: "%{scanned} 件の会話記録をスキャン（対象期間外 %{skipped} 件）· 使用量レコード %{records} 件 · %{seconds} 秒"
-usage.daily: 日別
-usage.monthly: 月別
-usage.projects: プロジェクト
-usage.scanning: プロバイダーの会話記録をスキャン中…
-usage.rescan: プロバイダーの会話記録を再スキャン
-usage.range: "%{start}〜%{end}"
-usage.sessions_summary: "%{count} セッションの入力、キャッシュ読み込み、出力の合計"
-usage.processed_tokens_upper: 処理済みトークン
-usage.token_share: "トークンの %{share}"
-usage.no_activity_window: この期間のアクティビティはありません
-usage.tokens_upper: トークン
-usage.daily_processed_tokens: 日別の処理済みトークン
-usage.model_upper: モデル
-usage.day_upper: 日付
-usage.breakdown: 内訳
-usage.no_projects_match: フィルタに一致するプロジェクトはありません
-usage.by_project: プロジェクト別
-usage.projects_caption: "%{projects} · %{tokens} トークン · %{sessions}"
-usage.projects_shown: "%{projects} 件中 %{shown} 件を表示"
-usage.token_count: "%{count} トークン"
-usage.last_active: 最終利用 %{date}
-usage.show_models: "%{models} のトークン詳細を表示"
-usage.other_sessions: その他のセッション
-usage.total: 合計
-usage.processed_tokens: 処理済みトークン
-usage.per_active_day: "アクティブな 1 日あたり %{count}"
-usage.cached_input: キャッシュ済み入力
-usage.observed_input_share: "実測入力の %{share}"
-usage.uncached_input: キャッシュなしの入力
-usage.cache_writes: "キャッシュ書き込み %{count}"
-usage.output: 出力
-usage.includes_reasoning: "うち推論 %{count}"
-usage.model: モデル
-usage.share: 割合
-usage.tokens: トークン
-usage.day: 日付
-usage.no_activity_12_months: 過去 12 か月間のアクティビティはありません
-usage.last_12_months: 過去 12 か月
-usage.so_far: 現在まで
-usage.no_activity: アクティビティなし
-usage.models_by_tokens: "%{models} · トークン順"
-usage.tokens_and_sessions: "%{tokens} トークン · %{sessions}"
-usage.month_caption: "%{tokens} トークン · %{sessions} · %{days}"
-usage.last_7_days: 過去 7 日間
-usage.last_30_days: 過去 30 日間
-usage.last_90_days: 過去 90 日間
-usage.this_month: 今月
-usage.last_month: 先月
-usage.custom: カスタム
-usage.project_one: "%{count} 個のプロジェクト"
-usage.project_many: "%{count} 個のプロジェクト"
-usage.session_one: "%{count} 件のセッション"
-usage.session_many: "%{count} 件のセッション"
-usage.model_one: "%{count} 個のモデル"
-usage.model_many: "%{count} 個のモデル"
-usage.active_day_one: "アクティブ %{count} 日"
-usage.active_day_many: "アクティブ %{count} 日"
-usage.filter_projects: プロジェクトを絞り込む…
-usage.chart_description: "Claude Code と Codex の日別 %{metric}。"
-usage.refresh_failed: "使用状況の更新に失敗しました：%{error}"
 usage.context_used: コンテキストウインドウを %{percent}% 使用（%{shortcut}）
 usage.shortcut: 使用状況（%{shortcut}）
 usage.context_window: コンテキストウインドウ
-usage.plan_limits: プランの使用量上限
-usage.plan_limits_named: プランの使用量上限 · %{plan}
-usage.open_account_settings: アカウントの使用状況設定を開く
-usage.unavailable: 利用不可 — %{error}
-usage.usage_limit: 使用量の上限
-usage.hour_limit: "%{count} 時間の上限"
-usage.day_limit: "%{count} 日間の上限"
-usage.weekly_limit: 週間の上限
-usage.daily_limit: 1 日の上限
-usage.monthly_limit: 月間の上限
-usage.limit_suffix: の上限
-usage.scoped_limit: "%{period} · %{name}"
-usage.weekly_all_models: 週間 · すべてのモデル
-usage.weekly_model: 週間 · %{model}
-usage.resets_soon: まもなくリセット
-usage.resets_in_minutes: "%{count} 分後にリセット"
-usage.resets_in_hours: "%{count} 時間後にリセット"
-usage.resets_in_hours_minutes: "%{hours} 時間 %{minutes} 分後にリセット"
-usage.resets_date: "%{date} にリセット"
 
-usage_error.signin_cannot_read: "%{provider} のログイン情報では使用量を取得できません（HTTP %{status}）。%{provider} でタスクを 1 回実行すると更新されます"
-usage_error.rate_limited: 使用量 API は現在レート制限されています
-usage_error.http_status: 使用量 API から HTTP %{status} が返されました
-usage_error.invalid_json: 使用量 API から無効な JSON が返されました
-usage_error.no_home_directory: ホームディレクトリが見つかりません
-usage_error.read_file: "%{path} を読み込めませんでした"
-usage_error.codex_auth_invalid: Codex の auth.json は有効な JSON ではありません
-usage_error.codex_access_token_missing: Codex の auth.json にアクセストークンがありません。`codex login` を実行してください
-usage_error.opencode_go_key_rejected: OpenCode Go API キーでは使用量を取得できません（HTTP %{status}）。OpenCode Go に再接続してください
-usage_error.opencode_go_not_entitled: OpenCode Go の使用量には有効な OpenCode Go サブスクリプションが必要です
-usage_error.no_rate_limit_windows: 使用量 API からレート制限期間が返されませんでした
-usage_error.claude_credentials_missing: キーチェーンにも ~/.claude にも Claude Code の認証情報がありません
-usage_error.run_security: /usr/bin/security を実行できませんでした
-usage_error.keychain_item_missing: キーチェーンに %{service} の項目がありません
-usage_error.claude_credentials_invalid: Claude Code の認証情報は有効な JSON ではありません
-usage_error.claude_oauth_missing: Claude Code の認証情報に claudeAiOauth の項目がありません
-usage_error.claude_access_token_missing: Claude Code の認証情報にアクセストークンがありません
-usage_error.run_curl: /usr/bin/curl を実行できませんでした
-usage_error.curl_stdin_unavailable: curl の標準入力を利用できません
-usage_error.configure_curl: curl に設定を渡せませんでした
-usage_error.curl_did_not_finish: curl がリクエストを完了しませんでした
-usage_error.curl_failed: "curl に失敗しました：%{error}"
-usage_error.unknown_error: 不明なエラー
-usage_error.curl_no_status: curl から HTTP ステータス行が返されませんでした
 
 activity.background_shell: バックグラウンドシェル
 activity.compacted_context: コンテキストを圧縮しました

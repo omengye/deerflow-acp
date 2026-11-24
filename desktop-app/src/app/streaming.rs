@@ -273,13 +273,6 @@ impl Waku {
                 runtime.last_background_refresh_at = Instant::now();
                 runtime.driver.refresh_background_work();
                 if let Some(session) = self.state.session_mut(session_id) {
-                    if let Some(ProviderResumeCursor::Claude {
-                        resume_at: Some(message_id),
-                        ..
-                    }) = &provider_cursor
-                    {
-                        session.mark_active_turn_provider_resume_at(message_id.clone());
-                    }
                     session.provider_cursor = provider_cursor;
                     if session.status == SessionStatus::Connecting {
                         session.status = SessionStatus::Working;
@@ -377,22 +370,8 @@ impl Waku {
                         // a `/goal` began: the provider's start confirms it.
                         session.mark_active_turn_provider_started();
                         session.status = SessionStatus::Working;
-                    } else if matches!(
-                        session.provider,
-                        ProviderKind::Codex
-                            | ProviderKind::Claude
-                            | ProviderKind::OpenCode2
-                            | ProviderKind::DeerFlow
-                    ) {
-                        // Some providers start turns on their own: Codex goal
-                        // continuation pursues an active goal whenever the
-                        // thread is idle, and Claude Code re-enters the model
-                        // once a backgrounded command, subagent or monitor
-                        // settles. DeerFlow explicit execution recovery also
-                        // starts without submitting a new user prompt.
-                        // Give the turn a transcript home — there is
-                        // no user message for it — so its work streams in
-                        // instead of being dropped.
+                    } else if session.provider.is_available() {
+                        // Explicit DeerFlow recovery can start a turn without a user prompt.
                         session.begin_provider_turn();
                         session.mark_active_turn_provider_started();
                         session.status = SessionStatus::Working;
@@ -665,39 +644,6 @@ impl Waku {
                     self.enqueue_follow_up_submission(session_id, submission, cx);
                 }
             }
-            DriverEvent::PlanUsageUpdated(usage) => {
-                if let Some(provider) = self
-                    .state
-                    .sessions
-                    .iter()
-                    .find(|session| session.id == session_id)
-                    .map(|session| session.provider)
-                {
-                    self.plan_usage.insert(provider, usage);
-                }
-            }
-            DriverEvent::GoalUpdated(goal) => {
-                // Conversation meta like usage: it applies regardless of turn
-                // state, and `None` means the provider cleared the goal.
-                if goal.is_some() {
-                    self.goal_observed_at.insert(session_id, Instant::now());
-                } else {
-                    self.goal_observed_at.remove(&session_id);
-                }
-                if let Some(session) = self.state.session_mut(session_id) {
-                    if let Some(goal) = &goal
-                        && session.messages.is_empty()
-                    {
-                        // A goal-first task is named after its objective
-                        // until the provider reports a better title.
-                        session.set_title_from_prompt(&goal.objective);
-                    }
-                    if session.thread_goal != goal {
-                        session.thread_goal = goal;
-                        self.state.mark_session_dirty(session_id);
-                    }
-                }
-            }
             DriverEvent::UsageUpdated {
                 context_tokens,
                 context_window,
@@ -730,19 +676,6 @@ impl Waku {
                 );
                 let previous_kinds = self.snapshot_selected_transcript_rows(session_id);
                 let driver_error = runtime.last_driver_error.take();
-                // A settled turn moved the account's rate-limit needles; ask
-                // that provider's plan meter to refresh once its backoff
-                // allows.
-                if let Some(provider) = self
-                    .state
-                    .sessions
-                    .iter()
-                    .find(|session| session.id == session_id)
-                    .map(|session| session.provider)
-                    .filter(|provider| usage_meter::PLAN_USAGE_PROVIDERS.contains(provider))
-                {
-                    self.plan_usage_stale.insert(provider);
-                }
                 if self
                     .state
                     .sessions
@@ -844,7 +777,6 @@ impl Waku {
                 // Unwind it so the error cannot strand a spinner; if the
                 // pursuit does start later, its own start report recreates
                 // the turn.
-                self.unwind_unconfirmed_pursuit_turn(session_id);
                 let has_active_turn = self
                     .state
                     .sessions

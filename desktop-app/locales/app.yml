@@ -184,17 +184,15 @@ settings.general_keywords:
 settings.appearance_keywords:
   en: appearance theme system light dark language english chinese simplified font size text editor
 settings.providers_keywords:
-  en: providers agents models cli version install detect claude codex cursor opencode opencode2 amp grok pi deerflow
+  en: providers agents models cli version install detect deerflow
 settings.skills:
   en: Skills
 settings.skills_keywords:
-  en: skills skill library evolution learning discovery generation validation adoption rollback history status agent disable enable delete claude codex cursor opencode pi amp shared
-settings.usage_keywords:
-  en: usage tokens cache daily chart model breakdown history claude codex
+  en: skills skill library evolution learning discovery generation validation adoption rollback history status agent disable enable delete shared
 settings.daemon_keywords:
   en: daemon server remote web network expose origin token port websocket
 settings.computer_use_keywords:
-  en: computer use screen recording accessibility apps control codex
+  en: computer use screen recording accessibility apps control
 settings.back:
   en: Back
 settings.search:
@@ -449,7 +447,7 @@ providers.checked_hours_ago:
 computer_use.allow_apps:
   en: Let Waku use apps
 computer_use.availability:
-  en: Computer Use is available with Codex, OpenCode, OpenCode 2, Grok, and Pi
+  en: Set the system permissions for desktop computer use.
 computer_use.desktop_access:
   en: Desktop access
 computer_use.windows_access_description:
@@ -913,7 +911,7 @@ computer_use.always_allow_app:
 computer_use.allow_control:
   en: Allow Waku to control %{app}?
 computer_use.screenshot_shared:
-  en: A screenshot of this window will be shared with the active Codex model
+  en: A screenshot of this window will be shared with the active model.
 computer_use.sensitive_action:
   en: This action can type text or press keys
 computer_use.bundle_id:
@@ -1117,7 +1115,7 @@ skills.toggle_failed:
 skills.empty_title:
   en: No skills yet
 skills.empty_description:
-  en: A skill is a folder with a SKILL.md — reusable instructions any agent can load, like a deploy runbook or a review checklist. Skills installed for Claude Code, Codex, and every other agent show up here, invoked as /name.
+  en: Skills are reusable instructions stored in SKILL.md. Installed skills appear here and can be invoked with /name.
 skills.library:
   en: Skills library
 skills.details:
@@ -1135,59 +1133,9 @@ commands.fast_enabled:
   en: Fast mode enabled
 commands.fast_disabled:
   en: Fast mode disabled
-commands.goal_description:
-  en: Set a goal this task keeps pursuing
 commands.resume_description:
   en: Resume a terminal agent session
 
-goal.title:
-  en: Goal
-goal.objective_placeholder:
-  en: What should this task keep working toward?
-goal.set:
-  en: Set goal
-goal.save:
-  en: Save goal
-goal.replace:
-  en: Replace goal
-goal.replace_notice:
-  en: Saving replaces the current goal and restarts its progress.
-goal.pause:
-  en: Pause goal
-goal.resume:
-  en: Resume goal
-goal.clear:
-  en: Clear goal
-goal.status_active:
-  en: Active
-goal.status_paused:
-  en: Paused
-goal.status_stalled:
-  en: Stalled
-goal.status_usage_limited:
-  en: Usage limited
-goal.status_budget_limited:
-  en: Budget exhausted
-goal.status_complete:
-  en: Complete
-goal.chip_active:
-  en: Pursuing goal
-goal.chip_paused:
-  en: Goal paused
-goal.chip_stalled:
-  en: Goal stalled
-goal.chip_usage_limited:
-  en: Goal hit usage limits
-goal.chip_budget_limited:
-  en: Goal unmet
-goal.chip_complete:
-  en: Goal achieved
-goal.set_notice:
-  en: "Set goal: %{objective}"
-goal.usage_tokens:
-  en: "%{used} / %{budget} tokens"
-goal.usage_tokens_unbudgeted:
-  en: "%{used} tokens"
 composer.edit_in_composer:
   en: Edit in composer
 composer.steer:
@@ -1285,8 +1233,6 @@ transcript.waiting_background:
   en: Waiting for background tasks
 session.stopped_before_response:
   en: The agent stopped before returning a response
-session.codex_exited_before_response:
-  en: Codex app-server exited before returning a response
 session.failed_after_partial_response:
   en: This turn failed before completion. Partial output has been preserved.
 session.agent_exited_during_turn:
@@ -1360,10 +1306,6 @@ errors.provider_not_installed:
   en: "%{provider} is not installed"
 errors.provider_not_found:
   en: "%{provider} is not installed or could not be found"
-errors.claude_fork_checkpoint_missing:
-  en: Claude omitted the fork checkpoint
-errors.claude_turn_checkpoint_unavailable:
-  en: "Claude's native checkpoint for that turn is unavailable: %{error}"
 errors.provider_session_file_unavailable:
   en: "%{provider}'s native session file is unavailable"
 errors.provider_turn_branching_unsupported:
@@ -1458,14 +1400,8 @@ errors.answer_provider_permission:
   en: "Could not answer %{provider}'s permission request: %{error}"
 errors.answer_provider_question:
   en: "Could not answer %{provider}'s question: %{error}"
-errors.initialize_codex_app_server:
-  en: Failed to initialize Codex app-server
 errors.register_computer_use_skill:
   en: Failed to register Waku Computer Use skill with Codex
-errors.codex_thread_open_incomplete:
-  en: Codex did not finish opening its thread
-errors.codex_goals_unsupported:
-  en: This Codex version does not support thread goals
 errors.provider_receive_prompt:
   en: "%{provider} could not receive the prompt"
 errors.provider_start_turn:
@@ -1485,6 +1421,8 @@ errors.provider_reported_error:
 
 session.response_unavailable:
   en: That response is no longer available
+session.archived_provider:
+  en: "Archived %{provider} session · Read only"
 session.response_cannot_fork:
   en: That response cannot be forked right now
 session.response_fork_in_progress:
@@ -1972,222 +1910,14 @@ duration.hours_short:
 duration.two_units:
   en: "%{first} %{second}"
 
-usage.scan_summary:
-  en: Scanned %{scanned} transcripts (%{skipped} outside the window) · %{records} usage records · %{seconds}s
-usage.daily:
-  en: Daily
-usage.monthly:
-  en: Monthly
-usage.projects:
-  en: Projects
-usage.scanning:
-  en: Scanning provider transcripts…
-usage.rescan:
-  en: Rescan provider transcripts
-usage.range:
-  en: "%{start} to %{end}"
-usage.sessions_summary:
-  en: Input, cache reads and output across %{count} sessions
-usage.processed_tokens_upper:
-  en: PROCESSED TOKENS
-usage.token_share:
-  en: "%{share} of tokens"
-usage.no_activity_window:
-  en: No activity in this window
-usage.tokens_upper:
-  en: TOKENS
-usage.daily_processed_tokens:
-  en: Daily processed tokens
-usage.model_upper:
-  en: MODEL
-usage.day_upper:
-  en: DAY
-usage.breakdown:
-  en: Breakdown
-usage.no_projects_match:
-  en: No projects match the filter
-usage.by_project:
-  en: By project
-usage.projects_caption:
-  en: "%{projects} · %{tokens} tokens · %{sessions}"
-usage.projects_shown:
-  en: "%{shown} of %{projects} shown"
-usage.token_count:
-  en: "%{count} tokens"
-usage.last_active:
-  en: last active %{date}
-usage.show_models:
-  en: Show %{models} with token details
-usage.other_sessions:
-  en: Other sessions
-usage.total:
-  en: Total
-usage.processed_tokens:
-  en: Processed tokens
-usage.per_active_day:
-  en: "%{count} per active day"
-usage.cached_input:
-  en: Cached input
-usage.observed_input_share:
-  en: "%{share} of observed input"
-usage.uncached_input:
-  en: Uncached input
-usage.cache_writes:
-  en: "%{count} cache writes"
-usage.output:
-  en: Output
-usage.includes_reasoning:
-  en: includes %{count} reasoning
-usage.model:
-  en: Model
-usage.share:
-  en: Share
-usage.tokens:
-  en: Tokens
-usage.day:
-  en: Day
-usage.no_activity_12_months:
-  en: No activity in the last 12 months
-usage.last_12_months:
-  en: Last 12 months
-usage.so_far:
-  en: so far
-usage.no_activity:
-  en: No activity
-usage.models_by_tokens:
-  en: "%{models} · by tokens"
-usage.tokens_and_sessions:
-  en: "%{tokens} tokens · %{sessions}"
-usage.month_caption:
-  en: "%{tokens} tokens · %{sessions} · %{days}"
-usage.last_7_days:
-  en: Last 7 days
-usage.last_30_days:
-  en: Last 30 days
-usage.last_90_days:
-  en: Last 90 days
-usage.this_month:
-  en: This month
-usage.last_month:
-  en: Last month
-usage.custom:
-  en: Custom
-usage.project_one:
-  en: "%{count} project"
-usage.project_many:
-  en: "%{count} projects"
-usage.session_one:
-  en: "%{count} session"
-usage.session_many:
-  en: "%{count} sessions"
-usage.model_one:
-  en: "%{count} model"
-usage.model_many:
-  en: "%{count} models"
-usage.active_day_one:
-  en: "%{count} active day"
-usage.active_day_many:
-  en: "%{count} active days"
-usage.filter_projects:
-  en: Filter projects…
-usage.chart_description:
-  en: Daily %{metric} split between Claude Code and Codex.
 
-usage.refresh_failed:
-  en: "Usage refresh failed: %{error}"
 usage.context_used:
   en: Context window %{percent}% used (%{shortcut})
 usage.shortcut:
   en: Usage (%{shortcut})
 usage.context_window:
   en: Context window
-usage.plan_limits:
-  en: Plan usage limits
-usage.plan_limits_named:
-  en: Plan usage limits · %{plan}
-usage.open_account_settings:
-  en: Open the account's usage settings
-usage.unavailable:
-  en: Unavailable — %{error}
-usage.usage_limit:
-  en: Usage limit
-usage.hour_limit:
-  en: "%{count}-hour limit"
-usage.day_limit:
-  en: "%{count}-day limit"
-usage.weekly_limit:
-  en: Weekly limit
-usage.daily_limit:
-  en: Daily limit
-usage.monthly_limit:
-  en: Monthly limit
-usage.limit_suffix:
-  en: " limit"
-usage.scoped_limit:
-  en: "%{period} · %{name}"
-usage.weekly_all_models:
-  en: Weekly · all models
-usage.weekly_model:
-  en: Weekly · %{model}
-usage.resets_soon:
-  en: Resets soon
-usage.resets_in_minutes:
-  en: Resets in %{count} min
-usage.resets_in_hours:
-  en: Resets in %{count} hr
-usage.resets_in_hours_minutes:
-  en: Resets in %{hours} hr %{minutes} min
-usage.resets_date:
-  en: Resets %{date}
 
-usage_error.signin_cannot_read:
-  en: "%{provider} sign-in can't read usage (HTTP %{status}). Running a %{provider} turn refreshes it"
-usage_error.rate_limited:
-  en: The usage endpoint is rate limited right now
-usage_error.http_status:
-  en: The usage endpoint answered HTTP %{status}
-usage_error.invalid_json:
-  en: The usage endpoint returned invalid JSON
-usage_error.no_home_directory:
-  en: No home directory
-usage_error.read_file:
-  en: Failed to read %{path}
-usage_error.codex_auth_invalid:
-  en: Codex auth.json is not JSON
-usage_error.codex_access_token_missing:
-  en: Codex auth.json has no access token; run `codex login`
-usage_error.opencode_go_key_rejected:
-  en: OpenCode Go API key can't read usage (HTTP %{status}); reconnect OpenCode Go
-usage_error.opencode_go_not_entitled:
-  en: OpenCode Go usage needs an active OpenCode Go subscription
-usage_error.no_rate_limit_windows:
-  en: The usage endpoint reported no rate-limit windows
-usage_error.claude_credentials_missing:
-  en: No Claude Code credentials in the keychain or ~/.claude
-usage_error.run_security:
-  en: Failed to run /usr/bin/security
-usage_error.keychain_item_missing:
-  en: The keychain has no %{service} item
-usage_error.claude_credentials_invalid:
-  en: Claude Code credentials are not JSON
-usage_error.claude_oauth_missing:
-  en: Claude Code credentials have no claudeAiOauth entry
-usage_error.claude_access_token_missing:
-  en: Claude Code credentials have no access token
-usage_error.run_curl:
-  en: Failed to run /usr/bin/curl
-usage_error.curl_stdin_unavailable:
-  en: curl stdin is unavailable
-usage_error.configure_curl:
-  en: Failed to pass the configuration to curl
-usage_error.curl_did_not_finish:
-  en: curl did not finish
-usage_error.curl_failed:
-  en: "curl failed: %{error}"
-usage_error.unknown_error:
-  en: unknown error
-usage_error.curl_no_status:
-  en: curl returned no HTTP status line
 
 settings.deerflow:
   en: Essentials

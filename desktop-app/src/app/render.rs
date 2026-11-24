@@ -248,7 +248,6 @@ impl Render for Waku {
             self.deerflow_focus_pending(window, cx);
             let command_palette = self.render_command_palette(window, cx);
             let commit_dialog = self.render_commit_dialog(cx);
-            let goal_dialog = self.render_goal_dialog(window, cx);
             let toast = self.render_active_toast(cx);
             let content = div()
                 .relative()
@@ -266,7 +265,6 @@ impl Render for Waku {
                 .children(toast)
                 .children(command_palette)
                 .children(commit_dialog)
-                .children(goal_dialog)
                 .children(image_preview)
                 .children(task_switcher)
                 .children(credential_editor)
@@ -283,7 +281,6 @@ impl Render for Waku {
         let computer_use = self.render_computer_use_overlay(window, cx);
         let command_palette = self.render_command_palette(window, cx);
         let commit_dialog = self.render_commit_dialog(cx);
-        let goal_dialog = self.render_goal_dialog(window, cx);
         let toast = self.render_active_toast(cx);
         let content = div()
             .key_context("Waku")
@@ -415,7 +412,6 @@ impl Render for Waku {
             .children(computer_use)
             .children(command_palette)
             .children(commit_dialog)
-            .children(goal_dialog)
             .children(image_preview)
             .children(task_switcher)
             .children(credential_editor)

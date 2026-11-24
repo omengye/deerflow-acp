@@ -69,16 +69,3 @@ jobs:
           cargo build --locked --package waku --bin waku_js_repl --package waku-computer-use --bin waku_computer_use
           bun scripts/cua-driver.ts bundle target/debug target/debug/resources debug
           bun scripts/test-computer-use.ts
-
-      # The generated protocol and browser client are platform-independent, so
-      # one runner is enough to catch a drifted checked-in artifact.
-      - name: Install JavaScript dependencies
-        if: runner.os == 'Linux'
-        run: bun install --frozen-lockfile
-
-      - name: Check generated protocol and browser client
-        if: runner.os == 'Linux'
-        run: |
-          bun run protocol:check
-          bun run --filter @waku/client check
-          bun run --filter @waku/client test

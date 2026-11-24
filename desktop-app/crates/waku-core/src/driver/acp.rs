@@ -19,8 +19,8 @@ use agent_client_protocol::schema::v1::{
     PromptRequest, PromptResponse, RequestId, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind,
     SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
-    SessionConfigSelectOptions, SessionId, SessionModeId, SessionModeState, SessionNotification,
-    SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason, TextContent,
+    SessionConfigSelectOptions, SessionId, SessionModeState, SessionNotification,
+    SetSessionConfigOptionRequest, StopReason, TextContent,
 };
 use agent_client_protocol::{
     AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo, Handled, LineDirection, Responder,
@@ -29,7 +29,7 @@ use agent_client_protocol::{
 use anyhow::{Context as _, anyhow};
 use base64::Engine as _;
 use parking_lot::Mutex;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use super::activity;
 mod deerflow_steering;
@@ -41,10 +41,6 @@ use crate::driver::{
 use crate::model::{
     ActivityKind, DriverEvent, PermissionOption, ProviderKind, ProviderModel, ProviderResumeCursor,
     RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion,
-};
-use waku_protocol::model_catalog::{
-    CursorModelSelection, cursor_suffix_has, normalize_cursor_reasoning_effort,
-    resolve_cursor_model,
 };
 
 enum CommandMessage {
@@ -124,7 +120,6 @@ pub struct AcpDriver {
     steering_availability: Arc<Mutex<deerflow_steering::Availability>>,
     provider: ProviderKind,
     access: Arc<Mutex<AcpAccessState>>,
-    computer_use: Option<super::support::HeadlessComputerUseRuntime>,
 }
 
 /// Per-provider launch details. Everything after process launch is ACP.
@@ -133,45 +128,11 @@ struct AcpLaunch {
     env: Vec<(String, String)>,
 }
 
-fn launch_for(provider: ProviderKind, reasoning_effort: Option<&str>) -> anyhow::Result<AcpLaunch> {
-    match provider {
-        ProviderKind::Cursor => Ok(AcpLaunch {
-            args: vec!["acp".into()],
-            env: Vec::new(),
-        }),
-        ProviderKind::Grok => {
-            let mut args = vec!["agent".into()];
-            if let Some(effort) = reasoning_effort.filter(|effort| !effort.is_empty()) {
-                args.push("--reasoning-effort".into());
-                args.push(effort.to_owned());
-            }
-            args.push("stdio".into());
-            Ok(AcpLaunch {
-                args,
-                env: vec![("GROK_OAUTH2_REFERRER".into(), "waku".into())],
-            })
-        }
-        ProviderKind::Fx => Ok(AcpLaunch {
-            args: vec!["acp".into()],
-            env: Vec::new(),
-        }),
-        ProviderKind::Kimi => Ok(AcpLaunch {
-            args: vec!["acp".into()],
-            env: Vec::new(),
-        }),
-        ProviderKind::OpenCode => Ok(AcpLaunch {
-            args: vec!["acp".into()],
-            env: Vec::new(),
-        }),
-        ProviderKind::DeerFlow => Ok(AcpLaunch {
-            args: crate::deerflow_config::launch_arguments()?,
-            env: crate::deerflow_config::launch_environment()?,
-        }),
-        _ => Err(anyhow!(
-            "{} does not speak the Agent Client Protocol",
-            provider.display_name()
-        )),
-    }
+fn deerflow_launch() -> anyhow::Result<AcpLaunch> {
+    Ok(AcpLaunch {
+        args: crate::deerflow_config::launch_arguments()?,
+        env: crate::deerflow_config::launch_environment()?,
+    })
 }
 
 impl AcpDriver {
@@ -208,16 +169,9 @@ impl AcpDriver {
             model,
             reasoning_effort,
             thinking_mode,
-            service_tier,
-            context_window,
-            agent_preset: _,
-            computer_use_enabled,
             provider_cursor,
+            ..
         } = options;
-        let fork_context = match &provider_cursor {
-            Some(ProviderResumeCursor::Cursor { fork_context, .. }) => fork_context.clone(),
-            _ => None,
-        };
         let resume_session_id = match provider_cursor {
             Some(cursor) if cursor.provider() == provider => {
                 let id = cursor.native_id();
@@ -233,27 +187,10 @@ impl AcpDriver {
             None => None,
         };
 
-        let launch = launch_for(provider, reasoning_effort.as_deref())?;
-        let client_mcp_servers = if provider == ProviderKind::DeerFlow {
-            crate::deerflow_config::client_mcp_servers()?
-        } else {
-            Vec::new()
-        };
-        let computer_use = (provider == ProviderKind::Grok && computer_use_enabled)
-            .then(|| super::support::HeadlessComputerUseRuntime::start(provider, events.clone()))
-            .transpose()?;
-        let grok_title_home = computer_use
-            .as_ref()
-            .and_then(super::support::HeadlessComputerUseRuntime::grok_home)
-            .map(ToOwned::to_owned);
-        let stderr_lines = Arc::new(Mutex::new(Vec::<String>::new()));
-        let agent = sdk_agent(
-            &binary,
-            &cwd,
-            launch,
-            computer_use.as_ref().map(|runtime| &runtime.config),
-            stderr_lines.clone(),
-        )?;
+        let launch = deerflow_launch()?;
+        let client_mcp_servers = crate::deerflow_config::client_mcp_servers()?;
+        let stderr_lines = Arc::new(Mutex::new(Vec::new()));
+        let agent = sdk_agent(&binary, &cwd, launch, stderr_lines.clone())?;
         let (commands, command_rx) = smol::channel::unbounded();
         let access = Arc::new(Mutex::new(AcpAccessState::new(mode)));
         let connection_access = access.clone();
@@ -282,24 +219,16 @@ impl AcpDriver {
                     model,
                     reasoning_effort,
                     thinking_mode,
-                    service_tier,
-                    context_window,
                     resume_session_id,
                     client_mcp_servers,
-                    fork_context,
-                    grok_title_home,
                     command_rx,
                     thread_events.clone(),
                 ));
                 if let Err(error) = result {
                     let stderr = super::support::provider_stderr_error(stderr_lines.lock().clone());
-                    let detail = if provider == ProviderKind::DeerFlow {
-                        match stderr {
-                            Some(stderr) => format!("{error}\n{stderr}"),
-                            None => error.to_string(),
-                        }
-                    } else {
-                        stderr.unwrap_or_else(|| error.to_string())
+                    let detail = match stderr {
+                        Some(stderr) => format!("{error}\n{stderr}"),
+                        None => error.to_string(),
                     };
                     let _ = thread_events
                         .send(DriverEvent::Error(format!("{provider_name}: {detail}")));
@@ -314,7 +243,6 @@ impl AcpDriver {
             steering_availability,
             provider,
             access,
-            computer_use,
         })
     }
 }
@@ -323,7 +251,6 @@ fn sdk_agent(
     binary: &Path,
     _cwd: &Path,
     mut launch: AcpLaunch,
-    computer_use: Option<&super::support::HeadlessComputerUseConfig>,
     stderr_lines: Arc<Mutex<Vec<String>>>,
 ) -> anyhow::Result<AcpAgent> {
     let binary = binary
@@ -333,9 +260,6 @@ fn sdk_agent(
     let cwd = _cwd
         .to_str()
         .ok_or_else(|| anyhow!("the ACP working directory is not valid UTF-8"))?;
-    let (computer_args, computer_env) =
-        super::support::grok_computer_use_launch_configuration(computer_use);
-    launch.args.extend(computer_args);
     let mut environment = crate::command_env::shell_environment()
         .into_iter()
         .map(|(name, value)| {
@@ -346,7 +270,7 @@ fn sdk_agent(
         })
         .collect::<Vec<_>>();
     environment.append(&mut launch.env);
-    environment.extend(computer_env);
+
 
     // `AcpAgentConfig` deliberately contains only argv and environment. macOS
     // and Linux `env -C` supplies the session cwd without a shell, preserving exact
@@ -386,11 +310,12 @@ pub(crate) fn catalog_agent(
     cwd: &Path,
     auto_start: bool,
 ) -> anyhow::Result<AcpAgent> {
-    let mut launch = launch_for(provider, None)?;
-    if provider == ProviderKind::DeerFlow && !auto_start {
+    anyhow::ensure!(provider.is_available(), "Archived sessions are read-only");
+    let mut launch = deerflow_launch()?;
+    if !auto_start {
         launch.args.push("--no-auto-start".into());
     }
-    sdk_agent(binary, cwd, launch, None, Arc::new(Mutex::new(Vec::new())))
+    sdk_agent(binary, cwd, launch, Arc::new(Mutex::new(Vec::new())))
 }
 
 type PermissionResponder = Responder<RequestPermissionResponse>;
@@ -454,15 +379,7 @@ fn complete_credential(pending: &PendingPermissions, id: &str, sealed: crate::mo
     responder.respond(response).map_err(|_| "Credential approval is no longer active".into())
 }
 
-#[derive(Clone, Copy)]
-enum AcpUserInputKind {
-    Cursor,
-    Xai,
-    DeerFlow,
-}
-
 struct PendingAcpUserInput {
-    kind: AcpUserInputKind,
     params: Value,
     responder: Responder<Value>,
 }
@@ -478,18 +395,16 @@ struct PendingPrompts {
 
 struct PendingPrompt {
     request_id: RequestId,
-    extension_id: Option<String>,
     session_id: String,
 }
 
 impl PendingPrompts {
-    fn insert(&mut self, request_id: RequestId, extension_id: Option<String>, session_id: String) {
+    fn insert(&mut self, request_id: RequestId, session_id: String) {
         if self.requests.is_empty() {
             self.user_input_stopped = false;
         }
         self.requests.push(PendingPrompt {
             request_id,
-            extension_id,
             session_id,
         });
     }
@@ -518,24 +433,12 @@ impl PendingPrompts {
         self.finish_if_idle()
     }
 
-    fn settle_extension(&mut self, session_id: &str, extension_id: Option<&str>) -> bool {
-        let Some(index) = self.requests.iter().position(|prompt| {
-            prompt.session_id == session_id
-                && extension_id
-                    .is_none_or(|extension_id| prompt.extension_id.as_deref() == Some(extension_id))
-        }) else {
-            return false;
-        };
-        self.requests.remove(index);
-        self.finish_if_idle()
-    }
-
     fn finish_if_idle(&self) -> bool {
         if !self.requests.is_empty() {
             return false;
         }
         if let Some(pending) = &self.user_inputs {
-            cancel_pending_deerflow_user_inputs(pending);
+            cancel_pending_user_inputs(pending);
         }
         true
     }
@@ -554,12 +457,8 @@ async fn run_sdk_connection(
     model: Option<String>,
     reasoning_effort: Option<String>,
     thinking_mode: Option<String>,
-    service_tier: Option<String>,
-    context_window: Option<String>,
     resume_session_id: Option<String>,
     client_mcp_servers: Vec<McpServer>,
-    fork_context: Option<String>,
-    grok_title_home: Option<std::path::PathBuf>,
     commands: smol::channel::Receiver<CommandMessage>,
     events: DriverEventSender,
 ) -> agent_client_protocol::Result<()> {
@@ -577,7 +476,6 @@ async fn run_sdk_connection(
         user_inputs: Some(pending_user_inputs.clone()),
         ..PendingPrompts::default()
     }));
-    let title_refresh = super::title_refresh::NativeTitleRefresh::default();
     let close_commands = commands.clone();
 
     Client
@@ -599,15 +497,7 @@ async fn run_sdk_connection(
                 async move |notification: SessionNotification, _connection| {
                     if !suppress_session_updates.load(Ordering::Acquire) {
                         let mut stream = stream_state.lock();
-                        if provider == ProviderKind::DeerFlow {
-                            return deerflow_tasks::receive_update(&mut stream,deerflow_tasks::EarlyUpdate::Session(notification),!prompt_requests.lock().is_empty(),&events);
-                        }
-                        handle_session_update(
-                            provider,
-                            notification,
-                            &events,
-                            &mut stream,
-                        )?;
+                        deerflow_tasks::receive_update(&mut stream, deerflow_tasks::EarlyUpdate::Session(notification), !prompt_requests.lock().is_empty(), &events)?;
                     }
                     Ok(())
                 }
@@ -618,34 +508,18 @@ async fn run_sdk_connection(
             {
                 let events = events.clone();
                 let prompt_requests = prompt_requests.clone();
-                let grok_title_home = grok_title_home.clone();
-                let title_refresh = title_refresh.clone();
                 let stream_state = stream_state.clone();
                 async move |notification: UntypedMessage, _connection| {
-                    if provider == ProviderKind::DeerFlow && notification.method() == "_deerflow/executions/updated" {
+                    if notification.method() == "_deerflow/executions/updated" {
                         let mut stream = stream_state.lock();
                         deerflow_tasks::receive_update(&mut stream,deerflow_tasks::EarlyUpdate::Lifecycle(notification.params().clone()),!prompt_requests.lock().is_empty(),&events)?;
                     }
-                    if provider == ProviderKind::DeerFlow && notification.method() == "_deerflow/steering/target" {
+                    if notification.method() == "_deerflow/steering/target" {
                         deerflow_steering::receive_target(&mut stream_state.lock(), notification.params(), &events);
                     }
-                    if provider == ProviderKind::DeerFlow && notification.method() == "_deerflow/steering/updated" {
+                    if notification.method() == "_deerflow/steering/updated" {
                         if let Some(state) = &mut stream_state.lock().deerflow_steering {
                             state.receive(notification.params(), &events);
-                        }
-                    }
-                    if notification.method() == "_x.ai/session/prompt_complete" {
-                        if let Some(session_id) = finish_xai_prompt_complete(
-                            notification.params(),
-                            &prompt_requests,
-                            &events,
-                        ) {
-                            start_grok_title_refresh(
-                                grok_title_home.as_deref(),
-                                &session_id,
-                                &title_refresh,
-                                events.clone(),
-                            );
                         }
                     }
                     Ok(())
@@ -659,17 +533,7 @@ async fn run_sdk_connection(
                 let pending_permissions = pending_permissions.clone();
                 let stream_state = stream_state.clone();
                 async move |request: RequestPermissionRequest, responder, _connection| {
-                    if provider == ProviderKind::DeerFlow {
-                        return deerflow_tasks::receive_permission(&mut stream_state.lock(),request,responder,mode,&pending_permissions,&events);
-                    }
-                    handle_permission_request(
-                        request,
-                        responder,
-                        provider,
-                        mode,
-                        &pending_permissions,
-                        &events,
-                    )
+                    deerflow_tasks::receive_permission(&mut stream_state.lock(), request, responder, mode, &pending_permissions, &events)
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -680,77 +544,16 @@ async fn run_sdk_connection(
                 let pending = pending_user_inputs.clone();
                 let prompt_requests = prompt_requests.clone();
                 async move |request: UntypedMessage, responder, _connection| {
-                    let kind = match request.method() {
-                        deerflow_user_input::METHOD if provider == ProviderKind::DeerFlow => {
-                            AcpUserInputKind::DeerFlow
-                        }
-                        "cursor/ask_question" => AcpUserInputKind::Cursor,
-                        "_x.ai/ask_user_question" | "x.ai/ask_user_question" => {
-                            AcpUserInputKind::Xai
-                        }
-                        _ => {
-                            return Ok(Handled::No {
-                                message: (request, responder),
-                                retry: false,
-                            });
-                        }
-                    };
-                    let request_id = responder.id().to_string();
-                    let params = match kind {
-                        AcpUserInputKind::Cursor | AcpUserInputKind::DeerFlow => request.params().clone(),
-                        AcpUserInputKind::Xai => {
-                            unwrap_xai_question_params(request.params()).clone()
-                        }
-                    };
-                    let questions = match kind {
-                        AcpUserInputKind::Cursor => cursor_user_input_questions(&params),
-                        AcpUserInputKind::Xai => xai_user_input_questions(&params),
-                        AcpUserInputKind::DeerFlow => {
-                            return deerflow_user_input::receive(params, responder, &prompt_requests, &pending, &events);
-                        }
-                    };
-                    if questions.is_empty() {
-                        responder.respond(cancelled_user_input_response(kind))?;
-                        return Ok(Handled::Yes);
+                    if request.method() != deerflow_user_input::METHOD {
+                        return Ok(Handled::No { message: (request, responder), retry: false });
                     }
-                    pending.lock().insert(
-                        request_id.clone(),
-                        PendingAcpUserInput {
-                            kind,
-                            params,
-                            responder,
-                        },
-                    );
-                    if events
-                        .send(DriverEvent::UserInputRequested {
-                            request_id: request_id.clone(),
-                            questions,
-                        })
-                        .is_err()
-                        && let Some(pending) = pending.lock().remove(&request_id)
-                    {
-                        let _ = pending
-                            .responder
-                            .respond(cancelled_user_input_response(pending.kind));
-                    }
-                    Ok(Handled::Yes)
+                    deerflow_user_input::receive(request.params().clone(), responder, &prompt_requests, &pending, &events)
                 }
             },
             agent_client_protocol::on_receive_request!(),
         )
         .connect_with(agent, async move |connection: ConnectionTo<Agent>| {
-            let mut client_capabilities = ClientCapabilities::new().terminal(false);
-            if provider == ProviderKind::DeerFlow {
-                client_capabilities = client_capabilities.meta(deerflow_user_input::capability());
-            }
-            if provider == ProviderKind::Cursor {
-                // Cursor only exposes its parameterized model controls to
-                // clients that opt in. Waku applies the returned config option
-                // ids rather than assuming Cursor's private ids stay stable.
-                let mut meta = Map::new();
-                meta.insert("parameterizedModelPicker".to_owned(), Value::Bool(true));
-                client_capabilities = client_capabilities.meta(meta);
-            }
+            let client_capabilities = ClientCapabilities::new().terminal(false).meta(deerflow_user_input::capability());
             let initialize = connection
                 .send_request(
                     InitializeRequest::new(ProtocolVersion::V1)
@@ -759,7 +562,7 @@ async fn run_sdk_connection(
                 )
                 .block_task()
                 .await?;
-            let (session_id, modes, config_options) = establish_session(
+            let (session_id, _modes, config_options) = establish_session(
                 &connection,
                 &initialize,
                 resume_session_id.as_deref(),
@@ -784,24 +587,6 @@ async fn run_sdk_connection(
                 None
             };
 
-            if provider == ProviderKind::DeerFlow
-                && let Some(options) = config_options.as_deref()
-            {
-                let models = crate::model_catalog::parse_deerflow_models(options);
-                if !models.is_empty() {
-                    crate::model_catalog::write_cached_models(provider, &models);
-                }
-            }
-
-            if let Some(mode_id) = desired_access_mode(provider, modes.as_ref(), mode) {
-                // Mode selection is opportunistic: an agent can advertise a
-                // mode but reject a later transition without invalidating the
-                // session itself.
-                let _ = connection
-                    .send_request(SetSessionModeRequest::new(session_id.clone(), mode_id))
-                    .block_task()
-                    .await;
-            }
             let native_session_id = session_id.to_string();
             if provider == ProviderKind::DeerFlow {
                 let supported = deerflow_steering::supported(&initialize);
@@ -834,27 +619,18 @@ async fn run_sdk_connection(
                 let _ = events.send(DriverEvent::ToolApprovalChanged(approval));
             }
 
-            let mut current_model = model;
-            let mut current_effort = reasoning_effort;
-            let mut current_thinking = thinking_mode;
-            let mut current_tier = service_tier;
-            let mut current_window = context_window;
             stream_state.lock().deerflow_config_options = config_options.clone();
             let mut model_options_ready = apply_model(
                 &connection,
                 &session_id,
-                provider,
                 config_options.as_deref(),
-                current_model.as_deref(),
-                current_effort.as_deref(),
-                current_thinking.as_deref(),
-                current_tier.as_deref(),
-                current_window.as_deref(),
+                model.as_deref(),
+                reasoning_effort.as_deref(),
+                thinking_mode.as_deref(),
                 &events,
                 &stream_state,
             )
             .await;
-            let mut fork_context = fork_context;
 
             while let Ok(command) = commands.recv().await {
                 match command {
@@ -872,7 +648,7 @@ async fn run_sdk_connection(
                         }
                     }
                     CommandMessage::Prompt(text, attachments) => {
-                        if provider == ProviderKind::DeerFlow && !access.lock().ready {
+                        if !access.lock().ready {
                             let _ = events.send(DriverEvent::TurnStarted);
                             let _ = events.send(DriverEvent::Error(
                                 "DeerFlow tool approval policy has not been confirmed. Wait for the pending change or retry the setting before sending a message.".into(),
@@ -891,12 +667,6 @@ async fn run_sdk_connection(
                             });
                             continue;
                         }
-                        let text = fork_context
-                            .take()
-                            .map(|context| {
-                                crate::cursor_session::prompt_with_fork_context(&context, &text)
-                            })
-                            .unwrap_or(text);
                         let _ = events.send(DriverEvent::TurnStarted);
                         if let Err(error) = send_prompt(
                             &connection,
@@ -905,10 +675,7 @@ async fn run_sdk_connection(
                             &attachments,
                             &prompt_requests,
                             &events,
-                            provider,
                             &native_session_id,
-                            grok_title_home.clone(),
-                            title_refresh.clone(),
                             stream_state.clone(),
                         ) {
                             let _ = events.send(DriverEvent::Error(error.to_string()));
@@ -919,50 +686,7 @@ async fn run_sdk_connection(
                         }
                     }
                     CommandMessage::Steer(text, run_id) => {
-                        if provider == ProviderKind::DeerFlow {
-                            deerflow_steering::submit(&connection, &native_session_id, text, run_id, stream_state.clone(), &events);
-                            continue;
-                        }
-                        if !model_options_ready {
-                            let _ = events.send(DriverEvent::SteerRejected {
-                                message: text,
-                                reason: "DeerFlow model settings have not been applied. Correct the options and retry.".into(),
-                            });
-                            continue;
-                        }
-                        if prompt_requests.lock().is_empty() {
-                            let _ = events.send(DriverEvent::SteerRejected {
-                                message: text,
-                                reason: format!(
-                                    "{} has no active turn to steer.",
-                                    provider.display_name()
-                                ),
-                            });
-                            continue;
-                        }
-                        match send_prompt(
-                            &connection,
-                            &session_id,
-                            text.clone(),
-                            &[],
-                            &prompt_requests,
-                            &events,
-                            provider,
-                            &native_session_id,
-                            grok_title_home.clone(),
-                            title_refresh.clone(),
-                            stream_state.clone(),
-                        ) {
-                            Ok(()) => {
-                                let _ = events.send(DriverEvent::SteerAccepted { message: text });
-                            }
-                            Err(error) => {
-                                let _ = events.send(DriverEvent::SteerRejected {
-                                    message: text,
-                                    reason: error.to_string(),
-                                });
-                            }
-                        }
+                        deerflow_steering::submit(&connection, &native_session_id, text, run_id, stream_state.clone(), &events);
                     }
                     CommandMessage::Cancel => {
                         prompt_requests.lock().user_input_stopped = true;
@@ -996,17 +720,7 @@ async fn run_sdk_connection(
                         answers,
                     } => {
                         if let Some(pending) = pending_user_inputs.lock().remove(&request_id) {
-                            let response = match pending.kind {
-                                AcpUserInputKind::Cursor => {
-                                    cursor_user_input_response(&pending.params, &answers)
-                                }
-                                AcpUserInputKind::Xai => {
-                                    xai_user_input_response(&pending.params, &answers)
-                                }
-                                AcpUserInputKind::DeerFlow => {
-                                    deerflow_user_input::response(&pending.params, &answers)
-                                }
-                            };
+                            let response = deerflow_user_input::response(&pending.params, &answers);
                             let _ = pending.responder.respond(response);
                         }
                     }
@@ -1015,7 +729,7 @@ async fn run_sdk_connection(
                             let _ = reply.send(Err("Tool approval change expired before it could be sent".into()));
                             continue;
                         }
-                        if provider != ProviderKind::DeerFlow || !prompt_requests.lock().is_empty() {
+                        if !prompt_requests.lock().is_empty() {
                             let _ = reply.send(Err("Tool approvals can only change while the DeerFlow session is idle".into()));
                             continue;
                         }
@@ -1026,39 +740,23 @@ async fn run_sdk_connection(
                         }
                     }
                     CommandMessage::Options(options) => {
-                        if provider == ProviderKind::DeerFlow && !prompt_requests.lock().is_empty() {
+                        if !prompt_requests.lock().is_empty() {
                             let _ = events.send(DriverEvent::Error("Wait for the current turn before changing model settings.".into()));
                             if let Some(options) = &stream_state.lock().deerflow_config_options {
                                 report_deerflow_models(options, &events);
                             }
                             continue;
                         }
-                        if provider == ProviderKind::DeerFlow || !model_options_ready
-                            || options.model != current_model
-                            || options.reasoning_effort != current_effort
-                            || options.service_tier != current_tier
-                            || options.context_window != current_window
-                        {
-                            current_model = options.model;
-                            current_effort = options.reasoning_effort;
-                            current_thinking = options.thinking_mode;
-                            current_tier = options.service_tier;
-                            current_window = options.context_window;
-                            model_options_ready = apply_model(
-                                &connection,
-                                &session_id,
-                                provider,
-                                config_options.as_deref(),
-                                current_model.as_deref(),
-                                current_effort.as_deref(),
-                                current_thinking.as_deref(),
-                                current_tier.as_deref(),
-                                current_window.as_deref(),
-                                &events,
-                                &stream_state,
-                            )
-                            .await;
-                        }
+                        model_options_ready = apply_model(
+                            &connection,
+                            &session_id,
+                            config_options.as_deref(),
+                            options.model.as_deref(),
+                            options.reasoning_effort.as_deref(),
+                            options.thinking_mode.as_deref(),
+                            &events,
+                            &stream_state,
+                        ).await;
                     }
                     CommandMessage::History { method, params, deadline, reply } => {
                         if !history_supported
@@ -1091,7 +789,7 @@ async fn run_sdk_connection(
                         }
                     }
                     CommandMessage::DeleteSession(expected, reply) => {
-                        if provider != ProviderKind::DeerFlow || expected != native_session_id {
+                        if expected != native_session_id {
                             let _ = reply.send(Err("rejected: Native session identity mismatch".into()));
                             continue;
                         }
@@ -1379,66 +1077,6 @@ async fn establish_session(
     Ok((response.session_id, response.modes, response.config_options))
 }
 
-fn desired_access_mode(
-    provider: ProviderKind,
-    modes: Option<&SessionModeState>,
-    mode: RuntimeMode,
-) -> Option<SessionModeId> {
-    // DeerFlow's plan mode enables its task planner. It is independent of
-    // tool approval and is not the legacy read-only mode used by Cursor.
-    if provider == ProviderKind::DeerFlow {
-        return None;
-    }
-    let modes = modes?;
-    let desired = if provider == ProviderKind::Fx {
-        let desired = if mode == RuntimeMode::Ask {
-            "ask"
-        } else {
-            "code"
-        };
-        modes
-            .available_modes
-            .iter()
-            .find(|mode| mode.id.to_string().eq_ignore_ascii_case(desired))?
-            .id
-            .clone()
-    } else {
-        // Sessions created before the interaction toggle was removed may
-        // retain the provider's read-only mode. Return only those sessions to
-        // the provider's ordinary execution mode; otherwise leave externally
-        // selected native modes untouched.
-        if !modes
-            .current_mode_id
-            .to_string()
-            .eq_ignore_ascii_case("plan")
-        {
-            return None;
-        }
-        modes
-            .available_modes
-            .iter()
-            .find(|mode| {
-                let id = mode.id.to_string();
-                id.eq_ignore_ascii_case("agent") || id.eq_ignore_ascii_case("default")
-            })?
-            .id
-            .clone()
-    };
-    (modes.current_mode_id != desired).then_some(desired)
-}
-
-/// Which session config option carries reasoning effort. ACP leaves the id to
-/// the agent: Kimi Code exposes it as its `thinking` level, while the other
-/// agents Waku drives keep it on `mode`. Grok does not use this path: its
-/// effort rides on `session/set_model` as `_meta.reasoningEffort`.
-fn reasoning_effort_config_id(provider: ProviderKind) -> &'static str {
-    match provider {
-        ProviderKind::Kimi => "thinking",
-        ProviderKind::DeerFlow => "thinking_enabled",
-        _ => "mode",
-    }
-}
-
 fn session_config_select_values(option: &SessionConfigOption) -> Vec<&str> {
     let SessionConfigKind::Select(select) = &option.kind else {
         return Vec::new();
@@ -1457,294 +1095,11 @@ fn session_config_select_values(option: &SessionConfigOption) -> Vec<&str> {
     }
 }
 
-fn cursor_model_selection(
-    option: &SessionConfigOption,
-    requested: &str,
-) -> Option<CursorModelSelection> {
-    resolve_cursor_model(session_config_select_values(option), requested)
-}
-
-fn cursor_option_id(option: &SessionConfigOption) -> String {
-    option.id.to_string().to_ascii_lowercase()
-}
-
-fn cursor_option_name(option: &SessionConfigOption) -> String {
-    option.name.to_ascii_lowercase()
-}
-
-fn is_cursor_thinking_option(option: &SessionConfigOption) -> bool {
-    option.category == Some(SessionConfigOptionCategory::ModelConfig) && {
-        let id = cursor_option_id(option);
-        let name = cursor_option_name(option);
-        id == "thinking" || name.contains("thinking")
-    }
-}
-
-fn is_cursor_fast_option(option: &SessionConfigOption) -> bool {
-    option.category == Some(SessionConfigOptionCategory::ModelConfig) && {
-        let id = cursor_option_id(option);
-        let name = cursor_option_name(option);
-        id == "fast" || name == "fast" || name.contains("fast mode")
-    }
-}
-
-fn is_cursor_context_option(option: &SessionConfigOption) -> bool {
-    option.category == Some(SessionConfigOptionCategory::ModelConfig) && {
-        let id = cursor_option_id(option);
-        let name = cursor_option_name(option);
-        id == "context" || id == "context_size" || name.contains("context")
-    }
-}
-
-fn is_cursor_effort_option(option: &SessionConfigOption) -> bool {
-    if !matches!(option.kind, SessionConfigKind::Select(_)) {
-        return false;
-    }
-    let id = cursor_option_id(option);
-    let name = cursor_option_name(option);
-    id == "effort"
-        || id == "reasoning"
-        || name == "effort"
-        || name == "reasoning"
-        || name.contains("effort")
-        || name.contains("reasoning")
-}
-
-fn find_cursor_effort_option(options: &[SessionConfigOption]) -> Option<&SessionConfigOption> {
-    let candidates: Vec<&SessionConfigOption> = options
-        .iter()
-        .filter(|option| is_cursor_effort_option(option))
-        .collect();
-    candidates
-        .iter()
-        .copied()
-        .find(|option| {
-            matches!(
-                option.category.as_ref(),
-                Some(SessionConfigOptionCategory::Other(value))
-                    if value.eq_ignore_ascii_case("model_option")
-            )
-        })
-        .or_else(|| {
-            candidates
-                .iter()
-                .copied()
-                .find(|option| option.id.to_string().eq_ignore_ascii_case("effort"))
-        })
-        .or_else(|| {
-            candidates
-                .iter()
-                .copied()
-                .find(|option| option.category == Some(SessionConfigOptionCategory::ThoughtLevel))
-        })
-        .or_else(|| candidates.first().copied())
-}
-
-fn cursor_matching_select_value<'a>(values: &[&'a str], requested: &str) -> Option<&'a str> {
-    let normalized = normalize_cursor_reasoning_effort(requested);
-    values
-        .iter()
-        .find(|value| normalize_cursor_reasoning_effort(value) == normalized)
-        .copied()
-}
-
-fn cursor_desired_effort_value(
-    option: &SessionConfigOption,
-    selection: &CursorModelSelection,
-    reasoning_effort: Option<&str>,
-) -> Option<String> {
-    let values = session_config_select_values(option);
-    if let Some(effort) = reasoning_effort.filter(|effort| !effort.is_empty())
-        && let Some(value) = cursor_matching_select_value(&values, effort)
-    {
-        return Some(value.to_owned());
-    }
-    if selection.suffix.contains("extra-high")
-        && let Some(value) = values
-            .iter()
-            .find(|value| normalize_cursor_reasoning_effort(value) == "xhigh")
-    {
-        return Some((*value).to_owned());
-    }
-    values
-        .iter()
-        .find(|value| cursor_suffix_has(&selection.suffix, value))
-        .map(|value| (*value).to_owned())
-}
-
-fn cursor_desired_thinking(
-    selection: &CursorModelSelection,
-    reasoning_effort: Option<&str>,
-) -> Option<bool> {
-    if let Some(effort) = reasoning_effort {
-        return Some(normalize_cursor_reasoning_effort(effort) != "none");
-    }
-    cursor_suffix_has(&selection.suffix, "thinking").then_some(true)
-}
-
-fn cursor_desired_fast(
-    selection: &CursorModelSelection,
-    service_tier: Option<&str>,
-) -> Option<bool> {
-    match service_tier {
-        Some("fast") => Some(true),
-        Some(_) => Some(false),
-        None if cursor_suffix_has(&selection.suffix, "fast") => Some(true),
-        None => None,
-    }
-}
-
-fn cursor_desired_context_value(
-    option: &SessionConfigOption,
-    context_window: Option<&str>,
-) -> Option<String> {
-    let requested = context_window.filter(|value| !value.is_empty())?;
-    let values = session_config_select_values(option);
-    let normalized = requested.replace(['_', ' '], "-");
-    values
-        .iter()
-        .find(|value| {
-            value.eq_ignore_ascii_case(requested)
-                || value
-                    .replace(['_', ' '], "-")
-                    .eq_ignore_ascii_case(&normalized)
-        })
-        .map(|value| (*value).to_owned())
-}
-
-fn cursor_flag_request_value(
-    option: &SessionConfigOption,
-    enabled: bool,
-) -> Option<SessionConfigOptionValue> {
-    match &option.kind {
-        SessionConfigKind::Boolean(_) => Some(SessionConfigOptionValue::boolean(enabled)),
-        SessionConfigKind::Select(_) => {
-            let value = if enabled { "true" } else { "false" };
-            session_config_select_values(option)
-                .contains(&value)
-                .then(|| SessionConfigOptionValue::value_id(value))
-        }
-        _ => None,
-    }
-}
-
-fn cursor_flag_matches(option: &SessionConfigOption, enabled: bool) -> bool {
-    match &option.kind {
-        SessionConfigKind::Boolean(boolean) => boolean.current_value == enabled,
-        SessionConfigKind::Select(_) => {
-            let value = if enabled { "true" } else { "false" };
-            session_config_current_value(option) == Some(value)
-        }
-        _ => false,
-    }
-}
-
 fn session_config_current_value(option: &SessionConfigOption) -> Option<&str> {
     let SessionConfigKind::Select(select) = &option.kind else {
         return None;
     };
     Some(select.current_value.0.as_ref())
-}
-
-async fn apply_cursor_variant_configs(
-    connection: &ConnectionTo<Agent>,
-    session_id: &SessionId,
-    mut options: Vec<SessionConfigOption>,
-    selection: &CursorModelSelection,
-    reasoning_effort: Option<&str>,
-    service_tier: Option<&str>,
-    context_window: Option<&str>,
-) -> agent_client_protocol::Result<()> {
-    // Thinking can reveal a thought-level option, so apply it first and use
-    // each response's refreshed option set for the next selection.
-    for target in ["thinking", "effort", "context", "fast"] {
-        let Some(option) = (match target {
-            "thinking" => options
-                .iter()
-                .find(|option| is_cursor_thinking_option(option)),
-            "effort" => find_cursor_effort_option(&options),
-            "context" => options
-                .iter()
-                .find(|option| is_cursor_context_option(option)),
-            "fast" => options.iter().find(|option| is_cursor_fast_option(option)),
-            _ => None,
-        })
-        .cloned() else {
-            continue;
-        };
-        let value = match target {
-            "thinking" => {
-                let Some(enabled) = cursor_desired_thinking(selection, reasoning_effort) else {
-                    continue;
-                };
-                if cursor_flag_matches(&option, enabled) {
-                    continue;
-                }
-                let Some(value) = cursor_flag_request_value(&option, enabled) else {
-                    continue;
-                };
-                value
-            }
-            "effort" => {
-                let Some(value) = cursor_desired_effort_value(&option, selection, reasoning_effort)
-                else {
-                    continue;
-                };
-                if session_config_current_value(&option) == Some(value.as_str()) {
-                    continue;
-                }
-                SessionConfigOptionValue::value_id(value)
-            }
-            "context" => {
-                let Some(value) = cursor_desired_context_value(&option, context_window) else {
-                    continue;
-                };
-                if session_config_current_value(&option) == Some(value.as_str()) {
-                    continue;
-                }
-                SessionConfigOptionValue::value_id(value)
-            }
-            "fast" => {
-                let Some(enabled) = cursor_desired_fast(selection, service_tier) else {
-                    continue;
-                };
-                if cursor_flag_matches(&option, enabled) {
-                    continue;
-                }
-                let Some(value) = cursor_flag_request_value(&option, enabled) else {
-                    continue;
-                };
-                value
-            }
-            _ => continue,
-        };
-        options = connection
-            .send_request(SetSessionConfigOptionRequest::new(
-                session_id.clone(),
-                option.id,
-                value,
-            ))
-            .block_task()
-            .await?
-            .config_options;
-    }
-    Ok(())
-}
-
-fn find_config_option(
-    config_options: &[SessionConfigOption],
-    category: SessionConfigOptionCategory,
-) -> Option<&SessionConfigOption> {
-    config_options
-        .iter()
-        .find(|option| option.category.as_ref() == Some(&category))
-}
-
-fn fx_model_option(config_options: &[SessionConfigOption]) -> Option<&SessionConfigOption> {
-    config_options.iter().find(|option| {
-        option.category == Some(SessionConfigOptionCategory::Model)
-            && option.id.to_string().eq_ignore_ascii_case("model")
-    })
 }
 
 pub(crate) fn parse_acp_config_models(option: &SessionConfigOption) -> Vec<ProviderModel> {
@@ -1791,107 +1146,50 @@ pub(crate) fn parse_acp_config_models(option: &SessionConfigOption) -> Vec<Provi
     models
 }
 
-fn fx_model_provider_switch<'a>(
-    config_options: &'a [SessionConfigOption],
-    model: &str,
-) -> Option<(&'a SessionConfigOption, &'static str)> {
-    if fx_model_option(config_options)
-        .is_some_and(|option| session_config_select_values(option).contains(&model))
-    {
-        return None;
-    }
-    // Fx scopes model options to the selected account route. AI Gateway IDs
-    // are provider/model pairs, while subscription IDs are flat. Selecting the
-    // Gateway route returns a refreshed model option that contains these IDs.
-    if !model.contains('/') {
-        return None;
-    }
-    let provider = config_options.iter().find(|option| {
-        option.category == Some(SessionConfigOptionCategory::Model)
-            && option.id.to_string().eq_ignore_ascii_case("provider")
-    })?;
-    (session_config_current_value(provider) != Some("gateway")
-        && session_config_select_values(provider).contains(&"gateway"))
-    .then_some((provider, "gateway"))
-}
-
-fn set_model_params(
-    session_id: &SessionId,
-    model: &str,
-    reasoning_effort: Option<&str>,
-    provider: ProviderKind,
-) -> serde_json::Value {
-    let mut params = json!({"sessionId": session_id, "modelId": model});
-    if provider == ProviderKind::Grok
-        && let Some(effort) = reasoning_effort.filter(|effort| !effort.is_empty())
-    {
-        params["_meta"] = json!({"reasoningEffort": effort});
-    }
-    params
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn apply_model(
     connection: &ConnectionTo<Agent>,
     session_id: &SessionId,
-    provider: ProviderKind,
     config_options: Option<&[SessionConfigOption]>,
     model: Option<&str>,
     reasoning_effort: Option<&str>,
     thinking_mode: Option<&str>,
-    service_tier: Option<&str>,
-    context_window: Option<&str>,
     events: &DriverEventSender,
     stream_state: &Arc<Mutex<AcpStreamState>>,
 ) -> bool {
-    if provider == ProviderKind::DeerFlow {
-        let options = {
-            let mut state = stream_state.lock();
-            state.deerflow_applying_model = true;
-            state.deerflow_config_options.clone()
-        };
-        let result = apply_deerflow_model(
-            connection,
-            session_id,
-            options.as_deref().or(config_options),
-            model,
-            reasoning_effort,
-            thinking_mode,
-        )
-        .await;
+    let options = {
         let mut state = stream_state.lock();
-        state.deerflow_applying_model = false;
-        let ready = match result {
-            Ok(options) => {
-                state.deerflow_config_options = Some(options);
-                true
-            }
-            Err(error) => {
-                let _ = events.send(DriverEvent::Error(tr!(
-                    "errors.select_model",
-                    error = error
-                )));
-                false
-            }
-        };
-        if let Some(options) = &state.deerflow_config_options {
-            report_deerflow_models(options, events);
-        }
-        return ready;
-    }
-    apply_other_model(
+        state.deerflow_applying_model = true;
+        state.deerflow_config_options.clone()
+    };
+    let result = apply_deerflow_model(
         connection,
         session_id,
-        provider,
-        config_options,
+        options.as_deref().or(config_options),
         model,
         reasoning_effort,
-        service_tier,
-        context_window,
-        events,
+        thinking_mode,
     )
     .await;
-    true
+    let mut state = stream_state.lock();
+    state.deerflow_applying_model = false;
+    let ready = match result {
+        Ok(options) => {
+            state.deerflow_config_options = Some(options);
+            true
+        }
+        Err(error) => {
+            let _ = events.send(DriverEvent::Error(tr!(
+                "errors.select_model",
+                error = error
+            )));
+            false
+        }
+    };
+    if let Some(options) = &state.deerflow_config_options {
+        report_deerflow_models(options, events);
+    }
+    ready
 }
 
 async fn apply_deerflow_model(
@@ -2015,10 +1313,6 @@ async fn apply_deerflow_model(
             }
         }
     }
-    let models = crate::model_catalog::parse_deerflow_models(&options);
-    if !models.is_empty() {
-        crate::model_catalog::write_cached_models(ProviderKind::DeerFlow, &models);
-    }
     Ok(options)
 }
 
@@ -2107,160 +1401,6 @@ fn deerflow_thinking_value(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_other_model(
-    connection: &ConnectionTo<Agent>,
-    session_id: &SessionId,
-    provider: ProviderKind,
-    config_options: Option<&[SessionConfigOption]>,
-    model: Option<&str>,
-    reasoning_effort: Option<&str>,
-    service_tier: Option<&str>,
-    context_window: Option<&str>,
-    events: &DriverEventSender,
-) {
-    let Some(model) = model else {
-        return;
-    };
-    let cursor_model_option = (provider == ProviderKind::Cursor)
-        .then_some(config_options)
-        .flatten()
-        .and_then(|options| find_config_option(options, SessionConfigOptionCategory::Model));
-    if let Some(option) = cursor_model_option
-        && let Some(selection) = cursor_model_selection(option, model)
-    {
-        match connection
-            .send_request(SetSessionConfigOptionRequest::new(
-                session_id.clone(),
-                option.id.clone(),
-                selection.value.as_str(),
-            ))
-            .block_task()
-            .await
-        {
-            Ok(response) => {
-                if let Err(error) = apply_cursor_variant_configs(
-                    connection,
-                    session_id,
-                    response.config_options,
-                    &selection,
-                    reasoning_effort,
-                    service_tier,
-                    context_window,
-                )
-                .await
-                {
-                    let _ = events.send(DriverEvent::Error(tr!(
-                        "errors.select_model",
-                        error = error
-                    )));
-                }
-            }
-            Err(error) => {
-                let _ = events.send(DriverEvent::Error(tr!(
-                    "errors.select_model",
-                    error = error
-                )));
-            }
-        }
-        return;
-    }
-
-    if provider == ProviderKind::Fx {
-        let mut options = config_options.unwrap_or_default().to_vec();
-        if let Some((provider_option, value)) = fx_model_provider_switch(&options, model) {
-            let config_id = provider_option.id.clone();
-            match connection
-                .send_request(SetSessionConfigOptionRequest::new(
-                    session_id.clone(),
-                    config_id,
-                    value,
-                ))
-                .block_task()
-                .await
-            {
-                Ok(response) => options = response.config_options,
-                Err(error) => {
-                    let _ = events.send(DriverEvent::Error(tr!(
-                        "errors.select_model",
-                        error = error
-                    )));
-                    return;
-                }
-            }
-        }
-        let Some(option) = fx_model_option(&options) else {
-            let _ = events.send(DriverEvent::Error(tr!(
-                "errors.select_model",
-                error = "Fx did not advertise its model configuration"
-            )));
-            return;
-        };
-        if !session_config_select_values(option).contains(&model) {
-            let _ = events.send(DriverEvent::Error(tr!(
-                "errors.select_model",
-                error = format!("Fx did not advertise model {model}")
-            )));
-            return;
-        }
-        if let Err(error) = connection
-            .send_request(SetSessionConfigOptionRequest::new(
-                session_id.clone(),
-                option.id.clone(),
-                model,
-            ))
-            .block_task()
-            .await
-        {
-            let _ = events.send(DriverEvent::Error(tr!(
-                "errors.select_model",
-                error = error
-            )));
-        }
-        return;
-    }
-
-    {
-        // Grok, Kimi, OpenCode, and Cursor agents that do not advertise a model
-        // config option retain the legacy request unchanged. Fx intentionally
-        // stays on session/set_config_option, its documented model API.
-        let request = match UntypedMessage::new(
-            "session/set_model",
-            set_model_params(session_id, model, reasoning_effort, provider),
-        ) {
-            Ok(request) => request,
-            Err(error) => {
-                let _ = events.send(DriverEvent::Error(tr!(
-                    "errors.select_model",
-                    error = error
-                )));
-                return;
-            }
-        };
-        if let Err(error) = connection.send_request(request).block_task().await {
-            let _ = events.send(DriverEvent::Error(tr!(
-                "errors.select_model",
-                error = error
-            )));
-            return;
-        }
-    }
-
-    if provider != ProviderKind::Grok
-        && let Some(effort) = reasoning_effort
-    {
-        // Reasoning effort is an optional config extension and is deliberately
-        // non-fatal when an agent does not expose it.
-        let _ = connection
-            .send_request(SetSessionConfigOptionRequest::new(
-                session_id.clone(),
-                reasoning_effort_config_id(provider),
-                effort,
-            ))
-            .block_task()
-            .await;
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn send_prompt(
     connection: &ConnectionTo<Agent>,
@@ -2269,30 +1409,13 @@ fn send_prompt(
     attachments: &[crate::model::MessageAttachment],
     prompt_requests: &PendingPromptRequests,
     events: &DriverEventSender,
-    provider: ProviderKind,
     native_session_id: &str,
-    grok_title_home: Option<std::path::PathBuf>,
-    title_refresh: super::title_refresh::NativeTitleRefresh,
     stream_state: Arc<Mutex<AcpStreamState>>,
 ) -> agent_client_protocol::Result<()> {
     stream_state.lock().produced_content = false;
-    // Read before the turn runs, so the failure lookup cannot mistake an
-    // earlier turn's record for this one's.
-    let wire_offset = (provider == ProviderKind::Kimi)
-        .then(|| crate::kimi_session::wire_offset(native_session_id));
-    let extension_id =
-        (provider == ProviderKind::Grok).then(|| format!("waku-{}", uuid::Uuid::new_v4()));
-    let content = if provider == ProviderKind::DeerFlow {
-        deerflow_prompt_content(
-            text,
-            attachments,
-            &waku_protocol::identity::desktop_data_directory(),
-        )?
-    } else {
-        vec![ContentBlock::Text(TextContent::new(text))]
-    };
+    let content = deerflow_prompt_content(text, attachments, &waku_protocol::identity::desktop_data_directory())?;
     let mut request = PromptRequest::new(session_id.clone(), content);
-    let foreground_id = if provider == ProviderKind::DeerFlow {
+    let foreground_id = {
         let mut stream = stream_state.lock();
         let id = stream
             .deerflow_steering
@@ -2300,31 +1423,21 @@ fn send_prompt(
             .map(deerflow_steering::State::begin_prompt);
         deerflow_steering::publish_target(&stream, events);
         id
-    } else {
-        None
     };
     if let Some(id) = &foreground_id {
         let mut meta = serde_json::Map::new();
         meta.insert("deerflow".into(), json!({"promptId": id}));
         request = request.meta(meta);
     }
-    if let Some(extension_id) = extension_id.as_ref() {
-        let mut meta = serde_json::Map::new();
-        meta.insert("promptId".into(), Value::String(extension_id.clone()));
-        meta.insert("requestId".into(), Value::String(extension_id.clone()));
-        request = request.meta(meta);
-    }
     let sent = connection.send_request(request);
     let request_id = sent.id().clone();
     prompt_requests.lock().insert(
         request_id.clone(),
-        extension_id,
         native_session_id.to_owned(),
     );
     let callback_request_id = request_id.clone();
     let callback_requests = prompt_requests.clone();
     let callback_events = events.clone();
-    let native_session_id = native_session_id.to_owned();
     let callback_stream = stream_state.clone();
     let callback_foreground = foreground_id.clone();
     let registered = sent.on_receiving_result(async move |result| {
@@ -2340,30 +1453,12 @@ fn send_prompt(
             }
         }
         if settled {
-            // Only an empty turn pays for this lookup, so a healthy turn never
-            // waits on Kimi's records.
-            let native_failure = wire_offset
-                .filter(|_| !stream_state.lock().produced_content)
-                .and_then(|offset| crate::kimi_session::turn_failure(&native_session_id, offset));
-            let success = if provider == ProviderKind::DeerFlow {
-                let mut stream = stream_state.lock();
-                let success = deerflow_tasks::finish_prompt(result, &mut stream, &callback_events);
-                if let Some(tasks) = &stream.deerflow_tasks {
-                    tasks.invalidate(&callback_events);
-                }
-                deerflow_tasks::flush_early_updates(&mut stream, false, &callback_events)?;
-                success
-            } else {
-                finish_prompt(provider, result, native_failure, &callback_events)
-            };
-            if provider == ProviderKind::Grok && success {
-                start_grok_title_refresh(
-                    grok_title_home.as_deref(),
-                    &native_session_id,
-                    &title_refresh,
-                    callback_events,
-                );
+            let mut stream = stream_state.lock();
+            deerflow_tasks::finish_prompt(result, &mut stream, &callback_events);
+            if let Some(tasks) = &stream.deerflow_tasks {
+                tasks.invalidate(&callback_events);
             }
+            deerflow_tasks::flush_early_updates(&mut stream, false, &callback_events)?;
         }
         Ok(())
     });
@@ -2656,66 +1751,6 @@ fn settle_prompt_request(prompt_requests: &Mutex<PendingPrompts>, request_id: &R
     prompt_requests.lock().settle_request(request_id)
 }
 
-fn finish_xai_prompt_complete(
-    params: &Value,
-    prompt_requests: &Mutex<PendingPrompts>,
-    events: &DriverEventSender,
-) -> Option<String> {
-    let Some(session_id) = params.get("sessionId").and_then(Value::as_str) else {
-        return None;
-    };
-    let prompt_id = params.get("promptId").and_then(Value::as_str);
-    if !prompt_requests
-        .lock()
-        .settle_extension(session_id, prompt_id)
-    {
-        return None;
-    }
-
-    let stop_reason = match params.get("stopReason").and_then(Value::as_str) {
-        Some("cancelled") => StopReason::Cancelled,
-        Some("max_tokens") => StopReason::MaxTokens,
-        Some("max_turn_requests") => StopReason::MaxTurnRequests,
-        Some("refusal") => StopReason::Refusal,
-        _ => StopReason::EndTurn,
-    };
-    finish_prompt(
-        ProviderKind::Grok,
-        Ok(PromptResponse::new(stop_reason)),
-        None,
-        events,
-    )
-    .then(|| session_id.to_owned())
-}
-
-fn start_grok_title_refresh(
-    grok_title_home: Option<&Path>,
-    native_session_id: &str,
-    title_refresh: &super::title_refresh::NativeTitleRefresh,
-    events: DriverEventSender,
-) {
-    let grok_title_home = grok_title_home.map(ToOwned::to_owned);
-    let native_session_id = native_session_id.to_owned();
-    title_refresh.start(
-        "waku-grok-title",
-        vec![
-            Duration::ZERO,
-            Duration::from_millis(250),
-            Duration::from_millis(750),
-            Duration::from_millis(1_500),
-            Duration::from_secs(3),
-            Duration::from_secs(5),
-            Duration::from_millis(7_500),
-            Duration::from_secs(10),
-        ],
-        events,
-        move || match grok_title_home.as_deref() {
-            Some(home) => crate::grok_session::generated_title_in(home, &native_session_id),
-            None => crate::grok_session::generated_title(&native_session_id),
-        },
-    );
-}
-
 fn token_limit_summary(limit: Option<&str>) -> String {
     match limit {
         Some("output_tokens") => tr!("session.model_output_limit"),
@@ -2860,268 +1895,12 @@ fn cancel_pending_user_inputs(pending: &PendingAcpUserInputs) {
     for (_, pending) in pending.lock().drain() {
         let _ = pending
             .responder
-            .respond(cancelled_user_input_response(pending.kind));
+            .respond(cancelled_user_input_response());
     }
 }
 
-fn cancel_pending_deerflow_user_inputs(pending: &PendingAcpUserInputs) {
-    let mut inputs = pending.lock();
-    let ids = inputs
-        .iter()
-        .filter(|(_, input)| matches!(input.kind, AcpUserInputKind::DeerFlow))
-        .map(|(id, _)| id.clone())
-        .collect::<Vec<_>>();
-    for id in ids {
-        if let Some(input) = inputs.remove(&id) {
-            let _ = input
-                .responder
-                .respond(cancelled_user_input_response(input.kind));
-        }
-    }
-}
-
-fn cancelled_user_input_response(kind: AcpUserInputKind) -> Value {
-    match kind {
-        AcpUserInputKind::Cursor => json!({"answers": {}}),
-        AcpUserInputKind::Xai | AcpUserInputKind::DeerFlow => json!({"outcome": "cancelled"}),
-    }
-}
-
-fn unwrap_xai_question_params(params: &Value) -> &Value {
-    if matches!(
-        params.get("method").and_then(Value::as_str),
-        Some("x.ai/ask_user_question" | "_x.ai/ask_user_question")
-    ) {
-        params.get("params").unwrap_or(params)
-    } else {
-        params
-    }
-}
-
-fn cursor_user_input_questions(params: &Value) -> Vec<UserInputQuestion> {
-    params
-        .get("questions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|question| {
-            let text = question.get("prompt").and_then(Value::as_str)?.trim();
-            if text.is_empty() {
-                return None;
-            }
-            let mut options = question
-                .get("options")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|option| {
-                    let label = option.get("label").and_then(Value::as_str)?.trim();
-                    (!label.is_empty()).then(|| UserInputOption {
-                        label: label.to_owned(),
-                        description: Some(label.to_owned()),
-                    })
-                })
-                .collect::<Vec<_>>();
-            if options.is_empty() {
-                options.push(UserInputOption {
-                    label: "OK".into(),
-                    description: Some("Continue".into()),
-                });
-            }
-            Some(UserInputQuestion {
-                id: question
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty())
-                    .unwrap_or(text)
-                    .to_owned(),
-                header: "Question".into(),
-                question: text.to_owned(),
-                options,
-                multi_select: question
-                    .get("allowMultiple")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-            })
-        })
-        .collect()
-}
-
-fn cursor_user_input_response(params: &Value, submitted: &[UserInputAnswer]) -> Value {
-    let mut answers = serde_json::Map::new();
-    for question in params
-        .get("questions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let Some(id) = question.get("id").and_then(Value::as_str) else {
-            continue;
-        };
-        let values = submitted
-            .iter()
-            .find(|answer| answer.question_id == id)
-            .map(|answer| answer.answers.as_slice())
-            .unwrap_or_default();
-        let value = if question
-            .get("allowMultiple")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            json!(values)
-        } else {
-            values
-                .first()
-                .map_or(Value::String(String::new()), |value| json!(value))
-        };
-        answers.insert(id.to_owned(), value);
-    }
-    json!({"answers": answers})
-}
-
-fn xai_user_input_questions(params: &Value) -> Vec<UserInputQuestion> {
-    params
-        .get("questions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .enumerate()
-        .filter_map(|(index, question)| {
-            let text = question.get("question").and_then(Value::as_str)?.trim();
-            if text.is_empty() {
-                return None;
-            }
-            let mut options = question
-                .get("options")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|option| {
-                    let label = option.get("label").and_then(Value::as_str)?.trim();
-                    (!label.is_empty()).then(|| UserInputOption {
-                        label: label.to_owned(),
-                        description: option
-                            .get("description")
-                            .and_then(Value::as_str)
-                            .map(str::trim)
-                            .filter(|description| !description.is_empty())
-                            .map(str::to_owned),
-                    })
-                })
-                .collect::<Vec<_>>();
-            if options.is_empty() {
-                options.push(UserInputOption {
-                    label: "OK".into(),
-                    description: Some("Continue".into()),
-                });
-            }
-            Some(UserInputQuestion {
-                id: question
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty())
-                    .unwrap_or(text)
-                    .to_owned(),
-                header: format!("Question {}", index + 1),
-                question: text.to_owned(),
-                options,
-                multi_select: question
-                    .get("multiSelect")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-            })
-        })
-        .collect()
-}
-
-fn xai_user_input_response(params: &Value, submitted: &[UserInputAnswer]) -> Value {
-    let mut answers = serde_json::Map::new();
-    let mut annotations = serde_json::Map::new();
-    for question in params
-        .get("questions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let Some(question_text) = question.get("question").and_then(Value::as_str) else {
-            continue;
-        };
-        let id = question
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or(question_text);
-        let values = submitted
-            .iter()
-            .find(|answer| answer.question_id == id || answer.question_id == question_text)
-            .map(|answer| answer.answers.as_slice())
-            .unwrap_or_default();
-        let options = question
-            .get("options")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        let option_labels = options
-            .iter()
-            .filter_map(|option| option.get("label").and_then(Value::as_str))
-            .collect::<Vec<_>>();
-        let selected = values
-            .iter()
-            .filter(|value| option_labels.contains(&value.as_str()))
-            .cloned()
-            .collect::<Vec<_>>();
-        let notes = values
-            .iter()
-            .filter(|value| !option_labels.contains(&value.as_str()))
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
-        let preview = if question
-            .get("multiSelect")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            None
-        } else {
-            selected.iter().find_map(|selected| {
-                options.iter().find_map(|option| {
-                    (option.get("label").and_then(Value::as_str) == Some(selected.as_str()))
-                        .then(|| {
-                            option
-                                .get("preview")
-                                .and_then(Value::as_str)
-                                .map(str::trim)
-                                .filter(|preview| !preview.is_empty())
-                                .map(str::to_owned)
-                        })
-                        .flatten()
-                })
-            })
-        };
-        answers.insert(
-            question_text.to_owned(),
-            json!(if selected.is_empty() && !notes.is_empty() {
-                vec!["Other".to_owned()]
-            } else {
-                selected
-            }),
-        );
-        let mut annotation = serde_json::Map::new();
-        if let Some(preview) = preview {
-            annotation.insert("preview".into(), Value::String(preview));
-        }
-        if !notes.is_empty() {
-            annotation.insert("notes".into(), Value::String(notes));
-        }
-        if !annotation.is_empty() {
-            annotations.insert(question_text.to_owned(), Value::Object(annotation));
-        }
-    }
-    let mut response = json!({"outcome": "accepted", "answers": answers});
-    if !annotations.is_empty() {
-        response["annotations"] = Value::Object(annotations);
-    }
-    response
+fn cancelled_user_input_response() -> Value {
+    json!({"outcome": "cancelled"})
 }
 
 fn valid_credential_form(form: &crate::model::CredentialForm) -> bool {
@@ -3138,7 +1917,7 @@ fn handle_permission_request(
     request: RequestPermissionRequest,
     responder: PermissionResponder,
     provider: ProviderKind,
-    mode: RuntimeMode,
+    _mode: RuntimeMode,
     pending: &PendingPermissions,
     events: &impl DriverEventSink,
 ) -> agent_client_protocol::Result<()> {
@@ -3178,29 +1957,6 @@ fn handle_permission_request(
         })
         .collect::<Vec<_>>();
 
-    if provider != ProviderKind::DeerFlow && mode != RuntimeMode::Ask {
-        let choice = request
-            .options
-            .iter()
-            .find(|option| option.kind == PermissionOptionKind::AllowAlways)
-            .or_else(|| {
-                request
-                    .options
-                    .iter()
-                    .find(|option| option.kind == PermissionOptionKind::AllowOnce)
-            });
-        return match choice {
-            Some(choice) => responder.respond(RequestPermissionResponse::new(
-                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                    choice.option_id.clone(),
-                )),
-            )),
-            None => responder.respond(RequestPermissionResponse::new(
-                RequestPermissionOutcome::Cancelled,
-            )),
-        };
-    }
-
     let title = params
         .pointer("/toolCall/title")
         .and_then(Value::as_str)
@@ -3239,16 +1995,6 @@ fn handle_session_update(
 ) -> agent_client_protocol::Result<()> {
     let update = serde_json::to_value(notification.update)?;
     let kind = update.get("sessionUpdate").and_then(Value::as_str);
-    if provider == ProviderKind::Fx
-        && !state.produced_content
-        && kind == Some("agent_message_chunk")
-        && update
-            .pointer("/content/text")
-            .and_then(Value::as_str)
-            .is_some_and(fx_context_notice)
-    {
-        return Ok(());
-    }
     if matches!(
         kind,
         Some(
@@ -3386,10 +2132,6 @@ fn handle_session_update(
         _ => {}
     }
     Ok(())
-}
-
-fn fx_context_notice(text: &str) -> bool {
-    text.starts_with("[context] ") || text.starts_with("skill discovery warning: ")
 }
 
 #[derive(Default)]
@@ -3562,11 +2304,7 @@ impl DriverControl for AcpDriver {
     }
 
     fn supports_steer(&self) -> bool {
-        match self.provider {
-            ProviderKind::DeerFlow => self.steering_availability.lock().supported,
-            ProviderKind::Fx => false,
-            _ => true,
-        }
+        self.steering_availability.lock().supported
     }
 
     fn steer(&self, prompt: String) {
@@ -3589,12 +2327,6 @@ impl DriverControl for AcpDriver {
 
     fn cancel(&self) {
         let _ = self.commands.try_send(CommandMessage::Cancel);
-    }
-
-    fn cancel_computer_use(&self) {
-        if let Some(computer_use) = self.computer_use.as_ref() {
-            computer_use.stop();
-        }
     }
 
     fn respond_credential(&self, id: String, sealed: crate::model::SealedCredential) -> Result<(), String> {
@@ -3681,11 +2413,6 @@ impl DriverControl for AcpDriver {
             .map_err(anyhow::Error::msg)
     }
 
-    fn rollback(&self, _turns: usize) -> anyhow::Result<Option<ProviderResumeCursor>> {
-        Err(anyhow!(
-            "conversation rollback is not supported by this provider transport"
-        ))
-    }
 }
 
 impl Drop for AcpDriver {
@@ -3715,29 +2442,6 @@ mod tests {
         assert!(!deerflow_history_capability(&json!({})));
     }
 
-    #[test]
-    fn deerflow_keeps_its_task_planner_independent_of_tool_approval() {
-        let modes = SessionModeState::new(
-            "plan",
-            vec![
-                SessionMode::new("default", "Default"),
-                SessionMode::new("plan", "Plan"),
-            ],
-        );
-        assert!(
-            desired_access_mode(ProviderKind::DeerFlow, Some(&modes), RuntimeMode::Ask).is_none()
-        );
-        assert!(
-            desired_access_mode(
-                ProviderKind::DeerFlow,
-                Some(&modes),
-                RuntimeMode::FullAccess
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
     fn failed_resume_and_load_never_create_a_replacement_session() {
         use agent_client_protocol::schema::v1::{
             LoadSessionResponse, NewSessionResponse, ResumeSessionResponse,
@@ -5006,7 +3710,6 @@ mod tests {
             steering_availability: Arc::default(),
             provider: ProviderKind::DeerFlow,
             access: Arc::new(Mutex::new(AcpAccessState::new(RuntimeMode::Ask))),
-            computer_use: None,
         };
         driver.prompt_with_attachments("Do not lose this message".into(), Vec::new());
         let seen = event_rx.try_iter().collect::<Vec<_>>();
@@ -5049,315 +3752,14 @@ mod tests {
     }
 
     #[test]
-    fn cursor_question_response_uses_native_scalar_and_array_answers() {
-        let params = json!({
-            "toolCallId": "ask-1",
-            "questions": [
-                {
-                    "id": "scope",
-                    "prompt": "Which scope?",
-                    "options": [{"id": "workspace", "label": "Workspace"}]
-                },
-                {
-                    "id": "checks",
-                    "prompt": "Which checks?",
-                    "options": [
-                        {"id": "tests", "label": "Tests"},
-                        {"id": "lint", "label": "Lint"}
-                    ],
-                    "allowMultiple": true
-                }
-            ]
-        });
-
-        let questions = cursor_user_input_questions(&params);
-        assert_eq!(questions.len(), 2);
-        assert!(!questions[0].multi_select);
-        assert!(questions[1].multi_select);
-
-        let response = cursor_user_input_response(
-            &params,
-            &[
-                UserInputAnswer {
-                    question_id: "scope".into(),
-                    answers: vec!["Workspace".into()],
-                },
-                UserInputAnswer {
-                    question_id: "checks".into(),
-                    answers: vec!["Tests".into(), "Lint".into()],
-                },
-            ],
-        );
-        assert_eq!(
-            response.pointer("/answers/scope"),
-            Some(&json!("Workspace"))
-        );
-        assert_eq!(
-            response.pointer("/answers/checks"),
-            Some(&json!(["Tests", "Lint"]))
-        );
-    }
-
-    #[test]
-    fn grok_question_response_keeps_native_labels_and_annotates_custom_text() {
-        let params = json!({
-            "sessionId": "session-1",
-            "toolCallId": "tool-1",
-            "mode": "default",
-            "questions": [
-                {
-                    "id": "environment",
-                    "question": "Where should this deploy?",
-                    "options": [{"label": "Preview", "preview": "Deploy to preview"}],
-                    "multiSelect": false
-                },
-                {
-                    "id": "notes",
-                    "question": "Anything else?",
-                    "options": [{"label": "No"}],
-                    "multiSelect": false
-                }
-            ]
-        });
-        let response = xai_user_input_response(
-            &params,
-            &[
-                UserInputAnswer {
-                    question_id: "environment".into(),
-                    answers: vec!["Preview".into()],
-                },
-                UserInputAnswer {
-                    question_id: "notes".into(),
-                    answers: vec!["Use the EU region".into()],
-                },
-            ],
-        );
-
-        assert_eq!(response["outcome"], "accepted");
-        assert_eq!(
-            response.pointer("/answers/Where should this deploy?/0"),
-            Some(&json!("Preview"))
-        );
-        assert_eq!(
-            response.pointer("/answers/Anything else?/0"),
-            Some(&json!("Other"))
-        );
-        assert_eq!(
-            response.pointer("/annotations/Where should this deploy?/preview"),
-            Some(&json!("Deploy to preview"))
-        );
-        assert_eq!(
-            response.pointer("/annotations/Anything else?/notes"),
-            Some(&json!("Use the EU region"))
-        );
-    }
-
-    #[test]
-    fn legacy_read_only_sessions_return_to_the_advertised_agent_mode() {
-        let modes = SessionModeState::new(
-            "plan",
-            vec![
-                SessionMode::new("agent", "Agent"),
-                SessionMode::new("plan", "Plan"),
-            ],
-        );
-
-        assert_eq!(
-            desired_access_mode(ProviderKind::Cursor, Some(&modes), RuntimeMode::FullAccess)
-                .map(|mode| mode.to_string()),
-            Some("agent".to_owned())
-        );
-    }
-
-    #[test]
-    fn fx_access_mode_selects_ask_or_code() {
-        let modes = SessionModeState::new(
-            "code",
-            vec![
-                SessionMode::new("ask", "Ask before sensitive actions"),
-                SessionMode::new("code", "Review sensitive actions automatically"),
-            ],
-        );
-        assert_eq!(
-            desired_access_mode(ProviderKind::Fx, Some(&modes), RuntimeMode::Ask)
-                .map(|mode| mode.to_string()),
-            Some("ask".to_owned())
-        );
-        assert!(
-            desired_access_mode(ProviderKind::Fx, Some(&modes), RuntimeMode::FullAccess).is_none()
-        );
-    }
-
-    #[test]
-    fn fx_launches_its_documented_acp_subcommand() {
-        let launch = launch_for(ProviderKind::Fx, None).unwrap();
-        assert_eq!(launch.args, ["acp"]);
-        assert!(launch.env.is_empty());
-    }
-
-    #[test]
-    fn fx_model_option_ignores_provider_selector_in_same_category() {
-        let provider = select_config_option(
-            "provider",
-            SessionConfigOptionCategory::Model,
-            "gateway",
-            &["gateway", "codex", "grok"],
-        );
-        let model = select_config_option(
-            "model",
-            SessionConfigOptionCategory::Model,
-            "openai/gpt-5.6-sol",
-            &["openai/gpt-5.6-sol", "anthropic/claude-sonnet-5"],
-        );
-
-        assert_eq!(
-            fx_model_option(&[provider, model]).map(|option| option.id.to_string()),
-            Some("model".to_owned())
-        );
-    }
-
-    #[test]
-    fn fx_gateway_model_selects_the_gateway_route_first() {
-        let provider = select_config_option(
-            "provider",
-            SessionConfigOptionCategory::Model,
-            "codex",
-            &["gateway", "codex", "grok"],
-        );
-        let model = select_config_option(
-            "model",
-            SessionConfigOptionCategory::Model,
-            "gpt-5.6-luna",
-            &["gpt-5.6-sol", "gpt-5.6-luna"],
-        );
-        let options = [provider, model];
-
-        let (option, value) =
-            fx_model_provider_switch(&options, "openai/gpt-5.6-luna-fast").unwrap();
-        assert_eq!(option.id.to_string(), "provider");
-        assert_eq!(value, "gateway");
-    }
-
-    #[test]
-    fn cursor_model_aliases_resolve_to_advertised_parameterized_picker_values() {
-        let option = select_config_option(
-            "model",
-            SessionConfigOptionCategory::Model,
-            "default",
-            &["default", "grok-4.6", "composer-2.5", "claude-sonnet-4-6"],
-        );
-
-        assert_eq!(
-            cursor_model_selection(&option, "auto"),
-            Some(CursorModelSelection {
-                value: "default".into(),
-                suffix: String::new(),
-            })
-        );
-        assert_eq!(
-            cursor_model_selection(&option, "composer-2.5"),
-            Some(CursorModelSelection {
-                value: "composer-2.5".into(),
-                suffix: String::new(),
-            })
-        );
-        assert_eq!(
-            cursor_model_selection(&option, "cursor-grok-4.6-xhigh-fast"),
-            Some(CursorModelSelection {
-                value: "grok-4.6".into(),
-                suffix: "xhigh-fast".into(),
-            })
-        );
-        assert_eq!(
-            cursor_model_selection(&option, "claude-4.6-sonnet-medium-thinking"),
-            Some(CursorModelSelection {
-                value: "claude-sonnet-4-6".into(),
-                suffix: "medium-thinking".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn cursor_model_suffix_selects_dynamic_effort_thinking_and_fast_options() {
-        let selection = CursorModelSelection {
-            value: "claude-opus-5".into(),
-            suffix: "thinking-extra-high-fast".into(),
-        };
-        let effort = select_config_option(
-            "effort",
-            SessionConfigOptionCategory::ThoughtLevel,
-            "high",
-            &["low", "medium", "high", "xhigh"],
-        );
-        let extra_high = select_config_option(
-            "reasoning",
-            SessionConfigOptionCategory::ThoughtLevel,
-            "high",
-            &["low", "medium", "high", "extra-high"],
-        );
-        let context = select_config_option(
-            "context",
-            SessionConfigOptionCategory::ModelConfig,
-            "272k",
-            &["272k", "1m"],
-        );
-
-        assert_eq!(
-            cursor_desired_effort_value(&effort, &selection, None).as_deref(),
-            Some("xhigh")
-        );
-        assert_eq!(
-            cursor_desired_effort_value(&extra_high, &selection, Some("xhigh")).as_deref(),
-            Some("extra-high")
-        );
-        assert_eq!(cursor_desired_thinking(&selection, None), Some(true));
-        assert_eq!(cursor_desired_fast(&selection, None), Some(true));
-        assert_eq!(
-            cursor_desired_effort_value(&effort, &selection, Some("low")).as_deref(),
-            Some("low")
-        );
-        assert_eq!(
-            cursor_desired_fast(&selection, Some("default")),
-            Some(false)
-        );
-        assert_eq!(
-            cursor_desired_context_value(&context, Some("1m")).as_deref(),
-            Some("1m")
-        );
-        assert_eq!(
-            cursor_desired_thinking(&selection, Some("none")),
-            Some(false)
-        );
-    }
-
-    #[test]
-    fn cursor_prefers_model_option_effort_over_thought_level() {
-        let thought = select_config_option(
-            "reasoning",
-            SessionConfigOptionCategory::ThoughtLevel,
-            "high",
-            &["low", "medium", "high"],
-        );
-        let effort = select_config_option(
-            "effort",
-            SessionConfigOptionCategory::Other("model_option".into()),
-            "max",
-            &["low", "medium", "high", "max"],
-        );
-        let options = [thought, effort];
-        let selected = find_cursor_effort_option(&options).unwrap();
-        assert_eq!(selected.id.to_string(), "effort");
-    }
-
-    #[test]
     fn a_steer_only_settles_when_the_last_sdk_request_finishes() {
         let requests = Mutex::new(PendingPrompts::default());
         requests
             .lock()
-            .insert(RequestId::Str("first".into()), None, "session".into());
+            .insert(RequestId::Str("first".into()), "session".into());
         requests
             .lock()
-            .insert(RequestId::Str("steer".into()), None, "session".into());
+            .insert(RequestId::Str("steer".into()), "session".into());
         assert!(!settle_prompt_request(
             &requests,
             &RequestId::Str("first".into())
@@ -5372,43 +3774,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn xai_prompt_complete_settles_a_missing_standard_response_once() {
-        let requests = Mutex::new(PendingPrompts::default());
-        let request_id = RequestId::Str("sdk-request".into());
-        requests.lock().insert(
-            request_id.clone(),
-            Some("waku-prompt".into()),
-            "grok-session".into(),
-        );
-        let (events, event_rx) = crate::driver::test_event_channel();
-
-        assert_eq!(
-            finish_xai_prompt_complete(
-                &json!({
-                    "sessionId": "grok-session",
-                    "promptId": "waku-prompt",
-                    "stopReason": "end_turn"
-                }),
-                &requests,
-                &events,
-            ),
-            Some("grok-session".into())
-        );
-        assert!(matches!(
-            event_rx.try_recv().unwrap(),
-            DriverEvent::TurnFinished {
-                success: true,
-                summary: None
-            }
-        ));
-        assert!(!settle_prompt_request(&requests, &request_id));
-        assert!(event_rx.try_recv().is_err());
-    }
-
-    /// Kimi ends a failed turn with `end_turn` and no content at all, so the
-    /// provider's own record is the only thing that can name the cause.
-    #[test]
     fn a_recovered_provider_failure_overrides_a_clean_stop_reason() {
         let (events, event_rx) = crossbeam_channel::unbounded();
 
@@ -5461,42 +3826,6 @@ mod tests {
             DriverEvent::TurnFinished { success: false, .. }
         ));
         assert!(event_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn other_providers_keep_their_own_error_codes_and_kinds() {
-        for provider in [
-            ProviderKind::Kimi,
-            ProviderKind::Grok,
-            ProviderKind::OpenCode,
-        ] {
-            for (code, kind) in [
-                (-32012, "execution_waiting_input"),
-                (-32026, "model_response_invalid"),
-                (-32033, "model_transport_failed"),
-                (-32028, "checkpoint_too_large"),
-                (-32029, "checkpoint_invalid"),
-                (-32030, "checkpoint_persist_failed"),
-                (-32027, "model_rate_limited"),
-            ] {
-                for error in [
-                    agent_client_protocol::Error::new(code, "provider-specific failure"),
-                    agent_client_protocol::Error::internal_error().data(json!({"kind": kind})),
-                ] {
-                    let expected = error.to_string();
-                    let (events, event_rx) = crossbeam_channel::unbounded();
-                    assert!(!finish_prompt(provider, Err(error), None, &events));
-                    assert!(
-                        matches!(event_rx.try_recv().unwrap(), DriverEvent::Error(message) if message == expected)
-                    );
-                    assert!(matches!(
-                        event_rx.try_recv().unwrap(),
-                        DriverEvent::TurnFinished { success: false, .. }
-                    ));
-                    assert!(event_rx.try_recv().is_err());
-                }
-            }
-        }
     }
 
     #[test]
@@ -5840,60 +4169,6 @@ mod tests {
     }
 
     #[test]
-    fn fx_context_notices_do_not_become_assistant_text() {
-        let (events, event_rx) = crossbeam_channel::unbounded();
-        let mut state = AcpStreamState::default();
-        for text in [
-            "[context] skill catalog omitted 19 entries",
-            "skill discovery warning: candidate was skipped",
-            "Hi! How can I help?",
-            "[context] is ordinary text after the answer starts",
-        ] {
-            let update = serde_json::from_value(json!({
-                "sessionUpdate": "agent_message_chunk",
-                "content": {"type": "text", "text": text}
-            }))
-            .unwrap();
-            handle_session_update(
-                ProviderKind::Fx,
-                SessionNotification::new("s", update),
-                &events,
-                &mut state,
-            )
-            .unwrap();
-        }
-
-        let seen = event_rx.try_iter().collect::<Vec<_>>();
-        assert_eq!(seen.len(), 2);
-        assert!(matches!(&seen[0], DriverEvent::TextDelta(text) if text == "Hi! How can I help?"));
-        assert!(matches!(&seen[1], DriverEvent::TextDelta(text) if text.starts_with("[context]")));
-        assert!(state.produced_content);
-    }
-
-    #[test]
-    fn grok_launch_passes_reasoning_effort_before_stdio() {
-        let launch = launch_for(ProviderKind::Grok, Some("xhigh")).unwrap();
-        assert_eq!(
-            launch.args,
-            ["agent", "--reasoning-effort", "xhigh", "stdio"]
-        );
-        let bare = launch_for(ProviderKind::Grok, None).unwrap();
-        assert_eq!(bare.args, ["agent", "stdio"]);
-    }
-
-    #[test]
-    fn grok_set_model_includes_reasoning_effort_meta() {
-        let params = set_model_params(
-            &SessionId::new("sess"),
-            "grok-4.6",
-            Some("xhigh"),
-            ProviderKind::Grok,
-        );
-        assert_eq!(params["modelId"], "grok-4.6");
-        assert_eq!(params["_meta"]["reasoningEffort"], "xhigh");
-    }
-
-    #[test]
     fn deerflow_acp_config_models_are_parsed_correctly() {
         let option = select_config_option(
             "model",
@@ -5936,185 +4211,4 @@ mod tests {
         );
     }
 
-    /// Drives a real agent through the SDK-backed driver. Ignored by default:
-    /// it needs the CLI installed, credentials, and the network.
-    #[test]
-    #[ignore = "requires an installed, authenticated grok"]
-    fn grok_prompt_response_from_the_sdk_finishes_the_turn() {
-        let binary = crate::command_env::find_executable("grok").expect("grok is not installed");
-        let (events, event_rx) = crate::driver::test_event_channel();
-        let driver = AcpDriver::start(
-            ProviderKind::Grok,
-            DriverStartOptions {
-                binary,
-                cwd: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
-                mode: RuntimeMode::FullAccess,
-                model: Some("grok-4.5".into()),
-                reasoning_effort: None,
-                thinking_mode: None,
-                service_tier: None,
-                context_window: None,
-                agent_preset: None,
-                computer_use_enabled: false,
-                provider_cursor: None,
-            },
-            events,
-        )
-        .expect("the ACP session should open");
-
-        loop {
-            let event = event_rx
-                .recv_timeout(Duration::from_secs(60))
-                .expect("the agent should report its session");
-            match event {
-                DriverEvent::Connected {
-                    provider_cursor: Some(ProviderResumeCursor::Grok { .. }),
-                } => break,
-                DriverEvent::Error(error) => panic!("the agent reported: {error}"),
-                _ => {}
-            }
-        }
-        driver.prompt("hi".into());
-        let mut finished = None;
-        while let Ok(event) = event_rx.recv_timeout(Duration::from_secs(120)) {
-            match event {
-                DriverEvent::TurnFinished { success, .. } => {
-                    finished = Some(success);
-                    break;
-                }
-                DriverEvent::Error(error) => panic!("the agent reported: {error}"),
-                _ => {}
-            }
-        }
-        assert_eq!(finished, Some(true));
-    }
-
-    /// Covers Cursor's provider-private parameterized picker with a model id
-    /// whose CLI alias carries both effort and fast-mode values.
-    #[test]
-    #[ignore = "requires an installed, authenticated cursor-agent"]
-    fn cursor_parameterized_model_selection_finishes_a_real_turn() {
-        let binary = crate::command_env::find_executable("cursor-agent")
-            .expect("cursor-agent is not installed");
-        let (events, event_rx) = crate::driver::test_event_channel();
-        let driver = AcpDriver::start(
-            ProviderKind::Cursor,
-            DriverStartOptions {
-                binary,
-                cwd: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
-                mode: RuntimeMode::FullAccess,
-                model: Some("cursor-grok-4.6-xhigh".into()),
-                reasoning_effort: None,
-                thinking_mode: None,
-                service_tier: None,
-                context_window: None,
-                agent_preset: None,
-                computer_use_enabled: false,
-                provider_cursor: None,
-            },
-            events,
-        )
-        .expect("the ACP session should open");
-
-        loop {
-            let event = event_rx
-                .recv_timeout(Duration::from_secs(60))
-                .expect("the agent should report its session");
-            match event {
-                DriverEvent::Connected {
-                    provider_cursor: Some(ProviderResumeCursor::Cursor { .. }),
-                } => break,
-                DriverEvent::Error(error) => panic!("the agent reported: {error}"),
-                _ => {}
-            }
-        }
-        driver.prompt("Reply exactly OK.".into());
-
-        let mut produced_text = false;
-        let mut finished = None;
-        while let Ok(event) = event_rx.recv_timeout(Duration::from_secs(120)) {
-            match event {
-                DriverEvent::TextDelta(text) => produced_text |= !text.is_empty(),
-                DriverEvent::TurnFinished { success, .. } => {
-                    finished = Some(success);
-                    break;
-                }
-                DriverEvent::Error(error) => panic!("the agent reported: {error}"),
-                _ => {}
-            }
-        }
-        assert!(produced_text, "the Cursor turn produced no text");
-        assert_eq!(finished, Some(true));
-    }
-
-    /// The invariant Kimi's silent failures break: a turn may finish
-    /// successfully or report why it did not, but it must never claim success
-    /// having produced nothing at all. Holds whether or not the account is
-    /// currently able to serve the request.
-    #[test]
-    #[ignore = "requires an installed, authenticated kimi"]
-    fn kimi_never_reports_an_empty_turn_as_a_success() {
-        let binary = crate::command_env::find_executable("kimi").expect("kimi is not installed");
-        let (events, event_rx) = crate::driver::test_event_channel();
-        let driver = AcpDriver::start(
-            ProviderKind::Kimi,
-            DriverStartOptions {
-                binary,
-                cwd: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
-                mode: RuntimeMode::FullAccess,
-                model: None,
-                reasoning_effort: None,
-                thinking_mode: None,
-                service_tier: None,
-                context_window: None,
-                agent_preset: None,
-                computer_use_enabled: false,
-                provider_cursor: None,
-            },
-            events,
-        )
-        .expect("the ACP session should open");
-
-        loop {
-            let event = event_rx
-                .recv_timeout(Duration::from_secs(60))
-                .expect("the agent should report its session");
-            match event {
-                DriverEvent::Connected {
-                    provider_cursor: Some(ProviderResumeCursor::Kimi { .. }),
-                } => break,
-                DriverEvent::Error(error) => panic!("the agent reported: {error}"),
-                _ => {}
-            }
-        }
-        driver.prompt("Say hi in three words.".into());
-
-        let mut produced_content = false;
-        let mut reported_error = None;
-        let mut finished = None;
-        while let Ok(event) = event_rx.recv_timeout(Duration::from_secs(120)) {
-            match event {
-                DriverEvent::TextDelta(_) | DriverEvent::ReasoningDelta(_) => {
-                    produced_content = true;
-                }
-                DriverEvent::Error(error) => reported_error = Some(error),
-                DriverEvent::TurnFinished { success, .. } => {
-                    finished = Some(success);
-                    break;
-                }
-                _ => {}
-            }
-        }
-
-        match finished.expect("the turn should settle") {
-            true => assert!(
-                produced_content,
-                "the turn was reported successful without producing anything"
-            ),
-            false => assert!(
-                reported_error.is_some_and(|error| !error.trim().is_empty()),
-                "the turn failed without naming a reason"
-            ),
-        }
-    }
 }

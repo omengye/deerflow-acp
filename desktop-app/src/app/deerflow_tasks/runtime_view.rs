@@ -682,7 +682,7 @@ impl Waku {
                     } else {
                         "刷新状态"
                     },
-                    self.goal_runtime_starts.contains(&session_id)
+                    self.idle_runtime_starts.contains(&session_id)
                         || browser.is_some_and(|browser| browser.controls_busy()),
                     cx,
                     |this, _, cx| this.open_deerflow_tasks(cx),

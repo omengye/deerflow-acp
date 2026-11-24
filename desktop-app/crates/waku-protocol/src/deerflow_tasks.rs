@@ -2,9 +2,8 @@
 //! process, checkpoint or credential handles; the host authorizes every action.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
     #[serde(default)]
@@ -24,21 +23,21 @@ pub struct Capabilities {
     pub tool_receipts: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum CancelScope {
     Subtree,
     Root,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     AllowOnce,
     RejectOnce,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalDecision {
     pub intent_id: String,
@@ -46,7 +45,7 @@ pub struct ApprovalDecision {
     pub decision: Decision,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -130,7 +129,7 @@ pub enum Action {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Command {
     pub request_id: String,
@@ -139,7 +138,7 @@ pub struct Command {
     pub action: Action,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page {
     pub session_id: String,
@@ -150,7 +149,7 @@ pub struct Page {
     pub consistency: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Node {
     pub id: String,
@@ -190,7 +189,7 @@ pub struct Node {
     pub updated_at: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Waiting {
     pub kind: String,
@@ -201,7 +200,7 @@ pub struct Waiting {
     pub resumable: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Usage {
     pub scope: String,
@@ -216,7 +215,7 @@ pub struct Usage {
 
 /// Immutable root quota shared by descendants. None means the host has not
 /// supplied it; a zero limit means unlimited.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Budget {
     pub max_tokens: u64,
@@ -226,13 +225,13 @@ pub struct Budget {
     pub stop_reason: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TaskResult {
     pub text: String,
     pub truncated: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Artifact {
     pub id: String,
@@ -241,7 +240,7 @@ pub struct Artifact {
     pub size: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactChunk {
     pub root_id: String,
@@ -255,7 +254,7 @@ pub struct ArtifactChunk {
     pub eof: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactPage {
     pub root_id: String,
@@ -267,7 +266,7 @@ pub struct ArtifactPage {
     pub consistency: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundExecutionReference {
     pub task_id: String,
@@ -278,7 +277,7 @@ pub struct BackgroundExecutionReference {
     pub resumable: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundDetail {
     pub id: String,
@@ -293,7 +292,7 @@ pub struct BackgroundDetail {
     pub resources: Option<Resources>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Resources {
     pub version: u64,
@@ -304,7 +303,7 @@ pub struct Resources {
     pub can_authorize: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceDescriptor {
     pub version: u64,
@@ -314,7 +313,7 @@ pub struct ResourceDescriptor {
     pub tools: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Interaction {
     pub id: String,
@@ -331,7 +330,7 @@ impl Interaction {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Intent {
     pub id: String,
@@ -344,7 +343,7 @@ pub struct Intent {
     pub config_version: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Execution {
     pub session_id: String,
@@ -358,7 +357,7 @@ pub struct Execution {
     pub blocked_reason: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionReference {
     pub run_id: String,
@@ -367,7 +366,7 @@ pub struct ExecutionReference {
     pub resumable: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum Response {
     Budget(SessionBudget),
@@ -382,7 +381,7 @@ pub enum Response {
     Artifacts(ArtifactPage),
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskBudget {
     pub max_tokens: u64,
@@ -390,7 +389,7 @@ pub struct TaskBudget {
     pub max_tool_calls: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionBudget {
     pub session_id: String,
@@ -400,7 +399,7 @@ pub struct SessionBudget {
     pub effective: TaskBudget,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReceiptPage {
     pub receipts: Vec<ToolReceipt>,
@@ -409,7 +408,7 @@ pub struct ReceiptPage {
     pub consistency: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolReceipt {
     pub session_id: String,
@@ -432,7 +431,7 @@ pub struct ToolReceipt {
     pub review: Option<Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",

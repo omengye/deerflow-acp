@@ -297,12 +297,6 @@ pub fn js_repl_server_path() -> anyhow::Result<PathBuf> {
     packaged_file(&path, "Waku JavaScript REPL")
 }
 
-pub fn pi_extension_path() -> anyhow::Result<PathBuf> {
-    let path = resources_directory(&host_executable_path()?, std::env::consts::OS)?
-        .join("computer-use/pi-extension.ts");
-    packaged_file(&path, "Waku Pi Computer Use extension")
-}
-
 /// Install the bundled helper as an independent, stable runtime service.
 ///
 /// Screen Recording differs from Accessibility on macOS: it follows the

@@ -2,21 +2,17 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::attachments::{AttachmentUpload, StoredAttachment};
 use crate::computer_use::ComputerPermissions;
 use crate::model::{
-    AgentSession, GoalOperation, Project, ProviderKind, ProviderProbe, ProviderResumeCursor,
+    AgentSession, Project, ProviderKind, ProviderProbe, ProviderResumeCursor,
     ProviderSessionHistory, ProviderSessionSummary, UserInputAnswer,
 };
 use crate::persistence::{ComposerDraftChange, ComposerDrafts, SessionMessageMatch};
-use crate::provider_session::{ProviderSessionFork, ProviderSessionForkRequest};
 use crate::settings::DaemonSettings;
 use crate::skills::SkillsCatalog;
-use crate::usage::PlanUsage;
-use crate::usage_history::{UsageHistory, UsageWindow};
 use crate::workspace::{WorkspaceOperation, WorkspaceResult};
 
 pub const PROTOCOL_VERSION: u32 = 12;
@@ -26,7 +22,7 @@ pub const DAEMON_ADDRESS_ENV: &str = "WAKU_DAEMON_ADDRESS";
 pub const APP_EXECUTABLE_ENV: &str = "WAKU_APP_EXECUTABLE";
 
 /// The only history action a client may retry while native outcome recovery is pending.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingHistoryOperation {
     pub kind: String,
@@ -34,7 +30,7 @@ pub struct PendingHistoryOperation {
     pub operation_id: Uuid,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaemonReady {
     pub address: String,
@@ -42,7 +38,7 @@ pub struct DaemonReady {
     pub pid: u32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
@@ -60,7 +56,7 @@ pub enum ClientMessage {
     Shutdown,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
     pub request_id: Uuid,
@@ -69,7 +65,7 @@ pub struct Request {
     pub command: Command,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplayCursor {
     pub session_id: Uuid,
@@ -79,7 +75,7 @@ pub struct ReplayCursor {
     pub sequence: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
@@ -148,12 +144,6 @@ pub enum Command {
         request_id: String,
         answers: Vec<UserInputAnswer>,
     },
-    /// Ask the live provider runtime to read or mutate its persisted thread
-    /// goal. Fire-and-forget: the outcome arrives as a `goalUpdated` driver
-    /// event, or an `error` event when the provider refuses.
-    Goal {
-        operation: GoalOperation,
-    },
     RunComputerTool {
         request: WireComputerToolRequest,
     },
@@ -166,12 +156,6 @@ pub enum Command {
     },
     SetToolApproval {
         mode: String,
-    },
-    Rollback {
-        turns: usize,
-    },
-    Fork {
-        turns_to_remove: usize,
     },
     GetSettings,
     /// DeerFlow configuration and lifecycle operations on the daemon host.
@@ -189,16 +173,8 @@ pub enum Command {
         discover_models: bool,
         probe_version: bool,
     },
-    FetchPlanUsage {
-        provider: ProviderKind,
-        cli_version: Option<String>,
-    },
     ProbeComputerPermissions {
         prompt: bool,
-    },
-    LoadUsageHistory {
-        window: UsageWindow,
-        project_roots: Vec<PathBuf>,
     },
     LoadSkills {
         projects: Vec<(String, PathBuf)>,
@@ -248,7 +224,6 @@ pub enum Command {
     StoreBlob {
         mime_type: String,
         #[serde(with = "base64_bytes")]
-        #[ts(type = "string")]
         bytes: Vec<u8>,
     },
     ImportAttachment {
@@ -256,7 +231,6 @@ pub enum Command {
         upload: AttachmentUpload,
     },
     ImportPathAttachment {
-        #[ts(type = "string")]
         path: PathBuf,
     },
     ReadBlob {
@@ -285,21 +259,16 @@ pub enum Command {
         #[serde(default)]
         operation_id: Option<Uuid>,
     },
-    ForkProviderSession {
-        request: ProviderSessionForkRequest,
-    },
     Workspace {
         operation: WorkspaceOperation,
     },
     OpenTerminal {
-        #[ts(type = "string")]
         cwd: PathBuf,
         cols: u16,
         rows: u16,
     },
     WriteTerminal {
         #[serde(with = "base64_bytes")]
-        #[ts(type = "string")]
         data: Vec<u8>,
     },
     ResizeTerminal {
@@ -310,7 +279,7 @@ pub enum Command {
     CloseSession,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WireDriverStartOptions {
     pub provider: String,
@@ -328,7 +297,7 @@ pub struct WireDriverStartOptions {
     pub provider_cursor: Option<Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WireSessionOptions {
     pub mode: String,
@@ -340,7 +309,7 @@ pub struct WireSessionOptions {
     pub context_window: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WireComputerToolRequest {
     pub call_id: String,
@@ -348,7 +317,7 @@ pub struct WireComputerToolRequest {
     pub arguments: Value,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WireDriverEvent {
     pub kind: String,
@@ -365,7 +334,7 @@ impl WireDriverEvent {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SequencedEvent {
     pub session_id: Uuid,
@@ -380,7 +349,7 @@ pub struct SequencedEvent {
     pub event: WireDriverEvent,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
@@ -408,7 +377,7 @@ pub enum ServerMessage {
     ShuttingDown,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "status",
     rename_all = "camelCase",
@@ -419,7 +388,7 @@ pub enum ResponseOutcome {
     Error { error: RpcError },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
@@ -457,9 +426,6 @@ pub enum ResponsePayload {
     ToolApproval {
         mode: String,
     },
-    Cursor {
-        cursor: Option<Value>,
-    },
     Settings {
         settings: DaemonSettings,
     },
@@ -467,14 +433,8 @@ pub enum ResponsePayload {
         probe: ProviderProbe,
         version: Option<String>,
     },
-    PlanUsage {
-        usage: Option<PlanUsage>,
-    },
     ComputerPermissions {
         permissions: ComputerPermissions,
-    },
-    UsageHistory {
-        history: UsageHistory,
     },
     SkillsCatalog {
         catalog: SkillsCatalog,
@@ -512,11 +472,7 @@ pub enum ResponsePayload {
     },
     BlobData {
         #[serde(with = "base64_bytes")]
-        #[ts(type = "string")]
         bytes: Vec<u8>,
-    },
-    ProviderSessionForked {
-        result: ProviderSessionFork,
     },
     SessionForked {
         session: AgentSession,
@@ -531,7 +487,7 @@ pub enum ResponsePayload {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RpcError {
     pub message: String,
 }

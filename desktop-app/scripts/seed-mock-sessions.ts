@@ -205,7 +205,7 @@ const FILES = [
   "src/md/highlight.rs",
   "src/persistence.rs",
   "src/model.rs",
-  "src/driver/codex.rs",
+  "crates/waku-core/src/driver/acp.rs",
   "src/ui/scrollbar.rs",
 ];
 
@@ -538,7 +538,7 @@ const PROFILES: Profile[] = [
     // frame, so this one is about sheer length rather than heavy rows.
     key: "long-history",
     title: "Perf · long history (thousands of turns)",
-    provider: "codex",
+    provider: "deerFlow",
     model: "gpt-5.2-codex",
     turns: 2000,
     answerBytes: [300, 1400],
@@ -555,7 +555,7 @@ const PROFILES: Profile[] = [
     // wrapping, which is where per-row measurement time goes.
     key: "markdown-heavy",
     title: "Perf · markdown and code heavy answers",
-    provider: "claude",
+    provider: "deerFlow",
     model: "claude-opus-5",
     turns: 260,
     answerBytes: [6000, 22000],
@@ -572,7 +572,7 @@ const PROFILES: Profile[] = [
     // Expanding one of these turns is the worst case for the transcript.
     key: "tool-storm",
     title: "Perf · tool activity storm (expand a turn)",
-    provider: "grok",
+    provider: "deerFlow",
     model: "grok-4.5",
     turns: 90,
     answerBytes: [400, 2500],
@@ -588,7 +588,7 @@ const PROFILES: Profile[] = [
     // Everything at once, and the biggest detail blob — the hydrate-cost test.
     key: "kitchen-sink",
     title: "Perf · everything at maximum",
-    provider: "openCode",
+    provider: "deerFlow",
     model: "gpt-5.2",
     turns: 700,
     answerBytes: [800, 9000],

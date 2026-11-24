@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
 
 /// Whether this build may run Computer Use.
 ///
@@ -72,14 +71,14 @@ fn plural(count: usize, noun: &str) -> String {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputerPermissions {
     pub screen_recording: bool,
     pub accessibility: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputerTarget {
     pub window_id: u64,
@@ -102,7 +101,7 @@ impl ComputerTarget {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputerAppGrant {
     pub bundle_id: String,
@@ -115,7 +114,7 @@ impl ComputerAppGrant {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ComputerUsePhase {
     AwaitingApproval,
@@ -123,7 +122,7 @@ pub enum ComputerUsePhase {
     Failed,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputerUseState {
     pub target: Option<ComputerTarget>,

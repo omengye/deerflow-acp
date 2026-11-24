@@ -10,9 +10,9 @@ This directory contains the GPL-3.0-only DeerFlow Desktop derivative of Waku.
 
 The desktop uses Waku's GPUI conversation workbench, native components and theme
 system. DeerFlow configuration is implemented with the same GPUI components and
-connects to DeerFlow's configuration service. This fork defaults to the bundled
-DeerFlow ACP provider. Other provider implementations remain in the source but
-are disabled by default. Waku's upstream updater and product analytics are
+connects to DeerFlow's configuration service. This fork runs the bundled
+DeerFlow ACP provider. Existing sessions from retired agents retain their
+original identities and can be viewed as history. Waku's upstream updater and product analytics are
 unconditionally disabled; the upstream release/signing/website assets are not
 DeerFlow publishing endpoints.
 
@@ -27,7 +27,7 @@ the DeerFlow Python environment. Existing Python ACP session databases are not
 migrated automatically; keep an earlier package to access that history.
 
 All desktop state lives in `user-data/desktop`, including `app.db`, `app.json`,
-`state.json`, daemon `settings.json`, blobs, model-cache, projectless workspaces,
+`state.json`, daemon `settings.json`, blobs, projectless workspaces,
 worktrees and the optional WebView2 profile. DeerFlow configuration and execution
 state use the adjacent `user-data/config`, `data`, `runtime`, `logs` and `skills`
 folders. `DEER_FLOW_PORTABLE_ROOT` overrides the complete package root when set

@@ -42,4 +42,4 @@ Projectless task directories are daemon-owned too and live beneath
 `~/.waku/projects`.
 
 The protocol types use Serde's tagged JSON representation and are exported by
-`waku-protocol`, including checked-in TypeScript bindings.
+`waku-protocol`.

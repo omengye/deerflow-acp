@@ -946,8 +946,6 @@ fn command_targets_runtime(command: &Command) -> bool {
             | Command::RejectComputerTool { .. }
             | Command::ApplyOptions { .. }
             | Command::SetToolApproval { .. }
-            | Command::Rollback { .. }
-            | Command::Fork { .. }
             | Command::ForkSessionFromResponse { .. }
             | Command::RewindSessionToMessage { .. }
             | Command::OpenTerminal { .. }
@@ -1248,6 +1246,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retired_sessions_keep_their_transcript_and_cannot_start_a_runtime() {
+        use crate::daemon::WakuBackend;
+        use crate::model::{ProviderResumeCursor, TurnStatus};
+        use crate::persistence::{PersistedState, StateStore};
+        use crate::settings::DaemonSettingsStore;
+
+        let root = std::env::temp_dir().join(format!("waku-archive-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = StateStore::daemon(root.join("app.db"));
+        let mut state = PersistedState::fresh(root.clone());
+        let archived = &mut state.sessions[0];
+        archived.provider = ProviderKind::Codex;
+        archived.provider_cursor = Some(ProviderResumeCursor::Codex { thread_id: "thread-123".into() });
+        archived.begin_turn("historical prompt");
+        archived.finish_active_turn(TurnStatus::Completed);
+        let id = archived.id;
+        let mut stale = archived.clone();
+        store.save(&mut state).unwrap();
+
+        let backend = WakuBackend::new(DaemonSettingsStore::open(root.join("settings.json")).unwrap(), store).unwrap();
+        let hub = Arc::new(Hub::default());
+        let call = |command| {
+            let runtime_id = Uuid::new_v4();
+            backend.handle(
+                Request { request_id: Uuid::new_v4(), session_id: id, runtime_id, command },
+                hub.event_sink(id, runtime_id),
+            )
+        };
+        for tag in ["amp", "claude", "codex", "cursor", "deepSeek", "fx", "openCode",
+                    "openCode2", "grok", "kimi", "ohMyPi", "pi"] {
+            let provider = serde_json::from_value(json!(tag)).unwrap();
+            assert!(call(Command::ProbeProvider {
+                provider, binary_override: None, discover_models: false, probe_version: false,
+            }).unwrap_err().to_string().contains("read-only"), "{tag}");
+            assert!(call(Command::ListProviderSessions { provider, limit: 1 }).is_err(), "{tag}");
+            let mut options = test_start_options();
+            options.provider = tag.into();
+            options.cwd = root.clone();
+            assert!(call(Command::Start { options }).unwrap_err().to_string().contains("read-only"), "{tag}");
+        }
+        let mut options = test_start_options();
+        options.provider = "deerFlow".into();
+        options.cwd = root.clone();
+        assert!(call(Command::Start { options }).unwrap_err().to_string().contains("read-only"));
+
+        stale.messages.clear();
+        stale.updated_at += 1;
+        call(Command::SaveTaskState {
+            projects: Vec::new(), live_session_ids: vec![], sessions: vec![stale],
+        }).unwrap();
+        let ResponsePayload::Session { session: Some(loaded) } =
+            call(Command::HydrateSession { session_id: id }).unwrap()
+        else { panic!("expected archived transcript"); };
+        assert_eq!(loaded.provider, ProviderKind::Codex);
+        assert_eq!(loaded.provider_native_id(), Some("thread-123"));
+        assert_eq!(loaded.messages[0].content, "historical prompt");
+        drop(backend);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn stale_client_cannot_restore_messages_or_queued_work_after_a_rewind() {
         use crate::daemon::WakuBackend;
         use crate::model::{QueuedMessage, TurnStatus};
@@ -1484,7 +1543,7 @@ mod tests {
                 .unwrap(),
             ResponsePayload::TaskState { .. }
         ));
-        let session = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
+        let session = AgentSession::new(Uuid::new_v4(), ProviderKind::DeerFlow);
         let session_id = session.id;
 
         assert!(matches!(
@@ -1540,7 +1599,7 @@ mod tests {
         // Desktop persistence uses fire-and-forget notifications, while Web
         // uses requests. Both directions must wake the other application's
         // catalog without echoing back to the source connection.
-        let second = AgentSession::new(Uuid::new_v4(), ProviderKind::Claude);
+        let second = AgentSession::new(Uuid::new_v4(), ProviderKind::DeerFlow);
         let second_id = second.id;
         observer
             .notify(
@@ -1599,7 +1658,7 @@ mod tests {
         let stale_client = DaemonClient::connect(&address.to_string(), "secret".into()).unwrap();
         let remover = DaemonClient::connect(&address.to_string(), "secret".into()).unwrap();
         let project = Project::from_path(root.join("repo"));
-        let mut session = AgentSession::new(project.id, ProviderKind::Codex);
+        let mut session = AgentSession::new(project.id, ProviderKind::DeerFlow);
         session.begin_turn("persist me");
         stale_client
             .request(
@@ -1676,8 +1735,8 @@ mod tests {
                 runtime_id,
                 Command::Start {
                     options: WireDriverStartOptions {
-                        provider: "codex".into(),
-                        binary: PathBuf::from("codex"),
+                        provider: "deerFlow".into(),
+                        binary: PathBuf::from("deerflow-acp"),
                         cwd: PathBuf::from("."),
                         mode: "fullAccess".into(),
                         model: None,
@@ -1744,8 +1803,8 @@ mod tests {
                 runtime_id,
                 Command::Start {
                     options: WireDriverStartOptions {
-                        provider: "codex".into(),
-                        binary: PathBuf::from("codex"),
+                        provider: "deerFlow".into(),
+                        binary: PathBuf::from("deerflow-acp"),
                         cwd: PathBuf::from("."),
                         mode: "fullAccess".into(),
                         model: None,
@@ -1864,8 +1923,8 @@ mod tests {
                 runtime_id,
                 Command::Start {
                     options: WireDriverStartOptions {
-                        provider: "codex".into(),
-                        binary: PathBuf::from("codex"),
+                        provider: "deerFlow".into(),
+                        binary: PathBuf::from("deerflow-acp"),
                         cwd: PathBuf::from("."),
                         mode: "fullAccess".into(),
                         model: None,
@@ -2265,10 +2324,8 @@ mod tests {
         let hub = Hub::default();
         let oversized_id = Uuid::new_v4();
         let oversized = ResponseOutcome::Ok {
-            payload: ResponsePayload::Cursor {
-                cursor: Some(serde_json::Value::String(
-                    "x".repeat(MAX_CACHED_RESPONSE_BYTES + 1),
-                )),
+            payload: ResponsePayload::BlobData {
+                bytes: vec![0; MAX_CACHED_RESPONSE_BYTES + 1],
             },
         };
         hub.cache_response(oversized_id, &oversized);
@@ -2322,7 +2379,7 @@ mod tests {
                 session_id: Uuid::nil(),
                 runtime_id: Uuid::nil(),
                 command: Command::ProbeProvider {
-                    provider: crate::model::ProviderKind::Codex,
+                    provider: crate::model::ProviderKind::DeerFlow,
                     binary_override: None,
                     discover_models: false,
                     probe_version: false,
@@ -2525,8 +2582,8 @@ mod tests {
 
     fn test_start_options() -> WireDriverStartOptions {
         WireDriverStartOptions {
-            provider: "codex".into(),
-            binary: PathBuf::from("codex"),
+            provider: "deerFlow".into(),
+            binary: PathBuf::from("deerflow-acp"),
             cwd: PathBuf::from("."),
             mode: "fullAccess".into(),
             model: None,

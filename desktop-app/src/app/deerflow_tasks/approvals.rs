@@ -529,7 +529,7 @@ impl Waku {
             card = card.child(task_button(
                 "df-attention-reconnect",
                 "重新连接 / 刷新审批状态",
-                browser.pending.is_some() || self.goal_runtime_starts.contains(&session),
+                browser.pending.is_some() || self.idle_runtime_starts.contains(&session),
                 cx,
                 |this, _, cx| this.open_deerflow_tasks(cx),
             ));

@@ -517,14 +517,6 @@ impl Waku {
         activity: &ActivityItem,
     ) {
         if activity.kind != crate::model::ActivityKind::Command
-            || self
-                .state
-                .sessions
-                .iter()
-                .find(|session| session.id == session_id)
-                .is_some_and(|session| {
-                    matches!(session.provider, ProviderKind::Codex | ProviderKind::Claude)
-                })
         {
             return;
         }

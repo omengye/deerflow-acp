@@ -462,10 +462,7 @@ mod tests {
                     &[],
                     &pending,
                     &events,
-                    ProviderKind::DeerFlow,
                     "session",
-                    None,
-                    super::super::super::title_refresh::NativeTitleRefresh::default(),
                     stream.clone(),
                 )?;
                 response_barrier(&connection).await?;

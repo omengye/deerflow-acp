@@ -17,13 +17,6 @@ fn permission_response_allowed(
     Some(option.allow)
 }
 
-fn retain_runtime_after_cancel(provider: ProviderKind) -> bool {
-    // Codex's app-server owns the Computer Use process tree, and Amp offers no
-    // interrupt on its stream — stopping it means ending the process. Both
-    // resume their native thread on the next prompt.
-    !matches!(provider, ProviderKind::Codex | ProviderKind::Amp)
-}
-
 fn new_task_runtime_mode(current: Option<&AgentSession>, remembered: RuntimeMode) -> RuntimeMode {
     current
         .map(|session| session.runtime_mode)
@@ -37,7 +30,7 @@ impl Waku {
 
     pub(super) fn select_project(&mut self, project_id: Uuid, cx: &mut Context<Self>) {
         self.state.selected_project = Some(project_id);
-        self.create_session_for(project_id, self.state.last_provider, cx);
+        self.create_session_for(project_id, cx);
     }
 
     pub(super) fn select_session(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
@@ -213,12 +206,14 @@ impl Waku {
             )
         }) {
             self.state.selected_project = Some(project_id);
-            self.state.last_provider = provider;
-            self.state.last_runtime_mode = runtime_mode;
-            self.state.last_model = model;
-            self.state.last_reasoning_effort = reasoning_effort;
-            self.state.last_service_tier = service_tier;
-            self.state.last_context_window = context_window;
+            if provider.is_available() {
+                self.state.last_provider = provider;
+                self.state.last_runtime_mode = runtime_mode;
+                self.state.last_model = model;
+                self.state.last_reasoning_effort = reasoning_effort;
+                self.state.last_service_tier = service_tier;
+                self.state.last_context_window = context_window;
+            }
         }
         if self
             .selected_session()
@@ -273,17 +268,12 @@ impl Waku {
         self.invalidate_composer_sources(cx);
     }
 
-    pub(super) fn create_session_for(
-        &mut self,
-        project_id: Uuid,
-        provider: ProviderKind,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn create_session_for(&mut self, project_id: Uuid, cx: &mut Context<Self>) {
         if let Some(draft_id) = self
             .state
             .sessions
             .iter()
-            .find(|session| session.project_id == project_id && !session.has_started())
+            .find(|session| session.project_id == project_id && session.provider.is_available() && !session.has_started())
             .map(|session| session.id)
         {
             self.select_session(draft_id, cx);
@@ -294,7 +284,7 @@ impl Waku {
         // a selected source task.
         let runtime_mode =
             new_task_runtime_mode(self.selected_session(), self.state.last_runtime_mode);
-        let mut session = self.state.new_session(project_id, provider);
+        let mut session = self.state.new_session(project_id);
         session.runtime_mode = runtime_mode;
         let id = session.id;
         self.state.push_session(session);
@@ -363,9 +353,7 @@ impl Waku {
             .map(std::path::Path::to_path_buf);
         let was_selected = self.state.selected_session == Some(session_id);
         self.submission_preparations.remove(&session_id);
-        self.goal_runtime_starts.remove(&session_id);
-        self.pending_goal_operations.remove(&session_id);
-        self.goal_observed_at.remove(&session_id);
+        self.idle_runtime_starts.remove(&session_id);
         self.reset_session_runtime(session_id);
         self.background_work.remove(&session_id);
         self.remove_right_panel_session_state(session_id);
@@ -423,7 +411,7 @@ impl Waku {
             } else if projectless {
                 self.create_projectless_session(cx);
             } else {
-                self.create_session_for(project_id, self.state.last_provider, cx);
+                self.create_session_for(project_id, cx);
             }
         } else {
             self.save();
@@ -458,7 +446,7 @@ impl Waku {
                 {
                     self.select_session(session_id, cx);
                 } else {
-                    self.create_session_for(project_id, self.state.last_provider, cx);
+                    self.create_session_for(project_id, cx);
                 }
             }
             None => self.create_projectless_session(cx),
@@ -490,9 +478,6 @@ impl Waku {
             .try_global::<crate::updater::UpdaterState>()
             .and_then(|updater| updater.0.as_ref())
             .is_some_and(|updater| updater.automatically_checks_for_updates());
-        // Warm the Usage page's transcript scan while the user is still on
-        // General, so clicking Usage lands on data instead of a spinner.
-        self.ensure_usage_history(false, cx);
         window.focus(&self.settings_focus, cx);
         cx.notify();
     }
@@ -1154,7 +1139,7 @@ impl Waku {
         }
         if session.is_busy()
             || self.submission_preparations.contains(&session.id)
-            || self.goal_runtime_starts.contains(&session.id)
+            || self.idle_runtime_starts.contains(&session.id)
             || self
                 .runtimes
                 .get(&session.id)
@@ -1193,7 +1178,7 @@ impl Waku {
                         .get(&session.id)
                         .is_some_and(|runtime| runtime.deerflow_options_pending)
                     || self.submission_preparations.contains(&session.id)
-                    || self.goal_runtime_starts.contains(&session.id))
+                    || self.idle_runtime_starts.contains(&session.id))
         }) {
             self.show_toast("请等待当前操作结束后再切换推理强度。");
             cx.notify();
@@ -1246,35 +1231,6 @@ impl Waku {
         }
     }
 
-    pub(super) fn set_agent_preset(&mut self, agent_preset: String, cx: &mut Context<Self>) {
-        let selectable = self
-            .provider_probe(ProviderKind::DeepSeek)
-            .is_some_and(|probe| {
-                probe
-                    .agent_presets
-                    .iter()
-                    .any(|preset| preset.id == agent_preset)
-            });
-        if !selectable {
-            return;
-        }
-        if let Some(session) = self.selected_session_mut()
-            && session.provider == ProviderKind::DeepSeek
-            && !session.has_started()
-            && !session.is_busy()
-            && session.agent_preset.as_deref() != Some(agent_preset.as_str())
-        {
-            let session_id = session.id;
-            session.agent_preset = Some(agent_preset);
-            // A provider cursor makes a session started, so this is normally a
-            // no-op. It also closes the narrow race where a blank runtime was
-            // prepared but had not reported its native session yet.
-            self.reset_session_runtime(session_id);
-            self.save();
-            cx.notify();
-        }
-    }
-
     pub(super) fn cancel_turn(&mut self, cx: &mut Context<Self>) {
         self.escape_stop_confirmation.clear();
         let Some(session_id) = self.state.selected_session else {
@@ -1287,17 +1243,6 @@ impl Waku {
         if self.submission_preparations.contains(&session_id) {
             return;
         }
-        let retain_runtime = self
-            .state
-            .sessions
-            .iter()
-            .find(|session| session.id == session_id)
-            .is_some_and(|session| retain_runtime_after_cancel(session.provider))
-            || self.session_has_live_detached_work(session_id);
-        // Goal operations queued behind a starting runtime would set the
-        // objective after this stop and begin pursuing it; the user asked to
-        // stop, so they leave with the turn.
-        self.pending_goal_operations.remove(&session_id);
         let mut runtime = self.runtimes.remove(&session_id);
         if let Some(runtime) = runtime.as_mut()
             && self.state.sessions.iter().any(|session| {
@@ -1312,11 +1257,7 @@ impl Waku {
         }
         if let Some(runtime) = runtime.as_ref() {
             runtime.driver.cancel();
-            if retain_runtime {
-                // A detached process keeps Codex's app-server resident, but
-                // Computer Use descendants still belong to the cancelled turn.
-                runtime.driver.cancel_computer_use();
-            }
+            runtime.driver.cancel_computer_use();
         }
         // Do not leave already-received text in the smoothing queue: once the
         // message is marked complete, a later delta would otherwise create a
@@ -1375,12 +1316,8 @@ impl Waku {
         if let Some(previous_kinds) = previous_kinds.as_deref() {
             self.splice_active_transcript_rows_after_visibility_change(previous_kinds);
         }
-        // A provider runtime owns its Waku JavaScript REPL and Computer Use
-        // descendants. Normally Stop closes that process tree and the next
-        // prompt resumes the same provider thread with a fresh runtime. A
-        // detached process or subagent is the exception: its provider must
-        // remain resident so Waku can keep observing and stopping it.
-        if retain_runtime && keep_runtime {
+        // DeerFlow interrupts the turn in place and can reuse its ACP connection.
+        if keep_runtime {
             if let Some(runtime) = runtime.take() {
                 self.runtimes.insert(session_id, runtime);
             }
@@ -1739,7 +1676,7 @@ impl Waku {
                     let project_id = project.id;
                     this.state.projects.push(project);
                     this.analytics.track(crate::analytics::Event::ProjectAdded);
-                    this.create_session_for(project_id, this.state.last_provider, cx);
+                    this.create_session_for(project_id, cx);
                 });
             }
         })
@@ -1786,7 +1723,7 @@ impl Waku {
                     project.name = Project::PROJECTLESS_NAME.to_owned();
                     let project_id = project.id;
                     waku.state.projects.push(project);
-                    waku.create_session_for(project_id, waku.state.last_provider, cx);
+                    waku.create_session_for(project_id, cx);
                 }
                 Err(error) => {
                     waku.show_toast(tr!("errors.create_projectless_task", error = error));
@@ -1918,15 +1855,5 @@ mod tests {
         assert_eq!(navigation.new_task, None);
     }
 
-    #[test]
-    fn stopping_releases_the_runtimes_that_cannot_be_interrupted_in_place() {
-        // Codex owns a Computer Use process tree; Amp has no stream interrupt.
-        assert!(!retain_runtime_after_cancel(ProviderKind::Codex));
-        assert!(!retain_runtime_after_cancel(ProviderKind::Amp));
-        for provider in ProviderKind::ALL {
-            if !matches!(provider, ProviderKind::Codex | ProviderKind::Amp) {
-                assert!(retain_runtime_after_cancel(provider));
-            }
-        }
-    }
+
 }

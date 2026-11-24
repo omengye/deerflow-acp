@@ -1,5 +1,4 @@
 use uuid::Uuid;
-use waku_protocol::provider_session::{ProviderSessionFork, ProviderSessionForkRequest};
 use waku_protocol::{Command, ResponsePayload, WorkspaceOperation, WorkspaceResult};
 
 use crate::DaemonClient;
@@ -173,19 +172,7 @@ impl WorkspaceClient {
         }
     }
 
-    pub fn fork_provider_session(
-        &self,
-        request: ProviderSessionForkRequest,
-    ) -> anyhow::Result<ProviderSessionFork> {
-        match self.client.request(
-            Uuid::nil(),
-            Uuid::nil(),
-            Command::ForkProviderSession { request },
-        )? {
-            ResponsePayload::ProviderSessionForked { result } => Ok(result),
-            _ => anyhow::bail!("Waku daemon returned an invalid provider-fork response"),
-        }
-    }
+
 }
 
 #[cfg(test)]

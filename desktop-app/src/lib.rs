@@ -47,7 +47,7 @@ mod updater;
 
 pub use waku_client::{
     checkpoint, command_env, composer_complete, git_branch, git_commit, i18n, identity, model,
-    model_catalog, persistence, projectless, skills, usage, usage_history, worktree,
+    persistence, projectless, skills, usage, worktree,
 };
 
 use gpui::{
@@ -209,7 +209,6 @@ pub fn run() {
             crate::app::init_settings_keys(cx);
             crate::app::init_command_palette(cx);
             crate::app::init_commit_dialog_keys(cx);
-            crate::app::init_goal_dialog_keys(cx);
             crate::app::init_image_preview_keys(cx);
             crate::app::init_sidebar_keys(cx);
             crate::app::init_skills_keys(cx);

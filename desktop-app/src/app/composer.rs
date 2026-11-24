@@ -1051,7 +1051,6 @@ impl Waku {
                 .child(
                     composer_menu_chip("composer-provider-model-disabled")
                         .provider(
-                            &theme,
                             provider,
                             provider_color(&theme, provider).opacity(0.9),
                         )
@@ -1182,7 +1181,6 @@ impl Waku {
         } else {
             composer_menu_chip("composer-provider-model")
                 .provider(
-                    &theme,
                     provider,
                     provider_color(&theme, provider).opacity(0.9),
                 )
@@ -1724,7 +1722,7 @@ impl Waku {
             || modes.is_empty()
             || session.is_busy()
             || self.submission_preparations.contains(&session.id)
-            || self.goal_runtime_starts.contains(&session.id);
+            || self.idle_runtime_starts.contains(&session.id);
         if disabled {
             return Some(
                 composer_menu_chip("thinking-mode")
@@ -1782,25 +1780,6 @@ impl Waku {
             return None;
         }
 
-        let cursor_suffix = (session.provider == ProviderKind::Cursor)
-            .then(|| self.model_for_session(session))
-            .flatten()
-            .and_then(|requested| {
-                self.provider_probe(session.provider).and_then(|probe| {
-                    waku_protocol::model_catalog::cursor_catalog_model(&probe.models, requested)
-                })
-            })
-            .map(|matched| matched.suffix)
-            .unwrap_or_default();
-        let suffix_effort = waku_protocol::model_catalog::cursor_suffix_reasoning_effort(
-            &cursor_suffix,
-            &model.reasoning_efforts,
-        );
-        let suffix_tier = waku_protocol::model_catalog::cursor_suffix_service_tier(
-            &cursor_suffix,
-            &model.service_tiers,
-        );
-
         let selected_effort = session
             .reasoning_effort
             .as_deref()
@@ -1810,7 +1789,6 @@ impl Waku {
                     .iter()
                     .any(|option| option.id == *selected)
             })
-            .or(suffix_effort.as_deref())
             .or(model.default_reasoning_effort.as_deref())
             .or_else(|| {
                 model
@@ -1837,7 +1815,6 @@ impl Waku {
                         .iter()
                         .any(|option| option.id == *selected)
             })
-            .or(suffix_tier.as_deref())
             .or(model.default_service_tier.as_deref())
             .unwrap_or("default")
             .to_owned();
@@ -2092,175 +2069,6 @@ impl Waku {
         )
     }
 
-    pub(super) fn render_agent_preset_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let session = self
-            .selected_session()
-            .filter(|session| session.provider == ProviderKind::DeepSeek)?;
-        if session.has_started() || session.is_busy() {
-            return None;
-        }
-        let presets = self
-            .provider_probe(ProviderKind::DeepSeek)
-            .map(|probe| probe.agent_presets.clone())
-            .unwrap_or_default();
-        if presets.is_empty() {
-            return None;
-        }
-        let selected_id = self.agent_preset_for_session(session)?;
-        let selected_label = self.agent_preset_label_for_session(session)?;
-        let theme = Theme::current(cx);
-        let weak = cx.entity().downgrade();
-        let refresh_weak = weak.clone();
-        let handle = self.menu_handle_with("agent-preset", cx, move |open, _, cx| {
-            if open {
-                let _ = refresh_weak.update(cx, |this, _| {
-                    this.refresh_provider_model_discovery(ProviderKind::DeepSeek);
-                });
-            }
-        });
-        let trigger = composer_menu_chip("agent-preset")
-            .icon("icons/bot.svg", theme.text_tertiary)
-            .label(selected_label)
-            .caret(false)
-            .selected(handle.is_open());
-
-        Some(dropdown_menu(
-            trigger,
-            "agent-preset-menu",
-            &handle,
-            MenuAlign::AboveLeft,
-            move |_| {
-                presets
-                    .clone()
-                    .into_iter()
-                    .map(|preset| {
-                        let weak = weak.clone();
-                        let preset_id = preset.id.clone();
-                        let selected = preset_id == selected_id;
-                        let name = if preset.is_custom {
-                            format!("{} · {}", preset.display_name(), tr!("agent_preset.custom"))
-                        } else {
-                            preset.display_name()
-                        };
-                        let description = preset
-                            .display_description()
-                            .unwrap_or_else(|| tr!("agent_preset.no_description"))
-                            // GPUI wraps at Unicode line-break opportunities,
-                            // but an underscored tool name is otherwise one
-                            // indivisible word. The zero-width spaces preserve
-                            // its visible spelling while allowing the menu to
-                            // keep it inside the card.
-                            .replace('_', "_\u{200b}");
-                        MenuItem::custom(move |_, _| {
-                            div()
-                                .w(px(340.0))
-                                .py(px(5.0))
-                                .overflow_hidden()
-                                .flex()
-                                .items_center()
-                                .gap(px(10.0))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .truncate()
-                                                .text_size(sp(12.5))
-                                                .font_weight(if selected {
-                                                    FontWeight::SEMIBOLD
-                                                } else {
-                                                    FontWeight::MEDIUM
-                                                })
-                                                .text_color(theme.text)
-                                                .child(name.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .mt(px(2.0))
-                                                .text_size(sp(12.5))
-                                                .line_height(sp(14.0))
-                                                .whitespace_normal()
-                                                .overflow_hidden()
-                                                .text_color(theme.text_tertiary)
-                                                .child(description.clone()),
-                                        ),
-                                )
-                                .when(selected, |element| {
-                                    element.child(icon(
-                                        "icons/check.svg",
-                                        11.0,
-                                        theme.text_tertiary,
-                                    ))
-                                })
-                                .into_any_element()
-                        })
-                        .on_click(move |_, cx| {
-                            let _ = weak.update(cx, |this, cx| {
-                                this.set_agent_preset(preset_id.clone(), cx);
-                            });
-                        })
-                    })
-                    .collect()
-            },
-        ))
-    }
-
-    /// The thread-goal chip: present only while the provider reports a goal,
-    /// it pairs a target icon with the status phrase (and budget consumption)
-    /// and opens the goal dialog. `/goal` is the keyboard route to the same
-    /// surface.
-    pub(super) fn render_goal_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let session = self.selected_session()?;
-        let goal = session.thread_goal.as_ref()?;
-        let session_id = session.id;
-        let theme = Theme::current(cx);
-        let color = super::goal_dialog::goal_status_color(goal.status, &theme);
-        // Elapsed pursuit time accrues only while a turn actually runs,
-        // matching how the provider accounts it.
-        let live_elapsed_seconds = (goal.status == crate::model::ThreadGoalStatus::Active
-            && session.is_busy())
-        .then(|| self.goal_observed_at.get(&session_id))
-        .flatten()
-        .map_or(0, |observed| observed.elapsed().as_secs() as i64);
-        let label = super::goal_dialog::goal_chip_label(goal, live_elapsed_seconds);
-        let objective = goal.objective.clone();
-        let weak = cx.entity().downgrade();
-        Some(
-            div()
-                .id("composer-goal")
-                .h(px(26.0))
-                .min_w_0()
-                .max_w_full()
-                .flex_shrink_0()
-                .px(px(7.0))
-                .rounded(px(6.0))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .cursor_default()
-                .text_size(sp(12.5))
-                .line_height(sp(16.0))
-                .text_color(color)
-                .child(icon("icons/target.svg", 10.5, color))
-                .child(div().min_w_0().max_w(px(220.0)).truncate().child(label))
-                .hover(|element| element.bg(theme.overlay))
-                .tooltip(Tooltip::text(objective))
-                .on_click(move |_, _, cx| {
-                    let _ = weak.update(cx, |this, cx| {
-                        this.request_goal_dialog(session_id, None, false, cx);
-                    });
-                })
-                .into_any_element(),
-        )
-    }
-
-    /// Stage files dropped onto the composer as attachment chips. The mention
-    /// each chip will submit takes the autocomplete's form: relative to the
-    /// project root when the file is inside it, absolute otherwise,
-    /// directories with a trailing slash.
     pub(super) fn stage_dropped_files(
         &mut self,
         paths: &ExternalPaths,
@@ -2544,8 +2352,6 @@ impl Waku {
         cx: &mut Context<Self>,
     ) -> bool {
         self.execute_resume_composer_command(prompt, cx)
-            || self.execute_fast_mode_toggle(prompt, cx)
-            || self.execute_goal_composer_command(prompt, cx)
     }
 
     fn execute_resume_composer_command(&mut self, prompt: &str, cx: &mut Context<Self>) -> bool {
@@ -2557,107 +2363,6 @@ impl Waku {
         // after that effect returns so the window action can safely re-enter
         // Waku and move focus into the Resume picker.
         cx.defer(|cx| cx.dispatch_action(&OpenResumePicker));
-        true
-    }
-
-    /// Bridge Codex's native `/goal` command without starting a turn. Reads run
-    /// against the session's cached goal; mutations go to the app-server and
-    /// echo back as `GoalUpdated` events.
-    fn execute_goal_composer_command(&mut self, prompt: &str, cx: &mut Context<Self>) -> bool {
-        use crate::composer_complete::GoalCommand;
-        use crate::model::{GoalOperation, ThreadGoalStatus};
-        let Some((session_id, command, current_goal)) =
-            self.selected_session().and_then(|session| {
-                let command = crate::composer_complete::parse_goal_submission(
-                    session.provider,
-                    prompt,
-                    &self.slash_command_index,
-                )?;
-                Some((session.id, command, session.thread_goal.clone()))
-            })
-        else {
-            return false;
-        };
-        match command {
-            GoalCommand::Show | GoalCommand::Edit => {
-                self.request_goal_dialog(session_id, None, false, cx);
-            }
-            GoalCommand::Pause => {
-                self.dispatch_goal_operation(
-                    session_id,
-                    GoalOperation::Set {
-                        objective: None,
-                        status: Some(ThreadGoalStatus::Paused),
-                        replace: false,
-                    },
-                    cx,
-                );
-            }
-            GoalCommand::Resume => {
-                self.dispatch_goal_operation(
-                    session_id,
-                    GoalOperation::Set {
-                        objective: None,
-                        status: Some(ThreadGoalStatus::Active),
-                        replace: false,
-                    },
-                    cx,
-                );
-            }
-            GoalCommand::Clear => {
-                self.dispatch_goal_operation(session_id, GoalOperation::Clear, cx);
-            }
-            GoalCommand::Set(objective) => match &current_goal {
-                // Replacing unfinished work needs a look at what it replaces;
-                // the dialog carries the confirmation.
-                Some(goal) if !goal.status.is_terminal() => {
-                    self.request_goal_dialog(session_id, Some(objective), true, cx);
-                }
-                Some(_) | None => {
-                    self.dispatch_goal_operation(
-                        session_id,
-                        GoalOperation::Set {
-                            objective: Some(objective),
-                            status: Some(ThreadGoalStatus::Active),
-                            replace: current_goal.is_some(),
-                        },
-                        cx,
-                    );
-                }
-            },
-        }
-        self.composer.update(cx, |input, cx| input.clear(cx));
-        cx.notify();
-        true
-    }
-
-    fn execute_fast_mode_toggle(&mut self, prompt: &str, cx: &mut Context<Self>) -> bool {
-        let Some(next_tier) = self.selected_session().and_then(|session| {
-            if !crate::composer_complete::is_fast_mode_toggle_submission(
-                session.provider,
-                prompt,
-                &self.slash_command_index,
-            ) {
-                return None;
-            }
-            let model = self.model_metadata_for_session(session)?;
-            crate::composer_complete::toggled_fast_service_tier(
-                session.service_tier.as_deref(),
-                &model.service_tiers,
-            )
-        }) else {
-            return false;
-        };
-        let enabled = next_tier != "default";
-        // Clearing emits an Edited event. Apply the tier afterward so any
-        // draft refresh caused by that event cannot repaint the old choice.
-        self.composer.update(cx, |input, cx| input.clear(cx));
-        self.set_service_tier(next_tier, cx);
-        self.show_success_toast(tr!(if enabled {
-            "commands.fast_enabled"
-        } else {
-            "commands.fast_disabled"
-        }));
         true
     }
 
@@ -3067,6 +2772,10 @@ impl Waku {
     pub(super) fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let theme = Theme::current(cx);
         let session = self.selected_session();
+        if let Some(archived) = session.filter(|session| !session.provider.is_available()) {
+            return div().p(px(12.)).text_color(theme.text_secondary)
+                .child(tr!("session.archived_provider", provider = archived.provider.display_name()));
+        }
         let preparing = session.is_some_and(|session| {
             self.submission_preparations.contains(&session.id)
                 || self.response_fork_preparations.contains_key(&session.id)
@@ -3160,9 +2869,7 @@ impl Waku {
                     composer_controls([self.render_provider_model_control(cx)])
                         .children(self.render_thinking_control(cx))
                         .children(self.render_model_traits_control(cx))
-                        .children(self.render_agent_preset_control(cx))
-                        .child(self.render_access_control(cx))
-                        .children(self.render_goal_control(cx)),
+                        .child(self.render_access_control(cx)),
                     match submit_action {
                         ComposerSubmitAction::Preparing => div()
                             .id("send-or-stop")
@@ -4378,7 +4085,7 @@ pub(super) fn picker_rail_shows_provider(
         .iter()
         .any(|probe| probe.provider == kind && probe.installed);
     let switched_off = disabled_providers.contains(&kind) && locked_provider != Some(kind);
-    installed && !switched_off
+    kind.is_available() && installed && !switched_off
 }
 
 pub(super) fn model_picker_subtitle(provider: ProviderKind, sub_provider: Option<&str>) -> String {
@@ -4424,7 +4131,7 @@ pub(super) fn visible_picker_models(
     let searching = !normalized_query.is_empty();
     let mut models = probes
         .iter()
-        .filter(|probe| probe.installed)
+        .filter(|probe| probe.provider.is_available() && probe.installed)
         .flat_map(|probe| {
             probe
                 .models

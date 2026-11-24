@@ -888,7 +888,7 @@ impl TaskConnection {
         let request_id = sent.id().clone();
         prompt_requests
             .lock()
-            .insert(request_id.clone(), None, self.session.clone());
+            .insert(request_id.clone(), self.session.clone());
         let callback_requests = prompt_requests.clone();
         let callback_id = request_id.clone();
         let callback_pending = self.pending.clone();
@@ -1147,10 +1147,7 @@ mod tests {
                         &[],
                         &requests,
                         &events,
-                        ProviderKind::DeerFlow,
                         "session",
-                        None,
-                        super::super::super::title_refresh::NativeTitleRefresh::default(),
                         stream.clone(),
                     )?;
                     let mut sequence = vec![];

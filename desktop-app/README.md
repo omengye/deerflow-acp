@@ -1,46 +1,19 @@
-# Waku
+# DeerFlow Desktop
 
-Waku is a fast, native desktop app for working with local coding agents. It is
-built in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui)
-and keeps projects, sessions, transcripts on your machine.
+DeerFlow Desktop is a native Rust and GPUI workbench derived from Waku. Its
+bundled DeerFlow ACP bridge runs conversations and keeps projects and session
+history on the daemon host.
 
-## Install
+## Windows portable build
 
-On macOS, [download the signed `.dmg`](https://waku.sh). It updates itself.
+From the repository root, run:
 
-On Linux:
-
-```sh
-curl -fsSL https://waku.sh/install.sh | sh
+```powershell
+./scripts/build-deerflow-desktop-go.ps1 -Configuration Release
 ```
 
-The script installs into `~/.local` without root. See
-[docs/linux.md](docs/linux.md) for requirements, manual installation, and
-uninstalling.
-
-On Windows, run `Waku-<version>-<arch>-Setup.exe` from the
-[latest release](https://github.com/egoist/waku/releases/latest). It installs
-per-user and updates itself. A portable `.zip` is published alongside it. See
-[docs/windows.md](docs/windows.md) for requirements and what is not available
-there yet.
-
-## Supported agents
-
-Waku works with:
-
-- [Amp](https://ampcode.com/)
-- Claude Code
-- Codex CLI
-- Cursor CLI
-- [Fx](https://fx.sh/)
-- Grok Build
-- Kimi Code
-- OpenCode
-- Pi
-
-Install and authenticate at least one supported agent CLI before starting Waku.
-Waku detects available CLIs automatically and uses each provider's native
-structured protocol and session continuity.
+Launch `deerflow-desktop.exe` from the resulting directory. See
+[FORK.md](FORK.md) for packaging, storage and upgrade details.
 
 ## Highlights
 
@@ -62,13 +35,8 @@ forks, and all workspace filesystem and Git operations; paths returned by it
 always refer to the daemon host. The desktop retains only presentation state
 and a disposable preview cache.
 
-The browser client lives at [`apps/web`](apps/web) and uses the generated
-browser transport in [`packages/waku-client`](packages/waku-client). Its
-checked-in types are generated directly from the Rust protocol, while its
-WebSocket client implements the same handshake, request IDs, subscriptions,
-sequence deduplication, and replay cursors as the Rust client. Run
-`bun run protocol:generate` after changing a wire type and
-`bun run protocol:check` to verify that generated files are current.
+The native Android client lives in the separate `deerflow-app` repository and
+uses the same authenticated Waku protocol.
 
 Projectless task workspaces live on the daemon host under
 `~/.waku/projects/<date>/<slug>`. The daemon moves workspaces created by the

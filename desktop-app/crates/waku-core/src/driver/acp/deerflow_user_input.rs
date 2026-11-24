@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::{
-    AcpUserInputKind, DriverEvent, DriverEventSink, Handled, PendingAcpUserInput,
+    DriverEvent, DriverEventSink, Handled, PendingAcpUserInput,
     PendingAcpUserInputs, PendingPromptRequests, Responder, UserInputAnswer, UserInputOption,
     UserInputQuestion, cancelled_user_input_response,
 };
@@ -54,7 +54,6 @@ pub(super) fn receive(
     pending: &PendingAcpUserInputs,
     events: &impl DriverEventSink,
 ) -> agent_client_protocol::Result<Handled<(super::UntypedMessage, Responder<Value>)>> {
-    let kind = AcpUserInputKind::DeerFlow;
     let prompts = prompt_requests.lock();
     let parsed = params
         .get("sessionId")
@@ -62,21 +61,20 @@ pub(super) fn receive(
         .filter(|session| prompts.accepts_user_input(session))
         .and_then(|_| questions(&params));
     let Some(questions) = parsed else {
-        responder.respond(cancelled_user_input_response(kind))?;
+        responder.respond(cancelled_user_input_response())?;
         return Ok(Handled::Yes);
     };
     // Keep insertion ordered with prompt completion, including timeout/error,
     // so a late callback cannot revive the panel after the owning turn ends.
     let mut inputs = pending.lock();
     if !inputs.is_empty() {
-        responder.respond(cancelled_user_input_response(kind))?;
+        responder.respond(cancelled_user_input_response())?;
         return Ok(Handled::Yes);
     }
     let request_id = responder.id().to_string();
     inputs.insert(
         request_id.clone(),
         PendingAcpUserInput {
-            kind,
             params,
             responder,
         },
@@ -89,7 +87,7 @@ pub(super) fn receive(
         .is_err()
         && let Some(input) = inputs.remove(&request_id)
     {
-        let _ = input.responder.respond(cancelled_user_input_response(kind));
+        let _ = input.responder.respond(cancelled_user_input_response());
     }
     Ok(Handled::Yes)
 }
@@ -317,7 +315,7 @@ mod tests {
             assert_eq!(response(&params, &answers), json!({"outcome":"cancelled"}));
         }
         assert_eq!(
-            super::super::cancelled_user_input_response(super::super::AcpUserInputKind::DeerFlow),
+            super::super::cancelled_user_input_response(),
             json!({"outcome":"cancelled"})
         );
     }
@@ -396,10 +394,7 @@ mod tests {
                         &[],
                         &prompts,
                         &events,
-                        ProviderKind::DeerFlow,
                         "session",
-                        None,
-                        super::super::super::title_refresh::NativeTitleRefresh::default(),
                         Arc::new(Mutex::new(AcpStreamState::default())),
                     )?;
                     let mut finished = false;

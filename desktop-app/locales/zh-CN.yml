@@ -90,12 +90,11 @@ settings.daemon: 服务器连接
 settings.computer_use: 电脑操作
 settings.general_keywords: 通用 本地 项目 对话 隐私 匿名 使用数据 分析 分享 更新 自动 版本 数学 公式 表达式 math latex
 settings.appearance_keywords: 外观 主题 系统 浅色 深色 语言 英语 中文 简体 字号 字体 大小 编辑器
-settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 检测 claude codex cursor opencode opencode2 amp grok pi deerflow
+settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 检测 deerflow
 settings.skills: 技能
-settings.skills_keywords: 技能 技能库 自动进化 自动维护 学习 发现 生成 评测 采用 撤回 记录 状态 智能体 禁用 启用 删除 claude codex cursor opencode pi amp 共享
-settings.usage_keywords: 用量 令牌 缓存 每日 图表 模型 明细 历史 claude codex
+settings.skills_keywords: 技能 技能库 自动进化 自动维护 学习 发现 生成 评测 采用 撤回 记录 状态 智能体 禁用 启用 删除 共享
 settings.daemon_keywords: 守护进程 服务 远程 网页 网络 暴露 来源 令牌 端口 websocket
-settings.computer_use_keywords: 电脑操作 屏幕录制 辅助功能 应用 控制 codex
+settings.computer_use_keywords: 电脑操作 屏幕录制 辅助功能 应用 控制
 settings.back: 返回
 settings.search: 搜索设置
 daemon.expose_title: 暴露由 Waku 管理的守护进程
@@ -220,7 +219,7 @@ providers.checked_just_now: 刚刚检查过
 providers.checked_minutes_ago: "%{count} 分钟前检查过"
 providers.checked_hours_ago: "%{count} 小时前检查过"
 computer_use.allow_apps: 允许 Waku 操作其他应用
-computer_use.availability: Codex、OpenCode、OpenCode 2、Grok 和 Pi 支持电脑操作功能
+computer_use.availability: 设置桌面电脑操作所需的系统权限。
 computer_use.macos_access: macOS 权限
 computer_use.helper_access: 请向 Waku 的独立控制助手 %{helper} 授予权限
 computer_use.screen_recording: 屏幕录制
@@ -439,7 +438,7 @@ agent_preset.no_description: 暂无描述。
 computer_use.allow_for_task: 本次任务允许
 computer_use.always_allow_app: 始终允许此应用
 computer_use.allow_control: 允许 Waku 控制“%{app}”吗？
-computer_use.screenshot_shared: 此窗口的截图将发送给当前使用的 Codex 模型
+computer_use.screenshot_shared: 此窗口的截图将发送给当前使用的模型。
 computer_use.sensitive_action: 此操作可以输入文字或按下按键
 computer_use.bundle_id: "Bundle ID：%{id}"
 computer_use.no_bundle_id: 此应用没有 Bundle ID，因此无法设为始终允许
@@ -538,7 +537,7 @@ skills.deleted_toast: "已将“%{name}”移到废纸篓"
 skills.delete_failed: "无法删除技能：%{error}"
 skills.toggle_failed: "无法更新技能：%{error}"
 skills.empty_title: 还没有技能
-skills.empty_description: 技能是一个包含 SKILL.md 的文件夹 — 任何智能体都能加载的可复用指令，例如部署手册或评审清单。为 Claude Code、Codex 等所有智能体安装的技能都会显示在这里，以 /名称 调用。
+skills.empty_description: 技能的可复用说明保存在 SKILL.md 中。已安装的技能会显示在这里，可以通过 /名称 调用。
 skills.library: 技能库
 skills.details: 技能详情
 skills.section_user_skills: 用户技能
@@ -547,32 +546,7 @@ skills.disable_named: 停用%{name}
 commands.fast_description: 切换快速模式
 commands.fast_enabled: 已启用快速模式
 commands.fast_disabled: 已关闭快速模式
-commands.goal_description: 为此任务设定一个持续追求的目标
 commands.resume_description: 恢复终端智能体会话
-goal.title: 目标
-goal.objective_placeholder: 这个任务应该持续朝什么方向努力？
-goal.set: 设定目标
-goal.save: 保存目标
-goal.replace: 替换目标
-goal.replace_notice: 保存将替换当前目标并重新开始其进度。
-goal.pause: 暂停目标
-goal.resume: 恢复目标
-goal.clear: 清除目标
-goal.status_active: 进行中
-goal.status_paused: 已暂停
-goal.status_stalled: 已停滞
-goal.status_usage_limited: 用量受限
-goal.status_budget_limited: 预算耗尽
-goal.status_complete: 已完成
-goal.chip_active: 正在追求目标
-goal.chip_paused: 目标已暂停
-goal.chip_stalled: 目标已停滞
-goal.chip_usage_limited: 目标达到用量上限
-goal.chip_budget_limited: 目标未达成
-goal.chip_complete: 目标已达成
-goal.set_notice: "设定目标：%{objective}"
-goal.usage_tokens: "%{used} / %{budget} 个 token"
-goal.usage_tokens_unbudgeted: "%{used} 个 token"
 composer.edit_in_composer: 在输入框中编辑
 composer.steer: 引导
 composer.remove_followup: 从队列中移除
@@ -619,7 +593,6 @@ session.turn_completed: 本轮已完成
 session.turn_waiting_background: 正在等待后台任务
 transcript.waiting_background: 正在等待后台任务
 session.stopped_before_response: 智能体在返回回复前停止了
-session.codex_exited_before_response: Codex app-server 在返回回复前退出了
 session.failed_after_partial_response: 本轮执行未完成即失败，已保留部分输出。
 session.agent_exited_during_turn: 本轮执行完成前，智能体连接已关闭，已保留部分输出。
 session.steer_rejected: 无法向智能体补充指示（%{error}）；消息已排队，将作为后续消息发送
@@ -656,8 +629,6 @@ errors.provider_native_thread_cursor_unavailable: "%{provider} 的原生线程�
 errors.provider_waku_task_unavailable: "%{provider} 对应的 Waku 任务不可用"
 errors.provider_not_installed: "尚未安装 %{provider}"
 errors.provider_not_found: "尚未安装 %{provider}，或无法找到该程序"
-errors.claude_fork_checkpoint_missing: Claude 未返回派生任务所需的检查点
-errors.claude_turn_checkpoint_unavailable: "Claude 中该轮任务的原生检查点不可用：%{error}"
 errors.provider_session_file_unavailable: "%{provider} 的原生会话文件不可用"
 errors.provider_turn_branching_unsupported: "%{provider} 无法在指定轮次回退或分支对话"
 errors.fork_task: "无法派生任务：%{error}"
@@ -705,10 +676,7 @@ errors.select_model: "无法选择模型：%{error}"
 errors.read_provider_event_stream: "无法读取 %{provider} 事件流：%{error}"
 errors.answer_provider_permission: "无法响应 %{provider} 的权限请求：%{error}"
 errors.answer_provider_question: "无法回答 %{provider} 的问题：%{error}"
-errors.initialize_codex_app_server: 无法初始化 Codex app-server
 errors.register_computer_use_skill: 无法向 Codex 注册 Waku 电脑操作技能
-errors.codex_thread_open_incomplete: Codex 未能完成线程打开操作
-errors.codex_goals_unsupported: 此版本的 Codex 不支持线程目标
 errors.provider_receive_prompt: "%{provider} 未能接收消息"
 errors.provider_start_turn: "%{provider} 未能开始本轮"
 errors.provider_rejected_steer: "%{provider} 拒绝了补充指示：%{error}"
@@ -718,6 +686,7 @@ errors.provider_rejected_prompt: "%{provider} 在开始处理前拒绝了消息"
 errors.provider_complete_turn: "%{provider} 未能完成本轮任务"
 errors.provider_reported_error: "%{provider} 报告了错误"
 session.response_unavailable: 该回复已不可用
+session.archived_provider: "此 %{provider} 历史会话仅供查看"
 session.response_cannot_fork: 目前无法从该回复派生任务
 session.response_fork_in_progress: 请等待任务派生完成后再移除原任务
 session.response_cannot_copy: 无法将该回复复制到新任务中
@@ -952,113 +921,9 @@ duration.seconds_short: "%{count} 秒"
 duration.minutes_short: "%{count} 分"
 duration.hours_short: "%{count} 小时"
 duration.two_units: "%{first} %{second}"
-usage.scan_summary: 已扫描 %{scanned} 份对话记录（%{skipped} 份不在所选时段内）· %{records} 条用量记录 · %{seconds} 秒
-usage.daily: 每日
-usage.monthly: 每月
-usage.projects: 项目
-usage.scanning: 正在扫描服务商的对话记录…
-usage.rescan: 重新扫描服务商的对话记录
-usage.range: "%{start} 至 %{end}"
-usage.sessions_summary: 汇总 %{count} 个任务的输入、缓存读取和输出
-usage.processed_tokens_upper: 已处理令牌
-usage.token_share: "占令牌的 %{share}"
-usage.no_activity_window: 所选时段内没有活动
-usage.tokens_upper: 令牌
-usage.daily_processed_tokens: 每日已处理令牌
-usage.model_upper: 模型
-usage.day_upper: 日期
-usage.breakdown: 明细
-usage.no_projects_match: 没有符合筛选条件的项目
-usage.by_project: 按项目
-usage.projects_caption: "%{projects} · %{tokens} 个令牌 · %{sessions}"
-usage.projects_shown: "共 %{projects}，当前显示 %{shown} 个"
-usage.token_count: "%{count} 个令牌"
-usage.last_active: 最后活跃于 %{date}
-usage.show_models: 查看 %{models} 的令牌明细
-usage.other_sessions: 其他任务
-usage.total: 总计
-usage.processed_tokens: 已处理令牌
-usage.per_active_day: 每个活跃日 %{count}
-usage.cached_input: 缓存输入
-usage.observed_input_share: 占已统计输入的 %{share}
-usage.uncached_input: 未缓存输入
-usage.cache_writes: "%{count} 个缓存写入令牌"
-usage.output: 输出
-usage.includes_reasoning: 其中推理令牌 %{count}
-usage.model: 模型
-usage.share: 占比
-usage.tokens: 令牌
-usage.day: 日期
-usage.no_activity_12_months: 过去 12 个月内没有活动
-usage.last_12_months: 过去 12 个月
-usage.so_far: 截至目前
-usage.no_activity: 没有活动
-usage.models_by_tokens: "%{models} · 按令牌排序"
-usage.tokens_and_sessions: "%{tokens} 个令牌 · %{sessions}"
-usage.month_caption: "%{tokens} 个令牌 · %{sessions} · %{days}"
-usage.last_7_days: 过去 7 天
-usage.last_30_days: 过去 30 天
-usage.last_90_days: 过去 90 天
-usage.this_month: 本月
-usage.last_month: 上月
-usage.custom: 自定义
-usage.project_one: "%{count} 个项目"
-usage.project_many: "%{count} 个项目"
-usage.session_one: "%{count} 个任务"
-usage.session_many: "%{count} 个任务"
-usage.model_one: "%{count} 个模型"
-usage.model_many: "%{count} 个模型"
-usage.active_day_one: "%{count} 个活跃日"
-usage.active_day_many: "%{count} 个活跃日"
-usage.filter_projects: 筛选项目…
-usage.chart_description: Claude Code 与 Codex 的每日%{metric}分布。
-usage.refresh_failed: "用量刷新失败：%{error}"
 usage.context_used: 上下文窗口已使用 %{percent}%（%{shortcut}）
 usage.shortcut: 用量（%{shortcut}）
 usage.context_window: 上下文窗口
-usage.plan_limits: 套餐用量限额
-usage.plan_limits_named: 套餐用量限额 · %{plan}
-usage.open_account_settings: 打开账户用量设置
-usage.unavailable: 不可用 — %{error}
-usage.usage_limit: 用量限额
-usage.hour_limit: "%{count} 小时限额"
-usage.day_limit: "%{count} 天限额"
-usage.weekly_limit: 每周限额
-usage.daily_limit: 每日限额
-usage.monthly_limit: 每月限额
-usage.limit_suffix: 限额
-usage.scoped_limit: "%{period} · %{name}"
-usage.weekly_all_models: 每周 · 所有模型
-usage.weekly_model: 每周 · %{model}
-usage.resets_soon: 即将重置
-usage.resets_in_minutes: "%{count} 分钟后重置"
-usage.resets_in_hours: "%{count} 小时后重置"
-usage.resets_in_hours_minutes: "%{hours} 小时 %{minutes} 分钟后重置"
-usage.resets_date: 将于 %{date} 重置
-usage_error.signin_cannot_read: "%{provider} 登录状态无法读取用量（HTTP %{status}）。运行一次 %{provider} 任务后即可刷新"
-usage_error.rate_limited: 用量接口当前受到速率限制，请稍后再试
-usage_error.http_status: 用量接口返回了 HTTP %{status}
-usage_error.invalid_json: 用量接口返回了无效的 JSON
-usage_error.no_home_directory: 找不到用户主目录
-usage_error.read_file: 无法读取 %{path}
-usage_error.codex_auth_invalid: Codex auth.json 不是有效的 JSON
-usage_error.codex_access_token_missing: Codex auth.json 中没有访问令牌；请运行 `codex login`
-usage_error.opencode_go_key_rejected: OpenCode Go API 密钥无法读取用量（HTTP %{status}）；请重新连接 OpenCode Go
-usage_error.opencode_go_not_entitled: OpenCode Go 用量需要有效的 OpenCode Go 订阅
-usage_error.no_rate_limit_windows: 用量接口未返回任何速率限制周期
-usage_error.claude_credentials_missing: 钥匙串和 ~/.claude 中均未找到 Claude Code 凭据
-usage_error.run_security: 无法运行 /usr/bin/security
-usage_error.keychain_item_missing: 钥匙串中没有 %{service} 项
-usage_error.claude_credentials_invalid: Claude Code 凭据不是有效的 JSON
-usage_error.claude_oauth_missing: Claude Code 凭据中没有 claudeAiOauth 项
-usage_error.claude_access_token_missing: Claude Code 凭据中没有访问令牌
-usage_error.run_curl: 无法运行 /usr/bin/curl
-usage_error.curl_stdin_unavailable: curl 的标准输入不可用
-usage_error.configure_curl: 无法向 curl 传递配置
-usage_error.curl_did_not_finish: curl 未能完成请求
-usage_error.curl_failed: "curl 失败：%{error}"
-usage_error.unknown_error: 未知错误
-usage_error.curl_no_status: curl 未返回 HTTP 状态行
 
 settings.deerflow: 常用
 settings.deerflow_models: 模型

@@ -136,8 +136,6 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 "contextWindow": context_window,
             }),
         ),
-        DriverEvent::PlanUsageUpdated(usage) => ("planUsageUpdated", serde_json::to_value(usage)?),
-        DriverEvent::GoalUpdated(goal) => ("goalUpdated", serde_json::to_value(goal)?),
         DriverEvent::TurnFinished { success, summary } => (
             "turnFinished",
             json!({ "success": success, "summary": summary }),
@@ -245,8 +243,6 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 context_window: usage.context_window,
             }
         }
-        "planUsageUpdated" => DriverEvent::PlanUsageUpdated(serde_json::from_value(payload)?),
-        "goalUpdated" => DriverEvent::GoalUpdated(serde_json::from_value(payload)?),
         "turnFinished" => {
             let finished: TurnFinishedWire = serde_json::from_value(payload)?;
             DriverEvent::TurnFinished {
@@ -377,35 +373,7 @@ mod tests {
             );
         }
     }
-    use crate::model::{ThreadGoal, ThreadGoalStatus, UserInputOption, UserInputQuestion};
-
-    #[test]
-    fn goal_updates_round_trip_through_the_daemon_wire() {
-        let wire = event_to_wire(DriverEvent::GoalUpdated(Some(ThreadGoal {
-            objective: "Ship the feature".into(),
-            status: ThreadGoalStatus::UsageLimited,
-            token_budget: Some(50_000),
-            tokens_used: 12_500,
-            time_used_seconds: 90,
-        })))
-        .unwrap();
-        assert_eq!(wire.kind, "goalUpdated");
-        // The status spelling is Codex's own camelCase vocabulary.
-        assert_eq!(wire.payload["status"], "usageLimited");
-
-        let DriverEvent::GoalUpdated(Some(goal)) = event_from_wire(wire).unwrap() else {
-            panic!("the event changed variants during its wire round trip");
-        };
-        assert_eq!(goal.objective, "Ship the feature");
-        assert_eq!(goal.status, ThreadGoalStatus::UsageLimited);
-        assert_eq!(goal.token_budget, Some(50_000));
-
-        let cleared = event_to_wire(DriverEvent::GoalUpdated(None)).unwrap();
-        assert!(matches!(
-            event_from_wire(cleared).unwrap(),
-            DriverEvent::GoalUpdated(None)
-        ));
-    }
+    use crate::model::{UserInputOption, UserInputQuestion};
 
     #[test]
     fn structured_user_input_round_trips_through_the_daemon_wire() {

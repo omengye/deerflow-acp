@@ -484,10 +484,10 @@ impl PersistedState {
         }
     }
 
-    pub fn new_session(&self, project_id: Uuid, provider: ProviderKind) -> AgentSession {
-        let mut session = AgentSession::new(project_id, provider);
+    pub fn new_session(&self, project_id: Uuid) -> AgentSession {
+        let mut session = AgentSession::new(project_id, ProviderKind::DeerFlow);
         session.runtime_mode = self.last_runtime_mode;
-        if provider == self.last_provider {
+        if self.last_provider.is_available() {
             session.model.clone_from(&self.last_model);
             session
                 .reasoning_effort
@@ -612,7 +612,9 @@ impl PersistedState {
 
     fn apply_app_settings(&mut self, settings: AppSettings) {
         self.analytics_enabled = settings.analytics_enabled;
-        self.favorite_models = settings.favorite_models;
+        self.favorite_models = settings.favorite_models.into_iter()
+            .filter(|favorite| favorite.provider.is_available())
+            .collect();
         self.theme = settings.theme;
         self.language = settings.language;
         self.ui_font_size = sanitized_ui_font_size(settings.ui_font_size);
@@ -622,10 +624,18 @@ impl PersistedState {
         self.open_in_app = settings.open_in_app;
     }
 
-    fn apply_app_state(&mut self, app_state: AppState) {
+    fn apply_app_state(&mut self, mut app_state: AppState) {
         self.analytics_id = app_state.analytics_id;
         self.selected_project = app_state.selected_project;
         self.selected_session = app_state.selected_session;
+        if !app_state.last_provider.is_available() {
+            app_state.last_provider = ProviderKind::DeerFlow;
+            app_state.last_model = None;
+            app_state.last_reasoning_effort = None;
+            app_state.last_service_tier = None;
+            app_state.last_context_window = None;
+        }
+        app_state.remembered_model_traits.retain(|entry| entry.provider.is_available());
         self.last_provider = app_state.last_provider;
         self.last_runtime_mode = app_state.last_runtime_mode;
         self.last_model = app_state.last_model;
@@ -665,7 +675,7 @@ impl PersistedState {
         else {
             return;
         };
-        let session = self.new_session(project_id, self.last_provider);
+        let session = self.new_session(project_id);
         self.selected_session = Some(session.id);
         self.sessions.push(session);
     }
@@ -920,7 +930,7 @@ impl StateStore {
             && cwd.parent().is_some()
         {
             let project = Project::from_path(cwd);
-            let session = state.new_session(project.id, state.last_provider);
+            let session = state.new_session(project.id);
             state.selected_project = Some(project.id);
             state.selected_session = Some(session.id);
             state.projects.push(project);
@@ -1184,7 +1194,7 @@ mod tests {
         let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
         state.last_runtime_mode = RuntimeMode::Ask;
 
-        let session = state.new_session(state.projects[0].id, ProviderKind::OpenCode);
+        let session = state.new_session(state.projects[0].id);
 
         assert_eq!(session.runtime_mode, RuntimeMode::Ask);
         assert_eq!(state.app_state().last_runtime_mode, RuntimeMode::Ask);

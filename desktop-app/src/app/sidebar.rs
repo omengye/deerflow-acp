@@ -2150,9 +2150,6 @@ impl Waku {
         let title = session
             .map(localized_session_title)
             .unwrap_or_else(|| tr!("session.new_task"));
-        let agent_preset_label = session
-            .filter(|session| session.provider == ProviderKind::DeepSeek && session.has_started())
-            .and_then(|session| self.agent_preset_label_for_session(session));
         let left_window_controls = (!self.sidebar_visible)
             .then(|| {
                 self.render_client_window_controls(
@@ -2248,24 +2245,7 @@ impl Waku {
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text)
                                 .child(SharedString::from(title)),
-                        )
-                        .children(agent_preset_label.map(|label| {
-                            div()
-                                .h(px(22.0))
-                                .max_w(px(180.0))
-                                .px(px(6.0))
-                                .rounded(px(6.0))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .gap(px(4.0))
-                                .bg(theme.overlay)
-                                .text_size(sp(12.5))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_secondary)
-                                .child(icon("icons/bot.svg", 10.5, theme.text_tertiary))
-                                .child(div().min_w_0().truncate().child(SharedString::from(label)))
-                        })),
+                        ),
                     cx,
                 ),
             )

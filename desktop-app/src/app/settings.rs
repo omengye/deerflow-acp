@@ -4,10 +4,6 @@ use crate::ui::ActivationExt;
 
 const SETTINGS_CONTENT_MAX_WIDTH: f32 = 760.0;
 
-/// The Usage page is a dashboard, not a form; it mirrors T3 Code's wide
-/// two-column layout and needs the extra room for the chart.
-const SETTINGS_USAGE_MAX_WIDTH: f32 = 1024.0;
-
 /// Key context the settings sidebar declares around its search field.
 const SETTINGS_SIDEBAR_CONTEXT: &str = "SettingsSidebar";
 
@@ -23,7 +19,7 @@ gpui::actions!(waku_settings, [FocusNextControl, FocusPreviousControl]);
 
 /// The sidebar's rows in display order, each with the keyword haystack the
 /// search field filters against.
-const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 14] = [
+const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 13] = [
     (
         SettingsPage::DeerFlow,
         "settings.deerflow",
@@ -91,12 +87,6 @@ const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 14] = [
         "settings.skills_keywords",
     ),
     (
-        SettingsPage::Usage,
-        "settings.usage",
-        "icons/chart-column.svg",
-        "settings.usage_keywords",
-    ),
-    (
         SettingsPage::Daemon,
         "settings.daemon",
         "icons/server.svg",
@@ -151,6 +141,39 @@ pub(super) fn visible_settings_pages(
 }
 
 impl Waku {
+    pub(super) fn open_settings_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
+        let page = if page.is_visible_in_navigation() || page == SettingsPage::DeerFlowSkillCenter {
+            page
+        } else {
+            SettingsPage::DeerFlow
+        };
+        // Secrets are revealed only for the current visit to the page. This
+        // also masks the token again when the Daemon row is reselected.
+        self.daemon_token_revealed = false;
+        self.settings_page = Some(page);
+        if page == SettingsPage::Channels {
+            self.enter_channels(cx);
+        }
+        if page == SettingsPage::Schedules {
+            self.enter_schedules(cx);
+        }
+        if page.is_deerflow() {
+            self.deerflow_route_page(page, cx);
+            self.ensure_deerflow_settings(cx);
+        }
+        if page == SettingsPage::DeerFlowTools {
+            self.search_plugins_request("search-status", serde_json::json!({}), cx);
+        }
+        // Each page starts at its own top; a scroll position carried over
+        // from the previous page would land mid-content.
+        self.settings_scroll.set_offset(gpui::Point::default());
+        if page == SettingsPage::Skills {
+            self.ensure_skills_catalog(false, cx);
+        }
+        cx.notify();
+    }
+
+
     pub(super) fn render_settings(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::current(cx);
 
@@ -422,30 +445,18 @@ impl Waku {
                         .child(self.render_skills_settings(cx)),
                 );
         }
-        // The Monthly and Projects list views own their own scrolling, so
-        // their pages fill the viewport instead of riding the shared scroll
-        // container.
-        let fills_viewport = page == SettingsPage::Usage
-            && matches!(
-                self.usage_view,
-                UsageViewMode::Monthly | UsageViewMode::Projects
-            );
         // The titlebar strip is transparent; once content slides under it, a
         // hairline marks the boundary so the clip edge reads as a header
         // rather than a glitch.
-        let content_scrolled = !fills_viewport && self.settings_scroll.offset().y < px(-1.0);
+        let content_scrolled = self.settings_scroll.offset().y < px(-1.0);
 
         let inner = div()
             .w_full()
             .max_w(px(match page {
-                SettingsPage::Usage => SETTINGS_USAGE_MAX_WIDTH,
                 SettingsPage::DeerFlowSkillCenter => 1120.0,
                 _ => SETTINGS_CONTENT_MAX_WIDTH,
             }))
             .mx_auto()
-            .when(fills_viewport, |element| {
-                element.h_full().min_h_0().flex().flex_col()
-            })
             .child(
                 div()
                     .pt(px(2.0))
@@ -464,7 +475,6 @@ impl Waku {
                         SettingsPage::General => tr!("settings.general"),
                         SettingsPage::Providers => tr!("settings.providers"),
                         SettingsPage::Skills => tr!("settings.skills"),
-                        SettingsPage::Usage => tr!("settings.usage"),
                         SettingsPage::Daemon => tr!("settings.daemon"),
                         SettingsPage::ComputerUse => tr!("settings.computer_use"),
                         SettingsPage::Appearance => tr!("settings.appearance"),
@@ -481,7 +491,6 @@ impl Waku {
                 SettingsPage::General => self.render_general_settings(cx),
                 SettingsPage::Providers => self.render_providers_settings(cx),
                 SettingsPage::Skills => self.render_skills_settings(cx),
-                SettingsPage::Usage => self.render_usage_settings(cx),
                 SettingsPage::Daemon => self.render_daemon_settings(cx),
                 SettingsPage::ComputerUse => self.render_computer_use_settings(cx),
                 SettingsPage::Appearance => self.render_appearance_settings(cx),
@@ -515,24 +524,16 @@ impl Waku {
                         div()
                             .id("settings-content-scroll")
                             .size_full()
-                            .when(!fills_viewport, |element| {
-                                element
-                                    .overflow_y_scroll()
-                                    .track_scroll(&self.settings_scroll)
-                                    .pb(px(48.0))
-                            })
-                            .when(fills_viewport, |element| {
-                                element.min_h_0().flex().flex_col()
-                            })
+                            .overflow_y_scroll()
+                            .track_scroll(&self.settings_scroll)
+                            .pb(px(48.0))
                             .px(px(32.0))
                             .child(inner),
                     )
-                    .when(!fills_viewport, |element| {
-                        element.child(scrollbar::vertical(
+                    .child(scrollbar::vertical(
                             &self.settings_scroll,
                             &self.settings_scrollbar,
-                        ))
-                    }),
+                        )),
             )
             .when(page.is_deerflow(), |element| {
                 element.child(self.render_deerflow_save_bar(cx))
@@ -1668,7 +1669,7 @@ impl Waku {
                     .items_baseline()
                     .child(SharedString::from(tr!(
                         "providers.not_detected_as",
-                        command = kind.command()
+                        command = crate::model::DEERFLOW_ACP_COMMAND
                     )))
                     .into_any_element()
             };
@@ -1862,7 +1863,7 @@ impl Waku {
             (Some(_), Some(path)) => tr!("providers.using_override", path = path),
             (Some(_), None) => tr!("providers.invalid_override"),
             (None, Some(path)) => tr!("providers.detected_at", path = path),
-            (None, None) => tr!("providers.searches_path", command = kind.command()),
+            (None, None) => tr!("providers.searches_path", command = crate::model::DEERFLOW_ACP_COMMAND),
         };
 
         let reset = div()
@@ -2475,9 +2476,6 @@ impl Waku {
         self.provider_path_input.update(cx, |input, cx| {
             input.set_placeholder(tr!("input.detected_automatically"), cx)
         });
-        self.usage_project_filter.update(cx, |input, cx| {
-            input.set_placeholder(tr!("input.filter_projects"), cx)
-        });
         self.refresh_command_palette_localized_text(cx);
         self.refresh_file_search_localized_text(cx);
         self.refresh_transcript_search_localized_text(cx);
@@ -2488,7 +2486,7 @@ impl Waku {
             terminal.update(cx, |terminal, cx| terminal.refresh_localized_text(cx));
         }
         for probe in &mut self.probes {
-            probe.models = crate::model_catalog::fallback_models(probe.provider);
+            probe.models = Vec::new();
         }
         self.refresh_provider_detection(None);
         self.invalidate_composer_sources(cx);

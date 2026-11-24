@@ -540,14 +540,6 @@ impl Waku {
         let handle = self.menu_handle("skills-source-filter", cx);
         let sources = [
             SkillSource::Shared,
-            SkillSource::Provider(ProviderKind::Claude),
-            SkillSource::Provider(ProviderKind::Codex),
-            SkillSource::Provider(ProviderKind::Cursor),
-            SkillSource::Provider(ProviderKind::Fx),
-            SkillSource::Provider(ProviderKind::OpenCode),
-            SkillSource::Provider(ProviderKind::Pi),
-            SkillSource::Provider(ProviderKind::OhMyPi),
-            SkillSource::Provider(ProviderKind::Amp),
         ];
         dropdown_menu(
             MenuChip::new("skills-source-filter")

@@ -3332,8 +3332,7 @@ impl Waku {
             session.is_busy()
                 || !session.queued_messages.is_empty()
                 || self.submission_preparations.contains(&session.id)
-                || self.goal_runtime_starts.contains(&session.id)
-                || self.pending_goal_operations.contains_key(&session.id)
+                || self.idle_runtime_starts.contains(&session.id)
                 || self.response_fork_preparations.contains_key(&session.id)
         }) {
             self.deerflow_settings.error =

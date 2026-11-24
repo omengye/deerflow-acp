@@ -204,7 +204,7 @@ impl Waku {
         browser.next = Some(list_action(None, false));
         self.open_right_panel_surface(RightPanelSurface::DeerFlowTasks, cx);
         if has_cursor && !self.runtimes.contains_key(&id) {
-            self.start_goal_runtime(id, cx);
+            self.start_idle_runtime(id, cx);
         }
         cx.notify();
     }
@@ -241,7 +241,7 @@ impl Waku {
                     .child(task_button(
                         "df-receipt-connect",
                         "连接原对话",
-                        self.goal_runtime_starts.contains(&id) || session.provider_cursor.is_none(),
+                        self.idle_runtime_starts.contains(&id) || session.provider_cursor.is_none(),
                         cx,
                         |this, _, cx| this.open_deerflow_receipts(cx),
                     ));

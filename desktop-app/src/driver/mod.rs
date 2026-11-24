@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::computer_use::ComputerToolRequest;
 use crate::model::{
-    BackgroundWorkKey, DriverEvent, ProviderKind, ProviderResumeCursor, RuntimeEventCursor,
+    BackgroundWorkKey, DriverEvent, ProviderKind, RuntimeEventCursor,
 };
 use crossbeam_channel::{Sender, bounded, select};
 use parking_lot::Mutex;
@@ -402,10 +402,6 @@ impl DriverControl for RemoteDriverControl {
         });
     }
 
-    fn goal(&self, operation: waku_protocol::model::GoalOperation) {
-        self.notify(waku_client::Command::Goal { operation });
-    }
-
     fn run_computer_tool(&self, request: ComputerToolRequest) {
         self.notify(waku_client::Command::RunComputerTool {
             request: waku_client::WireComputerToolRequest {
@@ -461,35 +457,6 @@ impl DriverControl for RemoteDriverControl {
         )? {
             waku_client::ResponsePayload::ToolApproval { mode } => Ok(mode),
             _ => anyhow::bail!("DeerFlow returned an invalid tool approval response"),
-        }
-    }
-
-    fn rollback(&self, turns: usize) -> anyhow::Result<Option<ProviderResumeCursor>> {
-        let client = self.client.lock().clone();
-        match client.request(
-            self.session_id,
-            self.runtime_id,
-            waku_client::Command::Rollback { turns },
-        )? {
-            waku_client::ResponsePayload::Cursor { cursor } => cursor
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(Into::into),
-            _ => anyhow::bail!("Waku daemon returned an invalid rollback response"),
-        }
-    }
-
-    fn fork(&self, turns_to_remove: usize) -> anyhow::Result<ProviderResumeCursor> {
-        let client = self.client.lock().clone();
-        match client.request(
-            self.session_id,
-            self.runtime_id,
-            waku_client::Command::Fork { turns_to_remove },
-        )? {
-            waku_client::ResponsePayload::Cursor {
-                cursor: Some(cursor),
-            } => serde_json::from_value(cursor).map_err(Into::into),
-            _ => anyhow::bail!("Waku daemon returned an invalid fork response"),
         }
     }
 

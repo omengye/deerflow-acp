@@ -410,9 +410,9 @@ impl PersistedState {
         }
     }
 
-    pub fn new_session(&self, project_id: Uuid, provider: ProviderKind) -> AgentSession {
-        let mut session = AgentSession::new(project_id, provider);
-        if provider == self.last_provider {
+    pub fn new_session(&self, project_id: Uuid) -> AgentSession {
+        let mut session = AgentSession::new(project_id, ProviderKind::DeerFlow);
+        if self.last_provider.is_available() {
             session.model.clone_from(&self.last_model);
             session
                 .reasoning_effort
@@ -515,7 +515,9 @@ impl PersistedState {
 
     fn apply_app_settings(&mut self, settings: AppSettings) {
         self.analytics_enabled = settings.analytics_enabled;
-        self.favorite_models = settings.favorite_models;
+        self.favorite_models = settings.favorite_models.into_iter()
+            .filter(|favorite| favorite.provider.is_available())
+            .collect();
         self.theme = settings.theme;
         self.language = settings.language;
     }
@@ -528,10 +530,18 @@ impl PersistedState {
         self.daemon_settings_extra = settings.extra;
     }
 
-    fn apply_app_state(&mut self, app_state: AppState) {
+    fn apply_app_state(&mut self, mut app_state: AppState) {
         self.analytics_id = app_state.analytics_id;
         self.selected_project = app_state.selected_project;
         self.selected_session = app_state.selected_session;
+        if !app_state.last_provider.is_available() {
+            app_state.last_provider = ProviderKind::DeerFlow;
+            app_state.last_model = None;
+            app_state.last_reasoning_effort = None;
+            app_state.last_service_tier = None;
+            app_state.last_context_window = None;
+        }
+        app_state.remembered_model_traits.retain(|entry| entry.provider.is_available());
         self.last_provider = app_state.last_provider;
         self.last_model = app_state.last_model;
         self.last_reasoning_effort = app_state.last_reasoning_effort;
@@ -571,7 +581,7 @@ impl PersistedState {
         }) else {
             return;
         };
-        let session = self.new_session(project_id, self.last_provider);
+        let session = self.new_session(project_id);
         self.selected_session = Some(session.id);
         self.sessions.push(session);
     }
@@ -2779,7 +2789,7 @@ mod tests {
         state.sessions[0].context_window = Some("1m".into());
         state.last_context_window = Some("1m".into());
         state.remember_model_traits(
-            ProviderKind::Codex,
+            ProviderKind::DeerFlow,
             "gpt-5.6-luna",
             Some("xhigh".into()),
             Some("fast".into()),
@@ -2787,7 +2797,7 @@ mod tests {
         );
         state.sessions[0].runtime_mode = crate::model::RuntimeMode::Auto;
         state.favorite_models.push(FavoriteModel {
-            provider: ProviderKind::Codex,
+            provider: ProviderKind::DeerFlow,
             model: "gpt-5.6-luna".into(),
         });
         state.theme = ThemePreference::Light;
@@ -2844,7 +2854,7 @@ mod tests {
         assert_eq!(restored.last_context_window.as_deref(), Some("1m"));
         assert_eq!(restored.sessions[0].context_window.as_deref(), Some("1m"));
         assert_eq!(
-            restored.model_traits_for(ProviderKind::Codex, "gpt-5.6-luna"),
+            restored.model_traits_for(ProviderKind::DeerFlow, "gpt-5.6-luna"),
             (Some("xhigh".into()), Some("fast".into()), Some("1m".into()))
         );
         assert_eq!(
@@ -2886,7 +2896,7 @@ mod tests {
         state.sessions[0].begin_turn("First");
         state.sessions[0].finish_active_turn(crate::model::TurnStatus::Completed);
         let quiet = {
-            let mut session = state.new_session(state.projects[0].id, ProviderKind::Codex);
+            let mut session = state.new_session(state.projects[0].id);
             session.begin_turn("Quiet");
             session.finish_active_turn(crate::model::TurnStatus::Completed);
             session
@@ -3381,7 +3391,7 @@ mod tests {
         state.sessions[0].begin_turn("Keep");
         state.sessions[0].push_message(MessageRole::User, "keep me");
         state.sessions[0].finish_active_turn(crate::model::TurnStatus::Completed);
-        let mut extra = state.new_session(state.projects[0].id, ProviderKind::Codex);
+        let mut extra = state.new_session(state.projects[0].id);
         extra.begin_turn("Remove");
         extra.push_message(MessageRole::User, "delete me");
         extra.finish_active_turn(crate::model::TurnStatus::Completed);
@@ -3533,7 +3543,7 @@ mod tests {
         let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
         state.sessions[0].begin_turn("First");
         state.sessions[0].finish_active_turn(crate::model::TurnStatus::Completed);
-        let mut second = state.new_session(state.projects[0].id, ProviderKind::Codex);
+        let mut second = state.new_session(state.projects[0].id);
         second.title = "Newer".into();
         second.begin_turn("Second");
         second.finish_active_turn(crate::model::TurnStatus::Completed);
@@ -3685,7 +3695,7 @@ mod tests {
         let started_id = state.sessions[0].id;
         state.sessions[0].begin_turn("Persist this session");
         state.sessions[0].finish_active_turn(crate::model::TurnStatus::Completed);
-        let draft = state.new_session(state.projects[0].id, ProviderKind::Codex);
+        let draft = state.new_session(state.projects[0].id);
         state.selected_session = Some(draft.id);
         state.sessions.push(draft);
 
@@ -3718,7 +3728,7 @@ mod tests {
         let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
         state.sessions[0].begin_turn("Keep");
         state.sessions[0].finish_active_turn(crate::model::TurnStatus::Completed);
-        let mut extra = state.new_session(state.projects[0].id, ProviderKind::Codex);
+        let mut extra = state.new_session(state.projects[0].id);
         extra.begin_turn("Remove");
         extra.finish_active_turn(crate::model::TurnStatus::Completed);
         let removed_id = extra.id;
@@ -3745,22 +3755,20 @@ mod tests {
     }
 
     #[test]
-    fn selected_model_and_traits_are_used_for_new_sessions() {
+    fn new_sessions_use_only_deerflow_model_preferences() {
         let mut state = PersistedState::fresh(PathBuf::from("/tmp/project"));
-        state.last_provider = ProviderKind::Grok;
-        state.last_model = Some("grok-code-fast-1".into());
+        state.last_model = Some("local-model".into());
         state.last_reasoning_effort = Some("high".into());
-        state.last_service_tier = Some("fast".into());
+        let current = state.new_session(state.projects[0].id);
+        assert_eq!(current.provider, ProviderKind::DeerFlow);
+        assert_eq!(current.model.as_deref(), Some("local-model"));
+        assert_eq!(current.reasoning_effort.as_deref(), Some("high"));
 
-        let remembered = state.new_session(state.projects[0].id, ProviderKind::Grok);
-        let other_provider = state.new_session(state.projects[0].id, ProviderKind::Codex);
-
-        assert_eq!(remembered.model.as_deref(), Some("grok-code-fast-1"));
-        assert_eq!(remembered.reasoning_effort.as_deref(), Some("high"));
-        assert_eq!(remembered.service_tier.as_deref(), Some("fast"));
-        assert!(other_provider.model.is_none());
-        assert!(other_provider.reasoning_effort.is_none());
-        assert!(other_provider.service_tier.is_none());
+        state.last_provider = ProviderKind::Grok;
+        let migrated = state.new_session(state.projects[0].id);
+        assert_eq!(migrated.provider, ProviderKind::DeerFlow);
+        assert!(migrated.model.is_none());
+        assert!(migrated.reasoning_effort.is_none());
     }
 
     #[test]

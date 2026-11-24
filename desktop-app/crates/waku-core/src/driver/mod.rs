@@ -2,17 +2,7 @@
 
 mod acp;
 mod activity;
-mod amp;
-mod claude;
-mod codex;
-mod computer_use;
-mod deepseek;
-mod opencode;
-mod opencode2;
-mod opencode2_computer_use;
-mod pi;
 mod support;
-mod title_refresh;
 
 pub(crate) use acp::{catalog_agent, parse_acp_config_models};
 
@@ -23,7 +13,7 @@ use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
 
 use crate::computer_use::ComputerToolRequest;
 use crate::model::{
-    BackgroundWorkKey, DriverEvent, GoalOperation, ProviderKind, ProviderResumeCursor, RuntimeMode,
+    BackgroundWorkKey, DriverEvent, ProviderKind, ProviderResumeCursor, RuntimeMode,
     UserInputAnswer,
 };
 
@@ -154,12 +144,6 @@ impl DriverHandle {
         self.inner.respond_user_input(request_id, answers);
     }
 
-    /// Read or mutate the provider-persisted thread goal. Outcomes arrive
-    /// asynchronously as `DriverEvent::GoalUpdated` or `DriverEvent::Error`.
-    pub fn goal(&self, operation: GoalOperation) {
-        self.inner.goal(operation);
-    }
-
     pub fn run_computer_tool(&self, request: ComputerToolRequest) {
         self.inner.run_computer_tool(request);
     }
@@ -176,13 +160,7 @@ impl DriverHandle {
         self.inner.set_tool_approval(mode)
     }
 
-    pub fn rollback(&self, turns: usize) -> anyhow::Result<Option<ProviderResumeCursor>> {
-        self.inner.rollback(turns)
-    }
 
-    pub fn fork(&self, turns_to_remove: usize) -> anyhow::Result<ProviderResumeCursor> {
-        self.inner.fork(turns_to_remove)
-    }
 
     pub(crate) fn deerflow_history(
         &self,
@@ -239,9 +217,6 @@ pub trait DriverControl: Send + Sync {
     }
     fn respond_credential(&self, _id: String, _sealed: crate::model::SealedCredential) -> Result<(), String> { Err("Provider does not support credential enrollment".into()) }
     fn respond_user_input(&self, _request_id: String, _answers: Vec<UserInputAnswer>) {}
-    /// Providers without persisted goals ignore the request; the UI only
-    /// offers goal controls where the provider reports one.
-    fn goal(&self, _operation: GoalOperation) {}
     fn run_computer_tool(&self, _request: ComputerToolRequest) {}
     fn reject_computer_tool(&self, _request: ComputerToolRequest, _reason: String) {}
     /// Applies changed turn options to the live session, returning whether the
@@ -252,10 +227,6 @@ pub trait DriverControl: Send + Sync {
     }
     fn set_tool_approval(&self, _mode: String) -> anyhow::Result<String> {
         anyhow::bail!("tool approval changes are not supported by this provider transport")
-    }
-    fn rollback(&self, turns: usize) -> anyhow::Result<Option<ProviderResumeCursor>>;
-    fn fork(&self, _turns_to_remove: usize) -> anyhow::Result<ProviderResumeCursor> {
-        anyhow::bail!("conversation forking is not supported by this provider transport")
     }
 }
 
@@ -288,45 +259,11 @@ pub struct SessionOptions {
 
 pub(crate) fn start_local(
     provider: ProviderKind,
-    mut options: DriverStartOptions,
+    options: DriverStartOptions,
     events: DriverEventSender,
 ) -> anyhow::Result<DriverHandle> {
-    // Computer Use is experimental, so release builds never start its helper
-    // whatever a client, a migrated state file, or an environment variable
-    // asks for. Every driver reads the clamped flag, which also means only
-    // debug builds register the REPL server's Cua bridge or attach the skill.
-    options.computer_use_enabled =
-        crate::computer_use::resolve_enabled(options.computer_use_enabled);
-    let inner: Arc<dyn DriverControl> = match provider {
-        ProviderKind::Codex => Arc::new(codex::CodexDriver::start(options, events)?),
-        ProviderKind::Pi => Arc::new(pi::PiDriver::start(pi::PiFlavor::Pi, options, events)?),
-        ProviderKind::OhMyPi => {
-            Arc::new(pi::PiDriver::start(pi::PiFlavor::OhMyPi, options, events)?)
-        }
-        // Cursor, Fx, Grok, DeerFlow, and Kimi Code all serve a long-lived ACP session,
-        // which is the only way their Supervised mode can actually ask the user
-        // rather than silently forcing or denying.
-        ProviderKind::Cursor
-        | ProviderKind::Fx
-        | ProviderKind::Grok
-        | ProviderKind::DeerFlow
-        | ProviderKind::Kimi => Arc::new(acp::AcpDriver::start(provider, options, events)?),
-        ProviderKind::DeepSeek => Arc::new(deepseek::DeepSeekDriver::start(options, events)?),
-        // OpenCode's own server is its real API, and it is what exposes
-        // interactive permission requests.
-        ProviderKind::OpenCode => Arc::new(opencode::OpenCodeDriver::start(options, events)?),
-        // OpenCode 2 is not a per-workspace server: one adopted background
-        // service carries every workspace, and every Waku task rides its one
-        // event stream.
-        ProviderKind::OpenCode2 => Arc::new(opencode2::OpenCode2Driver::start(options, events)?),
-        // Claude serves a realtime stream of user messages on stdin — the same
-        // transport the Agent SDK drives — which is what lets its Supervised
-        // mode ask rather than decide alone.
-        ProviderKind::Claude => Arc::new(claude::ClaudeDriver::start(options, events)?),
-        // Amp reads newline-delimited user messages on stdin and stays alive
-        // until stdin closes, so it too serves the whole conversation.
-        ProviderKind::Amp => Arc::new(amp::AmpDriver::start(options, events)?),
-    };
+    anyhow::ensure!(provider.is_available(), "{} sessions are read-only", provider.display_name());
+    let inner = Arc::new(acp::AcpDriver::start(provider, options, events)?);
     Ok(DriverHandle { inner })
 }
 

@@ -1596,7 +1596,7 @@ impl Waku {
             }
         }
         if let Some(id) = attach {
-            self.start_goal_runtime(id, cx);
+            self.start_idle_runtime(id, cx);
         }
         let selected = self.state.selected_session;
         let visible = self.right_panel_visible
@@ -1758,7 +1758,7 @@ impl Waku {
         if connected {
             self.maybe_refresh_deerflow_tasks(cx);
         } else if !self.runtimes.contains_key(&id) {
-            self.start_goal_runtime(id, cx);
+            self.start_idle_runtime(id, cx);
         }
         cx.notify();
     }
@@ -1865,7 +1865,7 @@ impl Waku {
                 .child(task_button(
                     "deerflow-task-connect",
                     "连接并读取任务",
-                    self.goal_runtime_starts.contains(&session)
+                    self.idle_runtime_starts.contains(&session)
                         || self
                             .selected_session()
                             .is_none_or(|session| session.provider_cursor.is_none()),
@@ -1892,7 +1892,7 @@ impl Waku {
                 .child(task_button(
                     "df-task-reconnect",
                     "重新连接",
-                    !browser.connection.is_empty() || self.goal_runtime_starts.contains(&session),
+                    !browser.connection.is_empty() || self.idle_runtime_starts.contains(&session),
                     cx,
                     |this, _, cx| this.open_deerflow_tasks(cx),
                 )),

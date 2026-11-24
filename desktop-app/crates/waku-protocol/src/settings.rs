@@ -3,12 +3,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
 
 use crate::computer_use::ComputerAppGrant;
 use crate::model::ProviderKind;
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct DaemonSettings {
     pub computer_use_enabled: bool,
@@ -25,10 +24,7 @@ impl Default for DaemonSettings {
         Self {
             computer_use_enabled: false,
             computer_use_allowed_apps: Vec::new(),
-            disabled_providers: ProviderKind::ALL
-                .into_iter()
-                .filter(|provider| *provider != ProviderKind::DeerFlow)
-                .collect(),
+            disabled_providers: Vec::new(),
             provider_binary_overrides: HashMap::new(),
             extra: BTreeMap::new(),
         }
@@ -41,6 +37,8 @@ impl DaemonSettings {
     }
 
     pub fn discard_legacy_app_keys(&mut self) {
+        self.disabled_providers.retain(|provider| provider.is_available());
+        self.provider_binary_overrides.retain(|provider, _| provider.is_available());
         for key in ["analytics_enabled", "favorite_models", "theme", "language"] {
             self.extra.remove(key);
         }

@@ -2086,7 +2086,7 @@ fn computer_use_navigation_is_debug_only() {
 }
 
 #[test]
-fn switched_off_providers_leave_the_picker_except_for_their_locked_session() {
+fn retired_providers_stay_out_of_tabs_search_and_favorites() {
     use super::ModelPickerTab;
     use super::composer::visible_picker_models;
     use crate::model::{FavoriteModel, ProviderModel, ProviderProbe};
@@ -2100,7 +2100,7 @@ fn switched_off_providers_leave_the_picker_except_for_their_locked_session() {
     };
     let probes = [
         probe(ProviderKind::Claude, "claude-sonnet-5"),
-        probe(ProviderKind::Codex, "gpt-5.6-sol"),
+        probe(ProviderKind::DeerFlow, "configured-model"),
     ];
     let favorites = [FavoriteModel {
         provider: ProviderKind::Claude,
@@ -2132,7 +2132,7 @@ fn switched_off_providers_leave_the_picker_except_for_their_locked_session() {
         &favorites,
         &disabled,
         None,
-        ModelPickerTab::Provider(ProviderKind::Codex),
+        ModelPickerTab::Provider(ProviderKind::DeerFlow),
         "",
     );
     assert_eq!(models.len(), 1);
@@ -2143,12 +2143,12 @@ fn switched_off_providers_leave_the_picker_except_for_their_locked_session() {
         &favorites,
         &disabled,
         None,
-        ModelPickerTab::Provider(ProviderKind::Codex),
+        ModelPickerTab::Provider(ProviderKind::DeerFlow),
         "claude",
     );
     assert!(models.is_empty());
 
-    // A session already locked to the provider keeps its models.
+    // An archived session cannot switch models, even if an old probe is supplied.
     let models = visible_picker_models(
         &probes,
         &favorites,
@@ -2157,7 +2157,7 @@ fn switched_off_providers_leave_the_picker_except_for_their_locked_session() {
         ModelPickerTab::Provider(ProviderKind::Claude),
         "",
     );
-    assert_eq!(models.len(), 1);
+    assert!(models.is_empty());
 }
 
 #[test]
@@ -2187,40 +2187,12 @@ fn tab_cycle_walks_favorites_then_usable_providers_in_rail_order() {
         models: vec![ProviderModel::new("model", "model")],
         agent_presets: Vec::new(),
     };
-    let probes = [
-        probe(ProviderKind::Claude, true),
-        probe(ProviderKind::Codex, true),
-        probe(ProviderKind::Cursor, false),
-    ];
-
-    // Uninstalled providers never join the cycle; favorites leads.
-    assert_eq!(
-        visible_picker_tabs(&probes, &[], None),
-        vec![
-            ModelPickerTab::Favorites,
-            ModelPickerTab::Provider(ProviderKind::Claude),
-            ModelPickerTab::Provider(ProviderKind::Codex),
-        ]
-    );
-
-    // Switched-off providers leave the cycle like they leave the rail.
-    assert_eq!(
-        visible_picker_tabs(&probes, &[ProviderKind::Claude], None),
-        vec![
-            ModelPickerTab::Favorites,
-            ModelPickerTab::Provider(ProviderKind::Codex),
-        ]
-    );
-
-    // A locked session cycles between favorites and its own provider only,
-    // even when that provider was switched off after the session started.
-    assert_eq!(
-        visible_picker_tabs(&probes, &[ProviderKind::Claude], Some(ProviderKind::Claude)),
-        vec![
-            ModelPickerTab::Favorites,
-            ModelPickerTab::Provider(ProviderKind::Claude),
-        ]
-    );
+    let active = ProviderKind::DeerFlow;
+    let probes = [probe(active, true), probe(ProviderKind::Codex, true)];
+    let enabled = vec![ModelPickerTab::Favorites, ModelPickerTab::Provider(active)];
+    assert_eq!(visible_picker_tabs(&probes, &[], None), enabled);
+    assert_eq!(visible_picker_tabs(&probes, &[active], None), [ModelPickerTab::Favorites]);
+    assert_eq!(visible_picker_tabs(&probes, &[active], Some(active)), enabled);
 }
 
 #[test]
@@ -2238,11 +2210,11 @@ fn the_picker_is_empty_only_once_detection_has_answered() {
     // What every probe looks like before detection answers: seeded with a
     // fallback catalog and not yet installed.
     let undetected = [
-        probe(ProviderKind::Claude, false),
+        probe(ProviderKind::DeerFlow, false),
         probe(ProviderKind::Codex, false),
     ];
     let detected = [
-        probe(ProviderKind::Claude, true),
+        probe(ProviderKind::DeerFlow, true),
         probe(ProviderKind::Codex, false),
     ];
 
@@ -2257,15 +2229,15 @@ fn the_picker_is_empty_only_once_detection_has_answered() {
     // never having been installed.
     assert!(picker_has_no_providers(
         &detected,
-        &[ProviderKind::Claude],
+        &[ProviderKind::DeerFlow],
         None,
         true
     ));
     // A session already locked to that provider keeps it, switched off or not.
     assert!(!picker_has_no_providers(
         &detected,
-        &[ProviderKind::Claude],
-        Some(ProviderKind::Claude),
+        &[ProviderKind::DeerFlow],
+        Some(ProviderKind::DeerFlow),
         true
     ));
 }
@@ -2282,42 +2254,11 @@ fn the_rail_draws_only_installed_providers_the_settings_left_on() {
         models: vec![ProviderModel::new("model", "model")],
         agent_presets: Vec::new(),
     };
-    let probes = [
-        probe(ProviderKind::Claude, true),
-        probe(ProviderKind::Codex, true),
-        probe(ProviderKind::Cursor, false),
-    ];
-
-    // An undetected CLI and a switched-off provider both leave the rail
-    // outright, rather than sitting in it dimmed.
-    assert!(!picker_rail_shows_provider(
-        &probes,
-        &[],
-        None,
-        ProviderKind::Cursor
-    ));
-    assert!(!picker_rail_shows_provider(
-        &probes,
-        &[ProviderKind::Claude],
-        None,
-        ProviderKind::Claude
-    ));
-
-    // A provider only the *current* session locks out stays drawn: that is a
-    // fact about this session, not about what the user configured.
-    assert!(picker_rail_shows_provider(
-        &probes,
-        &[],
-        Some(ProviderKind::Codex),
-        ProviderKind::Claude
-    ));
-
-    // ...and the locked session keeps its own tab even once it is switched
-    // off, since the picker is its only route to another model.
-    assert!(picker_rail_shows_provider(
-        &probes,
-        &[ProviderKind::Claude],
-        Some(ProviderKind::Claude),
-        ProviderKind::Claude
-    ));
+    let active = ProviderKind::DeerFlow;
+    let retired = ProviderKind::Claude;
+    let probes = [probe(active, true), probe(retired, true)];
+    assert!(picker_rail_shows_provider(&probes, &[], None, active));
+    assert!(!picker_rail_shows_provider(&probes, &[], Some(retired), retired));
+    assert!(!picker_rail_shows_provider(&probes, &[active], None, active));
+    assert!(picker_rail_shows_provider(&probes, &[active], Some(active), active));
 }

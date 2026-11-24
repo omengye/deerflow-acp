@@ -5,55 +5,26 @@ use std::path::Path;
 pub use waku_protocol::model::*;
 
 pub fn provider_probe(provider: ProviderKind, binary_override: Option<&str>) -> ProviderProbe {
-    let path = match binary_override {
-        Some(binary) => crate::command_env::resolve_binary_override(binary),
-        None if provider == ProviderKind::DeerFlow => waku_protocol::identity::bundled_acp_binary()
-            .or_else(|| crate::command_env::find_executable(provider.command())),
-        None => crate::command_env::find_executable(provider.command()),
+    let path = match (provider.is_available(), binary_override) {
+        (false, _) => None,
+        (true, Some(binary)) => crate::command_env::resolve_binary_override(binary),
+        (true, None) => waku_protocol::identity::bundled_acp_binary()
+            .or_else(|| crate::command_env::find_executable(DEERFLOW_ACP_COMMAND)),
     };
     ProviderProbe {
         provider,
         installed: path.is_some(),
         path,
-        models: crate::model_catalog::fallback_models(provider),
-        agent_presets: crate::model_catalog::fallback_agent_presets(provider),
+        models: Vec::new(),
+        agent_presets: Vec::new(),
     }
-}
-
-/// Detect a provider and hydrate its catalog from the daemon-owned cache.
-///
-/// This is the fast half of stale-while-revalidate: clients can render the
-/// last successful catalog immediately, then request live discovery to replace
-/// it. Cache I/O stays in the daemon instead of leaking host filesystem access
-/// into desktop or Web clients.
-pub fn cached_provider_probe(
-    provider: ProviderKind,
-    binary_override: Option<&str>,
-) -> ProviderProbe {
-    let cached = crate::model_catalog::cached_models(provider);
-    apply_cached_models(provider_probe(provider, binary_override), cached)
-}
-
-fn apply_cached_models(
-    mut probe: ProviderProbe,
-    cached_models: Option<Vec<ProviderModel>>,
-) -> ProviderProbe {
-    if probe.provider.supports_model_discovery()
-        && probe.provider != ProviderKind::DeerFlow
-        && let Some(models) = cached_models
-    {
-        probe.models = models;
-    }
-    probe
 }
 
 pub fn discover_provider_models(mut probe: ProviderProbe) -> ProviderProbe {
     if probe.provider.supports_model_discovery()
         && let Some(path) = probe.path.as_deref()
     {
-        let (models, agent_presets) = crate::model_catalog::discover_catalog(probe.provider, path);
-        probe.models = models;
-        probe.agent_presets = agent_presets;
+        probe.models = crate::model_catalog::discover_deerflow_models(path);
     }
     probe
 }
@@ -78,35 +49,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cached_catalog_replaces_fallback_before_live_discovery() {
-        let probe = ProviderProbe {
-            provider: ProviderKind::Codex,
-            installed: true,
-            path: Some("/usr/bin/codex".into()),
-            models: crate::model_catalog::fallback_models(ProviderKind::Codex),
-            agent_presets: Vec::new(),
-        };
-        let cached = vec![ProviderModel::new("cached-model", "Cached model").default()];
-
-        let probe = apply_cached_models(probe, Some(cached));
-
-        assert_eq!(probe.models.len(), 1);
-        assert_eq!(probe.models[0].id, "cached-model");
-    }
-
-    #[test]
-    fn deerflow_ignores_a_catalog_from_a_previous_daemon_config() {
-        let probe = ProviderProbe {
-            provider: ProviderKind::DeerFlow,
-            installed: true,
-            path: Some("deerflow-acp".into()),
-            models: Vec::new(),
-            agent_presets: Vec::new(),
-        };
-        let cached = vec![ProviderModel::new("gpt-4.1-mini", "OpenAI").default()];
-
-        let probe = apply_cached_models(probe, Some(cached));
-
+    fn retired_provider_never_resolves_an_override() {
+        let binary = std::env::current_exe().unwrap();
+        let probe = provider_probe(ProviderKind::Codex, binary.to_str());
+        assert!(!probe.installed);
+        assert!(probe.path.is_none());
         assert!(probe.models.is_empty());
     }
 }
