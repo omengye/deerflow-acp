@@ -5,7 +5,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Output, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use anyhow::{Context as _, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -40,15 +40,14 @@ pub fn turn_diff_base_ref(session_id: Uuid, turn_count: usize) -> String {
 /// checkpoint: a branch switch or terminal edit between turns must not be
 /// attributed to either response.
 pub fn capture_turn_start(cwd: &Path, session_id: Uuid, turn_count: usize) -> anyhow::Result<()> {
-    if !is_git_repository(cwd) {
+    let Some(worktree) = CheckpointWorktree::open(cwd)? else {
         return Ok(());
-    }
+    };
 
-    let head = resolve_ref(cwd, "HEAD");
     let branch = symbolic_head(cwd);
     let refs = repository_refs(cwd)?;
     let metadata = TurnStartMetadata {
-        head: head.clone(),
+        head: worktree.head.clone(),
         branch,
         refs,
     };
@@ -58,7 +57,7 @@ pub fn capture_turn_start(cwd: &Path, session_id: Uuid, turn_count: usize) -> an
     );
     let mut parents = Vec::new();
     let mut seen = HashSet::new();
-    if let Some(head) = head.as_ref()
+    if let Some(head) = worktree.head.as_ref()
         && seen.insert(head.clone())
     {
         parents.push(head.clone());
@@ -68,7 +67,7 @@ pub fn capture_turn_start(cwd: &Path, session_id: Uuid, turn_count: usize) -> an
             parents.push(commit.clone());
         }
     }
-    let commit = capture_worktree_commit_from(cwd, head.as_deref(), &message, &parents)?;
+    let commit = capture_worktree_commit_from(cwd, &worktree, &message, &parents)?;
     let start_ref = turn_start_ref(session_id, turn_count);
     let baseline_ref = checkpoint_ref(session_id, turn_count.saturating_sub(1));
     let mut commands = format!("update {start_ref} {commit}\n");
@@ -80,7 +79,7 @@ pub fn capture_turn_start(cwd: &Path, session_id: Uuid, turn_count: usize) -> an
 
 pub fn capture_turn(cwd: &Path, session_id: Uuid, turn_count: usize) -> anyhow::Result<Checkpoint> {
     let git_ref = checkpoint_ref(session_id, turn_count);
-    if !is_git_repository(cwd) {
+    let Some(worktree) = CheckpointWorktree::open(cwd)? else {
         return Ok(Checkpoint {
             turn_count,
             git_ref,
@@ -90,12 +89,10 @@ pub fn capture_turn(cwd: &Path, session_id: Uuid, turn_count: usize) -> anyhow::
             deletions: 0,
             created_at: unix_time(),
         });
-    }
+    };
 
     let end_branch = symbolic_head(cwd);
-    let end_head = resolve_ref(cwd, "HEAD");
-    let end_commit =
-        capture_worktree_commit_from(cwd, end_head.as_deref(), "Waku worktree snapshot", &[])?;
+    let end_commit = capture_worktree_commit_from(cwd, &worktree, "Waku worktree snapshot", &[])?;
     git_output(cwd, ["update-ref", &git_ref, &end_commit])?;
     let files = if turn_count == 0 {
         Vec::new()
@@ -108,7 +105,7 @@ pub fn capture_turn(cwd: &Path, session_id: Uuid, turn_count: usize) -> anyhow::
                 session_id,
                 turn_count,
                 &start_ref,
-                end_head.as_deref(),
+                worktree.head.as_deref(),
                 end_branch.as_deref(),
             )?
         } else {
@@ -160,24 +157,71 @@ pub(crate) fn workspace_root(cwd: &Path) -> anyhow::Result<PathBuf> {
 /// stages or unstages the user's files. Review uses the returned treeish to
 /// compare a stable worktree snapshot while edits continue on disk.
 pub fn capture_worktree_commit(cwd: &Path) -> anyhow::Result<String> {
-    if !is_git_repository(cwd) {
-        bail!("worktree snapshots require a Git repository");
-    }
+    let worktree = CheckpointWorktree::open(cwd)?
+        .context("worktree snapshots require a Git workspace with paths eligible for capture")?;
+    capture_worktree_commit_from(cwd, &worktree, "Waku worktree snapshot", &[])
+}
 
-    let head = resolve_ref(cwd, "HEAD");
-    capture_worktree_commit_from(cwd, head.as_deref(), "Waku worktree snapshot", &[])
+struct CheckpointWorktree {
+    head: Option<String>,
+    // In an ignored directory, only these NUL-delimited tracked paths can be captured.
+    tracked_paths: Option<Vec<u8>>,
+}
+
+impl CheckpointWorktree {
+    fn open(cwd: &Path) -> anyhow::Result<Option<Self>> {
+        let location = git_output(cwd, ["rev-parse", "--is-inside-work-tree", "--show-cdup"])
+            .unwrap_or_default();
+        let mut location = location.lines();
+        if location.next() != Some("true") {
+            return Ok(None);
+        }
+        let mut worktree = Self {
+            head: resolve_ref(cwd, "HEAD"),
+            tracked_paths: None,
+        };
+        if location.next().unwrap_or_default().is_empty() {
+            return Ok(Some(worktree));
+        }
+
+        // Check the directory itself. Git can match "." against a rule for its
+        // children (such as dist/*), which may have explicitly included files.
+        let ignored = crate::command_env::plain_command("git")
+            .args(["check-ignore", "--quiet", "--no-index", "--"])
+            .arg(cwd.canonicalize()?)
+            .current_dir(cwd)
+            .output()
+            .context("failed to check Git ignore rules")?;
+        match ignored.status.code() {
+            Some(1) => {}
+            Some(0) => {
+                // Include staged additions and paths removed from the index since HEAD.
+                let with_tree = worktree
+                    .head
+                    .as_ref()
+                    .map(|head| format!("--with-tree={head}"));
+                let args = ["ls-files", "--cached", "-z"]
+                    .into_iter()
+                    .chain(with_tree.as_deref())
+                    .chain(["--", "."]);
+                let paths = git_output_bytes(cwd, args)?;
+                if paths.is_empty() {
+                    return Ok(None);
+                }
+                worktree.tracked_paths = Some(paths);
+            }
+            _ => bail!("{}", command_error(&ignored)),
+        }
+        Ok(Some(worktree))
+    }
 }
 
 fn capture_worktree_commit_from(
     cwd: &Path,
-    head: Option<&str>,
+    worktree: &CheckpointWorktree,
     message: &str,
     parents: &[String],
 ) -> anyhow::Result<String> {
-    if !is_git_repository(cwd) {
-        bail!("worktree snapshots require a Git repository");
-    }
-
     let common_dir = git_output(cwd, ["rev-parse", "--git-common-dir"])?
         .trim()
         .to_owned();
@@ -193,10 +237,27 @@ fn capture_worktree_commit_from(
     let temporary_index = common_dir.join(format!("waku-checkpoint-index-{}", Uuid::new_v4()));
 
     let result = (|| {
-        if let Some(head) = head {
+        if let Some(head) = worktree.head.as_deref() {
             git_with_index(cwd, &temporary_index, ["read-tree", head])?;
         }
-        git_with_index(cwd, &temporary_index, ["add", "-A", "--", "."])?;
+        if let Some(paths) = &worktree.tracked_paths {
+            git_with_input(
+                crate::command_env::plain_command("git")
+                    .args([
+                        "update-index",
+                        "--add",
+                        "--remove",
+                        "--replace",
+                        "-z",
+                        "--stdin",
+                    ])
+                    .current_dir(cwd)
+                    .env("GIT_INDEX_FILE", &temporary_index),
+                paths,
+            )?;
+        } else {
+            git_with_index(cwd, &temporary_index, ["add", "-A", "--", "."])?;
+        }
         let tree = git_with_index(cwd, &temporary_index, ["write-tree"])?
             .trim()
             .to_owned();
@@ -747,26 +808,33 @@ fn update_refs(cwd: &Path, commands: String) -> anyhow::Result<()> {
     if commands.is_empty() {
         return Ok(());
     }
-    let mut child = crate::command_env::plain_command("git")
-        .args(["update-ref", "--stdin"])
-        .current_dir(cwd)
+    git_with_input(
+        crate::command_env::plain_command("git")
+            .args(["update-ref", "--stdin"])
+            .current_dir(cwd),
+        commands.as_bytes(),
+    )
+}
+
+fn git_with_input(command: &mut Command, input: &[u8]) -> anyhow::Result<()> {
+    let mut child = command
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .context("failed to execute git")?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow!("git update-ref stdin is unavailable"))?
-        .write_all(commands.as_bytes())
-        .context("failed to send ref updates to git")?;
-    let output = child.wait_with_output().context("failed to execute git")?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        bail!("{}", command_error(&output))
-    }
+    let mut stdin = child.stdin.take().context("git stdin is unavailable")?;
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(move || stdin.write_all(input));
+        let output = child.wait_with_output().context("failed to execute git")?;
+        if !output.status.success() {
+            bail!("{}", command_error(&output));
+        }
+        writer
+            .join()
+            .expect("git stdin writer panicked")
+            .context("failed to send input to git")
+    })
 }
 
 fn diff_files(cwd: &Path, from_ref: &str, to_ref: &str) -> anyhow::Result<Vec<CheckpointFile>> {
@@ -868,13 +936,21 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    Ok(String::from_utf8_lossy(&git_output_bytes(cwd, args)?).into_owned())
+}
+
+fn git_output_bytes<I, S>(cwd: &Path, args: I) -> anyhow::Result<Vec<u8>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let output = crate::command_env::plain_command("git")
         .args(args)
         .current_dir(cwd)
         .output()
         .context("failed to execute git")?;
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(output.stdout)
     } else {
         bail!("{}", command_error(&output))
     }
@@ -1094,6 +1170,98 @@ mod tests {
             fs::read_to_string(directory.join("private-cache/keep.txt")).unwrap(),
             "private\n"
         );
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn wholly_ignored_workspace_has_no_turn_checkpoints() {
+        let directory = diverged_repository();
+        let workspace = directory.join("dist/projects/chat");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(directory.join(".gitignore"), "/dist/\n").unwrap();
+        fs::write(workspace.join("output.txt"), "generated\n").unwrap();
+
+        let session = Uuid::new_v4();
+        capture_turn_start(&workspace, session, 1).unwrap();
+        let turn = capture_turn(&workspace, session, 1).unwrap();
+        assert_eq!(turn.status, CheckpointStatus::Unavailable);
+        assert!(session_turn_refs(&directory, session).is_empty());
+        assert!(!has_ref(&directory, &turn_start_ref(session, 1)));
+        assert!(git_text(&directory, &["diff", "--cached", "--name-only"]).is_empty());
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn ignore_exceptions_are_captured_at_the_root_and_in_a_subdirectory() {
+        let directory = diverged_repository();
+        let workspace = directory.join("nested");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(
+            directory.join(".gitignore"),
+            "*\n!root.txt\n!nested/\n!nested/keep.txt\n",
+        )
+        .unwrap();
+        fs::write(directory.join("root.txt"), "include\n").unwrap();
+        fs::write(workspace.join("keep.txt"), "include\n").unwrap();
+        fs::write(workspace.join("ignored.txt"), "skip\n").unwrap();
+
+        for (cwd, expected) in [
+            (&directory, "nested/keep.txt\nroot.txt"),
+            (&workspace, "nested/keep.txt"),
+        ] {
+            let snapshot = capture_worktree_commit(cwd).unwrap();
+            assert_eq!(
+                git_text(&directory, &["diff", "--name-only", "HEAD", &snapshot]),
+                expected
+            );
+        }
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn ignored_workspace_snapshots_only_its_tracked_files() {
+        let directory = diverged_repository();
+        let workspace = directory.join("dist");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join("old.txt"), "old\n").unwrap();
+        git_ok(&directory, &["add", "-f", "--", "dist/old.txt"]);
+        git_ok(&directory, &["commit", "--quiet", "-m", "track old file"]);
+        fs::write(directory.join(".gitignore"), "/dist/\n").unwrap();
+        fs::write(workspace.join("output.txt"), "generated\n").unwrap();
+        fs::write(directory.join("shared.txt"), "outside the workspace\n").unwrap();
+
+        let session = Uuid::new_v4();
+        capture_turn_start(&workspace, session, 1).unwrap();
+        git_ok(&workspace, &["rm", "--quiet", "old.txt"]);
+        fs::write(workspace.join("new file.txt"), "staged\n").unwrap();
+        git_ok(&workspace, &["add", "-f", "--", "new file.txt"]);
+        fs::write(workspace.join("new file.txt"), "working copy\n").unwrap();
+        let user_index = git_text(&directory, &["write-tree"]);
+
+        let turn = capture_turn(&workspace, session, 1).unwrap();
+        assert_eq!(turn.status, CheckpointStatus::Ready);
+        assert_eq!(
+            git_text(
+                &directory,
+                &["ls-tree", "-r", "--name-only", &turn.git_ref, "--", "dist"]
+            ),
+            "dist/new file.txt"
+        );
+        assert_eq!(
+            git_text(
+                &directory,
+                &["show", &format!("{}:dist/new file.txt", turn.git_ref)]
+            ),
+            "working copy"
+        );
+        assert_eq!(
+            git_text(
+                &directory,
+                &["show", &format!("{}:shared.txt", turn.git_ref)]
+            ),
+            "shared"
+        );
+        assert_eq!(git_text(&directory, &["write-tree"]), user_index);
         fs::remove_dir_all(directory).ok();
     }
 
