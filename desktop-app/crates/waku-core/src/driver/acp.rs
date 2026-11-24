@@ -1560,18 +1560,35 @@ fn deerflow_prompt_content(
         let metadata = file
             .metadata()
             .map_err(|error| image_attachment_error(error.to_string()))?;
-        if !metadata.is_file() || metadata.len() > MAX_DEERFLOW_IMAGE_BYTES {
+        // An uncompressed BMP from an earlier draft or an imported file may
+        // be larger than its PNG. Bound the read and the outgoing payload separately.
+        let source_limit = crate::attachments::MAX_ATTACHMENT_BYTES;
+        if !metadata.is_file() || metadata.len() > source_limit as u64 {
             return Err(image_attachment_error(format!(
-                "Image {} must be a file no larger than 20 MB.",
+                "Image {} must be a file no larger than 32 MB.",
                 attachment.name
             )));
         }
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        file.take(MAX_DEERFLOW_IMAGE_BYTES + 1)
+        file.take(source_limit as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(|error| {
                 image_attachment_error(format!("Could not read image {}: {error}", attachment.name))
             })?;
+        if bytes.len() > source_limit {
+            return Err(image_attachment_error(format!(
+                "Image {} exceeds the 32 MB attachment limit.",
+                attachment.name
+            )));
+        }
+        let bytes = crate::blob_store::png_from_bmp(&bytes)
+            .map_err(|error| {
+                image_attachment_error(format!(
+                    "Could not convert BMP image {} to PNG: {error}",
+                    attachment.name
+                ))
+            })?
+            .unwrap_or(bytes);
         if bytes.len() > MAX_DEERFLOW_IMAGE_BYTES as usize {
             return Err(image_attachment_error(format!(
                 "Image {} exceeds the 20 MB limit.",
@@ -1586,7 +1603,7 @@ fn deerflow_prompt_content(
         }
         let mime = image_mime_type(&bytes).ok_or_else(|| {
             image_attachment_error(format!(
-                "Image {} must contain PNG, JPEG, GIF, or WebP data.",
+                "Image {} must contain PNG, JPEG, GIF, WebP, or BMP data.",
                 attachment.name
             ))
         })?;
@@ -3681,11 +3698,77 @@ mod tests {
     }
 
     #[test]
+    fn deerflow_sends_windows_clipboard_bmp_as_png() {
+        // A 32-bit BI_RGB bitmap from Windows, with two rows in bottom-up order.
+        let bmp = base64::engine::general_purpose::STANDARD
+            .decode("Qk1GAAAAAAAAADYAAAAoAAAAAgAAAAIAAAABACAAAAAAAAAAAADEDgAAxA4AAAAAAAAAAAAA/wAA//////8AAP//AIAA/w==")
+            .unwrap();
+        let root =
+            std::env::temp_dir().join(format!("deerflow-acp-bmp-{}", uuid::Uuid::new_v4()));
+        let store = crate::blob_store::BlobStore::new(root.join("blobs"));
+        let pasted = store.store_clipboard_image("image/bmp", &bmp).unwrap();
+        let draft = store.store_image_bytes("image/bmp", &bmp).unwrap();
+        assert!(pasted.ends_with(".png"));
+        let png = std::fs::read(store.path_for(&pasted).unwrap()).unwrap();
+        let rgb = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+            .unwrap()
+            .into_rgb8();
+        assert_eq!(rgb.dimensions(), (2, 2));
+        assert_eq!(
+            rgb.into_raw(),
+            [255, 0, 0, 0, 128, 0, 0, 0, 255, 255, 255, 255]
+        );
+
+        let attachments = [(pasted, "image.png"), (draft, "image.bmp")].map(|(reference, name)| {
+            crate::model::MessageAttachment {
+                path: store.path_for(&reference).unwrap(),
+                mention: name.into(),
+                name: name.into(),
+                is_dir: false,
+                is_image: true,
+                blob_reference: Some(reference),
+            }
+        });
+        let blocks = deerflow_prompt_content(String::new(), &attachments, &root).unwrap();
+        assert_eq!(blocks.len(), 3);
+        for block in &blocks[1..] {
+            let ContentBlock::Image(image) = block else {
+                panic!("expected an image block");
+            };
+            assert_eq!(image.mime_type, "image/png");
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD
+                    .decode(&image.data)
+                    .unwrap(),
+                png
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deerflow_applies_image_budget_to_encoded_screenshot() {
+        let root =
+            std::env::temp_dir().join(format!("deerflow-acp-bmp-{}", uuid::Uuid::new_v4()));
+        let mut bmp = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(3840, 2160)
+            .write_to(&mut bmp, image::ImageFormat::Bmp)
+            .unwrap();
+        assert!(bmp.get_ref().len() as u64 > MAX_DEERFLOW_IMAGE_BYTES);
+        let attachment = stored_image_attachment(&root, "screenshot.bmp", bmp.get_ref());
+        let blocks = deerflow_prompt_content(String::new(), &[attachment], &root).unwrap();
+        assert!(matches!(&blocks[1], ContentBlock::Image(image) if image.mime_type == "image/png"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn deerflow_rejects_images_outside_store_and_invalid_or_oversized_data() {
         let root =
             std::env::temp_dir().join(format!("deerflow-acp-images-{}", uuid::Uuid::new_v4()));
         let mut image = stored_image_attachment(&root, "not-image.png", b"plain text");
         assert!(deerflow_prompt_content(String::new(), &[image.clone()], &root).is_err());
+        let broken = stored_image_attachment(&root, "broken.bmp", b"BMtruncated");
+        assert!(deerflow_prompt_content(String::new(), &[broken], &root).is_err());
         let outside = root.join("outside.png");
         std::fs::write(&outside, b"\x89PNG\r\n\x1a\n").unwrap();
         image.path = outside;

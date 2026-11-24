@@ -597,7 +597,7 @@ impl Backend for WakuBackend {
                 let reference = self
                     .task_store
                     .blobs()
-                    .store_image_bytes(&mime_type, &bytes)?;
+                    .store_clipboard_image(&mime_type, &bytes)?;
                 let path = self
                     .task_store
                     .blobs()

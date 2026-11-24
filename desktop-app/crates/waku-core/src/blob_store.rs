@@ -48,6 +48,24 @@ fn extension_for_mime(mime_type: &str) -> &'static str {
     }
 }
 
+/// Windows clipboard DIBs arrive from GPUI with a BMP file header. Keep
+/// already-encoded formats (including animated images) byte-for-byte.
+pub(crate) fn png_from_bmp(bytes: &[u8]) -> image::ImageResult<Option<Vec<u8>>> {
+    if !bytes.starts_with(b"BM") {
+        return Ok(None);
+    }
+    let mut reader =
+        image::ImageReader::with_format(io::Cursor::new(bytes), image::ImageFormat::Bmp);
+    // Indexed and RLE bitmaps can expand far beyond their stored size.
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    let bitmap = reader.decode()?;
+    let mut png = io::Cursor::new(Vec::new());
+    bitmap.write_to(&mut png, image::ImageFormat::Png)?;
+    Ok(Some(png.into_inner()))
+}
+
 /// Splits a `data:` URL into its MIME type and decoded bytes.
 fn decode_data_url(url: &str) -> Option<(&str, Vec<u8>)> {
     let (header, encoded) = url.split_once(',')?;
@@ -94,9 +112,23 @@ impl BlobStore {
         resolve_path(&self.root, reference)
     }
 
+    pub(crate) fn store_clipboard_image(
+        &self,
+        mime_type: &str,
+        bytes: &[u8],
+    ) -> io::Result<String> {
+        match png_from_bmp(bytes).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Could not convert clipboard BMP to PNG: {error}"),
+            )
+        })? {
+            Some(png) => self.store_image_bytes("image/png", &png),
+            None => self.store_image_bytes(mime_type, bytes),
+        }
+    }
+
     /// Stores raw binary image bytes and returns a durable blob reference.
-    /// Clipboard paste calls this off the UI thread, then resolves the
-    /// reference to the real path that providers can read.
     pub fn store_image_bytes(&self, mime_type: &str, bytes: &[u8]) -> io::Result<String> {
         let name = format!(
             "{:016x}.{}",
