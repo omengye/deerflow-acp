@@ -1274,6 +1274,9 @@ impl Waku {
                     .is_some_and(|session| session.status.is_busy());
                 if !busy {
                     self.runtime_attach_misses.remove(&session_id);
+                    if self.state.selected_session == Some(session_id) {
+                        self.maybe_refresh_deerflow_tasks(cx);
+                    }
                     return;
                 }
                 let misses = self.runtime_attach_misses.entry(session_id).or_default();
@@ -2145,10 +2148,9 @@ impl Waku {
         cx.notify();
     }
 
-    /// Composer Enter clears the field after emitting its event. A response
-    /// fork temporarily owns the source provider, so restore a keyboard
-    /// submission on the next task turn instead of racing it against the fork.
-    pub(super) fn defer_restore_composer_after_fork(
+    /// Restore a refused keyboard submission after the composer's Enter handler
+    /// settles. Preserve anything the user has since typed or navigated to.
+    pub(super) fn defer_restore_blocked_composer(
         &self,
         session_id: Uuid,
         prompt: String,
@@ -3392,7 +3394,7 @@ impl Waku {
 
     /// Start the next queued follow-up as a fresh turn. Only called once a
     /// settled turn has been fully closed, so the session is Idle.
-    fn drain_queued_message(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
+    pub(super) fn drain_queued_message(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
         if self.response_fork_preparations.contains_key(&session_id) {
             return;
         }
@@ -3412,6 +3414,7 @@ impl Waku {
             // Messages parked behind a goal-initiated provider start stay
             // queued until that runtime installs.
             || self.goal_runtime_starts.contains(&session_id)
+            || self.deerflow_tasks.get_mut(&session_id).is_some_and(|browser| browser.defer_queue_for_foreground())
         {
             return;
         }

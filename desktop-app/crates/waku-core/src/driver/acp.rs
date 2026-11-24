@@ -2340,9 +2340,6 @@ fn send_prompt(
             }
         }
         if settled {
-            if let Some(tasks) = &stream_state.lock().deerflow_tasks {
-                tasks.invalidate(&callback_events);
-            }
             // Only an empty turn pays for this lookup, so a healthy turn never
             // waits on Kimi's records.
             let native_failure = wire_offset
@@ -2351,6 +2348,9 @@ fn send_prompt(
             let success = if provider == ProviderKind::DeerFlow {
                 let mut stream = stream_state.lock();
                 let success = deerflow_tasks::finish_prompt(result, &mut stream, &callback_events);
+                if let Some(tasks) = &stream.deerflow_tasks {
+                    tasks.invalidate(&callback_events);
+                }
                 deerflow_tasks::flush_early_updates(&mut stream, false, &callback_events)?;
                 success
             } else {
@@ -2724,6 +2724,56 @@ fn token_limit_summary(limit: Option<&str>) -> String {
     }
 }
 
+// Both prompt and explicit resume can fail after an approval was accepted.
+// Use the durable execution status before telling the user the turn has ended.
+fn deerflow_failure_message(error: &agent_client_protocol::Error) -> Option<&'static str> {
+    let data = error.data.as_ref();
+    let kind = data.and_then(|data| data["kind"].as_str());
+    let status = data.and_then(|data| data["execution"]["status"].as_str());
+    match (i32::from(error.code), kind) {
+        (_, Some("pinned_search_config_invalid")) if status == Some("failed") => Some(
+            "本轮保存的搜索配置未通过完整性校验，本轮已停止。已完成的工具结果已保留，可在此对话发送新消息继续。",
+        ),
+        (_, Some("pinned_search_config_invalid")) => Some(
+            "本轮保存的搜索配置未通过完整性校验。已完成的工具结果已保留。",
+        ),
+        (-32012, _) | (_, Some("execution_waiting_input")) => Some(
+            "上一轮执行仍在等待处理。可在此对话继续或结束上一轮。",
+        ),
+        (-32014, _) | (_, Some("execution_unresumable")) if status == Some("failed") => Some(
+            "上一次执行无法从保存的进度恢复，本轮已停止。已完成的工具结果已保留，可在此对话发送新消息继续。",
+        ),
+        (-32014, _) | (_, Some("execution_unresumable")) => Some(
+            "上一次执行无法从保存的进度恢复。已完成的工具结果已保留。",
+        ),
+        (_, Some("execution_stopped")) => Some(
+            "上一次执行已经停止，可在此对话发送新消息继续。",
+        ),
+        (-32013, None) | (_, Some("execution_conflict")) => Some(
+            "执行状态已经变化，请按此对话中的最新状态继续。",
+        ),
+        (-32026, _) | (_, Some("model_response_invalid")) => Some(
+            "模型流式响应解析失败，本轮已停止。已完成的工具结果已保留，请发送新消息继续。",
+        ),
+        (-32033, _) | (_, Some("model_transport_failed")) => Some(
+            "模型服务或本地代理连接中断，本轮已停止。已完成的工具结果已保留；请检查网络或代理后在原会话发送新消息继续，系统不会自动重放已完成的操作。",
+        ),
+        (-32028, _) | (_, Some("checkpoint_too_large")) => Some(
+            "执行状态过大，无法保存本轮进度。请减少并行子任务后发送新消息继续；已保存的工具结果会保留。",
+        ),
+        (-32029, _) | (_, Some("checkpoint_invalid")) => Some(
+            "执行状态校验失败，暂时无法恢复。本轮已停止，已保存的记录会保留；请发送新消息继续。",
+        ),
+        (-32030, _) | (_, Some("checkpoint_persist_failed")) => Some(
+            "执行进度保存失败，本轮已停止。请检查本机存储后重试；已保存的记录会保留。",
+        ),
+        (-32027, _) | (_, Some("model_rate_limited")) => Some(
+            "模型服务请求受到限流，本轮已停止。请稍后重试或切换模型；已完成的工具结果已保留，请检查结果后再继续。",
+        ),
+        _ => None,
+    }
+}
+
 fn finish_prompt(
     provider: ProviderKind,
     result: agent_client_protocol::Result<PromptResponse>,
@@ -2733,49 +2783,12 @@ fn finish_prompt(
     let response = match result {
         Ok(response) => response,
         Err(error) => {
-            let error_kind = error
-                .data
-                .as_ref()
-                .and_then(|data| data.get("kind"))
-                .and_then(Value::as_str);
-            let known_failure_message = if provider == ProviderKind::DeerFlow {
-                match (i32::from(error.code), error_kind) {
-                    (-32012, _) | (_, Some("execution_waiting_input")) => Some(
-                        "上一轮执行仍在等待继续。请打开“运行状态 → 任务详情与管理”，恢复执行或取消该任务后再发送消息。",
-                    ),
-                    (-32026, _) | (_, Some("model_response_invalid")) => Some(
-                        "模型流式响应解析失败，本轮已停止。已完成的工具结果已保留，请发送新消息继续。",
-                    ),
-                    (-32033, _) | (_, Some("model_transport_failed")) => Some(
-                        "模型服务或本地代理连接中断，本轮已停止。已完成的工具结果已保留；请检查网络或代理后在原会话发送新消息继续，系统不会自动重放已完成的操作。",
-                    ),
-                    (-32028, _) | (_, Some("checkpoint_too_large")) => Some(
-                        "执行状态过大，无法保存本轮进度。请减少并行子任务后发送新消息继续；已保存的工具结果会保留。",
-                    ),
-                    (-32029, _) | (_, Some("checkpoint_invalid")) => Some(
-                        "执行状态校验失败，暂时无法恢复。本轮已停止，已保存的记录会保留；请发送新消息继续。",
-                    ),
-                    (-32030, _) | (_, Some("checkpoint_persist_failed")) => Some(
-                        "执行进度保存失败，本轮已停止。请检查本机存储后重试；已保存的记录会保留。",
-                    ),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            let rate_limited = provider == ProviderKind::DeerFlow
-                && (i32::from(error.code) == -32027
-                    || error
-                        .data
-                        .as_ref()
-                        .and_then(|data| data.get("kind"))
-                        .and_then(Value::as_str)
-                        == Some("model_rate_limited"));
+            let known_failure_message = (provider == ProviderKind::DeerFlow)
+                .then(|| deerflow_failure_message(&error))
+                .flatten();
             let message = error.to_string();
             let message = if let Some(known_failure_message) = known_failure_message {
                 known_failure_message.to_owned()
-            } else if rate_limited {
-                "模型服务请求受到限流，本轮已停止。请稍后重试或切换模型；已完成的工具结果已保留，请检查结果后再继续。".to_owned()
             } else if provider == ProviderKind::DeerFlow
                 && (message.contains("reconciliation_required")
                     || message.contains("Uncertain tool effects require review")
@@ -5507,13 +5520,27 @@ mod tests {
             ));
             assert!(matches!(
                 event_rx.try_recv().unwrap(),
-                DriverEvent::Error(message) if message == "上一轮执行仍在等待继续。请打开“运行状态 → 任务详情与管理”，恢复执行或取消该任务后再发送消息。"
+                DriverEvent::Error(message) if message == "上一轮执行仍在等待处理。可在此对话继续或结束上一轮。"
             ));
             assert!(matches!(
                 event_rx.try_recv().unwrap(),
                 DriverEvent::TurnFinished { success: false, .. }
             ));
             assert!(event_rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn pinned_search_error_only_reports_a_stopped_turn_after_confirmed_failure() {
+        for status in [None, Some("waiting_input"), Some("failed")] {
+            let error = agent_client_protocol::Error::new(-32014, "private-snapshot").data(json!({
+                "kind": "pinned_search_config_invalid",
+                "execution": { "status": status, "blockedReason": "fixture-secret" }
+            }));
+            let message = deerflow_failure_message(&error).unwrap();
+            assert!(message.contains("搜索配置"));
+            assert_eq!(message.contains("本轮已停止"), status == Some("failed"));
+            assert!(!message.contains("fixture-secret") && !message.contains("private-snapshot"));
         }
     }
 

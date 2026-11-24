@@ -215,13 +215,19 @@ impl Waku {
     // ── Permission ─────────────────────────────────────────────────────────
 
     pub(super) fn render_permission(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if let Some(input) = self.selected_runtime()?.pending_user_input.clone() {
+        let runtime = self.selected_runtime();
+        if let Some(input) = runtime.and_then(|runtime| runtime.pending_user_input.clone()) {
             return Some(self.render_user_input(input, cx));
         }
-        if let Some(permission) = self.selected_runtime()?.pending_computer_approval.as_ref() {
+        if let Some(permission) =
+            runtime.and_then(|runtime| runtime.pending_computer_approval.as_ref())
+        {
             return Some(self.render_computer_permission(permission, cx));
         }
-        let permission = self.selected_runtime()?.pending_permission.as_ref()?;
+        let Some(permission) = runtime.and_then(|runtime| runtime.pending_permission.as_ref())
+        else {
+            return self.render_foreground_recovery(cx);
+        };
         if self
             .selected_session()
             .is_some_and(|session| session.provider == ProviderKind::DeerFlow)
@@ -2491,6 +2497,9 @@ impl Waku {
             return None;
         }
         if self.execute_local_composer_command(prompt, cx) {
+            return None;
+        }
+        if self.handle_foreground_recovery_input(prompt, cx) {
             return None;
         }
         // Nothing installed or switched on can run this. Refuse before the

@@ -2448,7 +2448,7 @@ impl Waku {
                                 || this.pending_deerflow_approvals.contains_key(&session.id))
                             .then_some(session.id)
                         }) {
-                            this.defer_restore_composer_after_fork(session_id, prompt.clone(), cx);
+                            this.defer_restore_blocked_composer(session_id, prompt.clone(), cx);
                         } else if let Some(submission) =
                             this.submission_with_attachments(prompt, cx)
                         {

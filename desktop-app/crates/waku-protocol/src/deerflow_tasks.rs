@@ -15,6 +15,8 @@ pub struct Capabilities {
     pub resume: bool,
     pub resource_authorize: bool,
     pub executions: bool,
+    #[serde(default)]
+    pub execution_cancel: bool,
     pub artifact_read: bool,
     #[serde(default)]
     pub artifact_list: bool,
@@ -119,6 +121,10 @@ pub enum Action {
         limit: u32,
     },
     ExecutionResume {
+        run_id: String,
+        expected_version: u64,
+    },
+    ExecutionCancel {
         run_id: String,
         expected_version: u64,
     },
@@ -346,6 +352,8 @@ pub struct Execution {
     pub status: String,
     pub version: u64,
     pub resumable: bool,
+    #[serde(default)]
+    pub waiting_tasks: Vec<String>,
     #[serde(default)]
     pub blocked_reason: String,
 }

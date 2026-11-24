@@ -624,6 +624,15 @@ session.failed_after_partial_response: 本轮执行未完成即失败，已保�
 session.agent_exited_during_turn: 本轮执行完成前，智能体连接已关闭，已保留部分输出。
 session.steer_rejected: 无法向智能体补充指示（%{error}）；消息已排队，将作为后续消息发送
 session.steer_rejected_plain: 无法向智能体补充指示；消息已排队，将作为后续消息发送
+session.foreground_waiting: 上一轮任务正在等待处理
+session.foreground_status_unavailable: 暂时无法读取任务状态
+session.foreground_resume_hint: 可从上次停下的步骤继续。如果有工具需要审批，请求会显示在这里。
+session.foreground_resume: 继续执行
+session.foreground_cancel: 取消这次任务
+session.foreground_refresh: 刷新任务状态
+session.foreground_checking: 正在检查上一轮任务，消息已保留在输入框中。
+session.foreground_draft: 请在对话里继续或取消上一轮任务，消息已保留在输入框中。
+session.foreground_refresh_draft: 请刷新任务状态再继续，消息已保留在输入框中。
 session.model_output_limit: 模型达到单次输出上限，本轮尚未完成。
 session.run_token_budget_reached: 本任务的 Token 总预算已耗尽。
 session.token_limit_reached: 智能体达到 Token 限制，本轮尚未完成。

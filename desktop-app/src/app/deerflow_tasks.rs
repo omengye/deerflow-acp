@@ -3,6 +3,7 @@
 use super::*;
 mod approvals;
 mod artifacts;
+mod foreground;
 mod receipts;
 pub(super) mod runtime_view;
 mod session_budget;
@@ -473,6 +474,8 @@ pub(super) struct TaskBrowser {
     error: Option<String>,
     detail: Option<BackgroundDetail>,
     execution: Option<Execution>,
+    foreground: foreground::ForegroundRecovery,
+    foreground_queue_wait: bool,
     resource_summary: Option<SharedString>,
     previews: HashMap<String, Preview>,
     intent_index: usize,
@@ -531,6 +534,8 @@ impl Default for TaskBrowser {
             error: None,
             detail: None,
             execution: None,
+            foreground: Default::default(),
+            foreground_queue_wait: false,
             resource_summary: None,
             previews: HashMap::new(),
             intent_index: 0,
@@ -584,6 +589,7 @@ impl TaskBrowser {
         self.connection = connection_id;
         self.session = session_id;
         self.capabilities = capabilities;
+        self.foreground = foreground::ForegroundRecovery::connected(self.capabilities.executions);
         self.budget_ready();
         if self.show_receipts && self.capabilities.tool_receipts {
             self.next = Some(receipts::list_action(None, false));
@@ -614,6 +620,7 @@ impl TaskBrowser {
         self.detached_count > 0 || self.uncached_detached
     }
     fn disconnect(&mut self) {
+        self.foreground.disconnect();
         self.budget_request_started = None;
         if !matches!(self.budget_state, BudgetLoadState::Idle) {
             self.budget_open_requested = false;
@@ -869,6 +876,13 @@ impl TaskBrowser {
             self.capabilities.session_budget
         } else if matches!(action, Action::ReceiptList { .. }) {
             self.capabilities.tool_receipts
+        } else if matches!(action, Action::ExecutionCancel { .. }) {
+            self.capabilities.execution_cancel
+        } else if matches!(
+            action,
+            Action::ExecutionGet { .. } | Action::ExecutionResume { .. }
+        ) {
+            self.capabilities.executions
         } else {
             self.capabilities.tree
         };
@@ -910,6 +924,9 @@ impl TaskBrowser {
             self.receipts.invalidate();
         }
         self.pending = Some(command.clone());
+        if matches!(&command.action, Action::ExecutionGet {run_id} if run_id.is_empty()) {
+            return Some(command);
+        }
         match command.action {
             Action::BudgetGet => {
                 self.budget_open_requested = false;
@@ -1171,6 +1188,19 @@ impl TaskBrowser {
                     });
                 }
             }
+            (Action::ExecutionGet { run_id }, Response::Execution(execution))
+                if run_id.is_empty() =>
+            {
+                self.foreground.update(&self.session, execution)?;
+                self.pending = None;
+                return Ok(());
+            }
+            (Action::ExecutionCancel { run_id, .. }, Response::Execution(execution)) => {
+                anyhow::ensure!(&execution.run_id == run_id, "取消响应与当前执行不一致");
+                self.foreground.update(&self.session, execution)?;
+                self.foreground.refresh_needed = true;
+                self.refresh_needed = self.capabilities.tree;
+            }
             (Action::ExecutionGet { run_id }, Response::Execution(execution)) => {
                 anyhow::ensure!(
                     execution.session_id == self.session
@@ -1187,6 +1217,7 @@ impl TaskBrowser {
             }
             (Action::ExecutionResume { .. }, Response::ExecutionFinished) => {
                 self.clear_detail();
+                self.foreground.refresh_needed = true;
                 self.next = Some(self.list_action(None));
             }
             (Action::BackgroundGet { task_id }, Response::Background(detail))
@@ -1466,6 +1497,7 @@ impl Waku {
             } => {
                 if browser.connection == connection_id && browser.session == session_id {
                     browser.refresh_needed = true;
+                    browser.foreground.refresh_needed |= browser.capabilities.executions;
                 }
             }
             Event::Ready {
@@ -1480,6 +1512,11 @@ impl Waku {
                     return;
                 }
                 if let Err(error) = browser.accept(&command, response) {
+                    browser.foreground.failed(
+                        &command.action,
+                        "invalid_response",
+                        &error.to_string(),
+                    );
                     browser.fail_budget_request(&command.action, error.to_string());
                     if let Some(transfer) = &browser.transfer {
                         transfer.fail(error.to_string());
@@ -1498,6 +1535,10 @@ impl Waku {
                 message,
             } => {
                 if !browser.accepts(&command) {
+                    return;
+                }
+                if browser.foreground.failed(&command.action, &code, &message) {
+                    browser.pending = None;
                     return;
                 }
                 browser.fail_budget_request(
@@ -1531,15 +1572,31 @@ impl Waku {
         }
     }
     pub(super) fn maybe_refresh_deerflow_tasks(&mut self, cx: &mut Context<Self>) {
+        let mut attach = None;
         if let Some(session) = self.state.sessions.iter().find(|s| {
             Some(s.id) == self.state.selected_session && s.provider == ProviderKind::DeerFlow
         }) {
             let browser = self.deerflow_tasks.entry(session.id).or_default();
+            if session.detail_loaded
+                && session.provider_cursor.is_some()
+                && !session.is_busy()
+                && browser.connection.is_empty()
+                && !browser.foreground.attach_requested
+                && !self.runtimes.contains_key(&session.id)
+                && !self.runtime_attach_pending.contains(&session.id)
+            {
+                browser.foreground.attach_requested = true;
+                browser.foreground.refresh_needed = true;
+                attach = Some(session.id);
+            }
             if browser.sync_runtime(session) {
                 browser.refresh_needed |=
                     browser.capabilities.tree && !browser.connection.is_empty();
                 cx.notify();
             }
+        }
+        if let Some(id) = attach {
+            self.start_goal_runtime(id, cx);
         }
         let selected = self.state.selected_session;
         let visible = self.right_panel_visible
@@ -1565,7 +1622,12 @@ impl Waku {
             self.request_session_budget(session, cx);
         }
         let mut requests = vec![];
+        let mut queue_drains = vec![];
         for (session, browser) in &mut self.deerflow_tasks {
+            if browser.foreground_queue_wait && !browser.foreground_blocks_queue() {
+                browser.foreground_queue_wait = false;
+                queue_drains.push(*session);
+            }
             if browser
                 .learning_recovery
                 .as_ref()
@@ -1595,6 +1657,20 @@ impl Waku {
                 requests.push((*session, action));
             } else if let Some(action) = browser.queued_action.take() {
                 requests.push((*session, action));
+            } else if browser.foreground_lookup_due(selected == Some(*session), || {
+                self.state
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == *session)
+                    .is_some_and(|s| !s.is_busy())
+            }) {
+                browser.foreground.refresh_needed = false;
+                requests.push((
+                    *session,
+                    Action::ExecutionGet {
+                        run_id: String::new(),
+                    },
+                ));
             } else if browser.budget_open_requested && browser.capabilities.session_budget {
                 requests.push((*session, Action::BudgetGet));
             } else if let Some(action) = browser.next.take() {
@@ -1623,6 +1699,9 @@ impl Waku {
         }
         for (session, action) in requests {
             self.request_deerflow_task(session, action, cx);
+        }
+        for session in queue_drains {
+            self.drain_queued_message(session, cx);
         }
     }
     pub(super) fn open_deerflow_tasks(&mut self, cx: &mut Context<Self>) {
@@ -3091,6 +3170,7 @@ mod tests {
             version: 4,
             resumable: true,
             blocked_reason: String::new(),
+            waiting_tasks: vec![],
         };
         assert!(
             b.accept(&command, Response::Execution(execution.clone()))

@@ -658,6 +658,15 @@ session.failed_after_partial_response: このターンは完了前に失敗し�
 session.agent_exited_during_turn: このターンが完了する前にエージェントとの接続が終了しました。途中までの出力は保存されています。
 session.steer_rejected: エージェントに追加の指示を送れませんでした（%{error}）。メッセージはフォローアップとしてキューに追加されました
 session.steer_rejected_plain: エージェントに追加の指示を送れませんでした。メッセージはフォローアップとしてキューに追加されました
+session.foreground_waiting: 前のタスクが待機しています
+session.foreground_status_unavailable: タスクの状態を取得できません
+session.foreground_resume_hint: 中断した手順から再開できます。承認が必要な操作はここに表示されます。
+session.foreground_resume: タスクを再開
+session.foreground_cancel: このタスクをキャンセル
+session.foreground_refresh: タスクの状態を更新
+session.foreground_checking: 前のタスクを確認しています。メッセージは下書きに保存されています。
+session.foreground_draft: このチャットで前のタスクを再開またはキャンセルしてください。メッセージは下書きに保存されています。
+session.foreground_refresh_draft: タスクの状態を更新してください。メッセージは下書きに保存されています。
 session.model_output_limit: モデルが1回の応答の出力上限に達しました。このターンは未完了です。
 session.run_token_budget_reached: このタスクのトークン予算を使い切りました。
 session.token_limit_reached: エージェントがトークン制限に達しました。このターンは未完了です。

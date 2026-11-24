@@ -1295,6 +1295,24 @@ session.steer_rejected:
   en: The agent couldn't be steered (%{error}); the message was queued as a follow-up
 session.steer_rejected_plain:
   en: The agent couldn't be steered; the message was queued as a follow-up
+session.foreground_waiting:
+  en: The previous task is waiting
+session.foreground_status_unavailable:
+  en: Could not load task status
+session.foreground_resume_hint:
+  en: Resume from the saved step. Any pending tool request will appear here.
+session.foreground_resume:
+  en: Resume task
+session.foreground_cancel:
+  en: Cancel this task
+session.foreground_refresh:
+  en: Refresh task status
+session.foreground_checking:
+  en: Checking the previous task. Your message is saved as a draft.
+session.foreground_draft:
+  en: Resume or cancel the waiting task here. Your message is saved as a draft.
+session.foreground_refresh_draft:
+  en: Refresh the task status to continue. Your message is saved as a draft.
 session.model_output_limit:
   en: The model reached its per-response output limit. This turn is incomplete.
 session.run_token_budget_reached:

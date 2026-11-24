@@ -22,7 +22,7 @@ fn permission_label(option: &PermissionOption) -> &str {
     }
 }
 
-fn approval_card(title: impl Into<SharedString>, theme: Theme) -> Div {
+pub(super) fn approval_card(title: impl Into<SharedString>, theme: Theme) -> Div {
     div()
         .flex_none()
         .w_full()
@@ -48,7 +48,7 @@ fn approval_card(title: impl Into<SharedString>, theme: Theme) -> Div {
         )
 }
 
-fn decision_button(
+pub(super) fn decision_button(
     owner: &Waku,
     id: String,
     label: impl Into<SharedString>,

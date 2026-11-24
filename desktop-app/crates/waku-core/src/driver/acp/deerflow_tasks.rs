@@ -226,7 +226,12 @@ impl NotificationState {
                 if params["result"]["stopReason"] == "max_tokens" {
                     super::token_limit_summary(params["result"]["limit"].as_str())
                 } else {
-                    "自动执行已停止，请刷新任务状态查看原因。".into()
+                    serde_json::from_value::<agent_client_protocol::Error>(params["error"].clone())
+                        .ok()
+                        .as_ref()
+                        .and_then(super::deerflow_failure_message)
+                        .unwrap_or("自动执行已停止，已保存的执行记录会保留。")
+                        .into()
                 }
             }),
         });
@@ -402,6 +407,8 @@ fn capabilities(value: &Value) -> Capabilities {
         executions: executions["version"] == 1
             && executions["getMethod"] == "_deerflow/executions/get"
             && executions["resumeMethod"] == "_deerflow/executions/resume",
+        execution_cancel: executions["version"] == 1
+            && executions["cancelMethod"] == "_deerflow/executions/cancel",
         artifact_read: supported
             && tree["artifactReadMethod"] == "_deerflow/tasks/tree/artifacts/read",
         artifact_list: supported
@@ -418,6 +425,28 @@ pub(super) fn failed(events: &DriverEventSender, command: Command, code: &str, m
         code: code.into(),
         message: message.into(),
     }));
+}
+
+fn failed_resume(
+    events: &DriverEventSender,
+    stream: &mut AcpStreamState,
+    command: Command,
+    code: &str,
+    message: &str,
+) {
+    failed(events, command, code, message);
+    if let Some(tasks) = &mut stream.deerflow_tasks {
+        tasks.parked = None;
+    }
+    deerflow_steering::publish_target(stream, events);
+    let _ = events.send(DriverEvent::Error(message.into()));
+    let _ = events.send(DriverEvent::TurnFinished {
+        success: false,
+        summary: None,
+    });
+    if let Some(tasks) = &stream.deerflow_tasks {
+        tasks.invalidate(events);
+    }
 }
 
 impl TaskConnection {
@@ -457,14 +486,14 @@ impl TaskConnection {
                 && uuid::Uuid::parse_str(&command.request_id).is_ok(),
             "任务连接已变化，请刷新"
         );
-        let receipt_action = matches!(command.action, Action::ReceiptList { .. });
         anyhow::ensure!(
-            if matches!(command.action, Action::BudgetGet | Action::BudgetSet { .. }) {
-                self.capabilities.session_budget
-            } else if receipt_action {
-                self.capabilities.tool_receipts
-            } else {
-                self.capabilities.tree
+            match command.action {
+                Action::BudgetGet | Action::BudgetSet { .. } => self.capabilities.session_budget,
+                Action::ReceiptList { .. } => self.capabilities.tool_receipts,
+                Action::ExecutionGet { .. } | Action::ExecutionResume { .. } =>
+                    self.capabilities.executions,
+                Action::ExecutionCancel { .. } => self.capabilities.execution_cancel,
+                _ => self.capabilities.tree,
             },
             "当前服务未声明所需控制能力"
         );
@@ -611,11 +640,13 @@ impl TaskConnection {
                 )
             }
             Action::ExecutionGet { run_id } => {
-                anyhow::ensure!(
-                    self.capabilities.executions && !run_id.is_empty() && run_id.len() <= 256,
-                    "当前服务未提供执行恢复状态"
-                );
-                ("_deerflow/executions/get", json!({"runId":run_id}))
+                anyhow::ensure!(run_id.len() <= 256, "执行标识过长");
+                let params = if run_id.is_empty() {
+                    json!({})
+                } else {
+                    json!({"runId":run_id})
+                };
+                ("_deerflow/executions/get", params)
             }
             Action::ArtifactList {
                 root_id,
@@ -673,17 +704,25 @@ impl TaskConnection {
             Action::ExecutionResume {
                 run_id,
                 expected_version,
+            }
+            | Action::ExecutionCancel {
+                run_id,
+                expected_version,
             } => {
                 anyhow::ensure!(
-                    self.capabilities.executions
-                        && !run_id.is_empty()
+                    !run_id.is_empty()
                         && run_id.len() <= 256
                         && *expected_version > 0
                         && *expected_version <= i64::MAX as u64,
-                    "当前执行暂不可恢复"
+                    "无效的执行标识或版本"
                 );
+                let method = if matches!(command.action, Action::ExecutionResume { .. }) {
+                    "_deerflow/executions/resume"
+                } else {
+                    "_deerflow/executions/cancel"
+                };
                 (
-                    "_deerflow/executions/resume",
+                    method,
                     json!({"runId":run_id,"expectedVersion":expected_version}),
                 )
             }
@@ -763,12 +802,24 @@ impl TaskConnection {
                             "任务响应无效，请刷新当前任务。",
                         ),
                     },
-                    Err(error) => failed(
-                        &callback_events,
-                        callback_command,
-                        &error.code.to_string(),
-                        "任务操作未完成。状态可能已变化，请刷新后重试；聊天可以继续。",
-                    ),
+                    Err(error) => {
+                        let discovery = matches!(&callback_command.action, Action::ExecutionGet { run_id } if run_id.is_empty());
+                        let no_execution = discovery
+                            && i32::from(error.code) == -32602
+                            && (error.data.as_ref().is_some_and(|data| data["kind"] == "no_execution")
+                                || error.message == "Requested session or tool receipt was not found");
+                        let code = if no_execution {
+                            "no_execution".to_owned()
+                        } else {
+                            error.code.to_string()
+                        };
+                        failed(
+                            &callback_events,
+                            callback_command,
+                            &code,
+                            "任务操作未完成，请刷新状态后重试。",
+                        );
+                    }
                 }
                 Ok(())
             });
@@ -862,16 +913,14 @@ impl TaskConnection {
                         }));
                     }
                     Err(error) => {
-                        failed(
+                        failed_resume(
                             &callback_events,
+                            &mut callback_stream.lock(),
                             callback_command,
                             &error.code.to_string(),
-                            "执行未能恢复。请刷新执行状态；待审批工具不会被自动允许。",
+                            super::deerflow_failure_message(&error)
+                                .unwrap_or("执行未能恢复，请查看此对话中的最新执行状态。"),
                         );
-                        let _ = callback_events.send(DriverEvent::TurnFinished {
-                            success: false,
-                            summary: None,
-                        });
                     }
                 }
                 flush_early_updates(&mut callback_stream.lock(), false, &callback_events)?;
@@ -881,16 +930,13 @@ impl TaskConnection {
         if registered.is_err() {
             prompt_requests.lock().settle_request(&request_id);
             self.pending.store(false, Ordering::Release);
-            failed(
+            failed_resume(
                 events,
+                &mut stream_state.lock(),
                 command,
                 "connection_closed",
-                "执行恢复连接已断开，请重连后读取实际状态。",
+                "恢复执行时连接已断开。请重新连接此对话，查看最新执行状态。",
             );
-            let _ = events.send(DriverEvent::TurnFinished {
-                success: false,
-                summary: None,
-            });
         }
     }
 }
@@ -908,7 +954,9 @@ fn response(action: &Action, data: Value) -> anyhow::Result<Response> {
         Action::List { .. } => Response::Page(serde_json::from_value(data)?),
         Action::Get { .. } | Action::Cancel { .. } => Response::Node(serde_json::from_value(data)?),
         Action::Permission { .. } => Response::Permission(data),
-        Action::ExecutionGet { .. } => Response::Execution(serde_json::from_value(data)?),
+        Action::ExecutionGet { .. } | Action::ExecutionCancel { .. } => {
+            Response::Execution(serde_json::from_value(data)?)
+        }
         Action::ArtifactRead { .. } => Response::Artifact(serde_json::from_value(data)?),
         Action::ArtifactList { .. } => Response::Artifacts(serde_json::from_value(data)?),
         Action::ExecutionResume { .. } => {
@@ -924,6 +972,39 @@ fn response(action: &Action, data: Value) -> anyhow::Result<Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_resume_surfaces_in_chat_and_refreshes_the_bound_session() {
+        let (events, received) = crate::driver::test_event_channel();
+        let mut stream = AcpStreamState::default();
+        stream.deerflow_tasks = Some(NotificationState {
+            connection: "connection".into(),
+            session: "session".into(),
+            active: None,
+            parked: Some(("run".into(), 4)),
+            announced: false,
+            recent: Default::default(),
+        });
+        let command = Command {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            connection_id: "connection".into(),
+            session_id: "session".into(),
+            action: Action::ExecutionResume {
+                run_id: "run".into(),
+                expected_version: 4,
+            },
+        };
+        failed_resume(&events, &mut stream, command, "-32014", "搜索配置校验失败");
+        assert!(stream.deerflow_tasks.as_ref().unwrap().parked.is_none());
+        let events: Vec<_> = received.try_iter().collect();
+        assert!(matches!(events.as_slice(), [
+            DriverEvent::DeerFlowTasks(Event::Failed { .. }),
+            DriverEvent::Error(message),
+            DriverEvent::TurnFinished { success: false, .. },
+            DriverEvent::DeerFlowTasks(Event::Invalidated { connection_id, session_id }),
+        ] if message == "搜索配置校验失败" && connection_id == "connection" && session_id == "session"));
+    }
+
     #[test]
     fn deerflow_receipts_are_read_only_and_bound_to_the_owning_connection() {
         let caps = capabilities(
@@ -1589,6 +1670,58 @@ mod tests {
         value["_meta"]["deerflow"]["taskTree"]["listMethod"] = json!("external/mutate");
         assert!(!capabilities(&value).tree);
         assert!(!capabilities(&Value::Null).permission);
+    }
+    #[test]
+    fn foreground_discovery_and_cancel_are_bound_to_the_attached_session() {
+        let mut advertised = json!({"_meta":{"deerflow":{"executions":{
+            "version":1, "getMethod":"_deerflow/executions/get",
+            "resumeMethod":"_deerflow/executions/resume"
+        }}}});
+        let mut state = TaskConnection {
+            id: "connection".into(),
+            session: "session".into(),
+            capabilities: capabilities(&advertised),
+            pending: Arc::new(AtomicBool::new(false)),
+        };
+        let mut command = Command {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            connection_id: state.id.clone(),
+            session_id: state.session.clone(),
+            action: Action::ExecutionGet {
+                run_id: String::new(),
+            },
+        };
+        assert_eq!(
+            state.request(&command).unwrap(),
+            ("_deerflow/executions/get", json!({"sessionId":"session"}))
+        );
+        command.action = Action::ExecutionCancel {
+            run_id: "run".into(),
+            expected_version: 8,
+        };
+        assert!(state.request(&command).is_err());
+        advertised["_meta"]["deerflow"]["executions"]["cancelMethod"] =
+            json!("_deerflow/executions/cancel");
+        state.capabilities = capabilities(&advertised);
+        assert_eq!(
+            state.request(&command).unwrap(),
+            (
+                "_deerflow/executions/cancel",
+                json!({"sessionId":"session","runId":"run","expectedVersion":8})
+            )
+        );
+        let reply = json!({"sessionId":"session","runId":"run","version":9,"status":"cancelled","resumable":false});
+        assert!(
+            matches!(response(&command.action, reply).unwrap(), Response::Execution(execution) if execution.status == "cancelled" && execution.version == 9)
+        );
+        command.session_id = "other".into();
+        assert!(state.request(&command).is_err());
+        command.session_id = state.session.clone();
+        command.action = Action::ExecutionCancel {
+            run_id: "run".into(),
+            expected_version: 0,
+        };
+        assert!(state.request(&command).is_err());
     }
     #[test]
     fn deerflow_artifact_requests_require_advertisement_and_pin_later_chunk_hashes() {

@@ -177,6 +177,9 @@ impl Waku {
         message: String,
     ) {
         if let Some(browser) = self.deerflow_tasks.get_mut(&session) {
+            if browser.connection.is_empty() {
+                browser.foreground.connection_failed(&message);
+            }
             if matches!(browser.budget_state, BudgetLoadState::Connecting(_)) {
                 browser.budget_open_requested = false;
                 browser.budget_state = BudgetLoadState::Error(format!(
