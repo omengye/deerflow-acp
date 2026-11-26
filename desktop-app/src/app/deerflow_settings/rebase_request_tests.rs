@@ -12,6 +12,37 @@ fn base_document() -> Value {
 }
 
 #[test]
+fn mcp_only_save_uses_live_settings_and_mixed_edits_still_apply_together() {
+    let mut base = base_document();
+    base["client_mcp_servers"] = json!([]);
+    base["client_mcp_servers_revision"] = json!("old-mcp");
+    for mixed in [false, true] {
+        let mut draft = base.clone();
+        draft["client_mcp_servers"] = json!([{"name":"docs","command":"local","env":[]}]);
+        if mixed {
+            draft["models"][0]["model"] = json!("updated");
+        }
+        let result = request_deerflow_with_draft("save-and-apply", draft.clone(), Some(&base), |op, input| {
+            if op == "snapshot" { return Ok(base.clone()); }
+            if mixed {
+                assert_eq!(op, "save-and-apply");
+                assert_eq!(input, draft);
+                return Ok(json!({}));
+            }
+            assert_eq!(op, "save-mcp");
+            assert_eq!(input["client_mcp_servers_revision"], "old-mcp");
+            assert_eq!(input["client_mcp_servers"], draft["client_mcp_servers"]);
+            Ok(json!({"client_mcp_servers":input["client_mcp_servers"], "client_mcp_servers_revision":"new-mcp"}))
+        }).unwrap();
+        if !mixed {
+            assert_eq!(result["mcp_applied"], true);
+            assert_eq!(result["document"]["client_mcp_servers_revision"], "new-mcp");
+            assert_eq!(result["document"]["models"], base["models"]);
+        }
+    }
+}
+
+#[test]
 fn saves_fetch_latest_snapshot_before_submitting_the_merged_draft() {
     for operation in ["save", "save-and-apply", "validate"] {
         let base = base_document();

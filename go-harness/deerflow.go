@@ -548,6 +548,7 @@ func open(ctx context.Context, cfg Config, manualGenerator skillmaintenance.Gene
 	if err != nil {
 		return nil, err
 	}
+	manager.SetDesktopProfile(cfg.RuntimeProfile)
 	defer func() {
 		if err != nil {
 			_ = manager.Close()

@@ -98,15 +98,15 @@ func executionMCPResources(ctx context.Context, manager *mcp.Manager, req harnes
 		return nil, nil, nil
 	}
 	if pinned == nil {
-		descriptor, generation, err := manager.Describe(ctx, req.Session.ID)
-		if err != nil {
+		descriptor, generation, lease, err := manager.AcquireForTurn(ctx, req.Session.ID)
+		if err != nil || lease == nil {
 			return nil, nil, err
 		}
-		if generation == "" {
-			return nil, nil, nil
+		if hooks := interaction.FromContext(ctx); hooks != nil && hooks.InputSource != nil && hooks.InputSource.ResourceGeneration != "" && hooks.InputSource.ResourceGeneration != generation {
+			_ = lease.Close()
+			return nil, nil, harness.ErrResourcesWaiting
 		}
-		ref = &harness.MCPResourceRef{Version: 1, SessionID: req.Session.ID, OriginGeneration: generation, Descriptor: descriptor}
-		ref.HostRecipeID = manager.HostRecipeID(req.Session.ID)
+		return &harness.MCPResourceRef{Version: 1, SessionID: req.Session.ID, OriginGeneration: generation, Descriptor: descriptor, HostRecipeID: manager.HostRecipeID(req.Session.ID)}, lease, nil
 	}
 	if ref == nil {
 		generation, err := manager.Generation(ctx, req.Session.ID)

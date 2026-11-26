@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"sync"
 	"time"
 
@@ -23,6 +22,7 @@ type Manager struct {
 	mu        sync.Mutex
 	policy    harness.MCPPolicy
 	allowed   map[string]os.FileInfo
+	desktop   *desktopPolicy
 	bindings  map[string]*binding
 	pending   map[string]*binding
 	all       map[*binding]struct{}
@@ -45,6 +45,7 @@ type binding struct {
 	closing       bool        // protected by Manager.mu
 	err, closeErr error       // published by ready/closed respectively
 	endpoints     []*endpoint // immutable after ready closes
+	desktop       *desktopProcesses
 }
 
 func New(policy harness.MCPPolicy) (*Manager, error) {
@@ -87,10 +88,8 @@ func New(policy harness.MCPPolicy) (*Manager, error) {
 
 func (m *Manager) MCPCapabilities() (http, sse bool) { return m.policy.AllowHTTP, m.policy.AllowSSE }
 
-// Bind is atomic: tools become visible only after all servers initialize and
-// list successfully. Repeating an identical bind is a no-op. A replacement
-// leaves the previous binding untouched until the candidate is ready. Runtime
-// callers must hold the session's idle lifecycle lease while reconfiguring.
+// Publish a replacement under the session's idle lifecycle lease. Strict
+// client servers initialize atomically. Saved desktop programs are optional.
 func (m *Manager) Bind(ctx context.Context, owner, id, cwd string, servers []harness.MCPServer) error {
 	if m.host != nil {
 		if handled, err := m.bindHost(ctx, owner, id, cwd, servers); handled || err != nil {
@@ -108,8 +107,8 @@ func (m *Manager) Bind(ctx context.Context, owner, id, cwd string, servers []har
 		return err
 	}
 	data, _ := json.Marshal(struct {
-		CWD     string
-		Servers []harness.MCPServer
+		CWD string
+		*preparedServers
 	}{realCWD, prepared})
 	fingerprint := sha256.Sum256(data)
 	m.mu.Lock()
@@ -145,16 +144,23 @@ func (m *Manager) Bind(ctx context.Context, owner, id, cwd string, servers []har
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
 	b := &binding{owner: owner, id: id, generation: rand.Text(), fingerprint: fingerprint, ctx: lifetime, cancel: cancel, ready: make(chan struct{}), closed: make(chan struct{})}
+	if len(prepared.DesktopTargets) > 0 {
+		b.desktop = &desktopProcesses{cwd: realCWD, closed: make(chan struct{})}
+	}
 	m.pending[id] = b
 	m.all[b] = struct{}{}
 	m.mu.Unlock()
 	toolCount := 0
-	for _, server := range prepared {
+	for _, server := range prepared.Servers {
 		if err = ctx.Err(); err != nil {
 			break
 		}
+		if target, ok := prepared.DesktopTargets[server.Name]; ok {
+			b.desktop.servers = append(b.desktop.servers, desktopServer{config: server, target: target})
+			continue
+		}
 		var e *endpoint
-		e, err = m.connect(ctx, b, realCWD, server)
+		e, err = m.connect(ctx, b, realCWD, server, "")
 		if e != nil {
 			b.endpoints = append(b.endpoints, e)
 			toolCount += e.initialToolCount
@@ -166,6 +172,9 @@ func (m *Manager) Bind(ctx context.Context, owner, id, cwd string, servers []har
 			err = errors.New("MCP tool count exceeds configured limit")
 			break
 		}
+	}
+	if err == nil && b.desktop != nil {
+		b.desktop.refresh(ctx, m, b)
 	}
 	if err == nil {
 		err = ctx.Err()
@@ -208,47 +217,14 @@ func (m *Manager) Tools(ctx context.Context, id string) ([]tool.BaseTool, error)
 	if host, recipe := m.hostBinding(id); host != nil {
 		return host.Tools(ctx, recipe)
 	}
-	m.mu.Lock()
-	b := m.bindings[id]
-	pending := m.pending[id]
-	closed := m.closed
-	if b != nil && b.closing {
-		m.mu.Unlock()
-		return nil, ErrClosed
+	snapshot, err := m.resourceSnapshot(ctx, id, false)
+	if err != nil {
+		return nil, err
 	}
-	m.mu.Unlock()
-	if closed {
-		return nil, ErrClosed
+	result := make([]tool.BaseTool, 0, len(snapshot.tools))
+	for _, t := range snapshot.tools {
+		result = append(result, t)
 	}
-	if b == nil {
-		if pending != nil {
-			return nil, harness.ErrBusy
-		}
-		return nil, nil
-	}
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-b.ready:
-	}
-	if b.err != nil {
-		return nil, b.err
-	}
-	if b.ctx.Err() != nil {
-		return nil, ErrClosed
-	}
-	var result []tool.BaseTool
-	for _, e := range b.endpoints {
-		more, err := e.tools(ctx)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, more...)
-		if len(result) > m.policy.MaxTools {
-			return nil, fmt.Errorf("MCP tool count exceeds configured limit")
-		}
-	}
-	sort.Slice(result, func(i, j int) bool { a, _ := result[i].Info(ctx); b, _ := result[j].Info(ctx); return a.Name < b.Name })
 	return result, nil
 }
 
@@ -299,10 +275,28 @@ func (m *Manager) Generation(ctx context.Context, id string) (string, error) {
 	if b.err != nil {
 		return "", b.err
 	}
-	if len(b.endpoints) == 0 {
-		return "", nil
+	_, generation, _ := b.connections()
+	return generation, nil
+}
+
+func (b *binding) connections() ([]*endpoint, string, context.Context) {
+	endpoints := b.endpoints
+	generation := b.generation
+	lifetime := b.ctx
+	if b.desktop != nil {
+		active, membership := b.desktop.active()
+		if membership != nil {
+			lifetime = membership
+		}
+		endpoints = append(endpoints[:len(endpoints):len(endpoints)], active...)
+		for _, e := range active {
+			generation += "." + e.desktopID
+		}
 	}
-	return b.generation, nil
+	if len(endpoints) == 0 {
+		return nil, "", lifetime
+	}
+	return endpoints, generation, lifetime
 }
 
 func (m *Manager) startClose(b *binding) {
@@ -328,6 +322,9 @@ func (m *Manager) startClose(b *binding) {
 			close(errs)
 			for err := range errs {
 				b.closeErr = errors.Join(b.closeErr, err)
+			}
+			if b.desktop != nil {
+				b.closeErr = errors.Join(b.closeErr, b.desktop.close(m.policy.CloseTimeout))
 			}
 			m.mu.Lock()
 			if m.bindings[b.id] == b {
@@ -422,6 +419,9 @@ func (m *Manager) Close() error {
 			}
 			for _, b := range bindings {
 				<-b.closed // publishes the immutable endpoint list after setup
+				if b.desktop != nil {
+					<-b.desktop.closed
+				}
 				for _, e := range b.endpoints {
 					// Release's wait may have timed out. Global Close must still
 					// join owned cleanup before the SDK can release runtime.lock.

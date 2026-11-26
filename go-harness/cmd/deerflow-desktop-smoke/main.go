@@ -179,7 +179,7 @@ func (s *smoke) prepare() {
 	must(os.MkdirAll(s.workspace, 0700))
 	s.log("Copied immutable package allowlist", obj{})
 }
-func (s *smoke) configure() obj {
+func (s *smoke) configure(externalMCP bool) obj {
 	w := s.waku
 	snapshot := w.deerflow("snapshot")
 	need(below(str(object(snapshot["paths"])["config"]), s.root), "snapshot config escaped isolated package")
@@ -192,13 +192,15 @@ func (s *smoke) configure() obj {
 	s.log("Fresh package task, queue and child time limits are disabled", obj{})
 	raw := read(s.config)
 	need(strings.Contains(raw, "  accept_client_mcp_servers: false") && strings.Contains(raw, "  client_mcp_allowed_commands: []"), "default config lacks host MCP policy")
-	raw = strings.Replace(raw, "  accept_client_mcp_servers: false", "  accept_client_mcp_servers: true", 1)
-	if s.legacy {
-		raw = strings.Replace(raw, "  client_mcp_allowed_commands: []", "", 1)
-	} else {
-		raw = strings.Replace(raw, "  client_mcp_allowed_commands: []", "  client_mcp_allowed_commands: ["+string(jsonBytes(s.executable))+"]", 1)
+	if externalMCP {
+		raw = strings.Replace(raw, "  accept_client_mcp_servers: false", "  accept_client_mcp_servers: true", 1)
+		if s.legacy {
+			raw = strings.Replace(raw, "  client_mcp_allowed_commands: []", "", 1)
+		} else {
+			raw = strings.Replace(raw, "  client_mcp_allowed_commands: []", "  client_mcp_allowed_commands: ["+string(jsonBytes(s.executable))+"]", 1)
+		}
+		must(os.WriteFile(s.config, []byte(raw), 0600))
 	}
-	must(os.WriteFile(s.config, []byte(raw), 0600))
 	document := clone(w.deerflow("snapshot"))
 	for _, v := range array(document["models"]) {
 		m := object(v)
@@ -296,18 +298,19 @@ func main() {
 		}
 	}
 	var packagePath, cache, python string
-	var fixture, legacy, rateLimitOnly, userInputOnly bool
+	var fixture, legacy, rateLimitOnly, userInputOnly, mcpOnly bool
 	flag.StringVar(&packagePath, "package", "", "fresh extracted Windows Go desktop package")
 	// The fixture intentionally has no Git on PATH. Keep its ordinary chat
 	// workspace outside the source checkout so it cannot inherit repository refs.
 	flag.StringVar(&cache, "cache", filepath.Join(os.TempDir(), "deerflow-desktop-smoke"), "isolated output root; must not be inside the supplied package")
 	flag.BoolVar(&fixture, "mcp-fixture", false, "run the isolated stdio MCP fixture")
+	flag.BoolVar(&mcpOnly, "mcp-hot-only", false, "verify desktop MCP edits in the next turn of a live chat")
 	flag.BoolVar(&legacy, "legacy-empty-mcp-policy", false, "verify legacy enabled MCP with no executable allowlist")
 	flag.BoolVar(&rateLimitOnly, "rate-limit-only", false, "validate packaged model 429 retry and desktop errors using only isolated local fixtures")
 	flag.BoolVar(&userInputOnly, "user-input-only", false, "validate packaged desktop questions, answers and cancellation using only isolated local fixtures")
 	flag.StringVar(&python, "python", "", "optional operator-selected python.exe for pinned skill execution smoke; never installed or bundled")
 	flag.Parse()
-	if rateLimitOnly && userInputOnly {
+	if rateLimitOnly && userInputOnly || mcpOnly && (userInputOnly || rateLimitOnly) {
 		fmt.Fprintln(os.Stderr, "select only one focused smoke mode")
 		os.Exit(2)
 	}
@@ -353,7 +356,9 @@ func main() {
 	fmt.Println("Isolated smoke logs:", s.logs)
 	err := safe(func() {
 		s.prepare()
-		if userInputOnly {
+		if mcpOnly {
+			s.runHotMCP()
+		} else if userInputOnly {
 			s.runUserInput()
 		} else if rateLimitOnly {
 			s.runRateLimits()

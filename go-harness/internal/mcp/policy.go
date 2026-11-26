@@ -38,12 +38,22 @@ func executable(command string) (string, os.FileInfo, error) {
 	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0) {
 		return "", nil, fmt.Errorf("regular executable required")
 	}
+	// Windows Stat defers loading the file ID. Capture it before an installer
+	// can replace this path, even when size and timestamps are preserved.
+	if runtime.GOOS == "windows" && !os.SameFile(info, info) {
+		return "", nil, fmt.Errorf("cannot identify executable")
+	}
 	return real, info, nil
 }
 
 func invalid(message string) error { return fmt.Errorf("%w: MCP %s", harness.ErrInvalidInput, message) }
 
-func (m *Manager) prepare(cwd string, servers []harness.MCPServer) ([]harness.MCPServer, string, error) {
+type preparedServers struct {
+	Servers        []harness.MCPServer
+	DesktopTargets map[string]string `json:",omitempty"`
+}
+
+func (m *Manager) prepare(cwd string, servers []harness.MCPServer) (*preparedServers, string, error) {
 	if len(servers) > m.policy.MaxServers {
 		return nil, "", invalid("server count exceeds configured limit")
 	}
@@ -53,6 +63,8 @@ func (m *Manager) prepare(cwd string, servers []harness.MCPServer) ([]harness.MC
 	}
 	seen := make(map[string]bool, len(servers))
 	out := make([]harness.MCPServer, 0, len(servers))
+	var desktopGrants map[string]desktopGrant
+	targets := make(map[string]string)
 	for _, in := range servers {
 		s := in
 		s.Args = slices.Clone(in.Args)
@@ -102,13 +114,19 @@ func (m *Manager) prepare(cwd string, servers []harness.MCPServer) ([]harness.MC
 			if s.URL != "" || len(s.Headers) > 0 {
 				return nil, "", invalid("stdio configuration cannot contain URL or headers")
 			}
-			real, info, err := executable(s.Command)
-			if err != nil {
-				return nil, "", fmt.Errorf("%w: MCP command must resolve to an absolute executable", harness.ErrPermissionDenied)
+			if desktopGrants == nil && m.desktop != nil {
+				// Missing or unreadable desktop grants confer no authority.
+				desktopGrants, _ = m.desktop.grants()
 			}
-			trusted, allowed := m.allowed[pathKey(real)]
-			if !allowed || !os.SameFile(trusted, info) {
-				return nil, "", fmt.Errorf("%w: MCP command is not in the trusted executable allowlist", harness.ErrPermissionDenied)
+			if grant, ok := desktopGrants[s.Name]; ok && grant.matches(s) {
+				s.Command = filepath.Clean(s.Command)
+				targets[s.Name] = grant.target
+				break
+			}
+			real, info, err := executable(s.Command)
+			trusted := m.allowed[pathKey(real)]
+			if err != nil || trusted == nil || !os.SameFile(trusted, info) {
+				return nil, "", harness.ErrMCPLaunchDenied
 			}
 			s.Command = real
 		case "http", "sse":
@@ -128,7 +146,7 @@ func (m *Manager) prepare(cwd string, servers []harness.MCPServer) ([]harness.MC
 		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, realCWD, nil
+	return &preparedServers{Servers: out, DesktopTargets: targets}, realCWD, nil
 }
 
 func validHeaderName(name string) bool {

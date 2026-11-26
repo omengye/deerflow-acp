@@ -120,10 +120,13 @@ func mapError(err error) (mapped error) {
 	var skillConflict *harness.SkillNameConflictError
 	var compaction *harness.CompactionError
 	var imageFailure *harness.ImageGenerationError
+	var mcpSetup *harness.MCPSetupError
 	if errors.As(err, &p) {
 		return err
 	}
 	switch {
+	case errors.As(err, &mcpSetup):
+		return rpcError(protocol.InvalidParams, mcpSetup.Error())
 	case errors.Is(err, harness.ErrNoProgress):
 		return &protocol.Error{Code: -32023, Message: "Agent stopped as incomplete after repeated identical tool observations. Inspect the results and change strategy before continuing.", Data: map[string]any{"kind": "no_progress", "automaticReplay": false}}
 	case errors.Is(err, harness.ErrExecutionWaitingInput):
@@ -156,8 +159,10 @@ func mapError(err error) (mapped error) {
 		return rpcError(protocol.InvalidParams, "MCP resources changed; reconnect with compatible server configuration and tool schemas")
 	case errors.Is(err, harness.ErrResourcesWaiting):
 		return rpcError(protocol.ServerBusy, "MCP resources are unavailable or require explicit authorization")
+	case errors.Is(err, harness.ErrMCPLaunchDenied):
+		return &protocol.Error{Code: protocol.InvalidParams, Message: "MCP 启动请求与已授权的服务器定义不匹配", Data: map[string]any{"kind": "mcp_launch_denied"}}
 	case errors.Is(err, harness.ErrPermissionDenied):
-		return rpcError(protocol.InvalidParams, "Permission denied; check the host MCP executable allowlist and resource access policy")
+		return rpcError(protocol.InvalidParams, "Permission denied")
 	case errors.Is(err, harness.ErrNotAttached):
 		return rpcError(protocol.InvalidParams, "Session is not attached to this connection")
 	case errors.Is(err, harness.ErrNotFound):

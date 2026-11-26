@@ -73,7 +73,7 @@ func TestMCPResourceErrorsArePublicAndDoNotExposePrivateDetails(t *testing.T) {
 	}{
 		{"incompatible", errors.Join(harness.ErrResourcesWaiting, harness.ErrResourcesIncompatible), protocol.InvalidParams},
 		{"waiting", harness.ErrResourcesWaiting, protocol.ServerBusy},
-		{"permission", harness.ErrPermissionDenied, protocol.InvalidParams},
+		{"launch", harness.ErrMCPLaunchDenied, protocol.InvalidParams},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			rpc := executionUpdateError(errors.Join(test.cause, errors.New("fixture-secret in private/workspace")))
@@ -82,5 +82,8 @@ func TestMCPResourceErrorsArePublicAndDoNotExposePrivateDetails(t *testing.T) {
 				t.Fatalf("invalid public MCP diagnostic: %s %v", encoded, err)
 			}
 		})
+	}
+	if rpc := executionUpdateError(harness.ErrPermissionDenied); rpc.Code != protocol.InvalidParams || strings.Contains(rpc.Message, "MCP") {
+		t.Fatalf("unrelated permission denial attributed to MCP: %v", rpc)
 	}
 }

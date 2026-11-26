@@ -188,7 +188,8 @@ Models use provider=openai/claude; sandbox uses provider=local. Native tools are
 selected by name without Python class paths. See resources/go-native-tools.md.
 Optional host_opencli calls an installed OpenCLI/Node.js; browser commands need
 the user's OpenCLI browser bridge. It does not require Python.
-The optional stdio MCP executable allowlist is in local_acp of config.yaml.
+Manage local stdio MCP servers in Desktop Settings > Tools. Save Changes applies
+the selected programs and arguments to the next message in existing chats.
 WSL command execution uses the bundled, SHA-256 verified Go Linux helper.
 Select a WSL2 distribution explicitly; no guest interpreter is required.
 Bundled skills may contain reviewable Python source and text dependency

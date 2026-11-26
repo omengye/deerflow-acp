@@ -1,6 +1,19 @@
 package harness
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
+
+var ErrMCPLaunchDenied = fmt.Errorf("%w: MCP launch is not authorized", ErrPermissionDenied)
+
+// MCPSetupError exposes only the server label and the failed setup phase.
+type MCPSetupError struct {
+	Server string
+	Phase  string
+}
+
+func (e *MCPSetupError) Error() string { return "MCP 服务器 " + e.Server + " " + e.Phase + "失败" }
 
 // MCPServer is session-scoped connection intent. Env and Headers are credentials
 // and must not be persisted in ordinary history, sent to models, or logged.

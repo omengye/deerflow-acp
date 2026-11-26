@@ -1,12 +1,36 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
 )
+
+func TestToolMetadataSurvivesApprovalCheckpoint(t *testing.T) {
+	// Info decodes the discovery JSON into the same dynamic types seen by the
+	// agent. The native approval checkpoint must restore their values and types.
+	raw := []byte(`{"name":"record","extra":{"mcp.annotations":{"destructiveHint":false,"readOnlyHint":true},"nested":[{"enabled":false},1,"value"]}}`)
+	info, err := (&guardTool{info: raw}).Info(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	serializer := &schema.GobSerializer{}
+	data, err := serializer.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored schema.ToolInfo
+	if err := serializer.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(info, &restored) {
+		t.Fatalf("checkpoint changed tool metadata: got %#v, want %#v", restored.Extra, info.Extra)
+	}
+}
 
 func TestCanonicalToolInfoPreservesSchemaValues(t *testing.T) {
 	first := `{"name":"record","has_params_one_of":true,"json_schema":{"type":"object","properties":{"options":{"type":"object","properties":{"timezone":{"type":"string"},"action":{"type":"string","enum":["launch","queue"]}}},"count":{"type":"integer","minimum":9007199254740993}},"required":["options","count"]}}`

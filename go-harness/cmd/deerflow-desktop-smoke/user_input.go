@@ -82,7 +82,7 @@ func (s *smoke) answerQuestion(session, runtime, requestID, callID string, answe
 
 func (s *smoke) runUserInput() {
 	s.startWaku(uuid(), "waku-user-input")
-	saved := s.configure()
+	saved := s.configure(false)
 	object(saved["memory"])["enabled"] = false
 	s.waku.deerflow("save", saved)
 	s.waku.deerflow("start")

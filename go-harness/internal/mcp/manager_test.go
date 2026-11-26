@@ -115,6 +115,179 @@ func processConfig(t *testing.T, mode string) harness.MCPServer {
 	return harness.MCPServer{Name: "fixture", Command: exe, Args: []string{"-test.run=^TestMCPProcessHelper$"}, Env: map[string]string{"HARNESS_MCP_FIXTURE": "1", "HARNESS_MCP_MODE": mode, "HARNESS_MCP_TOKEN": fixtureSecret}}
 }
 
+func saveDesktopServers(t *testing.T, profile string, servers ...harness.MCPServer) {
+	t.Helper()
+	dir := filepath.Join(profile, "config")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	entries := []any{}
+	for _, server := range servers {
+		env := []map[string]string{}
+		for k, v := range server.Env {
+			env = append(env, map[string]string{"name": k, "value": v})
+		}
+		entries = append(entries, map[string]any{"name": server.Name, "command": server.Command, "args": server.Args, "env": env})
+	}
+	data, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "client-mcp-servers.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDesktopStdioGrantsFollowSavedDefinition(t *testing.T) {
+	profile := t.TempDir()
+	dir := filepath.Join(profile, "config")
+	original := processConfig(t, "desktop")
+	save := func(servers ...harness.MCPServer) { t.Helper(); saveDesktopServers(t, profile, servers...) }
+	manager := testManager(t, harness.MCPPolicy{})
+	manager.SetDesktopProfile(profile)
+	check := func(s harness.MCPServer, want bool) {
+		t.Helper()
+		_, _, err := manager.prepare(profile, []harness.MCPServer{s})
+		if (err == nil) != want || (!want && !errors.Is(err, harness.ErrPermissionDenied)) {
+			t.Fatalf("desktop grant %q expected %v: %v", s.Name, want, err)
+		}
+	}
+	check(original, false)
+	second := original
+	second.Name, second.Args = "another", []string{"second"}
+	save(original, second)
+	check(original, true)
+	check(second, true)
+	changed := original
+	changed.Args = second.Args
+	check(changed, false)
+	changed = original
+	changed.Env = map[string]string{"different": "value"}
+	check(changed, false)
+	changed = original
+	changed.Command = filepath.Join(dir, "different-program")
+	check(changed, false)
+	// Equal sizes and timestamps also occur in real Windows package updates.
+	program := filepath.Join(dir, "updating.exe")
+	install := func() {
+		t.Helper()
+		if err := os.WriteFile(program, []byte("fixture"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		stamp := time.Unix(499190400, 0)
+		if err := os.Chtimes(program, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	install()
+	updating := original
+	updating.Name, updating.Command = "updating", program
+	save(updating, second)
+	check(updating, true)
+	standalone := testManager(t, harness.MCPPolicy{AllowedCommands: []string{program}})
+	if err := os.Rename(program, program+".previous"); err != nil {
+		t.Fatal(err)
+	}
+	check(second, true)
+	// Authorization survives the installation gap, even for a cold manager.
+	cold := testManager(t, harness.MCPPolicy{})
+	cold.SetDesktopProfile(profile)
+	if _, _, err := cold.prepare(profile, []harness.MCPServer{second}); err != nil {
+		t.Fatal(err)
+	}
+	install()
+	check(updating, true)
+	if _, _, err := standalone.prepare(profile, []harness.MCPServer{updating}); !errors.Is(err, harness.ErrPermissionDenied) {
+		t.Fatalf("standalone policy accepted replacement executable: %v", err)
+	}
+	save(second)
+	check(original, false)
+	check(second, true)
+	save()
+	check(second, false)
+	legacy := testManager(t, harness.MCPPolicy{AllowedCommands: []string{original.Command}})
+	legacy.SetDesktopProfile(profile)
+	if _, _, err := legacy.prepare(profile, []harness.MCPServer{original}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDesktopProcessLossPreservesForegroundAndDoesNotReplay(t *testing.T) {
+	ctx, profile := context.Background(), testutil.CanonicalTempDir(t)
+	one, two := processConfig(t, "one"), processConfig(t, "two")
+	two.Name = "other"
+	effects := filepath.Join(profile, "effects")
+	one.Env["HARNESS_MCP_EFFECTS"] = effects
+	saveDesktopServers(t, profile, one, two)
+	m := testManager(t, harness.MCPPolicy{})
+	m.SetDesktopProfile(profile)
+	if err := m.Bind(ctx, "owner", "chat", profile, []harness.MCPServer{one, two}); err != nil {
+		t.Fatal(err)
+	}
+	d, generation, turn, err := m.AcquireForTurn(ctx, "chat")
+	if err != nil || turn == nil || len(turn.Tools) != 2 {
+		t.Fatalf("initial turn: %v %v", d.Servers, err)
+	}
+	defer turn.Close()
+	pinned, err := m.Acquire(ctx, "chat", d, generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+	call := func(tl tool.BaseTool, value string) error {
+		data, _ := json.Marshal(echoArgs{Value: value})
+		_, err := tl.(tool.EnhancedInvokableTool).InvokableRun(ctx, &schema.ToolArgument{Text: string(data)})
+		return err
+	}
+	if err := call(turn.Tools[0], "drop"); err == nil {
+		t.Fatal("lost response reported success")
+	}
+	select {
+	case <-pinned.Done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("dead transport retained its pinned lease")
+	}
+	if err := call(turn.Tools[1], "ok"); err != nil {
+		t.Fatalf("healthy sibling failed in the active turn: %v", err)
+	}
+	_, renewed, next, err := m.AcquireForTurn(ctx, "chat")
+	if err != nil || next == nil || len(next.Tools) != 2 || renewed == generation {
+		t.Fatalf("next turn did not recover: %v", err)
+	}
+	defer next.Close()
+	if _, err := m.Acquire(ctx, "chat", d, generation); !errors.Is(err, harness.ErrResourcesWaiting) {
+		t.Fatalf("old generation admitted: %v", err)
+	}
+	data, err := os.ReadFile(effects)
+	if err != nil || string(data) != "effect\n" {
+		t.Fatalf("uncertain tool effect repeated: %v", err)
+	}
+}
+
+func TestDesktopSlowDiscoveryDoesNotHoldChatUntilConnectTimeout(t *testing.T) {
+	ctx, profile := context.Background(), testutil.CanonicalTempDir(t)
+	slow, healthy := processConfig(t, "slowlist"), processConfig(t, "ok")
+	slow.Name, healthy.Name = "slow", "healthy"
+	saveDesktopServers(t, profile, slow, healthy)
+	m := testManager(t, harness.MCPPolicy{ConnectTimeout: time.Minute})
+	m.SetDesktopProfile(profile)
+	// This fixture never answers tools/list. The healthy program and first
+	// prompt can proceed while its connection is still initializing.
+	bounded, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	if err := m.Bind(bounded, "owner", "chat", profile, []harness.MCPServer{slow, healthy}); err != nil {
+		t.Fatal(err)
+	}
+	d, _, turn, err := m.AcquireForTurn(bounded, "chat")
+	if err != nil || turn == nil || strings.Join(d.Servers, ",") != "healthy" {
+		t.Fatalf("initial turn: %v %v", d.Servers, err)
+	}
+	defer turn.Close()
+	if err := m.Release(bounded, "owner", "chat"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func testManager(t *testing.T, policy harness.MCPPolicy) *Manager {
 	t.Helper()
 	if policy.CloseTimeout == 0 {

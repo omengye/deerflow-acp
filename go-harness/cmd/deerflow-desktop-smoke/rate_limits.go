@@ -114,7 +114,7 @@ func (s *smoke) rateLimitToolEvidence(nativeSession, callID string) obj {
 
 func (s *smoke) runRateLimits() {
 	s.startWaku(uuid(), "waku-rate-limit")
-	saved := s.configure()
+	saved := s.configure(false)
 	object(saved["memory"])["enabled"] = false
 	s.waku.deerflow("save", saved)
 	s.waku.deerflow("start")

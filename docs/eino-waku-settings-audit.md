@@ -125,13 +125,13 @@
 | `/runtime/enable_bash`、`/sandbox/allow_host_bash` | Windows Go 命令工具与宿主授权联合映射 | 保留实际联动，命名说明为命令/PowerShell；冲突在保存及启动时同样报错 |
 | `/sandbox/allow_host_tools` | `HostToolsAllowed` 门控 host_opencli | 保留；不能借开关安装工具或扩大命令白名单 |
 | `/runtime/tool_allowlist`、`tool_denylist` | `cfg.ToolPolicy`，运行装配和执行时再次核验 | 保留；null/空数组语义一致 |
-| `/client_mcp_servers` | Rust 对 stdio/绝对命令/宿主白名单与 env 验证，交给 ACP 客户端 | 保留 stdio；展示宿主策略的只读状态；没有宿主授权时给出具体不可用原因 |
+| `/client_mcp_servers` | 桌面保存本地 stdio 启动配置，Go 绑定时核对程序、参数和环境 | 选择程序并保存即可授权，已有聊天的下一轮应用增删 |
 | `/tools` | `BuiltinToolConfig`、原生工具工厂 | 已替换为逐工具原生字段及添加/移除配置操作；schema 声明参数适用工具和结果范围，删除 `use` 类路径及任意 JSON 编辑。原文件未知数据保留并诊断；不接受草稿注入 |
 | `/tool_groups` | 旧配置元数据，不能控制 Go 角色工具授权 | 编辑器和保存时的分组存在性限制已删除；保留原始分类数据供显式迁移，不在 snapshot 重建；授权按工具名称 |
 | `/sandbox/advanced` | daemon 不消费任意 sandbox 对象 | 任意 JSON 编辑和旧本地参数白名单已删除；仅开放实际宿主授权。原未知键保留并诊断，CLI 沙箱 provider/enabled/allow_shell 的生效值只读展示 |
 | snapshot 的 `/sandbox/use`（已移除） | 原生 provider 的兼容投影 | 已改为 `/sandbox/provider`；快照规范化本地类名，保存只写 provider；其他执行器需显式转换草稿，未知参数保留供迁移 |
 
-OpenCLI 使用 Go 宿主工具及现有启动/超时/错误回执链路。前台会话的 MCP 配置仍受宿主允许列表约束。后台重建使用显式宿主 `mcp.host_recipes`，属于仅宿主 YAML 可编辑的配置；schema 的 `HostSettings` 说明其应用方式，不向模型或桌面草稿暴露凭据。该链路的独立集成验证进度见实施状态，不能从前台设置保存结果推导后台互操作结论。
+OpenCLI 使用 Go 宿主工具及现有启动/超时/错误回执链路。前台桌面会话使用当前配置目录里已保存的 MCP 服务定义。后台重建使用显式宿主 `mcp.host_recipes`，属于仅宿主 YAML 可编辑的配置；schema 的 `HostSettings` 说明其应用方式，不向模型或桌面草稿暴露凭据。该链路的独立集成验证进度见实施状态，不能从前台设置保存结果推导后台互操作结论。
 
 工具参数和 sandbox 已加入 v2 schema 及 daemon/Waku 字段交集。工具允许/拒绝列表改为逐行名称，保留 null 与 []；OpenCLI 的 null 使用内置站点，[] 不授予适配器访问（仍能使用顶层发现命令）。工具配置条目的增删与工具授权分开：文件/命令工具仍由工具策略及宿主开关控制。API key 和含凭据的代理地址只显示已配置状态；留空保留同一原始工具的值，另有明确清除操作，重排不丢密钥，重新添加不继承隐藏值。测试覆盖保存→Go 启动→原生 web_fetch 经本地代理实际取回内容并截断；真实 Waku 交互和实际 CLI 覆盖仍待验收。
 

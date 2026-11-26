@@ -78,10 +78,14 @@ func (f *fakeModel) planned(body obj) obj {
 			}
 		}
 	}
-	if fn["name"] == "__desktop_mcp_record__" {
+	if fn["name"] == "__desktop_mcp_record__" || fn["name"] == "__desktop_other_record__" {
+		prefix := "mcp_desktop_fixture_record"
+		if fn["name"] == "__desktop_other_record__" {
+			prefix = "mcp_desktop_other_record"
+		}
 		for _, v := range array(body["tools"]) {
 			name := str(object(object(v)["function"])["name"])
-			if strings.HasPrefix(name, "mcp_desktop_fixture_record") {
+			if strings.HasPrefix(name, prefix) {
 				fn["name"] = name
 				break
 			}
@@ -205,6 +209,32 @@ func (f *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
 // The same native executable supplies the isolated stdio MCP fixture. Its
 // environment comes only from the smoke harness; credentials never enter logs.
 func serveMCP(input io.Reader, output io.Writer) error {
+	if state := os.Getenv("ACP_MCP_FIXTURE_STATE"); state != "" {
+		pid := fmt.Sprint(os.Getpid())
+		if err := os.WriteFile(state+".pid", []byte(pid), 0600); err != nil {
+			return err
+		}
+		if exists(state + ".fail") {
+			return fmt.Errorf("fixture handshake disabled")
+		}
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			tick := time.NewTicker(20 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-tick.C:
+					if target, _ := os.ReadFile(state + ".stop"); string(target) == pid {
+						_ = os.WriteFile(state+".stopped", target, 0600)
+						os.Exit(0)
+					}
+				}
+			}
+		}()
+	}
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	writer := json.NewEncoder(output)
@@ -222,7 +252,11 @@ func serveMCP(input io.Reader, output io.Writer) error {
 		case "initialize":
 			result = obj{"protocolVersion": params["protocolVersion"], "capabilities": obj{"tools": obj{}}, "serverInfo": obj{"name": "desktop-mcp-smoke", "version": "2"}}
 		case "tools/list":
-			result = obj{"tools": []any{obj{"name": "record", "description": "Record the isolated desktop smoke value", "inputSchema": obj{"type": "object", "properties": obj{"value": obj{"type": "string"}}, "required": []any{"value"}}}}}
+			result = obj{"tools": []any{obj{
+				"name": "record", "description": "Record the isolated desktop smoke value",
+				"inputSchema": obj{"type": "object", "properties": obj{"value": obj{"type": "string"}}, "required": []any{"value"}},
+				"annotations": obj{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
+			}}}
 		case "tools/call":
 			args, _ := params["arguments"].(map[string]any)
 			value, valid := args["value"].(string)

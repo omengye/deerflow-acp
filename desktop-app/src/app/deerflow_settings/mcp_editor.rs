@@ -1,6 +1,7 @@
-//! Native editor for Waku's existing stdio MCP sidecar. Host authority remains
-//! in the configuration service; adding an entry never grants an executable.
+//! Desktop stdio MCP servers and their saved launch configurations.
 use super::*;
+
+const MAX_SERVERS: usize = 8;
 
 pub(super) fn fields(state: &DeerFlowSettings, doc: &Value) -> Vec<Field> {
     if state.advanced {
@@ -29,7 +30,7 @@ pub(super) fn fields(state: &DeerFlowSettings, doc: &Value) -> Vec<Field> {
         Field::new(
             format!("{root}/command"),
             "程序路径",
-            "已存在的绝对路径；需由宿主另行授权",
+            "选择本机程序，或输入可执行文件的绝对路径",
             Kind::Text,
         ),
         Field::new(
@@ -75,10 +76,11 @@ impl Waku {
             .and_then(|doc| doc["client_mcp_servers"].as_array());
         let selected = state.selected_mcp;
         let editable = state.can_edit_field("/client_mcp_servers") && state.errors.is_empty();
-        let mut group = df_group(theme).child(df_label("MCP 服务器", "仅支持 stdio。宿主接入开关和程序允许列表仍需在 config.yaml 中配置，添加服务器不授予执行权限。", theme))
+        let mut group = df_group(theme).child(df_label("MCP 服务器", "保存后允许桌面会话按填写的参数和环境启动本地 stdio 程序。添加和移除会在聊天的下一条消息生效。", theme))
             .child(div().flex().flex_wrap().gap(px(6.0))
                 .child(df_button("df-mcp-back", "返回工具", state.busy(), false, theme, cx, |this, _, cx| this.deerflow_select_section(Section::Tools, cx)))
-                .child(df_button("df-mcp-add", "添加服务器", !editable || servers.is_some_and(|items| items.len() >= 32), false, theme, cx, |this, _, cx| this.deerflow_mcp_mutation("add", cx)))
+                .child(df_button("df-mcp-add", "添加服务器", !editable || servers.is_some_and(|items| items.len() >= MAX_SERVERS), false, theme, cx, |this, _, cx| this.deerflow_mcp_mutation("add", cx)))
+                .child(df_button("df-mcp-pick", "选择程序…", !editable || servers.is_none_or(|items| items.is_empty()), false, theme, cx, |this, _, cx| this.deerflow_pick_mcp_program(cx)))
                 .child(df_button("df-mcp-remove", "移除所选服务器", !editable || servers.is_none_or(|items| items.is_empty()), false, theme, cx, |this, _, cx| this.deerflow_mcp_mutation("remove", cx))));
         if let Some(servers) = servers {
             for (index, server) in servers.iter().enumerate() {
@@ -164,6 +166,29 @@ impl Waku {
         group.into_any_element()
     }
 
+    fn deerflow_pick_mcp_program(&mut self, cx: &mut Context<Self>) {
+        let selected = self.deerflow_settings.selected_mcp;
+        let generation = self.deerflow_settings.edit_generation;
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("选择 MCP 服务器程序".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = receiver.await && let Some(path) = paths.first() {
+                let _ = this.update(cx, |this, cx| {
+                    let state = &this.deerflow_settings;
+                    if state.section == Section::MCP && state.selected_mcp == selected
+                        && state.edit_generation == generation && state.can_edit_field("/client_mcp_servers") {
+                        this.deerflow_change(&format!("/client_mcp_servers/{selected}/command"), json!(path), cx);
+                        this.deerflow_rebind(cx);
+                    }
+                });
+            }
+        }).detach();
+    }
+
     fn deerflow_mcp_mutation(&mut self, action: &str, cx: &mut Context<Self>) {
         if !self.deerflow_settings.can_edit_field("/client_mcp_servers")
             || !self.deerflow_settings.errors.is_empty()
@@ -179,7 +204,7 @@ impl Waku {
             return;
         };
         match action {
-            "add" if servers.len() < 32 => {
+            "add" if servers.len() < MAX_SERVERS => {
                 servers.push(json!({"name":"","command":"","args":[],"env":[]}));
                 state.selected_mcp = servers.len() - 1;
                 state.selected_mcp_env = 0;

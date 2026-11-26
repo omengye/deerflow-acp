@@ -614,8 +614,22 @@ fn request_deerflow_with_draft(
     if matches!(operation, "validate" | "save" | "save-and-apply") {
         let base =
             base.ok_or_else(|| anyhow::anyhow!("配置原始快照缺失，请重新加载；草稿已保留。"))?;
-        let latest = request("snapshot", json!({}))?;
+        let mut latest = request("snapshot", json!({}))?;
         input = rebase::rebase_document(base, &input, &latest).map_err(anyhow::Error::msg)?;
+        if operation == "save-and-apply" && input["client_mcp_servers"] != latest["client_mcp_servers"] {
+            let servers = input["client_mcp_servers"].take();
+            input["client_mcp_servers"] = latest["client_mcp_servers"].clone();
+            if input == latest {
+                let saved = request("save-mcp", json!({
+                    "client_mcp_servers": servers,
+                    "client_mcp_servers_revision": latest["client_mcp_servers_revision"],
+                }))?;
+                latest["client_mcp_servers"] = saved["client_mcp_servers"].clone();
+                latest["client_mcp_servers_revision"] = saved["client_mcp_servers_revision"].clone();
+                return Ok(json!({"document": latest, "mcp_applied": true}));
+            }
+            input["client_mcp_servers"] = servers;
+        }
     }
     // The backend still checks the merged revision; a later writer must not
     // cause an unconditional retry that could overwrite concurrent changes.
@@ -1052,8 +1066,9 @@ impl Waku {
                         "snapshot" | "save" | "save-and-apply" => {
                             this.deerflow_settings.readiness = None;
                             this.deerflow_settings.network_probe = None;
+                            let mcp_applied = data["mcp_applied"] == true;
                             let (document, application) = if operation == "save-and-apply" {
-                                (data["document"].clone(), Some(data["status"].clone()))
+                                (data["document"].clone(), data.get("status").cloned())
                             } else {
                                 (data, None)
                             };
@@ -1075,7 +1090,9 @@ impl Waku {
                                 this.deerflow_settings.errors.clear();
                                 this.deerflow_settings.confirm_reload = false;
                                 this.deerflow_rebind(cx);
-                                if matches!(operation.as_str(), "save" | "save-and-apply") {
+                                if mcp_applied {
+                                    this.deerflow_settings.notice = Some("MCP 配置已保存，将在每个聊天的下一条消息生效。".into());
+                                } else if matches!(operation.as_str(), "save" | "save-and-apply") {
                                     this.deerflow_settings.needs_apply = true;
                                     this.deerflow_settings.notice =
                                         Some("配置已保存，正在等待任务完成并应用…".into());

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/gob"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	official "github.com/cloudwego/eino-ext/components/tool/mcp/officialmcp"
@@ -24,6 +26,13 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/harness"
 	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
+
+func init() {
+	// guardTool.Info decodes nested JSON in ToolInfo.Extra (including
+	// mcp.annotations). Eino checkpoints these values through interface fields.
+	gob.Register(map[string]any{})
+	gob.Register([]any{})
+}
 
 type endpoint struct {
 	binding                                *binding
@@ -40,6 +49,10 @@ type endpoint struct {
 	closed                                 chan struct{}
 	closeErr                               error
 	initialToolCount                       int
+	// Desktop discovery is published as one immutable list per connection.
+	desktopID    string
+	desktopTools atomic.Pointer[[]tool.BaseTool]
+	listChanged  chan struct{}
 }
 
 // Track the raw connection too: SDK initialization errors must not leak a
@@ -57,8 +70,12 @@ func (t *trackedTransport) Connect(ctx context.Context) (sdk.Connection, error) 
 	return c, err
 }
 
-func (m *Manager) connect(ctx context.Context, b *binding, cwd string, cfg harness.MCPServer) (*endpoint, error) {
-	lifetime, cancel := context.WithCancel(b.ctx)
+func (m *Manager) connect(ctx context.Context, b *binding, cwd string, cfg harness.MCPServer, desktopID string) (*endpoint, error) {
+	parent := b.ctx
+	if desktopID != "" {
+		parent = ctx // this program can retire independently of the binding
+	}
+	lifetime, cancel := context.WithCancel(parent)
 	e := &endpoint{binding: b, policy: m.policy, name: cfg.Name, ctx: lifetime, cancel: cancel, closed: make(chan struct{}), secrets: credentialValues(cfg)}
 	var infoBytes []byte
 	if cfg.Transport == "stdio" {
@@ -94,13 +111,29 @@ func (m *Manager) connect(ctx context.Context, b *binding, cwd string, cfg harne
 		}
 	}
 	e.transport = &trackedTransport{Transport: transport}
-	client := sdk.NewClient(&sdk.Implementation{Name: "deerflow-go", Version: "0.1.0"}, &sdk.ClientOptions{Capabilities: &sdk.ClientCapabilities{}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	options := &sdk.ClientOptions{Capabilities: &sdk.ClientCapabilities{}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	e.desktopID = desktopID
+	if desktopID != "" {
+		e.listChanged = make(chan struct{}, 1)
+		options.ToolListChangedHandler = func(context.Context, *sdk.ToolListChangedRequest) {
+			select {
+			case e.listChanged <- struct{}{}:
+			default:
+			}
+		}
+	}
+	client := sdk.NewClient(&sdk.Implementation{Name: "deerflow-go", Version: "0.1.0"}, options)
 	var err error
+	phase := "启动或协议握手"
 	e.client, err = client.Connect(lifetime, e.transport, nil)
 	if err == nil {
+		phase = "读取工具列表"
 		var discovered []tool.BaseTool
 		discovered, err = e.tools(ctx)
 		e.initialToolCount = len(discovered)
+		if err == nil && desktopID != "" {
+			e.desktopTools.Store(&discovered)
+		}
 	}
 	if err != nil {
 		if ctx.Err() != nil {
@@ -109,7 +142,7 @@ func (m *Manager) connect(ctx context.Context, b *binding, cwd string, cfg harne
 		if b.ctx.Err() != nil {
 			return e, ErrClosed
 		}
-		return e, errors.New("MCP server initialization or tool discovery failed")
+		return e, &harness.MCPSetupError{Server: cfg.Name, Phase: phase}
 	}
 	if !timer.Stop() {
 		return e, context.DeadlineExceeded
@@ -122,10 +155,10 @@ func (m *Manager) connect(ctx context.Context, b *binding, cwd string, cfg harne
 	}
 	go func() {
 		_ = e.client.Wait()
-		// A dead transport invalidates every borrower of this resource set.
-		// Reconnection is explicit and must receive a new generation.
 		e.cancel()
-		b.cancel()
+		if desktopID == "" {
+			b.cancel()
+		}
 	}()
 	return e, nil
 }
@@ -492,7 +525,7 @@ func (t *guardTool) InvokableRun(ctx context.Context, args string, opts ...tool.
 	}
 	op, done, err := t.endpoint.operation(ctx)
 	if err != nil {
-		return "", err
+		return "", harness.MarkToolNotExecuted(err)
 	}
 	defer done()
 	result, err := t.raw.InvokableRun(op, args, opts...)

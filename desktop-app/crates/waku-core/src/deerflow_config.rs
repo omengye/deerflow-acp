@@ -100,9 +100,7 @@ fn runtime_data_directory(user_data: &Path) -> Result<PathBuf> {
     Ok(data_dir)
 }
 
-/// Waku-owned per-session stdio servers. The host's YAML allowlist remains
-/// authoritative; this file only chooses servers from that list and supplies
-/// their arguments and session-private environment.
+/// Saving a server in this desktop profile authorizes its exact stdio launch.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ClientMcpServer {
@@ -151,11 +149,16 @@ fn read_client_mcp_config(path: &Path) -> Result<(Vec<ClientMcpServer>, String)>
 fn parse_client_mcp_config(value: &Value) -> Result<Vec<ClientMcpServer>> {
     let servers: Vec<ClientMcpServer> = serde_json::from_value(value.clone())
         .map_err(|_| anyhow!("会话 MCP 服务器字段结构无效；仅支持 stdio JSON 数组"))?;
+    validate_client_mcp_servers(&servers)?;
+    Ok(servers)
+}
+
+fn validate_client_mcp_servers(servers: &[ClientMcpServer]) -> Result<()> {
     if servers.len() > 8 {
         bail!("会话 MCP 服务器最多配置 8 个");
     }
     let mut names = HashSet::new();
-    for server in &servers {
+    for server in servers {
         if server
             .transport
             .as_deref()
@@ -170,9 +173,9 @@ fn parse_client_mcp_config(value: &Value) -> Result<Vec<ClientMcpServer>> {
         {
             bail!("会话 MCP 服务器名称为空、重复或无效");
         }
-        if !server.command.is_absolute() || !server.command.is_file() {
+        if !server.command.is_absolute() {
             bail!(
-                "会话 MCP 服务器 {} 的 command 必须是已存在的绝对文件路径",
+                "会话 MCP 服务器 {} 的 command 必须是绝对文件路径",
                 server.name
             );
         }
@@ -203,7 +206,7 @@ fn parse_client_mcp_config(value: &Value) -> Result<Vec<ClientMcpServer>> {
             }
         }
     }
-    Ok(servers)
+    Ok(())
 }
 
 fn redacted_client_mcp_config(servers: &[ClientMcpServer]) -> Result<Value> {
@@ -248,57 +251,19 @@ fn restore_client_mcp_secrets(
     Ok(())
 }
 
-fn allowed_client_mcp_servers(
-    servers: Vec<ClientMcpServer>,
-    policy: &Value,
-) -> Result<Vec<McpServer>> {
-    if servers.is_empty() {
-        return Ok(vec![]);
-    }
-    if policy["enabled"] != true {
-        bail!(
-            "会话 MCP 服务器未启用；请先在宿主 config.yaml 中启用 local_acp.accept_client_mcp_servers 并配置可执行文件允许列表"
-        );
-    }
-    let allowed = policy["allowed_commands"]
-        .as_array()
-        .ok_or_else(|| anyhow!("宿主 MCP 可执行文件允许列表无效"))?;
-    let mut result = Vec::with_capacity(servers.len());
-    for server in servers {
-        let command = server
-            .command
-            .canonicalize()
-            .with_context(|| format!("会话 MCP 服务器 {} 的可执行文件不存在", server.name))?;
-        if !allowed.iter().filter_map(Value::as_str).any(|item| {
-            let Ok(item) = Path::new(item).canonicalize() else {
-                return false;
-            };
-            if cfg!(windows) {
-                item.to_string_lossy()
-                    .eq_ignore_ascii_case(&command.to_string_lossy())
-            } else {
-                item == command
-            }
-        }) {
-            bail!(
-                "会话 MCP 服务器 {} 的可执行文件不在宿主允许列表中",
-                server.name
-            );
-        }
-        let env = server
+impl ClientMcpServer {
+    fn into_acp(self) -> McpServer {
+        let env = self
             .env
             .into_iter()
             .map(|entry| EnvVariable::new(entry.name, entry.value))
             .collect();
-        // Preserve the user-facing path on the wire. Windows canonicalize may
-        // add a \\?\ prefix that Go's filepath handling does not need.
-        result.push(McpServer::Stdio(
-            McpServerStdio::new(server.name, server.command)
-                .args(server.args)
+        McpServer::Stdio(
+            McpServerStdio::new(self.name, self.command)
+                .args(self.args)
                 .env(env),
-        ));
+        )
     }
-    Ok(result)
 }
 
 fn write_client_mcp_config(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -446,19 +411,6 @@ impl Paths {
         mcp_bridge_arguments(&policy)
     }
 
-    fn client_mcp_servers(&self) -> Result<Vec<McpServer>> {
-        let (servers, _) = read_client_mcp_config(&self.client_mcp_config)?;
-        if servers.is_empty() {
-            return Ok(vec![]);
-        }
-        let value = serde_json::to_value(&servers)?;
-        let servers = parse_client_mcp_config(&value)?;
-        allowed_client_mcp_servers(
-            servers,
-            &self.config_command("bridge-policy", &Value::Null)?,
-        )
-    }
-
     fn config_snapshot(&self) -> Result<Value> {
         let document = self.config_command("snapshot", &Value::Null)?;
         self.with_client_mcp_document(document)
@@ -476,7 +428,7 @@ impl Paths {
         // verbatim rather than interpreting their absence as a request to clear it.
         let has_servers = input.get("client_mcp_servers").is_some();
         let has_revision = input.get("client_mcp_servers_revision").is_some();
-        if !has_servers && !has_revision {
+        if !has_servers && !has_revision && operation != "save-mcp" {
             let document = self.config_command(operation, input)?;
             return if operation == "validate" {
                 Ok(document)
@@ -487,22 +439,41 @@ impl Paths {
         if !has_servers || !has_revision {
             bail!("桌面 MCP 服务器配置缺少列表或版本，请重新加载");
         }
+        // Share the revision check and commit across desktop hosts using this profile.
+        let _lock = if operation != "validate" {
+            let lock = std::fs::OpenOptions::new().read(true).write(true).create(true)
+                .truncate(false).open(self.client_mcp_config.with_extension("lock"))?;
+            lock.lock()?;
+            Some(lock)
+        } else {
+            None
+        };
         let (previous, revision) = read_client_mcp_config(&self.client_mcp_config)?;
         if input["client_mcp_servers_revision"].as_str() != Some(revision.as_str()) {
             bail!("桌面 MCP 服务器配置已变化，请重新加载后保存");
         }
         let mut servers = parse_client_mcp_config(&input["client_mcp_servers"])?;
         restore_client_mcp_secrets(&mut servers, &previous)?;
-        if !servers.is_empty() {
-            allowed_client_mcp_servers(
-                servers.clone(),
-                &self.config_command("bridge-policy", &Value::Null)?,
-            )?;
+        for server in &servers {
+            let already_saved = previous.iter().any(|old|
+                old.name == server.name && old.command == server.command
+            );
+            if !already_saved && !server.command.is_file() {
+                bail!("会话 MCP 服务器 {} 的程序文件不存在", server.name);
+            }
         }
         let mut serialized = serde_json::to_vec_pretty(&servers)?;
         serialized.push(b'\n');
         if serialized.len() as u64 > MAX_CLIENT_MCP_CONFIG {
             bail!("桌面 MCP 服务器配置超过大小限制");
+        }
+        if operation == "save-mcp" {
+            let saved = json!({
+                "client_mcp_servers": redacted_client_mcp_config(&servers)?,
+                "client_mcp_servers_revision": mcp_config_revision(&serialized),
+            });
+            write_client_mcp_config(&self.client_mcp_config, &serialized)?;
+            return Ok(saved);
         }
         // Keep MCP environment values out of the Go YAML configuration service.
         // Waku owns this separate file and sends the values only on ACP session setup.
@@ -648,12 +619,16 @@ pub fn launch_arguments() -> Result<Vec<String>> {
     Ok(arguments)
 }
 
-/// Session-scoped stdio MCP servers selected by the Waku host. The Go daemon
-/// independently enforces its executable allowlist again when binding them.
-pub fn client_mcp_servers() -> Result<Vec<McpServer>> {
-    let paths = Paths::discover()?;
-    paths.bootstrap()?;
-    paths.client_mcp_servers()
+/// Read one atomic desktop profile revision on the ACP worker, including removals.
+pub(crate) fn client_mcp_servers() -> (Vec<McpServer>, String) {
+    let path = waku_protocol::identity::portable_root().join("user-data/config/client-mcp-servers.json");
+    read_client_mcp_config(&path).and_then(|(servers, revision)| {
+        validate_client_mcp_servers(&servers)?;
+        Ok((servers.into_iter().map(ClientMcpServer::into_acp).collect(), revision))
+    }).unwrap_or_else(|error| {
+        eprintln!("DeerFlow 会话 MCP 暂不可用：{error}");
+        Default::default()
+    })
 }
 
 #[derive(Default)]
@@ -702,8 +677,11 @@ impl DeerFlowService {
                 .or_else(|_| paths.config_command(operation, &input)),
             "test-model" | "test-network" | "check-readiness" | "search-select"
             | "search-configure" => paths.config_command(operation, &input),
-            "save" | "save-and-apply" => {
+            "save" | "save-and-apply" | "save-mcp" => {
                 let _guard = self.state.mutation.lock();
+                if operation == "save-mcp" {
+                    return paths.save_config_document(operation, &input);
+                }
                 if self.state.applying.load(Ordering::Acquire)
                     && !self.state.starting.load(Ordering::Acquire)
                 {
@@ -885,6 +863,7 @@ fn ensure_operation(operation: &str) -> Result<()> {
         operation,
         "snapshot"
             | "save"
+            | "save-mcp"
             | "save-and-apply"
             | "validate"
             | "test-model"
@@ -1058,7 +1037,7 @@ mod tests {
 
     use super::*;
     #[test]
-    fn client_mcp_config_redacts_env_and_requires_host_allowlist() {
+    fn desktop_mcp_save_authorizes_saved_launch_and_redacts_env() {
         let root =
             std::env::temp_dir().join(format!("deerflow-client-mcp-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
@@ -1068,15 +1047,20 @@ mod tests {
             "server"
         });
         std::fs::write(&executable, b"fixture").unwrap();
-        let path = root.join("client-mcp-servers.json");
+        let paths = Paths::from_root(root.clone()).unwrap();
+        let path = &paths.client_mcp_config;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let input = json!([{
             "name":"workspace", "type":"stdio", "command":executable,
             "args":["serve"], "env":[{"name":"MCP_TOKEN","value":"private-token"}]
         }]);
-        let servers = parse_client_mcp_config(&input).unwrap();
-        write_client_mcp_config(&path, &serde_json::to_vec(&servers).unwrap()).unwrap();
-        let (saved, revision) = read_client_mcp_config(&path).unwrap();
+        let draft = json!({"client_mcp_servers":input, "client_mcp_servers_revision":""});
+        let result = paths.save_config_document("save-mcp", &draft).unwrap();
+        let (saved, revision) = read_client_mcp_config(path).unwrap();
         assert!(!revision.is_empty());
+        assert_eq!(result["client_mcp_servers_revision"], revision);
+        assert!(paths.save_config_document("save-mcp", &draft).is_err());
+        assert!(!paths.config.exists());
         let visible = redacted_client_mcp_config(&saved).unwrap();
         assert_eq!(visible[0]["env"][0]["value"], REDACTED_VALUE);
         assert!(!visible.to_string().contains("private-token"));
@@ -1089,24 +1073,21 @@ mod tests {
         let mut retargeted = parse_client_mcp_config(&visible).unwrap();
         retargeted[0].command = root.join("other-executable");
         assert!(restore_client_mcp_secrets(&mut retargeted, &saved).is_err());
-        assert!(allowed_client_mcp_servers(edited.clone(), &json!({"enabled":false})).is_err());
-        assert!(
-            allowed_client_mcp_servers(
-                edited.clone(),
-                &json!({"enabled":true,"allowed_commands":[]})
-            )
-            .is_err()
-        );
-        let result = allowed_client_mcp_servers(
-            edited,
-            &json!({
-                "enabled":true, "allowed_commands":[executable]
-            }),
-        )
-        .unwrap();
-        let wire = serde_json::to_value(result).unwrap();
+        let wire = serde_json::to_value(edited.into_iter().map(ClientMcpServer::into_acp).collect::<Vec<_>>()).unwrap();
         assert_eq!(wire[0]["name"], "workspace");
         assert_eq!(wire[0]["env"][0]["value"], "private-token");
+        std::fs::remove_file(&executable).unwrap();
+        validate_client_mcp_servers(&saved).unwrap();
+        let mut unavailable = visible.clone();
+        unavailable[0]["command"] = json!(root.join("not-installed"));
+        assert!(paths.save_config_document("save-mcp", &json!({
+            "client_mcp_servers": unavailable, "client_mcp_servers_revision": revision,
+        })).is_err());
+        paths.save_config_document("save-mcp", &json!({
+            "client_mcp_servers": visible, "client_mcp_servers_revision": revision,
+        })).unwrap();
+        paths.save_config_document("save-mcp", &json!({"client_mcp_servers":[], "client_mcp_servers_revision":revision})).unwrap();
+        assert!(read_client_mcp_config(path).unwrap().0.is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 

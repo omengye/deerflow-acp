@@ -73,8 +73,8 @@ func (m *Manager) ConfigureHostRecipes(configs []harness.HostMCPRecipe) error {
 			_ = host.Close()
 			return invalid("host recipe IDs and exact workspaces must be unique")
 		}
-		c.Workspace, c.Servers = cwd, servers
-		r.recipes[c.ID] = hostRecipe{config: c, digest: hostConfigDigest(cwd, servers)}
+		c.Workspace, c.Servers = cwd, servers.Servers
+		r.recipes[c.ID] = hostRecipe{config: c, digest: hostConfigDigest(cwd, c.Servers)}
 		r.workspaces[pathKey(cwd)] = c.ID
 	}
 	m.host = r

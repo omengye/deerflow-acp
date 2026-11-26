@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 	"slices"
 	"sort"
 	"sync"
@@ -14,6 +13,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
 
 // Describe returns stable resource identity and the current, ephemeral binding
@@ -22,62 +22,83 @@ func (m *Manager) Describe(ctx context.Context, id string) (harness.MCPResourceD
 	if host, recipe := m.hostBinding(id); host != nil {
 		return host.Describe(ctx, recipe)
 	}
-	descriptor, b, _, err := m.resourceSnapshot(ctx, id)
-	if err != nil || b == nil || len(b.endpoints) == 0 {
-		return descriptor, "", err
-	}
-	return descriptor, b.generation, nil
+	s, err := m.resourceSnapshot(ctx, id, false)
+	return s.descriptor, s.generation, err
+}
+
+type resourceSnapshot struct {
+	descriptor harness.MCPResourceDescriptor
+	generation string
+	binding    *binding
+	lifetime   context.Context
+	tools      []*guardTool
+	desktop    []*endpoint
 }
 
 // resourceSnapshot discovers once and fingerprints exactly those adapters. A
 // concurrent replacement cannot splice one binding's identity into another's
 // tool set. No connection configuration is returned to callers.
-func (m *Manager) resourceSnapshot(ctx context.Context, id string) (harness.MCPResourceDescriptor, *binding, []*guardTool, error) {
-	var empty harness.MCPResourceDescriptor
+func (m *Manager) resourceSnapshot(ctx context.Context, id string, freshTurn bool) (resourceSnapshot, error) {
+	var empty resourceSnapshot
 	if err := ctx.Err(); err != nil {
-		return empty, nil, nil, err
+		return empty, err
 	}
 	m.mu.Lock()
 	b, pending, closed := m.bindings[id], m.pending[id], m.closed
 	invalid := b != nil && (b.closing || b.ctx.Err() != nil)
 	m.mu.Unlock()
 	if closed || invalid {
-		return empty, nil, nil, ErrClosed
+		return empty, ErrClosed
 	}
 	if b == nil {
 		if pending != nil {
-			return empty, nil, nil, harness.ErrBusy
+			return empty, harness.ErrBusy
 		}
-		return empty, nil, nil, nil
+		return empty, nil
 	}
 	select {
 	case <-ctx.Done():
-		return empty, nil, nil, ctx.Err()
+		return empty, ctx.Err()
 	case <-b.ready:
 	}
 	if b.err != nil {
-		return empty, nil, nil, b.err
+		return empty, b.err
 	}
-	if len(b.endpoints) == 0 {
-		return empty, b, nil, nil
+	if freshTurn && b.desktop != nil {
+		b.desktop.refresh(ctx, m, b)
 	}
-	descriptor := harness.MCPResourceDescriptor{Version: 1, ConfigDigest: hex.EncodeToString(b.fingerprint[:]), Servers: make([]string, 0, len(b.endpoints)), Tools: []string{}}
+	endpoints, generation, lifetime := b.connections()
+	if len(endpoints) == 0 {
+		return empty, ctx.Err()
+	}
+	snapshot := resourceSnapshot{binding: b, generation: generation, lifetime: lifetime}
+	descriptor := harness.MCPResourceDescriptor{Version: 1, ConfigDigest: hex.EncodeToString(b.fingerprint[:]), Servers: make([]string, 0, len(endpoints)), Tools: []string{}}
 	var adapters []*guardTool
-	for _, e := range b.endpoints {
-		descriptor.Servers = append(descriptor.Servers, e.name)
-		items, err := e.tools(ctx)
-		if err != nil {
-			return empty, nil, nil, err
+	for _, e := range endpoints {
+		var items []tool.BaseTool
+		if e.desktopID != "" {
+			items = *e.desktopTools.Load()
+			if len(adapters)+len(items) > m.policy.MaxTools {
+				continue
+			}
+			snapshot.desktop = append(snapshot.desktop, e)
+		} else {
+			var err error
+			items, err = e.tools(ctx)
+			if err != nil {
+				return empty, err
+			}
 		}
+		descriptor.Servers = append(descriptor.Servers, e.name)
 		for _, item := range items {
 			adapter, ok := item.(*guardTool)
 			if !ok {
-				return empty, nil, nil, errors.New("MCP tool adapter is invalid")
+				return empty, errors.New("MCP tool adapter is invalid")
 			}
 			adapters = append(adapters, adapter)
 		}
 		if len(adapters) > m.policy.MaxTools {
-			return empty, nil, nil, errors.New("MCP tool count exceeds configured limit")
+			return empty, errors.New("MCP tool count exceeds configured limit")
 		}
 	}
 	type entry struct {
@@ -89,11 +110,11 @@ func (m *Manager) resourceSnapshot(ctx context.Context, id string) (harness.MCPR
 	for _, adapter := range adapters {
 		info, err := adapter.Info(ctx)
 		if err != nil || info == nil {
-			return empty, nil, nil, errors.New("MCP tool schema is invalid")
+			return empty, errors.New("MCP tool schema is invalid")
 		}
 		data, err := canonicalToolInfo(info)
 		if err != nil {
-			return empty, nil, nil, errors.New("MCP tool schema is invalid")
+			return empty, errors.New("MCP tool schema is invalid")
 		}
 		entries = append(entries, entry{Name: info.Name, Info: data, Adapter: adapter})
 	}
@@ -101,7 +122,7 @@ func (m *Manager) resourceSnapshot(ctx context.Context, id string) (harness.MCPR
 	sort.Strings(descriptor.Servers)
 	for i, item := range entries {
 		if i > 0 && entries[i-1].Name == item.Name {
-			return empty, nil, nil, errors.New("MCP tool names are not unique")
+			return empty, errors.New("MCP tool names are not unique")
 		}
 		descriptor.Tools = append(descriptor.Tools, item.Name)
 		adapters[i] = item.Adapter
@@ -111,7 +132,7 @@ func (m *Manager) resourceSnapshot(ctx context.Context, id string) (harness.MCPR
 		Tools   []entry
 	}{descriptor.Servers, entries})
 	if err != nil {
-		return empty, nil, nil, errors.New("MCP resource schema is invalid")
+		return empty, errors.New("MCP resource schema is invalid")
 	}
 	digest := sha256.Sum256(data)
 	descriptor.SchemaDigest = hex.EncodeToString(digest[:])
@@ -119,25 +140,43 @@ func (m *Manager) resourceSnapshot(ctx context.Context, id string) (harness.MCPR
 	valid := !m.closed && m.bindings[id] == b && !b.closing && b.ctx.Err() == nil
 	m.mu.Unlock()
 	if !valid {
-		return empty, nil, nil, ErrClosed
+		return empty, ErrClosed
 	}
 	if err := ctx.Err(); err != nil {
-		return empty, nil, nil, err
+		return empty, err
 	}
-	return descriptor, b, adapters, nil
+	snapshot.descriptor, snapshot.tools = descriptor, adapters
+	return snapshot, nil
 }
 
 // Lease borrows tools without owning the parent session's connection. Close
 // cancels only this borrower. Done also closes on binding or transport loss.
 // The returned Tools slice must be treated as read-only.
 type Lease struct {
-	Tools   []tool.BaseTool
-	Done    <-chan struct{}
-	manager *Manager
-	binding *binding
-	ctx     context.Context
-	cancel  context.CancelFunc
-	once    sync.Once
+	Tools           []tool.BaseTool
+	Done            <-chan struct{}
+	manager         *Manager
+	binding         *binding
+	ctx             context.Context
+	cancel          context.CancelFunc
+	once            sync.Once
+	requiredDesktop []*endpoint
+	stopWatching    []func() bool
+}
+
+// A new foreground turn owns one snapshot. An optional process dropping after
+// admission only affects calls to that process. Checkpoint and background
+// callers continue to Acquire their explicitly pinned generation.
+func (m *Manager) AcquireForTurn(ctx context.Context, id string) (harness.MCPResourceDescriptor, string, *Lease, error) {
+	if host, recipe := m.hostBinding(id); host != nil {
+		return host.AcquireForTurn(ctx, recipe)
+	}
+	s, err := m.resourceSnapshot(ctx, id, true)
+	if err != nil || s.generation == "" {
+		return s.descriptor, "", nil, err
+	}
+	lease, err := m.leaseSnapshot(s, false)
+	return s.descriptor, s.generation, lease, err
 }
 
 func (m *Manager) Acquire(ctx context.Context, id string, expected harness.MCPResourceDescriptor, generation string) (*Lease, error) {
@@ -147,19 +186,34 @@ func (m *Manager) Acquire(ctx context.Context, id string, expected harness.MCPRe
 	if expected.Version != 1 || expected.ConfigDigest == "" || expected.SchemaDigest == "" || generation == "" {
 		return nil, harness.ErrResourcesIncompatible
 	}
-	actual, b, adapters, err := m.resourceSnapshot(ctx, id)
+	s, err := m.resourceSnapshot(ctx, id, false)
 	if err != nil {
 		return nil, err
 	}
-	if b == nil || len(b.endpoints) == 0 || b.generation != generation {
+	if s.generation != generation {
 		return nil, harness.ErrResourcesWaiting
 	}
+	actual := s.descriptor
 	if actual.Version != expected.Version || actual.ConfigDigest != expected.ConfigDigest || actual.SchemaDigest != expected.SchemaDigest || !slices.Equal(actual.Servers, expected.Servers) || !slices.Equal(actual.Tools, expected.Tools) {
 		return nil, harness.ErrResourcesIncompatible
 	}
-	lifetime, cancel := context.WithCancel(b.ctx)
-	lease := &Lease{manager: m, binding: b, ctx: lifetime, cancel: cancel, Done: lifetime.Done(), Tools: make([]tool.BaseTool, 0, len(adapters))}
-	for _, adapter := range adapters {
+	return m.leaseSnapshot(s, true)
+}
+
+func (m *Manager) leaseSnapshot(s resourceSnapshot, pinned bool) (*Lease, error) {
+	parent := s.binding.ctx
+	if pinned {
+		parent = s.lifetime
+	}
+	lifetime, cancel := context.WithCancel(parent)
+	lease := &Lease{manager: m, binding: s.binding, ctx: lifetime, cancel: cancel, Done: lifetime.Done(), Tools: make([]tool.BaseTool, 0, len(s.tools))}
+	if pinned {
+		lease.requiredDesktop = s.desktop
+		for _, e := range s.desktop {
+			lease.stopWatching = append(lease.stopWatching, context.AfterFunc(e.ctx, cancel))
+		}
+	}
+	for _, adapter := range s.tools {
 		lease.Tools = append(lease.Tools, &leasedTool{lease: lease, raw: &enhancedGuardTool{guardTool: adapter}})
 	}
 	if err := lease.Check(); err != nil {
@@ -173,6 +227,11 @@ func (l *Lease) Check() error {
 	if l == nil || l.ctx.Err() != nil {
 		return ErrClosed
 	}
+	for _, e := range l.requiredDesktop {
+		if e.ctx.Err() != nil {
+			return ErrClosed
+		}
+	}
 	l.manager.mu.Lock()
 	defer l.manager.mu.Unlock()
 	if l.manager.closed || l.manager.bindings[l.binding.id] != l.binding || l.binding.closing || l.binding.ctx.Err() != nil {
@@ -183,7 +242,12 @@ func (l *Lease) Check() error {
 
 func (l *Lease) Close() error {
 	if l != nil {
-		l.once.Do(l.cancel)
+		l.once.Do(func() {
+			for _, stop := range l.stopWatching {
+				stop()
+			}
+			l.cancel()
+		})
 	}
 	return nil
 }

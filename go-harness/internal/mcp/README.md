@@ -107,7 +107,15 @@ This facility does not restore remote server state or guarantee remote effects.
 
 ## Transports and trust
 
-Stdio is the default transport. An empty `AllowedCommands` denies process startup.
+Stdio is the default transport. Desktop profiles also authorize individual
+servers saved in Settings. Each launch checks the saved name, executable path,
+arguments and environment. A new foreground turn detects a replacement file at
+the same resolved path, including replacements with identical timestamps. Each
+desktop server has its own connection. A missing program, failed handshake or
+process exit leaves the conversation and healthy servers available. The next
+turn retries available programs. An in-flight tool call keeps its original
+connection and execution receipt.
+Standalone clients with an empty `AllowedCommands` have no process authority.
 Every permitted command must be an absolute, existing executable. The manager
 canonicalizes its path and pins file identity when the policy is built. Arguments
 remain client-controlled: allowlisting a general-purpose shell or interpreter

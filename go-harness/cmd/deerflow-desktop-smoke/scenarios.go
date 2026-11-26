@@ -419,7 +419,7 @@ func (s *smoke) writeTurn(session, runtime, name, decision, content string, cach
 func (s *smoke) run() {
 	token := uuid()
 	wakuProcess := s.startWaku(token, "waku-daemon")
-	saved := s.configure()
+	saved := s.configure(true)
 	saved = s.startupRecovery()
 	s.preparePythonSkill()
 	w := s.waku

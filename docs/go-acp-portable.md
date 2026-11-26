@@ -168,9 +168,19 @@ terminal receipts remain uncertain and require explicit reconciliation.
 
 ## Desktop ACP client MCP
 
-The Windows desktop Go backend accepts stdio MCP servers supplied by an ACP
-client only when the host config explicitly authorizes their executables. Edit
-`user-data/config/config.yaml` in the extracted desktop package:
+In desktop Settings, open **Tools → Manage MCP servers**, add a stdio server,
+select its program, and enter any arguments and environment variables. Save
+Changes authorizes that exact launch in the current desktop profile. The next
+message in an existing chat uses the updated tools. Removing a server and
+saving withdraws its desktop authorization. A turn already in progress can
+finish. Changes confined to MCP take effect without a daemon restart.
+
+Program upgrades at the saved path retain authorization. If a program is
+temporarily missing or its MCP handshake fails, the chat can use its other
+tools. A later turn picks up the restored server automatically.
+
+External ACP clients can also use a separately configured executable policy in
+`user-data/config/config.yaml` for programs whose arguments they may choose.
 
 ```yaml
 local_acp:
@@ -186,8 +196,7 @@ per-session environment values for an authorized command but cannot add a new
 executable to the host list. The default is disabled. HTTP and SSE client MCP
 servers are outside this desktop configuration path.
 
-For sessions created by the desktop app itself, configure `client_mcp_servers`
-in DeerFlow settings as a JSON array. The app saves the list in
+The desktop editor stores its server definitions in
 `user-data/config/client-mcp-servers.json` and sends it with ACP session/new,
 session/load, and session/resume. For example:
 
@@ -203,7 +212,6 @@ session/load, and session/resume. For example:
 ]
 ```
 
-The `command` must also appear in `client_mcp_allowed_commands`. Environment
-values are redacted in settings snapshots and restored when saving an unchanged
-server entry. Empty the list to detach these tools from subsequent desktop ACP
-sessions.
+The runtime matches the saved server name, executable, arguments and environment.
+Settings snapshots redact environment values and preserve them when saving an
+unchanged server. Emptying the list removes the desktop tools on the next turn.

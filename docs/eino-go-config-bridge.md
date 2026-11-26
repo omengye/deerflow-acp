@@ -28,7 +28,7 @@ Rust Bridge 和 Waku 使用 Go 配置工具与 daemon。文件格式为 `config_
 
 `local_acp.enable_bash` 与 `sandbox.allow_host_bash` 同时启用时，Windows 桌面选择 Go PowerShell 提供方。其他命令提供方通过明确 CLI 参数配置，参见 [sandbox flags](../go-harness/internal/launch/sandbox.md)。OpenCLI 还需要 `sandbox.allow_host_tools` 与已安装的可执行程序。`tool_groups` 是旧元数据，不是授权入口。
 
-客户端 stdio MCP 由 `local_acp.accept_client_mcp_servers` 和 `client_mcp_allowed_commands` 决定宿主授权，Bridge 将 Go 配置工具校验的策略传给 daemon。客户端会话的实际 MCP 定义单独保存，参见 [ACP 客户端 MCP](go-acp-portable.md#desktop-acp-client-mcp)。
+桌面设置保存的 stdio MCP 条目授权对应的程序、参数和环境变量，已有聊天在下一轮应用增删。外部 ACP 客户端仍可使用宿主显式配置的可执行程序授权。参见 [ACP 客户端 MCP](go-acp-portable.md#desktop-acp-client-mcp)。
 
 ## 密钥库引用
 

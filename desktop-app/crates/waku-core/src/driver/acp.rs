@@ -188,7 +188,7 @@ impl AcpDriver {
         };
 
         let launch = deerflow_launch()?;
-        let client_mcp_servers = crate::deerflow_config::client_mcp_servers()?;
+        let client_mcp_servers = crate::deerflow_config::client_mcp_servers();
         let stderr_lines = Arc::new(Mutex::new(Vec::new()));
         let agent = sdk_agent(&binary, &cwd, launch, stderr_lines.clone())?;
         let (commands, command_rx) = smol::channel::unbounded();
@@ -458,7 +458,7 @@ async fn run_sdk_connection(
     reasoning_effort: Option<String>,
     thinking_mode: Option<String>,
     resume_session_id: Option<String>,
-    client_mcp_servers: Vec<McpServer>,
+    client_mcp_config: (Vec<McpServer>, String),
     commands: smol::channel::Receiver<CommandMessage>,
     events: DriverEventSender,
 ) -> agent_client_protocol::Result<()> {
@@ -562,15 +562,11 @@ async fn run_sdk_connection(
                 )
                 .block_task()
                 .await?;
-            let (session_id, _modes, config_options) = establish_session(
-                &connection,
-                &initialize,
-                resume_session_id.as_deref(),
-                &cwd,
-                &client_mcp_servers,
-                &suppress_session_updates,
-            )
-            .await?;
+            let ((session_id, _modes, config_options), mut mcp_revision) =
+                apply_session_mcp(client_mcp_config, async |servers| {
+                    establish_session(&connection, &initialize, resume_session_id.as_deref(),
+                        &cwd, &servers, &suppress_session_updates).await
+                }).await?;
             let approval_config_id = deerflow_approval_option(config_options.as_deref())
                 .map(|option| option.id.to_string())
                 .unwrap_or_else(|| "tool_approval".to_owned());
@@ -668,6 +664,11 @@ async fn run_sdk_connection(
                             continue;
                         }
                         let _ = events.send(DriverEvent::TurnStarted);
+                        if let Err(error) = refresh_session_mcp(&connection, &session_id, &cwd, &mut mcp_revision).await {
+                            let _ = events.send(DriverEvent::Error(format!("当前会话应用 MCP 配置失败：{error}")));
+                            let _ = events.send(DriverEvent::TurnFinished { success: false, summary: None });
+                            continue;
+                        }
                         if let Err(error) = send_prompt(
                             &connection,
                             &session_id,
@@ -1029,6 +1030,7 @@ async fn establish_session(
                         response.config_options,
                     ));
                 }
+                Err(error) if mcp_launch_denied(&error) => return Err(error),
                 Err(error) => failures.push(format!("session/resume: {error}")),
             }
         }
@@ -1051,6 +1053,7 @@ async fn establish_session(
                         response.config_options,
                     ));
                 }
+                Err(error) if mcp_launch_denied(&error) => return Err(error),
                 Err(error) => failures.push(format!("session/load: {error}")),
             }
         }
@@ -1075,6 +1078,48 @@ async fn establish_session(
         .block_task()
         .await?;
     Ok((response.session_id, response.modes, response.config_options))
+}
+
+fn mcp_launch_denied(error: &agent_client_protocol::Error) -> bool {
+    error.data.as_ref().is_some_and(|data| data["kind"] == "mcp_launch_denied")
+}
+
+// A save may commit between reading the profile and binding it. Only a
+// definite launch rejection is retried here, before a prompt is submitted.
+async fn apply_session_mcp<T>(
+    (servers, revision): (Vec<McpServer>, String),
+    mut apply: impl AsyncFnMut(Vec<McpServer>) -> agent_client_protocol::Result<T>,
+) -> agent_client_protocol::Result<(T, Option<String>)> {
+    match apply(servers).await {
+        Err(error) if mcp_launch_denied(&error) => {}
+        result => return result.map(|value| (value, Some(revision))),
+    }
+    let (latest, latest_revision) = smol::unblock(crate::deerflow_config::client_mcp_servers).await;
+    if latest_revision != revision {
+        match apply(latest).await {
+            Err(error) if mcp_launch_denied(&error) => {}
+            result => return result.map(|value| (value, Some(latest_revision))),
+        }
+    }
+    apply(Vec::new()).await.map(|value| (value, None))
+}
+
+async fn refresh_session_mcp(
+    connection: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    cwd: &std::path::Path,
+    applied_revision: &mut Option<String>,
+) -> anyhow::Result<()> {
+    let config = smol::unblock(crate::deerflow_config::client_mcp_servers).await;
+    if applied_revision.as_ref() != Some(&config.1) {
+        // Resume rebinds under the idle session lease, without replaying the transcript.
+        let (_, revision) = apply_session_mcp(config, async |servers| {
+            connection.send_request(ResumeSessionRequest::new(session_id.clone(), cwd).mcp_servers(servers))
+                .block_task().await
+        }).await?;
+        *applied_revision = revision;
+    }
+    Ok(())
 }
 
 fn session_config_select_values(option: &SessionConfigOption) -> Vec<&str> {
@@ -2459,6 +2504,7 @@ mod tests {
         assert!(!deerflow_history_capability(&json!({})));
     }
 
+    #[test]
     fn failed_resume_and_load_never_create_a_replacement_session() {
         use agent_client_protocol::schema::v1::{
             LoadSessionResponse, NewSessionResponse, ResumeSessionResponse,
