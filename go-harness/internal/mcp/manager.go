@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,8 @@ type Manager struct {
 	closeDone chan struct{}
 	closeErr  error
 	host      *hostRegistry // configured once, before exposing this manager
+	hostOnly  bool
+	catalogDB *sql.DB
 }
 
 type binding struct {
@@ -49,6 +52,12 @@ type binding struct {
 }
 
 func New(policy harness.MCPPolicy) (*Manager, error) {
+	if policy.ToolExposure == "" {
+		policy.ToolExposure = "auto"
+	}
+	if policy.ToolExposure != "auto" && policy.ToolExposure != "full" {
+		return nil, invalid("unknown tool exposure policy")
+	}
 	if policy.ConnectTimeout < 0 || policy.CallTimeout < 0 || policy.CloseTimeout < 0 || policy.MaxServers < 0 || policy.MaxTools < 0 || policy.MaxToolPages < 0 || policy.MaxResultChars < 0 {
 		return nil, fmt.Errorf("%w: MCP policy limits cannot be negative", harness.ErrInvalidInput)
 	}
@@ -144,19 +153,25 @@ func (m *Manager) Bind(ctx context.Context, owner, id, cwd string, servers []har
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
 	b := &binding{owner: owner, id: id, generation: rand.Text(), fingerprint: fingerprint, ctx: lifetime, cancel: cancel, ready: make(chan struct{}), closed: make(chan struct{})}
-	if len(prepared.DesktopTargets) > 0 {
-		b.desktop = &desktopProcesses{cwd: realCWD, closed: make(chan struct{})}
-	}
 	m.pending[id] = b
 	m.all[b] = struct{}{}
 	m.mu.Unlock()
 	toolCount := 0
+	schemaBytes := 0
 	for _, server := range prepared.Servers {
 		if err = ctx.Err(); err != nil {
 			break
 		}
-		if target, ok := prepared.DesktopTargets[server.Name]; ok {
-			b.desktop.servers = append(b.desktop.servers, desktopServer{config: server, target: target})
+		if target, saved := prepared.DesktopTargets[server.Name]; saved || m.hostOnly && server.Startup == "on_demand" {
+			if b.desktop == nil {
+				b.desktop = &desktopProcesses{cwd: realCWD, closed: make(chan struct{})}
+			}
+			if !saved {
+				target = server.Command
+			}
+			s := &desktopServer{config: server, target: target, saved: saved}
+			s.loadCatalog(ctx, m, realCWD)
+			b.desktop.servers = append(b.desktop.servers, s)
 			continue
 		}
 		var e *endpoint
@@ -164,17 +179,23 @@ func (m *Manager) Bind(ctx context.Context, owner, id, cwd string, servers []har
 		if e != nil {
 			b.endpoints = append(b.endpoints, e)
 			toolCount += e.initialToolCount
+			schemaBytes += e.initialToolBytes
 		}
 		if err != nil {
 			break
 		}
-		if toolCount > m.policy.MaxTools {
+		if toolCount > m.policy.MaxTools || schemaBytes > maxCatalogBytes {
 			err = errors.New("MCP tool count exceeds configured limit")
 			break
 		}
 	}
-	if err == nil && b.desktop != nil {
-		b.desktop.refresh(ctx, m, b)
+	if b.desktop != nil {
+		for _, s := range b.desktop.servers {
+			if len(s.cards)+toolCount > m.policy.MaxTools {
+				s.cards = nil
+			}
+			toolCount += len(s.cards)
+		}
 	}
 	if err == nil {
 		err = ctx.Err()
@@ -217,7 +238,7 @@ func (m *Manager) Tools(ctx context.Context, id string) ([]tool.BaseTool, error)
 	if host, recipe := m.hostBinding(id); host != nil {
 		return host.Tools(ctx, recipe)
 	}
-	snapshot, err := m.resourceSnapshot(ctx, id, false)
+	snapshot, err := m.resourceSnapshot(ctx, id, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -275,28 +296,17 @@ func (m *Manager) Generation(ctx context.Context, id string) (string, error) {
 	if b.err != nil {
 		return "", b.err
 	}
-	_, generation, _ := b.connections()
-	return generation, nil
+	if b.desktop != nil || len(b.endpoints) != 0 {
+		return b.generation, nil
+	}
+	return "", nil
 }
 
 func (b *binding) connections() ([]*endpoint, string, context.Context) {
-	endpoints := b.endpoints
-	generation := b.generation
-	lifetime := b.ctx
-	if b.desktop != nil {
-		active, membership := b.desktop.active()
-		if membership != nil {
-			lifetime = membership
-		}
-		endpoints = append(endpoints[:len(endpoints):len(endpoints)], active...)
-		for _, e := range active {
-			generation += "." + e.desktopID
-		}
+	if len(b.endpoints) == 0 && b.desktop == nil {
+		return nil, "", b.ctx
 	}
-	if len(endpoints) == 0 {
-		return nil, "", lifetime
-	}
-	return endpoints, generation, lifetime
+	return b.endpoints, b.generation, b.ctx
 }
 
 func (m *Manager) startClose(b *binding) {

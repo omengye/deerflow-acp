@@ -25,6 +25,10 @@ type MCPServer struct {
 	Env       map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
 	URL       string            `json:"url,omitempty" yaml:"url,omitempty"`
 	Headers   map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
+	// These options are authority supplied only by an explicitly configured host recipe.
+	Startup            string `json:"startup,omitempty" yaml:"startup,omitempty"`
+	Description        string `json:"description,omitempty" yaml:"description,omitempty"`
+	IdleTimeoutSeconds int    `json:"idle_timeout_seconds,omitempty" yaml:"idle_timeout_seconds,omitempty"`
 }
 
 // HostMCPRecipe is explicit host authority for one exact workspace. The host
@@ -41,6 +45,7 @@ type HostMCPRecipe struct {
 // An empty AllowedCommands list denies all stdio process startup. Each entry
 // must be an absolute path to a trusted executable; this is not an OS sandbox.
 type MCPPolicy struct {
+	ToolExposure    string // auto (default) or full
 	AllowedCommands []string
 	AllowHTTP       bool
 	AllowSSE        bool

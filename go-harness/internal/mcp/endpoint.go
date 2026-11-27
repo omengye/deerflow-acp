@@ -49,6 +49,8 @@ type endpoint struct {
 	closed                                 chan struct{}
 	closeErr                               error
 	initialToolCount                       int
+	initialToolBytes                       int
+	programKey                             string
 	// Desktop discovery is published as one immutable list per connection.
 	desktopID    string
 	desktopTools atomic.Pointer[[]tool.BaseTool]
@@ -79,6 +81,10 @@ func (m *Manager) connect(ctx context.Context, b *binding, cwd string, cfg harne
 	e := &endpoint{binding: b, policy: m.policy, name: cfg.Name, ctx: lifetime, cancel: cancel, closed: make(chan struct{}), secrets: credentialValues(cfg)}
 	var infoBytes []byte
 	if cfg.Transport == "stdio" {
+		if real, file, err := executable(cfg.Command); err == nil {
+			identity := desktopServer{config: cfg, target: real}
+			e.programKey = identity.catalogKey(cwd, file)
+		}
 		infoBytes, _ = json.Marshal(cfg)
 		infoBytes = append(infoBytes, []byte("\x00"+cwd)...)
 		e.credentialEndpoint = "stdio:" + cfg.Name
@@ -131,6 +137,9 @@ func (m *Manager) connect(ctx context.Context, b *binding, cwd string, cfg harne
 		var discovered []tool.BaseTool
 		discovered, err = e.tools(ctx)
 		e.initialToolCount = len(discovered)
+		for _, item := range discovered {
+			e.initialToolBytes += len(item.(*guardTool).info)
+		}
 		if err == nil && desktopID != "" {
 			e.desktopTools.Store(&discovered)
 		}
@@ -264,6 +273,7 @@ func (e *endpoint) operation(ctx context.Context) (context.Context, func(), erro
 type scopedClient struct {
 	endpoint *endpoint
 	listed   int
+	bytes    int
 }
 
 func (c *scopedClient) ListTools(ctx context.Context, params *sdk.ListToolsParams) (*sdk.ListToolsResult, error) {
@@ -289,7 +299,8 @@ func (c *scopedClient) ListTools(ctx context.Context, params *sdk.ListToolsParam
 		}
 	}
 	data, err := json.Marshal(result)
-	if err != nil || containsCredentials(data, c.endpoint.secrets) {
+	c.bytes += len(data)
+	if err != nil || c.bytes > maxCatalogBytes || containsCredentials(data, c.endpoint.secrets) {
 		return nil, errors.New("MCP tool metadata is invalid or contains connection credentials")
 	}
 	return result, nil
@@ -335,13 +346,19 @@ func safeOperationError(ctx context.Context, err error, operation string) error 
 
 func (e *endpoint) tools(ctx context.Context) ([]tool.BaseTool, error) {
 	errorAsError := false // A normal IsError response is terminal tool evidence.
+	rawNames := make(map[string]string)
 	result, err := official.GetTools(ctx, &official.Config{
 		Cli: &scopedClient{endpoint: e}, ServerName: e.name, ListToolsMode: official.ListToolsAllPages, MaxToolPages: e.policy.MaxToolPages,
 		MetadataMode: official.MetadataBasic, DescriptionPolicy: &official.DescriptionPolicy{MaxChars: 4096},
 		ResultPolicy:            &official.ResultPolicy{MaxChars: e.policy.MaxResultChars, IncludeStructuredContent: true, ErrorAsError: &errorAsError},
 		ToolCallResultHandlerV2: captureToolImages,
 		ToolNameMapper: func(_ context.Context, in official.ToolNameMapperInput) (official.ToolNameMapperOutput, error) {
-			return official.ToolNameMapperOutput{ExposedName: toolName(in.ServerName, in.Tool.Name)}, nil
+			name := toolName(in.ServerName, in.Tool.Name)
+			if _, exists := rawNames[name]; exists {
+				return official.ToolNameMapperOutput{}, errors.New("duplicate MCP tool")
+			}
+			rawNames[name] = in.Tool.Name
+			return official.ToolNameMapperOutput{ExposedName: name}, nil
 		},
 	})
 	if err != nil {
@@ -366,7 +383,7 @@ func (e *endpoint) tools(ctx context.Context) ([]tool.BaseTool, error) {
 		if !ok {
 			return nil, errors.New("MCP tool is not invokable")
 		}
-		wrapped = append(wrapped, &guardTool{endpoint: e, raw: invokable, info: data})
+		wrapped = append(wrapped, &guardTool{endpoint: e, raw: invokable, info: data, original: rawNames[info.Name]})
 	}
 	return wrapped, nil
 }
@@ -409,6 +426,7 @@ func toolName(server, name string) string {
 
 type guardTool struct {
 	endpoint *endpoint
+	original string
 	raw      tool.InvokableTool
 	info     []byte
 }

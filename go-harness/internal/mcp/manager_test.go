@@ -49,6 +49,17 @@ func TestMCPProcessHelper(t *testing.T) {
 		return
 	}
 	mode := os.Getenv("HARNESS_MCP_MODE")
+	record := func(event string) {
+		if path := os.Getenv("HARNESS_MCP_TRACE"); path != "" {
+			f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+			if err != nil {
+				os.Exit(2)
+			}
+			fmt.Fprintln(f, event)
+			f.Close()
+		}
+	}
+	record("start")
 	if mode == "stall" {
 		time.Sleep(time.Minute)
 		os.Exit(0)
@@ -87,6 +98,20 @@ func TestMCPProcessHelper(t *testing.T) {
 			os.Exit(3)
 		}
 		return mode + ":" + args.Value, nil
+	})
+	s.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
+		return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
+			record(method)
+			if method == "initialize" && os.Getenv("HARNESS_MCP_GATE") != "" {
+				for {
+					if _, err := os.Stat(os.Getenv("HARNESS_MCP_GATE")); err == nil {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
+			return next(ctx, method, req)
+		}
 	})
 	if mode == "slowlist" {
 		s.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
@@ -225,21 +250,38 @@ func TestDesktopProcessLossPreservesForegroundAndDoesNotReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, generation, turn, err := m.AcquireForTurn(ctx, "chat")
-	if err != nil || turn == nil || len(turn.Tools) != 2 {
+	if err != nil || turn == nil || len(turn.Tools) != 0 || d.Version != 2 {
 		t.Fatalf("initial turn: %v %v", d.Servers, err)
 	}
 	defer turn.Close()
+	for _, server := range turn.Catalog() {
+		if err := turn.Discover(ctx, server.Name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstPin, secondPin := turn.Catalog()[0].Tools[0].ToolPin, turn.Catalog()[1].Tools[0].ToolPin
+	first, _, err := turn.Pin(ctx, firstPin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := turn.Pin(ctx, secondPin)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pinned, err := m.Acquire(ctx, "chat", d, generation)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pinned.Close()
+	if _, _, err := pinned.Pin(ctx, firstPin); err != nil {
+		t.Fatal(err)
+	}
 	call := func(tl tool.BaseTool, value string) error {
 		data, _ := json.Marshal(echoArgs{Value: value})
 		_, err := tl.(tool.EnhancedInvokableTool).InvokableRun(ctx, &schema.ToolArgument{Text: string(data)})
 		return err
 	}
-	if err := call(turn.Tools[0], "drop"); err == nil {
+	if err := call(first, "drop"); err == nil {
 		t.Fatal("lost response reported success")
 	}
 	select {
@@ -247,16 +289,22 @@ func TestDesktopProcessLossPreservesForegroundAndDoesNotReplay(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("dead transport retained its pinned lease")
 	}
-	if err := call(turn.Tools[1], "ok"); err != nil {
+	if err := call(second, "ok"); err != nil {
 		t.Fatalf("healthy sibling failed in the active turn: %v", err)
 	}
 	_, renewed, next, err := m.AcquireForTurn(ctx, "chat")
-	if err != nil || next == nil || len(next.Tools) != 2 || renewed == generation {
+	if err != nil || next == nil || renewed != generation {
 		t.Fatalf("next turn did not recover: %v", err)
 	}
 	defer next.Close()
-	if _, err := m.Acquire(ctx, "chat", d, generation); !errors.Is(err, harness.ErrResourcesWaiting) {
-		t.Fatalf("old generation admitted: %v", err)
+	if _, _, err := next.Pin(ctx, firstPin); !errors.Is(err, harness.ErrResourcesWaiting) {
+		t.Fatalf("old process pin admitted: %v", err)
+	}
+	if err := next.Discover(ctx, firstPin.Server); err != nil {
+		t.Fatal(err)
+	}
+	if next.Catalog()[0].Tools[0].Connection == firstPin.Connection {
+		t.Fatal("restarted process retained its identity")
 	}
 	data, err := os.ReadFile(effects)
 	if err != nil || string(data) != "effect\n" {
@@ -279,10 +327,16 @@ func TestDesktopSlowDiscoveryDoesNotHoldChatUntilConnectTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, _, turn, err := m.AcquireForTurn(bounded, "chat")
-	if err != nil || turn == nil || strings.Join(d.Servers, ",") != "healthy" {
+	if err != nil || turn == nil || strings.Join(d.Servers, ",") != "healthy,slow" {
 		t.Fatalf("initial turn: %v %v", d.Servers, err)
 	}
 	defer turn.Close()
+	if err := turn.Discover(bounded, healthy.Name); err != nil {
+		t.Fatal(err)
+	}
+	if turn.Catalog()[1].Ready {
+		t.Fatal("discovery started the unrelated slow server")
+	}
 	if err := m.Release(bounded, "owner", "chat"); err != nil {
 		t.Fatal(err)
 	}

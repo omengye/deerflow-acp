@@ -554,6 +554,9 @@ func open(ctx context.Context, cfg Config, manualGenerator skillmaintenance.Gene
 			_ = manager.Close()
 		}
 	}()
+	if err = manager.SetCatalogDB(ctx, store.DB()); err != nil {
+		return nil, err
+	}
 	if err = manager.ConfigureHostRecipes(cfg.HostMCPRecipes); err != nil {
 		return nil, err
 	}

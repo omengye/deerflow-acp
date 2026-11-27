@@ -64,6 +64,14 @@ func (l *Ledger) PauseTool(ctx context.Context, grant Reservation) error {
 	})
 }
 
+// ToolStillPaused keeps a pinned MCP connection through a durable approval.
+// Failed storage reads cannot establish that a checkpoint has been released.
+func (l *Ledger) ToolStillPaused(ctx context.Context, id string) bool {
+	var keep bool
+	err := l.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM budget_reservations WHERE id=? AND state='paused')", id).Scan(&keep)
+	return err != nil || keep
+}
+
 // ResumeTool transfers one counted tool admission to a new fenced attempt.
 // The predecessor is consumed once. A repeat of the exact same continuation
 // returns its stored grant; only MarkDispatched's first=true authorizes I/O.

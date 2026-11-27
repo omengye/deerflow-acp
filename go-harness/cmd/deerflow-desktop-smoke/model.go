@@ -80,14 +80,40 @@ func (f *fakeModel) planned(body obj) obj {
 	}
 	if fn["name"] == "__desktop_mcp_record__" || fn["name"] == "__desktop_other_record__" {
 		prefix := "mcp_desktop_fixture_record"
+		server := "desktop-fixture"
 		if fn["name"] == "__desktop_other_record__" {
 			prefix = "mcp_desktop_other_record"
+			server = "desktop-other"
 		}
 		for _, v := range array(body["tools"]) {
 			name := str(object(object(v)["function"])["name"])
 			if strings.HasPrefix(name, prefix) {
 				fn["name"] = name
 				break
+			}
+		}
+		if strings.HasPrefix(str(fn["name"]), "__") {
+			done := map[string]bool{}
+			for _, v := range messages[latest+1:] {
+				m := object(v)
+				if m["role"] == "tool" {
+					done[str(m["tool_call_id"])] = true
+				}
+			}
+			for _, stage := range []string{"tool_search", "mcp_discover"} {
+				id := str(call["id"]) + "_" + stage
+				if done[id] {
+					continue
+				}
+				for _, v := range array(body["tools"]) {
+					if object(object(v)["function"])["name"] == stage {
+						args := obj{"query": "record"}
+						if stage == "mcp_discover" {
+							args["server"] = server
+						}
+						return obj{"id": id, "type": "function", "function": obj{"name": stage, "arguments": string(jsonBytes(args))}}
+					}
+				}
 			}
 		}
 	}

@@ -227,6 +227,9 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		if info.Name == "task" {
 			return p, errors.New("tool name task is reserved for native Eino delegation")
 		}
+		if info.Name == "tool_search" || info.Name == "mcp_discover" {
+			return p, fmt.Errorf("reserved MCP discovery tool %q", info.Name)
+		}
 		if info.Name == "write_todos" || info.Name == "skill" {
 			return p, errors.New("tool name write_todos is reserved for native Eino planning")
 		}
@@ -399,11 +402,13 @@ func (e *Engine) prepareAgent(ctx context.Context, req harness.RunRequest, name 
 		metered := &trackedModel{inner: chatModel, io: ioLifecycle, budget: b, sink: sink, media: &privateMedia, tuning: tuning, contextWindow: e.config.ContextWindows[selectedModel], outputLimits: e.config.ModelOutputLimits[selectedModel]}
 		retryPolicy = goalRetryPolicy(retryPolicy, e.config.GoalStore, req, goal, metered, e.config.GoalAutoContinue, sink)
 	}
+	node := compose.ToolsNodeConfig{Tools: tools, UnknownToolsHandler: unavailableToolHandler}
+	handlers = withMCPDiscovery(handlers, &node, extensions, e.config.ToolPolicy)
 	p.Agent, err = deep.New(ctx, &deep.Config{
 		Name: name, Description: "DeerFlow workspace assistant", Instruction: e.config.Instruction + extensions.InstructionAppend + extensions.ForegroundInstructionAppend + toolFailureInstruction + stoppedToolInstruction(ctx) + media.imageGenerationInstruction(),
 		ChatModel: chatModel, MaxIteration: nativeMaxIterations(e.config.MaxIterations),
 		ModelRetryConfig: retryPolicy,
-		ToolsConfig:      adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools, UnknownToolsHandler: unavailableToolHandler}},
+		ToolsConfig:      adk.ToolsConfig{ToolsNodeConfig: node},
 		Handlers:         handlers, WithoutWriteTodos: !e.config.ToolPolicy.Allows("write_todos"),
 		SubAgents:              children,
 		WithoutGeneralSubAgent: !delegationEnabled || e.roles != nil,

@@ -66,8 +66,19 @@ func placeholderCommandHint(name string) string {
 
 // Determine the service before generic placeholder substitution. Dispatch
 // must match the same service even when an MCP argument itself is a URL.
-func (m *toolMiddleware) desktopCredentialTarget(name, args string) (string, error) {
-	if lookup := m.credentialScopes[name]; lookup != nil && harness.HasCredentialMarker(json.RawMessage(args)) {
+func (m *toolMiddleware) scopeLookup(ctx context.Context, name string) func(string) (secrets.CredentialScope, error) {
+	if batch, _ := ctx.Value(mcpBatchKey{}).(map[string]tool.BaseTool); batch != nil {
+		if t, ok := batch[name].(interface {
+			CredentialScope(string) (secrets.CredentialScope, error)
+		}); ok {
+			return t.CredentialScope
+		}
+	}
+	return m.credentialScopes[name]
+}
+
+func (m *toolMiddleware) desktopCredentialTarget(ctx context.Context, name, args string) (string, error) {
+	if lookup := m.scopeLookup(ctx, name); lookup != nil && harness.HasCredentialMarker(json.RawMessage(args)) {
 		scope, err := lookup(args)
 		return scope.Service, err
 	}
@@ -88,14 +99,14 @@ func (m *toolMiddleware) desktopCredentialTarget(name, args string) (string, err
 
 // credentialScopeForApproval derives enrollment metadata solely from the tool selected
 // by the host. skill_run arguments here already contain its host-pinned secret plan.
-func (m *toolMiddleware) credentialScopeForApproval(name string, args json.RawMessage) (*harness.ServiceCredentialScope, error) {
+func (m *toolMiddleware) credentialScopeForApproval(ctx context.Context, name string, args json.RawMessage) (*harness.ServiceCredentialScope, error) {
 	if m.vault == nil || m.disallowSecrets || m.readOnly {
 		return nil, nil
 	}
 	var scope secrets.CredentialScope
 	var err error
 	if !m.trusted[name] {
-		lookup := m.credentialScopes[name]
+		lookup := m.scopeLookup(ctx, name)
 		if lookup == nil || !harness.HasCredentialMarker(args) {
 			return nil, nil
 		}
@@ -119,7 +130,7 @@ func (m *toolMiddleware) credentialScopeForApproval(name string, args json.RawMe
 			if in.Credential == "" {
 				return nil, nil
 			}
-			target, targetErr := m.desktopCredentialTarget(name, string(args))
+			target, targetErr := m.desktopCredentialTarget(ctx, name, string(args))
 			if targetErr != nil {
 				return nil, targetErr
 			}
@@ -159,7 +170,7 @@ func (m *toolMiddleware) secretPlaceholders(ctx context.Context, tc *adk.ToolCon
 		return nil, nil
 	}
 	raw := json.RawMessage(args)
-	scope, err := m.credentialScopeForApproval(tc.Name, raw)
+	scope, err := m.credentialScopeForApproval(ctx, tc.Name, raw)
 	if err != nil {
 		return nil, harness.MarkToolNotExecuted(err)
 	}

@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/omengye/deerflow-acp/go-harness/harness"
+	"github.com/omengye/deerflow-acp/go-harness/internal/configschema"
 	"github.com/omengye/deerflow-acp/go-harness/internal/session"
 )
 
@@ -44,6 +45,9 @@ func (m *Manager) ConfigureHostRecipes(configs []harness.HostMCPRecipe) error {
 	policy.AllowHTTP, policy.AllowSSE = false, false
 	for _, c := range configs {
 		for _, s := range c.Servers {
+			if !configschema.ValidMCPStartup(s) {
+				return invalid("invalid host startup options")
+			}
 			switch s.Transport {
 			case "", "stdio":
 				policy.AllowedCommands = append(policy.AllowedCommands, s.Command)
@@ -58,6 +62,7 @@ func (m *Manager) ConfigureHostRecipes(configs []harness.HostMCPRecipe) error {
 	if err != nil {
 		return invalid("host recipe executable policy is invalid")
 	}
+	host.hostOnly, host.catalogDB = true, m.catalogDB
 	r := &hostRegistry{manager: host, recipes: map[string]hostRecipe{}, workspaces: map[string]string{}, sessions: map[string]string{}}
 	for _, c := range configs {
 		if c.ID == "" || len(c.ID) > 128 || strings.TrimSpace(c.ID) != c.ID || strings.IndexFunc(c.ID, unicode.IsControl) >= 0 || !filepath.IsAbs(c.Workspace) || len(c.Servers) == 0 {

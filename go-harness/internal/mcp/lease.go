@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,8 +23,53 @@ func (m *Manager) Describe(ctx context.Context, id string) (harness.MCPResourceD
 	if host, recipe := m.hostBinding(id); host != nil {
 		return host.Describe(ctx, recipe)
 	}
-	s, err := m.resourceSnapshot(ctx, id, false)
+	s, err := m.resourceSnapshot(ctx, id, nil)
 	return s.descriptor, s.generation, err
+}
+
+// Old checkpoints pin the live members of a binding. Reading their status
+// never starts children. Explicit reauthorization may reopen exactly those
+// saved members before comparing the real schema.
+func (m *Manager) DescribeExpected(ctx context.Context, id string, expected harness.MCPResourceDescriptor, authorize bool) (harness.MCPResourceDescriptor, string, error) {
+	if host, recipe := m.hostBinding(id); host != nil {
+		return host.DescribeExpected(ctx, recipe, expected, authorize)
+	}
+	if expected.Version != 1 {
+		return m.Describe(ctx, id)
+	}
+	s, err := m.snapshot(ctx, id, &expected, authorize)
+	return s.descriptor, s.generation, err
+}
+
+func (m *Manager) ExpectedGeneration(ctx context.Context, id string, expected harness.MCPResourceDescriptor) (string, error) {
+	if host, recipe := m.hostBinding(id); host != nil {
+		return host.ExpectedGeneration(ctx, recipe, expected)
+	}
+	g, err := m.Generation(ctx, id)
+	if err != nil || expected.Version != 1 || g == "" {
+		return g, err
+	}
+	m.mu.Lock()
+	b := m.bindings[id]
+	m.mu.Unlock()
+	if b == nil || b.generation != g {
+		return "", harness.ErrResourcesWaiting
+	}
+	if d := b.desktop; d != nil {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		for _, s := range d.servers {
+			if !slices.Contains(expected.Servers, s.config.Name) {
+				continue
+			}
+			p := s.process
+			if p == nil || p.endpoint == nil || p.ctx.Err() != nil || p.endpoint.ctx.Err() != nil {
+				return "", harness.ErrResourcesWaiting
+			}
+			g += "." + p.endpoint.desktopID
+		}
+	}
+	return g, nil
 }
 
 type resourceSnapshot struct {
@@ -38,7 +84,11 @@ type resourceSnapshot struct {
 // resourceSnapshot discovers once and fingerprints exactly those adapters. A
 // concurrent replacement cannot splice one binding's identity into another's
 // tool set. No connection configuration is returned to callers.
-func (m *Manager) resourceSnapshot(ctx context.Context, id string, freshTurn bool) (resourceSnapshot, error) {
+func (m *Manager) resourceSnapshot(ctx context.Context, id string, legacy *harness.MCPResourceDescriptor) (resourceSnapshot, error) {
+	return m.snapshot(ctx, id, legacy, false)
+}
+
+func (m *Manager) snapshot(ctx context.Context, id string, legacy *harness.MCPResourceDescriptor, authorize bool) (resourceSnapshot, error) {
 	var empty resourceSnapshot
 	if err := ctx.Err(); err != nil {
 		return empty, err
@@ -64,15 +114,47 @@ func (m *Manager) resourceSnapshot(ctx context.Context, id string, freshTurn boo
 	if b.err != nil {
 		return empty, b.err
 	}
-	if freshTurn && b.desktop != nil {
-		b.desktop.refresh(ctx, m, b)
-	}
 	endpoints, generation, lifetime := b.connections()
-	if len(endpoints) == 0 {
+	if generation == "" {
 		return empty, ctx.Err()
+	}
+	if d := b.desktop; legacy != nil && d != nil {
+		if legacy.ConfigDigest != hex.EncodeToString(b.fingerprint[:]) {
+			return empty, harness.ErrResourcesIncompatible
+		}
+		endpoints = slices.Clone(endpoints)
+		for _, s := range d.servers {
+			if !slices.Contains(legacy.Servers, s.config.Name) {
+				continue
+			}
+			expected := ""
+			if !authorize {
+				d.mu.Lock()
+				if p := s.process; p != nil && p.endpoint != nil {
+					expected = p.endpoint.desktopID
+				}
+				d.mu.Unlock()
+				if expected == "" {
+					return empty, harness.ErrResourcesWaiting
+				}
+			}
+			p, err := d.acquire(ctx, m, b, s, expected)
+			if err != nil {
+				return empty, err
+			}
+			defer d.release(s, p)
+			endpoints = append(endpoints, p.endpoint)
+			generation += "." + p.endpoint.desktopID
+		}
 	}
 	snapshot := resourceSnapshot{binding: b, generation: generation, lifetime: lifetime}
 	descriptor := harness.MCPResourceDescriptor{Version: 1, ConfigDigest: hex.EncodeToString(b.fingerprint[:]), Servers: make([]string, 0, len(endpoints)), Tools: []string{}}
+	if d := b.desktop; d != nil && legacy == nil {
+		descriptor.Version = 2
+		for _, s := range d.servers {
+			descriptor.Servers = append(descriptor.Servers, s.config.Name)
+		}
+	}
 	var adapters []*guardTool
 	for _, e := range endpoints {
 		var items []tool.BaseTool
@@ -154,12 +236,17 @@ func (m *Manager) resourceSnapshot(ctx context.Context, id string, freshTurn boo
 // The returned Tools slice must be treated as read-only.
 type Lease struct {
 	Tools           []tool.BaseTool
+	eagerCatalog    []CatalogServer
 	Done            <-chan struct{}
 	manager         *Manager
 	binding         *binding
 	ctx             context.Context
 	cancel          context.CancelFunc
 	once            sync.Once
+	holdMu          sync.Mutex
+	pinned          bool
+	fresh           map[*desktopProcess]bool
+	holds           map[*desktopProcess]func()
 	requiredDesktop []*endpoint
 	stopWatching    []func() bool
 }
@@ -171,7 +258,7 @@ func (m *Manager) AcquireForTurn(ctx context.Context, id string) (harness.MCPRes
 	if host, recipe := m.hostBinding(id); host != nil {
 		return host.AcquireForTurn(ctx, recipe)
 	}
-	s, err := m.resourceSnapshot(ctx, id, true)
+	s, err := m.resourceSnapshot(ctx, id, nil)
 	if err != nil || s.generation == "" {
 		return s.descriptor, "", nil, err
 	}
@@ -183,10 +270,14 @@ func (m *Manager) Acquire(ctx context.Context, id string, expected harness.MCPRe
 	if host, recipe := m.hostBinding(id); host != nil {
 		return host.Acquire(ctx, recipe, expected, generation)
 	}
-	if expected.Version != 1 || expected.ConfigDigest == "" || expected.SchemaDigest == "" || generation == "" {
+	if (expected.Version != 1 && expected.Version != 2) || expected.ConfigDigest == "" || expected.SchemaDigest == "" || generation == "" {
 		return nil, harness.ErrResourcesIncompatible
 	}
-	s, err := m.resourceSnapshot(ctx, id, false)
+	var legacy *harness.MCPResourceDescriptor
+	if expected.Version == 1 {
+		legacy = &expected
+	}
+	s, err := m.resourceSnapshot(ctx, id, legacy)
 	if err != nil {
 		return nil, err
 	}
@@ -206,15 +297,31 @@ func (m *Manager) leaseSnapshot(s resourceSnapshot, pinned bool) (*Lease, error)
 		parent = s.lifetime
 	}
 	lifetime, cancel := context.WithCancel(parent)
-	lease := &Lease{manager: m, binding: s.binding, ctx: lifetime, cancel: cancel, Done: lifetime.Done(), Tools: make([]tool.BaseTool, 0, len(s.tools))}
+	lease := &Lease{manager: m, binding: s.binding, ctx: lifetime, cancel: cancel, pinned: pinned, Done: lifetime.Done(), Tools: make([]tool.BaseTool, 0, len(s.tools))}
 	if pinned {
 		lease.requiredDesktop = s.desktop
 		for _, e := range s.desktop {
 			lease.stopWatching = append(lease.stopWatching, context.AfterFunc(e.ctx, cancel))
 		}
 	}
+	byServer := make(map[string]int, len(s.binding.endpoints))
+	for _, e := range s.binding.endpoints {
+		byServer[e.name] = len(lease.eagerCatalog)
+		lease.eagerCatalog = append(lease.eagerCatalog, CatalogServer{Name: e.name, Ready: true})
+	}
 	for _, adapter := range s.tools {
 		lease.Tools = append(lease.Tools, &leasedTool{lease: lease, raw: &enhancedGuardTool{guardTool: adapter}})
+		if index, ok := byServer[adapter.endpoint.name]; ok {
+			card, err := cardFor(adapter)
+			if err != nil {
+				_ = lease.Close()
+				return nil, err
+			}
+			card.Binding, card.Connection = s.binding.generation, s.binding.generation
+			card.Program = adapter.endpoint.programKey
+			entry := &lease.eagerCatalog[index]
+			entry.Tools = append(entry.Tools, card)
+		}
 	}
 	if err := lease.Check(); err != nil {
 		_ = lease.Close()
@@ -247,14 +354,22 @@ func (l *Lease) Close() error {
 				stop()
 			}
 			l.cancel()
+			l.holdMu.Lock()
+			for _, release := range l.holds {
+				release()
+			}
+			l.holds = nil
+			l.holdMu.Unlock()
 		})
 	}
 	return nil
 }
 
 type leasedTool struct {
-	lease *Lease
-	raw   *enhancedGuardTool
+	lease   *Lease
+	raw     *enhancedGuardTool
+	server  *desktopServer
+	process *desktopProcess
 }
 
 func (t *leasedTool) CredentialScope(args string) (secrets.CredentialScope, error) {
@@ -265,6 +380,22 @@ func (t *leasedTool) Info(ctx context.Context) (*schema.ToolInfo, error) { retur
 func (t *leasedTool) InvokableRun(ctx context.Context, args *schema.ToolArgument, opts ...tool.Option) (*schema.ToolResult, error) {
 	if err := t.lease.Check(); err != nil {
 		return nil, harness.MarkToolNoEffect(err)
+	}
+	if s := t.server; s != nil {
+		d := t.lease.binding.desktop
+		d.mu.Lock()
+		err := s.check(t.lease.manager, d.cwd)
+		current := s.process == t.process && t.process.ctx.Err() == nil && t.raw.endpoint.ctx.Err() == nil
+		d.mu.Unlock()
+		if err != nil || !current {
+			return nil, harness.MarkToolNoEffect(harness.ErrResourcesWaiting)
+		}
+		if !slices.ContainsFunc(*t.raw.endpoint.desktopTools.Load(), func(item tool.BaseTool) bool {
+			other := item.(*guardTool)
+			return t.raw.original == other.original && bytes.Equal(t.raw.info, other.info)
+		}) {
+			return nil, harness.MarkToolNoEffect(harness.ErrResourcesIncompatible)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, harness.MarkToolNoEffect(err)

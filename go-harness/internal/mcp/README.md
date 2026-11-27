@@ -7,10 +7,13 @@ collision-resistant provider-compatible exposed names and fresh metadata copies.
 
 ## Lifecycle
 
-- `Bind` validates and clones configuration, connects every candidate server,
+- `Bind` validates and clones configuration, connects eager candidate servers,
   discovers tools, enforces the aggregate limit, and atomically publishes the new
   generation. Identical configuration is idempotent. Failure preserves the active
   generation. Successful publication immediately cancels stale tool wrappers.
+  Saved desktop stdio services and host stdio recipes with `startup: on_demand`
+  register their definitions here. Targeted discovery or invocation starts one
+  authorized child. Concurrent requests share initialization and tool listing.
 - `Release` closes that session's active and pending generations. `ReleaseOwner`
   first retires the owner, preventing late reconnects, then also closes retired
   generations. Cancellation of the caller's wait does not cancel cleanup.
@@ -64,6 +67,7 @@ workspace cannot also supply client MCP servers in this first version.
 
 ```yaml
 mcp:
+  tool_exposure: auto
   host_recipes:
     - id: project-docs
       workspace: 'C:\Work\project'
@@ -71,6 +75,9 @@ mcp:
       servers:
         - name: docs
           transport: stdio
+          startup: on_demand
+          idle_timeout_seconds: 600
+          description: Project documentation
           command: 'C:\Tools\docs-mcp.exe'
           args: ['--stdio']
           env:
@@ -113,8 +120,14 @@ arguments and environment. A new foreground turn detects a replacement file at
 the same resolved path, including replacements with identical timestamps. Each
 desktop server has its own connection. A missing program, failed handshake or
 process exit leaves the conversation and healthy servers available. The next
-turn retries available programs. An in-flight tool call keeps its original
-connection and execution receipt.
+targeted request can retry a failed program. Desktop programs stay alive while
+idle and exit on release. A host recipe can set a positive idle timeout.
+An in-flight tool call checks its original connection and schema before sending.
+Offline `tool_search` and targeted `mcp_discover` are scoped to each agent.
+With `auto`, a complete catalog of at most ten known tools is offered directly.
+Larger or incomplete catalogs offer discovery and expose up to five search hits
+at a time. The original tool handles permissions, credentials and business
+results. The SQLite cache stores discovery summaries and schema digests.
 Standalone clients with an empty `AllowedCommands` have no process authority.
 Every permitted command must be an absolute, existing executable. The manager
 canonicalizes its path and pins file identity when the policy is built. Arguments

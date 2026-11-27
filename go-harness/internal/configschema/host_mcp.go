@@ -26,9 +26,12 @@ func HostMCPRecipes(document map[string]any) ([]harness.HostMCPRecipe, error) {
 		return fail()
 	}
 	for key := range object {
-		if key != "host_recipes" {
+		if key != "host_recipes" && key != "tool_exposure" {
 			return fail()
 		}
+	}
+	if _, err := MCPToolExposure(document); err != nil {
+		return fail()
 	}
 	if object["host_recipes"] == nil {
 		return nil, nil
@@ -48,26 +51,27 @@ func HostMCPRecipes(document map[string]any) ([]harness.HostMCPRecipe, error) {
 			}
 		}
 	}
-	data, err := json.Marshal(object)
+	data, err := json.Marshal(items)
 	if err != nil {
 		return fail()
 	}
-	var target struct {
-		Recipes []harness.HostMCPRecipe `json:"host_recipes"`
-	}
+	var recipes []harness.HostMCPRecipe
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&target) != nil {
+	if decoder.Decode(&recipes) != nil {
 		return fail()
 	}
 	seen := map[string]bool{}
-	for _, c := range target.Recipes {
+	for _, c := range recipes {
 		if c.ID == "" || len(c.ID) > 128 || strings.TrimSpace(c.ID) != c.ID || strings.IndexFunc(c.ID, unicode.IsControl) >= 0 || seen[c.ID] || !filepath.IsAbs(c.Workspace) || len(c.Servers) < 1 || len(c.Servers) > 8 {
 			return fail()
 		}
 		seen[c.ID] = true
 		names := map[string]bool{}
 		for _, s := range c.Servers {
+			if !ValidMCPStartup(s) {
+				return fail()
+			}
 			if s.Name == "" || len(s.Name) > 128 || names[s.Name] || strings.IndexFunc(s.Name, unicode.IsControl) >= 0 || len(s.Args) > 256 || len(s.Env) > 128 || len(s.Headers) > 64 {
 				return fail()
 			}
@@ -86,5 +90,24 @@ func HostMCPRecipes(document map[string]any) ([]harness.HostMCPRecipe, error) {
 			}
 		}
 	}
-	return target.Recipes, nil
+	return recipes, nil
+}
+
+func MCPToolExposure(document map[string]any) (string, error) {
+	m, _ := document["mcp"].(map[string]any)
+	if v, ok := m["tool_exposure"]; ok {
+		if v == "auto" || v == "full" {
+			return v.(string), nil
+		}
+		return "", errors.New("mcp.tool_exposure must be auto or full")
+	}
+	return "auto", nil
+}
+
+func ValidMCPStartup(s harness.MCPServer) bool {
+	return (s.Startup == "" || s.Startup == "eager" || s.Startup == "on_demand") &&
+		(s.Startup != "on_demand" || s.Transport == "" || s.Transport == "stdio") &&
+		s.IdleTimeoutSeconds >= 0 && s.IdleTimeoutSeconds <= 2147483647 &&
+		(s.IdleTimeoutSeconds == 0 || s.Startup == "on_demand") &&
+		len(s.Description) <= 512 && strings.IndexFunc(s.Description, unicode.IsControl) < 0
 }

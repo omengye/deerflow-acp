@@ -79,6 +79,7 @@ func WithToolAliases(toolAliases map[string]ToolAliasConfig) ToolsNodeOption {
 // Input: An AssistantMessage containing ToolCalls
 // Output: An array of ToolMessage where the order of elements corresponds to the order of ToolCalls in the input
 type ToolsNode struct {
+	batchTools                        BatchToolResolver
 	tuple                             *toolsTuple
 	tools                             []tool.BaseTool
 	unknownToolHandler                func(ctx context.Context, name, input string) (string, error)
@@ -225,6 +226,9 @@ type ToolAliasConfig struct {
 
 // ToolsNodeConfig is the config for ToolsNode.
 type ToolsNodeConfig struct {
+	// BatchTools supplies additional executable adapters for this assistant
+	// message, including on checkpoint resume. Completed calls are excluded.
+	BatchTools BatchToolResolver
 	// Tools specify the list of tools can be called which are BaseTool but must implement InvokableTool or StreamableTool.
 	Tools []tool.BaseTool
 
@@ -327,6 +331,7 @@ func NewToolNode(ctx context.Context, conf *ToolsNodeConfig) (*ToolsNode, error)
 	}
 
 	return &ToolsNode{
+		batchTools:                        conf.BatchTools,
 		tuple:                             tuple,
 		tools:                             conf.Tools,
 		unknownToolHandler:                conf.UnknownToolsHandler,
@@ -1286,20 +1291,44 @@ func (tn *ToolsNode) buildTupleFromOpts(ctx context.Context, opt *toolsNodeOptio
 	return tuple, nil
 }
 
+type BatchToolResolver func(context.Context, *schema.Message, []schema.ToolCall) (context.Context, []tool.BaseTool, error)
+
+func (tn *ToolsNode) resolveBatch(ctx context.Context, opt *toolsNodeOptions, input *schema.Message, done map[string]string, enhanced map[string]*schema.ToolResult) (context.Context, *toolsTuple, error) {
+	if tn.batchTools != nil {
+		var pending []schema.ToolCall
+		for _, call := range input.ToolCalls {
+			_, a := done[call.ID]
+			_, b := enhanced[call.ID]
+			if !a && !b {
+				pending = append(pending, call)
+			}
+		}
+		next, extra, err := tn.batchTools(ctx, input, pending)
+		if err != nil {
+			return ctx, nil, err
+		}
+		ctx = next
+		if len(extra) > 0 {
+			base := opt.ToolList
+			if base == nil {
+				base = tn.tools
+			}
+			opt.ToolList = append(base[:len(base):len(base)], extra...)
+		}
+	}
+	if opt.ToolList == nil && opt.ToolAliases == nil {
+		return ctx, tn.tuple, nil
+	}
+	tuple, err := tn.buildTupleFromOpts(ctx, opt)
+	return ctx, tuple, err
+}
+
 // Invoke calls the tools and collects the results of invokable tools.
 // it's parallel if there are multiple tool calls in the input message.
 func (tn *ToolsNode) Invoke(ctx context.Context, input *schema.Message,
 	opts ...ToolsNodeOption) ([]*schema.Message, error) {
 
 	opt := getToolsNodeOptions(opts...)
-	tuple := tn.tuple
-	if opt.ToolList != nil || opt.ToolAliases != nil {
-		var err error
-		tuple, err = tn.buildTupleFromOpts(ctx, opt)
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	var executedTools map[string]string
 	var executedEnhancedTools map[string]*schema.ToolResult
@@ -1313,6 +1342,10 @@ func (tn *ToolsNode) Invoke(ctx context.Context, input *schema.Message,
 		}
 	}
 
+	ctx, tuple, err := tn.resolveBatch(ctx, opt, input, executedTools, executedEnhancedTools)
+	if err != nil {
+		return nil, err
+	}
 	tasks, err := tn.genToolCallTasks(ctx, tuple, input, executedTools, executedEnhancedTools, false)
 	if err != nil {
 		return nil, err
@@ -1394,14 +1427,6 @@ func (tn *ToolsNode) Stream(ctx context.Context, input *schema.Message,
 	opts ...ToolsNodeOption) (*schema.StreamReader[[]*schema.Message], error) {
 
 	opt := getToolsNodeOptions(opts...)
-	tuple := tn.tuple
-	if opt.ToolList != nil || opt.ToolAliases != nil {
-		var err error
-		tuple, err = tn.buildTupleFromOpts(ctx, opt)
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	var executedTools map[string]string
 	var executedEnhancedTools map[string]*schema.ToolResult
@@ -1415,6 +1440,10 @@ func (tn *ToolsNode) Stream(ctx context.Context, input *schema.Message,
 		}
 	}
 
+	ctx, tuple, err := tn.resolveBatch(ctx, opt, input, executedTools, executedEnhancedTools)
+	if err != nil {
+		return nil, err
+	}
 	tasks, err := tn.genToolCallTasks(ctx, tuple, input, executedTools, executedEnhancedTools, true)
 	if err != nil {
 		return nil, err

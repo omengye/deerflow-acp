@@ -731,7 +731,13 @@ func extensionFactory(cfg Config, manager *mcp.Manager, registry *skills.Registr
 		}
 		var remote []tool.BaseTool
 		if remoteLease != nil {
-			remote = remoteLease.Tools
+			if state.MCPResources.Version == 2 {
+				out.MCP, out.MCPExposure = remoteLease, state.MCPResources.ToolExposure
+				out.MCPOrigin = state.MCPResources.OriginGeneration
+				out.MCPHostRestore = state.MCPResources.HostRecipeID != "" && manager.HostRecipeStatus(*state.MCPResources) == "restorable"
+			} else {
+				remote = remoteLease.Tools
+			}
 		}
 		out.Tools = append(out.Tools, remote...)
 		if !commandPolicy.Enabled {

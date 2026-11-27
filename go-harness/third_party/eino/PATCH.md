@@ -11,7 +11,7 @@ The module cache is not modified. Keep the root dependency requirement at
 `v0.10.0-alpha.35`; replacing the entire module with the stable-branch fix commit
 would remove the session/background-task APIs used by this application.
 
-The only production source change is in `adk/interrupt.go`: port the canonical
+The change in `adk/interrupt.go` ports the canonical
 checkpoint/reference fix from upstream PR #1232, commit
 `60e1d9929cb65c8c4814b66fba2854e29b730114`:
 https://github.com/cloudwego/eino/pull/1232
@@ -41,6 +41,12 @@ from this module's directory (also run in CI):
 ```sh
 go test -mod=readonly ./adk -run '^TestCheckpointPatch' -count=1
 ```
+
+DeerFlow also uses an optional `compose.ToolsNodeConfig.BatchTools` resolver
+for MCP discovery. Both Invoke and Stream resolve the saved assistant message
+after restoring completed results, then use the standard tool tuple and its
+middleware. An agent with only batch tools still uses the ReAct graph.
+The application tests cover original-name dispatch, permissions and recovery.
 
 Remove the local replacement only after a compatible upstream version contains
 the deduplication and passes native resume, nested permission, session-store,

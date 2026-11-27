@@ -25,6 +25,7 @@ type MCPResourceRef struct {
 	SessionID        string                `json:"sessionId"`
 	OriginGeneration string                `json:"originGeneration"`
 	HostRecipeID     string                `json:"hostRecipeId,omitempty"`
+	ToolExposure     string                `json:"toolExposure,omitempty"`
 	Descriptor       MCPResourceDescriptor `json:"descriptor"`
 }
 

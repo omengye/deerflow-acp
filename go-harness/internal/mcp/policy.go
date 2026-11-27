@@ -66,6 +66,9 @@ func (m *Manager) prepare(cwd string, servers []harness.MCPServer) (*preparedSer
 	var desktopGrants map[string]desktopGrant
 	targets := make(map[string]string)
 	for _, in := range servers {
+		if !m.hostOnly && (in.Startup != "" || in.Description != "" || in.IdleTimeoutSeconds != 0) {
+			return nil, "", invalid("startup options require a host recipe")
+		}
 		s := in
 		s.Args = slices.Clone(in.Args)
 		s.Env = maps.Clone(in.Env)

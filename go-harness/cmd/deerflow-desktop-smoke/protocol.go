@@ -290,10 +290,10 @@ func (w *wakuClient) event(runtime, kind string, collect *[]obj, permission func
 		if collect != nil {
 			*collect = append(*collect, e)
 		}
-		need(e["kind"] != "error", "ACP driver error: %v", e["payload"])
 		if e["kind"] == kind {
 			return e["payload"]
 		}
+		need(e["kind"] != "error", "ACP driver error: %v", e["payload"])
 		if e["kind"] == "permission" && permission != nil {
 			permission(object(e["payload"]))
 		}

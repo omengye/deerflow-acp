@@ -63,7 +63,7 @@ func resourceRef(data json.RawMessage) (*harness.MCPResourceRef, error) {
 		return nil, harness.ErrResourcesIncompatible
 	}
 	ref := state.MCPResources
-	if ref != nil && (ref.Version != 1 || ref.SessionID == "" || ref.OriginGeneration == "" || ref.Descriptor.Version != 1 || len(ref.Descriptor.ConfigDigest) != 64 || len(ref.Descriptor.SchemaDigest) != 64 || len(ref.Descriptor.Servers) == 0) {
+	if ref != nil && ((ref.Version != 1 && ref.Version != 2) || ref.SessionID == "" || ref.OriginGeneration == "" || (ref.Descriptor.Version != 1 && !(ref.Version == 2 && ref.Descriptor.Version == 2)) || len(ref.Descriptor.ConfigDigest) != 64 || len(ref.Descriptor.SchemaDigest) != 64 || len(ref.Descriptor.Servers) == 0 || ref.Version == 2 && ref.ToolExposure != "auto" && ref.ToolExposure != "full") {
 		return nil, harness.ErrResourcesIncompatible
 	}
 	return ref, nil
@@ -106,7 +106,11 @@ func executionMCPResources(ctx context.Context, manager *mcp.Manager, req harnes
 			_ = lease.Close()
 			return nil, nil, harness.ErrResourcesWaiting
 		}
-		return &harness.MCPResourceRef{Version: 1, SessionID: req.Session.ID, OriginGeneration: generation, Descriptor: descriptor, HostRecipeID: manager.HostRecipeID(req.Session.ID)}, lease, nil
+		exposure := "auto"
+		if lease.FullExposure() {
+			exposure = "full"
+		}
+		return &harness.MCPResourceRef{Version: 2, ToolExposure: exposure, SessionID: req.Session.ID, OriginGeneration: generation, Descriptor: descriptor, HostRecipeID: manager.HostRecipeID(req.Session.ID)}, lease, nil
 	}
 	if ref == nil {
 		generation, err := manager.Generation(ctx, req.Session.ID)
@@ -179,7 +183,7 @@ func (h *backgroundHost) checkResourceRecord(ctx context.Context, r backgroundRe
 	if r.ref.HostRecipeID != "" && h.mcp.HostRecipeID(r.ref.SessionID) != r.ref.HostRecipeID {
 		return harness.ErrResourcesWaiting
 	}
-	generation, err := h.mcp.Generation(ctx, r.ref.SessionID)
+	generation, err := h.mcp.ExpectedGeneration(ctx, r.ref.SessionID, r.ref.Descriptor)
 	if err != nil || generation == "" || generation != r.generation {
 		return harness.ErrResourcesWaiting
 	}
@@ -320,7 +324,7 @@ func (h *backgroundHost) validateResources(ctx context.Context, b background.Bin
 	if h.mcp == nil {
 		return harness.ErrResourcesWaiting
 	}
-	descriptor, generation, err := h.mcp.Describe(ctx, ref.SessionID)
+	descriptor, generation, err := h.mcp.DescribeExpected(ctx, ref.SessionID, ref.Descriptor, false)
 	if err != nil {
 		return err
 	}
@@ -339,7 +343,7 @@ func (h *backgroundHost) bindResourcesTx(ctx context.Context, tx *sql.Tx, b back
 	}
 	generation, owner := ref.OriginGeneration, b.SubmittedBy
 	if ref.HostRecipeID != "" && h.mcp != nil && h.mcp.HostRecipeID(ref.SessionID) == ref.HostRecipeID && h.mcp.HostRecipeStatus(*ref) == "restorable" {
-		generation, err = h.mcp.Generation(ctx, ref.SessionID)
+		generation, err = h.mcp.ExpectedGeneration(ctx, ref.SessionID, ref.Descriptor)
 		if err != nil {
 			return err
 		}
@@ -416,8 +420,11 @@ func (h *backgroundHost) taskResources(ctx context.Context, actor harness.TaskAc
 			view.Reason = "The host MCP recipe is waiting for its transport. Reattach this workspace or restart the harness after restoring the host service."
 		}
 	}
-	descriptor, generation, err := h.mcp.Describe(ctx, r.ref.SessionID)
+	descriptor, generation, err := h.mcp.DescribeExpected(ctx, r.ref.SessionID, r.ref.Descriptor, false)
 	if err != nil || generation == "" {
+		if r.ref.Descriptor.Version == 1 && errors.Is(err, harness.ErrResourcesWaiting) {
+			view.CanAuthorize = status != "running"
+		}
 		return view, nil
 	}
 	if resourceHash(descriptor) != resourceHash(r.ref.Descriptor) {
@@ -461,7 +468,7 @@ func (h *backgroundHost) authorizeResources(ctx context.Context, actor harness.T
 	if r.ref.HostRecipeID != "" && h.mcp.HostRecipeID(r.ref.SessionID) != r.ref.HostRecipeID {
 		return harness.ErrResourcesWaiting
 	}
-	descriptor, generation, err := h.mcp.Describe(ctx, r.ref.SessionID)
+	descriptor, generation, err := h.mcp.DescribeExpected(ctx, r.ref.SessionID, r.ref.Descriptor, true)
 	if err != nil || generation == "" {
 		return harness.ErrResourcesWaiting
 	}
@@ -488,7 +495,7 @@ func (h *backgroundHost) authorizeResources(ctx context.Context, actor harness.T
 	if version != taskVersion || fresh.version != resourceVersion || !sameMCPRef(&fresh.ref, &r.ref) || status == "running" {
 		return harness.ErrExecutionConflict
 	}
-	current, err := h.mcp.Generation(ctx, r.ref.SessionID)
+	current, err := h.mcp.ExpectedGeneration(ctx, r.ref.SessionID, r.ref.Descriptor)
 	if err != nil || current != generation {
 		return harness.ErrResourcesWaiting
 	}

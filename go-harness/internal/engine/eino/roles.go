@@ -352,11 +352,13 @@ func (e *Engine) buildRoleAgent(ctx context.Context, spec agents.Spec, parent ag
 		&outputContinuationHistory{},
 		&modelLifecycle{io: lifecycle, budget: budget, sink: sink, media: &media, settings: spec.ModelSettings, tuning: tuning, role: true, contextWindow: e.config.ContextWindows[spec.Model], outputLimits: e.config.ModelOutputLimits[spec.Model]},
 		&toolMiddleware{sink: sink, permissions: permissions, protected: protected, trusted: trusted, preparers: preparers, policy: roleToolPolicy(spec, len(children) > 0, ownedBackground), permissionMode: e.config.PermissionMode, readOnly: req.Session.Mode == "plan" || req.Session.ApprovalMode == harness.ApprovalReadOnly, durableTaskWait: ownedBackground["task_wait"], io: lifecycle, budget: budget, images: e.config.ToolImageImporter, outputs: e.config.ToolOutputStore, disallowSecrets: true})
+	node := compose.ToolsNodeConfig{Tools: selected, UnknownToolsHandler: unavailableToolHandler}
+	handlers = withMCPDiscovery(handlers, &node, extensions, spec.Tools)
 	child, err := deep.New(ctx, &deep.Config{
 		Name: name, Description: spec.Description, Instruction: e.config.Instruction + "\n\n" + spec.Instruction + extensions.InstructionAppend + toolFailureInstruction + stoppedToolInstruction(ctx) + media.imageGenerationInstruction(),
 		ChatModel: chat, MaxIteration: nativeMaxIterations(spec.MaxTurns),
 		ModelRetryConfig: outputContinuationPolicy(compaction),
-		ToolsConfig:      adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: selected, UnknownToolsHandler: unavailableToolHandler}},
+		ToolsConfig:      adk.ToolsConfig{ToolsNodeConfig: node},
 		Handlers:         handlers, SubAgents: children, WithoutGeneralSubAgent: true, WithoutWriteTodos: !spec.Tools.Allows("write_todos"),
 	})
 	if err != nil {

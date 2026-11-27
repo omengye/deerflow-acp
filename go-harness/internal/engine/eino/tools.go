@@ -169,6 +169,9 @@ func (m *toolMiddleware) start(ctx context.Context, tc *adk.ToolContext, args st
 	needPermission := m.requiresPermission(tc.Name) || m.vault != nil && harness.ExplicitSecretApproval(request) ||
 		request.CredentialScope != nil && secrets.RemoteEnrollmentHandler(ctx) != nil
 	wasInterrupted, _, _ := tool.GetInterruptState[permissionState](ctx)
+	if batch, _ := ctx.Value(mcpBatchKey{}).(map[string]tool.BaseTool); batch[tc.Name] != nil {
+		needPermission = needPermission || m.permissionMode.RequiresToolPermission(tc.Name, false)
+	}
 	if wasInterrupted {
 		needPermission = true
 	}
@@ -333,7 +336,7 @@ func (m *toolMiddleware) credentialDispatchContext(ctx context.Context, tc *adk.
 		return ctx
 	}
 	raw := json.RawMessage(args)
-	scope, err := m.credentialScopeForApproval(tc.Name, raw)
+	scope, err := m.credentialScopeForApproval(ctx, tc.Name, raw)
 	if err != nil || scope == nil {
 		return ctx
 	}

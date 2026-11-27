@@ -22,6 +22,7 @@ import (
 	"github.com/omengye/deerflow-acp/go-harness/internal/agents"
 	durablebudget "github.com/omengye/deerflow-acp/go-harness/internal/budget"
 	"github.com/omengye/deerflow-acp/go-harness/internal/interaction"
+	"github.com/omengye/deerflow-acp/go-harness/internal/mcp"
 	"github.com/omengye/deerflow-acp/go-harness/internal/network"
 	"github.com/omengye/deerflow-acp/go-harness/internal/secrets"
 )
@@ -86,8 +87,12 @@ type Engine struct {
 // immutable resources used by both Tools and Handlers; it enters the execution
 // contract and checkpoint. Cleanup runs after all tracked execution has joined.
 type RunExtensions struct {
-	Tools    []tool.BaseTool
-	Handlers []adk.ChatModelAgentMiddleware
+	MCP            *mcp.Lease
+	MCPExposure    string
+	MCPOrigin      string
+	MCPHostRestore bool
+	Tools          []tool.BaseTool
+	Handlers       []adk.ChatModelAgentMiddleware
 	// InstructionAppend is pinned by State and added to this run's native
 	// DeepAgent instruction. It contains only host-selected descriptive data.
 	InstructionAppend string

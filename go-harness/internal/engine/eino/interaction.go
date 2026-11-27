@@ -113,9 +113,9 @@ func (m *toolMiddleware) requestFor(ctx context.Context, tc *adk.ToolContext, ar
 	var destination string
 	var scope *harness.ServiceCredentialScope
 	if !secrets.Disallowed(ctx) {
-		scope, _ = m.credentialScopeForApproval(tc.Name, arguments)
+		scope, _ = m.credentialScopeForApproval(ctx, tc.Name, arguments)
 	}
-	if lookup := m.credentialScopes[tc.Name]; lookup != nil && harness.HasCredentialMarker(arguments) {
+	if lookup := m.scopeLookup(ctx, tc.Name); lookup != nil && harness.HasCredentialMarker(arguments) {
 		if scope != nil {
 			destination = scope.Service
 		} else {
@@ -159,6 +159,12 @@ func (m *toolMiddleware) interruptPermission(ctx context.Context, tc *adk.ToolCo
 			return err
 		}
 		state.BudgetOperationID = grant.OperationID
+		batch, _ := ctx.Value(mcpBatchKey{}).(map[string]tool.BaseTool)
+		if pin, ok := batch[tc.Name].(interface {
+			RetainPausedOperation(string, func(context.Context, string) bool)
+		}); ok {
+			pin.RetainPausedOperation(grant.OperationID, m.budget.ledger.ToolStillPaused)
+		}
 	}
 	// A suspended permission stays a pending durable receipt/card. It has no
 	// terminal tool_end, and closeOpen must not manufacture one during join.

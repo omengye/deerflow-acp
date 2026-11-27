@@ -1666,7 +1666,7 @@ func (a *TypedChatModelAgent[M]) buildRunFunc(ctx context.Context) typedRunFunc[
 
 		a.exeCtx = ec
 
-		if len(ec.toolsNodeConf.Tools) == 0 {
+		if len(ec.toolsNodeConf.Tools) == 0 && ec.toolsNodeConf.BatchTools == nil {
 			var run typedRunFunc[M]
 			run, err = a.buildNoToolsRunFunc(ctx)
 			if err != nil {
@@ -1719,7 +1719,7 @@ func (a *TypedChatModelAgent[M]) getRunFunc(ctx context.Context, agentInput *Typ
 	}
 
 	var tempRun typedRunFunc[M]
-	if len(runtimeBC.toolsNodeConf.Tools) == 0 {
+	if len(runtimeBC.toolsNodeConf.Tools) == 0 && runtimeBC.toolsNodeConf.BatchTools == nil {
 		tempRun, err = a.buildNoToolsRunFunc(ctx)
 		if err != nil {
 			return ctx, nil, nil, nil, err
