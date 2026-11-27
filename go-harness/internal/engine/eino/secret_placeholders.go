@@ -43,7 +43,7 @@ func (m *toolMiddleware) placeholderUse(name string) placeholderUse {
 	}
 	if !m.trusted[name] {
 		// External tools, such as MCP tools, have no other way to receive a
-		// named secret. Such unbound references require explicit approval.
+		// named secret. Session policy governs its use at dispatch.
 		return placeholdersSubstituted
 	}
 	if name == "web_fetch" {

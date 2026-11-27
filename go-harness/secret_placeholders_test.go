@@ -77,9 +77,16 @@ func TestWebFetchUsesScopedCredentialWithoutExtraApproval(t *testing.T) {
 	}
 }
 
-// The same configured MCP tool consumes an unbound named secret and a scoped
-// credential. Only the named secret requires per-use disclosure approval.
 func TestSecretPlaceholderReachesOnlyTheMCPServer(t *testing.T) {
+	t.Run("full_access", func(t *testing.T) {
+		testMCPSecretPlaceholder(t, harness.ApprovalAllowAlways, harness.PermissionModeDangerous, false)
+	})
+	t.Run("global_with_tool_approvals_off", func(t *testing.T) {
+		testMCPSecretPlaceholder(t, harness.ApprovalGlobal, harness.PermissionModeOff, true)
+	})
+}
+
+func testMCPSecretPlaceholder(t *testing.T, approval string, permissionMode harness.PermissionMode, wantNamedApproval bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	token := randomTestSecret(t, "mcp-")
@@ -141,7 +148,7 @@ func TestSecretPlaceholderReachesOnlyTheMCPServer(t *testing.T) {
 	t.Cleanup(provider.Close)
 
 	dataDir := t.TempDir()
-	c, err := Open(ctx, Config{DataDir: dataDir, Provider: "openai", Model: "fixture", APIKey: "fixture-only", BaseURL: provider.URL + "/v1", PermissionMode: harness.PermissionModeDangerous, DisableSubagents: true, MCP: harness.MCPPolicy{AllowHTTP: true}})
+	c, err := Open(ctx, Config{DataDir: dataDir, Provider: "openai", Model: "fixture", APIKey: "fixture-only", BaseURL: provider.URL + "/v1", PermissionMode: permissionMode, DisableSubagents: true, MCP: harness.MCPPolicy{AllowHTTP: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +165,7 @@ func TestSecretPlaceholderReachesOnlyTheMCPServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = c.SetConfigOption(ctx, session.ID, "approval", harness.ApprovalAllowAlways); err != nil {
+	if _, err = c.SetConfigOption(ctx, session.ID, "approval", approval); err != nil {
 		t.Fatal(err)
 	}
 	var forms atomic.Int32
@@ -199,8 +206,12 @@ func TestSecretPlaceholderReachesOnlyTheMCPServer(t *testing.T) {
 	if got := latestToolResults(requests)["call-lookup"]; !strings.Contains(got, "authorized as [secret:API_TOKEN]") {
 		t.Fatalf("model saw %q", got)
 	}
-	if len(approvals) != 1 || !strings.HasPrefix(approvals[0].ToolName, "mcp_fixture_lookup_") || !strings.Contains(string(approvals[0].Arguments), "{{secret:API_TOKEN}}") || strings.Contains(string(approvals[0].Arguments), token) {
-		t.Fatalf("approvals = %+v", approvals)
+	if wantNamedApproval {
+		if len(approvals) != 1 || !strings.HasPrefix(approvals[0].ToolName, "mcp_fixture_lookup_") || !strings.Contains(string(approvals[0].Arguments), "{{secret:API_TOKEN}}") || strings.Contains(string(approvals[0].Arguments), token) {
+			t.Fatal("expected one approval identifying the named secret by reference")
+		}
+	} else if len(approvals) != 0 {
+		t.Fatalf("Full Access requested %d approvals for stored secrets", len(approvals))
 	}
 	for _, event := range events {
 		if data, _ := json.Marshal(event); bytes.Contains(data, []byte(token)) || bytes.Contains(data, []byte(scopedToken)) {
@@ -216,31 +227,49 @@ func TestSecretPlaceholderReachesOnlyTheMCPServer(t *testing.T) {
 
 func TestExplicitSecretApprovalGuardsHighRiskSecretOperations(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		req  harness.PermissionRequest
-		want bool
+		name, tool, arguments string
+		trusted               bool
+		wantDefault, wantFull bool
 	}{
-		{"import_config_write", harness.PermissionRequest{ToolName: "secret_manage", TrustedBuiltin: true, Arguments: json.RawMessage(`{"action":"import_config"}`)}, true},
-		{"import_config_dry_run", harness.PermissionRequest{ToolName: "secret_manage", TrustedBuiltin: true, Arguments: json.RawMessage(`{"action":"import_config","dry_run":true}`)}, false},
-		{"delete", harness.PermissionRequest{ToolName: "secret_manage", TrustedBuiltin: true, Arguments: json.RawMessage(`{"action":"delete","name":"K"}`)}, true},
-		{"restore", harness.PermissionRequest{ToolName: "secret_manage", TrustedBuiltin: true, Arguments: json.RawMessage(`{"action":"restore","name":"K"}`)}, true},
-		{"set", harness.PermissionRequest{ToolName: "secret_manage", TrustedBuiltin: true, Arguments: json.RawMessage(`{"action":"set","name":"K","value_sealed":"x"}`)}, false},
-		{"mcp_placeholder", harness.PermissionRequest{ToolName: "mcp_ext_call", TrustedBuiltin: false, Arguments: json.RawMessage(`{"token":"{{secret:API_KEY}}"}`)}, true},
-		{"mcp_escaped_placeholder", harness.PermissionRequest{ToolName: "mcp_ext_call", TrustedBuiltin: false, Arguments: json.RawMessage(`{"token":"\u007b{secret:API_KEY}}"}`)}, true},
-		{"mcp_plain", harness.PermissionRequest{ToolName: "mcp_ext_call", TrustedBuiltin: false, Arguments: json.RawMessage(`{"token":"plain"}`)}, false},
-		{"web_fetch_placeholder", harness.PermissionRequest{ToolName: "web_fetch", TrustedBuiltin: true, Arguments: json.RawMessage(`{"url":"https://h/?k={{secret:API_KEY:url}}"}`)}, true},
-		{"write_file_literal_placeholder", harness.PermissionRequest{ToolName: "write_file", TrustedBuiltin: true, Arguments: json.RawMessage(`{"path":"doc.md","content":"{{secret:API_KEY}}"}`)}, false},
-		{"execute_with_secrets", harness.PermissionRequest{ToolName: "execute", TrustedBuiltin: true, Arguments: json.RawMessage(`{"script":"echo hi","secrets":{"A":"B"}}`)}, true},
-		{"execute_with_secret_out", harness.PermissionRequest{ToolName: "execute", TrustedBuiltin: true, Arguments: json.RawMessage(`{"script":"echo hi","secret_out":true}`)}, true},
-		{"pinned_skill_read", harness.PermissionRequest{ToolName: "skill_run", TrustedBuiltin: true, Arguments: json.RawMessage(`{"secret_plan":{"read":{"TOKEN":"API_TOKEN"}}}`)}, false},
-		{"pinned_skill_read_and_write", harness.PermissionRequest{ToolName: "skill_run", TrustedBuiltin: true, Arguments: json.RawMessage(`{"secret_plan":{"read":{"TOKEN":"API_TOKEN"},"write":["REFRESH"]}}`)}, true},
-		{"external_skill_read", harness.PermissionRequest{ToolName: "skill_run", Arguments: json.RawMessage(`{"secret_plan":{"read":{"TOKEN":"API_TOKEN"}}}`)}, true},
-		{"execute_plain", harness.PermissionRequest{ToolName: "execute", TrustedBuiltin: true, Arguments: json.RawMessage(`{"script":"echo hi"}`)}, false},
-		{"bash_empty_args", harness.PermissionRequest{ToolName: "bash", TrustedBuiltin: true}, false},
+		{"import_config_write", "secret_manage", `{"action":"import_config"}`, true, true, true},
+		{"import_config_dry_run", "secret_manage", `{"action":"import_config","dry_run":true}`, true, false, false},
+		{"delete", "secret_manage", `{"action":"delete","name":"K"}`, true, true, true},
+		{"restore", "secret_manage", `{"action":"restore","name":"K"}`, true, true, true},
+		{"set", "secret_manage", `{"action":"set","name":"K","value_sealed":"x"}`, true, false, false},
+		{"set_delete_source", "secret_manage", `{"action":"set","name":"K","from_path":"key","delete_source":true}`, true, true, true},
+		{"mcp_placeholder", "mcp_ext_call", `{"token":"{{secret:API_KEY}}"}`, false, true, false},
+		{"mcp_escaped_placeholder", "mcp_ext_call", `{"token":"\u007b{secret:API_KEY}}"}`, false, true, false},
+		{"mcp_placeholder_and_unbound_credential", "mcp_ext_call", `{"token":"{{secret:API_KEY}}","key":"{{credential:key}}"}`, false, true, true},
+		{"mcp_plain", "mcp_ext_call", `{"token":"plain"}`, false, false, false},
+		{"web_fetch_placeholder", "web_fetch", `{"url":"https://h/?k={{secret:API_KEY:url}}"}`, true, true, false},
+		{"write_file_literal_placeholder", "write_file", `{"path":"doc.md","content":"{{secret:API_KEY}}"}`, true, false, false},
+		{"execute_with_secrets", "execute", `{"script":"echo hi","secrets":{"A":"B"}}`, true, true, false},
+		{"execute_with_secret_out", "execute", `{"script":"echo hi","secret_out":true}`, true, true, true},
+		{"execute_read_and_write", "execute", `{"secrets":{"A":"B"},"secret_out":true}`, true, true, true},
+		{"execute_read_and_unbound_credential", "execute", `{"secrets":{"A":"B"},"credential":{"service":"https://service.example"}}`, true, true, true},
+		{"external_execute_with_secrets", "execute", `{"secrets":{"A":"B"}}`, false, true, true},
+		{"bash_with_secrets", "bash", `{"secrets":{"A":"B"}}`, true, true, false},
+		{"skill_with_secrets", "skill_run", `{"secrets":{"A":"B"}}`, true, true, false},
+		{"pinned_skill_read", "skill_run", `{"secret_plan":{"read":{"TOKEN":"API_TOKEN"}}}`, true, false, false},
+		{"pinned_skill_read_and_write", "skill_run", `{"secret_plan":{"read":{"TOKEN":"API_TOKEN"},"write":["REFRESH"]}}`, true, true, true},
+		{"external_skill_read", "skill_run", `{"secret_plan":{"read":{"TOKEN":"API_TOKEN"}}}`, false, true, true},
+		{"execute_plain", "execute", `{"script":"echo hi"}`, true, false, false},
+		{"bash_empty_args", "bash", "", true, false, false},
 	} {
-		if got := harness.ExplicitSecretApproval(tc.req); got != tc.want {
-			t.Errorf("%s: ExplicitSecretApproval = %t; want %t", tc.name, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			request := harness.PermissionRequest{ToolName: tc.tool, Arguments: json.RawMessage(tc.arguments), TrustedBuiltin: tc.trusted}
+			if got := harness.ExplicitSecretApproval(request); got != tc.wantDefault {
+				t.Errorf("default explicit approval = %t, want %t", got, tc.wantDefault)
+			}
+			fullAccess := harness.Session{ApprovalMode: harness.ApprovalAllowAlways}
+			if got := harness.ExplicitApprovalForSession(fullAccess, request); got != tc.wantFull {
+				t.Errorf("Full Access explicit approval = %t, want %t", got, tc.wantFull)
+			}
+			fullAccess.Mode = "plan"
+			if got := harness.ExplicitApprovalForSession(fullAccess, request); got != tc.wantDefault {
+				t.Errorf("plan mode explicit approval = %t, want %t", got, tc.wantDefault)
+			}
+		})
 	}
 }
 

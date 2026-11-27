@@ -6,18 +6,28 @@ import (
 	"strings"
 )
 
-// ExplicitApproval reports whether p requires an explicit per-call human
-// decision that cannot be bypassed by broad session/deployment allow grants or
-// cached AllowAlways decisions.
+// ExplicitApproval reports whether a deployment grant or cached decision alone
+// is insufficient for this call.
 func ExplicitApproval(p PermissionRequest) bool {
-	return ExplicitSkillEditApproval(p) || ExplicitSecretApproval(p)
+	return ExplicitApprovalForSession(Session{}, p)
+}
+
+// ExplicitApprovalForSession allows a Full Access session to use named vault
+// secrets at dispatch. Write-back and destructive operations keep their review.
+func ExplicitApprovalForSession(session Session, p PermissionRequest) bool {
+	allowNamedReads := session.ApprovalMode == ApprovalAllowAlways && session.Mode != "plan"
+	return ExplicitSkillEditApproval(p) || explicitSecretApproval(p, allowNamedReads)
 }
 
 // ExplicitSecretApproval protects vault mutations and disclosure of secrets
 // without a host-bound consumer. Valid scoped reads use the tool's policy.
 func ExplicitSecretApproval(p PermissionRequest) bool {
+	return explicitSecretApproval(p, false)
+}
+
+func explicitSecretApproval(p PermissionRequest, allowNamedReads bool) bool {
 	if !p.TrustedBuiltin || p.ToolName == "web_fetch" {
-		if containsJSONMarker(p.Arguments, "{{secret:") || p.CredentialScope == nil && HasCredentialMarker(p.Arguments) {
+		if !allowNamedReads && containsJSONMarker(p.Arguments, "{{secret:") || p.CredentialScope == nil && HasCredentialMarker(p.Arguments) {
 			return true
 		}
 	}
@@ -56,10 +66,13 @@ func ExplicitSecretApproval(p PermissionRequest) bool {
 		if json.Unmarshal(p.Arguments, &in) != nil {
 			return true
 		}
-		if len(in.Secrets) > 0 || in.SecretOut || len(in.SecretPlan.Write) > 0 ||
+		if in.SecretOut || len(in.SecretPlan.Write) > 0 ||
 			len(in.SecretPlan.Read) > 0 && !(p.TrustedBuiltin && p.ToolName == "skill_run") ||
 			len(in.Credential) > 0 && string(in.Credential) != "null" && p.CredentialScope == nil {
 			return true
+		}
+		if len(in.Secrets) > 0 {
+			return !allowNamedReads || !p.TrustedBuiltin || p.ToolName == "web_fetch"
 		}
 	}
 	return false

@@ -196,7 +196,7 @@ func configuredPermission(x harness.Session, p harness.PermissionRequest) (harne
 			return harness.RejectOnce, true
 		}
 	}
-	if harness.ExplicitApproval(p) && x.ApprovalMode != harness.ApprovalRejectAlways {
+	if harness.ExplicitApprovalForSession(x, p) && x.ApprovalMode != harness.ApprovalRejectAlways {
 		return "", false
 	}
 	switch x.ApprovalMode {

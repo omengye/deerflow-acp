@@ -500,6 +500,7 @@ func TestSecretVaultEndToEndKeepsValuesOutOfModelAndDisk(t *testing.T) {
 		{"write_file", map[string]any{"path": "fresh.env", "content": "LEAK=[secret:API_TOKEN]\n"}},
 		{"read_file", map[string]any{"path": "config.env"}},
 		{"secret_read", map[string]any{"action": "list"}},
+		{"execute", map[string]any{"executable": exe, "args": []string{"-test.run=^TestSecretCommandFixtureChild$"}, "secrets": map[string]string{"FIXTURE_TOKEN": "REFRESHED_TOKEN"}}},
 	})
 	dataDir := t.TempDir()
 	c, err := Open(ctx, Config{DataDir: dataDir, Provider: "openai", Model: "fixture", APIKey: "fixture-only", BaseURL: provider.URL + "/v1", PermissionMode: harness.PermissionModeDangerous, DisableSubagents: true,
@@ -517,6 +518,9 @@ func TestSecretVaultEndToEndKeepsValuesOutOfModelAndDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := c.SetConfigOption(ctx, x.ID, "approval", harness.ApprovalAllowAlways); err != nil {
+		t.Fatal(err)
+	}
 	var events []harness.RunEvent
 	var approvals []harness.PermissionRequest
 	result, err := c.Run(ctx, x.ID, []harness.Content{{Type: "text", Text: "Store the token from token.txt, use it, and update config.env."}}, func(_ context.Context, event harness.RunEvent) error {
@@ -531,7 +535,7 @@ func TestSecretVaultEndToEndKeepsValuesOutOfModelAndDisk(t *testing.T) {
 	}
 
 	bodies, requests := seen()
-	if len(requests) < 8 {
+	if len(requests) < 9 {
 		t.Fatalf("provider saw %d requests", len(requests))
 	}
 	for i, body := range bodies {
@@ -548,6 +552,7 @@ func TestSecretVaultEndToEndKeepsValuesOutOfModelAndDisk(t *testing.T) {
 		"call-2": {"token=[secret:API_TOKEN] other=[secret:OTHER_TOKEN]", `"name":"REFRESHED_TOKEN"`},
 		"call-5": {`TOKEN=[secret:API_TOKEN]\nMODE=prod\n`},
 		"call-6": {`"count":3`, `"name":"API_TOKEN"`, `"name":"OTHER_TOKEN"`, `"name":"REFRESHED_TOKEN"`},
+		"call-7": {"token=[secret:REFRESHED_TOKEN]"},
 	} {
 		for _, text := range want {
 			if !strings.Contains(results[id], text) {
@@ -555,26 +560,19 @@ func TestSecretVaultEndToEndKeepsValuesOutOfModelAndDisk(t *testing.T) {
 			}
 		}
 	}
-	// secret_read needs no approval; secret_manage and execute ask for approval without showing values.
-	var commandApproval, manageApproval bool
+	// Only deleting the source and writing the refreshed token back require review.
+	if len(approvals) != 2 || approvals[0].ToolCallID != "call-0" || approvals[1].ToolCallID != "call-2" {
+		t.Fatal("expected approval only for source deletion and command write-back")
+	}
+	if !strings.Contains(string(approvals[1].Arguments), `"FIXTURE_TOKEN":"API_TOKEN"`) {
+		t.Fatal("write-back approval omitted the named input")
+	}
 	for _, request := range approvals {
-		if request.ToolName == "secret_read" {
-			t.Fatalf("%s asked for approval", request.ToolName)
-		}
-		if request.ToolName == "secret_manage" {
-			manageApproval = true
-		}
-		if request.ToolName == "execute" {
-			commandApproval = strings.Contains(string(request.Arguments), `"FIXTURE_TOKEN":"API_TOKEN"`)
-		}
 		for _, value := range []string{token, other, refreshed} {
 			if strings.Contains(string(request.Arguments), value) {
 				t.Fatalf("%s approval shows a value", request.ToolName)
 			}
 		}
-	}
-	if !commandApproval || !manageApproval {
-		t.Fatalf("commandApproval=%t manageApproval=%t", commandApproval, manageApproval)
 	}
 	for _, event := range events {
 		data, _ := json.Marshal(event)

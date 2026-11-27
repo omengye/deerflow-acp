@@ -80,9 +80,13 @@ func (c *Client) channelExecutionCommand(ctx context.Context, id, workspace stri
 			return out, nil
 		}
 	}
+	expected := map[string]harness.PermissionRequest{}
+	for _, p := range requests {
+		expected[p.ID] = p
+	}
 	required := []harness.ExecutionInteraction{}
 	for _, p := range state.WaitingInputs {
-		if approval != harness.ApprovalAllowAlways || channelExplicitPermission(p, requests) {
+		if !channelAutoApproves(x, approval, expected[p.ID]) {
 			required = append(required, p)
 		}
 	}
@@ -94,10 +98,6 @@ func (c *Client) channelExecutionCommand(ctx context.Context, id, workspace stri
 		out.Text, err = c.channelWaitingNotice(ctx, owner, x, state, approval)
 		return out, err
 	}
-	expected := map[string]harness.PermissionRequest{}
-	for _, p := range requests {
-		expected[p.ID] = p
-	}
 	approve := func(_ context.Context, p harness.PermissionRequest) (harness.PermissionDecision, error) {
 		if original, ok := expected[p.ID]; ok {
 			if p.SessionID != id || p.RunID != state.RunID || p.ConfigVersion != original.ConfigVersion || p.ToolName != original.ToolName || string(p.Arguments) != string(original.Arguments) {
@@ -107,7 +107,7 @@ func (c *Client) channelExecutionCommand(ctx context.Context, id, workspace stri
 				return d, nil
 			}
 		}
-		if approval == harness.ApprovalAllowAlways && !harness.ExplicitApproval(p) {
+		if channelAutoApproves(x, approval, p) {
 			return harness.AllowOnce, nil
 		}
 		return harness.PermissionCancelled, nil
@@ -205,16 +205,16 @@ func (c *Client) channelWaitingNotice(ctx context.Context, owner string, x harne
 		return "", err
 	}
 	for _, p := range state.WaitingInputs {
-		if approval == harness.ApprovalAllowAlways && !channelExplicitPermission(p, requests) {
-			text += "\n待恢复：" + channelToolDescription(p.ToolName)
-			continue
-		}
 		var request harness.PermissionRequest
 		for _, v := range requests {
 			if v.ID == p.ID {
 				request = v
 				break
 			}
+		}
+		if channelAutoApproves(x, approval, request) {
+			text += "\n待恢复：" + channelToolDescription(p.ToolName)
+			continue
 		}
 		review, safe := channelConfirmationReview(request)
 		if !safe || len(text)+len(review) > 6500 {
@@ -234,13 +234,8 @@ func (c *Client) channelWaitingNotice(ctx context.Context, owner string, x harne
 	return text + "\n\n/resume 接着原任务执行，不重跑原问题；/stop 取消；/new 新会话。", nil
 }
 
-func channelExplicitPermission(p harness.ExecutionInteraction, requests []harness.PermissionRequest) bool {
-	for _, request := range requests {
-		if request.ID == p.ID {
-			return harness.ExplicitApproval(request)
-		}
-	}
-	return true
+func channelAutoApproves(session harness.Session, approval string, request harness.PermissionRequest) bool {
+	return request.ToolName != "" && approval == harness.ApprovalAllowAlways && !harness.ExplicitApprovalForSession(session, request)
 }
 
 func channelConfirmationReview(p harness.PermissionRequest) (string, bool) {

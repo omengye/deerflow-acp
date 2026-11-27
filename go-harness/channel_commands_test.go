@@ -98,6 +98,32 @@ func TestChannelFullAccessAndCheckpointResumeWithoutReplay(t *testing.T) {
 	}
 }
 
+func TestChannelResumeVaultReadRequiresFullAccessOnSessionAndChannel(t *testing.T) {
+	full := harness.Session{ApprovalMode: harness.ApprovalAllowAlways}
+	read := harness.PermissionRequest{ToolName: "execute", TrustedBuiltin: true, Arguments: json.RawMessage(`{"secrets":{"TOKEN":"API_TOKEN"}}`)}
+	write := harness.PermissionRequest{ToolName: "execute", TrustedBuiltin: true, Arguments: json.RawMessage(`{"secrets":{"TOKEN":"API_TOKEN"},"secret_out":true}`)}
+	for _, tc := range []struct {
+		name    string
+		session harness.Session
+		channel string
+		request harness.PermissionRequest
+		want    bool
+	}{
+		{"both full", full, harness.ApprovalAllowAlways, read, true},
+		{"channel only", harness.Session{ApprovalMode: harness.ApprovalGlobal}, harness.ApprovalAllowAlways, read, false},
+		{"session only", full, harness.ApprovalGlobal, read, false},
+		{"plan", harness.Session{Mode: "plan", ApprovalMode: harness.ApprovalAllowAlways}, harness.ApprovalAllowAlways, read, false},
+		{"read and write", full, harness.ApprovalAllowAlways, write, false},
+		{"missing request", full, harness.ApprovalAllowAlways, harness.PermissionRequest{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := channelAutoApproves(tc.session, tc.channel, tc.request); got != tc.want {
+				t.Fatalf("channelAutoApproves = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestChannelExplicitSkillReviewIsBounded(t *testing.T) {
 	p := harness.PermissionRequest{ID: "intent", ToolName: "skill_edit"}
 	p.Arguments = json.RawMessage(`{"action":"apply","edit_id":"edit","host_review":{"target":{"name":"fixture"},"changes":[{"path":"SKILL.md","preview":"-old\n+new"}]}}`)
