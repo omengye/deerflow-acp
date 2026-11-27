@@ -119,6 +119,8 @@ type Receipt struct {
 
 var slotPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,95}$`)
 
+const PersonalManagementActor = "single-user-management"
+
 // Canonical names keep ordinary profile corrections on the same version chain.
 func CanonicalKey(key string) string {
 	key = strings.ToLower(strings.TrimSpace(key))
@@ -179,14 +181,30 @@ func (s *Store) mutateTx(ctx context.Context, tx *sql.Tx, scope Scope, in Mutati
 	in.Key = CanonicalKey(in.Key)
 	byID := in.FactID != ""
 	if in.OperationID == "" || len(in.OperationID) > 180 || in.ExpectedRevision < 0 || !validSource(in.Source) ||
-		(in.SchemaVersion != 0 && in.SchemaVersion != 2) || (in.Action != "remember" && in.Action != "forget") ||
+		(in.SchemaVersion != 0 && in.SchemaVersion != 2) ||
 		(!byID && !slotPattern.MatchString(in.Key)) ||
-		(byID && (in.Key != "" || in.Action != "forget" || len(in.FactID) > 256 || !utf8.ValidString(in.FactID) || strings.ContainsRune(in.FactID, 0))) {
+		(byID && (in.Key != "" || len(in.FactID) > 256 || !utf8.ValidString(in.FactID) || strings.ContainsRune(in.FactID, 0))) {
 		return Receipt{}, harness.ErrInvalidInput
 	}
-	if in.Action == "remember" && (!validCandidate(Candidate{Content: in.Content, Category: in.Category, Confidence: 1, Source: in.Source}) ||
-		len(in.Content) > 2048 || (in.Category != "profile" && in.Category != "preference" && in.Category != "project") ||
-		(scope.kind == GlobalScope && in.Category == "project") || credentialLike.MatchString(in.Content)) {
+	switch in.Action {
+	case "edit":
+		if !byID || scope.kind != GlobalScope || in.ExpectedRevision < 1 || in.Category != "" ||
+			in.Source.Kind != "operator" || in.Source.ActorID != PersonalManagementActor || in.Automatic || in.RequireSnapshot ||
+			in.Source.RunID != "" || in.Source.InputID != "" || strings.TrimSpace(in.Content) == "" ||
+			!utf8.ValidString(in.Content) || strings.ContainsRune(in.Content, 0) {
+			return Receipt{}, harness.ErrInvalidInput
+		}
+	case "remember":
+		if byID || !validCandidate(Candidate{Content: in.Content, Category: in.Category, Confidence: 1, Source: in.Source}) ||
+			(in.Category != "profile" && in.Category != "preference" && in.Category != "project") ||
+			(scope.kind == GlobalScope && in.Category == "project") {
+			return Receipt{}, harness.ErrInvalidInput
+		}
+	case "forget":
+	default:
+		return Receipt{}, harness.ErrInvalidInput
+	}
+	if in.Action != "forget" && (len(in.Content) > 2048 || credentialLike.MatchString(in.Content)) {
 		return Receipt{}, harness.ErrInvalidInput
 	}
 	raw, _ := json.Marshal(in)
@@ -284,7 +302,7 @@ func (s *Store) mutateTx(ctx context.Context, tx *sql.Tx, scope Scope, in Mutati
 		receipt.Status = "superseded"
 	case restoreStatus != "":
 		receipt.Status, receipt.Reason = restoreStatus, restoreReason
-	case byID && f.ID == "":
+	case byID && (f.ID == "" || (in.Action == "edit" && deleted)):
 		receipt.Status = "not_found"
 	case f.Revision != in.ExpectedRevision:
 		return Receipt{}, &StateConflict{State: KeyState{Scope: scope.kind, Key: key, Revision: f.Revision, Deleted: deleted, Exists: f.ID != ""}}
@@ -297,7 +315,7 @@ func (s *Store) mutateTx(ctx context.Context, tx *sql.Tx, scope Scope, in Mutati
 			return Receipt{}, err
 		}
 		receipt.Status, receipt.Revision, receipt.Barrier = "forgotten", f.Revision, true
-	case in.Action == "remember" && !deleted && f.ID != "" && f.Content == in.Content && f.Category == in.Category:
+	case !deleted && f.ID != "" && f.Content == in.Content && (in.Action == "edit" || in.Action == "remember" && f.Category == in.Category):
 		receipt.Status = "unchanged"
 	default:
 		version, err = bumpScope(ctx, tx, scope, version)
@@ -315,12 +333,19 @@ func (s *Store) mutateTx(ctx context.Context, tx *sql.Tx, scope Scope, in Mutati
 				return Receipt{}, err
 			}
 		}
+		// A manual correction has no new model-input evidence. Keep external
+		// context marked on subsequent revisions without reusing old evidence.
+		if in.Action == "edit" && Provenance(f) == ExternalContextProvenance {
+			in.Source.Provenance = ExternalContextProvenance
+		}
 		f.Revision++
 		f.Source = in.Source
 		f.Source.ID = "operation/" + in.OperationID
 		f.UpdatedAt = now
 		deleted = in.Action == "forget"
-		if !deleted {
+		if in.Action == "edit" {
+			f.Content = in.Content
+		} else if !deleted {
 			f.Content, f.Category, f.Confidence = in.Content, in.Category, 1
 		}
 		if f.Category == "" {

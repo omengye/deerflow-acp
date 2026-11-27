@@ -216,6 +216,7 @@ enum SettingsPage {
     DeerFlow,
     DeerFlowModels,
     DeerFlowTools,
+    DeerFlowMemory,
     DeerFlowAdvanced,
     DeerFlowSkillCenter,
     General,
@@ -238,6 +239,7 @@ impl SettingsPage {
                 | Self::Schedules
                 | Self::DeerFlowModels
                 | Self::DeerFlowTools
+                | Self::DeerFlowMemory
                 | Self::DeerFlowAdvanced
                 | Self::DeerFlowSkillCenter
                 | Self::Appearance

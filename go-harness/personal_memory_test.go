@@ -3,6 +3,7 @@ package deerflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -219,6 +220,71 @@ func TestPersonalMemoryManagementDurableReceiptAndProfileGuard(t *testing.T) {
 	status, err := call(map[string]any{"operation": "memory.personal.receipt", "operation_id": "phone-1"})
 	if err != nil || status.(map[string]any)["found"] != true {
 		t.Fatalf("status=%v %v", status, err)
+	}
+	saved := first.(memory.Receipt)
+	edit := map[string]any{"operation": "memory.personal.mutate", "profile_id": c.service.MemoryGlobalID, "operation_id": "desktop-edit", "action": "edit", "fact_id": saved.FactID, "content": "用户昵称是小林。", "expected_revision": saved.Revision}
+	edited, err := call(edit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := edited.(memory.Receipt)
+	if updated.FactID != saved.FactID || updated.Key != saved.Key || updated.Status != "updated" || updated.Revision != saved.Revision+1 {
+		t.Fatalf("edit=%+v", updated)
+	}
+	if repeated, err := call(edit); err != nil || repeated != edited {
+		t.Fatalf("edit replay=%v %v", repeated, err)
+	}
+	edit["operation_id"] = "stale-desktop-edit"
+	var conflict *localhost.ManagementError
+	if _, err = call(edit); !errors.As(err, &conflict) || conflict.Code != "memory_conflict" {
+		t.Fatalf("stale edit=%v", err)
+	}
+	list, err := call(map[string]any{"operation": "memory.personal.get"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := list.(map[string]any)["facts"].([]map[string]any)
+	if len(facts) != 1 || facts[0]["content"] != edit["content"] || facts[0]["category"] != "profile" {
+		t.Fatalf("edited list=%+v", facts)
+	}
+	if _, err := call(map[string]any{"operation": "memory.personal.mutate", "profile_id": c.service.MemoryGlobalID, "operation_id": "desktop-add", "action": "remember", "key": "manual.second", "category": "preference", "content": "简短回答", "expected_revision": 0}); err != nil {
+		t.Fatal(err)
+	}
+	firstPage, err := call(map[string]any{"operation": "memory.personal.get", "limit": 1, "facts_only": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := firstPage.(map[string]any)
+	if len(page["facts"].([]map[string]any)) != 1 || page["next_cursor"] == "" || page["versions"] != nil || page["jobs"] != nil {
+		t.Fatalf("first page=%+v", page)
+	}
+	firstRow := page["facts"].([]map[string]any)[0]
+	lastPage, err := call(map[string]any{"operation": "memory.personal.get", "limit": 1, "cursor": page["next_cursor"], "review_fact_id": firstRow["id"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := lastPage.(map[string]any)
+	lastRows := last["facts"].([]map[string]any)
+	reviewed := last["reviewed_fact"].(map[string]any)
+	if len(lastRows) != 1 || last["next_cursor"] != "" || lastRows[0]["id"] == firstRow["id"] ||
+		reviewed["id"] != firstRow["id"] || reviewed["revision"] != firstRow["revision"] || reviewed["content"] != firstRow["content"] {
+		t.Fatalf("last page=%+v", last)
+	}
+	if _, err = call(map[string]any{"operation": "memory.personal.mutate", "profile_id": c.service.MemoryGlobalID, "operation_id": "desktop-delete", "action": "forget", "fact_id": firstRow["id"], "expected_revision": firstRow["revision"]}); err != nil {
+		t.Fatal(err)
+	}
+	afterDelete, err := call(map[string]any{"operation": "memory.personal.get", "facts_only": true, "review_fact_id": firstRow["id"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fact, present := afterDelete.(map[string]any)["reviewed_fact"]; !present || fact != nil {
+		t.Fatalf("deleted review target=%v present=%v", fact, present)
+	}
+	if _, err = call(map[string]any{"operation": "memory.personal.get", "review_fact_id": " "}); err == nil {
+		t.Fatal("accepted empty review target")
+	}
+	if _, err = call(map[string]any{"operation": "memory.personal.get", "limit": 101}); err == nil {
+		t.Fatal("accepted oversized page")
 	}
 	operation["profile_id"] = "wrong-profile"
 	if _, err = call(operation); err == nil {

@@ -1933,6 +1933,10 @@ settings.schedules_keywords:
   en: schedule cron timer tasks 定时 任务 时间
 settings.deerflow_tools:
   en: Tools and permissions
+settings.deerflow_memory:
+  en: Memory
+settings.deerflow_memory_keywords:
+  en: memory memories global memory personal preferences add edit delete 全局记忆 管理记忆
 settings.deerflow_advanced:
   en: Advanced
 settings.deerflow_skill_center:

@@ -932,6 +932,8 @@ settings.schedules: 定时任务
 settings.schedules_keywords: 定时 任务 时间 schedule cron timer tasks
 settings.channels_keywords: 渠道 微信 登录 扫码 插件 channel wechat plugin login
 settings.deerflow_tools: 工具与权限
+settings.deerflow_memory: 记忆
+settings.deerflow_memory_keywords: 全局记忆 管理记忆 个人资料 个人偏好 添加 编辑 删除 memory memories global memory
 settings.deerflow_advanced: 高级
 settings.deerflow_skill_center: 技能
 settings.deerflow_models_keywords: 模型 model provider api 地址 密钥 图片 上下文

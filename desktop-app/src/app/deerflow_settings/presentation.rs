@@ -768,7 +768,6 @@ impl Waku {
         let mut links = div().flex().flex_wrap().gap(px(6.0));
         for (section, label) in [
             (Section::Agents, "管理角色"),
-            (Section::Memory, "管理记忆"),
             (Section::Sources, "配置技能来源"),
         ] {
             links = links.child(df_button(
@@ -784,6 +783,15 @@ impl Waku {
                 },
             ));
         }
+        links = links.child(df_button(
+            "df-common-memory",
+            "管理记忆",
+            false,
+            false,
+            theme,
+            cx,
+            |this, _, cx| this.open_settings_page(SettingsPage::DeerFlowMemory, cx),
+        ));
         links = links.child(df_button(
             "df-common-skills",
             "查看技能进化记录",

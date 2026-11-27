@@ -133,6 +133,73 @@ func TestPersonalMemoryIndependentConcurrentAttributesAndCAS(t *testing.T) {
 	}
 }
 
+func TestPersonalEditPromotedFactByID(t *testing.T) {
+	ctx := t.Context()
+	s, global := personalStore(t)
+	workspace, err := NewScope(WorkspaceScope, t.TempDir(), "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := s.Create(ctx, workspace, Candidate{Content: "original", Category: "project", Confidence: .8,
+		Source: Source{ID: "legacy", Kind: "model", Provenance: ExternalContextProvenance}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy, err := s.Promote(ctx, workspace, global, source.ID, source.Revision, Source{ID: "promotion", Kind: "operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RebuildIndex(ctx, global); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.db.ExecContext(ctx, `INSERT INTO memory_vectors(fact_id, revision, model, vector) VALUES(?, ?, 'fixture', '[]')`, copy.ID, copy.Revision); err != nil {
+		t.Fatal(err)
+	}
+	edit := Mutation{Action: "edit", FactID: copy.ID, ExpectedRevision: copy.Revision, OperationID: "edit", Content: "corrected",
+		Source: Source{ID: "edit", Kind: "operator", ActorID: PersonalManagementActor, PolicyVersion: ExplicitPolicy}}
+	if _, err = s.Mutate(ctx, workspace, edit); !errors.Is(err, harness.ErrInvalidInput) {
+		t.Fatalf("workspace edit accepted: %v", err)
+	}
+	runEdit := edit
+	runEdit.RequireSnapshot = true
+	if _, err = s.Mutate(ctx, global, runEdit); !errors.Is(err, harness.ErrInvalidInput) {
+		t.Fatalf("model edit accepted: %v", err)
+	}
+	updated, err := s.Mutate(ctx, global, edit)
+	if err != nil || updated.Key != "" || updated.FactID != copy.ID || updated.Revision != copy.Revision+1 || updated.Status != "updated" {
+		t.Fatalf("edited promoted fact=%+v %v", updated, err)
+	}
+	head, err := s.Get(ctx, global, copy.ID)
+	if err != nil || head.Content != edit.Content || head.Category != copy.Category || head.Confidence != copy.Confidence ||
+		head.Source.Provenance != ExternalContextProvenance || head.Source.ActorID != PersonalManagementActor {
+		t.Fatalf("edited metadata=%+v %v", head, err)
+	}
+	if found, err := s.Search(ctx, global, edit.Content, 1); err != nil || len(found) != 1 || found[0].Revision != updated.Revision {
+		t.Fatalf("search corrected content=%+v %v", found, err)
+	}
+	var vectors int
+	if err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_vectors WHERE fact_id=?`, copy.ID).Scan(&vectors); err != nil || vectors != 0 {
+		t.Fatalf("stale vectors=%d %v", vectors, err)
+	}
+	if original, err := s.Get(ctx, workspace, source.ID); err != nil || original.Content != source.Content || original.Revision != source.Revision {
+		t.Fatalf("changed source=%+v %v", original, err)
+	}
+	if err = s.Delete(ctx, global, copy.ID, updated.Revision, Source{ID: "delete", Kind: "operator"}); err != nil {
+		t.Fatal(err)
+	}
+	edit.OperationID = "edit-deleted"
+	edit.ExpectedRevision = updated.Revision + 1
+	if r, err := s.Mutate(ctx, global, edit); err != nil || r.Status != "not_found" {
+		t.Fatalf("edit after delete=%+v %v", r, err)
+	}
+	if _, err := s.Get(ctx, global, copy.ID); !errors.Is(err, harness.ErrNotFound) {
+		t.Fatalf("deleted fact restored: %v", err)
+	}
+	if found, err := s.Search(ctx, global, edit.Content, 1); err != nil || len(found) != 0 {
+		t.Fatalf("search deleted content=%+v %v", found, err)
+	}
+}
+
 func TestPersonalProfileAvailableForChineseParaphrases(t *testing.T) {
 	s, scope := personalStore(t)
 	ctx := context.Background()

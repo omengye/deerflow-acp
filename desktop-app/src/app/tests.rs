@@ -2059,6 +2059,7 @@ fn settings_search_filters_pages_for_arrow_cycling() {
             SettingsPage::Schedules,
             SettingsPage::DeerFlowModels,
             SettingsPage::DeerFlowTools,
+            SettingsPage::DeerFlowMemory,
             SettingsPage::DeerFlowSkillCenter,
             SettingsPage::Appearance,
             SettingsPage::DeerFlowAdvanced,
@@ -2076,6 +2077,8 @@ fn settings_search_filters_pages_for_arrow_cycling() {
     assert_eq!(pages("wechat"), vec![SettingsPage::Channels]);
     assert_eq!(pages("schedule"), vec![SettingsPage::Schedules]);
     assert_eq!(pages("定时"), vec![SettingsPage::Schedules]);
+    assert_eq!(pages("global memory"), vec![SettingsPage::DeerFlowMemory]);
+    assert_eq!(pages("全局记忆"), vec![SettingsPage::DeerFlowMemory]);
 }
 
 #[test]

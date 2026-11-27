@@ -19,7 +19,7 @@ gpui::actions!(waku_settings, [FocusNextControl, FocusPreviousControl]);
 
 /// The sidebar's rows in display order, each with the keyword haystack the
 /// search field filters against.
-const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 13] = [
+const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 14] = [
     (
         SettingsPage::DeerFlow,
         "settings.deerflow",
@@ -49,6 +49,12 @@ const SETTINGS_PAGES: [(SettingsPage, &str, &str, &str); 13] = [
         "settings.deerflow_tools",
         "icons/terminal.svg",
         "settings.deerflow_tools_keywords",
+    ),
+    (
+        SettingsPage::DeerFlowMemory,
+        "settings.deerflow_memory",
+        "icons/list.svg",
+        "settings.deerflow_memory_keywords",
     ),
     (
         SettingsPage::DeerFlowSkillCenter,
@@ -156,6 +162,9 @@ impl Waku {
         }
         if page == SettingsPage::Schedules {
             self.enter_schedules(cx);
+        }
+        if page == SettingsPage::DeerFlowMemory {
+            self.open_global_memory(cx);
         }
         if page.is_deerflow() {
             self.deerflow_route_page(page, cx);
@@ -470,6 +479,7 @@ impl Waku {
                         SettingsPage::DeerFlow => tr!("settings.deerflow"),
                         SettingsPage::DeerFlowModels => tr!("settings.deerflow_models"),
                         SettingsPage::DeerFlowTools => tr!("settings.deerflow_tools"),
+                        SettingsPage::DeerFlowMemory => tr!("settings.deerflow_memory"),
                         SettingsPage::DeerFlowAdvanced => tr!("settings.deerflow_advanced"),
                         SettingsPage::DeerFlowSkillCenter => tr!("settings.deerflow_skill_center"),
                         SettingsPage::General => tr!("settings.general"),
@@ -483,6 +493,7 @@ impl Waku {
             .child(match page {
                 SettingsPage::Channels => self.render_channels(cx),
                 SettingsPage::Schedules => self.render_schedules(cx),
+                SettingsPage::DeerFlowMemory => self.render_global_memory(theme, cx),
                 SettingsPage::DeerFlow
                 | SettingsPage::DeerFlowModels
                 | SettingsPage::DeerFlowTools

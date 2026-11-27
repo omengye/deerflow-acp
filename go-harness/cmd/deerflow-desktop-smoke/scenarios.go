@@ -430,6 +430,7 @@ func (s *smoke) run() {
 	s.log("Local readiness uses saved revision without model requests", obj{})
 	w.deerflow("start")
 	state := s.settled()
+	checkGlobalMemory := s.globalMemory()
 	s.schedules()
 	generation := state["applied_generation"]
 	a := s.acp("acp-before-apply")
@@ -477,6 +478,7 @@ func (s *smoke) run() {
 	need(object(array(saved["models"])[0])["display_name"] == "Applied smoke model" && str(object(applied["status"])["apply_error"]) == "", "save-and-apply failed")
 	state = s.settled()
 	checkDeletedSkill()
+	checkGlobalMemory()
 	need(state["config_revision"] == saved["config_revision"], "runtime did not apply saved revision")
 	if generation != nil {
 		need(state["applied_generation"].(float64) > generation.(float64), "apply generation did not advance")

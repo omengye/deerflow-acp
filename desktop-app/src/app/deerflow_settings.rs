@@ -14,6 +14,7 @@ mod effective;
 mod evolution;
 mod feedback;
 mod generation;
+mod global_memory;
 mod image_generation_capability;
 mod learning;
 mod learning_diagnostics;
@@ -278,6 +279,8 @@ pub(super) struct DeerFlowSettings {
     memory_scope: String,
     selected_session: Option<String>,
     memory_data: Value,
+    global_memory: global_memory::GlobalMemory,
+    global_memory_input: Entity<TextInput>,
     diagnostic_data: Value,
     proposals: Vec<Value>,
     proposal: Option<Value>,
@@ -376,6 +379,8 @@ impl DeerFlowSettings {
             memory_scope: "workspace".into(),
             selected_session: None,
             memory_data: Value::Null,
+            global_memory: Default::default(),
+            global_memory_input: cx.new(|cx| TextInput::new(window, cx).multi_line().placeholder("输入要保存的内容")),
             diagnostic_data: Value::Null,
             proposals: Vec::new(),
             proposal: None,

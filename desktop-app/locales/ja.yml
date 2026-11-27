@@ -988,6 +988,8 @@ computer_use.windows_access_description: 現在の Windows デスクトップセ
 settings.channels: チャンネル
 settings.channels_keywords: チャンネル WeChat プラグイン ログイン QR メッセージ
 settings.deerflow: 基本設定
+settings.deerflow_memory: メモリ
+settings.deerflow_memory_keywords: 記憶 メモリ グローバル 個人設定 追加 編集 削除 memory memories global memory
 settings.deerflow_advanced: 詳細設定
 settings.deerflow_advanced_keywords: 詳細 サブエージェント ロール メモリ スキル 予算 制限 タイムアウト サービス ログ 診断 データ ソース インポート
 settings.deerflow_keywords: deerflow モデル エージェント メモリ スキル ツール 権限 ACP ランタイム 診断 復旧

@@ -849,6 +849,12 @@ impl Waku {
                 "tools permissions opencli mcp 工具 权限 代理",
             ),
             (
+                SettingsPage::DeerFlowMemory,
+                "settings.deerflow_memory",
+                "icons/list.svg",
+                "memory memories global preferences 记忆 全局记忆 管理记忆",
+            ),
+            (
                 SettingsPage::DeerFlowAdvanced,
                 "settings.deerflow_advanced",
                 "icons/settings.svg",
