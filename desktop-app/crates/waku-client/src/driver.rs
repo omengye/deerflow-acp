@@ -2,13 +2,13 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
 use uuid::Uuid;
 use waku_protocol::computer_use::ComputerToolRequest;
 use waku_protocol::model::{
-    BackgroundWorkKey, DriverEvent, ProviderResumeCursor, RuntimeMode,
-    UserInputAnswer,
+    BackgroundWorkKey, DriverEvent, ProviderResumeCursor, RuntimeMode, UserInputAnswer,
 };
 
 #[derive(Clone)]
@@ -42,6 +42,18 @@ impl DriverHandle {
         Self { inner: control }
     }
 
+    pub fn local_reconnecting_since(&self) -> Option<Instant> {
+        self.inner.local_reconnecting_since()
+    }
+
+    pub fn is_local_reconnecting(&self) -> bool {
+        self.local_reconnecting_since().is_some()
+    }
+
+    pub fn local_connection_generation(&self) -> u64 {
+        self.inner.local_connection_generation()
+    }
+
     /// Send a prompt along with the ids this client gave the turn it opened
     /// and that turn's user message, so the daemon can publish the same
     /// identity to every other client attached to the runtime.
@@ -58,6 +70,51 @@ impl DriverHandle {
     ) {
         self.inner
             .prompt_with_attachments(prompt, turn_id, message_id, attachments);
+    }
+
+    /// False means a local connection rejected the action before enqueue.
+    /// Successful enqueue does not acknowledge execution by the daemon.
+    pub fn try_prompt_with_attachments(
+        &self,
+        prompt: String,
+        turn_id: Option<Uuid>,
+        message_id: Option<Uuid>,
+        attachments: Vec<waku_protocol::model::MessageAttachment>,
+    ) -> bool {
+        self.inner
+            .try_prompt_with_attachments(prompt, turn_id, message_id, attachments)
+    }
+
+    pub fn try_steer(&self, prompt: String) -> bool {
+        self.inner.try_steer(prompt)
+    }
+
+    pub fn try_steer_run(&self, prompt: String, run_id: String) -> bool {
+        self.inner.try_steer_run(prompt, run_id)
+    }
+
+    pub fn try_cancel(&self) -> bool {
+        self.inner.try_cancel()
+    }
+
+    pub fn try_respond(&self, request_id: String, option_id: String) -> bool {
+        self.inner.try_respond(request_id, option_id)
+    }
+
+    pub fn try_respond_user_input(
+        &self,
+        request_id: String,
+        answers: Vec<UserInputAnswer>,
+    ) -> bool {
+        self.inner.try_respond_user_input(request_id, answers)
+    }
+
+    pub fn try_run_computer_tool(&self, request: ComputerToolRequest) -> bool {
+        self.inner.try_run_computer_tool(request)
+    }
+
+    pub fn try_reject_computer_tool(&self, request: ComputerToolRequest, reason: String) -> bool {
+        self.inner.try_reject_computer_tool(request, reason)
     }
 
     pub fn supports_steer(&self) -> bool {
@@ -102,7 +159,8 @@ impl DriverHandle {
         request_id: String,
         sealed: waku_protocol::model::SealedCredential,
     ) -> anyhow::Result<()> {
-        self.inner.respond_credential(connection, request_id, sealed)
+        self.inner
+            .respond_credential(connection, request_id, sealed)
     }
 
     pub fn respond_user_input(&self, request_id: String, answers: Vec<UserInputAnswer>) {
@@ -133,6 +191,50 @@ impl DriverHandle {
 }
 
 pub trait DriverControl: Send + Sync {
+    fn local_reconnecting_since(&self) -> Option<Instant> {
+        None
+    }
+    fn local_connection_generation(&self) -> u64 {
+        0
+    }
+    fn try_prompt_with_attachments(
+        &self,
+        prompt: String,
+        turn_id: Option<Uuid>,
+        message_id: Option<Uuid>,
+        attachments: Vec<waku_protocol::model::MessageAttachment>,
+    ) -> bool {
+        self.prompt_with_attachments(prompt, turn_id, message_id, attachments);
+        true
+    }
+    fn try_steer(&self, prompt: String) -> bool {
+        self.steer(prompt);
+        true
+    }
+    fn try_steer_run(&self, prompt: String, run_id: String) -> bool {
+        self.steer_run(prompt, run_id);
+        true
+    }
+    fn try_cancel(&self) -> bool {
+        self.cancel();
+        true
+    }
+    fn try_respond(&self, request_id: String, option_id: String) -> bool {
+        self.respond(request_id, option_id);
+        true
+    }
+    fn try_respond_user_input(&self, request_id: String, answers: Vec<UserInputAnswer>) -> bool {
+        self.respond_user_input(request_id, answers);
+        true
+    }
+    fn try_run_computer_tool(&self, request: ComputerToolRequest) -> bool {
+        self.run_computer_tool(request);
+        true
+    }
+    fn try_reject_computer_tool(&self, request: ComputerToolRequest, reason: String) -> bool {
+        self.reject_computer_tool(request, reason);
+        true
+    }
     fn respond_credential(
         &self,
         _connection: crate::DaemonClient,

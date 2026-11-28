@@ -810,7 +810,7 @@ impl Backend for WakuBackend {
                             }
                             if matches!(
                                 event,
-                                DriverEvent::TurnFinished { .. } | DriverEvent::ProcessExited
+                                DriverEvent::TurnFinished { .. } | DriverEvent::TurnCancelled | DriverEvent::ProcessExited
                             ) {
                                 remove_finished_runtime(
                                     &active_workspace_prompts,
@@ -1212,7 +1212,14 @@ fn handle_driver_command(
         Command::RespondUserInput {
             request_id,
             answers,
-        } => driver.respond_user_input(request_id, answers),
+            confirm_delivery,
+        } => {
+            if confirm_delivery {
+                let result = driver.respond_user_input_checked(request_id, answers);
+                return Ok(ResponsePayload::UserInputReceipt { result });
+            }
+            driver.respond_user_input(request_id, answers);
+        }
         Command::RunComputerTool { request } => {
             driver.run_computer_tool(crate::computer_use::ComputerToolRequest {
                 call_id: request.call_id,
@@ -1312,6 +1319,10 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
         DriverEvent::RuntimeEventCursorAdvanced(_) => {
             bail!("client-only runtime cursors cannot be sent by the daemon")
         }
+        DriverEvent::LocalSessionAttachmentFailed(_) => {
+            bail!("local session attachment failures cannot be sent by the daemon")
+        }
+        DriverEvent::LocalUserInputResult { .. } => bail!("local answer receipts cannot be broadcast"),
         DriverEvent::Connected { provider_cursor } => {
             ("connected", serde_json::to_value(provider_cursor)?)
         }
@@ -1423,6 +1434,7 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 "contextWindow": context_window,
             }),
         ),
+        DriverEvent::TurnCancelled => ("turnFinished", json!({"success": true, "cancelled": true})),
         DriverEvent::TurnFinished { success, summary } => (
             "turnFinished",
             json!({ "success": success, "summary": summary }),
@@ -1532,9 +1544,10 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
         }
         "turnFinished" => {
             let finished: TurnFinishedWire = serde_json::from_value(payload)?;
-            DriverEvent::TurnFinished {
-                success: finished.success,
-                summary: finished.summary,
+            if finished.cancelled && finished.success {
+                DriverEvent::TurnCancelled
+            } else {
+                DriverEvent::TurnFinished { success: finished.success, summary: finished.summary }
             }
         }
         "error" => DriverEvent::Error(serde_json::from_value(payload)?),
@@ -1607,6 +1620,8 @@ struct UsageWire {
 #[derive(Deserialize)]
 struct TurnFinishedWire {
     success: bool,
+    #[serde(default)]
+    cancelled: bool,
     summary: Option<String>,
 }
 

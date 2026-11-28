@@ -143,6 +143,9 @@ impl DriverHandle {
     pub fn respond_user_input(&self, request_id: String, answers: Vec<UserInputAnswer>) {
         self.inner.respond_user_input(request_id, answers);
     }
+    pub fn respond_user_input_checked(&self, request_id: String, answers: Vec<UserInputAnswer>) -> crate::model::LocalUserInputResult {
+        self.inner.respond_user_input_checked(request_id, answers)
+    }
 
     pub fn run_computer_tool(&self, request: ComputerToolRequest) {
         self.inner.run_computer_tool(request);
@@ -217,6 +220,9 @@ pub trait DriverControl: Send + Sync {
     }
     fn respond_credential(&self, _id: String, _sealed: crate::model::SealedCredential) -> Result<(), String> { Err("Provider does not support credential enrollment".into()) }
     fn respond_user_input(&self, _request_id: String, _answers: Vec<UserInputAnswer>) {}
+    fn respond_user_input_checked(&self, _request_id: String, _answers: Vec<UserInputAnswer>) -> crate::model::LocalUserInputResult {
+        crate::model::LocalUserInputResult::NotSent
+    }
     fn run_computer_tool(&self, _request: ComputerToolRequest) {}
     fn reject_computer_tool(&self, _request: ComputerToolRequest, _reason: String) {}
     /// Applies changed turn options to the live session, returning whether the

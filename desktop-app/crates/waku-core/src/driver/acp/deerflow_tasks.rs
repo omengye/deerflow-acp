@@ -220,6 +220,10 @@ impl NotificationState {
         {
             return;
         }
+        if success && params["result"]["stopReason"] == "cancelled" {
+            let _ = events.send(DriverEvent::TurnCancelled);
+            return;
+        }
         let _ = events.send(DriverEvent::TurnFinished {
             success,
             summary: (!success).then(|| {
@@ -1522,10 +1526,12 @@ mod tests {
             }))
             .unwrap();
             finish_prompt(Ok(response), &mut stream, &events);
-            assert!(matches!(
-                received.try_recv().unwrap(),
-                DriverEvent::TurnFinished { .. }
-            ));
+            let ended = received.try_recv().unwrap();
+            if stop_reason == "cancelled" {
+                assert!(matches!(ended, DriverEvent::TurnCancelled));
+            } else {
+                assert!(matches!(ended, DriverEvent::TurnFinished { .. }));
+            }
             assert!(received.try_recv().is_err());
             assert!(stream.deerflow_tasks.as_ref().unwrap().parked.is_none());
         }

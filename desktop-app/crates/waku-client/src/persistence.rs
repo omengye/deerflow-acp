@@ -117,6 +117,8 @@ pub struct ComposerDraftStore {
 struct ComposerDraftSaveState {
     snapshot: ComposerDrafts,
     latest_generation: u64,
+    /// Only these draft keys may have been applied without an acknowledgement.
+    unconfirmed: Vec<ComposerDraftTarget>,
 }
 
 impl ComposerDraftStore {
@@ -152,11 +154,12 @@ impl ComposerDraftStore {
         if generation < state.latest_generation {
             return Ok(());
         }
-        let changes = composer_draft_changes(&state.snapshot, &drafts);
+        let changes = composer_draft_changes(&state.snapshot, &drafts, &state.unconfirmed);
+        state.latest_generation = generation;
         if changes.is_empty() {
-            state.latest_generation = generation;
             return Ok(());
         }
+        let targets = changes.iter().map(|change| change.target).collect();
         match self
             .daemon
             .client()
@@ -165,11 +168,18 @@ impl ComposerDraftStore {
                 Uuid::nil(),
                 Command::ApplyComposerDraftChanges { changes },
             )
-            .map_err(to_io_error)?
+            .map_err(|error| {
+                if !self.daemon.is_remote() && crate::DaemonClient::is_transport_lost(&error)
+                    && !crate::DaemonClient::definitely_not_sent(&error)
+                {
+                    state.unconfirmed = targets;
+                }
+                transport_io_error(error)
+            })?
         {
             ResponsePayload::Ack => {
                 state.snapshot = drafts;
-                state.latest_generation = generation;
+                state.unconfirmed.clear();
                 Ok(())
             }
             _ => Err(io::Error::other(
@@ -182,6 +192,7 @@ impl ComposerDraftStore {
 fn composer_draft_changes(
     previous: &ComposerDrafts,
     next: &ComposerDrafts,
+    unconfirmed: &[ComposerDraftTarget],
 ) -> Vec<ComposerDraftChange> {
     let mut changes = Vec::new();
     collect_composer_draft_changes(
@@ -196,6 +207,14 @@ fn composer_draft_changes(
         |session_id| ComposerDraftTarget::Session { session_id },
         &mut changes,
     );
+    for &target in unconfirmed {
+        if !changes.iter().any(|change| change.target == target) {
+            changes.push(ComposerDraftChange {
+                target,
+                draft: next.get(target.into()).cloned(),
+            });
+        }
+    }
     changes
 }
 
@@ -1038,7 +1057,7 @@ impl StateStore {
                     sessions,
                 },
             )
-            .map_err(to_io_error)?;
+            .map_err(transport_io_error)?;
         state.dirty_sessions.clear();
         Ok(())
     }
@@ -1131,6 +1150,23 @@ fn restore_task_state_skeletons(sessions: &mut [AgentSession]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_persists_latest_draft_even_if_an_unacknowledged_edit_was_reverted() {
+        let session_id = Uuid::new_v4();
+        let target = ComposerDraftTarget::Session { session_id };
+        let before = ComposerDrafts::default();
+        let mut latest = before.clone();
+        // Both local snapshots are empty, but the server may have received an
+        // intermediate edit. Only that key must be explicitly removed.
+        let changes = composer_draft_changes(&before, &latest, &[target]);
+        assert_eq!(changes, vec![ComposerDraftChange { target, draft: None }]);
+        let draft = ComposerDraft { text: "newer edit".into(), ..Default::default() };
+        latest.set(target.into(), draft.clone());
+        assert_eq!(composer_draft_changes(&before, &latest, &[target]), vec![ComposerDraftChange {
+            target, draft: Some(draft),
+        }]);
+    }
 
     #[test]
     fn math_rendering_defaults_on_and_persists_as_an_app_preference() {
@@ -1269,4 +1305,12 @@ fn normalize_computer_app_grants(grants: &mut Vec<ComputerAppGrant>) {
 
 fn to_io_error(error: impl std::fmt::Display) -> io::Error {
     io::Error::other(error.to_string())
+}
+
+fn transport_io_error(error: anyhow::Error) -> io::Error {
+    if crate::DaemonClient::is_transport_lost(&error) {
+        io::Error::new(io::ErrorKind::ConnectionAborted, error)
+    } else {
+        to_io_error(error)
+    }
 }

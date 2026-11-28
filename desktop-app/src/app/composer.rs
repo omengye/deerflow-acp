@@ -2293,6 +2293,17 @@ impl Waku {
         prompt: &str,
         cx: &mut Context<Self>,
     ) -> Option<ComposerSubmission> {
+        if let Some(id) = self.state.selected_session
+            && self.local_session_unavailable(id)
+        {
+            self.local_action_notice = Some((id, "本地连接正在恢复，草稿已保留。"));
+            cx.notify();
+            return None;
+        }
+        if self.selected_runtime().is_some_and(SessionRuntime::prompt_delivery_uncertain) {
+            cx.notify();
+            return None;
+        }
         if self.selected_session().is_some_and(|session| {
             self.pending_deerflow_approvals.contains_key(&session.id)
                 || self
@@ -2797,7 +2808,21 @@ impl Waku {
         // reads as unavailable and the submission path refuses too, so
         // `enter` cannot slip past a disabled control.
         let no_providers = self.model_picker_has_no_providers();
-        let can_send = has_draft && !no_providers;
+        let recovery_notice = self.show_local_recovery_notice();
+        let uncertain = self.selected_runtime().is_some_and(SessionRuntime::prompt_delivery_uncertain);
+        let can_send = has_draft && !no_providers && !recovery_notice && !uncertain;
+        let action_notice = self.local_action_notice.filter(|(id, _)| Some(*id) == self.state.selected_session);
+        let message = if uncertain {
+            Some("消息的发送结果待确认，请查看会话记录。")
+        } else if let Some((_, message)) = action_notice {
+            Some(message)
+        } else if recovery_notice {
+            Some("正在重新连接本地服务…")
+        } else if let Some(runtime) = self.selected_runtime() {
+            runtime.pending_action_notice()
+        } else {
+            None
+        };
         let (autocomplete, autocomplete_actionable) =
             match self.render_composer_autocomplete(window, cx) {
                 Some((element, actionable)) => (Some(element), actionable),
@@ -2860,6 +2885,9 @@ impl Waku {
                         }))
                 })
                 .children(autocomplete)
+                .when_some(message, |card, message| {
+                    card.child(div().px(px(14.)).text_size(sp(12.)).text_color(theme.text_secondary).child(message))
+                })
                 .when(!self.composer_attachments.is_empty(), |card| {
                     card.child(self.render_composer_attachments(cx))
                 })

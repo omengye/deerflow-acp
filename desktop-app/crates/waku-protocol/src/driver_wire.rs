@@ -25,6 +25,10 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
         DriverEvent::RuntimeEventCursorAdvanced(_) => {
             bail!("client-only runtime cursors cannot be sent by the daemon")
         }
+        DriverEvent::LocalSessionAttachmentFailed(_) => {
+            bail!("local session attachment failures cannot be sent by the daemon")
+        }
+        DriverEvent::LocalUserInputResult { .. } => bail!("local answer receipts cannot be broadcast"),
         DriverEvent::Connected { provider_cursor } => {
             ("connected", serde_json::to_value(provider_cursor)?)
         }
@@ -136,6 +140,7 @@ pub fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 "contextWindow": context_window,
             }),
         ),
+        DriverEvent::TurnCancelled => ("turnFinished", json!({"success": true, "cancelled": true})),
         DriverEvent::TurnFinished { success, summary } => (
             "turnFinished",
             json!({ "success": success, "summary": summary }),
@@ -245,9 +250,10 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
         }
         "turnFinished" => {
             let finished: TurnFinishedWire = serde_json::from_value(payload)?;
-            DriverEvent::TurnFinished {
-                success: finished.success,
-                summary: finished.summary,
+            if finished.cancelled && finished.success {
+                DriverEvent::TurnCancelled
+            } else {
+                DriverEvent::TurnFinished { success: finished.success, summary: finished.summary }
             }
         }
         "error" => DriverEvent::Error(serde_json::from_value(payload)?),
@@ -320,12 +326,24 @@ struct UsageWire {
 #[derive(Deserialize)]
 struct TurnFinishedWire {
     success: bool,
+    #[serde(default)]
+    cancelled: bool,
     summary: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_turn_round_trips_without_changing_an_older_completion() {
+        let wire = event_to_wire(DriverEvent::TurnCancelled).unwrap();
+        assert_eq!(wire.kind, "turnFinished");
+        assert_eq!(wire.payload["success"], true);
+        assert!(matches!(event_from_wire(wire).unwrap(), DriverEvent::TurnCancelled));
+        let legacy = WireDriverEvent::new("turnFinished", json!({"success":true}));
+        assert!(matches!(event_from_wire(legacy).unwrap(), DriverEvent::TurnFinished { success: true, .. }));
+    }
 
     #[test]
     fn resolved_permission_round_trips_with_only_its_request_identity() {

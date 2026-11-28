@@ -552,7 +552,7 @@ struct PendingCheckpointCapture {
 /// preparation window from a connecting provider that can already be stopped.
 struct PreparedSubmission {
     workspace: SessionWorkspace,
-    checkpoint_warning: Option<String>,
+    checkpoint_warning: Option<anyhow::Error>,
     /// `None` reuses an already-live runtime. `Some` contains the result of a
     /// provider process start performed on the background executor.
     driver: Option<anyhow::Result<PreparedDriver>>,
@@ -869,6 +869,10 @@ struct SessionRuntime {
     /// Presentation metadata for steering messages awaiting the provider's
     /// accepted/rejected acknowledgement, in transport order.
     pending_steers: VecDeque<ComposerSubmission>,
+    /// Local prompts have a replayable acknowledgement with both identities.
+    pending_local_prompt: Option<(Uuid, Uuid, u64)>,
+    pending_local_permission: Option<SentPermission>,
+    local_cancel_generation: Option<u64>,
     steering_run_id: Option<String>,
     stream_phase: Option<StreamPhase>,
     /// The parked-turn notification has fired for the turn in flight, so a
@@ -890,6 +894,46 @@ struct SessionRuntime {
     last_background_refresh_at: Instant,
 }
 
+impl SessionRuntime {
+    fn prompt_delivery_uncertain(&self) -> bool {
+        self.pending_local_prompt.is_some_and(|(_, _, sent)| sent != self.driver.local_connection_generation())
+    }
+
+    fn pending_action_notice(&self) -> Option<&'static str> {
+        if let Some(sent) = self.local_cancel_generation {
+            return Some(if sent == self.driver.local_connection_generation() {
+                "已请求停止，正在等待本轮结束。"
+            } else {
+                "停止请求的结果待确认，请查看会话状态。"
+            });
+        }
+        if let Some(sent) = self.pending_local_permission.as_ref() {
+            return Some(if sent.generation == self.driver.local_connection_generation() {
+                "正在确认审批决定。"
+            } else {
+                "审批结果待确认，可手动重试原决定。"
+            });
+        }
+        match self.pending_user_input.as_ref()?.delivery {
+            AnswerDelivery::Sending => Some("正在确认回答是否送达。"),
+            AnswerDelivery::Unknown => Some("回答的送达结果待确认，已保留原回答。"),
+            AnswerDelivery::Editing => None,
+        }
+    }
+}
+
+struct SentPermission {
+    request_id: String,
+    option_id: String,
+    generation: u64,
+}
+
+impl SentPermission {
+    fn blocks(&self, request_id: &str, option_id: &str, generation: u64) -> bool {
+        self.request_id == request_id && (self.generation == generation || self.option_id != option_id)
+    }
+}
+
 #[derive(Clone)]
 struct PendingUserInput {
     request_id: String,
@@ -897,6 +941,14 @@ struct PendingUserInput {
     question_index: usize,
     selections: HashMap<String, Vec<String>>,
     custom_answers: HashMap<String, String>,
+    delivery: AnswerDelivery,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum AnswerDelivery {
+    Editing,
+    Sending,
+    Unknown,
 }
 
 impl PendingUserInput {
@@ -907,6 +959,7 @@ impl PendingUserInput {
             question_index: 0,
             selections: HashMap::new(),
             custom_answers: HashMap::new(),
+            delivery: AnswerDelivery::Editing,
         }
     }
 
@@ -1217,6 +1270,11 @@ pub struct Waku {
     event_wake_tx: smol::channel::Sender<()>,
     task_state_sync_tx: Sender<Result<RemoteTaskStateSnapshot, String>>,
     task_state_sync_events: Receiver<Result<RemoteTaskStateSnapshot, String>>,
+    local_recovery_notice_visible: bool,
+    local_action_notice: Option<(Uuid, &'static str)>,
+    retry_local_draft_save: bool,
+    retry_local_state_save: bool,
+    queues_waiting_for_connection: HashSet<Uuid>,
     runtimes: HashMap<Uuid, SessionRuntime>,
     runtime_attach_pending: HashSet<Uuid>,
     runtime_attach_misses: HashMap<Uuid, u8>,
@@ -2342,15 +2400,16 @@ impl Waku {
                 &composer,
                 |this: &mut Self, _, event: &ComposerEvent, cx| match event {
                     ComposerEvent::Submit(prompt) => {
-                        if let Some(session_id) = this.selected_session().and_then(|session| {
-                            (this.response_fork_preparations.contains_key(&session.id)
-                                || this.pending_deerflow_approvals.contains_key(&session.id))
-                            .then_some(session.id)
+                        if this.selected_session().is_some_and(|session| {
+                            this.response_fork_preparations.contains_key(&session.id)
+                                || this.pending_deerflow_approvals.contains_key(&session.id)
                         }) {
-                            this.defer_restore_blocked_composer(session_id, prompt.clone(), cx);
-                        } else if let Some(submission) =
+                            return;
+                        }
+                        if let Some(submission) =
                             this.submission_with_attachments(prompt, cx)
                         {
+                            this.composer.update(cx, |input, cx| input.clear(cx));
                             this.submit_composer_submission(submission, cx);
                         }
                     }
@@ -2675,7 +2734,10 @@ impl Waku {
                         .timer(BACKGROUND_WORK_TICK_INTERVAL)
                         .await;
                     if this
-                        .update(cx, |this, cx| this.maybe_refresh_background_work(cx))
+                        .update(cx, |this, cx| {
+                            this.update_local_recovery_notice(cx);
+                            this.maybe_refresh_background_work(cx);
+                        })
                         .is_err()
                     {
                         break;
@@ -2818,6 +2880,11 @@ impl Waku {
                 event_wake_tx,
                 task_state_sync_tx,
                 task_state_sync_events,
+                local_recovery_notice_visible: false,
+                local_action_notice: None,
+                retry_local_draft_save: false,
+                retry_local_state_save: false,
+                queues_waiting_for_connection: HashSet::new(),
                 runtimes: HashMap::new(),
                 runtime_attach_pending: HashSet::new(),
                 runtime_attach_misses: HashMap::new(),

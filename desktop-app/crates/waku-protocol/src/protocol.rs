@@ -143,6 +143,8 @@ pub enum Command {
     RespondUserInput {
         request_id: String,
         answers: Vec<UserInputAnswer>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        confirm_delivery: bool,
     },
     RunComputerTool {
         request: WireComputerToolRequest,
@@ -403,6 +405,8 @@ pub enum ResponsePayload {
         has_more: bool,
     },
     Ack,
+    /// Returned only when RespondUserInput explicitly asks for delivery confirmation.
+    UserInputReceipt { result: crate::model::LocalUserInputResult },
     DeerFlow {
         data: Value,
     },
@@ -525,6 +529,16 @@ mod base64_bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_user_input_is_opt_in_for_older_clients() {
+        let old = serde_json::json!({"type": "respondUserInput", "requestId": "req", "answers": []});
+        let command: Command = serde_json::from_value(old.clone()).unwrap();
+        assert!(matches!(command, Command::RespondUserInput { confirm_delivery: false, .. }));
+        assert_eq!(serde_json::to_value(command).unwrap(), old);
+        let receipt = ResponsePayload::UserInputReceipt { result: crate::model::LocalUserInputResult::Delivered };
+        assert_eq!(serde_json::to_value(receipt).unwrap(), serde_json::json!({"type":"userInputReceipt","result":"delivered"}));
+    }
 
     #[test]
     fn replay_pages_round_trip_with_explicit_event_delivery_mode() {

@@ -3084,7 +3084,7 @@ pub enum ComposerEvent {
 pub struct ComposerAttachmentPaste(pub Vec<ClipboardEntry>);
 
 /// The prompt composer, built on [`TextInput`]: a self-sizing multi-line
-/// field where Enter submits the trimmed prompt and clears, the primary
+/// field where Enter offers the trimmed prompt to its owner, the primary
 /// modifier + Enter steers it into the running turn instead, and image or
 /// file pastes surface as attachments rather than text. Everything textual —
 /// editing, IME, undo, selection — is the embedded field's; this component
@@ -3108,13 +3108,12 @@ impl ComposerInput {
         });
         let focus_handle = input.read(cx).focus();
         let _subscriptions = vec![
-            cx.subscribe(&input, |composer, _, event: &InputEvent, cx| match event {
+            cx.subscribe(&input, |_, _, event: &InputEvent, cx| match event {
                 InputEvent::Submit(raw) => {
-                    // The prompt is consumed by sending it, and whitespace
-                    // alone is nothing to send.
+                    // The owner clears the input only after admitting the
+                    // action. A reconnect can leave the draft editable.
                     let value = raw.trim().to_owned();
                     if !value.is_empty() {
-                        composer.input.update(cx, |input, cx| input.clear(cx));
                         cx.emit(ComposerEvent::Submit(value));
                     }
                 }
@@ -3369,6 +3368,24 @@ mod tests {
         cx.update(|window, cx| window.focus(&composer.read(cx).focus(), cx));
         cx.run_until_parked();
         (composer, cx)
+    }
+
+    #[gpui::test]
+    fn enter_keeps_draft_until_submission_is_admitted(cx: &mut TestAppContext) {
+        let (composer, cx) = setup_composer(cx);
+        let submitted = Rc::new(RefCell::new(Vec::new()));
+        let output = submitted.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&composer, move |_, event: &ComposerEvent, _| {
+                if let ComposerEvent::Submit(text) = event {
+                    output.borrow_mut().push(text.clone());
+                }
+            }).detach();
+        });
+        composer.update(cx, |composer, cx| composer.set_content("  unfinished draft  ", cx));
+        cx.simulate_keystrokes("enter");
+        assert_eq!(submitted.borrow().as_slice(), ["unfinished draft"]);
+        cx.read_entity(&composer, |composer, cx| assert_eq!(composer.content(cx), "  unfinished draft  "));
     }
 
     #[gpui::test]

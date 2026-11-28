@@ -135,6 +135,24 @@ pub(super) fn questions(params: &Value) -> Option<Vec<UserInputQuestion>> {
     Some(questions)
 }
 
+pub(super) fn complete(
+    pending: &PendingAcpUserInputs,
+    request_id: &str,
+    answers: &[UserInputAnswer],
+) -> crate::model::LocalUserInputResult {
+    use crate::model::LocalUserInputResult;
+    let Some(input) = pending.lock().remove(request_id) else {
+        return LocalUserInputResult::NotPending;
+    };
+    let reply = response(&input.params, answers);
+    let accepted = reply["outcome"] == "accepted";
+    if input.responder.respond(reply).is_ok() && accepted {
+        LocalUserInputResult::Delivered
+    } else {
+        LocalUserInputResult::NotPending
+    }
+}
+
 pub(super) fn response(params: &Value, submitted: &[UserInputAnswer]) -> Value {
     let cancelled = || json!({"outcome": "cancelled"});
     let Some(questions) = questions(params) else {
@@ -409,9 +427,9 @@ mod tests {
                                     cancel_pending_user_inputs(&pending);
                                     assert!(!prompts.lock().accepts_user_input("session"));
                                 } else if mode == "accepted" {
-                                    let input = pending.lock().remove(&request_id).unwrap();
-                                    let answer = response(
-                                        &input.params,
+                                    use crate::model::LocalUserInputResult;
+                                    let delivered = complete(
+                                        &pending, &request_id,
                                         &[
                                             UserInputAnswer {
                                                 question_id: "q1".into(),
@@ -423,7 +441,8 @@ mod tests {
                                             },
                                         ],
                                     );
-                                    input.responder.respond(answer)?;
+                                    assert_eq!(delivered, LocalUserInputResult::Delivered);
+                                    assert_eq!(complete(&pending, &request_id, &[]), LocalUserInputResult::NotPending);
                                 }
                             }
                             Ok(DriverEvent::TurnFinished { .. }) => finished = true,

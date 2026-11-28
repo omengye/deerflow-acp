@@ -3,7 +3,7 @@ use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::SystemTime;
 use std::time::{Duration, Instant};
@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::DaemonClient;
+use waku_protocol::connection_diagnostics::Event;
 use waku_protocol::{
     APP_EXECUTABLE_ENV, Command, DAEMON_TOKEN_ENV, DaemonReady, DaemonSettings, PROTOCOL_VERSION,
     ResponsePayload,
@@ -230,7 +231,11 @@ impl DaemonProcess {
                 return Err(error);
             }
         };
-        let client = match DaemonClient::connect(&client_address, token.clone()) {
+        let client = match DaemonClient::connect_local_with_resume(
+            &client_address,
+            token.clone(),
+            Vec::new(),
+        ) {
             Ok(client) => client,
             Err(error) => {
                 let _ = child.kill();
@@ -248,10 +253,6 @@ impl DaemonProcess {
 
     pub fn client(&self) -> DaemonClient {
         self.client.clone()
-    }
-
-    fn has_exited(&mut self) -> bool {
-        !matches!(self.child.try_wait(), Ok(None))
     }
 
     fn stop(&mut self) {
@@ -335,6 +336,9 @@ struct SupervisorInner {
     settings_updates: Sender<DaemonSettings>,
     client_updates: Mutex<Vec<Sender<DaemonClient>>>,
     running: AtomicBool,
+    clock_origin: Instant,
+    // Milliseconds past clock_origin, plus one. Zero means the transport is ready.
+    recovery_started: AtomicU64,
 }
 
 enum DaemonTarget {
@@ -444,6 +448,8 @@ impl DaemonSupervisor {
             settings_updates,
             client_updates: Mutex::new(Vec::new()),
             running: AtomicBool::new(true),
+            clock_origin: Instant::now(),
+            recovery_started: AtomicU64::new(0),
         });
         let weak_inner = Arc::downgrade(&inner);
         std::thread::Builder::new()
@@ -472,6 +478,33 @@ impl DaemonSupervisor {
 
     pub fn is_remote(&self) -> bool {
         self.inner.executable.is_none()
+    }
+
+    /// UI ticks can sample this without locking the supervisor or probing the process.
+    pub fn local_recovery_elapsed(&self) -> Option<Duration> {
+        let start = self
+            .inner
+            .recovery_started
+            .load(Ordering::Acquire)
+            .checked_sub(1)?;
+        Some(
+            self.inner
+                .clock_origin
+                .elapsed()
+                .saturating_sub(Duration::from_millis(start)),
+        )
+    }
+
+    /// Admission check for an explicit action, including a close before the next monitor tick.
+    pub fn local_transport_unavailable(&self) -> bool {
+        if self.is_remote() {
+            return false;
+        }
+        match &*self.inner.target.lock() {
+            DaemonTarget::Local(process) => process.client.is_disconnected(),
+            DaemonTarget::Restarting(_) => true,
+            DaemonTarget::Remote { .. } => false,
+        }
     }
 
     pub fn settings(&self) -> DaemonSettings {
@@ -542,6 +575,7 @@ fn monitor_daemon(
     mut active_stamp: Option<ExecutableStamp>,
     watch_for_rebuilds: bool,
 ) {
+    let mut episode = None;
     loop {
         std::thread::sleep(REBUILD_POLL_INTERVAL);
         let Some(inner) = weak_inner.upgrade() else {
@@ -549,6 +583,16 @@ fn monitor_daemon(
         };
         if !inner.running.load(Ordering::Acquire) {
             return;
+        }
+        if let Some(executable) = inner.executable.as_ref() {
+            monitor_local(
+                &inner,
+                executable,
+                &mut active_stamp,
+                watch_for_rebuilds,
+                &mut episode,
+            );
+            continue;
         }
         let remote_reconnect = {
             let target = inner.target.lock();
@@ -590,96 +634,154 @@ fn monitor_daemon(
                 .client_updates
                 .lock()
                 .retain(|subscriber| subscriber.send(replacement.clone()).is_ok());
-            continue;
         }
-        // A dropped desktop socket does not mean the daemon or its provider
-        // runtimes exited. Reconnect to the live child first so an otherwise
-        // healthy provider turn survives the transport failure.
-        let (local_recovery, local_reconnect) = {
-            let mut target = inner.target.lock();
-            match &mut *target {
-                DaemonTarget::Local(process) => {
-                    let recovery = local_daemon_recovery(
-                        process.has_exited(),
-                        process.client.is_disconnected(),
-                    );
-                    let reconnect = (recovery == LocalDaemonRecovery::Reconnect).then(|| {
-                        (
-                            process.client.clone(),
-                            process.address.clone(),
-                            process.token.clone(),
-                            process.client.last_sequences(),
-                        )
-                    });
-                    (recovery, reconnect)
-                }
-                DaemonTarget::Restarting(_) => (LocalDaemonRecovery::Restart, None),
-                DaemonTarget::Remote { .. } => continue,
-            }
-        };
-        if let Some((disconnected, address, token, resume_from)) = local_reconnect {
-            let _restart = inner.restart.lock();
-            let still_current = matches!(
-                &*inner.target.lock(),
-                DaemonTarget::Local(process)
-                    if process.client.same_connection(&disconnected)
-                        && process.client.is_disconnected()
-            );
-            if !still_current {
-                continue;
-            }
-            if let Ok(replacement) = DaemonClient::connect_with_resume(&address, token, resume_from)
-            {
-                let installed = {
-                    let mut target = inner.target.lock();
-                    match &mut *target {
-                        DaemonTarget::Local(process)
-                            if process.client.same_connection(&disconnected) =>
-                        {
-                            process.client = replacement.clone();
-                            true
-                        }
-                        _ => false,
-                    }
-                };
-                if installed {
-                    inner
-                        .client_updates
-                        .lock()
-                        .retain(|subscriber| subscriber.send(replacement.clone()).is_ok());
-                    queue_settings_refresh(&inner);
-                }
-                continue;
-            }
+    }
+}
+
+struct RecoveryEpisode {
+    connection: Uuid,
+    started: Instant,
+    attempts: u32,
+    last_error: Option<&'static str>,
+}
+
+impl RecoveryEpisode {
+    fn event(&self, phase: &'static str) -> Event {
+        let mut event = Event::new(phase, self.connection);
+        event.attempt = Some(self.attempts);
+        event.elapsed_ms = Some(self.started.elapsed().as_millis() as u64);
+        event
+    }
+
+    fn failed(&mut self, phase: &'static str, error: &anyhow::Error) {
+        let reason = DaemonClient::connection_error_category(error);
+        // Summarize prolonged failures while recording a change of cause immediately.
+        if self.last_error != Some(reason) || self.attempts.is_power_of_two() {
+            let mut event = self.event(phase).with_error(error.as_ref());
+            event.reason = Some(reason);
+            event.write_desktop();
         }
-        let process_exited = local_recovery == LocalDaemonRecovery::Restart;
-        let Some(executable) = inner.executable.as_ref() else {
+        self.last_error = Some(reason);
+    }
+}
+
+fn monitor_local(
+    inner: &SupervisorInner,
+    executable: &Path,
+    active_stamp: &mut Option<ExecutableStamp>,
+    watch_for_rebuilds: bool,
+    episode: &mut Option<RecoveryEpisode>,
+) {
+    // Reconfiguration also takes this lock. A check for an exited process must never
+    // restart a newer healthy child which was installed after that check.
+    let _restart = inner.restart.lock();
+    let stamp = watch_for_rebuilds
+        .then(|| ExecutableStamp::read(executable).ok())
+        .flatten();
+    let rebuilt = stamp.is_some() && stamp != *active_stamp;
+    let mut target = inner.target.lock();
+    let (action, old_connection, pid, status) = match &mut *target {
+        DaemonTarget::Local(p) => {
+            let status = p.child.try_wait().ok().flatten();
+            let action = local_daemon_recovery(status.is_some(), p.client.is_disconnected());
+            (action, p.client.connection_id(), Some(p.child.id()), status)
+        }
+        DaemonTarget::Restarting(client) => (
+            LocalDaemonRecovery::Restart,
+            client.connection_id(),
+            None,
+            None,
+        ),
+        DaemonTarget::Remote { .. } => return,
+    };
+    if action == LocalDaemonRecovery::None && !rebuilt {
+        if let Some(previous) = episode.take() {
+            // Explicit settings reconfiguration recovered the connection between checks.
+            let mut event = previous.event("recovered");
+            event.new_connection_id = Some(old_connection);
+            event.daemon_pid = pid;
+            event.write_desktop();
+            inner.recovery_started.store(0, Ordering::Release);
+        }
+        return;
+    }
+
+    let trace = episode.get_or_insert_with(|| {
+        let started = Instant::now();
+        inner.recovery_started.store(
+            (started.duration_since(inner.clock_origin).as_millis() as u64) + 1,
+            Ordering::Release,
+        );
+        let mut event = Event::new("recovery_started", old_connection);
+        event.daemon_pid = pid;
+        event.reason = Some(if status.is_some() {
+            "child_exited"
+        } else if rebuilt {
+            "executable_updated"
+        } else {
+            "transport_closed"
+        });
+        event.write_desktop();
+        RecoveryEpisode {
+            connection: old_connection,
+            started,
+            attempts: 0,
+            last_error: None,
+        }
+    });
+    trace.attempts = trace.attempts.saturating_add(1);
+    if let Some(status) = status {
+        let mut event = trace.event("child_exited");
+        event.exit_code = status.code();
+        event.daemon_pid = pid;
+        event.write_desktop();
+    }
+    if action == LocalDaemonRecovery::Reconnect && !rebuilt {
+        let DaemonTarget::Local(p) = &*target else {
             return;
         };
-        let observed_stamp = ExecutableStamp::read(executable).ok();
-        let executable_changed = watch_for_rebuilds
-            && observed_stamp.is_some_and(|observed| Some(observed) != active_stamp);
-        if !process_exited && !executable_changed {
-            continue;
+        let (address, token, previous) = (p.address.clone(), p.token.clone(), p.client.clone());
+        drop(target);
+        let client = match DaemonClient::connect_local_with_resume(
+            &address,
+            token,
+            previous.last_sequences(),
+        ) {
+            Ok(client) => client,
+            Err(error) => {
+                trace.failed("reconnect_failed", &error);
+                return;
+            }
+        };
+        if let DaemonTarget::Local(p) = &mut *inner.target.lock() {
+            p.client = client.clone();
         }
-        let _restart = inner.restart.lock();
+        inner
+            .client_updates
+            .lock()
+            .retain(|s| s.send(client.clone()).is_ok());
+    } else {
+        drop(target);
         let Some(exposure) = inner.exposure.lock().clone() else {
             return;
         };
-        match replace_local_daemon(&inner, executable, &exposure) {
-            Ok(()) => {}
-            Err(error) => {
-                eprintln!("could not restart rebuilt Waku daemon: {error:#}");
-                continue;
-            }
+        if let Err(error) = replace_local_daemon(inner, executable, &exposure) {
+            trace.failed("restart_failed", &error);
+            return;
         }
-        queue_settings_refresh(&inner);
-        if let Some(observed_stamp) = observed_stamp {
-            active_stamp = Some(observed_stamp);
+        if stamp.is_some() {
+            *active_stamp = stamp;
         }
-        drop(_restart);
-        drop(inner);
     }
+    inner.recovery_started.store(0, Ordering::Release);
+    if let DaemonTarget::Local(p) = &*inner.target.lock() {
+        let mut event = trace.event("recovered");
+        event.new_connection_id = Some(p.client.connection_id());
+        event.daemon_pid = Some(p.child.id());
+        event.write_desktop();
+    }
+    *episode = None;
+    queue_settings_refresh(inner);
 }
 
 fn replace_local_daemon(

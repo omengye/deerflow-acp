@@ -1240,7 +1240,29 @@ impl Waku {
         // composer deliberately shows a spinner rather than Stop until the
         // provider runtime exists, and the keyboard action follows the same
         // boundary.
+        if self.local_session_unavailable(session_id) {
+            self.local_action_notice = Some((session_id, "本地连接正在恢复，停止请求尚未发送。"));
+            cx.notify();
+            return;
+        }
         if self.submission_preparations.contains(&session_id) {
+            return;
+        }
+        let local_turn = !self.daemon.is_remote() && self.selected_session().and_then(AgentSession::active_turn_id).is_some();
+        if local_turn && let Some(runtime) = self.runtimes.get_mut(&session_id) {
+            let generation = runtime.driver.local_connection_generation();
+            if runtime.local_cancel_generation.is_some() {
+                return;
+            }
+            if runtime.driver.try_cancel() {
+                runtime.local_cancel_generation = Some(generation);
+                runtime.cancel_drain.begin();
+                runtime.driver.cancel_computer_use();
+                self.pending_queue_drains.retain(|id| *id != session_id);
+            } else {
+                self.local_action_notice = Some((session_id, "本地连接正在恢复，停止请求尚未发送。"));
+            }
+            cx.notify();
             return;
         }
         let mut runtime = self.runtimes.remove(&session_id);
@@ -1355,8 +1377,20 @@ impl Waku {
                 return;
             };
             let decision = if allow { "allow" } else { "deny" };
-            runtime.driver.respond(request_id, option_id);
-            runtime.pending_permission = None;
+            let generation = runtime.driver.local_connection_generation();
+            if runtime.pending_local_permission.as_ref().is_some_and(|sent| sent.blocks(&request_id, &option_id, generation)) {
+                return;
+            }
+            if !runtime.driver.try_respond(request_id.clone(), option_id.clone()) {
+                self.local_action_notice = Some((session_id, "本地连接正在恢复，审批决定尚未发送。"));
+                cx.notify();
+                return;
+            }
+            if !self.daemon.is_remote() {
+                runtime.pending_local_permission = Some(SentPermission { request_id, option_id, generation });
+            } else {
+                runtime.pending_permission = None;
+            }
             Some(decision)
         } else {
             return;
@@ -1369,7 +1403,7 @@ impl Waku {
                     decision,
                 });
         }
-        if let Some(session) = self.selected_session_mut() {
+        if self.daemon.is_remote() && let Some(session) = self.selected_session_mut() {
             session.status = SessionStatus::Working;
         }
         cx.notify();
@@ -1516,6 +1550,9 @@ impl Waku {
             if !answered {
                 return;
             }
+            if pending.delivery == AnswerDelivery::Sending {
+                return;
+            }
             if pending.question_index + 1 < pending.questions.len() {
                 pending.question_index += 1;
                 false
@@ -1528,13 +1565,20 @@ impl Waku {
             let Some(runtime) = self.runtimes.get_mut(&session_id) else {
                 return;
             };
-            let Some(pending) = runtime.pending_user_input.take() else {
+            let Some(pending) = runtime.pending_user_input.as_mut() else {
                 return;
             };
-            let answers = pending.answers();
-            runtime
-                .driver
-                .respond_user_input(pending.request_id, answers);
+            if !runtime.driver.try_respond_user_input(pending.request_id.clone(), pending.answers()) {
+                self.local_action_notice = Some((session_id, "本地连接正在恢复，回答已保留。"));
+                cx.notify();
+                return;
+            }
+            if !self.daemon.is_remote() {
+                pending.delivery = AnswerDelivery::Sending;
+                cx.notify();
+                return;
+            }
+            runtime.pending_user_input = None;
             if let Some(session) = self.state.session_mut(session_id) {
                 session.status = SessionStatus::Working;
             }
@@ -1569,11 +1613,20 @@ impl Waku {
         };
 
         if decision == "deny" {
-            runtime.driver.reject_computer_tool(
-                pending.request,
+            if !runtime.driver.try_reject_computer_tool(
+                pending.request.clone(),
                 "The user denied control of this app.".into(),
-            );
+            ) {
+                runtime.pending_computer_approval = Some(pending);
+                self.runtimes.insert(session_id, runtime);
+                return;
+            }
         } else {
+            if !runtime.driver.try_run_computer_tool(pending.request.clone()) {
+                runtime.pending_computer_approval = Some(pending);
+                self.runtimes.insert(session_id, runtime);
+                return;
+            }
             let key = pending.target.grant_key();
             runtime.computer_session_grants.insert(key);
             if decision == "always" && pending.target.persistable() {
@@ -1591,7 +1644,6 @@ impl Waku {
                     self.save();
                 }
             }
-            runtime.driver.run_computer_tool(pending.request);
         }
         if let Some(session) = self.state.session_mut(session_id) {
             session.status = SessionStatus::Working;

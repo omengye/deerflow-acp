@@ -214,8 +214,7 @@ fn prepare_submission(
             turn_count,
         },
     )
-    .err()
-    .map(|error| tr!("errors.capture_pre_turn_checkpoint", error = error));
+    .err();
 
     // Process startup can synchronously resolve executables, bind sockets,
     // and spawn children. It belongs behind the same animated preparation
@@ -249,7 +248,46 @@ fn perform_message_rewind(request: MessageRewindRequest) -> Result<(AgentSession
 }
 
 
+pub(super) fn recovery_notice_due(transport: Option<Duration>, session: Option<Duration>) -> bool {
+    transport.max(session).is_some_and(|elapsed| elapsed >= Duration::from_secs(3))
+}
+
 impl Waku {
+    pub(super) fn local_session_unavailable(&self, session_id: Uuid) -> bool {
+        self.daemon.local_transport_unavailable()
+            || self.runtimes.get(&session_id).is_some_and(|runtime| runtime.driver.is_local_reconnecting())
+    }
+
+    pub(super) fn show_local_recovery_notice(&self) -> bool {
+        let session = self.selected_runtime()
+            .and_then(|runtime| runtime.driver.local_reconnecting_since())
+            .map(|since| since.elapsed());
+        recovery_notice_due(self.daemon.local_recovery_elapsed(), session)
+    }
+
+    pub(super) fn update_local_recovery_notice(&mut self, cx: &mut Context<Self>) {
+        let visible = self.show_local_recovery_notice();
+        if self.local_recovery_notice_visible != visible {
+            self.local_recovery_notice_visible = visible;
+            cx.notify();
+        }
+        if self.local_action_notice.is_some_and(|(id, _)| !self.local_session_unavailable(id)) {
+            self.local_action_notice = None;
+            cx.notify();
+        }
+        for session_id in std::mem::take(&mut self.queues_waiting_for_connection) {
+            self.drain_queued_message(session_id, cx);
+        }
+        if (self.retry_local_draft_save || self.retry_local_state_save) && !self.daemon.local_transport_unavailable() {
+            if std::mem::take(&mut self.retry_local_draft_save) {
+                self.schedule_composer_draft_save(cx);
+            }
+            if std::mem::take(&mut self.retry_local_state_save) {
+                self.save();
+            }
+        }
+    }
+
     pub(super) fn restart_task_state_sync(&self) {
         let clients = self.daemon.subscribe_clients();
         let results = self.task_state_sync_tx.clone();
@@ -951,14 +989,16 @@ impl Waku {
             .update_settings(self.state.daemon_settings())
             .err()
             .map(|error| error.to_string());
-        let app_error = self
-            .store
-            .save(&mut self.state)
-            .err()
-            .map(|error| error.to_string());
+        let app_error = match self.store.save(&mut self.state) {
+            Err(error) if !self.daemon.is_remote() && error.kind() == std::io::ErrorKind::ConnectionAborted => {
+                self.retry_local_state_save = true;
+                None
+            }
+            outcome => outcome.err().map(|error| error.to_string()),
+        };
         if let Some(error) = daemon_error.or(app_error) {
             self.show_toast(tr!("errors.save_local_state", error = error));
-        } else {
+        } else if !self.retry_local_state_save {
             self.stream_state_dirty = false;
         }
     }
@@ -1088,7 +1128,9 @@ impl Waku {
                     let checkpoint = match captured {
                         Ok(checkpoint) => checkpoint,
                         Err(error) => {
-                            waku.show_toast(tr!("errors.capture_turn_checkpoint", error = error));
+                            if waku.daemon.is_remote() || !waku_client::DaemonClient::is_transport_lost(&error) {
+                                waku.show_toast(tr!("errors.capture_turn_checkpoint", error = error));
+                            }
                             Checkpoint {
                                 turn_count,
                                 git_ref: checkpoint::checkpoint_ref(session_id, turn_count),
@@ -1247,32 +1289,6 @@ impl Waku {
         cx.notify();
     }
 
-    /// Restore a refused keyboard submission after the composer's Enter handler
-    /// settles. Preserve anything the user has since typed or navigated to.
-    pub(super) fn defer_restore_blocked_composer(
-        &self,
-        session_id: Uuid,
-        prompt: String,
-        cx: &mut Context<Self>,
-    ) {
-        let composer = self.composer.clone();
-        cx.spawn(async move |waku, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(1))
-                .await;
-            let _ = waku.update(cx, |waku, cx| {
-                if waku.state.selected_session == Some(session_id) {
-                    composer.update(cx, |input, cx| {
-                        if input.content(cx).is_empty() {
-                            input.set_content(prompt, cx);
-                        }
-                    });
-                }
-            });
-        })
-        .detach();
-    }
-
     pub(super) fn begin_message_edit(
         &mut self,
         action: UserMessageAction,
@@ -1399,12 +1415,9 @@ impl Waku {
         let Some(edit) = self.message_edit.clone() else {
             return;
         };
-        if self.submission_preparations.contains(&edit.session_id) {
+        if self.submission_preparations.contains(&edit.session_id) || self.local_session_unavailable(edit.session_id) {
             return;
         }
-        // Keyboard submission clears ComposerInput after emitting its event.
-        // Use the event's captured value rather than rereading the field; the
-        // button path enters here with its own pre-clear content as well.
         let prompt = prompt.trim().to_owned();
         if prompt.is_empty() && edit.attachments.is_empty() {
             self.show_toast(tr!("session.edited_message_empty"));
@@ -1957,7 +1970,9 @@ impl Waku {
                 // which starts its own runtime.
                 self.pending_deerflow_approvals.remove(&session_id);
                 self.fail_deerflow_budget_connection(session_id, error.to_string());
-                self.show_toast(error.to_string());
+                if self.daemon.is_remote() || !waku_client::DaemonClient::is_transport_lost(&error) {
+                    self.show_toast(error.to_string());
+                }
                 self.drain_queued_message(session_id, cx);
                 cx.notify();
                 return;
@@ -2010,7 +2025,9 @@ impl Waku {
             Some(Err(error)) => {
                 self.pending_deerflow_approvals.remove(&session_id);
                 self.fail_deerflow_budget_connection(session_id, error.to_string());
-                self.show_toast(error.to_string());
+                if self.daemon.is_remote() || !waku_client::DaemonClient::is_transport_lost(&error) {
+                    self.show_toast(error.to_string());
+                }
                 self.drain_queued_message(session_id, cx);
                 cx.notify();
                 return;
@@ -2038,6 +2055,9 @@ impl Waku {
                 events: prepared.events,
                 pending_events: VecDeque::new(),
                 pending_steers: VecDeque::new(),
+                pending_local_prompt: None,
+                pending_local_permission: None,
+                local_cancel_generation: None,
                 stream_phase: None,
                 park_announced: false,
                 stream_remeasure_pending: false,
@@ -2084,6 +2104,10 @@ impl Waku {
             // so the message goes straight in as a steer: queued, it would
             // wait for a settle that only the message itself could hasten.
             self.steer_composer_submission(submission, cx);
+            return;
+        }
+        if self.runtimes.get(&session.id).is_some_and(|runtime| runtime.cancel_drain.is_pending()) {
+            self.submit_submission_for_session(session.id, submission, cx);
             return;
         }
         if session.is_busy() {
@@ -2134,10 +2158,14 @@ impl Waku {
         }
         let provider_prompt = submission.prompt.clone();
         if let Some(runtime) = self.runtimes.get_mut(&session.id) {
-            if let Some(run) = &runtime.steering_run_id {
-                runtime.driver.steer_run(provider_prompt, run.clone());
+            let admitted = if let Some(run) = &runtime.steering_run_id {
+                runtime.driver.try_steer_run(provider_prompt, run.clone())
             } else {
-                runtime.driver.steer(provider_prompt);
+                runtime.driver.try_steer(provider_prompt)
+            };
+            if !admitted {
+                self.restore_unsent_submission(session.id, submission, cx);
+                return;
             }
             runtime.pending_steers.push_back(submission);
         } else {
@@ -2234,7 +2262,7 @@ impl Waku {
         turn_id: Option<Uuid>,
         cx: &mut Context<Self>,
     ) {
-        if !self.selected_session().is_some_and(|session| {
+        if self.local_session_unavailable(session_id) || !self.selected_session().is_some_and(|session| {
             session.id == session_id
                 && (session.provider != ProviderKind::DeerFlow
                     || (session.active_turn_id() == turn_id && self.session_can_steer(session)))
@@ -2276,6 +2304,12 @@ impl Waku {
     /// Start the next queued follow-up as a fresh turn. Only called once a
     /// settled turn has been fully closed, so the session is Idle.
     pub(super) fn drain_queued_message(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
+        if self.local_session_unavailable(session_id) {
+            if self.state.sessions.iter().any(|s| s.id == session_id && !s.queued_messages.is_empty()) {
+                self.queues_waiting_for_connection.insert(session_id);
+            }
+            return;
+        }
         if self.response_fork_preparations.contains_key(&session_id) {
             return;
         }
@@ -2518,7 +2552,10 @@ impl Waku {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.submission_preparations.remove(&session_id);
-                self.fail_deerflow_budget_connection(session_id, error.to_string());
+                let recovery = !self.daemon.is_remote() && waku_client::DaemonClient::is_transport_lost(&error);
+                if !recovery {
+                    self.fail_deerflow_budget_connection(session_id, error.to_string());
+                }
                 self.track_active_turn_outcome(
                     session_id,
                     crate::analytics::TurnOutcome::PreparationFailed,
@@ -2552,9 +2589,11 @@ impl Waku {
                         self.transcript_anchor_following.set(false);
                     }
                     self.splice_transcript_rows_after_visibility_change(&previous_kinds);
-                    self.restore_composer_submission(submission, cx);
-                    self.show_toast(tr!("errors.create_worktree", error = error));
+                    if !recovery {
+                        self.show_toast(tr!("errors.create_worktree", error = error));
+                    }
                 }
+                self.restore_unsent_submission(session_id, submission, cx);
                 cx.notify();
                 return;
             }
@@ -2623,8 +2662,10 @@ impl Waku {
         // The transcript already shows the turn — the prompt message, its
         // anchor, and the working indicator all landed at accept time. Only
         // preparation's own output surfaces here.
-        if selected && let Some(warning) = checkpoint_warning {
-            self.show_toast(warning);
+        if selected && let Some(error) = checkpoint_warning
+            && (self.daemon.is_remote() || !waku_client::DaemonClient::is_transport_lost(&error))
+        {
+            self.show_toast(tr!("errors.capture_pre_turn_checkpoint", error = error));
         }
         let provider = self
             .state
@@ -2634,8 +2675,7 @@ impl Waku {
             .map(|session| session.provider)
             .unwrap_or(self.state.last_provider);
         // The transcript keeps the typed slash command while the transport receives the expanded template.
-        let prompt = submission.prompt;
-        let driver_prompt = self.resolve_provider_submission(provider, &prompt);
+        let driver_prompt = self.resolve_provider_submission(provider, &submission.prompt);
         // The turn and its user message landed at accept time. Their ids go
         // with the prompt so every other client attached to the runtime
         // mirrors the same rows instead of minting its own.
@@ -2648,13 +2688,26 @@ impl Waku {
             .unwrap_or((None, None));
         let mut failed_to_start = false;
         match driver {
-            Ok(driver) => driver.prompt_with_attachments(
-                driver_prompt,
-                turn_id,
-                message_id,
-                submission.attachments,
-            ),
+            Ok(driver) => {
+                let generation = driver.local_connection_generation();
+                let admitted = driver.try_prompt_with_attachments(
+                    driver_prompt, turn_id, message_id, submission.attachments.clone(),
+                );
+                if !admitted {
+                    self.restore_unsent_turn(session_id, turn_id, submission, cx);
+                    return;
+                }
+                if !self.daemon.is_remote() && let (Some(turn), Some(message)) = (turn_id, message_id)
+                    && let Some(runtime) = self.runtimes.get_mut(&session_id)
+                {
+                    runtime.pending_local_prompt = Some((turn, message, generation));
+                }
+            }
             Err(error) => {
+                if !self.daemon.is_remote() && waku_client::DaemonClient::is_transport_lost(&error) {
+                    self.restore_unsent_turn(session_id, turn_id, submission, cx);
+                    return;
+                }
                 failed_to_start = true;
                 self.fail_deerflow_budget_connection(session_id, error.to_string());
                 let message = tr!("errors.start_agent", error = error);
@@ -2686,6 +2739,26 @@ impl Waku {
             let _ = waku.update(cx, |waku, _| waku.save());
         })
         .detach();
+    }
+
+    fn restore_unsent_turn(&mut self, session_id: Uuid, turn_id: Option<Uuid>, submission: ComposerSubmission, cx: &mut Context<Self>) {
+        self.submission_preparations.remove(&session_id);
+        self.local_action_notice = Some((session_id, "本地连接已变更，消息尚未发送，草稿已保留。"));
+        if let Some(session) = self.state.session_mut(session_id)
+            && let Some(turn_id) = turn_id
+            && session.active_turn_id() == Some(turn_id)
+        {
+            session.unwind_unstarted_turn(turn_id);
+            session.status = SessionStatus::Idle;
+        }
+        if self.state.selected_session == Some(session_id) {
+            self.transcript_anchor.set(None);
+            self.transcript_anchor_following.set(false);
+            self.sync_transcript_rows();
+            self.remeasure_transcript_tail();
+        }
+        self.restore_unsent_submission(session_id, submission, cx);
+        self.save();
     }
 
     pub(super) fn collect_runtime_events(runtime: &mut SessionRuntime) {
@@ -2811,7 +2884,7 @@ impl Waku {
                         | DriverEvent::SteeringCapability { .. }
                         | DriverEvent::ConversationCapability { .. }
                         | DriverEvent::SteeringUpdated(_)
-                        | DriverEvent::TurnFinished { .. }
+                        | DriverEvent::TurnFinished { .. } | DriverEvent::TurnCancelled
                         | DriverEvent::Error(_)
                         | DriverEvent::ProcessExited
                 );

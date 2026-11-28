@@ -1572,6 +1572,9 @@ impl Waku {
         }
     }
     pub(super) fn maybe_refresh_deerflow_tasks(&mut self, cx: &mut Context<Self>) {
+        if self.daemon.local_transport_unavailable() {
+            return;
+        }
         let mut attach = None;
         if let Some(session) = self.state.sessions.iter().find(|s| {
             Some(s.id) == self.state.selected_session && s.provider == ProviderKind::DeerFlow
@@ -1606,6 +1609,9 @@ impl Waku {
             );
         let mut budget_reads = vec![];
         for (session, browser) in &mut self.deerflow_tasks {
+            if self.runtimes.get(session).is_some_and(|runtime| runtime.driver.is_local_reconnecting()) {
+                continue;
+            }
             let panel_visible = visible && selected == Some(*session);
             let can_connect = self.runtimes.contains_key(session)
                 || self.state.sessions.iter().any(|candidate| {
@@ -1624,6 +1630,9 @@ impl Waku {
         let mut requests = vec![];
         let mut queue_drains = vec![];
         for (session, browser) in &mut self.deerflow_tasks {
+            if self.runtimes.get(session).is_some_and(|runtime| runtime.driver.is_local_reconnecting()) {
+                continue;
+            }
             if browser.foreground_queue_wait && !browser.foreground_blocks_queue() {
                 browser.foreground_queue_wait = false;
                 queue_drains.push(*session);

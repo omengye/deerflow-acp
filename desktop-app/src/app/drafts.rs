@@ -57,6 +57,43 @@ impl From<MessageAttachment> for ComposerAttachment {
 }
 
 impl Waku {
+    /// A rejected send can finish after switching tasks or typing a follow-up.
+    /// Restore it to its own draft and keep any newer edits there.
+    pub(super) fn restore_unsent_submission(
+        &mut self, session_id: Uuid, submission: ComposerSubmission, cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.state.sessions.iter().find(|session| session.id == session_id) else {
+            return;
+        };
+        let key = crate::persistence::ComposerDraftKey::for_session(session);
+        let selected = self.state.selected_session == Some(session_id);
+        // Unwinding the first optimistic turn can return a session to its
+        // project-scoped draft key. A navigation during preparation may have
+        // already captured newer text under the temporary session key.
+        self.composer_drafts.move_to_empty(crate::persistence::ComposerDraftKey::Session(session_id), key);
+        if selected {
+            self.capture_current_composer_draft(cx);
+        }
+        let mut draft = crate::persistence::ComposerDraft {
+            text: submission.display_content.unwrap_or(submission.prompt),
+            attachments: submission.attachments.into_iter().map(ComposerAttachment::from)
+                .map(|attachment| (&attachment).into()).collect(),
+        };
+        if let Some(newer) = self.composer_drafts.get(key) {
+            if !draft.text.is_empty() && !newer.text.is_empty() {
+                draft.text.push('\n');
+            }
+            draft.text.push_str(&newer.text);
+            draft.attachments.extend(newer.attachments.iter().cloned());
+        }
+        self.composer_drafts.set(key, draft);
+        if selected {
+            self.restore_selected_composer_draft(cx);
+        }
+        self.schedule_composer_draft_save(cx);
+        cx.notify();
+    }
+
     pub(super) fn selected_composer_draft_key(
         &self,
     ) -> Option<crate::persistence::ComposerDraftKey> {
@@ -207,6 +244,10 @@ impl Waku {
                 .await;
             if let Err(error) = result {
                 let _ = waku.update(cx, |waku, cx| {
+                    if !waku.daemon.is_remote() && error.kind() == std::io::ErrorKind::ConnectionAborted {
+                        waku.retry_local_draft_save = true;
+                        return;
+                    }
                     waku.show_toast(tr!("errors.save_local_state", error = error));
                     cx.notify();
                 });

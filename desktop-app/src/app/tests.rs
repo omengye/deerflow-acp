@@ -30,6 +30,26 @@ use crate::model::{
 };
 
 #[test]
+fn local_recovery_notice_waits_three_seconds_and_covers_reattachment() {
+    use std::time::Duration;
+    use super::runtime::recovery_notice_due;
+    assert!(!recovery_notice_due(None, None));
+    assert!(!recovery_notice_due(Some(Duration::from_millis(2999)), None));
+    assert!(recovery_notice_due(Some(Duration::from_secs(3)), None));
+    assert!(recovery_notice_due(None, Some(Duration::from_secs(4))));
+    assert!(!recovery_notice_due(None, Some(Duration::from_secs(1))));
+}
+
+#[test]
+fn uncertain_approval_only_allows_explicit_retry_of_the_original_decision() {
+    let sent = super::SentPermission { request_id: "a".into(), option_id: "allow".into(), generation: 1 };
+    assert!(sent.blocks("a", "allow", 1));
+    assert!(sent.blocks("a", "deny", 2));
+    assert!(!sent.blocks("a", "allow", 2));
+    assert!(!sent.blocks("b", "deny", 1));
+}
+
+#[test]
 fn structured_user_input_preserves_question_order_and_custom_answer_precedence() {
     let questions = vec![
         UserInputQuestion {

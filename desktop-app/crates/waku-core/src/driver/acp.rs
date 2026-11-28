@@ -70,6 +70,7 @@ enum CommandMessage {
     RespondUserInput {
         request_id: String,
         answers: Vec<UserInputAnswer>,
+        receipt: Option<(Instant, crossbeam_channel::Sender<crate::model::LocalUserInputResult>)>,
     },
     Options(SessionOptions),
     SetToolApproval {
@@ -719,10 +720,15 @@ async fn run_sdk_connection(
                     CommandMessage::RespondUserInput {
                         request_id,
                         answers,
+                        receipt,
                     } => {
-                        if let Some(pending) = pending_user_inputs.lock().remove(&request_id) {
-                            let response = deerflow_user_input::response(&pending.params, &answers);
-                            let _ = pending.responder.respond(response);
+                        let result = if receipt.as_ref().is_some_and(|(deadline, _)| Instant::now() >= *deadline) {
+                            crate::model::LocalUserInputResult::NotSent
+                        } else {
+                            deerflow_user_input::complete(&pending_user_inputs, &request_id, &answers)
+                        };
+                        if let Some((_, reply)) = receipt {
+                            let _ = reply.send(result);
                         }
                     }
                     CommandMessage::SetToolApproval { mode, deadline, reply } => {
@@ -1916,7 +1922,11 @@ fn finish_prompt(
         return false;
     }
     let (success, summary) = match response.stop_reason {
-        StopReason::EndTurn | StopReason::Cancelled => (true, None),
+        StopReason::Cancelled => {
+            let _ = events.send(DriverEvent::TurnCancelled);
+            return true;
+        }
+        StopReason::EndTurn => (true, None),
         StopReason::MaxTokens => (
             false,
             Some(token_limit_summary(
@@ -2415,7 +2425,22 @@ impl DriverControl for AcpDriver {
         let _ = self.commands.try_send(CommandMessage::RespondUserInput {
             request_id,
             answers,
+            receipt: None,
         });
+    }
+
+    fn respond_user_input_checked(&self, request_id: String, answers: Vec<UserInputAnswer>) -> crate::model::LocalUserInputResult {
+        use crate::model::LocalUserInputResult;
+        let (reply, result) = crossbeam_channel::bounded(1);
+        let deadline = Instant::now() + TOOL_APPROVAL_TIMEOUT;
+        if self.commands.try_send(CommandMessage::RespondUserInput {
+            request_id,
+            answers,
+            receipt: Some((deadline, reply)),
+        }).is_err() {
+            return LocalUserInputResult::NotSent;
+        }
+        result.recv_deadline(deadline).unwrap_or(LocalUserInputResult::Unknown)
     }
 
     fn apply_options(&self, options: SessionOptions) -> bool {

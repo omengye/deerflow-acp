@@ -30,6 +30,7 @@ pub mod attachments;
 pub mod blob;
 pub mod checkpoint;
 pub mod composer;
+pub mod connection_diagnostics;
 pub mod computer_use;
 pub mod deerflow_tasks;
 mod driver_wire;

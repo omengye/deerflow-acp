@@ -348,6 +348,9 @@ impl Waku {
                 turn_id,
                 message_id,
             } => {
+                if runtime.pending_local_prompt.is_some_and(|(turn, message, _)| (turn, message) == (turn_id, message_id)) {
+                    runtime.pending_local_prompt = None;
+                }
                 // A prompt reached this runtime: another client's submission,
                 // or the echo of this one. The session decides whether that
                 // is news; a mirrored turn is marked for the next save so the
@@ -488,6 +491,9 @@ impl Waku {
             }
             DriverEvent::DeerFlowTasks(event) => self.handle_deerflow_task_event(session_id, event),
             DriverEvent::PermissionResolved { request_id } => {
+                if runtime.pending_local_permission.as_ref().is_some_and(|sent| sent.request_id == request_id) {
+                    runtime.pending_local_permission = None;
+                }
                 if runtime.pending_permission.as_ref().is_some_and(|p| p.request_id == request_id) {
                     runtime.pending_permission = None;
                     self.credential_submissions.remove(&session_id);
@@ -503,6 +509,9 @@ impl Waku {
                 options,
             } => {
                 if self.accepts_turn_output(session_id) {
+                    if runtime.pending_local_permission.as_ref().is_some_and(|sent| sent.request_id != request_id) {
+                        runtime.pending_local_permission = None;
+                    }
                     runtime.pending_permission = Some(PendingPermission {
                         request_id,
                         title,
@@ -518,6 +527,11 @@ impl Waku {
                 request_id,
                 questions,
             } => {
+                if !self.daemon.is_remote()
+                    && runtime.pending_user_input.as_ref().is_some_and(|p| p.request_id == request_id)
+                {
+                    return true;
+                }
                 if self.accepts_turn_output(session_id) && !questions.is_empty() {
                     runtime.pending_user_input = Some(PendingUserInput::new(request_id, questions));
                     if self.state.selected_session == Some(session_id) {
@@ -526,6 +540,27 @@ impl Waku {
                     }
                     if let Some(session) = self.state.session_mut(session_id) {
                         session.status = SessionStatus::Waiting;
+                    }
+                }
+            }
+            DriverEvent::LocalUserInputResult { request_id, result } => {
+                use waku_protocol::model::LocalUserInputResult;
+                if let Some(pending) = runtime.pending_user_input.as_mut().filter(|p| p.request_id == request_id) {
+                    match result {
+                        LocalUserInputResult::Delivered | LocalUserInputResult::NotPending => {
+                            runtime.pending_user_input = None;
+                            if result == LocalUserInputResult::Delivered
+                                && let Some(session) = self.state.session_mut(session_id)
+                                && session.status == SessionStatus::Waiting
+                            {
+                                session.status = SessionStatus::Working;
+                            }
+                            if self.state.selected_session == Some(session_id) {
+                                self.user_input_answer.update(cx, |input, cx| input.clear(cx));
+                            }
+                        }
+                        LocalUserInputResult::Unknown => pending.delivery = AnswerDelivery::Unknown,
+                        LocalUserInputResult::NotSent => pending.delivery = AnswerDelivery::Editing,
                     }
                 }
             }
@@ -661,14 +696,26 @@ impl Waku {
                     self.state.mark_session_dirty(session_id);
                 }
             }
-            DriverEvent::TurnFinished { success, summary } => {
+            finished @ (DriverEvent::TurnFinished { .. } | DriverEvent::TurnCancelled) => {
+                runtime.pending_local_permission = None;
+                let local_stop_requested = runtime.local_cancel_generation.take().is_some();
+                let (success, summary, cancelled) = match finished {
+                    DriverEvent::TurnFinished { success, summary } => (success, summary, false),
+                    _ => (true, None, true),
+                };
                 self.credential_submissions.remove(&session_id);
+                if cancelled || local_stop_requested {
+                    self.pending_queue_drains.retain(|id| *id != session_id);
+                    self.queues_waiting_for_connection.remove(&session_id);
+                }
                 if runtime.cancel_drain.finish() && allow_queue_drain {
                     self.pending_queue_drains.push(session_id);
                 }
                 self.settle_foreground_work(
                     session_id,
-                    if success {
+                    if cancelled {
+                        BackgroundWorkStatus::Stopped
+                    } else if success {
                         BackgroundWorkStatus::Completed
                     } else {
                         BackgroundWorkStatus::Failed
@@ -697,7 +744,7 @@ impl Waku {
                             } else {
                                 session.display_title().to_owned()
                             };
-                            let body = if success {
+                            let body = if success && !cancelled {
                                 tr!("session.turn_completed")
                             } else {
                                 tr!("session.stopped")
@@ -715,22 +762,28 @@ impl Waku {
                     } else {
                         SessionStatus::Failed
                     };
-                    persist_turn_finish_message(
-                        session,
-                        &mut runtime.failure_notice,
-                        success,
-                        summary,
-                        driver_error,
-                    );
+                    if cancelled {
+                        if !session.messages.iter().any(|message| {
+                            message.role == MessageRole::Assistant && message.turn_id == session.active_turn_id()
+                        }) {
+                            session.push_message(MessageRole::Assistant, tr!("session.stopped"));
+                        }
+                    } else {
+                        persist_turn_finish_message(session, &mut runtime.failure_notice, success, summary, driver_error);
+                    }
                 }
                 self.finish_active_turn_with_analytics(
                     session_id,
-                    if success {
+                    if cancelled {
+                        TurnStatus::Interrupted
+                    } else if success {
                         TurnStatus::Completed
                     } else {
                         TurnStatus::Failed
                     },
-                    if success {
+                    if cancelled {
+                        crate::analytics::TurnOutcome::Cancelled
+                    } else if success {
                         crate::analytics::TurnOutcome::Completed
                     } else {
                         crate::analytics::TurnOutcome::Failed
@@ -749,7 +802,7 @@ impl Waku {
                 runtime.computer_use_previews.clear();
                 runtime.driver.refresh_background_work();
                 self.capture_latest_turn_checkpoint_for(session_id);
-                if allow_queue_drain && success {
+                if allow_queue_drain && success && !cancelled && !local_stop_requested {
                     // Start the next queued follow-up once the runtime has
                     // been re-inserted so the same process is reused.
                     self.pending_queue_drains.push(session_id);
@@ -792,6 +845,14 @@ impl Waku {
                         persist_turn_failure(session, &mut runtime.failure_notice, error);
                     }
                 }
+            }
+            DriverEvent::LocalSessionAttachmentFailed(error) => {
+                if self.state.selected_session == Some(session_id) {
+                    self.show_toast(format!("本地会话重新连接失败：{}", compact_driver_error(&error)));
+                }
+                // Drop this adapter. An explicit session attach can query the
+                // running daemon again without resubmitting a provider command.
+                return false;
             }
             DriverEvent::ProcessExited => {
                 self.credential_submissions.remove(&session_id);

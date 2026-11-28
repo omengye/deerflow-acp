@@ -13,7 +13,7 @@ use replay_log::{MAX_REPLAY_PAGE_EVENTS, ReplayLog};
 mod replay_tests;
 
 use anyhow::{Context as _, bail};
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use parking_lot::Mutex;
 use subtle::ConstantTimeEq as _;
 use tungstenite::handshake::server::{
@@ -23,6 +23,7 @@ use tungstenite::http::{StatusCode, header::ORIGIN};
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket, accept_hdr_with_config};
 use uuid::Uuid;
+use waku_protocol::connection_diagnostics::Event;
 
 use crate::model::{AgentSession, Project, ProviderKind, SessionStatus};
 use crate::protocol::MAX_WIRE_MESSAGE_BYTES;
@@ -145,16 +146,30 @@ impl EventSink {
 /// One connected client's delivery state.
 struct Subscriber {
     messages: Sender<ServerMessage>,
+    local_connection: Option<Uuid>,
     /// Signalled when the subscriber falls too far behind and is dropped from
     /// the hub. The connection polls it and closes, letting the client
     /// reconnect and resume from its last replayed cursor.
-    kicked: Sender<()>,
+    kicked: Sender<SubscriberRemoval>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SubscriberRemoval {
+    QueueFull(usize),
+    ChannelClosed,
 }
 
 impl Subscriber {
-    fn new(messages: Sender<ServerMessage>) -> (Self, Receiver<()>) {
+    fn new(messages: Sender<ServerMessage>) -> (Self, Receiver<SubscriberRemoval>) {
         let (kicked, kicked_rx) = unbounded();
-        (Self { messages, kicked }, kicked_rx)
+        (
+            Self {
+                messages,
+                local_connection: None,
+                kicked,
+            },
+            kicked_rx,
+        )
     }
 }
 
@@ -414,21 +429,25 @@ impl Hub {
     /// subscriber's connection observes the kick, closes, and reconnects with
     /// replay cursors, so no event stream is lost permanently.
     fn broadcast(state: &mut HubState, message: &ServerMessage, skip: Option<u64>) {
-        let mut overwhelmed = Vec::new();
-        for (&subscriber_id, subscriber) in &state.subscribers {
+        state.subscribers.retain(|&subscriber_id, subscriber| {
             if Some(subscriber_id) == skip {
-                continue;
+                return true;
             }
-            if subscriber.messages.len() >= MAX_QUEUED_MESSAGES_PER_SUBSCRIBER
-                || subscriber.messages.try_send(message.clone()).is_err()
-            {
-                overwhelmed.push((subscriber_id, subscriber.kicked.clone()));
-            }
-        }
-        for (subscriber_id, kicked) in overwhelmed {
-            state.subscribers.remove(&subscriber_id);
-            let _ = kicked.send(());
-        }
+            let queued = subscriber.messages.len();
+            let reason = if queued >= MAX_QUEUED_MESSAGES_PER_SUBSCRIBER {
+                SubscriberRemoval::QueueFull(queued)
+            } else {
+                match subscriber.messages.try_send(message.clone()) {
+                    Ok(()) => return true,
+                    Err(TrySendError::Full(_)) => SubscriberRemoval::QueueFull(
+                        subscriber.messages.capacity().unwrap_or(queued),
+                    ),
+                    Err(TrySendError::Disconnected(_)) => SubscriberRemoval::ChannelClosed,
+                }
+            };
+            let _ = subscriber.kicked.send(reason);
+            false
+        });
     }
 
     fn task_state_changed(&self, source_subscriber_id: u64) {
@@ -706,6 +725,17 @@ pub fn serve(
         }
     }
     backend.shutdown();
+    if options.allow_shutdown {
+        // The parent monitor may have initiated shutdown while live connections
+        // were still in their read poll. Give them a bounded chance to report.
+        let deadline = std::time::Instant::now() + Duration::from_millis(125);
+        while active_connections.load(Ordering::Acquire) != 0
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        waku_protocol::connection_diagnostics::drain_daemon_log(Duration::from_millis(200));
+    }
     Ok(())
 }
 
@@ -720,6 +750,8 @@ fn handle_connection(
     pending_permit: ConnectionPermit,
     active_connections: Arc<AtomicUsize>,
 ) -> anyhow::Result<()> {
+    let local_diagnostics =
+        options.allow_shutdown && stream.peer_addr().is_ok_and(|p| p.ip().is_loopback());
     // Accepted sockets can inherit the listener's nonblocking flag on some
     // platforms. The handshake is deliberately blocking; steady-state reads
     // get their bounded polling behavior from SO_RCVTIMEO below.
@@ -756,14 +788,14 @@ fn handle_connection(
             options.authentication_timeout.as_millis(),
         )
     })?;
-    let resume_from = match hello {
+    let (connection_id, resume_from) = match hello {
         ClientMessage::Hello {
             protocol_version,
             token,
             resume_from,
-            ..
+            client_id,
         } if protocol_version == PROTOCOL_VERSION && token_matches(expected_token, &token) => {
-            resume_from
+            (client_id, resume_from)
         }
         ClientMessage::Hello {
             protocol_version, ..
@@ -830,12 +862,45 @@ fn handle_connection(
         .set_write_timeout(Some(SOCKET_WRITE_STALL_TIMEOUT))?;
 
     let (outgoing, outgoing_rx) = bounded(MAX_QUEUED_MESSAGES_PER_SUBSCRIBER);
-    let (subscriber, kicked) = Subscriber::new(outgoing.clone());
+    let (mut subscriber, kicked) = Subscriber::new(outgoing.clone());
+    if local_diagnostics {
+        subscriber.local_connection = Some(connection_id);
+        Event::new("connection_accepted", connection_id).write_daemon();
+    }
     let subscriber_id = hub.subscribe(&resume_from, subscriber);
 
-    'connection: while !shutdown.load(Ordering::Acquire) {
-        if kicked.try_recv().is_ok() {
-            break;
+    let closed = |reason| Event::new("connection_closed", connection_id).because(reason);
+    let write_failure = |error: &anyhow::Error| {
+        let stalled = error
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<io::Error>())
+            .any(|e| {
+                matches!(
+                    e.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                )
+            });
+        closed(if stalled {
+            "socket_write_timeout"
+        } else {
+            "socket_write_failed"
+        })
+        .with_error(error.as_ref())
+    };
+    let mut requested_shutdown = false;
+    let end = 'connection: loop {
+        if shutdown.load(Ordering::Acquire) {
+            break closed("daemon_shutdown");
+        }
+        if let Ok(removal) = kicked.try_recv() {
+            match removal {
+                SubscriberRemoval::QueueFull(depth) => {
+                    let mut event = closed("subscriber_queue_full");
+                    event.queue_depth = Some(depth);
+                    break event;
+                }
+                SubscriberRemoval::ChannelClosed => break closed("subscriber_channel_closed"),
+            }
         }
         // Give incoming page requests/cancellation a chance even while a
         // provider continuously emits live events.
@@ -843,8 +908,8 @@ fn handle_connection(
             let Ok(message) = outgoing_rx.try_recv() else {
                 break;
             };
-            if write_json(&mut socket, &message).is_err() {
-                break 'connection;
+            if let Err(error) = write_json(&mut socket, &message) {
+                break 'connection write_failure(&error);
             }
         }
         match socket.read() {
@@ -854,33 +919,60 @@ fn handle_connection(
                 }
                 Ok(ClientMessage::Shutdown) => {
                     if options.allow_shutdown {
-                        write_json(&mut socket, &ServerMessage::ShuttingDown)?;
-                        shutdown.store(true, Ordering::Release);
-                        break;
+                        if let Err(error) = write_json(&mut socket, &ServerMessage::ShuttingDown) {
+                            break write_failure(&error);
+                        }
+                        requested_shutdown = true;
+                        break closed("requested_shutdown");
                     }
-                    write_json(
+                    if let Err(error) = write_json(
                         &mut socket,
                         &ServerMessage::Rejected {
                             message: "daemon shutdown is managed by its service owner".into(),
                         },
-                    )?;
+                    ) {
+                        break write_failure(&error);
+                    }
                 }
                 Ok(ClientMessage::Hello { .. }) => {}
                 Err(error) => {
                     eprintln!("waku-daemon ignored invalid message: {error}");
                 }
             },
-            Ok(Message::Close(_)) => break,
+            Ok(Message::Close(frame)) => {
+                let mut event = closed("peer_close");
+                event.close_code = frame.map(|close| close.code.into());
+                break event;
+            }
             Ok(Message::Ping(_)) => {
                 let _ = socket.flush();
             }
             Ok(_) => {}
             Err(tungstenite::Error::Io(error)) if retryable_io(&error) => {}
-            Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => break,
-            Err(error) => return Err(error).context("Waku daemon WebSocket failed"),
+            Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                break closed("peer_closed");
+            }
+            Err(tungstenite::Error::Protocol(
+                tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+            )) => break closed("peer_eof_without_close"),
+            Err(tungstenite::Error::Capacity(_)) => break closed("wire_limit_exceeded"),
+            Err(error) => {
+                if !local_diagnostics {
+                    eprintln!(
+                        "waku-daemon connection ended: Waku daemon WebSocket failed: {error}"
+                    );
+                }
+                break closed("socket_read_failed").with_error(&error);
+            }
         }
-    }
+    };
     hub.unsubscribe(subscriber_id);
+    if local_diagnostics {
+        end.write_daemon();
+    }
+    if requested_shutdown {
+        shutdown.store(true, Ordering::Release);
+    }
     Ok(())
 }
 
@@ -1109,14 +1201,30 @@ fn handle_request(
                 after_sequence,
                 through_sequence,
                 limit,
-            } => hub.replay_page(
-                session_id,
-                runtime_id,
-                *epoch,
-                *after_sequence,
-                *through_sequence,
-                *limit,
-            ),
+            } => hub
+                .replay_page(
+                    session_id,
+                    runtime_id,
+                    *epoch,
+                    *after_sequence,
+                    *through_sequence,
+                    *limit,
+                )
+                .inspect_err(|error| {
+                    let local_connection = hub
+                        .state
+                        .lock()
+                        .subscribers
+                        .get(&source_subscriber_id)
+                        .and_then(|s| s.local_connection);
+                    if let Some(id) = local_connection {
+                        let mut event =
+                            Event::new("replay_failed", id).because(replay_failure_category(error));
+                        event.session_id = Some(session_id);
+                        event.runtime_id = Some(runtime_id);
+                        event.with_error(error.as_ref()).write_daemon();
+                    }
+                }),
             _ => backend.handle(request, hub.event_sink(session_id, runtime_id)),
         };
         let outcome = match handled {
@@ -1163,6 +1271,35 @@ fn handle_request(
         });
     }
     HandledRequest { outcome, executed }
+}
+
+fn replay_failure_category(error: &anyhow::Error) -> &'static str {
+    // A storage failure may wrap an OS message and file path. Only record the
+    // operation we recognize; the original error still goes back to the caller.
+    let message = error.to_string();
+    if message.contains("could not create private replay storage") {
+        return "journal_create_failed";
+    }
+    if message.contains("could not open replay storage") {
+        return "journal_open_failed";
+    }
+    if message.contains("could not retain replay event") {
+        return "journal_data_write_failed";
+    }
+    if message.contains("could not retain replay position") {
+        return "journal_index_write_failed";
+    }
+    match message.as_str() {
+        "runtime replay is no longer available" => "runtime_unavailable",
+        "replay cursor is outside this runtime" => "cursor_out_of_range",
+        "replay daemon epoch changed" => "epoch_changed",
+        "replay event identity changed" => "event_identity_mismatch",
+        "replay page made no progress" => "page_stalled",
+        "replay requires an exact runtime identity"
+        | "invalid replay page limit"
+        | "invalid replay page bounds" => "invalid_page_request",
+        _ => "journal_page_failed",
+    }
 }
 
 fn task_catalog_action(command: &Command) -> TaskCatalogAction {
@@ -2307,7 +2444,7 @@ mod tests {
         // is dropped from the hub and its connection is told to close.
         sink.send(WireDriverEvent::new("two", serde_json::Value::Null))
             .unwrap();
-        assert!(kicked.try_recv().is_ok());
+        assert_eq!(kicked.try_recv().unwrap(), SubscriberRemoval::QueueFull(1));
 
         assert!(matches!(
             events.try_recv(),

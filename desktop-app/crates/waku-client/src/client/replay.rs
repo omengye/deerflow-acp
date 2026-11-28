@@ -114,13 +114,17 @@ impl Delivery {
     pub(super) fn cursors(&self) -> Vec<ReplayCursor> {
         self.cursors.values().cloned().collect()
     }
-    pub(super) fn is_replay(&self, id: Uuid) -> bool {
-        self.requests.contains_key(&id)
+    pub(super) fn requested_runtime(&self, id: Uuid) -> Option<Key> {
+        self.requests.get(&id).map(|request| request.key)
     }
-    pub(super) fn expired(&self) -> bool {
+    pub(super) fn expired_page(&self) -> Option<(Uuid, Uuid, Duration)> {
         self.requests
             .values()
-            .any(|p| p.started.elapsed() >= REPLAY_TIMEOUT)
+            .filter_map(|p| {
+                let elapsed = p.started.elapsed();
+                (elapsed >= REPLAY_TIMEOUT).then_some((p.key.0, p.key.1, elapsed))
+            })
+            .max_by_key(|page| page.2)
     }
     pub(super) fn close(&mut self) {
         self.subscriptions.clear();

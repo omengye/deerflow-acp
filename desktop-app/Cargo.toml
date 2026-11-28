@@ -73,6 +73,7 @@ tokio = { version = "1", features = ["rt"] }
 # happens instead of coalescing into the display link's next one — a panel
 # resize drew once per mouse-move event rather than once per displayed frame.
 [dev-dependencies]
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 gpui = { git = "https://github.com/egoist/zed", branch = "waku-webview", features = [
   "test-support",
 ] }

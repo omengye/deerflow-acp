@@ -1784,6 +1784,15 @@ pub struct SteeringUpdate {
     pub reason: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LocalUserInputResult {
+    Delivered,
+    NotPending,
+    NotSent,
+    Unknown,
+}
+
 #[derive(Clone, Debug)]
 pub enum DriverEvent {
     DeerFlowTasks(crate::deerflow_tasks::Event),
@@ -1791,6 +1800,10 @@ pub enum DriverEvent {
     /// sequence has been incorporated into the local session projection.
     /// Providers never emit this and the daemon never serializes it.
     RuntimeEventCursorAdvanced(RuntimeEventCursor),
+    /// The local UI could not reattach its driver. The runtime outcome is unknown.
+    LocalSessionAttachmentFailed(String),
+    /// Completion of this GUI's checked answer submission, never broadcast.
+    LocalUserInputResult { request_id: String, result: LocalUserInputResult },
     Connected {
         provider_cursor: Option<ProviderResumeCursor>,
     },
@@ -1887,6 +1900,8 @@ pub enum DriverEvent {
         context_tokens: Option<u64>,
         context_window: Option<u64>,
     },
+    /// The provider explicitly returned the cancelled stop reason.
+    TurnCancelled,
     TurnFinished {
         success: bool,
         summary: Option<String>,

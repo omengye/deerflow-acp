@@ -1,14 +1,16 @@
 //! Desktop proxy for the provider runtime owned by `waku-daemon`.
 
+mod recovery;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use crate::computer_use::ComputerToolRequest;
-use crate::model::{
-    BackgroundWorkKey, DriverEvent, ProviderKind, RuntimeEventCursor,
-};
+use crate::model::{BackgroundWorkKey, DriverEvent, ProviderKind, RuntimeEventCursor};
 use crossbeam_channel::{Sender, bounded, select};
 use parking_lot::Mutex;
+use recovery::{SessionRecovery, log_attachment, reattach};
 
 pub use waku_client::driver::{
     DriverControl, DriverEventSender, DriverHandle, DriverStartOptions, SessionOptions,
@@ -89,6 +91,8 @@ fn connect_remote(
     events: DriverEventSender,
 ) -> anyhow::Result<DriverHandle> {
     let client_updates = daemon.subscribe_clients();
+    let recovery = Arc::new(SessionRecovery::new(!daemon.is_remote()));
+    let forwarding_recovery = recovery.clone();
     let active_client = Arc::new(Mutex::new(initial_client.clone()));
     let forwarding_client = active_client.clone();
     let supports_steer = Arc::new(AtomicBool::new(supports_steer));
@@ -150,6 +154,7 @@ fn connect_remote(
                 if !disconnected || forwarding_closed.load(Ordering::Acquire) {
                     break;
                 }
+                forwarding_recovery.begin();
                 forwarding_steer.store(false, Ordering::Release);
                 let _ = forwarding_events.send(DriverEvent::SteeringCapability {
                     supported: false,
@@ -160,40 +165,61 @@ fn connect_remote(
                 // Wait for the supervisor's next connection, then ask that
                 // daemon whether this exact runtime survived before changing
                 // the task status.
-                let replacement = loop {
-                    select! {
-                        recv(forwarding_shutdown) -> _ => return,
-                        recv(client_updates) -> replacement => {
-                            let Ok(replacement) = replacement else {
-                                return;
-                            };
-                            if !client.same_connection(&replacement) {
-                                break replacement;
-                            }
-                        }
+                let Some((replacement, attached)) = reattach(
+                    &client,
+                    |candidate| daemon.client().same_connection(candidate),
+                    &client_updates,
+                    &forwarding_shutdown,
+                    &forwarding_recovery,
+                    session_id,
+                    runtime_id,
+                ) else {
+                    return;
+                };
+                if forwarding_closed.load(Ordering::Acquire) {
+                    return;
+                }
+                let attached = match attached {
+                    Ok(attached) => attached,
+                    Err(error) => {
+                        let _ = forwarding_events.send(DriverEvent::LocalSessionAttachmentFailed(
+                            error.to_string(),
+                        ));
+                        break;
                     }
                 };
-                let attached = replacement.request(
-                    session_id,
-                    uuid::Uuid::nil(),
-                    waku_client::Command::AttachSession,
-                );
-                if let Ok(waku_client::ResponsePayload::SessionRuntime {
+                if let waku_client::ResponsePayload::SessionRuntime {
                     pending_history: Some(operation),
                     ..
-                }) = &attached
+                } = &attached
                 {
                     waku_client::WorkspaceClient::restore_pending_history(session_id, operation);
                 }
                 match attached {
-                    Ok(waku_client::ResponsePayload::SessionRuntime {
+                    waku_client::ResponsePayload::SessionRuntime {
                         runtime_id: Some(attached_runtime_id),
                         supports_steer,
                         steering_run_id,
                         conversation_capability,
                         deerflow_ready,
                         ..
-                    }) if attached_runtime_id == runtime_id => {
+                    } if attached_runtime_id == runtime_id => {
+                        remote_events = replacement.subscribe(session_id, runtime_id);
+                        log_attachment(
+                            "session_reattached",
+                            &replacement,
+                            &forwarding_recovery,
+                            session_id,
+                            runtime_id,
+                            None,
+                            "same_runtime",
+                        );
+                        forwarding_recovery.install(
+                            &forwarding_client,
+                            &replacement,
+                            session_id,
+                            runtime_id,
+                        );
                         forwarding_steer.store(supports_steer, Ordering::Release);
                         let _ = forwarding_events.send(DriverEvent::SteeringCapability {
                             supported: supports_steer,
@@ -206,26 +232,43 @@ fn connect_remote(
                         if let Some(ready) = deerflow_ready {
                             let _ = forwarding_events.send(DriverEvent::DeerFlowTasks(ready));
                         }
-                        *forwarding_client.lock() = replacement.clone();
                         client = replacement;
-                        remote_events = client.subscribe(session_id, runtime_id);
                     }
-                    Ok(waku_client::ResponsePayload::SessionRuntime { .. }) => {
+                    waku_client::ResponsePayload::SessionRuntime { .. } => {
+                        log_attachment(
+                            "session_runtime_gone",
+                            &replacement,
+                            &forwarding_recovery,
+                            session_id,
+                            runtime_id,
+                            None,
+                            "runtime_missing_or_replaced",
+                        );
                         let _ = forwarding_events.send(DriverEvent::ProcessExited);
                         break;
                     }
-                    Ok(_) => {
-                        let _ = forwarding_events.send(DriverEvent::Error(
-                            "Waku daemon returned an invalid runtime attachment response".into(),
-                        ));
+                    _ => {
+                        let failure = if forwarding_recovery.local {
+                            log_attachment(
+                                "session_reattach_failed",
+                                &replacement,
+                                &forwarding_recovery,
+                                session_id,
+                                runtime_id,
+                                None,
+                                "invalid_attach_response",
+                            );
+                            DriverEvent::LocalSessionAttachmentFailed(
+                                "本地服务返回了无效的会话挂接响应。".into(),
+                            )
+                        } else {
+                            DriverEvent::Error(
+                                "Waku daemon returned an invalid runtime attachment response"
+                                    .into(),
+                            )
+                        };
+                        let _ = forwarding_events.send(failure);
                         break;
-                    }
-                    Err(_) => {
-                        // This replacement also disappeared. Its client
-                        // channel will be followed by another supervisor
-                        // publication; keep the task live until one can answer
-                        // authoritatively.
-                        client = replacement;
                     }
                 }
             }
@@ -235,6 +278,7 @@ fn connect_remote(
         return Err(error.into());
     }
     Ok(DriverHandle::from_control(Arc::new(RemoteDriverControl {
+        recovery,
         client: active_client,
         session_id,
         runtime_id,
@@ -246,6 +290,7 @@ fn connect_remote(
 }
 
 struct RemoteDriverControl {
+    recovery: Arc<SessionRecovery>,
     client: Arc<Mutex<waku_client::DaemonClient>>,
     session_id: uuid::Uuid,
     runtime_id: uuid::Uuid,
@@ -257,16 +302,157 @@ struct RemoteDriverControl {
 
 impl RemoteDriverControl {
     fn notify(&self, command: waku_client::Command) {
-        let client = self.client.lock().clone();
+        self.report_admission(self.try_notify(command));
+    }
+
+    fn report_admission(&self, queued: bool) {
+        if !queued {
+            let _ = self.events.send(DriverEvent::Error(
+                "本地连接正在恢复，本次操作未发送。".into(),
+            ));
+        }
+    }
+
+    fn try_notify(&self, command: waku_client::Command) -> bool {
+        let client = self.client.lock();
+        if self.recovery.since().is_some() {
+            return false;
+        }
         if let Err(error) = client.notify(self.session_id, self.runtime_id, command) {
+            if self.recovery.local && waku_client::DaemonClient::definitely_not_sent(&error) {
+                self.recovery.begin();
+                return false;
+            }
             let _ = self.events.send(DriverEvent::Error(format!(
                 "Waku daemon command failed: {error}"
             )));
         }
+        true
     }
 }
 
 impl DriverControl for RemoteDriverControl {
+    fn local_reconnecting_since(&self) -> Option<Instant> {
+        self.recovery.since()
+    }
+
+    fn local_connection_generation(&self) -> u64 {
+        self.recovery.generation.load(Ordering::Acquire)
+    }
+
+    fn try_prompt_with_attachments(
+        &self,
+        prompt: String,
+        turn_id: Option<uuid::Uuid>,
+        message_id: Option<uuid::Uuid>,
+        attachments: Vec<waku_protocol::model::MessageAttachment>,
+    ) -> bool {
+        let command = if attachments.is_empty() {
+            waku_client::Command::Prompt {
+                prompt,
+                turn_id,
+                message_id,
+            }
+        } else {
+            waku_client::Command::PromptWithAttachments {
+                prompt,
+                turn_id,
+                message_id,
+                attachments,
+            }
+        };
+        self.try_notify(command)
+    }
+
+    fn try_steer(&self, prompt: String) -> bool {
+        self.try_notify(waku_client::Command::Steer {
+            prompt,
+            run_id: None,
+        })
+    }
+
+    fn try_steer_run(&self, prompt: String, run_id: String) -> bool {
+        self.try_notify(waku_client::Command::Steer {
+            prompt,
+            run_id: Some(run_id),
+        })
+    }
+
+    fn try_cancel(&self) -> bool {
+        self.try_notify(waku_client::Command::Cancel)
+    }
+
+    fn try_respond(&self, request_id: String, option_id: String) -> bool {
+        self.try_notify(waku_client::Command::Respond {
+            request_id,
+            option_id,
+        })
+    }
+
+    fn try_respond_user_input(
+        &self,
+        request_id: String,
+        answers: Vec<waku_protocol::model::UserInputAnswer>,
+    ) -> bool {
+        use waku_protocol::model::LocalUserInputResult;
+        let command = waku_client::Command::RespondUserInput {
+            request_id: request_id.clone(),
+            answers,
+            confirm_delivery: self.recovery.local,
+        };
+        if !self.recovery.local {
+            return self.try_notify(command);
+        }
+        let client = self.client.lock();
+        if self.recovery.since().is_some() {
+            return false;
+        }
+        let pending = match client.begin_request(self.session_id, self.runtime_id, command) {
+            Ok(pending) => pending,
+            Err(_) => {
+                self.recovery.begin();
+                return false;
+            }
+        };
+        drop(client);
+        let events = self.events.clone();
+        let submitted = request_id.clone();
+        let waiter = std::thread::Builder::new().name("deerflow-answer-receipt".into())
+            .spawn(move || {
+                let result = match pending.wait(std::time::Duration::from_secs(15)) {
+                    Ok(waku_client::ResponsePayload::UserInputReceipt { result }) => result,
+                    // Older daemons Ack the queue operation. Only the specific
+                    // checked receipt confirms that the ACP responder accepted it.
+                    _ => LocalUserInputResult::Unknown,
+                };
+                let _ = events.send(DriverEvent::LocalUserInputResult { request_id: submitted, result });
+            });
+        if waiter.is_err() {
+            let _ = self.events.send(DriverEvent::LocalUserInputResult { request_id, result: LocalUserInputResult::Unknown });
+        }
+        true
+    }
+
+    fn try_run_computer_tool(&self, request: ComputerToolRequest) -> bool {
+        self.try_notify(waku_client::Command::RunComputerTool {
+            request: waku_client::WireComputerToolRequest {
+                call_id: request.call_id,
+                tool: request.tool,
+                arguments: request.arguments,
+            },
+        })
+    }
+
+    fn try_reject_computer_tool(&self, request: ComputerToolRequest, reason: String) -> bool {
+        self.try_notify(waku_client::Command::RejectComputerTool {
+            request: waku_client::WireComputerToolRequest {
+                call_id: request.call_id,
+                tool: request.tool,
+                arguments: request.arguments,
+            },
+            reason,
+        })
+    }
     fn respond_credential(
         &self,
         client: waku_client::DaemonClient,
@@ -300,24 +486,16 @@ impl DriverControl for RemoteDriverControl {
         message_id: Option<uuid::Uuid>,
         attachments: Vec<waku_protocol::model::MessageAttachment>,
     ) {
-        if attachments.is_empty() {
-            self.prompt(prompt, turn_id, message_id);
-        } else {
-            self.notify(waku_client::Command::PromptWithAttachments {
-                prompt,
-                turn_id,
-                message_id,
-                attachments,
-            });
-        }
-    }
-
-    fn prompt(&self, prompt: String, turn_id: Option<uuid::Uuid>, message_id: Option<uuid::Uuid>) {
-        self.notify(waku_client::Command::Prompt {
+        self.report_admission(self.try_prompt_with_attachments(
             prompt,
             turn_id,
             message_id,
-        });
+            attachments,
+        ));
+    }
+
+    fn prompt(&self, prompt: String, turn_id: Option<uuid::Uuid>, message_id: Option<uuid::Uuid>) {
+        self.prompt_with_attachments(prompt, turn_id, message_id, Vec::new());
     }
 
     fn supports_steer(&self) -> bool {
@@ -325,29 +503,25 @@ impl DriverControl for RemoteDriverControl {
     }
 
     fn steer(&self, prompt: String) {
-        self.notify(waku_client::Command::Steer {
-            prompt,
-            run_id: None,
-        });
+        self.report_admission(self.try_steer(prompt));
     }
 
     fn steer_run(&self, prompt: String, run_id: String) {
-        self.notify(waku_client::Command::Steer {
-            prompt,
-            run_id: Some(run_id),
-        });
+        self.report_admission(self.try_steer_run(prompt, run_id));
     }
 
     fn cancel(&self) {
-        self.notify(waku_client::Command::Cancel);
+        self.report_admission(self.try_cancel());
     }
 
     fn cancel_computer_use(&self) {
-        self.notify(waku_client::Command::CancelComputerUse);
+        // Turn-finished/process-exited cleanup is scoped to the old turn.
+        // Its cancellation must never be replayed against a later turn.
+        self.try_notify(waku_client::Command::CancelComputerUse);
     }
 
     fn refresh_background_work(&self) {
-        self.notify(waku_client::Command::RefreshBackgroundWork);
+        self.try_notify(waku_client::Command::RefreshBackgroundWork);
     }
 
     fn deerflow_tasks(&self, command: waku_protocol::deerflow_tasks::Command) {
@@ -385,10 +559,7 @@ impl DriverControl for RemoteDriverControl {
     }
 
     fn respond(&self, request_id: String, option_id: String) {
-        self.notify(waku_client::Command::Respond {
-            request_id,
-            option_id,
-        });
+        self.report_admission(self.try_respond(request_id, option_id));
     }
 
     fn respond_user_input(
@@ -396,31 +567,15 @@ impl DriverControl for RemoteDriverControl {
         request_id: String,
         answers: Vec<waku_protocol::model::UserInputAnswer>,
     ) {
-        self.notify(waku_client::Command::RespondUserInput {
-            request_id,
-            answers,
-        });
+        self.report_admission(self.try_respond_user_input(request_id, answers));
     }
 
     fn run_computer_tool(&self, request: ComputerToolRequest) {
-        self.notify(waku_client::Command::RunComputerTool {
-            request: waku_client::WireComputerToolRequest {
-                call_id: request.call_id,
-                tool: request.tool,
-                arguments: request.arguments,
-            },
-        });
+        self.report_admission(self.try_run_computer_tool(request));
     }
 
     fn reject_computer_tool(&self, request: ComputerToolRequest, reason: String) {
-        self.notify(waku_client::Command::RejectComputerTool {
-            request: waku_client::WireComputerToolRequest {
-                call_id: request.call_id,
-                tool: request.tool,
-                arguments: request.arguments,
-            },
-            reason,
-        });
+        self.report_admission(self.try_reject_computer_tool(request, reason));
     }
 
     fn apply_options(&self, options: SessionOptions) -> bool {
@@ -473,3 +628,6 @@ impl Drop for RemoteDriverControl {
         client.unsubscribe(self.session_id, self.runtime_id);
     }
 }
+
+#[cfg(test)]
+mod recovery_tests;

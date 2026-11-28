@@ -295,8 +295,7 @@ impl Waku {
             self.discard_current_composer_draft(cx);
             self.run_foreground_action(id, &action, cx);
         } else {
-            // Enter has already cleared the text field; clicking Send has not.
-            // Staged attachments and their display text stay in the composer.
+            // Both keyboard and button submissions retain the draft until admitted.
             let notice = tr!(if browser.foreground.lookup_error.is_some() {
                 "session.foreground_refresh_draft"
             } else if checking {
@@ -314,7 +313,6 @@ impl Waku {
                 }
                 self.maybe_refresh_deerflow_tasks(cx);
             }
-            self.defer_restore_blocked_composer(id, prompt.to_owned(), cx);
             self.show_toast(notice);
             cx.notify();
         }
