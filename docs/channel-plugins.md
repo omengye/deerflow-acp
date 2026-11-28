@@ -15,10 +15,10 @@ separate states. Connected means a successful provider poll, not merely a stored
 token. Desktop status polling stops when the page is closed; the host worker stays
 running. The host must remain running to receive messages.
 
-Recent conversations shows one row per channel account and session, with its
-title, latest task state and total message count. Expand a row to see the
-individual delivery receipts. A sent reply can contain a permission request
-or a task failure. Messages without a session have a separate history entry.
+Recent conversations shows the title, task state, message count and last activity
+for each channel account and session. **Open task** opens the linked desktop
+session and its task panel. Rows with only channel records show their status.
+Messages without a session have a separate entry.
 
 Disable preserves credentials and history, but cancels owned work and quarantines
 pending work rather than replaying it. Logout also clears credentials and disables
