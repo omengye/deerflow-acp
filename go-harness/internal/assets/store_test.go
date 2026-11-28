@@ -342,17 +342,75 @@ func TestCleanupPinsActivePreparationAndRetainsCommittedSnapshots(t *testing.T) 
 
 func (f *assetFixture) startTool(t *testing.T, name string) (string, string) {
 	t.Helper()
+	return f.startToolWithArguments(t, name, json.RawMessage(`{}`))
+}
+func (f *assetFixture) startToolWithArguments(t *testing.T, name string, args json.RawMessage) (string, string) {
+	t.Helper()
 	ctx := context.Background()
 	run, call := hr.NewID(), hr.NewID()
 	if err := f.runtime.BeginRun(ctx, harness.RunRequest{Session: f.session, RunID: run, InputID: hr.NewID(), Input: []harness.Content{{Type: "text", Text: "run"}}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, phase := range []struct{ kind, status string }{{"tool_start", "pending"}, {"tool_execute", "in_progress"}} {
-		if _, err := f.runtime.Append(ctx, harness.RunEvent{SessionID: f.session.ID, RunID: run, ToolCallID: call, ToolName: name, Kind: phase.kind, Status: phase.status, Arguments: json.RawMessage(`{}`)}, f.assets); err != nil {
+		if _, err := f.runtime.Append(ctx, harness.RunEvent{SessionID: f.session.ID, RunID: run, ToolCallID: call, ToolName: name, Kind: phase.kind, Status: phase.status, Arguments: args}, f.assets); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return run, call
+}
+
+func TestArtifactOutputLocationSurvivesReplayWithoutConfusingSameNames(t *testing.T) {
+	f := newAssetFixture(t)
+	ctx := context.Background()
+	root := filepath.Join(f.session.CWD, ".deerflow", "outputs")
+	name := "01-印文 想象图 #1.png"
+	paths := []string{"/mnt/user-data/outputs/甲/" + name, "甲/" + name, ".deerflow/outputs/乙/" + name}
+	wanted := []string{filepath.Join(root, "甲", name), filepath.Join(root, "乙", name)}
+	for _, path := range wanted {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args, err := json.Marshal(map[string][]string{"paths": paths})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, call := f.startToolWithArguments(t, "present_files", args)
+	staged, err := f.assets.StageArtifacts(ctx, f.session, run, call, paths)
+	if err != nil || len(staged) != len(wanted) {
+		t.Fatalf("stage=%v err=%v", staged, err)
+	}
+	_, err = f.runtime.Append(ctx, harness.RunEvent{SessionID: f.session.ID, RunID: run, ToolCallID: call, ToolName: "present_files", Kind: "tool_end", Status: "completed"}, f.assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range staged {
+		ref := *c.Asset
+		snapshot := fileURI(filepath.Join(f.dir, ref.ID+".blob"))
+		check := func(want string) {
+			t.Helper()
+			link, output, err := f.assets.ResourceURIs(ctx, f.session.ID, ref)
+			if err != nil || link != snapshot || output != want {
+				t.Fatalf("snapshot=%q output=%q want=%q err=%v", link, output, want, err)
+			}
+		}
+		check(fileURI(wanted[i]))
+		// Earlier versions persisted the arguments and artifact order, but no outputPath.
+		if _, err = f.db.DB().Exec(`UPDATE harness_assets SET metadata=json_remove(metadata,'$.outputPath') WHERE id=?`, ref.ID); err != nil {
+			t.Fatal(err)
+		}
+		check(fileURI(wanted[i]))
+		if _, _, err = f.assets.ResourceURIs(ctx, "another-session", ref); !errors.Is(err, harness.ErrPermissionDenied) {
+			t.Fatalf("foreign session: %v", err)
+		}
+		if err = os.Remove(wanted[i]); err != nil {
+			t.Fatal(err)
+		}
+		check("")
+	}
 }
 func TestArtifactTerminalReceiptRegistryAndAuditAreAtomic(t *testing.T) {
 	f := newAssetFixture(t)

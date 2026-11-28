@@ -830,6 +830,7 @@ files.no_project_open: プロジェクトが開かれていません
 files.no_project_open_description: プロジェクトを開くとファイルを閲覧できます
 files.no_project_is_open: 開いているプロジェクトはありません
 files.unable_to_edit: "このファイルを編集できません：%{error}"
+files.image_daemon_update: バイナリ画像をプレビューするにはワークスペースのデーモンを更新してください。
 files.could_not_save_opening: "%{path} を保存できませんでした：まだ開いています"
 files.could_not_save_read_only: "%{path} を保存できませんでした：このファイルは編集できません"
 files.could_not_save: "%{path} を保存できませんでした：%{error}"

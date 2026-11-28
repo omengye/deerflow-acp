@@ -94,7 +94,7 @@ func TestACPExecutableImageArtifactAndRestart(t *testing.T) {
 	}
 	p.request(t, "session/prompt", map[string]any{"sessionId": session.ID, "prompt": []any{map[string]any{"type": "image", "data": encodedImage, "mimeType": "image/png"}, map[string]any{"type": "text", "text": "Inspect image and present report.txt"}}})
 	list := p.request(t, "_deerflow/artifacts/list", map[string]any{"sessionId": session.ID})
-	if !bytes.Contains(list, []byte(`"type":"resource_link"`)) || !bytes.Contains(list, []byte("file:")) || bytes.Contains(list, []byte(`"asset"`)) {
+	if !bytes.Contains(list, []byte(`"type":"resource_link"`)) || !bytes.Contains(list, []byte(`"outputUri":"file:`)) || !bytes.Contains(list, []byte("/.deerflow/outputs/report.txt")) || bytes.Contains(list, []byte(`"asset"`)) {
 		t.Fatalf("artifact projection=%s", list)
 	}
 	p.stop(t)
@@ -107,7 +107,7 @@ func TestACPExecutableImageArtifactAndRestart(t *testing.T) {
 	for _, event := range p.updates {
 		value := string(event)
 		imageReplayed = imageReplayed || strings.Contains(value, encodedImage)
-		artifactReplayed = artifactReplayed || (strings.Contains(value, `"resource_link"`) && strings.Contains(value, "file:"))
+		artifactReplayed = artifactReplayed || (strings.Contains(value, `"resource_link"`) && strings.Contains(value, `"outputUri":"file:`) && strings.Contains(value, "/.deerflow/outputs/report.txt"))
 		if strings.Contains(value, "deerflow-asset://") || strings.Contains(value, `"asset"`) {
 			t.Fatal("internal asset reference leaked into ACP replay")
 		}

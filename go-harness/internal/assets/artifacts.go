@@ -20,6 +20,25 @@ const outputAlias = "/mnt/user-data/outputs/"
 
 func artifactKey(runID, callID string) string { return runID + "\x00" + callID }
 
+func relativeArtifactPath(cwd, path string) (string, error) {
+	outputRoot := filepath.Join(cwd, ".deerflow", "outputs")
+	if strings.HasPrefix(path, outputAlias) {
+		path = filepath.Join(outputRoot, filepath.FromSlash(strings.TrimPrefix(path, outputAlias)))
+	} else if !filepath.IsAbs(path) {
+		local := filepath.FromSlash(path)
+		if strings.HasPrefix(local, filepath.Join(".deerflow", "outputs")+string(filepath.Separator)) {
+			path = filepath.Join(cwd, local)
+		} else {
+			path = filepath.Join(outputRoot, local)
+		}
+	}
+	rel, err := filepath.Rel(outputRoot, path)
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", invalid("only session output files can be presented")
+	}
+	return rel, nil
+}
+
 // StageArtifacts returns stable references but does not register/publish them.
 // Runtime's successful tool_end commits them with its receipt and audit event.
 func (s *Store) StageArtifacts(ctx context.Context, x harness.Session, runID, callID string, paths []string) (contents []harness.Content, returnErr error) {
@@ -51,21 +70,11 @@ func (s *Store) stageArtifacts(ctx context.Context, x harness.Session, runID, ca
 	outputRoot := filepath.Join(x.CWD, ".deerflow", "outputs")
 	seen := map[string]bool{}
 	for _, path := range paths {
-		if strings.HasPrefix(path, outputAlias) {
-			path = filepath.Join(outputRoot, filepath.FromSlash(strings.TrimPrefix(path, outputAlias)))
-		} else if !filepath.IsAbs(path) {
-			local := filepath.FromSlash(path)
-			prefix := filepath.Join(".deerflow", "outputs") + string(filepath.Separator)
-			if strings.HasPrefix(local, prefix) {
-				path = filepath.Join(x.CWD, local)
-			} else {
-				path = filepath.Join(outputRoot, local)
-			}
+		rel, err := relativeArtifactPath(x.CWD, path)
+		if err != nil {
+			return nil, err
 		}
-		rel, err := filepath.Rel(outputRoot, path)
-		if err != nil || !filepath.IsLocal(rel) {
-			return nil, invalid("only session output files can be presented")
-		}
+		path = filepath.Join(outputRoot, rel)
 		if seen[rel] {
 			continue
 		}
@@ -105,6 +114,7 @@ func (s *Store) stageArtifacts(ctx context.Context, x harness.Session, runID, ca
 		if before.Size() != after.Size() || before.ModTime() != after.ModTime() || ref.Size != before.Size() {
 			return nil, invalid("artifact changed while being snapshotted")
 		}
+		p.records[len(p.records)-1].OutputPath = filepath.ToSlash(rel)
 		p.Input = append(p.Input, assetContent(ref, "DeerFlow local artifact"))
 	}
 	s.mu.Lock()

@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::Output;
 
@@ -49,12 +50,31 @@ pub fn execute(operation: WorkspaceOperation) -> anyhow::Result<WorkspaceResult>
                 filesystem_root,
             }
         }
-        WorkspaceOperation::ReadTextFile {
+        WorkspaceOperation::ReadFile {
             root,
             relative_path,
+            binary: false,
         } => WorkspaceResult::TextFile {
             content: fs::read_to_string(resolve_workspace_path(&root, &relative_path)?)?,
         },
+        WorkspaceOperation::ReadFile {
+            root,
+            relative_path,
+            binary: true,
+        } => {
+            // Keep a base64 response within the transport's frame limit, even
+            // if the file grows while we are reading it.
+            let limit = waku_protocol::attachments::MAX_ATTACHMENT_BYTES;
+            let file = fs::File::open(resolve_workspace_path(&root, &relative_path)?)?;
+            let mut bytes = Vec::new();
+            file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+            anyhow::ensure!(
+                bytes.len() <= limit,
+                "file exceeds the {} MiB preview limit",
+                limit >> 20
+            );
+            WorkspaceResult::BinaryFile { bytes }
+        }
         WorkspaceOperation::WriteTextFile {
             root,
             relative_path,
@@ -605,26 +625,53 @@ mod tests {
     }
 
     #[test]
+    fn binary_file_reader_round_trips_non_utf8_through_the_wire() {
+        let root = std::env::temp_dir().join(format!("waku-image-file-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let name = "01-印文想象图-蔡仲平本.png";
+        let data = b"\x89PNG\r\n\x1a\n\x00\xff";
+        fs::write(root.join(name), data).unwrap();
+        let read = |path: &str| {
+            execute(WorkspaceOperation::ReadFile {
+                root: root.clone(),
+                relative_path: path.into(),
+                binary: true,
+            })
+        };
+        let encoded = serde_json::to_value(read(name).unwrap()).unwrap();
+        assert!(encoded["bytes"].is_string());
+        let WorkspaceResult::BinaryFile { bytes } = serde_json::from_value(encoded).unwrap() else {
+            panic!("expected binary file response");
+        };
+        assert_eq!(bytes, data);
+        assert!(read("../outside.png").is_err());
+        assert!(read("missing.png").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn file_reader_keeps_the_complete_disk_content() {
         let root = std::env::temp_dir().join(format!("waku-editor-file-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let content = "line\n".repeat(10_000);
         fs::write(root.join("large.txt"), &content).unwrap();
 
+        let legacy_read = serde_json::json!({
+            "type": "readTextFile", "root": root, "relative_path": "large.txt"
+        });
+        let operation = serde_json::from_value(legacy_read.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&operation).unwrap(), legacy_read);
         let WorkspaceResult::TextFile { content: restored } =
-            execute(WorkspaceOperation::ReadTextFile {
-                root: root.clone(),
-                relative_path: PathBuf::from("large.txt"),
-            })
-            .unwrap()
+            execute(operation).unwrap()
         else {
             panic!("unexpected workspace response")
         };
         assert_eq!(restored, content);
         assert!(
-            execute(WorkspaceOperation::ReadTextFile {
+            execute(WorkspaceOperation::ReadFile {
                 root: root.clone(),
                 relative_path: PathBuf::from("missing.txt"),
+                binary: false,
             })
             .is_err()
         );

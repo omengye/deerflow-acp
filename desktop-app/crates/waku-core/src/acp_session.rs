@@ -22,6 +22,7 @@ use base64::Engine as _;
 use parking_lot::Mutex;
 use serde_json::Value;
 use uuid::Uuid;
+use waku_protocol::workspace::DEERFLOW_OUTPUT_FRAGMENT;
 
 use crate::model::{
     AgentTurn, Message, MessageRole, ProviderKind, ProviderResumeCursor, ProviderSessionHistory,
@@ -342,9 +343,24 @@ fn history_from_updates_with_images(
 pub(crate) fn content_text(content: &Value) -> Option<String> {
     match content.get("type").and_then(Value::as_str) {
         Some("resource_link") => {
-            let uri = url::Url::parse(content.get("uri")?.as_str()?).ok()?;
+            let mut uri = url::Url::parse(content.get("uri")?.as_str()?).ok()?;
             if !matches!(uri.scheme(), "file" | "http" | "https") {
                 return None;
+            }
+            if uri.scheme() == "file"
+                && let Some(mut output) = content
+                    .pointer("/_meta/deerflow/outputUri")
+                    .and_then(Value::as_str)
+                    .and_then(|value| url::Url::parse(value).ok())
+                    .filter(|url| {
+                        url.scheme() == "file"
+                            && url.query().is_none()
+                            && url.fragment().is_none()
+                            && url.to_file_path().is_ok()
+                    })
+            {
+                output.set_fragment(Some(DEERFLOW_OUTPUT_FRAGMENT));
+                uri = output;
             }
             let label = content
                 .get("title")
@@ -518,6 +534,61 @@ mod tests {
             content_text(&json!({"type":"resource_link","name":"bad","uri":"javascript:alert(1)"}))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn deerflow_output_uri_survives_acp_notification_and_replay() {
+        let output = "file:///D:/workspace/.deerflow/outputs/nested/%E5%9B%BE%20%231.png";
+        let notification: SessionNotification = serde_json::from_value(json!({
+            "sessionId": "s",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {
+                    "type": "resource_link", "name": "图 #1.png",
+                    "uri": "file:///C:/state/assets/snapshot.blob",
+                    "_meta": {"deerflow": {"outputUri": output}}
+                }
+            }
+        }))
+        .unwrap();
+        let update = serde_json::to_value(notification.update).unwrap();
+        let expected = format!("\n\n[图 #1.png](<{output}#deerflow-output>)\n\n");
+        assert_eq!(
+            content_markdown(&update["content"], None).unwrap(),
+            expected
+        );
+        let history = history_from_updates(&[
+            json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"show image"}}),
+            update,
+        ]);
+        assert_eq!(history.messages[1].content, expected);
+    }
+
+    #[test]
+    fn invalid_deerflow_output_metadata_preserves_resource_link_handling() {
+        let mut resource = json!({
+            "type": "resource_link", "name": "report",
+            "uri": "file:///C:/state/assets/snapshot.blob"
+        });
+        let fallback = content_text(&resource);
+        for invalid in [
+            "https://example.com/r.pdf",
+            "javascript:alert(1)",
+            "relative.pdf",
+            "file:///C:/out/file.pdf#part",
+            "file:///C:/out/file.pdf?query",
+        ] {
+            resource["_meta"] = json!({"deerflow": {"outputUri": invalid}});
+            assert_eq!(content_text(&resource), fallback);
+        }
+        resource["_meta"] = json!({"deerflow": {"outputUri": "file:///C:/output.pdf"}});
+        resource["uri"] = json!("https://example.com/r.pdf");
+        assert_eq!(
+            content_text(&resource).unwrap(),
+            "\n\n[report](<https://example.com/r.pdf>)\n\n"
+        );
+        resource["uri"] = json!("javascript:alert(1)");
+        assert_eq!(content_text(&resource), None);
     }
 
     use serde_json::json;

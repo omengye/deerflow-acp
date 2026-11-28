@@ -19,13 +19,13 @@ func (s *Store) PrepareFork(ctx context.Context, source string, target harness.S
 	if err != nil {
 		return nil, nil, err
 	}
-	var refs []harness.AssetRef
+	var refs []storedAsset
 	for rows.Next() {
 		var data []byte
 		if err = rows.Scan(&data); err != nil {
 			break
 		}
-		var ref harness.AssetRef
+		var ref storedAsset
 		if err = json.Unmarshal(data, &ref); err != nil {
 			break
 		}
@@ -49,7 +49,8 @@ func (s *Store) PrepareFork(ctx context.Context, source string, target harness.S
 	}
 	mapping := make(map[string]harness.AssetRef)
 	p.forkReferences = make(map[string]string)
-	for _, ref := range refs {
+	for _, stored := range refs {
+		ref := stored.AssetRef
 		data, e := s.resolve(ctx, source, ref)
 		if e != nil {
 			_ = p.Finish(false)
@@ -63,6 +64,17 @@ func (s *Store) PrepareFork(ctx context.Context, source string, target harness.S
 		if copy.SHA256 != ref.SHA256 {
 			_ = p.Finish(false)
 			return nil, nil, fmt.Errorf("fork asset digest mismatch")
+		}
+		if ref.Kind == harness.AssetArtifact {
+			outputPath := stored.OutputPath
+			if outputPath == "" {
+				outputPath, e = s.legacyOutputPath(ctx, target.CWD, ref)
+				if e != nil {
+					_ = p.Finish(false)
+					return nil, nil, e
+				}
+			}
+			p.records[len(p.records)-1].OutputPath = outputPath
 		}
 		mapping[ref.ID] = copy
 		// Both identities come from digest-verified source metadata and a new

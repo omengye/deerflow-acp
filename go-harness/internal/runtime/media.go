@@ -89,11 +89,12 @@ func (s *Service) ProjectContent(ctx context.Context, sessionID string, c harnes
 		c.Data = base64.StdEncoding.EncodeToString(data)
 		c.URI = ""
 	case "resource_link":
-		uri, err := s.Assets.LocalURI(ctx, sessionID, *c.Asset)
+		uri, outputURI, err := s.Assets.ResourceURIs(ctx, sessionID, *c.Asset)
 		if err != nil {
 			return harness.Content{}, err
 		}
 		c.URI = uri
+		c.OutputURI = outputURI
 	default:
 		return harness.Content{}, harness.ErrInvalidInput
 	}

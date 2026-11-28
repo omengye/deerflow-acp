@@ -7,6 +7,9 @@ use crate::composer::{FileEntry, SlashCommand};
 use crate::git::{AgentInvocation, BranchSnapshot, CommitSnapshot, CreatedWorktree};
 use crate::model::{Checkpoint, ProviderKind};
 
+/// Marks published files that the desktop reveals in their containing directory.
+pub const DEERFLOW_OUTPUT_FRAGMENT: &str = "deerflow-output";
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ReviewDiffSource {
@@ -52,9 +55,14 @@ pub enum WorkspaceOperation {
     BrowseDirectory {
         path: Option<PathBuf>,
     },
-    ReadTextFile {
+    // Older daemons ignore the optional flag and immediately return text or
+    // a UTF-8 error. An unknown operation would time out on those versions.
+    #[serde(rename = "readTextFile")]
+    ReadFile {
         root: PathBuf,
         relative_path: PathBuf,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        binary: bool,
     },
     WriteTextFile {
         root: PathBuf,
@@ -177,6 +185,10 @@ pub enum WorkspaceResult {
     },
     TextFile {
         content: String,
+    },
+    BinaryFile {
+        #[serde(with = "crate::protocol::base64_bytes")]
+        bytes: Vec<u8>,
     },
     ProjectFiles {
         entries: Vec<FileEntry>,

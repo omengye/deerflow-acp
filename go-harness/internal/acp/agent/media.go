@@ -139,6 +139,9 @@ func (a *Agent) wireContent(ctx context.Context, sessionID string, c harness.Con
 		return map[string]any{"type": "image", "data": c.Data, "mimeType": c.MimeType}, nil
 	case "resource_link":
 		m := map[string]any{"type": "resource_link", "uri": c.URI, "name": c.Name}
+		if c.OutputURI != "" {
+			m["_meta"] = map[string]any{"deerflow": map[string]any{"outputUri": c.OutputURI}}
+		}
 		if c.MimeType != "" {
 			m["mimeType"] = c.MimeType
 		}

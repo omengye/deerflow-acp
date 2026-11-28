@@ -38,9 +38,15 @@ type Store struct {
 }
 
 type record struct {
-	Ref       harness.AssetRef
-	Path      string
-	Workspace string
+	Ref        harness.AssetRef
+	Path       string
+	OutputPath string
+}
+
+// OutputPath is host provenance, kept outside the immutable AssetRef used by clients.
+type storedAsset struct {
+	harness.AssetRef
+	OutputPath string `json:"outputPath,omitempty"`
 }
 
 // Prepared keeps snapshots pinned until the accepting transaction completes.
@@ -212,7 +218,7 @@ func (p *Prepared) attachRecords(ctx context.Context, tx *sql.Tx) error {
 		return harness.ErrPermissionDenied
 	}
 	for _, r := range p.records {
-		data, err := json.Marshal(r.Ref)
+		data, err := json.Marshal(storedAsset{AssetRef: r.Ref, OutputPath: r.OutputPath})
 		if err != nil {
 			return err
 		}
@@ -249,7 +255,7 @@ func (p *Prepared) snapshot(ctx context.Context, source io.Reader, name, mime, k
 		return harness.AssetRef{}, err
 	}
 	ref := harness.AssetRef{ID: id, SessionID: p.session.ID, SHA256: fmt.Sprintf("%x", hash.Sum(nil)), Size: n, MimeType: mime, Name: name, Kind: kind}
-	p.records = append(p.records, record{Ref: ref, Path: target, Workspace: p.session.CWD})
+	p.records = append(p.records, record{Ref: ref, Path: target})
 	p.refs = append(p.refs, ref)
 	return ref, nil
 }
@@ -323,15 +329,26 @@ func (s *Store) resolve(ctx context.Context, sessionID string, ref harness.Asset
 
 // LocalURI validates the snapshot before exposing it to an authorized client.
 func (s *Store) LocalURI(ctx context.Context, sessionID string, ref harness.AssetRef) (string, error) {
+	path, err := s.SnapshotPath(ctx, sessionID, ref)
+	if err != nil {
+		return "", err
+	}
+	return filePathURI(path), nil
+}
+
+// ResourceURIs keeps ACP's immutable resource URI separate from an optional
+// workspace location that a desktop client can reveal.
+func (s *Store) ResourceURIs(ctx context.Context, sessionID string, ref harness.AssetRef) (snapshot, output string, err error) {
 	s.lifecycle.RLock()
 	defer s.lifecycle.RUnlock()
 	if s.closed {
-		return "", errors.New("asset store is closed")
+		return "", "", errors.New("asset store is closed")
 	}
 	if _, err := s.resolve(ctx, sessionID, ref); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return s.localURI(ref), nil
+	output, err = s.resourceOutputURI(ctx, ref)
+	return s.localURI(ref), output, err
 }
 
 // SnapshotPath validates an authorized reference before handing its immutable
@@ -350,7 +367,11 @@ func (s *Store) SnapshotPath(ctx context.Context, sessionID string, ref harness.
 
 // localURI only formats a reference already verified by the calling operation.
 func (s *Store) localURI(ref harness.AssetRef) string {
-	p := filepath.ToSlash(filepath.Join(s.path, ref.ID+".blob"))
+	return filePathURI(filepath.Join(s.path, ref.ID+".blob"))
+}
+
+func filePathURI(path string) string {
+	p := filepath.ToSlash(path)
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
 	}

@@ -1631,6 +1631,8 @@ files.no_project_is_open:
   en: No project is open
 files.unable_to_edit:
   en: "Unable to edit this file: %{error}"
+files.image_daemon_update:
+  en: "Update the workspace daemon to preview binary images."
 files.could_not_save_opening:
   en: "Could not save %{path}: still opening"
 files.could_not_save_read_only:

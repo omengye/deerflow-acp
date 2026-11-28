@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 
+mod artifact_links;
+
 const TAB_SCROLL_FADE_WIDTH: f32 = 24.0;
 const REVIEW_DIFF_FILE_HEADER_HEIGHT: f32 = 36.0;
 
@@ -21,6 +23,7 @@ pub(super) struct WorkingTreeEntry {
 enum TranscriptLinkRoute {
     ProjectFile(String),
     Finder(PathBuf),
+    Output(PathBuf),
     External,
 }
 
@@ -143,6 +146,14 @@ fn transcript_link_route(target: &str, workspace: Option<&Path>) -> TranscriptLi
         return TranscriptLinkRoute::External;
     };
     let path = normalized_path(&path);
+    if target.rsplit_once('#').map(|(_, fragment)| fragment)
+        == Some(waku_protocol::workspace::DEERFLOW_OUTPUT_FRAGMENT)
+        && target
+            .get(..5)
+            .is_some_and(|s| s.eq_ignore_ascii_case("file:"))
+    {
+        return TranscriptLinkRoute::Output(path);
+    }
     if let Some(relative_path) =
         workspace.and_then(|workspace| workspace_relative_file_path(workspace, &path))
     {
@@ -653,9 +664,6 @@ fn file_icon_for_name(name: &str) -> &'static str {
         "sql" | "db" | "sqlite" | "sqlite3" | "csv" | "xls" | "xlsx" => {
             "icons/file-types/database.svg"
         }
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "ico" | "tiff" => {
-            "icons/file-types/image.svg"
-        }
         "svg" => "icons/file-types/svg.svg",
         "pdf" => "icons/file-types/pdf.svg",
         "mp3" | "wav" | "flac" | "ogg" | "m4a" => "icons/file-types/audio.svg",
@@ -695,6 +703,7 @@ fn file_icon_for_name(name: &str) -> &'static str {
         "diff" | "patch" => "icons/file-types/diff.svg",
         "exe" | "dll" | "so" | "dylib" => "icons/file-types/exe.svg",
         "lock" => "icons/file-types/lock.svg",
+        _ if workspace_image::Format::for_path(&name).is_some() => "icons/file-types/image.svg",
         _ => "icons/file-types/file.svg",
     }
 }
@@ -840,9 +849,10 @@ fn read_right_panel_file(
     project_path: &Path,
     relative_path: &str,
 ) -> (String, bool) {
-    match workspace.request(waku_client::WorkspaceOperation::ReadTextFile {
+    match workspace.request(waku_client::WorkspaceOperation::ReadFile {
         root: project_path.to_path_buf(),
         relative_path: PathBuf::from(relative_path),
+        binary: false,
     }) {
         Ok(waku_client::WorkspaceResult::TextFile { content }) => (content, true),
         Ok(_) => (
@@ -1106,6 +1116,13 @@ mod tests {
         assert_eq!(
             transcript_link_route(&format!("{encoded_file_url}#L12C4"), Some(workspace)),
             TranscriptLinkRoute::ProjectFile("My File.rs".into())
+        );
+        let original = workspace.join(".deerflow/outputs/印面 #1.jpg");
+        let mut output = url::Url::from_file_path(&original).unwrap();
+        output.set_fragment(Some(waku_protocol::workspace::DEERFLOW_OUTPUT_FRAGMENT));
+        assert_eq!(
+            transcript_link_route(output.as_str(), Some(workspace)),
+            TranscriptLinkRoute::Output(original)
         );
 
         let outside_file = workspace.join("../kero/src/app.rs");
@@ -1742,12 +1759,37 @@ mod tests {
 
 impl Waku {
     pub(super) fn open_transcript_link(&mut self, target: &str, cx: &mut Context<Self>) -> bool {
-        match transcript_link_route(target, self.selected_workspace_path()) {
+        let workspace = self.selected_workspace_path();
+        let original = self
+            .selected_session()
+            .zip(workspace)
+            .and_then(|(session, root)| artifact_links::cached_output_path(session, root, target));
+        let route = original
+            .map(TranscriptLinkRoute::Output)
+            .unwrap_or_else(|| transcript_link_route(target, workspace));
+        // Remote output files stay on the daemon host. Open them through the
+        // workspace reader when possible, as for ordinary remote file links.
+        let route = match route {
+            TranscriptLinkRoute::Output(path) if self.daemon.is_remote() => workspace
+                .and_then(|root| workspace_relative_file_path(root, &path))
+                .map(TranscriptLinkRoute::ProjectFile)
+                .unwrap_or(TranscriptLinkRoute::Finder(path)),
+            other => other,
+        };
+        match route {
             TranscriptLinkRoute::ProjectFile(relative_path) => {
                 self.open_right_panel_surface(RightPanelSurface::Files, cx);
                 self.open_right_panel_file(relative_path, cx);
             }
-            TranscriptLinkRoute::Finder(path) => {
+            TranscriptLinkRoute::Output(path) if !path.is_file() => {
+                self.show_toast(format!(
+                    "{}: {}",
+                    tr!("files.file_unavailable"),
+                    path.display()
+                ));
+                cx.notify();
+            }
+            TranscriptLinkRoute::Finder(path) | TranscriptLinkRoute::Output(path) => {
                 if self.daemon.is_remote() {
                     self.show_toast(tr!("errors.remote_host_path"));
                     cx.notify();
@@ -1924,6 +1966,7 @@ impl Waku {
             Some(RightPanelSurface::File(path)) => Some(path.clone()),
             _ => None,
         }
+        .filter(|path| workspace_image::Format::for_path(path).is_none())
     }
 
     fn right_panel_file_is_dirty(&self, relative_path: &str) -> bool {
@@ -2857,24 +2900,26 @@ impl Waku {
     ) -> Div {
         let theme = Theme::current(cx);
         let file_tree_width = fitted_file_tree_width(panel_width, self.right_panel_file_tree_width);
-        let (editor_state, writable, _) =
-            self.ensure_right_panel_file_editor(&relative_path, window, cx);
-
-        // Markdown files carry the global source/preview toggle; every other
-        // language always shows source.
         let is_markdown = file_highlighter_language(&relative_path) == "markdown";
         let preview = is_markdown && self.state.markdown_preview;
-        let body = if preview {
-            self.render_file_markdown_preview(&relative_path, &editor_state, cx)
+        let body = if let Some(format) = workspace_image::Format::for_path(&relative_path) {
+            self.close_file_search(window, cx);
+            self.render_workspace_image(&relative_path, format, window, cx)
         } else {
-            self.render_file_editor_body(
-                &relative_path,
-                &editor_state,
-                panel_width - file_tree_width,
-                writable,
-                window,
-                cx,
-            )
+            let (editor_state, writable, _) =
+                self.ensure_right_panel_file_editor(&relative_path, window, cx);
+            if preview {
+                self.render_file_markdown_preview(&relative_path, &editor_state, cx)
+            } else {
+                self.render_file_editor_body(
+                    &relative_path,
+                    &editor_state,
+                    panel_width - file_tree_width,
+                    writable,
+                    window,
+                    cx,
+                )
+            }
         };
         let preview_toggle = is_markdown.then(|| {
             let focus = self.transcript_control_focus("file-markdown-preview-toggle", cx);
@@ -3367,6 +3412,7 @@ impl Waku {
     }
 
     pub(super) fn reload_clean_right_panel_file_editors(&mut self, cx: &mut Context<Self>) {
+        self.right_panel_image_revision = self.right_panel_image_revision.wrapping_add(1);
         let paths = self
             .right_panel_file_editors
             .iter()

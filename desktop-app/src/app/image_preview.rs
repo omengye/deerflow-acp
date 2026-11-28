@@ -287,15 +287,15 @@ pub(super) fn image_format_for_name(name: &str) -> Option<gpui::ImageFormat> {
         .and_then(|extension| extension.to_str())?
         .to_ascii_lowercase();
     match extension.as_str() {
-        "png" => Some(gpui::ImageFormat::Png),
-        "jpg" | "jpeg" => Some(gpui::ImageFormat::Jpeg),
+        "png" | "apng" => Some(gpui::ImageFormat::Png),
+        "jpg" | "jpeg" | "jfif" | "jpe" => Some(gpui::ImageFormat::Jpeg),
         "webp" => Some(gpui::ImageFormat::Webp),
         "gif" => Some(gpui::ImageFormat::Gif),
         "svg" => Some(gpui::ImageFormat::Svg),
         "bmp" => Some(gpui::ImageFormat::Bmp),
         "tif" | "tiff" => Some(gpui::ImageFormat::Tiff),
         "ico" => Some(gpui::ImageFormat::Ico),
-        "pnm" | "pbm" | "pgm" | "ppm" => Some(gpui::ImageFormat::Pnm),
+        "pnm" | "pam" | "pbm" | "pgm" | "ppm" => Some(gpui::ImageFormat::Pnm),
         _ => None,
     }
 }

@@ -504,7 +504,7 @@ impl From<anyhow::Error> for RpcError {
     }
 }
 
-mod base64_bytes {
+pub(crate) mod base64_bytes {
     use base64::Engine as _;
     use serde::{Deserialize as _, Deserializer, Serializer};
 

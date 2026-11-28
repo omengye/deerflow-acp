@@ -27,6 +27,7 @@ type Content struct {
 	Data        string    `json:"data,omitempty"`
 	MimeType    string    `json:"mimeType,omitempty"`
 	URI         string    `json:"uri,omitempty"`
+	OutputURI   string    `json:"-"` // Local presentation hint, populated only for transport.
 	Name        string    `json:"name,omitempty"`
 	Size        *int64    `json:"size,omitempty"`
 	Description string    `json:"description,omitempty"`

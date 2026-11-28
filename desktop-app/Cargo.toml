@@ -37,6 +37,8 @@ gpui_platform = { git = "https://github.com/egoist/zed", branch = "waku-webview"
   "wayland",
   "x11",
 ] }
+# Use the same raster decoders and frame type as GPUI for workspace images.
+image = { version = "0.25", default-features = false }
 parking_lot = "0.12"
 reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls"] }
 rquickjs = "0.12.2"
@@ -157,8 +159,6 @@ raw-window-handle = "0.6"
 # it into a sibling staging prefix before the handoff helper swaps it in.
 ed25519-dalek = "2"
 flate2 = "1"
-# Matches the version GPUI exposes through `WindowOptions::icon`.
-image = { version = "0.25", default-features = false, features = ["png"] }
 tar = "0.4"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
@@ -179,6 +179,7 @@ webview2-com = "0.38"
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Graphics_DirectComposition",
+  "Win32_Graphics_Imaging",
   "Win32_System_Com",
   "Win32_UI_WindowsAndMessaging",
 ] }
